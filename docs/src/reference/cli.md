@@ -608,6 +608,28 @@ A column with a WIP limit shows its live count against the limit after its
 name, for example `[WIP 2/3]`. When it has more items than the limit, it shows
 `[WIP 4/3, over the limit]`.
 
+### `kairos boards flow`
+
+```
+kairos boards flow <BOARD> [--from <YYYY-MM-DD>] [--to <YYYY-MM-DD>] [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<BOARD>` | slug or UUID | required | The board. |
+| `--from <DATE>` | `YYYY-MM-DD` | 89 days before `--to` | The first day of the range (UTC). |
+| `--to <DATE>` | `YYYY-MM-DD` | today | The last day of the range (UTC). |
+
+Shows the flow metrics of the board for the range:
+
+- the cycle time: the count, the mean, the median and the 85th percentile;
+- the throughput per week;
+- the work in progress, with its age;
+- the cumulative flow of the last 14 days. `--json` gives each day.
+
+A cancelled task counts apart from the done items. A range has 366 days at
+most. The definitions are in [`board_flow`](mcp-tools.md#board_flow).
+
 ### `kairos boards wip-limit`
 
 ```

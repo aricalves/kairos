@@ -17,6 +17,7 @@ pub mod code_indexes;
 pub mod code_rename;
 pub mod embeddings;
 pub mod events;
+pub mod flow;
 pub mod forge;
 pub mod graph;
 pub mod impacts;

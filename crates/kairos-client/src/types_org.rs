@@ -989,6 +989,133 @@ pub struct TenantDeletedResponse {
     pub dropped: bool,
 }
 
+// ---------------------------------------------------------------------------
+// Flow metrics (KAIROS-T-0372)
+// ---------------------------------------------------------------------------
+
+/// Query of `GET /api/boards/{id}/flow` (KAIROS-T-0372). Dates are
+/// `YYYY-MM-DD` (UTC), and the range has the two days. The defaults: `to`
+/// is today, `from` is 89 days before `to` (90 days). A range has 366 days
+/// at most.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+#[serde(deny_unknown_fields)]
+pub struct BoardFlowQuery {
+    /// The first day of the range, `YYYY-MM-DD`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// The last day of the range, `YYYY-MM-DD`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+}
+
+/// The flow metrics of a board for a range (KAIROS-T-0372), from the
+/// history of the moves (`activity_log`). Only the live items of the board
+/// count; a cancelled task counts apart from the done items.
+///
+/// The start of an item is its first entry into a start column. A start
+/// column has `claims` (Active). With no such column, the column named
+/// Active is the start. An item is done in an `is_done` column; its done
+/// time is its last entry into one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct BoardFlow {
+    /// The board (UUID).
+    pub board_id: String,
+    pub board_slug: String,
+    /// The first day of the range, `YYYY-MM-DD`.
+    pub from: String,
+    /// The last day of the range, `YYYY-MM-DD`.
+    pub to: String,
+    /// The start columns, by name. Empty: the board has no start, and no
+    /// cycle time.
+    pub start_columns: Vec<String>,
+    /// The done columns, by name.
+    pub done_columns: Vec<String>,
+    /// The done items of the range (not cancelled).
+    pub done_count: i64,
+    /// The cancelled tasks of the range, by the time of the cancel.
+    pub cancelled_count: i64,
+    pub cycle_time: FlowCycleTime,
+    /// The done items of the range that never entered a start column (no
+    /// cycle time).
+    pub done_without_start: i64,
+    /// One row for each week of the range (weeks start on Monday, UTC).
+    pub throughput: Vec<FlowWeek>,
+    /// The work in progress: each item that is not done and has a start,
+    /// oldest first.
+    pub ageing: Vec<FlowAgeingItem>,
+    pub cumulative_flow: CumulativeFlow,
+}
+
+/// The cycle time of the done items of the range (KAIROS-T-0372): from the
+/// start to the done time, in days.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct FlowCycleTime {
+    /// The number of items with a cycle time.
+    pub count: i64,
+    pub mean_days: Option<f64>,
+    pub median_days: Option<f64>,
+    /// The 85th percentile (nearest rank).
+    pub p85_days: Option<f64>,
+    /// Each item, in the order of its done time.
+    pub items: Vec<FlowCycleTimeItem>,
+}
+
+/// One done item and its cycle time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct FlowCycleTimeItem {
+    pub short_code: String,
+    pub title: String,
+    /// RFC 3339.
+    pub started_at: String,
+    /// RFC 3339.
+    pub done_at: String,
+    pub days: f64,
+}
+
+/// The throughput of one week.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct FlowWeek {
+    /// The Monday of the week, `YYYY-MM-DD`.
+    pub week_start: String,
+    /// The items that went to a done column in the week (not cancelled).
+    pub done: i64,
+    /// The tasks cancelled in the week.
+    pub cancelled: i64,
+}
+
+/// One item in progress, and its age.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct FlowAgeingItem {
+    pub short_code: String,
+    pub title: String,
+    /// The column of the item now.
+    pub column: String,
+    /// The start of the item (RFC 3339).
+    pub started_at: String,
+    /// The time from the start to now, in days.
+    pub age_days: f64,
+}
+
+/// The number of live items in each column at the end of each day of the
+/// range (UTC).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CumulativeFlow {
+    /// The columns: those of the board in position order, then an old name
+    /// of a column that the history has (a column that has a new name now).
+    pub columns: Vec<String>,
+    /// One row for each day; `counts` has the order of `columns`.
+    pub days: Vec<CumulativeFlowDay>,
+}
+
+/// One day of the cumulative flow.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CumulativeFlowDay {
+    /// `YYYY-MM-DD`.
+    pub date: String,
+    pub counts: Vec<i64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

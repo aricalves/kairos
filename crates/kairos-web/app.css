@@ -569,3 +569,14 @@
 .kairos-board__column:has(.kairos-board__wip--over) .kairos-board__column-head {
   border-bottom: 2px solid var(--bad);
 }
+
+/* KAIROS-T-0372: the flow panel of a board. The tiles wrap across the
+   width; the panel sits above the columns. */
+.kairos-flow {
+  margin-bottom: var(--space-md);
+}
+.kairos-flow__tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+  gap: var(--space-sm);
+}

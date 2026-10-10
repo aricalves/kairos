@@ -130,6 +130,20 @@ pub struct MyBoardsParams {
     pub level: Option<String>,
 }
 
+/// `board_flow` (KAIROS-T-0372).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct BoardFlowParams {
+    /// The board, by slug (e.g. "platform-delivery") or UUID.
+    pub board: String,
+    /// The first day of the range, YYYY-MM-DD. Default: 89 days before
+    /// `to`.
+    pub from: Option<String>,
+    /// The last day of the range, YYYY-MM-DD. Default: today (UTC).
+    pub to: Option<String>,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
@@ -1395,6 +1409,28 @@ impl KairosMcp {
                 }
             }
             Ok(out)
+        })
+        .await
+    }
+
+    // KAIROS-T-0372: the flow metrics of a board.
+    #[tool(
+        description = "The flow metrics of a board for a range of days (UTC): cycle time (from the first entry into a start column to the last entry into a done column, in days: count, mean, median, 85th percentile, and each item), throughput per week (done items, and cancelled tasks apart), the age of each item in progress (not done, with a start), and the cumulative flow (the live items of each column at the end of each day). A start column is a column with claims (Active), or the column named Active when the board has none. `board` is a slug or UUID. Optional `from` and `to` are dates YYYY-MM-DD: the default is the 90 days to today; a range has 366 days at most. The cumulative flow shows the last 14 days; the REST route GET /api/boards/{id}/flow gives each day."
+    )]
+    pub async fn board_flow(
+        &self,
+        Parameters(params): Parameters<BoardFlowParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (_, tenant) = Self::caller(&context)?;
+        self.run_tool(&tenant, move |conn| {
+            let flow = crate::api::org::flow::board_flow_of(
+                conn,
+                &params.board,
+                params.from.as_deref(),
+                params.to.as_deref(),
+            )?;
+            Ok(flow_text(&flow))
         })
         .await
     }
@@ -3873,6 +3909,83 @@ fn card_details(updated_at: DateTime<Utc>, metadata: Option<&Vec<(String, String
         parts.push(format!("{slug}: {value}"));
     }
     format!(" {{{}}}", parts.join("; "))
+}
+
+/// The text of `board_flow` (KAIROS-T-0372). Pure.
+fn flow_text(flow: &kairos_client::types_org::BoardFlow) -> String {
+    let days = |value: Option<f64>| value.map_or_else(|| "-".to_string(), |v| format!("{v}"));
+    let mut out = format!(
+        "# Flow of {} ({} to {})\n\nStart columns: {}. Done columns: {}.\nDone: {}. Cancelled: \
+         {} (counted apart). Done with no start: {}.\n",
+        flow.board_slug,
+        flow.from,
+        flow.to,
+        if flow.start_columns.is_empty() {
+            "none (no cycle time)".to_string()
+        } else {
+            flow.start_columns.join(", ")
+        },
+        if flow.done_columns.is_empty() {
+            "none".to_string()
+        } else {
+            flow.done_columns.join(", ")
+        },
+        flow.done_count,
+        flow.cancelled_count,
+        flow.done_without_start,
+    );
+    let cycle = &flow.cycle_time;
+    out.push_str(&format!(
+        "\n## Cycle time (days)\ncount {}, mean {}, median {}, 85th percentile {}\n",
+        cycle.count,
+        days(cycle.mean_days),
+        days(cycle.median_days),
+        days(cycle.p85_days)
+    ));
+    for item in &cycle.items {
+        out.push_str(&format!(
+            "- {} {} ({} days, done {})\n",
+            item.short_code,
+            item.title,
+            item.days,
+            item.done_at.get(..10).unwrap_or(&item.done_at)
+        ));
+    }
+    out.push_str("\n## Throughput per week\n");
+    for week in &flow.throughput {
+        out.push_str(&format!(
+            "- week of {}: done {}, cancelled {}\n",
+            week.week_start, week.done, week.cancelled
+        ));
+    }
+    out.push_str("\n## Work in progress (oldest first)\n");
+    if flow.ageing.is_empty() {
+        out.push_str("No item is in progress.\n");
+    }
+    for item in &flow.ageing {
+        out.push_str(&format!(
+            "- {} {} [{}] {} days\n",
+            item.short_code, item.title, item.column, item.age_days
+        ));
+    }
+    let cfd = &flow.cumulative_flow;
+    out.push_str(&format!(
+        "\n## Cumulative flow (last 14 days)\ndate | {}\n",
+        cfd.columns.join(" | ")
+    ));
+    let skip = cfd.days.len().saturating_sub(14);
+    for day in cfd.days.iter().skip(skip) {
+        out.push_str(&format!(
+            "{} | {}\n",
+            day.date,
+            day.counts
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ));
+    }
+    out
 }
 
 /// The WIP limit of a column in the text of `board_items` (KAIROS-T-0371):

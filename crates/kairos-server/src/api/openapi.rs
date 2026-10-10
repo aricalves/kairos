@@ -150,6 +150,7 @@ use crate::app::AppState;
         crate::api::org::boards::update_board,
         crate::api::org::boards::delete_board,
         crate::api::org::boards::board_items,
+        crate::api::org::flow::board_flow,
         crate::api::org::boards::archive_completed,
         crate::api::org::boards::set_code_sequence,
         crate::api::org::boards::list_columns,

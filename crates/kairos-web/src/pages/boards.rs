@@ -22,6 +22,7 @@
 //!   attach to strategies/initiatives/tasks only).
 
 pub(crate) mod data;
+mod flow;
 pub(crate) mod live;
 
 use aurora_dark::components::{
@@ -1336,6 +1337,9 @@ fn BoardBody(
     let create_open = RwSignal::new(false);
     let doc_open = RwSignal::new(false);
     let archive_open = RwSignal::new(false);
+    // KAIROS-T-0372: the flow panel, open or not.
+    let flow_open = RwSignal::new(false);
+    let flow_board = StoredValue::new(board.slug.clone());
     // KAIROS-T-0363: the tasks that "Archive completed" takes.
     let completed = Memo::new(move |_| {
         model.with(|m| {
@@ -1584,6 +1588,11 @@ fn BoardBody(
                             "New document"
                         </Button>
                     })}
+                    // KAIROS-T-0372: the flow metrics, for each reader.
+                    <Button variant="default" size="xs"
+                        on_click=Callback::new(move |_| flow_open.update(|open| *open = !*open))>
+                        {move || if flow_open.get() { "Hide flow" } else { "Flow" }}
+                    </Button>
                     // KAIROS-T-0363: only for a person who may archive each
                     // task of the board (`manage_tasks`).
                     {move || (is_delivery && powers.get().create).then(|| view! {
@@ -1597,6 +1606,9 @@ fn BoardBody(
             }.into_any());
             view! { <PageHeader title sub right=header_right/> }
         }}
+        {move || flow_open.get().then(|| view! {
+            <flow::FlowPanel board=flow_board.get_value()/>
+        })}
         {move || {
             // COLLIERY-T-0261: the board has 2000 cards at most. A board
             // with more cards says so, with the numbers.

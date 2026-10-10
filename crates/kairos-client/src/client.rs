@@ -746,6 +746,17 @@ impl KairosClient {
             .await
     }
 
+    /// `GET /api/boards/{id}/flow` — the flow metrics of a board for a
+    /// range of days (KAIROS-T-0372). `board` is a slug or a UUID.
+    pub async fn board_flow(
+        &self,
+        board: &str,
+        query: &crate::types_org::BoardFlowQuery,
+    ) -> Result<crate::types_org::BoardFlow, Error> {
+        self.get_query(&format!("/api/boards/{board}/flow"), query)
+            .await
+    }
+
     /// Each item of a board: `GET /api/boards/{id}/items`, page after
     /// page, as one response (COLLIERY-T-0261). `limit` and `offset` of
     /// `query` have no effect: the pages have the maximum size, and the

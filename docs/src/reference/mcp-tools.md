@@ -1,8 +1,8 @@
 # MCP tools
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-thirty-eight tools. A drift gate in the test suite
-asserts that `tools/list` returns these thirty-eight and no others. The same
+thirty-nine tools. A drift gate in the test suite
+asserts that `tools/list` returns these thirty-nine and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -354,9 +354,10 @@ A [cancelled](glossary.md#cancel) task carries `[cancelled]`.
 A column with a WIP limit shows its live count against the limit after its
 name: `## Active (2) [WIP 2/3]`. A column with more live items than its limit
 shows `[WIP 4/3, over the limit]`. The count is of the whole column, not of the
-result. A move into a column over its limit is allowed: the answer of
-`transition_item` or `move_item` ends with the line `Warning: the column Active
-has 4 items, over its WIP limit of 3. Your move of ACME-T-0012 is recorded.`
+result. Kairos does not refuse a move into a column over its limit. The answer
+of `transition_item` or `move_item` ends with a warning line, for example
+`Warning: the column Active has 4 items, over its WIP limit of 3. Your move of
+ACME-T-0012 is recorded.`
 
 With `details: true`, each card ends with the date (UTC) of its last change
 and its metadata values, in slug order:
@@ -377,6 +378,44 @@ Refuses: `NOT_FOUND` for an unknown or archived board; `VALIDATION` for a
 `column` that is not on that board, and the refusal lists the board's columns,
 for an unknown `repository`, for an unknown `team`, and for `team` with
 `no_team`.
+
+### `board_flow`
+
+The flow metrics of a board for a range of days (UTC).
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `board` | string | yes | — | Slug or UUID. |
+| `from` | string | no | 89 days before `to` | The first day of the range, `YYYY-MM-DD`. |
+| `to` | string | no | today | The last day of the range, `YYYY-MM-DD`. |
+
+The result has 4 parts:
+
+- **Cycle time**: the days from the start to the done time of each done item
+  of the range. The count, the mean, the median and the 85th percentile, then
+  each item.
+- **Throughput per week**: the done items and the cancelled tasks of each week.
+  Weeks start on Monday.
+- **Work in progress**: each item that is not done and has a start, with its
+  age in days, oldest first.
+- **Cumulative flow**: the live items of each column at the end of each of the
+  last 14 days. `GET /api/boards/{id}/flow` gives each day of the range.
+
+The definitions:
+
+- The start of an item is its first entry into a start column. A start column
+  has the flag `claims` (the Active column of a delivery board). When the board
+  has no such column, the column with the name Active is the start column.
+- An item is done when it is in a done column now. Its done time is its last
+  entry into a done column.
+- A cancelled task counts apart. It is not in the done count, and it has no
+  cycle time.
+- Only the live items of the board count. The history names the columns by
+  their name at the time of the move. A column with a new name shows its old
+  name in the cumulative flow.
+
+Refuses: `NOT_FOUND` for an unknown board; `VALIDATION` for a date that is not
+`YYYY-MM-DD`, a `from` after `to`, or a range of more than 366 days.
 
 ### `get_item`
 

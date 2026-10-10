@@ -229,6 +229,26 @@ One column's items in the `GET /api/boards/{id}/items` view: every live workflow
 
 Board detail: the board plus its full configuration (`GET /api/boards/{id}`).
 
+## BoardFlow
+
+The flow metrics of a board for a range (KAIROS-T-0372), from the history of the moves (`activity_log`). Only the live items of the board count; a cancelled task counts apart from the done items. The start of an item is its first entry into a start column. A start column has `claims` (Active). With no such column, the column named Active is the start. An item is done in an `is_done` column; its done time is its last entry into one.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ageing` | array of [`FlowAgeingItem`](schemas.md#flowageingitem) | yes | The work in progress: each item that is not done and has a start, oldest first. |
+| `board_id` | `string` | yes | The board (UUID). |
+| `board_slug` | `string` | yes |  |
+| `cancelled_count` | `integer` | yes | The cancelled tasks of the range, by the time of the cancel. |
+| `cumulative_flow` | [`CumulativeFlow`](schemas.md#cumulativeflow) | yes |  |
+| `cycle_time` | [`FlowCycleTime`](schemas.md#flowcycletime) | yes |  |
+| `done_columns` | array of `string` | yes | The done columns, by name. |
+| `done_count` | `integer` | yes | The done items of the range (not cancelled). |
+| `done_without_start` | `integer` | yes | The done items of the range that never entered a start column (no cycle time). |
+| `from` | `string` | yes | The first day of the range, `YYYY-MM-DD`. |
+| `start_columns` | array of `string` | yes | The start columns, by name. Empty: the board has no start, and no cycle time. |
+| `throughput` | array of [`FlowWeek`](schemas.md#flowweek) | yes | One row for each week of the range (weeks start on Monday, UTC). |
+| `to` | `string` | yes | The last day of the range, `YYYY-MM-DD`. |
+
 ## BoardItemsResponse
 
 Response of `GET /api/boards/{id}/items`: one page of the items on the board, grouped by column (columns in position order). The order of the items is: the position of the column, then the type, then the short code (COLLIERY-T-0261). The order of the types is: strategy, initiative, task, ADR. Each column is in each page, and a column can have no item on a page.
@@ -707,6 +727,24 @@ The server refuses a body with a field that is not in this table ([Errors](../er
 
 Response of connection creation and rotation: the connection plus the delivery URL and secret to paste into the forge. **The secret is shown here and nowhere else** — it is derived, never stored, so it cannot be re-read later (rotate to get a new one).
 
+## CumulativeFlow
+
+The number of live items in each column at the end of each day of the range (UTC).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `columns` | array of `string` | yes | The columns: those of the board in position order, then an old name of a column that the history has (a column that has a new name now). |
+| `days` | array of [`CumulativeFlowDay`](schemas.md#cumulativeflowday) | yes | One row for each day; `counts` has the order of `columns`. |
+
+## CumulativeFlowDay
+
+One day of the cumulative flow.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `counts` | array of `integer` | yes |  |
+| `date` | `string` | yes | `YYYY-MM-DD`. |
+
 ## DeleteResponse
 
 Response of `DELETE /api/{family}/{short_code}` â the soft delete and its KAIROS-A-0001 cascade.
@@ -802,6 +840,52 @@ The S-0005 error envelope: `{"error": {"code", "message", "details"}}`.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `error` | [`ErrorBody`](schemas.md#errorbody) | yes |  |
+
+## FlowAgeingItem
+
+One item in progress, and its age.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `age_days` | `number` | yes | The time from the start to now, in days. |
+| `column` | `string` | yes | The column of the item now. |
+| `short_code` | `string` | yes |  |
+| `started_at` | `string` | yes | The start of the item (RFC 3339). |
+| `title` | `string` | yes |  |
+
+## FlowCycleTime
+
+The cycle time of the done items of the range (KAIROS-T-0372): from the start to the done time, in days.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `count` | `integer` | yes | The number of items with a cycle time. |
+| `items` | array of [`FlowCycleTimeItem`](schemas.md#flowcycletimeitem) | yes | Each item, in the order of its done time. |
+| `mean_days` | `number`, nullable | no |  |
+| `median_days` | `number`, nullable | no |  |
+| `p85_days` | `number`, nullable | no | The 85th percentile (nearest rank). |
+
+## FlowCycleTimeItem
+
+One done item and its cycle time.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `days` | `number` | yes |  |
+| `done_at` | `string` | yes | RFC 3339. |
+| `short_code` | `string` | yes |  |
+| `started_at` | `string` | yes | RFC 3339. |
+| `title` | `string` | yes |  |
+
+## FlowWeek
+
+The throughput of one week.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `cancelled` | `integer` | yes | The tasks cancelled in the week. |
+| `done` | `integer` | yes | The items that went to a done column in the week (not cancelled). |
+| `week_start` | `string` | yes | The Monday of the week, `YYYY-MM-DD`. |
 
 ## ForgeConnection
 

@@ -330,6 +330,25 @@ Request body (required): `application/json`, [`UpdateColumnRequest`](schemas.md#
 | `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown board/column |
 | `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | DUPLICATE_COLUMN_NAME / VALIDATION |
 
+### `GET /api/boards/{id}/flow`
+
+The flow metrics of a board for a range of days (KAIROS-T-0372). They are
+the cycle time, the throughput per week, the work in progress and the
+cumulative flow. A cancelled task counts apart
+from the done items. The path takes the slug or the id of the board.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `id` | path | yes | `string` | The slug or the id (UUID) of the board |
+| `from` | query | no | `string` | The first day of the range, `YYYY-MM-DD`. |
+| `to` | query | no | `string` | The last day of the range, `YYYY-MM-DD`. |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`BoardFlow`](schemas.md#boardflow) | The flow metrics of the range |
+| `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown board |
+| `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | VALIDATION: a date that is not YYYY-MM-DD, from after to, or more than 366 days |
+
 ### `GET /api/boards/{id}/items`
 
 One page of the items on the board, grouped by column (columns in

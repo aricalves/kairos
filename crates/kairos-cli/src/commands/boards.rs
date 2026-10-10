@@ -67,6 +67,22 @@ pub enum BoardsCommand {
         #[command(flatten)]
         common: Common,
     },
+    /// The flow metrics of a board for a range of days: cycle time,
+    /// throughput per week (cancelled apart), the age of the work in
+    /// progress, and the cumulative flow by column
+    Flow {
+        /// Board slug or id (UUID)
+        #[arg(value_name = "BOARD")]
+        board: String,
+        /// The first day, YYYY-MM-DD (default: 89 days before --to)
+        #[arg(long)]
+        from: Option<String>,
+        /// The last day, YYYY-MM-DD (default: today, UTC)
+        #[arg(long)]
+        to: Option<String>,
+        #[command(flatten)]
+        common: Common,
+    },
     /// Set or remove the WIP limit of a column (needs configure_boards). A
     /// move into a column over its limit is allowed, with a warning
     #[command(name = "wip-limit")]
@@ -203,6 +219,25 @@ impl BoardsCommand {
                 if let Some(note) = items.incomplete_note("use --offset") {
                     println!("{note}");
                 }
+                Ok(())
+            }
+            Self::Flow {
+                board,
+                from,
+                to,
+                common,
+            } => {
+                let client = client(&common)?;
+                let flow = client
+                    .board_flow(
+                        &board,
+                        &kairos_client::types_org::BoardFlowQuery { from, to },
+                    )
+                    .await?;
+                if common.json {
+                    return print_json(&flow);
+                }
+                print!("{}", flow_report(&flow));
                 Ok(())
             }
             Self::WipLimit {
@@ -375,6 +410,72 @@ fn print_board_items(items: &BoardItemsResponse, details: bool) {
     }
 }
 
+/// The text of `boards flow` (KAIROS-T-0372). Pure, host-tested.
+fn flow_report(flow: &kairos_client::types_org::BoardFlow) -> String {
+    let days = |value: Option<f64>| value.map_or_else(|| "-".to_string(), |v| format!("{v}"));
+    let mut out = format!(
+        "Flow of {} from {} to {}\nStart columns: {}. Done columns: {}.\nDone: {}. Cancelled: {} \
+         (counted apart). Done with no start: {}.\n",
+        flow.board_slug,
+        flow.from,
+        flow.to,
+        if flow.start_columns.is_empty() {
+            "none (no cycle time)".to_string()
+        } else {
+            flow.start_columns.join(", ")
+        },
+        flow.done_columns.join(", "),
+        flow.done_count,
+        flow.cancelled_count,
+        flow.done_without_start
+    );
+    let cycle = &flow.cycle_time;
+    out.push_str(&format!(
+        "\nCycle time (days): count {}, mean {}, median {}, 85th percentile {}\n",
+        cycle.count,
+        days(cycle.mean_days),
+        days(cycle.median_days),
+        days(cycle.p85_days)
+    ));
+    let mut weeks = Table::new(&["WEEK", "DONE", "CANCELLED"]);
+    for week in &flow.throughput {
+        weeks.row(vec![
+            week.week_start.clone(),
+            week.done.to_string(),
+            week.cancelled.to_string(),
+        ]);
+    }
+    out.push_str("\nThroughput per week\n");
+    out.push_str(&weeks.render());
+    out.push_str("\nWork in progress (oldest first)\n");
+    if flow.ageing.is_empty() {
+        out.push_str("(none)\n");
+    } else {
+        let mut ageing = Table::new(&["CODE", "COLUMN", "AGE_DAYS", "TITLE"]);
+        for item in &flow.ageing {
+            ageing.row(vec![
+                item.short_code.clone(),
+                item.column.clone(),
+                item.age_days.to_string(),
+                item.title.clone(),
+            ]);
+        }
+        out.push_str(&ageing.render());
+    }
+    let cfd = &flow.cumulative_flow;
+    let mut header = vec!["DATE"];
+    header.extend(cfd.columns.iter().map(String::as_str));
+    let mut table = Table::new(&header);
+    for day in cfd.days.iter().skip(cfd.days.len().saturating_sub(14)) {
+        let mut row = vec![day.date.clone()];
+        row.extend(day.counts.iter().map(i64::to_string));
+        table.row(row);
+    }
+    out.push_str("\nCumulative flow (last 14 days; --json has each day)\n");
+    out.push_str(&table.render());
+    out
+}
+
 /// The WIP limit of a column after its name (KAIROS-T-0371):
 /// ` [WIP 2/3]`, ` [WIP 4/3, over the limit]`, or nothing. Pure.
 fn wip_text(count: i64, wip_limit: Option<i32>) -> String {
@@ -470,5 +571,57 @@ mod wip_tests {
         assert_eq!(wip_text(2, Some(3)), " [WIP 2/3]");
         assert_eq!(wip_text(3, Some(3)), " [WIP 3/3]");
         assert_eq!(wip_text(4, Some(3)), " [WIP 4/3, over the limit]");
+    }
+
+    /// KAIROS-T-0372.
+    #[test]
+    fn the_flow_report_has_the_four_parts() {
+        use kairos_client::types_org::*;
+        let flow = BoardFlow {
+            board_id: "b".into(),
+            board_slug: "web-delivery".into(),
+            from: "2026-10-01".into(),
+            to: "2026-10-11".into(),
+            start_columns: vec!["Active".into()],
+            done_columns: vec!["Done".into()],
+            done_count: 1,
+            cancelled_count: 1,
+            cycle_time: FlowCycleTime {
+                count: 1,
+                mean_days: Some(2.0),
+                median_days: Some(2.0),
+                p85_days: Some(2.0),
+                items: vec![],
+            },
+            done_without_start: 0,
+            throughput: vec![FlowWeek {
+                week_start: "2026-09-28".into(),
+                done: 1,
+                cancelled: 1,
+            }],
+            ageing: vec![FlowAgeingItem {
+                short_code: "WEB-T-0002".into(),
+                title: "Two".into(),
+                column: "Active".into(),
+                started_at: "2026-10-01T00:00:00Z".into(),
+                age_days: 10.0,
+            }],
+            cumulative_flow: CumulativeFlow {
+                columns: vec!["Active".into(), "Done".into()],
+                days: vec![CumulativeFlowDay {
+                    date: "2026-10-11".into(),
+                    counts: vec![1, 2],
+                }],
+            },
+        };
+        let text = super::flow_report(&flow);
+        assert!(
+            text.contains("Done: 1. Cancelled: 1 (counted apart)."),
+            "{text}"
+        );
+        assert!(text.contains("median 2, 85th percentile 2"), "{text}");
+        assert!(text.contains("2026-09-28"), "{text}");
+        assert!(text.contains("WEB-T-0002"), "{text}");
+        assert!(text.contains("2026-10-11"), "{text}");
     }
 }

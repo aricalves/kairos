@@ -5,7 +5,7 @@
 
 # REST API
 
-OpenAPI 3.1.0, Kairos 0.10.0. 114 paths, 187 schemas.
+OpenAPI 3.1.0, Kairos 0.10.0. 115 paths, 194 schemas.
 
 Every endpoint is served under the tenant resolved from the request host and requires a bearer token; see [Configuration](configuration.md) for how a deployment resolves both. The live spec is at `/api/openapi.json`.
 
@@ -15,11 +15,11 @@ This page is generated from that spec, so it cannot drift from the router — bu
 
 - [Work items](rest/work-items.md) — 38 operations. The five entity families. Every one has the same shape — list, get, create, update, delete — and the same optimistic-concurrency contract on update (KAIROS-A-0004): submit the `version` you read, and a concurrent edit gets 409 with the current entity in `details.current`. A write to a claimed task by a different person gets the header `Kairos-Warning: <code> claimed by <name> since <time>` (KAIROS-T-0359).
 - [Across any work item](rest/across-any-work-item.md) — 23 operations. Operations addressed by `{entity_type}` and a short code, so they work uniformly across the five families.
-- [Boards and teams](rest/boards-and-teams.md) — 53 operations. Board configuration, membership, the team structures that own boards, and the grants of `manage_structure` (KAIROS-T-0337).
+- [Boards and teams](rest/boards-and-teams.md) — 54 operations. Board configuration, membership, the team structures that own boards, and the grants of `manage_structure` (KAIROS-T-0337).
 - [Execution scope](rest/execution-scope.md) — 21 operations. Repositories as first-class execution scope (KAIROS-A-0019) and the git forges behind them.
 - [Tenant configuration](rest/tenant-configuration.md) — 12 operations. Org-admin surfaces: the metadata and template definitions that shape what work items can carry.
 - [Machine access](rest/machine-access.md) — 14 operations. Agent keys of a person, service accounts and their API keys, and the SCIM tokens for directory sync.
 - [The deployment itself](rest/the-deployment-itself.md) — 8 operations. Activity, administration, and what the deployment reports about itself.
 - [Signing in](rest/signing-in.md) — 7 operations. Sessions, and local password accounts (KAIROS-I-0018). `/api/login` and `/api/local-accounts` are only on a deployment with `KAIROS_LOCAL_AUTH` on. `/api/session` and `/api/logout` are on each deployment (KAIROS-T-0364). `/api/login` and `/api/logout` are unauthenticated by nature. Everything under `/api/local-accounts` is org-admin only, including the reads: a list of somebody's live sessions is a security surface rather than work content.
-- [Schemas](rest/schemas.md) — 187 wire shapes, referenced from the operations above.
+- [Schemas](rest/schemas.md) — 194 wire shapes, referenced from the operations above.
 
