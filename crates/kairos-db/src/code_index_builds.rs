@@ -4,7 +4,13 @@
 //!
 //! A run starts as `running` and ends as `ok` or `failed`. A run that the
 //! server never ended (the server stopped) is ended by [`end_stale`] at the
-//! next pass of the builder for the repository.
+//! next pass of the builder for the repository, and by [`end_all_stale`]
+//! when the builder starts.
+//!
+//! Each run records the start of its server (KAIROS-T-0354): a random id
+//! that the server process makes when it starts. A run is stale only when
+//! that id is not the id of the server that runs now: a run of this server
+//! is active, and nothing ends it as stopped.
 //!
 //! The connection must be pinned to a tenant schema. This module does not
 //! check rights: the caller does.
@@ -54,6 +60,10 @@ pub struct Build {
     /// The model that wrote the summaries of the run, as `provider/model`
     /// (KAIROS-T-0341). None for a run that made none.
     pub model: Option<String>,
+    /// The start of the server that runs the run (KAIROS-T-0354). None for
+    /// a run from before that version, and for a run that ended when it
+    /// started (an upload, a failure before the run).
+    pub server_instance: Option<Uuid>,
 }
 
 #[derive(Insertable)]
@@ -65,6 +75,7 @@ struct NewBuild<'a> {
     trigger: &'a str,
     outcome: &'a str,
     requested_by: Option<Uuid>,
+    server_instance: Option<Uuid>,
 }
 
 /// The counts of the index that a run wrote.
@@ -77,12 +88,15 @@ pub struct Counts {
 }
 
 /// Start a run: a `running` row. `trigger` is one of [`TRIGGERS`].
+/// `server_instance` is the start of the server that runs it
+/// (KAIROS-T-0354).
 pub fn start(
     conn: &mut PgConnection,
     repository_id: Uuid,
     trigger: &str,
     ref_name: Option<&str>,
     requested_by: Option<Uuid>,
+    server_instance: Option<Uuid>,
 ) -> QueryResult<Build> {
     diesel::insert_into(code_index_builds::table)
         .values(NewBuild {
@@ -92,6 +106,7 @@ pub fn start(
             trigger,
             outcome: "running",
             requested_by,
+            server_instance,
         })
         .returning(Build::as_select())
         .get_result(conn)
@@ -152,20 +167,30 @@ pub fn record_finished(
     counts: Option<Counts>,
 ) -> QueryResult<Build> {
     conn.transaction(|conn| {
-        let run = start(conn, repository_id, trigger, ref_name, requested_by)?;
+        let run = start(conn, repository_id, trigger, ref_name, requested_by, None)?;
         set_commit(conn, run.id, commit_sha)?;
         end_ok(conn, run.id, counts, None)
     })
 }
 
-/// End each `running` run of a repository as `failed` with
-/// [`SERVER_STOPPED`]: the builder starts a pass for the repository, so no
-/// run of it is active. The count of the runs ended.
-pub fn end_stale(conn: &mut PgConnection, repository_id: Uuid) -> QueryResult<usize> {
+/// End each `running` run of a repository that another start of the
+/// server began, as `failed` with [`SERVER_STOPPED`]: that server stopped
+/// during the run. A run of `server_instance` (the server that runs now)
+/// stays as it is. The count of the runs ended.
+pub fn end_stale(
+    conn: &mut PgConnection,
+    repository_id: Uuid,
+    server_instance: Uuid,
+) -> QueryResult<usize> {
     diesel::update(
         code_index_builds::table
             .filter(code_index_builds::repository_id.eq(repository_id))
-            .filter(code_index_builds::outcome.eq("running")),
+            .filter(code_index_builds::outcome.eq("running"))
+            .filter(
+                code_index_builds::server_instance
+                    .is_null()
+                    .or(code_index_builds::server_instance.ne(server_instance)),
+            ),
     )
     .set((
         code_index_builds::outcome.eq("failed"),
@@ -205,7 +230,7 @@ pub fn record_failure_once(
         {
             return Ok(None);
         }
-        let run = start(conn, repository_id, trigger, ref_name, None)?;
+        let run = start(conn, repository_id, trigger, ref_name, None, None)?;
         if let Some(commit) = commit_sha {
             set_commit(conn, run.id, commit)?;
         }
@@ -213,16 +238,26 @@ pub fn record_failure_once(
     })
 }
 
-/// End each `running` run of the tenant as `failed` with [`SERVER_STOPPED`]:
-/// the builder starts, so no run is active. The count of the runs ended.
-pub fn end_all_stale(conn: &mut PgConnection) -> QueryResult<usize> {
-    diesel::update(code_index_builds::table.filter(code_index_builds::outcome.eq("running")))
-        .set((
-            code_index_builds::outcome.eq("failed"),
-            code_index_builds::error.eq(Some(SERVER_STOPPED)),
-            code_index_builds::finished_at.eq(diesel::dsl::now),
-        ))
-        .execute(conn)
+/// End each `running` run of the tenant that another start of the server
+/// began, as `failed` with [`SERVER_STOPPED`]: the builder of
+/// `server_instance` starts, and the server of those runs stopped. The
+/// count of the runs ended.
+pub fn end_all_stale(conn: &mut PgConnection, server_instance: Uuid) -> QueryResult<usize> {
+    diesel::update(
+        code_index_builds::table
+            .filter(code_index_builds::outcome.eq("running"))
+            .filter(
+                code_index_builds::server_instance
+                    .is_null()
+                    .or(code_index_builds::server_instance.ne(server_instance)),
+            ),
+    )
+    .set((
+        code_index_builds::outcome.eq("failed"),
+        code_index_builds::error.eq(Some(SERVER_STOPPED)),
+        code_index_builds::finished_at.eq(diesel::dsl::now),
+    ))
+    .execute(conn)
 }
 
 /// The running run of a repository, if it has one.
@@ -230,6 +265,37 @@ pub fn running(conn: &mut PgConnection, repository_id: Uuid) -> QueryResult<Opti
     code_index_builds::table
         .filter(code_index_builds::repository_id.eq(repository_id))
         .filter(code_index_builds::outcome.eq("running"))
+        .order(code_index_builds::started_at.desc())
+        .select(Build::as_select())
+        .first(conn)
+        .optional()
+}
+
+/// Lock the row of a repository until the end of the transaction
+/// (KAIROS-T-0354): the check for an active run and the start of a run are
+/// one step, so 2 runs of a repository do not start at the same time.
+pub fn lock_repository(conn: &mut PgConnection, repository_id: Uuid) -> QueryResult<()> {
+    use crate::schema::repositories;
+    repositories::table
+        .find(repository_id)
+        .select(repositories::id)
+        .for_update()
+        .first::<Uuid>(conn)
+        .optional()
+        .map(|_| ())
+}
+
+/// The running run of a repository that the server of `server_instance`
+/// began, if it has one (KAIROS-T-0354): an active run.
+pub fn active(
+    conn: &mut PgConnection,
+    repository_id: Uuid,
+    server_instance: Uuid,
+) -> QueryResult<Option<Build>> {
+    code_index_builds::table
+        .filter(code_index_builds::repository_id.eq(repository_id))
+        .filter(code_index_builds::outcome.eq("running"))
+        .filter(code_index_builds::server_instance.eq(server_instance))
         .order(code_index_builds::started_at.desc())
         .select(Build::as_select())
         .first(conn)

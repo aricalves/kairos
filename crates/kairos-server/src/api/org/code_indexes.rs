@@ -197,13 +197,16 @@ pub(crate) async fn list_code_index_builds(
 /// The ONE check and write of a rebuild request (KAIROS-T-0332), for REST
 /// and for the MCP tool `rebuild_code_index`: the gate of a change of the
 /// repository, the builder setting of the repository, no active run, then
-/// the `running` row with `trigger = request`. The caller queues the
-/// request with the service after the write.
+/// the `running` row with `trigger = request` of the server
+/// `server_instance` (KAIROS-T-0354). The check and the write are one
+/// transaction, with the row of the repository locked. The caller queues
+/// the request with the service after the write.
 pub(crate) fn request_rebuild(
     conn: &mut PgConnection,
     tenant_slug: &str,
     user: Uuid,
     reference: &str,
+    server_instance: Uuid,
 ) -> Result<(Repository, Build), ApiError> {
     let repo = changeable(conn, tenant_slug, user, reference)?;
     if !repo.code_index_build_on() {
@@ -217,8 +220,12 @@ pub(crate) fn request_rebuild(
             ),
         ));
     }
-    if let Some(active) = code_index_builds::running(conn, repo.id).map_err(ApiError::internal)? {
-        return Err(ApiError::new(
+    super::run_in_transaction(conn, |conn| {
+        code_index_builds::lock_repository(conn, repo.id).map_err(ApiError::internal)?;
+        if let Some(active) =
+            code_index_builds::running(conn, repo.id).map_err(ApiError::internal)?
+        {
+            return Err(ApiError::new(
             StatusCode::CONFLICT,
             "CODE_INDEX_BUILD_RUNNING",
             format!(
@@ -231,20 +238,19 @@ pub(crate) fn request_rebuild(
             ),
         )
         .with_details(json!({ "run": active.id })));
-    }
-    let run = super::run_in_transaction(conn, |conn| {
+        }
         let run = code_index_builds::start(
             conn,
             repo.id,
             "request",
             Some(&repo.default_branch),
             Some(user),
+            Some(server_instance),
         )
         .map_err(ApiError::internal)?;
         crate::code_index::notify_run(conn, &repo.slug, Some(user))?;
-        Ok(run)
-    })?;
-    Ok((repo, run))
+        Ok((repo, run))
+    })
 }
 
 /// The refusal when the deployment has no code index builder.
@@ -288,10 +294,11 @@ pub(crate) async fn rebuild_code_index(
     let service = state.code_index.clone().ok_or_else(no_builder)?;
     let user = auth.user_id;
     let tenant_slug = tenant.slug.clone();
+    let instance = service.instance();
     let (repo, run) = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            request_rebuild(conn, &tenant_slug, user, &slug)
+            request_rebuild(conn, &tenant_slug, user, &slug, instance)
         })
         .await?;
     service.request_rebuild(RebuildRequest {

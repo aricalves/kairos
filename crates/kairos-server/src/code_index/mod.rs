@@ -51,6 +51,17 @@
 //! made. After a restart, the next first build of the repository uses those
 //! summaries again. A repository with `code_index_build = off` gets no build.
 //!
+//! # The runs
+//!
+//! Each run has a row ([`kairos_db::code_index_builds`]) with the start of
+//! its server: a random id that [`CodeIndexService`] makes (KAIROS-T-0354).
+//! One run of a repository at a time: a lane does not start a run on a
+//! repository that has a `running` run of this server (a requested build
+//! that waits for its turn, or a first build), and says so in its note. A
+//! `running` run of another id is of a server that stopped: the builder
+//! ends it as failed when it starts ([`end_stale_runs`]), and before the
+//! next run of the repository.
+//!
 //! # The tools
 //!
 //! The image does not hold the tools of the builder (COLLIERY-T-2525). At
@@ -113,6 +124,9 @@ pub struct CodeIndexService {
     requests: Mutex<std::collections::VecDeque<RebuildRequest>>,
     /// Woken for each request.
     wake: tokio::sync::Notify,
+    /// The start of this server (KAIROS-T-0354): a random id, recorded on
+    /// each run. A `running` run of another id is of a server that stopped.
+    instance: uuid::Uuid,
 }
 
 /// A build that a person asked for (KAIROS-T-0332). Its run row exists
@@ -148,7 +162,13 @@ impl CodeIndexService {
             notes: Mutex::default(),
             requests: Mutex::default(),
             wake: tokio::sync::Notify::new(),
+            instance: uuid::Uuid::new_v4(),
         }
+    }
+
+    /// The start of this server, as the runs record it (KAIROS-T-0354).
+    pub fn instance(&self) -> uuid::Uuid {
+        self.instance
     }
 
     /// Queue a build that a person asked for, and wake the builder.
@@ -914,6 +934,12 @@ pub async fn sweep(
                     note = %note,
                     "code index not built"
                 ),
+                (None, Some(note)) if note.starts_with(ACTIVE_RUN) => tracing::info!(
+                    tenant = %outcome.tenant,
+                    repository = %outcome.repository,
+                    note = %note,
+                    "code index update not started"
+                ),
                 _ => {}
             }
             outcomes.push(outcome);
@@ -1195,34 +1221,86 @@ fn slug_of_run(conn: &mut diesel::pg::PgConnection, run: &runs::Build) -> Option
         .map(|repo| repo.slug)
 }
 
-/// Start the record of a run (KAIROS-T-0331): a `running` row, after the
-/// stale rows of the repository are ended. None when the write fails: the
-/// failure is logged, and the build goes on with no record.
+/// The start of the note of a repository that has an active run
+/// (KAIROS-T-0354).
+pub const ACTIVE_RUN: &str = "a run of the repository is active";
+
+/// The note of a repository whose run `run` is active (KAIROS-T-0354).
+fn active_note(run: &runs::Build) -> String {
+    format!(
+        "{ACTIVE_RUN}: run {} (trigger {}), started {}",
+        run.id,
+        run.trigger,
+        run.started_at.to_rfc3339()
+    )
+}
+
+/// The active run of `repo_id`: a `running` run of this server
+/// (KAIROS-T-0354). None when it has none, or when the read fails.
+async fn active_run(
+    blocking: &BlockingTenantPool,
+    service: &CodeIndexService,
+    tenant: &str,
+    repo_id: uuid::Uuid,
+) -> Option<runs::Build> {
+    let instance = service.instance();
+    blocking
+        .run(tenant, move |conn| {
+            runs::active(conn, repo_id, instance).map_err(ApiError::internal)
+        })
+        .await
+        .ok()
+        .flatten()
+}
+
+/// What [`record_start`] did.
+enum Started {
+    /// The row of the new run. None when the write failed: the failure is
+    /// logged, and the build goes on with no record.
+    Run(Option<uuid::Uuid>),
+    /// A run of this server is active on the repository (KAIROS-T-0354):
+    /// no run starts.
+    Active(Box<runs::Build>),
+}
+
+/// Start the record of a run (KAIROS-T-0331): a `running` row of this
+/// server, after the stale rows of the repository are ended. A stale row is
+/// a `running` row of another start of the server (KAIROS-T-0354). When a
+/// run of this server is active on the repository, no run starts.
 async fn record_start(
     blocking: &BlockingTenantPool,
+    service: &CodeIndexService,
     tenant: &str,
     repo: &Repository,
     trigger: &'static str,
-) -> Option<uuid::Uuid> {
+) -> Started {
     let repo_id = repo.id;
     let branch = repo.default_branch.clone();
     let slug = repo.slug.clone();
+    let instance = service.instance();
     let written = blocking
         .run(tenant, move |conn| {
             crate::api::org::run_in_transaction(conn, |conn| {
-                runs::end_stale(conn, repo_id).map_err(ApiError::internal)?;
-                let run = runs::start(conn, repo_id, trigger, Some(&branch), None)
+                runs::lock_repository(conn, repo_id).map_err(ApiError::internal)?;
+                runs::end_stale(conn, repo_id, instance).map_err(ApiError::internal)?;
+                if let Some(active) =
+                    runs::active(conn, repo_id, instance).map_err(ApiError::internal)?
+                {
+                    return Ok(Err(active));
+                }
+                let run = runs::start(conn, repo_id, trigger, Some(&branch), None, Some(instance))
                     .map_err(ApiError::internal)?;
                 notify_run(conn, &slug, None)?;
-                Ok(run)
+                Ok(Ok(run))
             })
         })
         .await;
     match written {
-        Ok(run) => Some(run.id),
+        Ok(Ok(run)) => Started::Run(Some(run.id)),
+        Ok(Err(active)) => Started::Active(Box::new(active)),
         Err(e) => {
             tracing::warn!(tenant, repository = %repo.slug, error = ?e, "code index run not recorded");
-            None
+            Started::Run(None)
         }
     }
 }
@@ -1316,9 +1394,11 @@ async fn record_failure_once(
     }
 }
 
-/// End the `running` rows of each tenant when the builder starts: the
-/// server stopped during those runs (KAIROS-T-0331).
-async fn end_stale_runs(blocking: &BlockingTenantPool) {
+/// End the `running` rows of each tenant that another start of the server
+/// began, when the builder starts: that server stopped during those runs
+/// (KAIROS-T-0331, KAIROS-T-0354). A run of `service` (this server) stays.
+pub async fn end_stale_runs(blocking: &BlockingTenantPool, service: &CodeIndexService) {
+    let instance = service.instance();
     let tenants = match blocking
         .run_public(|conn| kairos_db::list_tenants(conn).map_err(ApiError::internal))
         .await
@@ -1331,8 +1411,8 @@ async fn end_stale_runs(blocking: &BlockingTenantPool) {
     };
     for tenant in tenants.into_iter().filter(|t| t.schema_exists) {
         match blocking
-            .run(&tenant.slug, |conn| {
-                runs::end_all_stale(conn).map_err(ApiError::internal)
+            .run(&tenant.slug, move |conn| {
+                runs::end_all_stale(conn, instance).map_err(ApiError::internal)
             })
             .await
         {
@@ -1400,6 +1480,12 @@ async fn build_repository(
     };
     if !repo.code_index_build_on() {
         return done(outcome, OPTED_OUT.into());
+    }
+    // A run of this server is active on the repository: a requested build
+    // that waits for its turn, or a first build (KAIROS-T-0354). The update
+    // waits for the next pass, and the active run keeps its row.
+    if let Some(active) = active_run(blocking, service, tenant, repo.id).await {
+        return done(outcome, active_note(&active));
     }
 
     let Fetched {
@@ -1520,7 +1606,10 @@ async fn build_repository(
         }
     };
     outcome.base = Some(base.commit.clone());
-    let run = record_start(blocking, tenant, &repo, "push").await;
+    let run = match record_start(blocking, service, tenant, &repo, "push").await {
+        Started::Run(run) => run,
+        Started::Active(active) => return done(outcome, active_note(&active)),
+    };
     record_commit(blocking, tenant, run, &head).await;
     let models = match models_for(blocking, service, tenant, &repo, &summarizers, &embedder).await {
         Ok(models) => models,
@@ -1653,6 +1742,13 @@ async fn full_build_repository(
         record_end(blocking, tenant, run, Err(OPTED_OUT)).await;
         return done(outcome, OPTED_OUT.into());
     }
+    // A build with no run row of its own does not start while a run of
+    // this server is active on the repository (KAIROS-T-0354).
+    if run.is_none()
+        && let Some(active) = active_run(blocking, service, tenant, repo.id).await
+    {
+        return done(outcome, active_note(&active));
+    }
 
     let Fetched { clone, head, .. } = match fetch_head(blocking, service, tenant, &repo, false)
         .await
@@ -1680,7 +1776,10 @@ async fn full_build_repository(
     );
     let run = match run {
         Some(id) => Some(id),
-        None => record_start(blocking, tenant, &repo, trigger).await,
+        None => match record_start(blocking, service, tenant, &repo, trigger).await {
+            Started::Run(run) => run,
+            Started::Active(active) => return done(outcome, active_note(&active)),
+        },
     };
     record_commit(blocking, tenant, run, &head).await;
     let models = match models_for(blocking, service, tenant, &repo, &summarizers, &embedder).await {
@@ -1824,7 +1923,7 @@ pub async fn run_builder(
         interval_secs = interval.as_secs(),
         "code index builder started"
     );
-    end_stale_runs(&blocking).await;
+    end_stale_runs(&blocking, &service).await;
     let wake = tokio::sync::Notify::new();
     let updates = async {
         let mut ticker = tokio::time::interval(interval);

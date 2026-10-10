@@ -53,8 +53,8 @@ use kairos_embed::{DeterministicProvider, EmbeddingProvider};
 use kairos_index::{FakeSummarizer, Index, Level, UpdateOptions};
 use kairos_server::app;
 use kairos_server::code_index::{
-    CodeIndexService, FakeSummarizers, OPTED_OUT, SummarizerSource, first_builds, requested_builds,
-    run_builder, sweep,
+    ACTIVE_RUN, CodeIndexService, FakeSummarizers, OPTED_OUT, SummarizerSource, end_stale_runs,
+    first_builds, requested_builds, run_builder, sweep,
 };
 use kairos_server::middleware::auth::Authenticator;
 
@@ -1332,8 +1332,9 @@ async fn a_run_that_the_server_did_not_end_is_failed_at_the_next_run() {
         .upload_code_index("payments-api", &a, Some("main"), w.index(&a))
         .await
         .expect("the first index");
-    let stale = kairos_db::code_index_builds::start(&mut w.conn, w.repo_id, "push", None, None)
-        .expect("a running row");
+    let stale =
+        kairos_db::code_index_builds::start(&mut w.conn, w.repo_id, "push", None, None, None)
+            .expect("a running row");
 
     // When the next run of the repository starts
     commit_b(&w.git);
@@ -1354,6 +1355,113 @@ async fn a_run_that_the_server_did_not_end_is_failed_at_the_next_run() {
     );
     assert_eq!(runs[0].outcome, "ok");
     assert_eq!(runs[0].trigger, "push");
+}
+
+// KAIROS-T-0354: the update lane does not start a run on a repository
+// whose requested run is active, and the requested run keeps its row.
+#[tokio::test]
+async fn the_update_lane_does_not_start_a_run_while_a_requested_run_is_active() {
+    // Given an index of commit A, and a requested run that waits for the
+    // builder
+    let w = World::new("kairos_code_index_t0354_active").await;
+    let a = w.a.clone();
+    w.bob
+        .upload_code_index("payments-api", &a, Some("main"), w.index(&a))
+        .await
+        .expect("the first index");
+    let requested = w
+        .bob
+        .rebuild_code_index("payments-api")
+        .await
+        .expect("202 with the run");
+    let b = commit_b(&w.git);
+
+    // When the update lane runs
+    let outcomes = w.sweep().await;
+
+    // Then it makes no run of the repository, and says why
+    assert_eq!(outcomes.len(), 1, "{outcomes:?}");
+    assert!(outcomes[0].report.is_none(), "{outcomes:?}");
+    let note = outcomes[0].note.clone().expect("a note");
+    assert!(note.starts_with(ACTIVE_RUN), "{note}");
+    assert!(note.contains(&requested.id), "{note}");
+    let runs = runs_of(&w).await;
+    assert_eq!(runs.len(), 2, "the upload and the request: {runs:?}");
+    assert_eq!(runs[0].id, requested.id);
+    assert_eq!(runs[0].outcome, "running", "the request keeps its row");
+
+    // And the requested run ends ok, with the index of the head
+    let outcomes = w.requested_builds().await;
+    assert!(outcomes[0].report.is_some(), "{outcomes:?}");
+    let runs = runs_of(&w).await;
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    assert_eq!(runs[0].id, requested.id);
+    assert_eq!(runs[0].outcome, "ok", "{runs:?}");
+    assert_eq!(runs[0].commit.as_deref(), Some(b.as_str()));
+    let outcomes = w.sweep().await;
+    assert_eq!(outcomes[0].note.as_deref(), Some("the head has an index"));
+}
+
+// KAIROS-T-0354: the stale-run rule ends only the runs of a server that
+// stopped.
+#[tokio::test]
+async fn only_the_runs_of_a_server_that_stopped_are_ended() {
+    use kairos_db::code_index_builds as runs;
+    let mut w = World::new("kairos_code_index_t0354_stale").await;
+    // Given a running run of a server that stopped, a running run from
+    // before the servers recorded their start, and a running run of this
+    // server
+    let stopped = runs::start(
+        &mut w.conn,
+        w.repo_id,
+        "push",
+        None,
+        None,
+        Some(Uuid::new_v4()),
+    )
+    .expect("a run of a server that stopped");
+    let old = runs::start(&mut w.conn, w.repo_id, "push", None, None, None)
+        .expect("a run with no server");
+    let ours = runs::start(
+        &mut w.conn,
+        w.repo_id,
+        "first",
+        None,
+        None,
+        Some(w.service.instance()),
+    )
+    .expect("a run of this server");
+
+    // When the builder of this server starts
+    end_stale_runs(&w.state.blocking, &w.service).await;
+
+    // Then the runs of the server that stopped are ended, and the run of
+    // this server is not
+    let runs = runs_of(&w).await;
+    let of = |id: Uuid| {
+        runs.iter()
+            .find(|r| r.id == id.to_string())
+            .unwrap_or_else(|| panic!("run {id}"))
+    };
+    for stale in [stopped.id, old.id] {
+        assert_eq!(of(stale).outcome, "failed", "{runs:?}");
+        assert_eq!(of(stale).error.as_deref(), Some(runs::SERVER_STOPPED));
+    }
+    assert_eq!(of(ours.id).outcome, "running", "{runs:?}");
+    assert_eq!(of(ours.id).error, None);
+
+    // And at the next start of the server, the run is of a server that
+    // stopped
+    let next = CodeIndexService::from_repo_url(w.work().join("next"));
+    assert_ne!(next.instance(), w.service.instance());
+    end_stale_runs(&w.state.blocking, &next).await;
+    let runs = runs_of(&w).await;
+    let ended = runs
+        .iter()
+        .find(|r| r.id == ours.id.to_string())
+        .expect("the run");
+    assert_eq!(ended.outcome, "failed");
+    assert_eq!(ended.error.as_deref(), Some(runs::SERVER_STOPPED));
 }
 
 #[tokio::test]

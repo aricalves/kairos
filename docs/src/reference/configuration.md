@@ -390,6 +390,16 @@ summaries again. After the builder stores the index, it removes the file.
 If a first build of a commit fails, the builder does not try that commit
 again. It tries again when the head moves or when the server starts again.
 
+The builder makes one run of a repository at a time. When a run of the
+repository is active, the update lane does not start a run of it. For
+example, a requested build waits for its turn, or a first build runs. The
+update waits for the next pass, and its note says which run is active.
+
+Each run records the start of its server. When the server starts, the
+builder ends each run of an earlier start as failed. Such a run gets the text
+"The server stopped during the run". A run of the server that runs now does
+not get that text.
+
 The log has these lines for each first build:
 
 - `code index first build started`, with the repository and the commit.

@@ -126,6 +126,7 @@ diesel::table! {
         started_at -> Timestamptz,
         finished_at -> Nullable<Timestamptz>,
         model -> Nullable<Text>,
+        server_instance -> Nullable<Uuid>,
     }
 }
 

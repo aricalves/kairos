@@ -2028,11 +2028,14 @@ impl KairosMcp {
         let user = auth.user_id;
         let slug = tenant.slug.clone();
         let reference = params.repository;
+        let instance = service.instance();
         let requested = self
             .state
             .blocking
             .run(&tenant.slug, move |conn| {
-                crate::api::org::code_indexes::request_rebuild(conn, &slug, user, &reference)
+                crate::api::org::code_indexes::request_rebuild(
+                    conn, &slug, user, &reference, instance,
+                )
             })
             .await;
         match requested {
