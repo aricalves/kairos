@@ -102,6 +102,11 @@ pub struct WhoamiParams {}
 pub struct ListRepositoriesParams {
     /// Only this team's repositories (slug or UUID).
     pub team: Option<String>,
+    /// The number of repositories in the result (default 50, maximum 200).
+    pub limit: Option<i64>,
+    /// The number of repositories to skip (default 0). The result says
+    /// which offset gives the next part of the directory.
+    pub offset: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -720,7 +725,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Directory of repositories in this organization (KAIROS-A-0019): for each, its slug, forge and full name, the ONE owning team, the delivery board of that team, the open task count, and whether webhooks are connected. The open task count includes linked tasks on all boards. The owner does not choose the board of a task. Call to find a repository to link a task to, or to find who owns a repo. Optional `team` (slug or UUID) narrows to one team's repositories."
+        description = "Directory of repositories in this organization (KAIROS-A-0019): for each, its slug, forge and full name, the ONE owning team, the delivery board of that team, the open task count, and whether webhooks are connected. The open task count includes linked tasks on all boards. The owner does not choose the board of a task. Call to find a repository to link a task to, or to find who owns a repo. Optional `team` (slug or UUID) narrows to one team's repositories. The result has 50 repositories at most by default: optional `limit` (maximum 200) and `offset` give a different part of the directory. When the result is not the full directory, its first line says so and gives the `offset` of the next part."
     )]
     pub async fn list_repositories(
         &self,
@@ -736,9 +741,30 @@ impl KairosMcp {
                 .transpose()?;
             let rows = repositories::list(conn, team_id)
                 .map_err(crate::api::org::repositories::map_error)?;
-            let rendered = crate::api::org::repositories::render(conn, rows)?;
+            // KAIROS-T-0268: the same page as `GET /api/repositories`.
+            let (limit, offset) = crate::api::clamp_pagination(&kairos_client::types::Pagination {
+                limit: params.limit,
+                offset: params.offset,
+            });
+            let page = crate::api::org::repositories::render_page(conn, rows, limit, offset)?;
+            let rendered = page.items;
             let mut out = String::from("# Repositories\n");
-            if rendered.is_empty() {
+            let shown = rendered.len() as i64;
+            if offset > 0 || offset + shown < page.total {
+                out.push_str(&format!(
+                    "Repositories in the directory: {}. Shown: {shown} (limit {limit}, offset \
+                     {offset}).",
+                    page.total
+                ));
+                if offset + shown < page.total {
+                    out.push_str(&format!(
+                        " Call again with offset {} for the next part.",
+                        offset + shown
+                    ));
+                }
+                out.push('\n');
+            }
+            if page.total == 0 {
                 out.push_str(
                     "(none. An organization admin or a member of the owner team adds a \
                      repository with add_repository.)\n",

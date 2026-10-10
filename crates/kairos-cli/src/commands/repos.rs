@@ -24,6 +24,7 @@
 //! `get` (alias `show`) prints the status of the token, never the token.
 
 use kairos_client::EntityKind;
+use kairos_client::types::Pagination;
 use kairos_client::types_repositories::{
     CreateRepositoryRequest, ImpactingItem, Repository, UpdateRepositoryRequest,
 };
@@ -41,6 +42,12 @@ pub enum ReposCommand {
         /// Only this team's repositories (slug or UUID)
         #[arg(long, value_name = "TEAM")]
         team: Option<String>,
+        /// Page size (default 50, max 200)
+        #[arg(long)]
+        limit: Option<i64>,
+        /// Rows to skip
+        #[arg(long)]
+        offset: Option<i64>,
         #[command(flatten)]
         common: Common,
     },
@@ -359,17 +366,28 @@ fn repo_table(repos: &[Repository]) -> Table {
 impl ReposCommand {
     pub async fn run(self) -> Result<(), CliError> {
         match self {
-            Self::List { team, common } => {
+            Self::List {
+                team,
+                limit,
+                offset,
+                common,
+            } => {
                 let client = client(&common)?;
-                let repos = client.list_repositories(team.as_deref()).await?;
+                let envelope = client
+                    .list_repositories_page(team.as_deref(), Pagination { limit, offset })
+                    .await?;
                 if common.json {
-                    return print_json(&repos);
+                    return print_json(&envelope);
                 }
-                if repos.is_empty() {
+                if envelope.items.is_empty() {
                     println!("(none)");
                 } else {
-                    print!("{}", repo_table(&repos).render());
+                    print!("{}", repo_table(&envelope.items).render());
                 }
+                println!(
+                    "total: {} (limit {}, offset {})",
+                    envelope.total, envelope.limit, envelope.offset
+                );
                 Ok(())
             }
             Self::Get {

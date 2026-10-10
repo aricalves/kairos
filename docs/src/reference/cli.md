@@ -272,15 +272,15 @@ Board placement per noun:
 
 | Noun | Option | Type | Default | Description |
 |---|---|---|---|---|
-| `strategies` | `--board <BOARD_ID>` | UUID | required | Board to create the strategy on. |
+| `strategies` | `--board <BOARD>` | slug or UUID | required | Board to create the strategy on. |
 | `strategies` | `--column <COLUMN_ID>` | UUID | the board's first column | Column to place it in. |
-| `initiatives` | `--board <BOARD_ID>` | UUID | required | Board to create the initiative on. |
+| `initiatives` | `--board <BOARD>` | slug or UUID | required | Board to create the initiative on. |
 | `initiatives` | `--column <COLUMN_ID>` | UUID | the board's first column | Column to place it in. |
 | `tasks` | `--board <BOARD>` | slug or UUID | required unless `--team` is given | Delivery board to create the task on. The board decides the team of the task. With `--team` and no `--board`, the task goes to the delivery board of that team. |
 | `tasks` | `--column <COLUMN_ID>` | UUID | the board's first column | Column to place it in. |
 | `documents` | `--board <BOARD>` | slug or UUID | required | The owner board of the document. It gives the right to edit the document, and the code of the document gets the prefix of this board. The document is not a card of the board. |
 | `documents` | `--parent <SHORT_CODE>` | string | none | The workflow item the document supports. It does not give the document an owner board. |
-| `adrs` | `--board <BOARD_ID>` | UUID | none | ADR board. Omitting it creates an off-board ADR, which is an org-admin operation. |
+| `adrs` | `--board <BOARD>` | slug or UUID | none | ADR board. Omitting it creates an off-board ADR, which is an org-admin operation. |
 | `adrs` | `--column <COLUMN_ID>` | UUID | the board's first column | Column to place it in. |
 
 Options specific to one noun:
@@ -869,6 +869,12 @@ kairos repos list [OPTIONS]
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--team <TEAM>` | slug or UUID | all teams | Only this team's repositories. |
+| `--limit <LIMIT>` | integer | server default 50, maximum 200 | Page size. |
+| `--offset <OFFSET>` | integer | 0 | Rows to skip. |
+
+After the table, the command prints the count of the repositories and the
+page: `total: 12 (limit 50, offset 0)`. With `--json`, the command prints
+the page: `items`, `total`, `limit` and `offset`.
 
 ### `kairos repos get`
 

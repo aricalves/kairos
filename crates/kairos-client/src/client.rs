@@ -1385,15 +1385,57 @@ impl KairosClient {
 
     // -- repositories (KAIROS-T-0106, A-0019) ----------------------------
 
-    /// `GET /api/repositories[?team=]` — the repository directory (open
-    /// tenant-wide), optionally one team's (UUID or slug).
+    /// `GET /api/repositories[?team=&limit=&offset=]` — one page of the
+    /// repository directory (open tenant-wide), optionally one team's
+    /// (UUID or slug). The page has the shape of each other list
+    /// (KAIROS-T-0268).
+    pub async fn list_repositories_page(
+        &self,
+        team: Option<&str>,
+        page: Pagination,
+    ) -> Result<ListEnvelope<crate::types_repositories::Repository>, Error> {
+        #[derive(Serialize)]
+        struct Query<'a> {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            team: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            limit: Option<i64>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            offset: Option<i64>,
+        }
+        self.get_query(
+            "/api/repositories",
+            &Query {
+                team,
+                limit: page.limit,
+                offset: page.offset,
+            },
+        )
+        .await
+    }
+
+    /// The full repository directory, optionally one team's: each page of
+    /// [`Self::list_repositories_page`].
     pub async fn list_repositories(
         &self,
         team: Option<&str>,
     ) -> Result<Vec<crate::types_repositories::Repository>, Error> {
-        match team {
-            Some(team) => self.get(&format!("/api/repositories?team={team}")).await,
-            None => self.get("/api/repositories").await,
+        let mut all = Vec::new();
+        loop {
+            let page = self
+                .list_repositories_page(
+                    team,
+                    Pagination {
+                        limit: Some(200),
+                        offset: Some(all.len() as i64),
+                    },
+                )
+                .await?;
+            let got = page.items.len();
+            all.extend(page.items);
+            if got == 0 || all.len() as i64 >= page.total {
+                return Ok(all);
+            }
         }
     }
 

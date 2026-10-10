@@ -157,15 +157,20 @@ impl RepositoryCredential {
 }
 
 /// `GET /api/repositories[?team=]` — the directory, optionally one team's.
+/// The route gives pages, as each other list (KAIROS-T-0268), and this
+/// function reads each page.
 pub async fn list_repositories(
     auth: Auth,
     team: Option<&str>,
 ) -> Result<Vec<Repository>, ApiError> {
     let path = match team {
-        Some(team) => format!("/api/repositories?team={team}"),
+        Some(team) => format!(
+            "/api/repositories?team={}",
+            crate::api::encode_component(team)
+        ),
         None => "/api/repositories".to_string(),
     };
-    get_json(auth, &path).await
+    crate::api::get_all(auth, &path).await
 }
 
 /// mirror of: `kairos_client::types_repositories::ImpactingItem`: one

@@ -1173,6 +1173,22 @@ async fn mcp_endpoint_against_live_stack() {
         .call_ok("list_repositories", json!({"team": "platform"}))
         .await;
     assert!(text.contains("payments-api"), "{text}");
+    // KAIROS-T-0268: the tool gives pages, as `GET /api/repositories`. A
+    // part of the directory says so, and gives the next offset.
+    let text = session
+        .call_ok("list_repositories", json!({"limit": 1}))
+        .await;
+    assert!(text.contains("payments-api"), "{text}");
+    assert!(!text.contains("Shown:"), "the full directory: {text}");
+    let text = session
+        .call_ok("list_repositories", json!({"limit": 1, "offset": 1}))
+        .await;
+    assert!(
+        text.contains("Repositories in the directory: 1. Shown: 0 (limit 1, offset 1)."),
+        "{text}"
+    );
+    assert!(!text.contains("payments-api"), "{text}");
+    assert!(!text.contains("(none"), "{text}");
     let text = session
         .call_err("list_repositories", json!({"team": "nope"}))
         .await;
@@ -2888,7 +2904,9 @@ async fn repository_tools_against_live_stack() {
             text,
             format!(
                 "VALIDATION: The repository slug {slug:?} is not correct. A repository slug \
-                 must match ^[a-z0-9][a-z0-9-]{{1,62}}$.\ndetails: {{\"field\":\"slug\"}}"
+                 must match ^[a-z0-9][a-z0-9-]{{1,62}}$. Use 2 to 63 characters: lowercase \
+                 letters, digits and hyphens. The first character is a letter or a digit. An \
+                 example is acme-payments-api.\ndetails: {{\"field\":\"slug\"}}"
             )
         );
     }

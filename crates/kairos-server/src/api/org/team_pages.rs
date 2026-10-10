@@ -382,6 +382,7 @@ pub(crate) async fn update_page(
         .run(&slug, move |conn| {
             require_team(conn, team_id)?;
             require_team_member_or_admin(conn, &tenant, team_id, user)?;
+            let before = team_pages::load_page(conn, team_id, page_id).map_err(map_page_error)?;
             let updated = if let Some(content) = &body.content {
                 team_pages::update_page_content(
                     conn,
@@ -405,6 +406,18 @@ pub(crate) async fn update_page(
                 )
                 .map_err(map_page_error)?
             };
+            // KAIROS-T-0268: a real change makes an activity entry. An edit
+            // with the stored values writes nothing, so it makes none.
+            if updated.updated_at != before.updated_at {
+                log_page_activity(
+                    conn,
+                    user,
+                    kairos_db::models::enums::ActivityAction::Update,
+                    "team_page",
+                    page_id,
+                    format!("team:{team_id} slug:{}", updated.slug),
+                )?;
+            }
             Ok(page_dto(updated))
         })
         .await?;

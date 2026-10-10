@@ -623,20 +623,24 @@ pub(crate) async fn update_board(
             {
                 check_slug_form("board", new_slug)?;
             }
+            // KAIROS-T-0268: only a value that is different from the value
+            // of the row goes to the write. When no value is different, the
+            // route writes nothing and makes no activity entry.
+            let changes = kairos_db::models::boards::BoardChangeset {
+                name: body.name.clone().filter(|name| *name != board.name),
+                slug: body.slug.clone().filter(|new| *new != board.slug),
+                ..Default::default()
+            };
+            if changes.name.is_none() && changes.slug.is_none() {
+                return Ok(board.into_dto());
+            }
             // COLLIERY-T-0255: two live boards cannot have the same slug.
-            if let Some(new_slug) = body.slug.as_deref() {
+            if let Some(new_slug) = changes.slug.as_deref() {
                 boards::check_board_slug(conn, new_slug, Some(board_id))
                     .map_err(map_config_error)?;
             }
             let updated = diesel::update(dsl::boards.filter(dsl::id.eq(board_id)))
-                .set((
-                    kairos_db::models::boards::BoardChangeset {
-                        name: body.name.clone(),
-                        slug: body.slug.clone(),
-                        ..Default::default()
-                    },
-                    dsl::updated_at.eq(diesel::dsl::now),
-                ))
+                .set((changes, dsl::updated_at.eq(diesel::dsl::now)))
                 .returning(Board::as_returning())
                 .get_result::<Board>(conn);
             // An update at the same time got the slug first: the index
@@ -1314,35 +1318,42 @@ pub(crate) async fn update_column(
         .blocking
         .run(&tenant.slug, move |conn| {
             let board = load_board(conn, board_id)?;
-            load_column_of_board(conn, board_id, column_id)?;
+            let column = load_column_of_board(conn, board_id, column_id)?;
             require_capability(conn, &slug, Some(board.id), user, CONFIGURE)?;
+            if let Some(position) = body.position
+                && position < 0
+            {
+                return Err(ApiError::validation(format!(
+                    "The position {position} is not correct. A position is 0 or more."
+                )));
+            }
 
-            if let Some(name) = &body.name {
+            // KAIROS-T-0268: only a value that is different from the value
+            // of the row goes to the write. When no value is different, the
+            // route writes nothing and makes no activity entry.
+            if let Some(name) = body.name.as_ref().filter(|name| **name != column.name) {
                 boards::rename_column(conn, column_id, name, user).map_err(map_config_error)?;
             }
-            if let Some(is_done) = body.is_done {
+            if let Some(is_done) = body.is_done.filter(|done| *done != column.is_done) {
                 boards::set_column_done(conn, column_id, is_done, user)
                     .map_err(map_config_error)?;
             }
             // KAIROS-T-0359: the same path and capability as `is_done`.
-            if let Some(claims) = body.claims {
+            if let Some(claims) = body.claims.filter(|claims| *claims != column.claims) {
                 boards::set_column_claims(conn, column_id, claims, user)
                     .map_err(map_config_error)?;
             }
             if let Some(position) = body.position {
-                if position < 0 {
-                    return Err(ApiError::validation(format!(
-                        "The position {position} is not correct. A position is 0 or more."
-                    )));
-                }
-                let mut order: Vec<Uuid> = load_columns(conn, board_id)?
-                    .into_iter()
-                    .map(|c| c.id)
-                    .collect();
+                let columns = load_columns(conn, board_id)?;
+                let now_at = columns.iter().position(|c| c.id == column_id);
+                let mut order: Vec<Uuid> = columns.into_iter().map(|c| c.id).collect();
                 order.retain(|&c| c != column_id);
                 let index = (position as usize).min(order.len());
-                order.insert(index, column_id);
-                boards::reorder_columns(conn, board_id, &order, user).map_err(map_config_error)?;
+                if now_at != Some(index) {
+                    order.insert(index, column_id);
+                    boards::reorder_columns(conn, board_id, &order, user)
+                        .map_err(map_config_error)?;
+                }
             }
             Ok(load_column_of_board(conn, board_id, column_id)?.into_dto())
         })

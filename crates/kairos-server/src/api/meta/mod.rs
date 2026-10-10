@@ -104,6 +104,28 @@ pub fn require_org_admin(tenant: &TenantContext) -> Result<(), ApiError> {
     }
 }
 
+/// The activity entry of a change of the configuration of the tenant: a
+/// template or a metadata definition (KAIROS-T-0268). The caller's
+/// transaction. The action is `update`.
+pub(crate) fn log_meta_activity(
+    conn: &mut PgConnection,
+    actor_id: Uuid,
+    entity_type: &str,
+    entity_id: Uuid,
+    details: String,
+) -> Result<(), diesel::result::Error> {
+    diesel::insert_into(kairos_db::schema::activity_log::table)
+        .values(kairos_db::models::NewActivityLogEntry {
+            actor_id,
+            action: kairos_db::models::enums::ActivityAction::Update,
+            entity_id: Some(entity_id),
+            entity_type: Some(entity_type.to_string()),
+            details,
+        })
+        .execute(conn)?;
+    Ok(())
+}
+
 /// Map a plural `{entity_type}` path segment (the S-0005 family names, as
 /// used by every `/api/{family}` route) to its [`ItemType`].
 pub fn item_type_of_family(family: &str) -> Option<ItemType> {

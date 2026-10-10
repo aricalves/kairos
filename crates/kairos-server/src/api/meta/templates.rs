@@ -30,6 +30,7 @@ use crate::app::AppState;
 use crate::body::ApiJson;
 use crate::error::ApiError;
 use crate::input::ApiQuery;
+use crate::middleware::auth::AuthContext;
 use crate::middleware::tenant::TenantContext;
 
 pub fn router() -> Router<AppState> {
@@ -132,6 +133,37 @@ fn resolve_entries(
         resolved.push((definition.id, entry.default_value.clone(), entry.required));
     }
     Ok(resolved)
+}
+
+/// The stored metadata associations of a template, as
+/// `(definition_id, default_value, required)` triples.
+fn stored_entries(
+    conn: &mut PgConnection,
+    template_id: Uuid,
+) -> Result<Vec<(Uuid, Option<String>, bool)>, ApiError> {
+    use kairos_db::schema::template_metadata;
+    let rows: Vec<TemplateMetadata> = template_metadata::table
+        .filter(template_metadata::template_id.eq(template_id))
+        .select(TemplateMetadata::as_select())
+        .load(conn)
+        .map_err(ApiError::internal)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.metadata_definition_id, row.default_value, row.required))
+        .collect())
+}
+
+/// Two lists of entries are the same set: the sequence is not a value
+/// (the detail sorts the fields by slug). Pure.
+fn same_entries(
+    sent: &[(Uuid, Option<String>, bool)],
+    stored: &[(Uuid, Option<String>, bool)],
+) -> bool {
+    let mut sent = sent.to_vec();
+    let mut stored = stored.to_vec();
+    sent.sort();
+    stored.sort();
+    sent == stored
 }
 
 /// Replace a template's metadata associations (caller's transaction).
@@ -295,6 +327,10 @@ pub(crate) async fn create_template(
 /// Update a template (org admin only): omitted fields are unchanged;
 /// `metadata` replaces the full association list. Existing documents are
 /// unaffected (A-0003: no ongoing relationship after stamping).
+///
+/// A body with no field is a 422 `VALIDATION`. A body whose values are
+/// equal to the stored values writes nothing and makes no activity entry.
+/// A real change makes an activity entry (KAIROS-T-0268).
 #[utoipa::path(
     patch,
     path = "/api/templates/{id}",
@@ -305,43 +341,77 @@ pub(crate) async fn create_template(
         (status = 200, description = "Updated", body = dto::TemplateDetail),
         (status = 403, description = "Caller is not an org admin", body = dto_base::ErrorEnvelope),
         (status = 404, description = "Unknown id", body = dto_base::ErrorEnvelope),
-        (status = 422, description = "Unknown definition slug, invalid default, or duplicate slug", body = dto_base::ErrorEnvelope),
+        (status = 422, description = "No field to change, unknown definition slug, invalid default, or duplicate slug", body = dto_base::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn update_template(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Extension(tenant): Extension<TenantContext>,
     Path(id): Path<String>,
     ApiJson(body): ApiJson<dto::UpdateTemplateRequest>,
 ) -> Result<Json<dto::TemplateDetail>, ApiError> {
     require_org_admin(&tenant)?;
     let id = parse_uuid(&id, "template id")?;
+    if body.name.is_none()
+        && body.slug.is_none()
+        && body.content.is_none()
+        && body.metadata.is_none()
+    {
+        return Err(ApiError::validation(
+            "The request has no field to change. Send one or more of name, slug, content and \
+             metadata.",
+        ));
+    }
+    let user = auth.user_id;
     let updated = state
         .blocking
         .run(&tenant.slug, move |conn| {
             use kairos_db::schema::templates;
-            load(conn, id)?;
+            let current = load(conn, id)?;
             let entries = body
                 .metadata
                 .as_deref()
                 .map(|metadata| resolve_entries(conn, metadata))
                 .transpose()?;
+            // KAIROS-T-0268: only a value that is different from the stored
+            // value goes to the write. The list of the metadata is a change
+            // only when the set of the entries is different.
+            let entries = match entries {
+                Some(entries) if same_entries(&entries, &stored_entries(conn, id)?) => None,
+                entries => entries,
+            };
+            let changes = TemplateChangeset {
+                name: body.name.clone().filter(|name| *name != current.name),
+                slug: body.slug.clone().filter(|slug| *slug != current.slug),
+                content: body.content.clone().filter(|text| *text != current.content),
+                is_system_default: None,
+                updated_at: Some(chrono::Utc::now()),
+            };
+            if changes.name.is_none()
+                && changes.slug.is_none()
+                && changes.content.is_none()
+                && entries.is_none()
+            {
+                return detail(conn, current);
+            }
             let updated = conn
                 .transaction::<Template, DieselError, _>(|conn| {
                     let updated: Template =
                         diesel::update(templates::table.filter(templates::id.eq(id)))
-                            .set(TemplateChangeset {
-                                name: body.name.clone(),
-                                slug: body.slug.clone(),
-                                content: body.content.clone(),
-                                is_system_default: None,
-                                updated_at: Some(chrono::Utc::now()),
-                            })
+                            .set(changes)
                             .returning(Template::as_returning())
                             .get_result(conn)?;
                     if let Some(entries) = &entries {
                         replace_associations(conn, id, entries)?;
                     }
+                    super::log_meta_activity(
+                        conn,
+                        user,
+                        "template",
+                        id,
+                        format!("template_settings:{}", updated.slug),
+                    )?;
                     Ok(updated)
                 })
                 .map_err(map_write_error)?;

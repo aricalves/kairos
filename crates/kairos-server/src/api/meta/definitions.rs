@@ -39,6 +39,7 @@ use crate::app::AppState;
 use crate::body::ApiJson;
 use crate::error::ApiError;
 use crate::input::ApiQuery;
+use crate::middleware::auth::AuthContext;
 use crate::middleware::tenant::TenantContext;
 
 pub fn router() -> Router<AppState> {
@@ -500,6 +501,10 @@ pub(crate) async fn get_definition(
 /// Update a definition (org admin only): rename, re-slug, and/or replace
 /// the enum option list. The field type is immutable — existing
 /// `item_metadata` values were validated against it (A-0003).
+///
+/// A body with no field is a 422 `VALIDATION`. A body whose values are
+/// equal to the stored values writes nothing and makes no activity entry.
+/// A real change makes an activity entry (KAIROS-T-0268).
 #[utoipa::path(
     patch,
     path = "/api/metadata-definitions/{id}",
@@ -510,17 +515,29 @@ pub(crate) async fn get_definition(
         (status = 200, description = "Updated", body = dto::MetadataDefinition),
         (status = 403, description = "Caller is not an org admin", body = dto_base::ErrorEnvelope),
         (status = 404, description = "Unknown id", body = dto_base::ErrorEnvelope),
-        (status = 422, description = "Option rules or duplicate slug", body = dto_base::ErrorEnvelope),
+        (status = 422, description = "No field to change, option rules, or duplicate slug", body = dto_base::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn update_definition(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Extension(tenant): Extension<TenantContext>,
     Path(id): Path<String>,
     ApiJson(body): ApiJson<dto::UpdateMetadataDefinitionRequest>,
 ) -> Result<Json<dto::MetadataDefinition>, ApiError> {
     require_org_admin(&tenant)?;
     let id = parse_uuid(&id, "definition id")?;
+    if body.name.is_none()
+        && body.slug.is_none()
+        && body.enum_options.is_none()
+        && body.entity_types.is_none()
+    {
+        return Err(ApiError::validation(
+            "The request has no field to change. Send one or more of name, slug, enum_options \
+             and entity_types.",
+        ));
+    }
+    let user = auth.user_id;
     if let Some(entity_types) = &body.entity_types {
         check_entity_types(entity_types)?;
     }
@@ -539,25 +556,55 @@ pub(crate) async fn update_definition(
                 }
                 check_option_rules(FieldType::Enum, options)?;
             }
+            // KAIROS-T-0268: only a value that is different from the stored
+            // value goes to the write. The options are a list in sequence;
+            // the entity types are a set.
+            let options = match body.enum_options.clone() {
+                Some(options) if options == enum_option_values(conn, id)? => None,
+                options => options,
+            };
+            let entity_types = match body.entity_types.clone() {
+                Some(sent) => {
+                    let mut sorted = sent.clone();
+                    sorted.sort_by_key(|t| ENTITY_TYPES.iter().position(|v| v == t));
+                    (sorted != scopes_of(conn, id)?).then_some(sent)
+                }
+                None => None,
+            };
+            let changes = MetadataDefinitionChangeset {
+                name: body.name.clone().filter(|name| *name != existing.name),
+                slug: body.slug.clone().filter(|slug| *slug != existing.slug),
+                field_type: None,
+                is_system_default: None,
+                updated_at: Some(chrono::Utc::now()),
+            };
+            if changes.name.is_none()
+                && changes.slug.is_none()
+                && options.is_none()
+                && entity_types.is_none()
+            {
+                return hydrate(conn, existing);
+            }
             let updated = conn
                 .transaction::<MetadataDefinition, DieselError, _>(|conn| {
                     let updated: MetadataDefinition =
                         diesel::update(definitions::table.filter(definitions::id.eq(id)))
-                            .set(MetadataDefinitionChangeset {
-                                name: body.name.clone(),
-                                slug: body.slug.clone(),
-                                field_type: None,
-                                is_system_default: None,
-                                updated_at: Some(chrono::Utc::now()),
-                            })
+                            .set(changes)
                             .returning(MetadataDefinition::as_returning())
                             .get_result(conn)?;
-                    if let Some(options) = &body.enum_options {
+                    if let Some(options) = &options {
                         replace_options(conn, id, options)?;
                     }
-                    if let Some(entity_types) = &body.entity_types {
+                    if let Some(entity_types) = &entity_types {
                         replace_scopes(conn, id, entity_types)?;
                     }
+                    super::log_meta_activity(
+                        conn,
+                        user,
+                        "metadata_definition",
+                        id,
+                        format!("metadata_definition_settings:{}", updated.slug),
+                    )?;
                     Ok(updated)
                 })
                 .map_err(map_write_error)?;

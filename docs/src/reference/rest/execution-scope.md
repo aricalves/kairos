@@ -27,15 +27,21 @@ Request body (required): `application/json`, [`QueryVectorRequest`](schemas.md#q
 The repository directory (open tenant-wide), by slug. `?team=` narrows
 to one owning team.
 
+The response is a page, `{items, total, limit, offset}`, as for each
+other list (KAIROS-T-0268). Until 0.11 it was an array of each
+repository.
+
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
 | `team` | query | no | `string` | Only this team's repositories (UUID or slug). |
 | `forge` | query | no | `string` | With `name`: the ONE repository registered under this forge (`github|gitlab|other`) and full name — how a checkout matches its git remote (KAIROS-T-0116). Returns an empty list when unknown. |
 | `name` | query | no | `string` | `owner/repo`, paired with `forge`. |
+| `limit` | query | no | `integer` | Page size (default 50, max 200). |
+| `offset` | query | no | `integer` | Rows to skip (default 0). |
 
 | Response | Body | Meaning |
 |---|---|---|
-| `200` | array of [`Repository`](schemas.md#repository) | Repositories, by slug |
+| `200` | [`ListEnvelope_Repository`](schemas.md#listenvelope_repository) | Page of repositories, by slug |
 | `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown team |
 
 ### `POST /api/repositories`

@@ -126,6 +126,13 @@ repository does not choose the board of a task.
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `team` | string | no | all teams | Narrow to one team's repositories. Slug or UUID. |
+| `limit` | integer | no | `50` | The number of repositories in the result. The maximum is 200. |
+| `offset` | integer | no | `0` | The number of repositories to skip. |
+
+A result can be a part of the directory. Then its first line gives the count
+of the repositories and the `offset` of the next part:
+`Repositories in the directory: 120. Shown: 50 (limit 50, offset 0). Call
+again with offset 50 for the next part.`
 
 Refuses: `VALIDATION` for an unknown `team` — it is a filter value, not a
 path.

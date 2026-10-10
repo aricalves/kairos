@@ -514,16 +514,22 @@ pub(crate) async fn update_team(
             {
                 check_slug_form("team", new_slug)?;
             }
+            // KAIROS-T-0268: only a value that is different from the value
+            // of the row goes to the write. When no value is different, the
+            // route writes nothing and makes no activity entry: the forms of
+            // the GUI send each field at each save.
+            let changes = TeamChangeset {
+                name: body.name.clone().filter(|name| *name != team.name),
+                slug: body.slug.clone().filter(|new| *new != team.slug),
+                team_type: team_type.filter(|kind| *kind != team.team_type),
+                ..Default::default()
+            };
+            if changes.name.is_none() && changes.slug.is_none() && changes.team_type.is_none() {
+                let board = delivery_board_of(conn, team_id)?;
+                return Ok(team_to_dto(team, board));
+            }
             let updated: Team = diesel::update(dsl::teams.filter(dsl::id.eq(team_id)))
-                .set((
-                    TeamChangeset {
-                        name: body.name.clone(),
-                        slug: body.slug.clone(),
-                        team_type,
-                        ..Default::default()
-                    },
-                    dsl::updated_at.eq(diesel::dsl::now),
-                ))
+                .set((changes, dsl::updated_at.eq(diesel::dsl::now)))
                 .returning(Team::as_returning())
                 .get_result(conn)
                 .map_err(|e| {

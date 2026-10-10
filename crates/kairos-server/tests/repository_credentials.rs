@@ -430,7 +430,7 @@ async fn the_read_token_of_a_repository() {
         .await
         .unwrap();
     assert_no_token("GET repositories", &list.to_string());
-    let listed = list
+    let listed = list["items"]
         .as_array()
         .unwrap()
         .iter()
