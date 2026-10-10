@@ -124,8 +124,8 @@ stateDiagram-v2
 Two things the picture is meant to fix in the reader's head.
 
 **There is no third state.** Put away is not a stage on the way to deletion,
-because nothing deletes: the retention sweeper is unwired, and even wired it
-prunes history and activity rather than the rows. The only way out of `PutAway`
+because nothing deletes: the retention sweeper prunes history and activity,
+not the rows. The only way out of `PutAway`
 is back to `Live`.
 
 **Restore is not the inverse of delete.** The `delete` edge cascades to
@@ -389,9 +389,8 @@ across the API, MCP, the CLI and the GUI together rather than incrementally.
 
 And the open question is erasure, not visibility. For a task, a board manager
 can now delete it for good (see above). For the other item types, nothing in
-Kairos destroys archived content: the retention sweeper is not wired into the server
-at all, and even when it is, it purges history and activity rows rather than
-the archived records themselves. So archived content is permanent, and this
+Kairos destroys archived content: the retention sweeper purges history and
+activity rows, not the archived records themselves. So archived content is permanent, and this
 decision makes that permanent *by design* rather than by accident. A tenant
 with a regulatory erasure requirement sits directly against the rule that
 archiving is not a permission boundary, and would force a real deletion path

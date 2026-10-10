@@ -600,3 +600,175 @@ async fn retention_loop_ticks_until_break() {
         "ticked exactly until break"
     );
 }
+
+/// KAIROS-T-0366: the pass of the server loop. Rows older than the setting
+/// go and newer rows stay; expired password sessions go and live sessions
+/// stay; while a different connection holds the retention lock, a pass does
+/// nothing.
+#[test]
+fn retention_pass_removes_old_rows_and_expired_sessions_on_one_server_at_a_time() {
+    use kairos_db::local_auth::{NewLocalSession, create_session};
+    use kairos_db::retention::{RETENTION_LOCK_KEY, run_retention_pass};
+
+    const PASS_DB: &str = "kairos_retention_pass_test";
+    let admin_url = admin_database_url();
+    let mut admin_conn = PgConnection::establish(&admin_url).unwrap_or_else(|e| {
+        panic!("cannot connect to compose postgres at {admin_url}: {e} (`angreal services up`)")
+    });
+    sql_query(format!("DROP DATABASE IF EXISTS {PASS_DB} WITH (FORCE)"))
+        .execute(&mut admin_conn)
+        .expect("dropping scratch database");
+    sql_query(format!("CREATE DATABASE {PASS_DB}"))
+        .execute(&mut admin_conn)
+        .expect("creating scratch database");
+    let url = with_database(&admin_url, PASS_DB);
+    let mut conn = PgConnection::establish(&url).expect("connecting to scratch database");
+    run_public_migrations(&mut conn).expect("running public migrations");
+    provision_tenant(&mut conn, "acme", "Acme Inc").expect("provisioning acme");
+
+    let now = at(2026, 10, 11, 12, 0, 0);
+    let config = RetentionConfig {
+        activity_retention_days: 30,
+        mode: RetentionMode::Discard,
+        ..RetentionConfig::default()
+    };
+
+    // activity_log: one row older than the 30-day setting, one newer.
+    pin(&mut conn, "org_acme");
+    for (action, ts) in [
+        ("old_row", now - Duration::days(31)),
+        ("new_row", now - Duration::days(29)),
+    ] {
+        diesel::insert_into(schema::activity_log::table)
+            .values((
+                schema::activity_log::actor_id.eq(Uuid::nil()),
+                schema::activity_log::action.eq(action),
+                schema::activity_log::details.eq(""),
+                schema::activity_log::occurred_at.eq(ts),
+            ))
+            .execute(&mut conn)
+            .expect("inserting activity row");
+    }
+
+    // local_sessions: one expired before `now`, one live after it.
+    let robin = insert_user(&mut conn, "local|robin", "robin@acme.test", "Robin");
+    for (hash, expires_at) in [
+        ("expired", now - Duration::hours(1)),
+        ("live", now + Duration::hours(1)),
+    ] {
+        create_session(
+            &mut conn,
+            NewLocalSession {
+                user_id: robin,
+                token_hash: hash.to_string(),
+                expires_at,
+            },
+        )
+        .expect("inserting session");
+    }
+    sql_query("SET search_path TO DEFAULT")
+        .execute(&mut conn)
+        .expect("resetting search_path");
+
+    let session_hashes = |conn: &mut PgConnection| -> Vec<String> {
+        schema::local_sessions::table
+            .order(schema::local_sessions::token_hash.asc())
+            .select(schema::local_sessions::token_hash)
+            .load(conn)
+            .expect("loading sessions")
+    };
+    let activity_actions = |conn: &mut PgConnection| -> Vec<String> {
+        pin(conn, "org_acme");
+        let actions = schema::activity_log::table
+            .filter(schema::activity_log::action.ne("retention_sweep"))
+            .order(schema::activity_log::action.asc())
+            .select(schema::activity_log::action)
+            .load(conn)
+            .expect("loading activity");
+        sql_query("SET search_path TO DEFAULT")
+            .execute(conn)
+            .expect("resetting search_path");
+        actions
+    };
+
+    // A different server holds the lock: the pass does nothing.
+    let mut other = PgConnection::establish(&url).expect("second connection");
+    sql_query("SELECT pg_advisory_lock($1)")
+        .bind::<diesel::sql_types::BigInt, _>(RETENTION_LOCK_KEY)
+        .execute(&mut other)
+        .expect("taking the retention lock");
+    let skipped = run_retention_pass(&mut conn, &config, now).expect("pass while locked");
+    assert_eq!(
+        skipped, None,
+        "a second server does not sweep at the same time"
+    );
+    assert_eq!(session_hashes(&mut conn), vec!["expired", "live"]);
+    assert_eq!(activity_actions(&mut conn), vec!["new_row", "old_row"]);
+
+    // Two passes at the same time: at most one runs.
+    sql_query("SELECT pg_advisory_unlock($1)")
+        .bind::<diesel::sql_types::BigInt, _>(RETENTION_LOCK_KEY)
+        .execute(&mut other)
+        .expect("releasing the retention lock");
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let ran = Arc::new(AtomicUsize::new(0));
+    let threads: Vec<_> = (0..2)
+        .map(|_| {
+            let (barrier, ran, url, config) =
+                (barrier.clone(), ran.clone(), url.clone(), config.clone());
+            std::thread::spawn(move || {
+                let mut conn = PgConnection::establish(&url).expect("pass connection");
+                barrier.wait();
+                if run_retention_pass(&mut conn, &config, now)
+                    .expect("concurrent pass")
+                    .is_some()
+                {
+                    ran.fetch_add(1, Ordering::SeqCst);
+                }
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().expect("pass thread");
+    }
+    assert!(ran.load(Ordering::SeqCst) >= 1, "one of the passes runs");
+
+    // Whatever ran: the old rows are gone and the new rows stay.
+    assert_eq!(session_hashes(&mut conn), vec!["live"]);
+    assert_eq!(activity_actions(&mut conn), vec!["new_row"]);
+
+    // The lock was released: a later pass runs, and finds nothing to remove.
+    let pass = run_retention_pass(&mut conn, &config, now)
+        .expect("pass")
+        .expect("the lock is free");
+    assert_eq!(pass.expired_sessions_deleted, 0);
+    assert_eq!(pass.tenants.len(), 1);
+    assert_eq!(pass.tenants[0].activity_log.rows_pruned, 0);
+
+    // `off` sweeps no tenant but still deletes expired sessions.
+    pin(&mut conn, "org_acme");
+    create_session(
+        &mut conn,
+        NewLocalSession {
+            user_id: robin,
+            token_hash: "expired-2".to_string(),
+            expires_at: now - Duration::minutes(5),
+        },
+    )
+    .expect("inserting session");
+    let off = RetentionConfig {
+        mode: RetentionMode::Off,
+        ..RetentionConfig::default()
+    };
+    let pass = run_retention_pass(&mut conn, &off, now)
+        .expect("pass")
+        .expect("the lock is free");
+    assert!(pass.tenants.is_empty());
+    assert_eq!(pass.expired_sessions_deleted, 1);
+
+    drop(conn);
+    drop(other);
+    sql_query(format!("DROP DATABASE IF EXISTS {PASS_DB} WITH (FORCE)"))
+        .execute(&mut admin_conn)
+        .expect("dropping scratch database");
+}

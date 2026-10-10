@@ -309,8 +309,9 @@ pub fn bootstrap_admin_if_empty(
     })
 }
 
-/// Delete sessions that expired before `before`. Housekeeping for an operator or
-/// a future sweeper; nothing on the request path depends on it, because expiry is
+/// Delete sessions that expired before `before`. The retention pass of the
+/// server calls it ([`crate::retention::run_retention_pass`], KAIROS-T-0366);
+/// nothing on the request path depends on it, because expiry is
 /// enforced by [`LocalSession::is_valid_at`] rather than by the row's absence.
 pub fn delete_expired_sessions(
     conn: &mut PgConnection,

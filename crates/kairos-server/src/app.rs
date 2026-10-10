@@ -686,6 +686,10 @@ pub async fn serve(
 ) -> Result<(), String> {
     let bind_addr = config.bind_addr;
     let refresh_secs = config.embed_refresh_secs;
+    // KAIROS-T-0366: a bad retention value stops the start, like any other
+    // bad setting.
+    let retention = kairos_core::retention::RetentionConfig::from_env()
+        .map_err(|e| format!("retention configuration: {e}"))?;
     let mut state = build_state(config).await.map_err(|e| e.to_string())?;
     // KAIROS-T-0330: the tenants that did not migrate at startup.
     state.tenant_readiness = Arc::new(readiness);
@@ -713,6 +717,7 @@ pub async fn serve(
     }
 
     start_code_index_builder(&state);
+    start_retention_loop(state.config.database_url.clone(), retention);
 
     let app = router(state);
 
@@ -736,6 +741,66 @@ pub async fn serve(
     // image smoke check) can tell it from a kill.
     tracing::info!("shutdown complete");
     Ok(())
+}
+
+/// How often the retention pass runs (KAIROS-T-0366). The first pass runs at
+/// the start.
+pub const RETENTION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// Start the retention loop (KAIROS-T-0366): each [`RETENTION_INTERVAL`], on
+/// a connection of its own, [`kairos_db::retention::run_retention_pass`]
+/// sweeps `item_history` and `activity_log` of each tenant by the retention
+/// settings and deletes the expired password sessions. An advisory lock lets
+/// one replica at a time run the pass; the other replicas skip it. A failed
+/// pass is logged, and the next pass runs on time. Detached like the
+/// embedding refresher: a pass that a stop interrupts is done again by the
+/// next start.
+fn start_retention_loop(database_url: String, config: kairos_core::retention::RetentionConfig) {
+    tracing::info!(
+        mode = %config.mode,
+        interval_secs = RETENTION_INTERVAL.as_secs(),
+        "retention: the loop starts"
+    );
+    kairos_db::retention::spawn_retention_loop(RETENTION_INTERVAL, move || {
+        retention_tick(&database_url, &config);
+        std::ops::ControlFlow::Continue(())
+    });
+}
+
+/// One tick of the retention loop: connect, run the pass, log the result.
+fn retention_tick(database_url: &str, config: &kairos_core::retention::RetentionConfig) {
+    let mut conn = match kairos_db::establish_migration_connection(database_url) {
+        Ok(conn) => conn,
+        Err(e) => {
+            tracing::error!(error = %e, "retention: the pass cannot connect to the database");
+            return;
+        }
+    };
+    match kairos_db::retention::run_retention_pass(&mut conn, config, chrono::Utc::now()) {
+        Ok(None) => {
+            tracing::info!("retention: a different server runs the pass; this server skips it");
+        }
+        Ok(Some(pass)) => {
+            for report in &pass.tenants {
+                tracing::info!(
+                    tenant = %report.slug,
+                    mode = %report.mode,
+                    item_history_archived = report.item_history.rows_archived,
+                    item_history_pruned = report.item_history.rows_pruned,
+                    activity_log_archived = report.activity_log.rows_archived,
+                    activity_log_pruned = report.activity_log.rows_pruned,
+                    warnings = report.item_history.warnings + report.activity_log.warnings,
+                    "retention: tenant swept"
+                );
+            }
+            tracing::info!(
+                tenants = pass.tenants.len(),
+                expired_sessions_deleted = pass.expired_sessions_deleted,
+                "retention: pass done"
+            );
+        }
+        Err(e) => tracing::error!(error = %e, "retention: the pass failed"),
+    }
 }
 
 /// Create the first-boot admin if `KAIROS_BOOTSTRAP_ADMIN` is set and the

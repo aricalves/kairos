@@ -16,8 +16,8 @@ startup with a message naming the variable — invalid values are never silently
 replaced by defaults — and an empty or whitespace-only value is treated as
 unset.
 
-The five retention variables are not among them. Nothing in the server reads
-them; their own parsing rules differ, and are stated in that section.
+The five retention variables are not among them. The server reads them at
+startup too, but their parsing rules are different. That section gives them.
 
 ### Required
 
@@ -509,15 +509,25 @@ the folder. Then the server downloads nothing.
 | `KAIROS_DEV_UI` | `true` \| `1` \| `false` \| `0` | `false` | Mounts the Swagger UI at `/api/docs`. At the default the route does not exist. Any other value fails startup. |
 | `KAIROS_WEB_DIST` | directory path | unset | Serve the GUI from this directory instead of the assets embedded in the binary. When both are present, the directory wins. |
 
-### Retention — recognised but inert
+### Retention
 
-**In 0.10.0 the server reads none of the five variables below, and they have no
-effect.** The retention sweeper's scheduler, `spawn_retention_loop`, is not
-called anywhere in the server binary, and its own documentation records that
-wiring as a later milestone. Nothing is compacted, offloaded or pruned
-regardless of these values. The Helm chart surfaces them, so they are listed
-here; the types and defaults below are the ones the parser implements and the
-ones that will take effect once the loop is wired in.
+The server runs a retention pass at startup and then each 24 hours. The
+interval is fixed. One pass:
+
+- In each tenant, removes the `item_history` rows and the `activity_log` rows
+  that the five variables below make prune candidates. The mode sets what
+  happens to them first.
+- Deletes the password sessions (`local_sessions`) that expired before the
+  pass. This occurs in each mode, also `off`, because an expired session
+  cannot log in.
+- Writes one `retention_sweep` row to the `activity_log` of each tenant that
+  it sweeps, with the counts of the rows it archived and removed.
+- Logs the counts for each tenant and the number of deleted sessions.
+
+When there are 2 or more replicas, only one replica runs a pass at a time. A
+pass takes a Postgres advisory lock. A replica that cannot get the lock skips
+that pass. A failed pass is logged, and the next pass runs on time. A value
+that the server cannot parse stops the start.
 
 Their parsing differs from the sixteen variables above: empty is not treated as
 unset. An empty `KAIROS_HISTORY_HOT_DAYS`, `KAIROS_HISTORY_KEEP_LATEST`,
@@ -847,8 +857,8 @@ The chart's two rendering guards:
   Rendering fails only when neither is set; with both set,
   `database.existingSecret` is used and no Secret is rendered.
 
-Retention values left `null` or `""` are absent from the ConfigMap, which is
-moot in 0.10.0 because the server reads none of them.
+Retention values left `null` or `""` are absent from the ConfigMap. Then the
+server uses its defaults.
 
 ## Reference Compose deployment
 
