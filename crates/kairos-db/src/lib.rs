@@ -69,7 +69,7 @@ pub use migrations::{
     run_public_migrations,
 };
 pub use pool::{PgPool, PoolError, TenantConnection, TenantPool};
-pub use seed::{SeedDemoReport, SeedError, seed_demo};
+pub use seed::{DroppedDemo, SeedDemoReport, SeedError, seed_demo};
 pub use tenant::{
     MIGRATION_LOCK_KEY, TenantError, TenantInfo, TenantMigrationOutcome, TenantMigrationReport,
     TenantProvisionReport, drop_tenant, list_tenants, migrate_all_tenants, migrate_each_tenant,

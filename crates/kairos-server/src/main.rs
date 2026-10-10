@@ -460,8 +460,15 @@ fn seed_demo(conn: &mut PgConnection, args: &[String]) -> Result<(), String> {
         }
         Err(e) => Err(format!("seed-demo: {e}")),
         Ok(report) => {
-            if report.recreated {
-                println!("dropped existing tenant 'demo' (--force) before reseeding");
+            match report.dropped {
+                // KAIROS-T-0346: say what the reset removed, so a test run
+                // shows that it starts from the seed only.
+                Some(dropped) => println!(
+                    "dropped the tenant 'demo' (--force) before the seed: {} teams, {} boards, \
+                     {} items",
+                    dropped.teams, dropped.boards, dropped.items
+                ),
+                None => println!("there was no tenant 'demo' to drop"),
             }
             println!(
                 "seeded tenant '{}' (schema {}): {} users (alice=org admin, bob, carol), \

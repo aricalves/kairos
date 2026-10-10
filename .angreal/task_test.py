@@ -403,7 +403,13 @@ def _prepare_gui_stack(env, phase):
     if code != 0:
         return _e2e_phase(f"{phase}: web build", code)
 
-    print(f"Reseeding the demo tenant for {phase}...", flush=True)
+    # KAIROS-T-0346: seed-demo --force drops the whole tenant schema, so the
+    # rows that an earlier leg or run made go too; it prints what it dropped.
+    print(
+        f"Resetting the demo tenant for {phase} (seed-demo --force drops the tenant "
+        "and seeds it again)...",
+        flush=True,
+    )
     code = subprocess.run(
         [str(SERVER_BIN), "seed-demo", "--force"],
         cwd=str(PROJECT_ROOT),
@@ -658,7 +664,11 @@ def e2e():
         env = os.environ.copy()
         env.setdefault("DATABASE_URL", E2E_DATABASE_URL)
 
-        print("Seeding the demo tenant (kairos-server seed-demo --force)...", flush=True)
+        print(
+            "Resetting the demo tenant (kairos-server seed-demo --force drops the "
+            "tenant and seeds it again)...",
+            flush=True,
+        )
         exit_code = _e2e_phase(
             "seed-demo",
             subprocess.run(
