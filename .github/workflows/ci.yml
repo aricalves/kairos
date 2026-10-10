@@ -28,14 +28,14 @@ permissions:
 jobs:
   ci:
     name: ci
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust toolchain (from rust-toolchain.toml)
-        # rustup (>= 1.28, preinstalled on ubuntu-latest) reads
+        # rustup (>= 1.28, preinstalled on ubuntu-24.04) reads
         # rust-toolchain.toml and installs the pinned channel + components
         # (rustfmt, clippy) when invoked with no arguments.
         run: |
@@ -59,7 +59,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends libpq-dev
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -101,7 +101,7 @@ jobs:
         run: python3 scripts/render-openapi.py --check
 
       - name: Upload OpenAPI artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: openapi.json
           path: target/openapi.json
@@ -139,7 +139,7 @@ jobs:
         run: angreal web build --release
 
       - name: Set up Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
 
       # Gate 8 — the chart actually renders, for every deployment shape in
       # `deploy/helm/kairos/ci/`.
