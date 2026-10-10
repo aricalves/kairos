@@ -941,6 +941,9 @@ const CANCELLED_CHIP: &str = "Cancelled";
 struct ColumnModel {
     id: String,
     name: String,
+    /// The WIP chip and whether the column is over its limit
+    /// (KAIROS-T-0371); `None` for a column with no limit.
+    wip: Option<(String, bool)>,
     targets: Vec<(String, String)>,
     cards: Vec<CardModel>,
     key: String,
@@ -1073,10 +1076,16 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                     None,
                 )
             }));
+            let wip = data::wip_label(group.item_count, group.column.wip_limit)
+                .map(|label| (label, group.over_wip_limit));
             ColumnModel {
                 id: group.column.id.clone(),
                 name: group.column.name.clone(),
-                key: format!("{}|{}|{:?}", group.column.id, group.column.name, targets),
+                key: format!(
+                    "{}|{}|{:?}|{:?}",
+                    group.column.id, group.column.name, targets, wip
+                ),
+                wip,
                 targets,
                 cards,
             }
@@ -2100,7 +2109,7 @@ fn LaneColumns(
                 each=move || columns.get()
                 key=|column| column.key.clone()
                 children=move |column: ColumnModel| {
-                    let ColumnModel { id, name, targets, key: _, cards: _ } = column;
+                    let ColumnModel { id, name, wip, targets, key: _, cards: _ } = column;
                     // This column's live card list — this lane's slice of
                     // it: the column node itself persists across
                     // refetches; only its cards diff.
@@ -2167,6 +2176,24 @@ fn LaneColumns(
                                 <Group gap="xs">
                                     <Text bright=true bold=true size="sm">{name}</Text>
                                     <Text dimmed=true size="xs">{move || cards.with(Vec::len).to_string()}</Text>
+                                    // KAIROS-T-0371: the live count against
+                                    // the WIP limit, marked when over it.
+                                    {wip.map(|(label, over)| {
+                                        let title = if over {
+                                            "The column holds more items than its WIP limit."
+                                        } else {
+                                            "The live items of the column and its WIP limit."
+                                        };
+                                        view! {
+                                            <span class="kairos-board__wip"
+                                                class:kairos-board__wip--over=over
+                                                data-testid="wip" title=title>
+                                                <Pill color=if over { token::BAD } else { token::MUTED }>
+                                                    {if over { format!("{label} over") } else { label }}
+                                                </Pill>
+                                            </span>
+                                        }
+                                    })}
                                 </Group>
                             </header>
                             // KAIROS-T-0328: the cards of a column scroll on

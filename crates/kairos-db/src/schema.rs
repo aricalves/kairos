@@ -74,6 +74,7 @@ diesel::table! {
         is_done -> Bool,
         deleted_at -> Nullable<Timestamptz>,
         claims -> Bool,
+        wip_limit -> Nullable<Int4>,
     }
 }
 

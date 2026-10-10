@@ -1406,6 +1406,46 @@ pub fn set_column_claims(
     })
 }
 
+/// Set or clear the WIP limit of a column (KAIROS-T-0371). `Some(n)` needs
+/// `n > 0` (the caller checks it; the database has the same check). A
+/// limit below the count of the column is allowed: the board marks the
+/// column.
+pub fn set_column_wip_limit(
+    conn: &mut PgConnection,
+    column_id: Uuid,
+    wip_limit: Option<i32>,
+    actor_id: Uuid,
+) -> Result<BoardColumn, BoardError> {
+    conn.transaction::<_, BoardError, _>(|conn| {
+        use crate::schema::board_columns;
+
+        let board_id = column_board_id(conn, column_id)?;
+        let (columns, _) = load_board_rules(conn, board_id)?;
+        let name = column_name(&columns, column_id)?;
+
+        let updated: BoardColumn =
+            diesel::update(board_columns::table.filter(board_columns::id.eq(column_id)))
+                .set((
+                    board_columns::wip_limit.eq(wip_limit),
+                    board_columns::updated_at.eq(diesel::dsl::now),
+                ))
+                .returning(BoardColumn::as_returning())
+                .get_result(conn)?;
+        log_activity(
+            conn,
+            actor_id,
+            ActivityAction::BoardConfig,
+            Some(board_id),
+            "board",
+            format!(
+                "column_wip_limit:{name}={}",
+                wip_limit.map_or_else(|| "none".to_string(), |n| n.to_string())
+            ),
+        )?;
+        Ok(updated)
+    })
+}
+
 /// Rename a column (name uniqueness enforced by
 /// [`kairos_core::board::check_rename_column`]).
 pub fn rename_column(

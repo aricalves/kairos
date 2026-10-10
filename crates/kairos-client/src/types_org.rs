@@ -95,6 +95,14 @@ pub struct BoardColumn {
     #[serde(default)]
     #[schema(required = true)]
     pub removed_at: Option<String>,
+    /// The most live items that the column should hold (KAIROS-T-0371);
+    /// `null`: no limit. Kairos does not refuse a move into a column over its
+    /// limit, and the answer has the header `Kairos-Warning`. The server sends
+    /// it in each response; the default is for the client only (an older
+    /// server).
+    #[serde(default)]
+    #[schema(required = true)]
+    pub wip_limit: Option<i32>,
 }
 
 /// An allowed column-to-column transition edge.
@@ -210,6 +218,16 @@ where
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct BoardColumnItems {
     pub column: BoardColumn,
+    /// The live items in the column, on each page (KAIROS-T-0371): the
+    /// count that the WIP limit is for. Not changed by the filters or the
+    /// page. The default is for the client only (an older server).
+    #[serde(default)]
+    #[schema(required = true)]
+    pub item_count: i64,
+    /// `item_count` is above `column.wip_limit`.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub over_wip_limit: bool,
     pub strategies: Vec<Strategy>,
     pub initiatives: Vec<Initiative>,
     pub tasks: Vec<Task>,
@@ -513,6 +531,15 @@ pub struct UpdateColumnRequest {
     /// tasks in the column end.
     #[serde(default)]
     pub claims: Option<bool>,
+    /// The WIP limit of the column (KAIROS-T-0371): a number above 0, or
+    /// `null` to remove the limit. Leave it out to keep the limit.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    #[schema(value_type = Option<i32>)]
+    pub wip_limit: Option<Option<i32>>,
 }
 
 /// Body of `POST /api/boards/{id}/transitions`.
@@ -1017,6 +1044,7 @@ mod tests {
             is_done: false,
             claims: false,
             removed_at: None,
+            wip_limit: None,
         };
         let sent = serde_json::to_value(&column).expect("serializes");
         assert!(

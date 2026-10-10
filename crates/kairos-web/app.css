@@ -560,3 +560,12 @@
 .kairos-team__repo-description {
   overflow-wrap: anywhere;
 }
+
+/* KAIROS-T-0371: the WIP chip of a column head. Over the limit, the head
+   gets a line in the colour of a fault. */
+.kairos-board__wip--over {
+  font-weight: 600;
+}
+.kairos-board__column:has(.kairos-board__wip--over) .kairos-board__column-head {
+  border-bottom: 2px solid var(--bad);
+}

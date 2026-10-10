@@ -1196,7 +1196,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "List the items on a board grouped by column: short code, type, and title. `board` is a slug or UUID; optional `column` (name or UUID) restricts to one column; optional `repository` (slug or UUID) narrows the tasks to one repository — pass the repository you are checked out in to see your queue. Live cards only unless `include_deleted` is true, which adds the archived ones back in the column they were put away in, each marked [archived]. A card with open dependencies is tagged [blocked by N] and [blocks N]. A task with a claim is tagged [claimed by NAME]: the person who works on it, and \"(agent)\" when the agent of the person made the claim. A strategy or an initiative with teams is tagged [teams: a, b]: the teams of the boards of its tasks (two levels down for a strategy), plus the teams set on it by hand (`set_team`). Optional `team` (slug or UUID) restricts the strategies and the initiatives to those of one team, and `no_team: true` to those with no team. Only open `blocks` edges are counted: an edge with either end in a done column, or with an archived item at the other end, is not. The result has 200 items at most by default: optional `limit` (maximum 1000) and `offset` give a different part of the board. When the result is not the full board, its first lines say so and give the `offset` of the next part. Call the tool again with that `offset` until you have each part. Optional `details: true` adds to each card the date of its last change and its metadata values (for example the priority): `{updated 2026-10-08; priority: high}`. Use it to pick or triage work without `get_item` for each card."
+        description = "List the items on a board grouped by column: short code, type, and title. `board` is a slug or UUID; optional `column` (name or UUID) restricts to one column; optional `repository` (slug or UUID) narrows the tasks to one repository — pass the repository you are checked out in to see your queue. Live cards only unless `include_deleted` is true, which adds the archived ones back in the column they were put away in, each marked [archived]. A card with open dependencies is tagged [blocked by N] and [blocks N]. A task with a claim is tagged [claimed by NAME]: the person who works on it, and \"(agent)\" when the agent of the person made the claim. A strategy or an initiative with teams is tagged [teams: a, b]: the teams of the boards of its tasks (two levels down for a strategy), plus the teams set on it by hand (`set_team`). Optional `team` (slug or UUID) restricts the strategies and the initiatives to those of one team, and `no_team: true` to those with no team. Only open `blocks` edges are counted: an edge with either end in a done column, or with an archived item at the other end, is not. The result has 200 items at most by default: optional `limit` (maximum 1000) and `offset` give a different part of the board. When the result is not the full board, its first lines say so and give the `offset` of the next part. Call the tool again with that `offset` until you have each part. Optional `details: true` adds to each card the date of its last change and its metadata values (for example the priority): `{updated 2026-10-08; priority: high}`. Use it to pick or triage work without `get_item` for each card. A column with a WIP limit shows the live count against the limit, [WIP 2/3], and [WIP 4/3, over the limit] when it holds more. A move into a column over its limit is allowed: the answer of the move has a warning line."
     )]
     pub async fn board_items(
         &self,
@@ -1313,6 +1313,15 @@ impl KairosMcp {
                 HashMap::new()
             };
 
+            // KAIROS-T-0371: the live count of each column, for the WIP
+            // limit. 1 query.
+            let live_counts: HashMap<Uuid, i64> =
+                kairos_db::board_items::live_column_counts(conn, &[board.id])
+                    .map_err(ApiError::internal)?
+                    .into_iter()
+                    .map(|c| (c.column_id, c.count))
+                    .collect();
+
             let mut out = format!(
                 "# Board {} — {} ({})\n",
                 board.slug, board.name, board.board_level
@@ -1327,13 +1336,17 @@ impl KairosMcp {
                     items.iter().filter(|i| i.column_id == column.id).collect();
                 // The number is that of the column only when the result
                 // is the full board.
+                let wip = wip_marker(
+                    live_counts.get(&column.id).copied().unwrap_or(0),
+                    column.wip_limit,
+                );
                 out.push_str(&match incomplete {
                     Some(_) => format!(
-                        "\n## {} ({} in this result)\n",
+                        "\n## {} ({} in this result){wip}\n",
                         column.name,
                         in_column.len()
                     ),
-                    None => format!("\n## {} ({})\n", column.name, in_column.len()),
+                    None => format!("\n## {} ({}){wip}\n", column.name, in_column.len()),
                 });
                 for item in in_column {
                     // The marker is not decoration: an agent that cannot
@@ -2116,6 +2129,12 @@ impl KairosMcp {
             let from_board = board_by_ref(conn, &from_board_id.to_string())?;
             let moved = boards::move_task_with(conn, item.id, target.id, user, params.rename)
                 .map_err(map_board_error)?;
+            // KAIROS-T-0371: the entry column of the target over its limit.
+            let moved_code = moved
+                .rename
+                .as_ref()
+                .map_or(item.short_code.clone(), |rename| rename.new_code.clone());
+            crate::claims::note_wip(conn, moved.column_id, &moved_code)?;
             let column = board_columns(conn, target.id)?
                 .into_iter()
                 .find(|c| c.id == moved.column_id)
@@ -2470,6 +2489,8 @@ impl KairosMcp {
                 ItemType::Document => unreachable!("documents have no board placement"),
             }
             .map_err(map_board_error)?;
+            // KAIROS-T-0371: a move into a column over its WIP limit.
+            crate::claims::note_wip(conn, to_column_id, &item.short_code)?;
 
             let name_of = |id: Uuid| {
                 columns
@@ -3852,6 +3873,19 @@ fn card_details(updated_at: DateTime<Utc>, metadata: Option<&Vec<(String, String
         parts.push(format!("{slug}: {value}"));
     }
     format!(" {{{}}}", parts.join("; "))
+}
+
+/// The WIP limit of a column in the text of `board_items` (KAIROS-T-0371):
+/// ` [WIP 2/3]`, ` [WIP 4/3, over the limit]`, or nothing for a column with
+/// no limit. `count` is the live count of the column, on each page. Pure.
+fn wip_marker(count: i64, wip_limit: Option<i32>) -> String {
+    match wip_limit {
+        None => String::new(),
+        Some(limit) if kairos_db::board_items::over_wip_limit(count, Some(limit)) => {
+            format!(" [WIP {count}/{limit}, over the limit]")
+        }
+        Some(limit) => format!(" [WIP {count}/{limit}]"),
+    }
 }
 
 /// The open-dependency tags of one `board_items` line: `" [blocked by

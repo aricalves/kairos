@@ -664,6 +664,7 @@ pub(crate) async fn move_task(
             let moved = boards::move_task_with(conn, task.id, target, user, body.rename)
                 .map_err(map_board_error)?;
             let code = moved.rename.map_or(short_code, |rename| rename.new_code);
+            crate::claims::note_wip(conn, moved.column_id, &code)?;
             let moved = load(conn, &code, Liveness::LiveOnly)?.into_dto();
             embed(conn, moved)
         })
@@ -707,6 +708,8 @@ pub(crate) async fn transition_task(
             require_capability(conn, &slug, Some(task.board_id), user, "transition_items")?;
             crate::claims::note(conn, task.id, user)?;
             boards::transition_task(conn, task.id, to_column_id, user).map_err(map_board_error)?;
+            // KAIROS-T-0371: a move into a column over its WIP limit.
+            crate::claims::note_wip(conn, to_column_id, &short_code)?;
             let task = load(conn, &short_code, Liveness::LiveOnly)?.into_dto();
             embed(conn, task)
         })

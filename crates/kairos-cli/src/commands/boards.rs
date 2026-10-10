@@ -7,7 +7,9 @@ use crate::context::{Common, client, print_json};
 use crate::error::CliError;
 use crate::table::Table;
 
-use kairos_client::types_org::{BoardItemsQuery, BoardItemsResponse, CreateBoardRequest};
+use kairos_client::types_org::{
+    BoardItemsQuery, BoardItemsResponse, CreateBoardRequest, UpdateColumnRequest,
+};
 
 /// Operations on boards.
 #[derive(clap::Subcommand, Debug)]
@@ -62,6 +64,25 @@ pub enum BoardsCommand {
         /// priority: high}
         #[arg(long)]
         details: bool,
+        #[command(flatten)]
+        common: Common,
+    },
+    /// Set or remove the WIP limit of a column (needs configure_boards). A
+    /// move into a column over its limit is allowed, with a warning
+    #[command(name = "wip-limit")]
+    WipLimit {
+        /// Board slug or id (UUID)
+        #[arg(value_name = "BOARD")]
+        board: String,
+        /// Column name or id (UUID)
+        #[arg(value_name = "COLUMN")]
+        column: String,
+        /// The limit, a number above 0
+        #[arg(long, conflicts_with = "none", required_unless_present = "none")]
+        limit: Option<i32>,
+        /// Remove the limit
+        #[arg(long)]
+        none: bool,
         #[command(flatten)]
         common: Common,
     },
@@ -184,6 +205,59 @@ impl BoardsCommand {
                 }
                 Ok(())
             }
+            Self::WipLimit {
+                board,
+                column,
+                limit,
+                none,
+                common,
+            } => {
+                let client = client(&common)?;
+                let detail = client.get_board(&board).await?;
+                let target = detail
+                    .columns
+                    .iter()
+                    .find(|c| c.id == column || c.name.eq_ignore_ascii_case(&column))
+                    .ok_or_else(|| {
+                        CliError::Failure(format!(
+                            "The board {board} has no column {column:?}. The columns are: {}.",
+                            detail
+                                .columns
+                                .iter()
+                                .map(|c| c.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ))
+                    })?;
+                let wip_limit = if none { None } else { limit };
+                let updated = client
+                    .update_column(
+                        &detail.board.id,
+                        &target.id,
+                        &UpdateColumnRequest {
+                            name: None,
+                            position: None,
+                            is_done: None,
+                            claims: None,
+                            wip_limit: Some(wip_limit),
+                        },
+                    )
+                    .await?;
+                if common.json {
+                    return print_json(&updated);
+                }
+                match updated.wip_limit {
+                    Some(limit) => println!(
+                        "The column {} of {} has the WIP limit {limit}.",
+                        updated.name, detail.board.slug
+                    ),
+                    None => println!(
+                        "The column {} of {} has no WIP limit.",
+                        updated.name, detail.board.slug
+                    ),
+                }
+                Ok(())
+            }
             Self::ArchiveCompleted {
                 board,
                 confirm,
@@ -247,8 +321,10 @@ fn print_board_items(items: &BoardItemsResponse, details: bool) {
             + column.adrs.len();
         println!();
         println!(
-            "== {} ({count} items, id {})",
-            column.column.name, column.column.id
+            "== {} ({count} items, id {}){}",
+            column.column.name,
+            column.column.id,
+            wip_text(column.item_count, column.column.wip_limit)
         );
         if count == 0 {
             println!("   (empty)");
@@ -296,6 +372,18 @@ fn print_board_items(items: &BoardItemsResponse, details: bool) {
                 more(item.short_code(), &item.updated_at, None)
             );
         }
+    }
+}
+
+/// The WIP limit of a column after its name (KAIROS-T-0371):
+/// ` [WIP 2/3]`, ` [WIP 4/3, over the limit]`, or nothing. Pure.
+fn wip_text(count: i64, wip_limit: Option<i32>) -> String {
+    match wip_limit {
+        None => String::new(),
+        Some(limit) if count > i64::from(limit) => {
+            format!(" [WIP {count}/{limit}, over the limit]")
+        }
+        Some(limit) => format!(" [WIP {count}/{limit}]"),
     }
 }
 
@@ -368,5 +456,19 @@ mod archive_completed_tests {
             "{text}"
         );
         assert!(text.contains("tasks restore"), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod wip_tests {
+    use super::wip_text;
+
+    /// KAIROS-T-0371.
+    #[test]
+    fn the_wip_text_names_the_count_and_the_limit() {
+        assert_eq!(wip_text(2, None), "");
+        assert_eq!(wip_text(2, Some(3)), " [WIP 2/3]");
+        assert_eq!(wip_text(3, Some(3)), " [WIP 3/3]");
+        assert_eq!(wip_text(4, Some(3)), " [WIP 4/3, over the limit]");
     }
 }

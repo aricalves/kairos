@@ -604,6 +604,28 @@ The board has 340 items. This result shows 200 (limit 200, offset 0). To read th
 Board capability grants are not part of the CLI surface. See
 [Capabilities and access](../explanation/capabilities-and-access.md).
 
+A column with a WIP limit shows its live count against the limit after its
+name, for example `[WIP 2/3]`. When it has more items than the limit, it shows
+`[WIP 4/3, over the limit]`.
+
+### `kairos boards wip-limit`
+
+```
+kairos boards wip-limit <BOARD> <COLUMN> (--limit <N> | --none) [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<BOARD>` | slug or UUID | required | The board. |
+| `<COLUMN>` | name or UUID | required | The column. |
+| `--limit <N>` | integer | none | The WIP limit, a number above 0. |
+| `--none` | flag | off | Remove the limit. |
+
+Sets or removes the WIP limit of a column. You need `configure_boards` on the
+board. Kairos does not refuse a move into a column over its limit. The REST
+answer has the header `Kairos-Warning`, and the MCP answer has a warning line.
+The board marks the column.
+
 ### `kairos boards archive-completed`
 
 ```

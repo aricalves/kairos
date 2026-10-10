@@ -338,6 +338,7 @@ pub(crate) async fn transition_strategy(
             )?;
             boards::transition_strategy(conn, strategy.id, to_column_id, user)
                 .map_err(map_board_error)?;
+            crate::claims::note_wip(conn, to_column_id, &short_code)?;
             Ok(load(conn, &short_code, Liveness::LiveOnly)?.into_dto())
         })
         .await?;

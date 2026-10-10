@@ -351,6 +351,13 @@ A task with a claim carries `[claimed by Alice]`, or `[claimed by Alice
 
 A [cancelled](glossary.md#cancel) task carries `[cancelled]`.
 
+A column with a WIP limit shows its live count against the limit after its
+name: `## Active (2) [WIP 2/3]`. A column with more live items than its limit
+shows `[WIP 4/3, over the limit]`. The count is of the whole column, not of the
+result. A move into a column over its limit is allowed: the answer of
+`transition_item` or `move_item` ends with the line `Warning: the column Active
+has 4 items, over its WIP limit of 3. Your move of ACME-T-0012 is recorded.`
+
 With `details: true`, each card ends with the date (UTC) of its last change
 and its metadata values, in slug order:
 

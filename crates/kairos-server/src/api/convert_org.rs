@@ -44,6 +44,7 @@ impl IntoDto<dto::BoardColumn> for BoardColumn {
             // Only ever `Some` for a caller that asked for removed columns
             // (KAIROS-T-0164) — the default board read never loads them.
             removed_at: self.deleted_at.map(timestamp),
+            wip_limit: self.wip_limit,
         }
     }
 }

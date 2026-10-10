@@ -47,6 +47,9 @@ pub struct BoardColumn {
     /// (KAIROS-T-0080).
     #[serde(default)]
     pub is_done: bool,
+    /// The WIP limit of the column (KAIROS-T-0371); `None`: no limit.
+    #[serde(default)]
+    pub wip_limit: Option<i32>,
 }
 
 /// mirror of: `kairos_client::types_org::BoardTransition` (partial).
@@ -140,6 +143,22 @@ pub async fn update_column(
         auth,
         &format!("/api/boards/{board_id}/columns/{column_id}"),
         &json!({ "name": name, "position": position, "is_done": is_done }),
+    )
+    .await
+}
+
+/// `PATCH /api/boards/{id}/columns/{col_id}` with `wip_limit` only
+/// (KAIROS-T-0371): a number above 0, or `None` to remove the limit.
+pub async fn set_column_wip_limit(
+    auth: Auth,
+    board_id: &str,
+    column_id: &str,
+    wip_limit: Option<i32>,
+) -> Result<Value, ApiError> {
+    patch_json(
+        auth,
+        &format!("/api/boards/{board_id}/columns/{column_id}"),
+        &json!({ "wip_limit": wip_limit }),
     )
     .await
 }

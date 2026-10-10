@@ -1039,15 +1039,33 @@ pub(crate) async fn board_items(
             )
             .map_err(ApiError::internal)?;
 
+            // KAIROS-T-0371: the live count of each column (all pages, no
+            // filter), for the WIP limit. 1 query.
+            let counts: HashMap<Uuid, i64> =
+                kairos_db::board_items::live_column_counts(conn, &[board_id])
+                    .map_err(ApiError::internal)?
+                    .into_iter()
+                    .map(|c| (c.column_id, c.count))
+                    .collect();
             let mut groups: Vec<dto::BoardColumnItems> = columns
                 .into_iter()
-                .map(|column| dto::BoardColumnItems {
-                    column: column.into_dto(),
-                    strategies: vec![],
-                    initiatives: vec![],
-                    tasks: vec![],
-                    adrs: vec![],
+                .map(|column| {
+                    let item_count = counts.get(&column.id).copied().unwrap_or(0);
+                    let over_wip_limit =
+                        kairos_db::board_items::over_wip_limit(item_count, column.wip_limit);
+                    (column, item_count, over_wip_limit)
                 })
+                .map(
+                    |(column, item_count, over_wip_limit)| dto::BoardColumnItems {
+                        column: column.into_dto(),
+                        item_count,
+                        over_wip_limit,
+                        strategies: vec![],
+                        initiatives: vec![],
+                        tasks: vec![],
+                        adrs: vec![],
+                    },
+                )
                 .collect();
             let index_of: HashMap<String, usize> = groups
                 .iter()
@@ -1314,6 +1332,11 @@ pub(crate) async fn add_column(
 /// A person who moves a task into a column with `claims` gets the claim of
 /// the task. When the flag goes off, the claims of the tasks in the column
 /// end.
+///
+/// It also sets the WIP limit of the column (`wip_limit`, KAIROS-T-0371): a
+/// number above 0, or `null` to remove it. Kairos does not refuse a move into
+/// a column over its limit. The answer of the move has a warning in the
+/// header `Kairos-Warning`.
 #[utoipa::path(
     patch,
     path = "/api/boards/{id}/columns/{col_id}",
@@ -1343,11 +1366,21 @@ pub(crate) async fn update_column(
         && body.position.is_none()
         && body.is_done.is_none()
         && body.claims.is_none()
+        && body.wip_limit.is_none()
     {
         return Err(ApiError::validation(
-            "The request has no field to change. Send one or more of name, position, is_done \
-             and claims.",
+            "The request has no field to change. Send one or more of name, position, is_done, \
+             claims and wip_limit.",
         ));
+    }
+    if let Some(Some(limit)) = body.wip_limit
+        && limit < 1
+    {
+        return Err(ApiError::validation(format!(
+            "The wip_limit {limit} is not correct. Send a number above 0, or null to remove \
+             the limit."
+        ))
+        .with_details(serde_json::json!({ "field": "wip_limit" })));
     }
     let user = auth.user_id;
     let slug = tenant.slug.clone();
@@ -1378,6 +1411,11 @@ pub(crate) async fn update_column(
             // KAIROS-T-0359: the same path and capability as `is_done`.
             if let Some(claims) = body.claims.filter(|claims| *claims != column.claims) {
                 boards::set_column_claims(conn, column_id, claims, user)
+                    .map_err(map_config_error)?;
+            }
+            // KAIROS-T-0371: the same path and capability as `claims`.
+            if let Some(limit) = body.wip_limit.filter(|limit| *limit != column.wip_limit) {
+                boards::set_column_wip_limit(conn, column_id, limit, user)
                     .map_err(map_config_error)?;
             }
             if let Some(position) = body.position {

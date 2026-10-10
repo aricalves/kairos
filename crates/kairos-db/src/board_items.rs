@@ -246,6 +246,53 @@ pub fn live_column_counts(
         .load(conn)
 }
 
+/// The load of one column against its WIP limit (KAIROS-T-0371).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnLoad {
+    pub name: String,
+    /// The live cards in the column, of the four types.
+    pub count: i64,
+    pub wip_limit: Option<i32>,
+}
+
+impl ColumnLoad {
+    /// The column has more live cards than its limit.
+    pub fn over_limit(&self) -> bool {
+        self.wip_limit
+            .is_some_and(|limit| self.count > i64::from(limit))
+    }
+}
+
+/// Is a count over a limit? Pure.
+pub fn over_wip_limit(count: i64, wip_limit: Option<i32>) -> bool {
+    wip_limit.is_some_and(|limit| count > i64::from(limit))
+}
+
+/// The load of the column `column_id`: its name, its live cards and its
+/// limit. `None` for an unknown column. 2 queries.
+pub fn column_load(
+    conn: &mut PgConnection,
+    column_id: Uuid,
+) -> Result<Option<ColumnLoad>, DieselError> {
+    use crate::schema::board_columns;
+    let Some((board_id, wip_limit)) = board_columns::table
+        .filter(board_columns::id.eq(column_id))
+        .select((board_columns::board_id, board_columns::wip_limit))
+        .first::<(Uuid, Option<i32>)>(conn)
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    Ok(live_column_counts(conn, &[board_id])?
+        .into_iter()
+        .find(|c| c.column_id == column_id)
+        .map(|c| ColumnLoad {
+            name: c.name,
+            count: c.count,
+            wip_limit,
+        }))
+}
+
 /// The metadata values of each item of `ids` (KAIROS-T-0368): one query,
 /// keyed by item id, each list as `(definition slug, value)` in slug order.
 /// An item with no value has no entry. `board_items` with `details` and

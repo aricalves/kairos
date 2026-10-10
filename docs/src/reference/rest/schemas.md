@@ -209,6 +209,7 @@ A board column.
 | `position` | `integer` | yes | Display ordering, 0-indexed. |
 | `removed_at` | `string`, nullable | yes | When this column was REMOVED from its board (RFC 3339), `null` while it is part of the board (KAIROS-T-0161, KAIROS-T-0164). `GET /api/boards/{id}` omits removed columns entirely unless it is asked for them (`?include_removed_columns=true`), so this is `null` on every default read. It is a timestamp only for a caller that wants the column an ARCHIVED card was put away in — the audit fact the soft delete exists to preserve. Named `removed_at`, not `archived_at`: the entity DTOs' `archived_at` is the KAIROS-A-0020 work-item state, and a column is not work. The server sends it in each response, `null` for a live column, so the schema shows it as required and nullable (COLLIERY-T-0256, the pattern of COLLIERY-T-0254). The default is for the client only: a response of an older server has no `removed_at`, and it reads as `None`. |
 | `updated_at` | `string` | yes | RFC 3339. |
+| `wip_limit` | `integer`, nullable | yes | The most live items that the column should hold (KAIROS-T-0371); `null`: no limit. Kairos does not refuse a move into a column over its limit, and the answer has the header `Kairos-Warning`. The server sends it in each response; the default is for the client only (an older server). |
 
 ## BoardColumnItems
 
@@ -219,6 +220,8 @@ One column's items in the `GET /api/boards/{id}/items` view: every live workflow
 | `adrs` | array of [`Adr`](schemas.md#adr) | yes |  |
 | `column` | [`BoardColumn`](schemas.md#boardcolumn) | yes |  |
 | `initiatives` | array of [`Initiative`](schemas.md#initiative) | yes |  |
+| `item_count` | `integer` | yes | The live items in the column, on each page (KAIROS-T-0371): the count that the WIP limit is for. Not changed by the filters or the page. The default is for the client only (an older server). |
+| `over_wip_limit` | `boolean` | yes | `item_count` is above `column.wip_limit`. |
 | `strategies` | array of [`Strategy`](schemas.md#strategy) | yes |  |
 | `tasks` | array of [`Task`](schemas.md#task) | yes |  |
 
@@ -2118,6 +2121,7 @@ Body of `PATCH /api/boards/{id}/columns/{col_id}` — rename, move, and/or set t
 | `is_done` | `boolean`, nullable | no | Mark occupants as completed for children-progress rollups (KAIROS-T-0080). An explicit admin choice — the dead-end heuristic only ever suggests. |
 | `name` | `string`, nullable | no |  |
 | `position` | `integer`, nullable | no | New 0-indexed position; the other columns shift around it. |
+| `wip_limit` | `integer`, nullable | no | The WIP limit of the column (KAIROS-T-0371): a number above 0, or `null` to remove the limit. Leave it out to keep the limit. |
 
 The server refuses a body with a field that is not in this table ([Errors](../errors.md#a-field-of-the-body)).
 

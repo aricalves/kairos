@@ -311,6 +311,11 @@ A person who moves a task into a column with `claims` gets the claim of
 the task. When the flag goes off, the claims of the tasks in the column
 end.
 
+It also sets the WIP limit of the column (`wip_limit`, KAIROS-T-0371): a
+number above 0, or `null` to remove it. Kairos does not refuse a move into
+a column over its limit. The answer of the move has a warning in the
+header `Kairos-Warning`.
+
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
 | `id` | path | yes | `string` | Board id (UUID) |

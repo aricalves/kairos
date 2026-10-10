@@ -491,6 +491,7 @@ async fn org_and_admin_endpoints_against_live_stack() {
                 position: Some(0),
                 is_done: None,
                 claims: None,
+                wip_limit: None,
             },
         )
         .await
