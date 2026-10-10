@@ -18,9 +18,12 @@
 //! - create-from-template ([`create_doc`]) and the archive (a soft
 //!   delete) with cascade warning ([`delete`], A-0001);
 //! - for a task: Cancel with a reason, and Delete for good ([`end`],
-//!   KAIROS-T-0362).
+//!   KAIROS-T-0362);
+//! - for a task: the claim, with Hand off and Release ([`claim`],
+//!   KAIROS-T-0369).
 
 pub(crate) mod api;
+mod claim;
 mod create_doc;
 mod delete;
 mod editor;
@@ -46,6 +49,7 @@ use super::copy_link;
 use super::repositories;
 use crate::auth::use_auth;
 use api::{Family, ItemDetail, RelationshipGroup};
+use claim::ClaimPanel;
 use create_doc::CreateDocumentDialog;
 use delete::DeleteDialog;
 use editor::ContentEditor;
@@ -243,6 +247,8 @@ fn ItemLoaded(
     let cancellation = item.cancellation.clone();
     let cancelled = cancellation.is_some();
     let task_column = item.column_id.clone();
+    let claim_column = item.column_id.clone();
+    let task_claim = item.claim.clone();
     let lane = item.work_class.clone();
     let repository = item.repository.as_ref().map(|r| r.slug.clone());
     let lifecycle = item.lifecycle.clone();
@@ -389,6 +395,12 @@ fn ItemLoaded(
                             work_class=lane repository created_by archived on_moved/>
                     }.into_any()
                 }}
+                // KAIROS-T-0369: the claim of a task, with Hand off and
+                // Release.
+                {(family == Family::Task).then(|| view! {
+                    <ClaimPanel code=short_code.clone() claim=task_claim board
+                        column_id=claim_column archived on_moved/>
+                })}
                 {matches!(family, Family::Document | Family::Adr).then(|| view! {
                     <ImpactsPanel family code=short_code.clone() impacts board
                         created_by=impacts_creator archived on_moved/>

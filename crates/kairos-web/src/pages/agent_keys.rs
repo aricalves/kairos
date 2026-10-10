@@ -186,6 +186,7 @@ pub fn AgentKeysPage() -> impl IntoView {
                             );
                         };
                         view! {
+                            <div data-testid="agent-key">
                             <Stack gap="xs">
                                 <Group justify="between" wrap=true>
                                     <Group gap="sm" wrap=true>
@@ -214,6 +215,7 @@ pub fn AgentKeysPage() -> impl IntoView {
                                 </Text>
                                 <Divider/>
                             </Stack>
+                            </div>
                         }
                     }).collect_view().into_any(),
                 }}
