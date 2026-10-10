@@ -71,8 +71,10 @@ pub fn split(db: &Path) -> Result<Split, IndexError> {
     let keys = used_keys(&conn)?;
     let vector_model = vector_model(&conn)?;
     conn.execute("DELETE FROM summaries", [])?;
-    // The parse cache is local (KAIROS-T-0297).
+    // The parse cache is local (KAIROS-T-0297), and so is the record of the
+    // base pool that a checkout took (KAIROS-T-0355).
     conn.execute("DROP TABLE IF EXISTS parse_cache", [])?;
+    conn.execute("DELETE FROM pool_meta WHERE name = ?1", [TAKEN_BASE_POOL])?;
     conn.execute_batch("VACUUM")?;
     drop(conn);
 
@@ -161,6 +163,38 @@ pub fn copy_pool(from: &Path, to: &Path) -> Result<(), IndexError> {
     let mut target = Connection::open(to)?;
     check_version(&target)?;
     crate::summary::copy_pool(&source, &mut target)
+}
+
+/// The name of the `pool_meta` row of a checkout that records the base pool
+/// that it took from Kairos (KAIROS-T-0355), as `<commit>:<summaries>`.
+/// Local: [`split`] removes it.
+const TAKEN_BASE_POOL: &str = "taken_base_pool";
+
+/// The base pool that the checkout index at `db` took from Kairos
+/// (KAIROS-T-0355), as `<commit>:<summaries>`, if it took one.
+pub fn taken_base_pool(db: &Path) -> Result<Option<String>, IndexError> {
+    let conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    check_version(&conn)?;
+    Ok(conn
+        .query_row(
+            "SELECT value FROM pool_meta WHERE name = ?1",
+            [TAKEN_BASE_POOL],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+/// Record in the checkout index at `db` that it took the base pool
+/// `value` (`<commit>:<summaries>`) from Kairos (KAIROS-T-0355), so that the
+/// next update does not take the same pool again.
+pub fn set_taken_base_pool(db: &Path, value: &str) -> Result<(), IndexError> {
+    let conn = Connection::open(db)?;
+    check_version(&conn)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO pool_meta (name, value) VALUES (?1, ?2)",
+        params![TAKEN_BASE_POOL, value],
+    )?;
+    Ok(())
 }
 
 /// The summary keys that the index file at `db` uses. Sorted.
@@ -276,6 +310,23 @@ mod tests {
              INSERT INTO pool_meta (name, value) VALUES ('vector_model', 'det/m/1');",
         )
         .unwrap();
+    }
+
+    #[test]
+    fn the_record_of_a_taken_base_pool_stays_local() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("in.db");
+        index_with_pool(&db);
+        assert_eq!(taken_base_pool(&db).unwrap(), None);
+        set_taken_base_pool(&db, "abc:3").unwrap();
+        set_taken_base_pool(&db, "abc:5").unwrap();
+        assert_eq!(taken_base_pool(&db).unwrap().as_deref(), Some("abc:5"));
+
+        // An upload of the index does not take the record with it.
+        let split = split(&db).unwrap();
+        let out = dir.path().join("out.db");
+        assemble(&split.structure_gz, split.pool, &out).unwrap();
+        assert_eq!(taken_base_pool(&out).unwrap(), None);
     }
 
     #[test]

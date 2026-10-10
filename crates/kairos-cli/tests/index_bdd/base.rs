@@ -155,7 +155,9 @@ fn repository_at_a(dir: &Path) -> String {
 /// The index of `commit` of the repository at `repo`, as a checkout builds
 /// it: the tree of the commit, the fake summarizer, the deterministic
 /// vectors.
-fn index_of(repo: &Path, commit: &str, out: &Path) -> Vec<u8> {
+///
+/// `options` choose the summaries: a part of them for a scenario.
+fn index_with(repo: &Path, commit: &str, out: &Path, options: &UpdateOptions) -> Vec<u8> {
     let tree = TempDir::new().expect("a folder for the tree");
     let archive = Command::new("git")
         .args(["archive", "--format=tar", commit])
@@ -182,7 +184,7 @@ fn index_of(repo: &Path, commit: &str, out: &Path) -> Vec<u8> {
         out,
         &mut FakeSummarizer::default(),
         &DeterministicProvider::default(),
-        &UpdateOptions::default(),
+        options,
     )
     .expect("the index of the commit builds");
     fs::read(out).expect("read the index")
@@ -340,8 +342,14 @@ impl Kairos {
 
     /// Build the summarized index of `commit` and send it to Kairos.
     async fn upload(&self, commit: &str) -> Vec<u8> {
+        self.upload_with(commit, &UpdateOptions::default()).await
+    }
+
+    /// [`Self::upload`] with these options.
+    async fn upload_with(&self, commit: &str, options: &UpdateOptions) -> Vec<u8> {
         let file = self.work.path().join(format!("{commit}.db"));
-        let bytes = index_of(&self.remote, commit, &file);
+        let _ = fs::remove_file(&file);
+        let bytes = index_with(&self.remote, commit, &file, options);
         self.client()
             .upload_code_index(REPOSITORY, commit, Some("main"), bytes.clone())
             .await
@@ -456,11 +464,18 @@ impl BaseWorld {
 
     /// [`Self::update`] with these environment variables added.
     fn update_with(&mut self, env: &[(&str, &str)]) {
+        self.update_args(&[], env);
+    }
+
+    /// [`Self::update`] with these flags and environment variables added.
+    fn update_args(&mut self, flags: &[&str], env: &[(&str, &str)]) {
         let root = self.root().to_path_buf();
         let config = TempDir::new().expect("a config folder");
         let mut command = Command::new(KAIROS);
         command
-            .args(["index", "update", "--repository", REPOSITORY, "--root"])
+            .args(["index", "update", "--repository", REPOSITORY])
+            .args(flags)
+            .arg("--root")
             .arg(&root)
             .env_remove("KAIROS_MCP_KEY")
             .env("KAIROS_CONFIG_DIR", config.path())
@@ -506,6 +521,83 @@ async fn kairos_has_a(world: &mut CliWorld) {
     let a = kairos.a.clone();
     w.index_a = kairos.upload(&a).await;
     w.kairos = Some(kairos);
+}
+
+/// KAIROS-T-0355: Kairos has an index of A with the summaries of 2
+/// symbols only.
+#[given("Kairos has a partly summarized index of commit A of main")]
+async fn kairos_has_a_part_of_a(world: &mut CliWorld) {
+    let w = base(world);
+    let kairos = Kairos::start().await;
+    let a = kairos.a.clone();
+    let mut options = UpdateOptions::default();
+    options.summarize.max_new_symbols = Some(2);
+    w.index_a = kairos.upload_with(&a, &options).await;
+    w.kairos = Some(kairos);
+}
+
+/// KAIROS-T-0355: a clone of A, and its local index from the base of
+/// Kairos, with the summaries that the base has.
+#[given("a checkout of A whose local index links the summaries of that index")]
+fn a_checkout_with_the_partial_index(world: &mut CliWorld) {
+    let w = base(world);
+    w.clone_remote();
+    w.update_args(&["--link-only"], &[]);
+    let out = w.output();
+    assert!(w.run.as_ref().expect("a run").status.success(), "{out}");
+    assert!(
+        w.stdout().contains("Kairos: downloaded the index of"),
+        "{out}"
+    );
+    let (with, without) = w.summarized();
+    assert_eq!(with.len(), 2, "{out}");
+    assert!(!without.is_empty(), "{out}");
+}
+
+/// KAIROS-T-0355: the builder of Kairos makes the other summaries of A, as
+/// a push run does: the index of A in Kairos now has each summary.
+#[given("Kairos then gets a summary of each symbol of A")]
+async fn kairos_gets_each_summary(world: &mut CliWorld) {
+    let w = base(world);
+    let a = w.kairos().a.clone();
+    w.index_a = w.kairos().upload(&a).await;
+}
+
+#[then("the update says that it took the summaries from Kairos")]
+fn update_says_taken(world: &mut CliWorld) {
+    let w = base(world);
+    let out = w.output();
+    assert!(w.run.as_ref().expect("a run").status.success(), "{out}");
+    let stdout = w.stdout();
+    assert!(
+        stdout.contains("the local index is nearer to the tree than the index of"),
+        "{out}"
+    );
+    assert!(
+        stdout.contains("The update took the summaries from Kairos and keeps the local structure."),
+        "{out}"
+    );
+    assert!(!stdout.contains("Kairos: downloaded the index of"), "{out}");
+    assert!(!stdout.contains("Not made:"), "{out}");
+}
+
+#[then("the server says that it took the summaries from Kairos")]
+fn server_says_taken(world: &mut CliWorld) {
+    let r = world.result.as_ref().expect("no result");
+    assert!(!r.is_error, "{}", r.text);
+    assert!(
+        r.text
+            .contains("the local index is nearer to the tree than the index of"),
+        "{}",
+        r.text
+    );
+    assert!(
+        r.text
+            .contains("The update took the summaries from Kairos and keeps the local structure."),
+        "{}",
+        r.text
+    );
+    assert!(r.text.contains(", 0 with none."), "{}", r.text);
 }
 
 /// KAIROS-T-0343: the organization has a hosted provider, and the
@@ -740,8 +832,11 @@ fn a_local_index(world: &mut CliWorld) {
 
 #[when(expr = "I run {string}")]
 fn run_update(world: &mut CliWorld, command: String) {
-    assert_eq!(command, "kairos index update");
-    base(world).update();
+    match command.as_str() {
+        "kairos index update" => base(world).update(),
+        "kairos index update --link-only" => base(world).update_args(&["--link-only"], &[]),
+        other => panic!("no step runs {other:?}"),
+    }
 }
 
 #[when(expr = "I run {string} with KAIROS_INDEX_SUMMARIZE=1")]

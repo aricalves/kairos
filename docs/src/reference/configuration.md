@@ -639,6 +639,11 @@ It downloads that index if the checkout has no index. It also downloads it if
 the base is nearer to the tree than the local index. Then it indexes the
 changed files.
 
+When the local index is as near to the tree as the base, the CLI keeps the
+local index. The base can have more summaries than the local index links.
+Then the CLI downloads the base and takes its summaries into the local
+index. The output says so. The tool `fetch_index` of the code tools does the same.
+
 | Setting | Description |
 |---|---|
 | `--url`, then `KAIROS_URL`, then `deployment_url` in `.claude/kairos.local.md` | The Kairos deployment. With none of them, the CLI uses the deployment of `kairos login`. |

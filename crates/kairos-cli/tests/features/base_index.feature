@@ -61,3 +61,24 @@ Feature: Start from the base index
     Then the CLI downloads the index of A
     And the CLI says that this repository makes its summaries on Kairos
     And the symbols of A keep their summaries, and the changed symbols have none
+
+  # KAIROS-T-0355: the builder of Kairos made more summaries of the commit
+  # of the local index (a push run). The local index is as near to the tree
+  # as the base, so it keeps its structure, takes the pool of the base and
+  # links the new summaries.
+  Scenario: kairos index update takes the new summaries of the base index of the same commit
+    Given Kairos has a partly summarized index of commit A of main
+    And a checkout of A whose local index links the summaries of that index
+    And Kairos then gets a summary of each symbol of A
+    When I run "kairos index update --link-only"
+    Then the update says that it took the summaries from Kairos
+    And each symbol of A has its summary from the base index
+
+  Scenario: fetch_index takes the new summaries of the base index of the same commit
+    Given Kairos has a partly summarized index of commit A of main
+    And a checkout of A whose local index links the summaries of that index
+    And Kairos then gets a summary of each symbol of A
+    And a kairos-code server started in a folder that is not a checkout
+    When the agent calls fetch_index with the path of the checkout
+    Then the server says that it took the summaries from Kairos
+    And each symbol of A has its summary from the base index
