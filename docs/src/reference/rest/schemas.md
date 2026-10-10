@@ -560,6 +560,17 @@ Body of `POST /api/delivery-streams`.
 
 The server refuses a body with a field that is not in this table ([Errors](../errors.md#a-field-of-the-body)).
 
+## CreateStructureGrantRequest
+
+Body of `POST /api/structure-grants`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `board` | `string`, nullable | no | The board (slug or UUID) of a board grant. Omit it for a grant at the organization. |
+| `user` | `string` | yes | The principal: a user id (UUID), an email, or a user name of a member of the organization. A service account is given by its id. |
+
+The server refuses a body with a field that is not in this table ([Errors](../errors.md#a-field-of-the-body)).
+
 ## CreateTaskRequest
 
 Body of `POST /api/tasks`.
@@ -1768,6 +1779,23 @@ A strategy (Flight Level 3), as returned by `/api/strategies`.
 | `updated_at` | `string` | yes | RFC 3339. |
 | `updated_by` | `string` | yes | Last editor user id (UUID). |
 | `version` | `integer` | yes | Optimistic-concurrency version (KAIROS-A-0004); submit it back on PATCH. |
+
+## StructureGrant
+
+One grant of `manage_structure` (`GET /api/structure-grants` element). `scope` is `organization` or `board`. A grant on the organization covers teams, team members, boards and repositories. A grant on a board covers the configuration, the members and the grants of that board only.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `board_id` | `string`, nullable | no | The board of a board grant (UUID), or null. |
+| `board_slug` | `string`, nullable | no | The slug of the board of a board grant, or null. |
+| `display_name` | `string` | yes |  |
+| `email` | `string` | yes |  |
+| `granted_at` | `string` | yes | RFC 3339. |
+| `granted_by` | `string` | yes | `public.users.id` of the organization admin who granted it. |
+| `id` | `string` | yes | The id of the grant (UUID). `DELETE /api/structure-grants/{id}` revokes it. |
+| `kind` | `string` | yes | `human` | `service_account`. |
+| `scope` | `string` | yes | `organization` | `board`. |
+| `user_id` | `string` | yes | `public.users.id` of the principal (UUID). |
 
 ## SummaryProviderSettings
 

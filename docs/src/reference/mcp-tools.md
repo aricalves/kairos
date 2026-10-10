@@ -1,8 +1,8 @@
 # MCP tools
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-thirty-one tools. A drift gate in the test suite
-asserts that `tools/list` returns these thirty-one and no others. The same
+thirty-five tools. A drift gate in the test suite
+asserts that `tools/list` returns these thirty-five and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -36,7 +36,7 @@ Codes an agent can receive, and what each means.
 |---|---|
 | `NOT_FOUND` | A short code, board or repository named as the subject of the call does not exist; an `unlink_items` edge does not exist; or a `search` `traverse.from` does not resolve. On a write tool it also means the item exists but is archived: writes resolve live items only, and the message reads `no live item with short code …`. |
 | `VALIDATION` | An argument is malformed, an enum value is outside its vocabulary, an argument does not apply to the item type, or something named as a *filter or reference* — a team, a repository filter, a parent, a metadata definition, a column — does not exist. A reference that does not resolve is `VALIDATION`; the call's own subject not existing is `NOT_FOUND`. **One exception:** `search`'s `traverse.from` is a reference and still answers `NOT_FOUND`, because a traversal's root is the subject of that traversal. |
-| `FORBIDDEN` | The rule for the write refuses the principal. For an edit, the [edit rule](capabilities.md#the-edit-rule): the principal did not create the item and lacks `manage_<type>` on its board. For an edge, the [link rule](capabilities.md#who-can-write-relationships): the principal can edit neither end. For a move or a create: the principal lacks the board capability. The message names the capability. For `add_repository` and `update_repository`: the principal is not a member of the owner team and is not an organization admin. The message names the team. One case has a longer message: a move (`transition_item`, `move_item`) of a request that the caller created, while the request is in the entry column. That message says that the item is a request, that the team of the board moves it, that the caller can edit, link and archive it, and which capability the move needs. A `create_item` that sends `work_class: planned` to a board that the caller does not manage is also `FORBIDDEN`. |
+| `FORBIDDEN` | The rule for the write refuses the principal. For an edit, the [edit rule](capabilities.md#the-edit-rule): the principal did not create the item and lacks `manage_<type>` on its board. For an edge, the [link rule](capabilities.md#who-can-write-relationships): the principal can edit neither end. For a move or a create: the principal lacks the board capability. The message names the capability. For `add_repository` and `update_repository`: the principal is not a member of the owner team and is not an organization admin. The message names the team. For `create_team`, `create_board` and `add_team_member`: the principal is not an organization admin and has no `manage_structure` on the organization. The message names the capability and the scope. One case has a longer message: a move (`transition_item`, `move_item`) of a request that the caller created, while the request is in the entry column. That message says that the item is a request, that the team of the board moves it, that the caller can edit, link and archive it, and which capability the move needs. A `create_item` that sends `work_class: planned` to a board that the caller does not manage is also `FORBIDDEN`. |
 | `CONFLICT` | An optimistic-concurrency version mismatch. The refusal carries the current version and content. From `add_repository`: the directory has the slug already, or it has the repository already. |
 | `INVALID_TRANSITION` | The target column is not reachable from the item's current column in the board's transition graph. The refusal enumerates the allowed target columns. |
 | `ITEM_NOT_ON_BOARD` | The item has no board placement, so it cannot be transitioned or moved. |
@@ -88,7 +88,9 @@ Identity, organization role, teams, those teams' repositories, the boards where
 the caller holds write capabilities, and the capabilities every member holds
 implicitly. Each board of a team of the caller shows the capabilities that the
 team gives with no grant (`(team <slug>, no grant)`). On the ADR board of the
-team, these include `manage_adrs`.
+team, these include `manage_adrs`. The section `Structure (manage_structure)`
+gives the grants of [`manage_structure`](capabilities.md#manage_structure) of
+the caller: on the organization, or on one board.
 
 No arguments.
 
@@ -1285,6 +1287,133 @@ admins only. The creator of the task gets no right here.
 Refuses: `VALIDATION` when `confirm` is `false`; `NOT_FOUND` for an unknown
 short code; `FORBIDDEN` without `manage_tasks`.
 
+## The structure of the organization
+
+These four tools change the teams, the boards and the grants of the
+organization. An organization admin can use each tool. A principal with the
+capability [`manage_structure`](capabilities.md#manage_structure) can use them
+too, at the scope of the grant:
+
+| Grant of `manage_structure` | What the tools can do |
+|---|---|
+| On the organization | Each tool, on each team and each board. |
+| On one board | `grant_capability` on that board only. |
+| None | Nothing. Each tool refuses with `FORBIDDEN`. |
+
+Only an organization admin grants `manage_structure`. A holder of it cannot
+grant it. See [Run an admin agent](../how-to/run-an-admin-agent.md).
+
+Each tool calls the function of its REST route. The rule, the refusals and
+the activity rows are those of the route. The activity log names the
+principal of the call.
+
+### `create_team`
+
+Creates a team, its delivery board and its ADR board, in one transaction.
+The team and the delivery board are those of `POST /api/teams`. The ADR board
+is that of `POST /api/boards` with `board_level` `adr` and the team.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `name` | string | yes | — | The name of the team. |
+| `slug` | string | yes | — | The slug of the team. It must match `^[a-z][a-z0-9_-]{1,62}$`. The delivery board gets the slug `{slug}-delivery`. The ADR board gets `{slug}-adrs`. |
+| `code_prefix` | string | yes | — | The short-code prefix of the two boards, for example `OPS`. It must match `^[A-Z][A-Z0-9]{1,9}$`. It does not change later. |
+| `team_type` | string | no | `stream_aligned` | `stream_aligned`, `platform`, `enabling` or `complicated_subsystem`. |
+| `adr_board` | boolean | no | `true` | `false` makes no ADR board. |
+
+The new boards have no members. Use `add_team_member` and `grant_capability`.
+
+The result is two lines:
+
+```text
+Created team home-ops (Home operations, stream_aligned). Delivery board: home-ops-delivery (prefix OPS). ADR board: home-ops-adrs.
+The boards have no members. Use add_team_member and grant_capability.
+```
+
+Requires the organization admin role or `manage_structure` on the
+organization.
+
+Refuses: `VALIDATION` for a slug or a prefix that does not have the form, and
+for an unknown `team_type`. `CONFLICT` when a live team has the slug. `CONFLICT`
+when a live board has a slug of the new boards. `CONFLICT` when a live delivery
+board has the prefix. `FORBIDDEN` without the capability:
+
+```text
+FORBIDDEN: This action requires the capability "manage_structure" on the organization, or the organization admin role. A grant of "manage_structure" on one board does not give it. Ask an organization admin to do this, or to grant you "manage_structure" on the organization.
+details: {"board_id":null,"required_capability":"manage_structure","scope":"organization"}
+```
+
+When Kairos refuses one of the boards, it writes nothing.
+
+### `create_board`
+
+Creates one board, as `POST /api/boards` does. The board gets the default
+columns and transitions of its level.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `name` | string | yes | — | The name of the board. |
+| `slug` | string | yes | — | The slug of the board. It must match `^[a-z][a-z0-9_-]{1,62}$`. |
+| `board_level` | string | yes | — | `strategy`, `initiative`, `delivery` or `adr`. |
+| `code_prefix` | string | yes | — | The short-code prefix of the board. It must match `^[A-Z][A-Z0-9]{1,9}$`. The ADR board of a team takes the prefix of the team. |
+| `team` | string | no | none | The owner team. Slug or UUID. A delivery board must have a team, and the team must have no delivery board. A strategy or an initiative board must not have a team. An ADR board with a team is the ADR board of that team. |
+
+Requires the organization admin role or `manage_structure` on the
+organization. A grant on one board does not create a board.
+
+Refuses: the refusals of `POST /api/boards` (`VALIDATION`, `CONFLICT`,
+`TEAM_HAS_DELIVERY_BOARD`, `TEAM_HAS_ADR_BOARD`), and `FORBIDDEN` as for
+`create_team`.
+
+### `add_team_member`
+
+Adds a member of the organization to a team, as
+`POST /api/teams/{id}/members` does. A team member gets `manage_tasks`,
+`manage_documents` and `transition_items` on the boards of the team with no
+grant. On the ADR board of the team, the member also gets `manage_adrs`.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `team` | string | yes | — | The team. Slug or UUID. |
+| `user` | string | yes | — | A user id, an email, a user name, or the name of a service account. |
+
+Requires the organization admin role or `manage_structure` on the
+organization.
+
+Refuses: `VALIDATION` for an unknown team, and for a `user` that is not a
+member of the organization. `CONFLICT` when the user is a member of the team
+already. `FORBIDDEN` as for `create_team`.
+
+### `grant_capability`
+
+Grants one capability to a member of the organization.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `user` | string | yes | — | A user id, an email, a user name, or the name of a service account. |
+| `capability` | string | yes | — | A board capability or a glob of [the vocabulary](capabilities.md#the-grantable-vocabulary), or `manage_structure`. |
+| `board` | string | no | none | The board. Slug or UUID. A board capability needs it. For `manage_structure`, no `board` is a grant on the organization. |
+
+A board capability is a grant of `POST /api/boards/{id}/members`. It requires
+`administer_members` on the board, or `manage_structure` on the board or on
+the organization.
+
+`manage_structure` is a grant of `POST /api/structure-grants`. Only an
+organization admin can grant it.
+
+Refuses: `VALIDATION` for a capability outside the vocabulary, and for a board
+capability with no `board`. `VALIDATION` for a `user` that is not a member of
+the organization. `NOT_FOUND` for an unknown board. `CONFLICT` when the member has
+the grant already. `FORBIDDEN` without the capability on the board:
+
+```text
+FORBIDDEN: This action requires the capability "administer_members" on the board 0193a1c2-0000-7000-8000-000000000003, or the capability "manage_structure" on that board or on the organization. Ask an organization admin for one of them.
+details: {"board_id":"0193a1c2-0000-7000-8000-000000000003","or_capability":"manage_structure","required_capability":"administer_members"}
+```
+
+`FORBIDDEN` for `manage_structure` from a principal that is not an
+organization admin.
+
 ## Related reading
 
 - [Archiving](../explanation/archiving.md) — why archiving is not a permission
@@ -1300,4 +1429,5 @@ short code; `FORBIDDEN` without `manage_tasks`.
 
 - [Connect over MCP](../how-to/connect-over-mcp.md)
 - [Give an agent machine access](../how-to/give-an-agent-machine-access.md)
+- [Run an admin agent](../how-to/run-an-admin-agent.md)
 - [Find archived work](../how-to/find-archived-work.md)

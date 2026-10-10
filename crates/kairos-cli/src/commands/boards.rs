@@ -7,13 +7,37 @@ use crate::context::{Common, client, print_json};
 use crate::error::CliError;
 use crate::table::Table;
 
-use kairos_client::types_org::{BoardItemsQuery, BoardItemsResponse};
+use kairos_client::types_org::{BoardItemsQuery, BoardItemsResponse, CreateBoardRequest};
 
 /// Operations on boards.
 #[derive(clap::Subcommand, Debug)]
 pub enum BoardsCommand {
     /// List boards (paginated)
     List(ListArgs),
+    /// Create a board: an ADR board, a strategy or an initiative board, or the
+    /// delivery board of a team that has none (KAIROS-T-0337)
+    Create {
+        /// Board name
+        #[arg(long)]
+        name: String,
+        /// Board slug (^[a-z][a-z0-9_-]{1,62}$)
+        #[arg(long)]
+        slug: String,
+        /// strategy|initiative|delivery|adr
+        #[arg(long)]
+        level: String,
+        /// The owner team, by slug or id (UUID). A delivery board needs one. An
+        /// ADR board with a team is the ADR board of that team
+        #[arg(long)]
+        team: Option<String>,
+        /// The short-code prefix of the board, for example OPS (a capital
+        /// letter, then 1 to 9 capital letters or digits). The ADR board of a
+        /// team takes the prefix of the team. It does not change later.
+        #[arg(long = "code-prefix", value_name = "PREFIX")]
+        code_prefix: String,
+        #[command(flatten)]
+        common: Common,
+    },
     /// Show a board's live items grouped by column (one page)
     Show {
         /// Board slug or id (UUID)
@@ -54,6 +78,44 @@ pub enum BoardsCommand {
 impl BoardsCommand {
     pub async fn run(self) -> Result<(), CliError> {
         match self {
+            Self::Create {
+                name,
+                slug,
+                level,
+                team,
+                code_prefix,
+                common,
+            } => {
+                let client = client(&common)?;
+                // The body takes the id of the team. A slug is read first.
+                let team_id = match team {
+                    Some(team) if looks_like_uuid(&team) => Some(team),
+                    Some(team) => Some(client.get_team_by_slug(&team).await?.id),
+                    None => None,
+                };
+                let detail = client
+                    .create_board(&CreateBoardRequest {
+                        name,
+                        slug,
+                        board_level: level,
+                        team_id,
+                        code_prefix,
+                    })
+                    .await?;
+                if common.json {
+                    return print_json(&detail);
+                }
+                let columns: Vec<&str> = detail.columns.iter().map(|c| c.name.as_str()).collect();
+                println!(
+                    "Created board {} ({}, {}, prefix {}). Columns: {}.",
+                    detail.board.slug,
+                    detail.board.name,
+                    detail.board.board_level,
+                    detail.board.code_prefix,
+                    columns.join(", ")
+                );
+                Ok(())
+            }
             Self::List(args) => {
                 let client = client(&args.common)?;
                 let envelope = client.list_boards(args.page()).await?;
@@ -227,6 +289,17 @@ fn archived_completed_text(
         if response.count == 1 { "" } else { "s" },
         response.short_codes.join(", ")
     )
+}
+
+/// Whether `value` has the form of a UUID (8-4-4-4-12 hex digits). A team
+/// slug cannot have that form (COLLIERY-T-0260).
+fn looks_like_uuid(value: &str) -> bool {
+    let parts: Vec<&str> = value.split('-').collect();
+    parts.len() == 5
+        && parts
+            .iter()
+            .zip([8, 4, 4, 4, 12])
+            .all(|(part, len)| part.len() == len && part.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 #[cfg(test)]

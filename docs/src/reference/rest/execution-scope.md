@@ -83,7 +83,8 @@ decisions about it. It has the live items only.
 
 ### `DELETE /api/repositories/{slug}`
 
-Remove a repository (org admin). Refused with 409 while live tasks or a
+Remove a repository (org admin, or `manage_structure` at the
+organization, KAIROS-T-0337). Refused with 409 while live tasks or a
 live webhook connection still reference it.
 
 | Parameter | In | Required | Type | Description |

@@ -5,6 +5,7 @@
 pub mod admin;
 pub mod boards;
 pub mod entities;
+pub mod grants;
 pub mod keys;
 pub mod members;
 pub mod orgs;

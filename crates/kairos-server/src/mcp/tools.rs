@@ -3,7 +3,9 @@
 //! (KAIROS-I-0012), `restore_item` (KAIROS-A-0020), `related_work`
 //! (KAIROS-T-0191), `propose_edge` (KAIROS-T-0192), `set_repository`
 //! (COLLIERY-T-0220), and `add_repository` and `update_repository`
-//! (COLLIERY-T-0266) — each a
+//! (COLLIERY-T-0266); later tasks added more (35 in all since KAIROS-T-0337
+//! added `create_team`, `create_board`, `add_team_member` and
+//! `grant_capability`) — each a
 //! thin wrapper over the same `kairos-core`/`kairos-db` services the REST
 //! handlers call — through [`crate::blocking::BlockingTenantPool`], never
 //! HTTP (A-0011). Contracts:
@@ -598,8 +600,83 @@ pub struct ArchiveCompletedParams {
     pub confirm: bool,
 }
 
+/// Parameters for `create_team` (KAIROS-T-0337). The names are those of the
+/// body of `POST /api/teams`, and `adr_board`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct CreateTeamParams {
+    /// The name of the team (e.g. "Home operations").
+    pub name: String,
+    /// The slug of the team (e.g. "home-ops"): it must match
+    /// ^[a-z][a-z0-9_-]{1,62}$. The delivery board gets the slug
+    /// "{slug}-delivery", and the ADR board "{slug}-adrs".
+    pub slug: String,
+    /// The short-code prefix of the boards of the team (e.g. "OPS"): a
+    /// capital letter, then 1 to 9 capital letters or digits. It does not
+    /// change later. Tasks get OPS-T-0001, ADRs OPS-A-0001.
+    pub code_prefix: String,
+    /// stream_aligned | platform | enabling | complicated_subsystem. The
+    /// default is stream_aligned.
+    pub team_type: Option<String>,
+    /// Also make the ADR board of the team. The default is true.
+    pub adr_board: Option<bool>,
+}
+
+/// Parameters for `create_board` (KAIROS-T-0337). The names are those of
+/// the body of `POST /api/boards`, with `team` for `team_id`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct CreateBoardParams {
+    /// The name of the board.
+    pub name: String,
+    /// The slug of the board: it must match ^[a-z][a-z0-9_-]{1,62}$.
+    pub slug: String,
+    /// strategy | initiative | delivery | adr.
+    pub board_level: String,
+    /// The owner team (slug or UUID). A delivery board must have one; a
+    /// strategy or an initiative board must not. An ADR board with a team
+    /// is the ADR board of that team.
+    pub team: Option<String>,
+    /// The short-code prefix of the board: a capital letter, then 1 to 9
+    /// capital letters or digits. The ADR board of a team takes the prefix
+    /// of the team.
+    pub code_prefix: String,
+}
+
+/// Parameters for `add_team_member` (KAIROS-T-0337).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct AddTeamMemberParams {
+    /// The team, by slug or UUID.
+    pub team: String,
+    /// The member of the organization: a user id, an email, a user name, or
+    /// the name of a service account.
+    pub user: String,
+}
+
+/// Parameters for `grant_capability` (KAIROS-T-0337).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct GrantCapabilityParams {
+    /// The member of the organization: a user id, an email, a user name, or
+    /// the name of a service account.
+    pub user: String,
+    /// A board capability (manage_tasks, manage_documents, manage_adrs,
+    /// manage_initiatives, manage_strategies, transition_items,
+    /// configure_boards, administer_members, or a glob: *, manage_*,
+    /// configure_*, transition_*), or manage_structure.
+    pub capability: String,
+    /// The board, by slug or UUID. A board capability needs it. For
+    /// manage_structure, omit it for a grant at the organization.
+    pub board: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
-// The tools (31; the list is asserted in tests/mcp.rs)
+// The tools (35; the list is asserted in tests/mcp.rs)
 // ---------------------------------------------------------------------------
 
 #[tool_router(vis = "pub(super)")]
@@ -719,6 +796,39 @@ impl KairosMcp {
                  task in the entry column of its delivery board, in the support lane.\n",
                 kairos_core::abac::COMPUTED_CAPABILITIES.join(", ")
             ));
+            // KAIROS-T-0337: the grants of `manage_structure`.
+            let structure: Vec<(Option<Uuid>, Option<String>)> = {
+                use kairos_db::schema::structure_grants as sg;
+                sg::table
+                    .left_join(boards::table)
+                    .filter(sg::user_id.eq(user_id))
+                    .filter(sg::board_id.is_null().or(boards::deleted_at.is_null()))
+                    .order(boards::slug.asc().nulls_first())
+                    .select((sg::board_id, boards::slug.nullable()))
+                    .load(conn)
+                    .map_err(ApiError::internal)?
+            };
+            out.push_str("\n## Structure (manage_structure)\n");
+            if is_admin {
+                out.push_str("- organization admin: you can change each team, board and grant.\n");
+            }
+            if structure.is_empty() && !is_admin {
+                out.push_str("(none. An organization admin grants it.)\n");
+            }
+            for (board_id, board_slug) in structure {
+                match (board_id, board_slug) {
+                    (None, _) => out.push_str(
+                        "- on the organization: teams, team members, boards, the columns, \
+                         transitions, members and grants of each board, repositories\n",
+                    ),
+                    (Some(_), Some(board)) => out.push_str(&format!(
+                        "- on the board {board}: its columns, transitions, members and grants\n"
+                    )),
+                    (Some(board_id), None) => out.push_str(&format!(
+                        "- on the board {board_id}: its columns, transitions, members and grants\n"
+                    )),
+                }
+            }
             Ok(out)
         })
         .await
@@ -2603,6 +2713,199 @@ impl KairosMcp {
                     response.short_codes.join(", ")
                 )
             })
+        })
+        .await
+    }
+
+    // KAIROS-T-0337: the structure tools. Each calls the function of its
+    // REST route, so the gate and the refusals are those of REST: an
+    // organization admin, or a grant of `manage_structure` at the scope.
+    #[tool(
+        description = "Create a team with its delivery board (slug {slug}-delivery) and its ADR board (slug {slug}-adrs), as POST /api/teams does, in one transaction. `code_prefix` is the short-code prefix of the two boards (e.g. OPS gives OPS-T-0001 and OPS-A-0001): a capital letter, then 1 to 9 capital letters or digits; it does not change later. Optional: `team_type` (stream_aligned, platform, enabling, complicated_subsystem; the default is stream_aligned), `adr_board` (false makes no ADR board). The new boards have no members: use `add_team_member` (a team member can work the boards of the team) and `grant_capability`. Requires the organization admin role or `manage_structure` on the organization. A grant of manage_structure on one board does not create a team."
+    )]
+    pub async fn create_team(
+        &self,
+        Parameters(params): Parameters<CreateTeamParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            atomically(conn, |conn| {
+                let team = crate::api::org::teams::create(
+                    conn,
+                    &slug,
+                    user,
+                    kairos_client::types_org::CreateTeamRequest {
+                        name: params.name.clone(),
+                        slug: params.slug.clone(),
+                        team_type: params.team_type.clone(),
+                        code_prefix: params.code_prefix.clone(),
+                    },
+                )?;
+                let mut out = format!(
+                    "Created team {} ({}, {}). Delivery board: {}-delivery (prefix {}).",
+                    team.slug, team.name, team.team_type, team.slug, params.code_prefix
+                );
+                if params.adr_board.unwrap_or(true) {
+                    let adr = crate::api::org::boards::create(
+                        conn,
+                        &slug,
+                        user,
+                        kairos_client::types_org::CreateBoardRequest {
+                            name: format!("{} ADRs", params.name),
+                            slug: format!("{}-adrs", params.slug),
+                            board_level: BoardLevel::Adr.to_string(),
+                            team_id: Some(team.id.clone()),
+                            code_prefix: params.code_prefix.clone(),
+                        },
+                    )?;
+                    out.push_str(&format!(" ADR board: {}.", adr.board.slug));
+                }
+                out.push_str(
+                    "\nThe boards have no members. Use add_team_member and grant_capability.",
+                );
+                Ok(out)
+            })
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Create one board, as POST /api/boards does: an ADR board (board_level adr; with `team`, the ADR board of that team, which takes the prefix of the team), a strategy or an initiative board (no team), or a delivery board (a team with no delivery board). `slug` must match ^[a-z][a-z0-9_-]{1,62}$. `code_prefix` is the short-code prefix: a capital letter, then 1 to 9 capital letters or digits; it does not change later. The board gets the default columns and transitions of its level. Requires the organization admin role or `manage_structure` on the organization. A grant of manage_structure on one board does not create a board."
+    )]
+    pub async fn create_board(
+        &self,
+        Parameters(params): Parameters<CreateBoardParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            let team = params
+                .team
+                .as_deref()
+                .map(|team| team_by_ref(conn, team))
+                .transpose()?;
+            let detail = crate::api::org::boards::create(
+                conn,
+                &slug,
+                user,
+                kairos_client::types_org::CreateBoardRequest {
+                    name: params.name,
+                    slug: params.slug,
+                    board_level: params.board_level,
+                    team_id: team.as_ref().map(|team| team.id.to_string()),
+                    code_prefix: params.code_prefix,
+                },
+            )?;
+            let columns: Vec<&str> = detail.columns.iter().map(|c| c.name.as_str()).collect();
+            Ok(format!(
+                "Created board {} ({}, {}, prefix {}{}). Columns: {}.",
+                detail.board.slug,
+                detail.board.name,
+                detail.board.board_level,
+                detail.board.code_prefix,
+                team.map(|team| format!(", team {}", team.slug))
+                    .unwrap_or_default(),
+                columns.join(", ")
+            ))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Add a member of the organization to a team, as POST /api/teams/{id}/members does. A team member gets manage_tasks, manage_documents and transition_items on the boards of the team with no grant, and manage_adrs on the ADR board of the team. `team` is a slug or UUID. `user` is a user id, an email, a user name, or the name of a service account. Requires the organization admin role or `manage_structure` on the organization."
+    )]
+    pub async fn add_team_member(
+        &self,
+        Parameters(params): Parameters<AddTeamMemberParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            let team = team_by_ref(conn, &params.team)?;
+            let target = crate::api::org::structure_grants::resolve_member(
+                conn,
+                &slug,
+                &params.user,
+                "user",
+            )?;
+            let member =
+                crate::api::org::teams::add_member_as(conn, &slug, user, team.id, target.id)?;
+            Ok(format!(
+                "Added {} <{}> to the team {}.",
+                member.display_name, member.email, team.slug
+            ))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Grant a capability to a member of the organization. A board capability (manage_tasks, manage_documents, manage_adrs, manage_initiatives, manage_strategies, transition_items, configure_boards, administer_members, or a glob: *, manage_*, configure_*, transition_*) needs `board` (slug or UUID), and requires `administer_members` on that board, or `manage_structure` on that board or on the organization. The capability manage_structure is the structure of the organization: with no `board`, at the organization (teams, team members, boards, the configuration, members and grants of each board, repositories); with `board`, that board only (its columns, transitions, members and grants). Only an organization admin grants manage_structure. `user` is a user id, an email, a user name, or the name of a service account."
+    )]
+    pub async fn grant_capability(
+        &self,
+        Parameters(params): Parameters<GrantCapabilityParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            if params.capability == kairos_core::abac::MANAGE_STRUCTURE {
+                let grant = crate::api::org::structure_grants::grant(
+                    conn,
+                    &slug,
+                    user,
+                    &params.user,
+                    params.board.as_deref(),
+                )?;
+                let scope = match &grant.board_slug {
+                    Some(board) => format!("on the board {board}"),
+                    None => "on the organization".to_string(),
+                };
+                return Ok(format!(
+                    "Granted manage_structure {scope} to {} <{}> (grant {}).",
+                    grant.display_name, grant.email, grant.id
+                ));
+            }
+            let Some(board) = params.board.as_deref() else {
+                return Err(ApiError::validation(format!(
+                    "The capability {:?} is a board capability. Send `board`, the slug or the \
+                     UUID of the board.",
+                    params.capability
+                ))
+                .with_details(json!({ "argument": "board" })));
+            };
+            let board = board_by_ref(conn, board)?;
+            let target = crate::api::org::structure_grants::resolve_member(
+                conn,
+                &slug,
+                &params.user,
+                "user",
+            )?;
+            let member = crate::api::org::boards::grant_as(
+                conn,
+                &slug,
+                user,
+                board.id,
+                target.id,
+                std::slice::from_ref(&params.capability),
+            )?;
+            Ok(format!(
+                "Granted {} on the board {} to {} <{}>. The capabilities of the member on the \
+                 board: {}.",
+                params.capability,
+                board.slug,
+                member.display_name,
+                member.email,
+                member.capabilities.join(", ")
+            ))
         })
         .await
     }

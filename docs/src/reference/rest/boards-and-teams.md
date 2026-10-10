@@ -5,7 +5,7 @@
 
 # Boards and teams
 
-Board configuration, membership, and the team structures that own boards.
+Board configuration, membership, the team structures that own boards, and the grants of `manage_structure` (KAIROS-T-0337).
 
 ## boards
 
@@ -26,8 +26,9 @@ List boards (open tenant-wide).
 ### `POST /api/boards`
 
 Create a board seeded with the system default columns/transitions for
-its level (KAIROS-A-0002). Org-admin-only: a new board has no capability
-context yet (A-0006 tenant-config fallback).
+its level (KAIROS-A-0002). An organization admin, or `manage_structure`
+on the organization (KAIROS-T-0337). A grant on one board does not count:
+the new board is not that board.
 
 A delivery board needs a team (COLLIERY-T-0230). A request for a
 delivery board with no `team_id` is a 422. The board of a task decides
@@ -81,7 +82,7 @@ Request body (required): `application/json`, [`CreateBoardRequest`](schemas.md#c
 | Response | Body | Meaning |
 |---|---|---|
 | `201` | [`BoardDetail`](schemas.md#boarddetail) | Created, with the seeded configuration |
-| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Not an org admin |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Not an org admin, and no manage_structure on the organization |
 | `409` | [`ErrorEnvelope`](schemas.md#errorenvelope) | A live board has the slug, or a live board of the same level has the prefix; details.board names it |
 | `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Bad level/team reference, a slug that does not have the form of a board slug, a code_prefix that is absent or does not match the rule, a delivery board with no team, a strategy or initiative board with a team, the prefix of a team ADR board that is not the prefix of the team, TEAM_HAS_DELIVERY_BOARD, or TEAM_HAS_ADR_BOARD |
 
@@ -208,7 +209,8 @@ delivery board holds no tasks: 422 `NOT_DELIVERY_BOARD`.
 ### `PUT /api/boards/{id}/code-sequences/{item_type}`
 
 Set the number of the next code of a type on a board (COLLIERY-T-3104).
-Org-admin-only.
+An organization admin, or `manage_structure` on the organization
+(KAIROS-T-0337).
 
 The next create of `item_type` on the board gets the code
 `{code_prefix}-{type letter}-{next_number}`. The Metis import uses this
@@ -241,7 +243,7 @@ Request body (required): `application/json`, [`SetCodeSequenceRequest`](schemas.
 | Response | Body | Meaning |
 |---|---|---|
 | `200` | [`CodeSequence`](schemas.md#codesequence) | The sequence; next_code is the code of the next create |
-| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Not an org admin |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Not an org admin, and no manage_structure on the organization |
 | `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown board |
 | `409` | [`ErrorEnvelope`](schemas.md#errorenvelope) | CODE_IN_USE, CODE_RETIRED, or SEQUENCE_IS_PAST |
 | `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | An item_type that the board does not hold, a next_number below 1, or an unknown field |
@@ -495,6 +497,49 @@ Request body (required): `application/json`, [`ReplaceCapabilitiesRequest`](sche
 | `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown board, or user is not a member |
 | `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Capability outside the A-0006 vocabulary |
 
+## structure-grants
+
+### `GET /api/structure-grants`
+
+List each grant of `manage_structure` (open tenant-wide).
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | array of [`StructureGrant`](schemas.md#structuregrant) | The grants: the grants at the organization first, then the grants on live boards |
+| `401` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Missing/invalid token |
+
+### `POST /api/structure-grants`
+
+Grant `manage_structure` to a person or a service account, on the
+organization (no `board`) or on one board. Only an organization admin
+can grant it. A holder of `manage_structure` cannot grant it. A second
+grant at the same scope is a 409.
+
+Request body (required): `application/json`, [`CreateStructureGrantRequest`](schemas.md#createstructuregrantrequest)
+
+| Response | Body | Meaning |
+|---|---|---|
+| `201` | [`StructureGrant`](schemas.md#structuregrant) | Granted |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Not an org admin |
+| `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown board |
+| `409` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The principal has the grant at this scope already |
+| `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | No member of the organization has the reference |
+
+### `DELETE /api/structure-grants/{id}`
+
+Revoke a grant of `manage_structure`. Only an organization admin can
+revoke it.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `id` | path | yes | `string` | The id of the grant (UUID) |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`StructureGrant`](schemas.md#structuregrant) | Revoked; the body is the grant that was revoked |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Not an org admin |
+| `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown grant |
+
 ## teams
 
 ### `GET /api/teams`
@@ -514,7 +559,8 @@ List teams (open tenant-wide).
 ### `POST /api/teams`
 
 Create a team AND its delivery board (seeded from the system delivery
-defaults, slug `{slug}-delivery`) in one transaction. Org-admin-only.
+defaults, slug `{slug}-delivery`) in one transaction. An organization admin,
+or `manage_structure` on the organization (KAIROS-T-0337).
 
 The slug must match `^[a-z][a-z0-9_-]{1,62}$`, and it cannot have the
 form of a UUID (COLLIERY-T-0260). If not, the request is a 422
@@ -536,7 +582,7 @@ Request body (required): `application/json`, [`CreateTeamRequest`](schemas.md#cr
 | Response | Body | Meaning |
 |---|---|---|
 | `201` | [`Team`](schemas.md#team) | Created; delivery_board_id names the team's new board |
-| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Not an org admin |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Not an org admin, and no manage_structure on the organization |
 | `409` | [`ErrorEnvelope`](schemas.md#errorenvelope) | A live team has the slug, a live board has the slug of the delivery board, or a live delivery board has the prefix |
 | `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Bad team_type, the slug does not have the form of a slug, or the code_prefix is absent or does not match the rule |
 
@@ -570,7 +616,8 @@ Get one team (open tenant-wide).
 ### `DELETE /api/teams/{id}`
 
 Soft-delete a team and its delivery board together. The board must be
-empty (422 `BOARD_NOT_EMPTY` — the T-0010 empty rule). Org-admin-only.
+empty (422 `BOARD_NOT_EMPTY` — the T-0010 empty rule). An organization
+admin, or `manage_structure` on the organization (KAIROS-T-0337).
 
 A team of old data can have 2 or more live delivery boards. The delete
 applies the rule to each board, and it removes each board with the team
@@ -583,13 +630,14 @@ applies the rule to each board, and it removes each board with the team
 | Response | Body | Meaning |
 |---|---|---|
 | `200` | [`OrgDeleteResponse`](schemas.md#orgdeleteresponse) | Team and delivery board soft-deleted |
-| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Not an org admin |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Not an org admin, and no manage_structure on the organization |
 | `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown team |
 | `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | BOARD_NOT_EMPTY, or BOARD_OWNS_DOCUMENTS |
 
 ### `PATCH /api/teams/{id}`
 
-Update a team (name/slug/team_type). Org-admin-only. The delivery
+Update a team (name/slug/team_type). An organization admin, or
+`manage_structure` on the organization (KAIROS-T-0337). The delivery
 board's name/slug are independent and unchanged.
 
 A new slug must match `^[a-z][a-z0-9_-]{1,62}$`, and it cannot have the
@@ -606,7 +654,7 @@ Request body (required): `application/json`, [`UpdateTeamRequest`](schemas.md#up
 | Response | Body | Meaning |
 |---|---|---|
 | `200` | [`Team`](schemas.md#team) | Updated |
-| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Not an org admin |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Not an org admin, and no manage_structure on the organization |
 | `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown team |
 | `409` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Slug already in use |
 | `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Bad team_type, empty body, or the new slug does not have the form of a slug |
@@ -643,7 +691,8 @@ List a team's members (open tenant-wide).
 
 ### `POST /api/teams/{id}/members`
 
-Add a member to a team. Org-admin-only.
+Add a member to a team. An organization admin, or `manage_structure`
+on the organization (KAIROS-T-0337).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
@@ -654,14 +703,15 @@ Request body (required): `application/json`, [`AddTeamMemberRequest`](schemas.md
 | Response | Body | Meaning |
 |---|---|---|
 | `201` | [`TeamMember`](schemas.md#teammember) | Added |
-| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Not an org admin |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Not an org admin, and no manage_structure on the organization |
 | `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown team |
 | `409` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Already a member |
 | `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown user |
 
 ### `DELETE /api/teams/{id}/members/{user_id}`
 
-Remove a member from a team. Org-admin-only.
+Remove a member from a team. An organization admin, or
+`manage_structure` on the organization (KAIROS-T-0337).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
@@ -671,7 +721,7 @@ Remove a member from a team. Org-admin-only.
 | Response | Body | Meaning |
 |---|---|---|
 | `200` | [`OrgDeleteResponse`](schemas.md#orgdeleteresponse) | Removed |
-| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Not an org admin |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Not an org admin, and no manage_structure on the organization |
 | `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown team or not a member |
 
 ### `GET /api/teams/{id}/work-documents`

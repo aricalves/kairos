@@ -141,7 +141,7 @@ here without a response schema. Never called; it exists only for the
 
 | Response | Body | Meaning |
 |---|---|---|
-| `200` | — | The authenticated user, the resolved organization and the caller's role in it, the caller's teams, and the caller's board-scoped capability grants (KAIROS-A-0006, grouped by board) (`crate::app::WhoamiResponse`: `{user: {id, external_id, email, display_name}, organization: {id, slug, role}, teams: [{id, slug, name}], capabilities: [{board_id, board_slug, grants: [..]}]}`) |
+| `200` | — | The authenticated user, the resolved organization and the caller's role in it, the caller's teams, and the caller's board-scoped capability grants (KAIROS-A-0006, grouped by board) (`crate::app::WhoamiResponse`: `{user: {id, external_id, email, display_name}, organization: {id, slug, role}, teams: [{id, slug, name}], capabilities: [{board_id, board_slug, grants: [..]}], structure: [{scope, board_id, board_slug}]}`). `structure` lists the grants of manage_structure (KAIROS-T-0337): scope organization or board. |
 | `401` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Missing/invalid token |
 | `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Not a member of the organization |
 

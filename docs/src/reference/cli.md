@@ -26,7 +26,7 @@ Command groups, each detailed below:
 | Authentication | `login`, `logout`, `whoami` |
 | Work items | `strategies`, `initiatives`, `tasks`, `documents`, `adrs` |
 | Finding work | `search`, `boards` |
-| Organization | `orgs`, `members`, `teams`, `streams`, `repos` |
+| Organization | `orgs`, `members`, `teams`, `streams`, `repos`, `grants`, `boards create` |
 | Machine access | `service-accounts`, `keys` |
 | Deployment administration | `admin` |
 
@@ -163,7 +163,9 @@ Also accepts `--url` and `--tenant`.
 
 The default rendering prints three lines: `user:` with display name and email,
 `org:` with the organization slug and the caller's role, and `teams:` with the
-team names, or `(none)`.
+team names, or `(none)`. A caller with a grant of `manage_structure` gets a
+fourth line, `manage_structure:`. It gives the scope of each grant:
+`organization` or `board <slug>`.
 
 The `/api/whoami` response carries more than the default rendering prints. The
 board capabilities the principal holds, the capabilities every member holds
@@ -597,6 +599,24 @@ Archives each task in the done columns of the board, cancelled tasks too. Each
 task goes through the same archive as `tasks archive`. The call archives each
 task, or none. You need `manage_tasks` on the board. The command prints the
 count and the codes. To get a task back, use `kairos tasks restore <code>`.
+
+### `kairos boards create`
+
+```
+kairos boards create --name <NAME> --slug <SLUG> --level <LEVEL> --code-prefix <PREFIX> [--team <TEAM>] [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--name <NAME>` | string | required | Board name. |
+| `--slug <SLUG>` | string | required | Board slug. It must match `^[a-z][a-z0-9_-]{1,62}$`. |
+| `--level <LEVEL>` | `strategy` \| `initiative` \| `delivery` \| `adr` | required | The level of the board. |
+| `--code-prefix <PREFIX>` | string | required | The short-code prefix of the board. A capital letter, then 1 to 9 capital letters or digits. The ADR board of a team takes the prefix of the team. |
+| `--team <TEAM>` | slug or UUID | none | The owner team. A delivery board needs a team. An ADR board with a team is the ADR board of that team. |
+
+`POST /api/boards`. The board gets the default columns and transitions of its
+level. You need the organization admin role or `manage_structure` on the
+organization.
 
 ## Organization
 
@@ -1137,6 +1157,28 @@ token.
 
 Repositories are the codebases that tasks link to. See
 [Repositories as execution scope](../explanation/repositories-as-execution-scope.md).
+
+### `kairos grants`
+
+```
+kairos grants list [OPTIONS]
+kairos grants add --user <USER> [--capability <CAPABILITY>] [--board <BOARD>] [OPTIONS]
+kairos grants remove <GRANT_ID> --confirm [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `--user <USER>` | string | required on `add` | For `manage_structure`: a user id, an email, a user name, or the name of a service account. For a board capability: the user id. |
+| `--capability <CAPABILITY>` | string | `manage_structure` | `manage_structure`, or a board capability such as `manage_tasks` or `configure_boards`. |
+| `--board <BOARD>` | slug or UUID | none | For `manage_structure`: the one board of the grant. With no `--board`, the grant is on the organization. A board capability needs it. |
+| `<GRANT_ID>` | UUID | required on `remove` | A grant of `manage_structure`, from `kairos grants list`. |
+| `--confirm` | flag | off | Required for the revoke to happen. |
+
+`list` shows each grant of
+[`manage_structure`](capabilities.md#manage_structure). Only an organization
+admin can add or remove a grant of `manage_structure`. A board capability
+needs `administer_members` on the board, or `manage_structure` on the board or
+on the organization. See [Run an admin agent](../how-to/run-an-admin-agent.md).
 
 ## Machine access
 

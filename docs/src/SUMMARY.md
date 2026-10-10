@@ -45,6 +45,7 @@ checklist.
 
 - [Give an agent your key](how-to/give-an-agent-your-key.md)
 - [Give an agent machine access](how-to/give-an-agent-machine-access.md)
+- [Run an admin agent](how-to/run-an-admin-agent.md)
 - [Connect over MCP](how-to/connect-over-mcp.md)
 - [Configure semantic retrieval](how-to/configure-retrieval.md)
 

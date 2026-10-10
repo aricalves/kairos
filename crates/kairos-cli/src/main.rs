@@ -52,6 +52,7 @@ use commands::boards::BoardsCommand;
 use commands::entities::{
     AdrsCommand, DocumentsCommand, InitiativesCommand, StrategiesCommand, TasksCommand,
 };
+use commands::grants::GrantsCommand;
 use commands::keys::KeysCommand;
 use commands::members::MembersCommand;
 use commands::orgs::OrgsCommand;
@@ -182,6 +183,10 @@ enum Command {
     /// Your agent keys, or the API keys of a service account
     #[command(subcommand)]
     Keys(KeysCommand),
+    /// Capability grants: manage_structure (on the organization or on one
+    /// board), and the board capabilities
+    #[command(subcommand)]
+    Grants(GrantsCommand),
     /// Deployment administration (tenant provisioning)
     #[command(subcommand)]
     Admin(AdminCommand),
@@ -228,6 +233,7 @@ async fn run(command: Command) -> Result<(), CliError> {
         Command::Adrs(command) => command.run().await,
         Command::Search(args) => (*args).run().await,
         Command::Teams(command) => command.run().await,
+        Command::Grants(command) => command.run().await,
         Command::Repos(command) => command.run().await,
         Command::Streams(command) => command.run().await,
         Command::Members(command) => command.run().await,
@@ -597,6 +603,18 @@ fn print_identity(identity: &WhoamiResponse) {
         let teams: Vec<&str> = identity.teams.iter().map(|t| t.name.as_str()).collect();
         println!("teams:  {}", teams.join(", "));
     }
+    // KAIROS-T-0337: the grants of manage_structure.
+    if !identity.structure.is_empty() {
+        let scopes: Vec<String> = identity
+            .structure
+            .iter()
+            .map(|grant| match &grant.board_slug {
+                Some(board) => format!("board {board}"),
+                None => "organization".to_string(),
+            })
+            .collect();
+        println!("manage_structure: {}", scopes.join(", "));
+    }
 }
 
 #[cfg(test)]
@@ -606,6 +624,67 @@ mod tests {
     #[test]
     fn smoke() {
         assert_eq!(env!("CARGO_PKG_NAME"), "kairos-cli");
+    }
+
+    /// KAIROS-T-0337: `grants add` grants manage_structure by default, on
+    /// the organization; `--board` narrows it to one board. `boards create`
+    /// takes the level, the prefix and an optional team.
+    #[test]
+    fn grants_and_boards_create_parse() {
+        let cli = Cli::try_parse_from(["kairos", "grants", "add", "--user", "admin-agent"])
+            .expect("grants add parses");
+        match cli.command {
+            Command::Grants(GrantsCommand::Add {
+                user,
+                capability,
+                board,
+                ..
+            }) => {
+                assert_eq!(user, "admin-agent");
+                assert_eq!(capability, "manage_structure");
+                assert_eq!(board, None);
+            }
+            _ => panic!("expected grants add"),
+        }
+        let cli = Cli::try_parse_from([
+            "kairos",
+            "grants",
+            "add",
+            "--user",
+            "admin-agent",
+            "--board",
+            "ops-delivery",
+        ])
+        .expect("grants add --board parses");
+        assert!(matches!(
+            cli.command,
+            Command::Grants(GrantsCommand::Add { board: Some(_), .. })
+        ));
+        assert!(
+            Cli::try_parse_from(["kairos", "grants", "remove", "g1"]).is_ok(),
+            "remove parses; --confirm is checked at run time"
+        );
+        let cli = Cli::try_parse_from([
+            "kairos",
+            "boards",
+            "create",
+            "--name",
+            "Ops ADRs",
+            "--slug",
+            "ops-adrs",
+            "--level",
+            "adr",
+            "--team",
+            "ops",
+            "--code-prefix",
+            "OPS",
+        ])
+        .expect("boards create parses");
+        assert!(matches!(cli.command, Command::Boards(_)));
+        assert!(
+            Cli::try_parse_from(["kairos", "boards", "create", "--name", "x"]).is_err(),
+            "slug, level and prefix are required"
+        );
     }
 
     /// KAIROS-T-0318: `repos update --code-index-build` takes on and off

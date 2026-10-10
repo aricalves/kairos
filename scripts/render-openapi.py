@@ -61,10 +61,11 @@ write to a claimed task by a different person gets the header
 short code, so they work uniformly across the five families.""",
      ["relationships", "metadata", "history", "cascade", "restore", "search"]),
 
-    ("Boards and teams", """Board configuration, membership, and the team
-structures that own boards.""",
-     ["boards", "board-members", "teams", "team-pages", "delivery-streams",
-      "members"]),
+    ("Boards and teams", """Board configuration, membership, the team
+structures that own boards, and the grants of `manage_structure`
+(KAIROS-T-0337).""",
+     ["boards", "board-members", "structure-grants", "teams", "team-pages",
+      "delivery-streams", "members"]),
 
     ("Execution scope", """Repositories as first-class execution scope
 (KAIROS-A-0019) and the git forges behind them.""",
