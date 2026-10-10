@@ -227,6 +227,7 @@ async fn cli_login_whoami_refresh_logout_live() {
         code_index_dir: None,
         code_index_poll_secs: 0,
         code_index_threads: 4,
+        code_index_min_rebuild_secs: 0,
         dev_ui: false,
         // GUI serving fields (KAIROS-T-0039): irrelevant to the CLI suite.
         web_dist: None,

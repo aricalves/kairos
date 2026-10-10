@@ -28,7 +28,7 @@ mod common;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
@@ -53,8 +53,8 @@ use kairos_embed::{DeterministicProvider, EmbeddingProvider};
 use kairos_index::{FakeSummarizer, Index, Level, UpdateOptions};
 use kairos_server::app;
 use kairos_server::code_index::{
-    ACTIVE_RUN, CodeIndexService, FakeSummarizers, OPTED_OUT, SummarizerSource, end_stale_runs,
-    first_builds, requested_builds, run_builder, sweep,
+    ACTIVE_RUN, CodeIndexService, FakeSummarizers, MIN_REBUILD, OPTED_OUT, SummarizerSource,
+    end_stale_runs, first_builds, requested_builds, run_builder, sweep,
 };
 use kairos_server::middleware::auth::Authenticator;
 
@@ -470,6 +470,21 @@ impl World {
             &self.state.blocking,
             &self.service,
             Some(Arc::new(FakeSummarizers)),
+            embedder,
+        )
+        .await
+    }
+
+    /// One pass of the update lane with `summarizers`.
+    async fn sweep_with(
+        &self,
+        summarizers: Arc<dyn SummarizerSource>,
+    ) -> Vec<kairos_server::code_index::BuildOutcome> {
+        let embedder: Arc<dyn EmbeddingProvider> = Arc::new(DeterministicProvider::default());
+        sweep(
+            &self.state.blocking,
+            &self.service,
+            Some(summarizers),
             embedder,
         )
         .await
@@ -2088,4 +2103,223 @@ async fn an_index_of_a_commit_not_in_the_history_gets_a_full_build() {
     // And the next pass has nothing to do
     let outcomes = w.sweep().await;
     assert!(outcomes.iter().all(|o| o.report.is_none()), "{outcomes:?}");
+}
+
+// ===========================================================================
+// KAIROS-T-0334: the update lane serves the repository that has been stale
+// longest first
+// ===========================================================================
+
+/// The fake summarizer, which calls `hook` before each summary.
+#[derive(Clone)]
+struct HookSummarizers {
+    hook: Arc<dyn Fn(&kairos_index::SummaryRequest) + Send + Sync>,
+}
+
+struct HookSummarizer {
+    inner: FakeSummarizer,
+    hook: Arc<dyn Fn(&kairos_index::SummaryRequest) + Send + Sync>,
+}
+
+impl kairos_index::Summarizer for HookSummarizer {
+    fn model(&self) -> String {
+        self.inner.model()
+    }
+
+    fn summarize(&mut self, request: &kairos_index::SummaryRequest) -> Result<String, String> {
+        (self.hook)(request);
+        self.inner.summarize(request)
+    }
+}
+
+impl SummarizerSource for HookSummarizers {
+    fn run(
+        &self,
+        job: &mut dyn FnMut(
+            &mut dyn kairos_index::Summarizer,
+        )
+            -> Result<kairos_index::UpdateReport, kairos_index::IndexError>,
+    ) -> Result<kairos_index::UpdateReport, kairos_index::IndexError> {
+        job(&mut HookSummarizer {
+            inner: FakeSummarizer::default(),
+            hook: Arc::clone(&self.hook),
+        })
+    }
+
+    fn model_name(&self) -> String {
+        FakeSummarizer::default().model
+    }
+}
+
+/// A second repository `ledger`, registered after `payments-api`, with an
+/// index of its first commit, sent now. Its folder.
+async fn add_ledger(w: &World) -> PathBuf {
+    let dir = w.work().join("ledger");
+    std::fs::create_dir_all(&dir).unwrap();
+    git(&dir, &["init", "-q", "-b", "main"]);
+    write(&dir, "ledger/__init__.py", "");
+    write(
+        &dir,
+        "ledger/book.py",
+        "def post(entries, entry):\n    return entries + [entry]\n\n\n\
+         def balance(entries):\n    return sum(e[1] for e in entries)\n",
+    );
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-q", "-m", "first"]);
+    let head = git(&dir, &["rev-parse", "HEAD"]);
+    w.bob
+        .create_repository(&repository("ledger"))
+        .await
+        .expect("ledger");
+    let bytes = index_of(&dir, &head, &w.files.path().join("ledger.db"));
+    w.bob
+        .upload_code_index("ledger", &head, Some("main"), bytes)
+        .await
+        .expect("the index of ledger");
+    dir
+}
+
+/// Push a commit that adds one function in `folder` of the git repository
+/// at `dir`. Its sha.
+fn push_function(dir: &Path, folder: &str) -> String {
+    let n = git(dir, &["rev-list", "--count", "HEAD"]);
+    write(
+        dir,
+        &format!("{folder}/added_{n}.py"),
+        &format!("def added_{n}(x):\n    return x * {n}\n"),
+    );
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", &format!("added {n}")]);
+    git(dir, &["rev-parse", "HEAD"])
+}
+
+/// The repositories that a pass built, in order.
+fn built(outcomes: &[kairos_server::code_index::BuildOutcome]) -> Vec<&str> {
+    outcomes
+        .iter()
+        .filter(|o| o.report.is_some())
+        .map(|o| o.repository.as_str())
+        .collect()
+}
+
+// Criterion 1: with 2 repositories stale, the one that has been stale
+// longest is built first, even when the other gets a new push during the
+// build.
+#[tokio::test]
+async fn the_repository_that_has_been_stale_longest_is_built_first() {
+    // Given payments-api with the older index, and ledger, which comes first
+    // in the list (by slug) and gets its push first
+    let w = World::new("kairos_code_index_t0334_order").await;
+    let a = w.a.clone();
+    w.bob
+        .upload_code_index("payments-api", &a, Some("main"), w.index(&a))
+        .await
+        .expect("the index of A");
+    let ledger = add_ledger(&w).await;
+    push_function(&ledger, "ledger");
+    let b = commit_b(&w.git);
+
+    // When the update lane runs, and ledger gets a push during the build
+    // of payments-api
+    let pushed = Arc::new(Mutex::new(None::<String>));
+    let hook = {
+        let (ledger, pushed) = (ledger.clone(), Arc::clone(&pushed));
+        move |request: &kairos_index::SummaryRequest| {
+            let mut pushed = pushed.lock().unwrap();
+            if request.path.starts_with("pkg/") && pushed.is_none() {
+                *pushed = Some(push_function(&ledger, "ledger"));
+            }
+        }
+    };
+    let outcomes = w
+        .sweep_with(Arc::new(HookSummarizers {
+            hook: Arc::new(hook),
+        }))
+        .await;
+
+    // Then payments-api is built first, and ledger after it, at its new head
+    assert_eq!(built(&outcomes), ["payments-api", "ledger"], "{outcomes:?}");
+    assert_eq!(outcomes[0].commit, b);
+    let pushed = pushed
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the push during the build");
+    assert_eq!(outcomes[1].commit, pushed);
+}
+
+// Criterion 2: a repository that gets a push during each build of another
+// repository is not built twice in a row while the other is stale. And
+// KAIROS_CODE_INDEX_MIN_REBUILD_SECS keeps a repository that was updated a
+// short time ago for a later pass.
+#[tokio::test]
+async fn a_busy_repository_is_not_built_twice_in_a_row() {
+    // Given 2 repositories, each stale
+    let w = World::new("kairos_code_index_t0334_busy").await;
+    let a = w.a.clone();
+    w.bob
+        .upload_code_index("payments-api", &a, Some("main"), w.index(&a))
+        .await
+        .expect("the index of A");
+    let ledger = add_ledger(&w).await;
+    commit_b(&w.git);
+    push_function(&ledger, "ledger");
+
+    // When each build of one repository gets a push to the other
+    let last = Arc::new(Mutex::new(String::new()));
+    let hook = {
+        let (payments, ledger, last) = (w.git.clone(), ledger.clone(), Arc::clone(&last));
+        move |request: &kairos_index::SummaryRequest| {
+            let folder = request
+                .path
+                .split('/')
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            let mut last = last.lock().unwrap();
+            if *last == folder {
+                return;
+            }
+            *last = folder.clone();
+            match folder.as_str() {
+                "pkg" => push_function(&ledger, "ledger"),
+                _ => push_function(&payments, "pkg"),
+            };
+        }
+    };
+    let summarizers: Arc<dyn SummarizerSource> = Arc::new(HookSummarizers {
+        hook: Arc::new(hook),
+    });
+    let mut sequence = Vec::new();
+    for _ in 0..3 {
+        let outcomes = w.sweep_with(Arc::clone(&summarizers)).await;
+        sequence.extend(built(&outcomes).into_iter().map(str::to_string));
+    }
+
+    // Then the builds alternate: no repository gets 2 builds in a row
+    println!("builds: {sequence:?}");
+    assert_eq!(sequence.len(), 6, "{sequence:?}");
+    assert!(
+        sequence.windows(2).all(|pair| pair[0] != pair[1]),
+        "{sequence:?}"
+    );
+
+    // And with a least time of 1 hour between 2 updates, the 2 stale
+    // repositories wait, and the notes say why
+    push_function(&ledger, "ledger");
+    w.service.set_min_rebuild_secs(3600);
+    let outcomes = w.sweep_with(Arc::clone(&summarizers)).await;
+    assert_eq!(outcomes.len(), 2, "{outcomes:?}");
+    for outcome in &outcomes {
+        let note = outcome.note.as_deref().unwrap_or_default();
+        assert!(outcome.report.is_none(), "{outcome:?}");
+        assert!(note.starts_with(MIN_REBUILD), "{note}");
+        assert!(
+            note.contains("KAIROS_CODE_INDEX_MIN_REBUILD_SECS is 3600"),
+            "{note}"
+        );
+    }
+    w.service.set_min_rebuild_secs(0);
+    let outcomes = w.sweep_with(summarizers).await;
+    assert_eq!(built(&outcomes).len(), 2, "{outcomes:?}");
 }

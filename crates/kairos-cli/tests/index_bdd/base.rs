@@ -369,6 +369,7 @@ fn config(scratch_url: &str) -> AppConfig {
         code_index_dir: None,
         code_index_poll_secs: 0,
         code_index_threads: 4,
+        code_index_min_rebuild_secs: 0,
         web_client_id: "kairos-web".to_string(),
         api_bearer: kairos_server::config::ApiBearer::AccessToken,
         web_client_secret: None,

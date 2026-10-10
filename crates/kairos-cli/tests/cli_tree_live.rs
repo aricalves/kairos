@@ -265,6 +265,7 @@ async fn cli_command_tree_golden_path_live() {
         code_index_dir: None,
         code_index_poll_secs: 0,
         code_index_threads: 4,
+        code_index_min_rebuild_secs: 0,
         dev_ui: false,
         web_dist: None,
         web_client_id: "kairos-web".to_string(),

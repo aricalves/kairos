@@ -297,6 +297,24 @@ pub fn vector_model(conn: &mut PgConnection, repository_id: Uuid) -> QueryResult
         .map(Option::flatten)
 }
 
+/// The time of the newest index write of each repository that has an
+/// index (KAIROS-T-0334): the newest `updated_at` of its indexes. The
+/// update lane serves the repository with the oldest time first.
+pub fn newest_writes(conn: &mut PgConnection) -> QueryResult<Vec<(Uuid, DateTime<Utc>)>> {
+    code_indexes::table
+        .group_by(code_indexes::repository_id)
+        .select((
+            code_indexes::repository_id,
+            diesel::dsl::max(code_indexes::updated_at),
+        ))
+        .load::<(Uuid, Option<DateTime<Utc>>)>(conn)
+        .map(|rows| {
+            rows.into_iter()
+                .filter_map(|(id, at)| at.map(|at| (id, at)))
+                .collect()
+        })
+}
+
 /// The ids of the live repositories that have one index or more: the
 /// repositories that the builder follows.
 pub fn indexed_repositories(conn: &mut PgConnection) -> QueryResult<Vec<Uuid>> {

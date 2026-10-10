@@ -286,6 +286,7 @@ the index after each push to the default branch.
 | `KAIROS_CODE_INDEX_DIR` | directory path | unset | The folder for a bare clone of each repository, the tools of the builder and the work folders of the builder. Put it on a volume. When it is not set, the server cannot find the nearest indexed commit, does not build and downloads nothing. Uploads and downloads of indexes still work. |
 | `KAIROS_CODE_INDEX_POLL_SECS` | whole number | `300` | How often the builder fetches each indexed repository. `0` turns the builder off. |
 | `KAIROS_CODE_INDEX_THREADS` | whole number, 1 or more | `4` | The number of CPU threads that the summary model of the builder uses. More threads make the summaries faster, but they take CPU from the other services on the host. `0` or a value that is not a number stops the start of the server. |
+| `KAIROS_CODE_INDEX_MIN_REBUILD_SECS` | whole number | `0` | The least time in seconds between 2 updates of one repository. `0` turns the limit off. On a slow host, a repository with many pushes then waits, and the other stale repositories get their updates. A value that is not a number stops the start of the server. |
 
 #### The providers of the summaries and the vectors
 
@@ -375,6 +376,18 @@ The builder has 2 lanes:
 The update lane does not wait for the first-build lane. Thus, during a long
 first build, the updates of the other repositories continue at each
 interval.
+
+The update lane serves the repositories in this order: the repository with
+the oldest newest index first. The order of the list and the time of the
+pushes do not change it. Thus the repository that has been stale longest
+gets its update first. A repository that got an update goes to the end of
+the next pass. A repository with many pushes does not get 2 updates in a
+row while another repository is stale.
+
+With `KAIROS_CODE_INDEX_MIN_REBUILD_SECS`, a repository whose newest index
+is younger than that time gets no update in the pass. A later pass updates
+it. This order is for the update lane only. An update still goes before the
+next step of a first build.
 
 The 2 lanes do not run the summary model at the same time. An update goes
 first: a first build stops between 2 summaries while an update runs. Thus

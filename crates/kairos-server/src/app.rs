@@ -116,7 +116,8 @@ fn code_index_service(config: &AppConfig) -> Option<Arc<crate::code_index::CodeI
     let dir = config.code_index_dir.clone()?;
     Some(Arc::new(
         crate::code_index::CodeIndexService::from_repo_url(dir)
-            .with_secrets_key(config.secrets_key.clone()),
+            .with_secrets_key(config.secrets_key.clone())
+            .with_min_rebuild_secs(config.code_index_min_rebuild_secs),
     ))
 }
 

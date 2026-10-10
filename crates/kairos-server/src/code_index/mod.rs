@@ -29,6 +29,24 @@
 //! commit below it to that head ([`kairos_index::update`] with a SCIP run),
 //! and stores the result.
 //!
+//! The order of a pass (KAIROS-T-0334): the repository with the oldest
+//! newest index first, over all tenants. The time of the newest index of a
+//! repository is the earliest time at which it became stale, so the
+//! repository that has been stale longest goes first, whatever the order of
+//! the list or of the pushes. A repository that a build just updated goes
+//! last in the next pass. So a repository that gets a push during each
+//! build of the others does not get 2 builds in a row while another
+//! repository is stale. With `KAIROS_CODE_INDEX_MIN_REBUILD_SECS` (off by
+//! default), a repository whose newest index is younger than that time gets
+//! no update in the pass, and waits for a later pass.
+//!
+//! The order applies inside the update lane only. It does not change the
+//! gate of KAIROS-T-0318: an update still goes ahead of the next step of a
+//! first build, and the first-build lane serves the repositories that have
+//! no index, in the order of their slugs. A skip by the minimum time does
+//! not give the gate to a first build for longer than one pass: the next
+//! pass tries the repository again.
+//!
 //! [`first_builds`] makes the first index of each repository that has none
 //! (KAIROS-T-0318): a full build of the head of its default branch. A full
 //! build of Kairos takes about 12 hours on a CPU, so it must not stop the
@@ -127,6 +145,9 @@ pub struct CodeIndexService {
     /// The start of this server (KAIROS-T-0354): a random id, recorded on
     /// each run. A `running` run of another id is of a server that stopped.
     instance: uuid::Uuid,
+    /// `KAIROS_CODE_INDEX_MIN_REBUILD_SECS` (KAIROS-T-0334): the least time
+    /// between 2 updates of one repository. 0: off.
+    min_rebuild_secs: std::sync::atomic::AtomicU64,
 }
 
 /// A build that a person asked for (KAIROS-T-0332). Its run row exists
@@ -163,6 +184,30 @@ impl CodeIndexService {
             requests: Mutex::default(),
             wake: tokio::sync::Notify::new(),
             instance: uuid::Uuid::new_v4(),
+            min_rebuild_secs: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// The least time between 2 updates of one repository
+    /// (`KAIROS_CODE_INDEX_MIN_REBUILD_SECS`, KAIROS-T-0334). 0: off.
+    pub fn with_min_rebuild_secs(self, secs: u64) -> Self {
+        self.set_min_rebuild_secs(secs);
+        self
+    }
+
+    /// Change the time of [`Self::with_min_rebuild_secs`].
+    pub fn set_min_rebuild_secs(&self, secs: u64) {
+        self.min_rebuild_secs
+            .store(secs, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn min_rebuild(&self) -> Option<Duration> {
+        match self
+            .min_rebuild_secs
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            0 => None,
+            secs => Some(Duration::from_secs(secs)),
         }
     }
 
@@ -831,6 +876,8 @@ struct Base {
     commit: String,
     structure: Vec<u8>,
     pool: Vec<kairos_db::code_indexes::PoolRow>,
+    /// The time of the newest index of the repository (KAIROS-T-0334).
+    newest: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Where an update of a repository starts (KAIROS-T-0347).
@@ -894,9 +941,39 @@ async fn repositories_of(
     out
 }
 
+/// The repositories of a pass of the update lane, over all tenants, the
+/// repository with the oldest newest index first (KAIROS-T-0334). A tie
+/// keeps the order of the tenants and of the slugs.
+async fn update_order(blocking: &BlockingTenantPool) -> Vec<(String, Repository)> {
+    let mut order = Vec::new();
+    for (tenant, repos) in repositories_of(blocking, Pass::Updates).await {
+        let newest: HashMap<uuid::Uuid, chrono::DateTime<chrono::Utc>> = blocking
+            .run(&tenant, |conn| {
+                kairos_db::code_indexes::newest_writes(conn).map_err(ApiError::internal)
+            })
+            .await
+            .map(|rows| rows.into_iter().collect())
+            .unwrap_or_else(|e| {
+                tracing::warn!(tenant = %tenant, error = ?e, "code index builder could not read the times of the indexes");
+                HashMap::new()
+            });
+        for repo in repos {
+            let at = newest.get(&repo.id).copied();
+            order.push((at, tenant.clone(), repo));
+        }
+    }
+    // No time sorts first: such a repository is not known to be fresh.
+    order.sort_by_key(|(at, _, _)| *at);
+    order
+        .into_iter()
+        .map(|(_, tenant, repo)| (tenant, repo))
+        .collect()
+}
+
 /// Fetch each repository that has an index, and update the index of the
-/// head of its default branch when it has none. One repository at a time.
-/// A repository with `code_index_build = off` is not fetched.
+/// head of its default branch when it has none. One repository at a time,
+/// the repository with the oldest newest index first (KAIROS-T-0334). A
+/// repository with `code_index_build = off` is not fetched.
 pub async fn sweep(
     blocking: &BlockingTenantPool,
     service: &Arc<CodeIndexService>,
@@ -904,46 +981,50 @@ pub async fn sweep(
     embedder: Arc<dyn kairos_embed::EmbeddingProvider>,
 ) -> Vec<BuildOutcome> {
     let mut outcomes = Vec::new();
-    for (tenant, repos) in repositories_of(blocking, Pass::Updates).await {
-        for repo in repos {
-            let outcome = build_repository(
-                blocking,
-                service,
-                &tenant,
-                repo,
-                summarizers.clone(),
-                Arc::clone(&embedder),
-            )
-            .await;
-            match (&outcome.report, &outcome.note) {
-                (Some(report), _) => tracing::info!(
-                    tenant = %outcome.tenant,
-                    repository = %outcome.repository,
-                    commit = %outcome.commit,
-                    base = ?outcome.base,
-                    symbols = report.summary.symbols.summarized,
-                    files = report.summary.files.summarized,
-                    modules = report.summary.modules.summarized,
-                    elapsed_secs = outcome.elapsed.as_secs_f64(),
-                    "code index built"
-                ),
-                (None, Some(note)) if note.starts_with("failed") => tracing::warn!(
-                    tenant = %outcome.tenant,
-                    repository = %outcome.repository,
-                    commit = %outcome.commit,
-                    note = %note,
-                    "code index not built"
-                ),
-                (None, Some(note)) if note.starts_with(ACTIVE_RUN) => tracing::info!(
-                    tenant = %outcome.tenant,
-                    repository = %outcome.repository,
-                    note = %note,
-                    "code index update not started"
-                ),
-                _ => {}
-            }
-            outcomes.push(outcome);
+    for (tenant, repo) in update_order(blocking).await {
+        let outcome = build_repository(
+            blocking,
+            service,
+            &tenant,
+            repo,
+            summarizers.clone(),
+            Arc::clone(&embedder),
+        )
+        .await;
+        match (&outcome.report, &outcome.note) {
+            (Some(report), _) => tracing::info!(
+                tenant = %outcome.tenant,
+                repository = %outcome.repository,
+                commit = %outcome.commit,
+                base = ?outcome.base,
+                symbols = report.summary.symbols.summarized,
+                files = report.summary.files.summarized,
+                modules = report.summary.modules.summarized,
+                elapsed_secs = outcome.elapsed.as_secs_f64(),
+                "code index built"
+            ),
+            (None, Some(note)) if note.starts_with("failed") => tracing::warn!(
+                tenant = %outcome.tenant,
+                repository = %outcome.repository,
+                commit = %outcome.commit,
+                note = %note,
+                "code index not built"
+            ),
+            (None, Some(note)) if note.starts_with(ACTIVE_RUN) => tracing::info!(
+                tenant = %outcome.tenant,
+                repository = %outcome.repository,
+                note = %note,
+                "code index update not started"
+            ),
+            (None, Some(note)) if note.starts_with(MIN_REBUILD) => tracing::debug!(
+                tenant = %outcome.tenant,
+                repository = %outcome.repository,
+                note = %note,
+                "code index update waits"
+            ),
+            _ => {}
         }
+        outcomes.push(outcome);
     }
     outcomes
 }
@@ -1220,6 +1301,10 @@ fn slug_of_run(conn: &mut diesel::pg::PgConnection, run: &runs::Build) -> Option
         .ok()
         .map(|repo| repo.slug)
 }
+
+/// The start of the note of a repository that waits for the least time
+/// between 2 updates (KAIROS-T-0334).
+pub const MIN_REBUILD: &str = "the repository was updated a short time ago";
 
 /// The start of the note of a repository that has an active run
 /// (KAIROS-T-0354).
@@ -1512,11 +1597,10 @@ async fn build_repository(
     let repo_id = repo.id;
     let start = blocking
         .run(tenant, move |conn| {
-            let indexed: HashSet<String> = kairos_db::code_indexes::list(conn, repo_id)
-                .map_err(ApiError::internal)?
-                .into_iter()
-                .map(|i| i.commit_sha)
-                .collect();
+            let listed =
+                kairos_db::code_indexes::list(conn, repo_id).map_err(ApiError::internal)?;
+            let newest = listed.iter().map(|i| i.updated_at).max();
+            let indexed: HashSet<String> = listed.into_iter().map(|i| i.commit_sha).collect();
             let Some(nearest) = ancestors.iter().find(|c| indexed.contains(*c)) else {
                 return Ok(None);
             };
@@ -1548,6 +1632,7 @@ async fn build_repository(
                 commit: nearest.clone(),
                 structure,
                 pool,
+                newest,
             })))
         })
         .await;
@@ -1606,6 +1691,22 @@ async fn build_repository(
         }
     };
     outcome.base = Some(base.commit.clone());
+    // The least time between 2 updates of one repository (KAIROS-T-0334):
+    // a repository updated a short time ago waits for a later pass.
+    if let (Some(min), Some(newest)) = (service.min_rebuild(), base.newest) {
+        let age = (chrono::Utc::now() - newest).to_std().unwrap_or_default();
+        if age < min {
+            return done(
+                outcome,
+                format!(
+                    "{MIN_REBUILD}: the newest index is {} s old, and \
+                     KAIROS_CODE_INDEX_MIN_REBUILD_SECS is {}",
+                    age.as_secs(),
+                    min.as_secs()
+                ),
+            );
+        }
+    }
     let run = match record_start(blocking, service, tenant, &repo, "push").await {
         Started::Run(run) => run,
         Started::Active(active) => return done(outcome, active_note(&active)),

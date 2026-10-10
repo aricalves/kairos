@@ -154,6 +154,11 @@ pub struct AppConfig {
     /// the builder (COLLIERY-T-2529). Default 4, at least 1. The builder
     /// shares the host with the live services.
     pub code_index_threads: u32,
+    /// `KAIROS_CODE_INDEX_MIN_REBUILD_SECS` — the least time between 2
+    /// updates of one repository by the update lane (KAIROS-T-0334). Default
+    /// 0: off. On a slow host, a repository that gets many pushes then waits
+    /// while the other repositories are stale.
+    pub code_index_min_rebuild_secs: u64,
     /// `KAIROS_WEB_CLIENT_ID` — the public OAuth client id the SPA uses
     /// for its PKCE flow (KAIROS-T-0039, A-0010). Default `kairos-web`,
     /// matching the dev Dex fixture (`.angreal/dex/config.yaml`).
@@ -562,6 +567,7 @@ impl AppConfig {
             code_index_dir: get("KAIROS_CODE_INDEX_DIR").map(std::path::PathBuf::from),
             code_index_poll_secs: parse_num(&get, "KAIROS_CODE_INDEX_POLL_SECS", 300)?,
             code_index_threads,
+            code_index_min_rebuild_secs: parse_num(&get, "KAIROS_CODE_INDEX_MIN_REBUILD_SECS", 0)?,
             web_client_id: get("KAIROS_WEB_CLIENT_ID").unwrap_or_else(|| "kairos-web".to_string()),
             api_bearer,
             web_client_secret: get("KAIROS_WEB_CLIENT_SECRET"),
@@ -725,6 +731,29 @@ mod tests {
             let err = AppConfig::from_lookup(lookup(&vars)).expect_err(value);
             assert!(
                 err.to_string().contains("KAIROS_CODE_INDEX_THREADS"),
+                "{value}: {err}"
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // KAIROS-T-0334: the least time between 2 updates of one repository.
+
+    #[test]
+    fn the_min_rebuild_time_is_off_by_default_and_refuses_text() {
+        let config = AppConfig::from_lookup(lookup(MINIMAL)).expect("valid config");
+        assert_eq!(config.code_index_min_rebuild_secs, 0);
+        let mut vars = MINIMAL.to_vec();
+        vars.push(("KAIROS_CODE_INDEX_MIN_REBUILD_SECS", "3600"));
+        let config = AppConfig::from_lookup(lookup(&vars)).expect("valid config");
+        assert_eq!(config.code_index_min_rebuild_secs, 3600);
+        for value in ["an hour", "-1"] {
+            let mut vars = MINIMAL.to_vec();
+            vars.push(("KAIROS_CODE_INDEX_MIN_REBUILD_SECS", value));
+            let err = AppConfig::from_lookup(lookup(&vars)).expect_err(value);
+            assert!(
+                err.to_string()
+                    .contains("KAIROS_CODE_INDEX_MIN_REBUILD_SECS"),
                 "{value}: {err}"
             );
         }
