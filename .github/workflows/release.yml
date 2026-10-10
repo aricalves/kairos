@@ -245,6 +245,17 @@ jobs:
           cache-from: type=gha,scope=image-${{ matrix.variant }}-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=image-${{ matrix.variant }}-${{ matrix.arch }}
 
+      # KAIROS-T-0336: start the image that was just pushed, next to a
+      # Postgres, and check it: healthy, tini as PID 1, no zombie after a
+      # minute of healthchecks, and a clean stop on SIGTERM. A failure here
+      # stops the job before its digest goes to the manifest, so no tag gets
+      # the image.
+      - name: Smoke check the image
+        run: |
+          image="ghcr.io/colliery-io/kairos@${{ steps.build.outputs.digest }}"
+          docker pull "${image}"
+          scripts/image-smoke.sh "${image}"
+
       - name: Export the digest
         run: |
           mkdir -p "/tmp/digests/${{ matrix.variant }}"

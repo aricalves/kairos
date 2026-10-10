@@ -632,7 +632,7 @@ async fn whoami(
 }
 
 /// Run the server: build state, bind `KAIROS_BIND_ADDR`, serve with
-/// graceful shutdown on ctrl-c. Public migrations already ran (main.rs
+/// graceful shutdown on ctrl-c or SIGTERM. Public migrations already ran (main.rs
 /// applies them before any subcommand, KAIROS-T-0007).
 pub async fn serve(
     config: AppConfig,
@@ -685,7 +685,11 @@ pub async fn serve(
     )
     .with_graceful_shutdown(shutdown_signal())
     .await
-    .map_err(|e| format!("server error: {e}"))
+    .map_err(|e| format!("server error: {e}"))?;
+    // KAIROS-T-0336: the last line of a clean stop, so an operator (and the
+    // image smoke check) can tell it from a kill.
+    tracing::info!("shutdown complete");
+    Ok(())
 }
 
 /// Create the first-boot admin if `KAIROS_BOOTSTRAP_ADMIN` is set and the
@@ -772,11 +776,38 @@ async fn bootstrap_first_admin(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
-/// Resolves when ctrl-c (SIGINT) arrives.
+/// Resolves when ctrl-c (SIGINT) or SIGTERM arrives.
+///
+/// KAIROS-T-0336: `docker stop` and Kubernetes send SIGTERM. Before, the
+/// server listened for SIGINT only: as PID 1 the kernel dropped SIGTERM and
+/// the runtime killed the server at the end of the stop timeout; behind the
+/// init of the image SIGTERM ended it with no drain.
 async fn shutdown_signal() {
-    if let Err(e) = tokio::signal::ctrl_c().await {
-        tracing::error!(error = %e, "failed to listen for ctrl-c; running until killed");
-        std::future::pending::<()>().await;
-    }
-    tracing::info!("shutdown signal received; draining");
+    let interrupt = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            tracing::error!(error = %e, "failed to listen for ctrl-c");
+            std::future::pending::<()>().await;
+        }
+        "SIGINT"
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to listen for SIGTERM");
+                std::future::pending::<()>().await;
+            }
+        }
+        "SIGTERM"
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<&str>();
+    let signal = tokio::select! {
+        name = interrupt => name,
+        name = terminate => name,
+    };
+    tracing::info!(signal, "shutdown signal received; draining");
 }

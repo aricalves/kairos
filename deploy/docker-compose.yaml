@@ -62,6 +62,10 @@ services:
     # Never `latest` (KAIROS-A-0013) — pin to a published release tag.
     image: ghcr.io/colliery-io/kairos:${KAIROS_VERSION:?pin KAIROS_VERSION to a published release tag, never latest}
     restart: unless-stopped
+    # No `init: true` (KAIROS-T-0336): from 0.11 the image has its own init.
+    # tini is PID 1: it reaps the orphaned children (the curl of the
+    # healthcheck, the git of the code index builder) and sends SIGTERM on
+    # to kairos-server. An image before 0.11 needs `init: true` here.
     environment:
       DATABASE_URL: postgres://kairos:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/kairos
       # Identity is external (KAIROS-A-0016): point these at YOUR IdP. Both
