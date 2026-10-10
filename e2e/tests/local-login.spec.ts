@@ -81,8 +81,8 @@ test('local login: the form signs in with a password and reaches a board', async
   // the assertion that matters: the token took the same in-memory path an OIDC access
   // token takes.
   await page.getByRole('link', { name: 'Boards', exact: true }).click();
-  // `.kairos-board-grid` is per-board, not one grid for the page, so `.first()` —
-  // asserting on the bare class matched five elements.
+  // `.kairos-board-grid` is one grid per flight-level band, not one for the page, so `.first()` —
+  // asserting on the bare class matches each band.
   await expect(page.locator('.kairos-board-grid').first()).toBeVisible();
   await page.getByRole('link', { name: /Platform Delivery/ }).first().click();
   await expect(page.locator('section.kairos-board__column').first()).toBeVisible();

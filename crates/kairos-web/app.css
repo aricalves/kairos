@@ -12,7 +12,7 @@
  */
 
 /* One flight-level band on /boards (KAIROS-T-0069/T-0063): the level
-   pill heads the band; groups inside stack with their team headings. */
+   pill heads the band, then one grid of its tiles (KAIROS-T-0319). */
 .kairos-board-band {
   display: flex;
   flex-direction: column;
@@ -35,17 +35,31 @@
 
 /* ---- Boards area (KAIROS-T-0040) ---------------------------------------- */
 
-/* Board list: responsive tile grid; each tile is a link styled as a card. */
+/* Board list: responsive tile grid; each tile is a link styled as a card.
+   One grid for each band, so the tiles wrap across the page width
+   (KAIROS-T-0319). min() keeps one column on a narrow phone. */
 .kairos-board-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr));
   gap: var(--space-sm);
 }
 
-/* A tile is an Aurora Card; the wrapper keeps the e2e hook and makes the
-   cards of a row the same height. */
+/* A tile is an Aurora Card, then the team of the board under it. The
+   wrapper keeps the e2e hook and makes the cards of a row the same
+   height. */
+.kairos-board-tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
 .kairos-board-tile > .cl-card {
-  height: 100%;
+  flex: 1;
+}
+
+.kairos-board-tile__team {
+  padding-left: var(--space-xs);
 }
 
 /* Document lifecycle badge (KAIROS-T-0078): an editorial label, styled

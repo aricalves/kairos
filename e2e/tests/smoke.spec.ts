@@ -78,6 +78,29 @@ test('GUI smoke: login → boards → create → move → live WS → edit/409 �
     await expect(tiles.filter({ hasText: 'Platform Delivery' })).toBeVisible();
     // seed-demo provisions 5 boards.
     await expect(tiles).toHaveCount(5);
+    // KAIROS-T-0319: the delivery band is one grid, so at laptop width the
+    // 2 delivery boards are in one row. Each tile links to its team.
+    const platform = tiles.filter({ hasText: 'Platform Delivery' });
+    const web = tiles.filter({ hasText: 'Web Delivery' });
+    await expect(platform.getByRole('link', { name: 'Platform', exact: true })).toHaveAttribute(
+      'href',
+      '/teams/platform',
+    );
+    await expect(web.getByRole('link', { name: 'Web', exact: true })).toHaveAttribute(
+      'href',
+      '/teams/web',
+    );
+    const platformBox = await platform.boundingBox();
+    const webBox = await web.boundingBox();
+    expect(platformBox && webBox && Math.abs(platformBox.y - webBox.y) < 1).toBe(true);
+    // At phone width the grid has one column: the tiles fit the page.
+    const size = page.viewportSize();
+    await page.setViewportSize({ width: 375, height: 800 });
+    const phoneBox = await platform.boundingBox();
+    expect(phoneBox && phoneBox.x >= 0 && phoneBox.x + phoneBox.width <= 375).toBe(true);
+    const webPhoneBox = await web.boundingBox();
+    expect(phoneBox && webPhoneBox && webPhoneBox.y > phoneBox.y).toBe(true);
+    if (size) await page.setViewportSize(size);
   });
 
   // 3. Open platform-delivery; seeded items in the right columns -----------
