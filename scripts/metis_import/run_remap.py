@@ -146,7 +146,15 @@ class Context:
             raise Stop("--prefix is %s, but the delivery board %s has the prefix %s. --prefix must "
                        "be the prefix of the delivery board."
                        % (args.prefix, delivery["slug"], delivery.get("code_prefix")))
-        repos = api.json("GET", "/api/repositories")
+        # GET /api/repositories gives a page, {items, total, limit, offset}
+        # (KAIROS-T-0268). Read each page.
+        repos, offset = [], 0
+        while True:
+            page = api.json("GET", "/api/repositories?limit=200&offset=%d" % offset)
+            repos.extend(page["items"])
+            offset += len(page["items"])
+            if not page["items"] or offset >= page["total"]:
+                break
         match = [r for r in repos if r["slug"] == args.repository]
         if not match:
             raise Stop("the tenant has no repository %r" % args.repository)
