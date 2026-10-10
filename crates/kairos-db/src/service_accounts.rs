@@ -16,7 +16,9 @@ use uuid::Uuid;
 
 use crate::models::public::{NewServiceAccountUser, User};
 use crate::models::{NewOrganizationMember, OrgRole};
-use crate::schema::{api_keys, board_member_capabilities, organization_members, users};
+use crate::schema::{
+    api_keys, board_member_capabilities, organization_members, structure_grants, users,
+};
 
 /// Create a service account: a `users` row (`kind='service_account'`, synthetic
 /// `external_id`/`email`) plus its single `organization_members` row. Atomic.
@@ -79,9 +81,9 @@ pub fn find_service_account(
         .optional()
 }
 
-/// Delete a service account and everything attached to it: its API keys and
-/// board capability grants (tenant schema) plus its membership and `users` row
-/// (public). Atomic. The caller must have already resolved it via
+/// Delete a service account and everything attached to it: its API keys,
+/// board capability grants and grants of `manage_structure` (tenant
+/// schema) plus its membership and `users` row (public). Atomic. The caller must have already resolved it via
 /// [`find_service_account`] (org scoping + kind check).
 pub fn delete_service_account(
     conn: &mut PgConnection,
@@ -94,6 +96,9 @@ pub fn delete_service_account(
             board_member_capabilities::table.filter(board_member_capabilities::user_id.eq(user_id)),
         )
         .execute(conn)?;
+        // KAIROS-T-0337: its grants of `manage_structure`.
+        diesel::delete(structure_grants::table.filter(structure_grants::user_id.eq(user_id)))
+            .execute(conn)?;
         diesel::delete(
             organization_members::table
                 .filter(organization_members::organization_id.eq(org_id))

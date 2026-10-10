@@ -44,11 +44,12 @@ use crate::types_org::{
     AddBoardMemberRequest, AddOrgMemberRequest, AddStreamTeamRequest, AddTeamMemberRequest,
     BOARD_ITEMS_MAX_LIMIT, Board, BoardColumn, BoardDetail, BoardItemsQuery, BoardItemsResponse,
     BoardMember, BoardTransition, CreateBoardRequest, CreateColumnRequest, CreateStreamRequest,
-    CreateTeamRequest, CreateTenantRequest, CreateTransitionRequest, DeliveryStream,
-    OrgDeleteResponse, OrgMember, RemoveBoardMemberResponse, RemoveOrgMemberResponse,
-    ReplaceCapabilitiesRequest, Team, TeamMember, TenantCreatedResponse, TenantDeletedResponse,
-    TenantSummary, UpdateBoardRequest, UpdateColumnRequest, UpdateOrgMemberRequest,
-    UpdateStreamRequest, UpdateTeamRequest, WhoamiResponse,
+    CreateStructureGrantRequest, CreateTeamRequest, CreateTenantRequest, CreateTransitionRequest,
+    DeliveryStream, OrgDeleteResponse, OrgMember, RemoveBoardMemberResponse,
+    RemoveOrgMemberResponse, ReplaceCapabilitiesRequest, StructureGrant, Team, TeamMember,
+    TenantCreatedResponse, TenantDeletedResponse, TenantSummary, UpdateBoardRequest,
+    UpdateColumnRequest, UpdateOrgMemberRequest, UpdateStreamRequest, UpdateTeamRequest,
+    WhoamiResponse,
 };
 use crate::types_search::{SearchRequest, SearchResponse};
 use crate::types_team_pages::{
@@ -900,6 +901,29 @@ impl KairosClient {
         user_id: &str,
     ) -> Result<RemoveBoardMemberResponse, Error> {
         self.delete(&format!("/api/boards/{board_id}/members/{user_id}"))
+            .await
+    }
+
+    // -- the structure capability (KAIROS-T-0337) -----------------------------
+
+    /// `GET /api/structure-grants` — each grant of `manage_structure`.
+    pub async fn list_structure_grants(&self) -> Result<Vec<StructureGrant>, Error> {
+        self.get("/api/structure-grants").await
+    }
+
+    /// `POST /api/structure-grants` — grant `manage_structure` at the
+    /// organization (no `board`) or on one board. Org admin only.
+    pub async fn create_structure_grant(
+        &self,
+        request: &CreateStructureGrantRequest,
+    ) -> Result<StructureGrant, Error> {
+        self.post_created("/api/structure-grants", request).await
+    }
+
+    /// `DELETE /api/structure-grants/{id}` — revoke one grant. Org admin
+    /// only.
+    pub async fn delete_structure_grant(&self, grant_id: &str) -> Result<StructureGrant, Error> {
+        self.delete(&format!("/api/structure-grants/{grant_id}"))
             .await
     }
 

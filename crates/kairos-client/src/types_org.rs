@@ -643,6 +643,50 @@ pub struct AddTeamMemberRequest {
 }
 
 // ---------------------------------------------------------------------------
+// The structure capability (KAIROS-T-0337)
+// ---------------------------------------------------------------------------
+
+/// One grant of `manage_structure` (`GET /api/structure-grants` element).
+/// `scope` is `organization` or `board`. A grant on the organization covers
+/// teams, team members, boards and repositories. A grant on a board covers
+/// the configuration, the members and the grants of that board only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct StructureGrant {
+    /// The id of the grant (UUID). `DELETE /api/structure-grants/{id}`
+    /// revokes it.
+    pub id: String,
+    /// `public.users.id` of the principal (UUID).
+    pub user_id: String,
+    pub email: String,
+    pub display_name: String,
+    /// `human` | `service_account`.
+    pub kind: String,
+    /// `organization` | `board`.
+    pub scope: String,
+    /// The board of a board grant (UUID), or null.
+    pub board_id: Option<String>,
+    /// The slug of the board of a board grant, or null.
+    pub board_slug: Option<String>,
+    /// `public.users.id` of the organization admin who granted it.
+    pub granted_by: String,
+    /// RFC 3339.
+    pub granted_at: String,
+}
+
+/// Body of `POST /api/structure-grants`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateStructureGrantRequest {
+    /// The principal: a user id (UUID), an email, or a user name of a member
+    /// of the organization. A service account is given by its id.
+    pub user: String,
+    /// The board (slug or UUID) of a board grant. Omit it for a grant at the
+    /// organization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub board: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Delivery streams
 // ---------------------------------------------------------------------------
 
@@ -767,6 +811,21 @@ pub struct WhoamiResponse {
     /// Repositories owned by the caller's teams (KAIROS-T-0107, A-0019).
     #[serde(default)]
     pub repositories: Vec<WhoamiRepository>,
+    /// The caller's grants of `manage_structure` (KAIROS-T-0337): at the
+    /// organization, or on one board. Empty when the caller has none.
+    #[serde(default)]
+    pub structure: Vec<WhoamiStructureGrant>,
+}
+
+/// One grant of [`WhoamiResponse::structure`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct WhoamiStructureGrant {
+    /// `organization` | `board`.
+    pub scope: String,
+    /// The board of a board grant (UUID), or null.
+    pub board_id: Option<String>,
+    /// The slug of the board of a board grant, or null.
+    pub board_slug: Option<String>,
 }
 
 /// One repository of [`WhoamiResponse::repositories`].

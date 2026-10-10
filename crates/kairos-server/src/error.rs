@@ -126,14 +126,58 @@ impl ApiError {
     /// 403 `FORBIDDEN` naming the missing KAIROS-A-0006 capability in
     /// `details.required_capability` (+ `details.board_id` when the check
     /// was board-scoped; `null` = the org-admin-only fallback applied).
+    ///
+    /// KAIROS-T-0337: when the capability is one that `manage_structure`
+    /// covers (`configure_boards`, `administer_members`), the refusal says
+    /// so, names the two scopes of that grant, and says who grants it.
+    /// `details.or_capability` is then `manage_structure`.
     pub fn capability_required(capability: &str, board_id: Option<uuid::Uuid>) -> Self {
-        let scope = match board_id {
-            Some(board_id) => format!("the capability {capability:?} on the board {board_id}"),
-            None => "the organization admin role".to_string(),
-        };
-        Self::forbidden(format!("This action requires {scope}.")).with_details(json!({
-            "required_capability": capability,
-            "board_id": board_id,
+        let structure = kairos_core::abac::MANAGE_STRUCTURE;
+        match board_id {
+            Some(board_id) if kairos_core::abac::structure_covers(capability) => {
+                Self::forbidden(format!(
+                    "This action requires the capability {capability:?} on the board \
+                     {board_id}, or the capability {structure:?} on that board or on the \
+                     organization. Ask an organization admin for one of them."
+                ))
+                .with_details(json!({
+                    "required_capability": capability,
+                    "board_id": board_id,
+                    "or_capability": structure,
+                }))
+            }
+            Some(board_id) => Self::forbidden(format!(
+                "This action requires the capability {capability:?} on the board {board_id}."
+            ))
+            .with_details(json!({
+                "required_capability": capability,
+                "board_id": board_id,
+            })),
+            None => Self::forbidden("This action requires the organization admin role.")
+                .with_details(json!({
+                    "required_capability": capability,
+                    "board_id": board_id,
+                })),
+        }
+    }
+
+    /// 403 `FORBIDDEN` for a change to the structure of the organization
+    /// (KAIROS-T-0337): a team, a team member, a board, a repository. The
+    /// principal is not an organization admin and has no grant of
+    /// `manage_structure` at the organization. A grant on one board does
+    /// not count. `details.scope` is `organization`.
+    pub fn structure_required() -> Self {
+        let structure = kairos_core::abac::MANAGE_STRUCTURE;
+        Self::forbidden(format!(
+            "This action requires the capability {structure:?} on the organization, or the \
+             organization admin role. A grant of {structure:?} on one board does not give \
+             it. Ask an organization admin to do this, or to grant you {structure:?} on the \
+             organization."
+        ))
+        .with_details(json!({
+            "required_capability": structure,
+            "scope": "organization",
+            "board_id": null,
         }))
     }
 

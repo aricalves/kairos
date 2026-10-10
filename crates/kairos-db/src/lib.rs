@@ -44,8 +44,8 @@ pub mod tenant;
 pub mod tls;
 
 pub use abac::{
-    AbacError, authorize, check_capability, grant_capability, is_org_admin,
-    resolve_authorization_board, revoke_capability,
+    AbacError, StructureGrant, authorize, check_capability, grant_capability, holds_structure,
+    is_org_admin, resolve_authorization_board, revoke_capability,
 };
 pub use boards::{
     BoardError, CodePrefix, SeveralDeliveryBoards, add_column, add_transition,

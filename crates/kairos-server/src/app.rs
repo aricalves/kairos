@@ -491,6 +491,20 @@ pub struct WhoamiResponse {
     pub implicit: Vec<&'static str>,
     /// Repositories owned by the caller's teams (KAIROS-T-0107, A-0019).
     pub repositories: Vec<WhoamiRepository>,
+    /// The caller's grants of `manage_structure` (KAIROS-T-0337): the grant
+    /// at the organization first, then the grants on boards.
+    pub structure: Vec<WhoamiStructureGrant>,
+}
+
+/// One grant of [`WhoamiResponse::structure`].
+#[derive(Debug, serde::Serialize)]
+pub struct WhoamiStructureGrant {
+    /// `organization` | `board`.
+    pub scope: &'static str,
+    /// The board of a board grant, or null.
+    pub board_id: Option<Uuid>,
+    /// The slug of the board of a board grant, or null.
+    pub board_slug: Option<String>,
 }
 
 /// One repository of [`WhoamiResponse::repositories`].
@@ -598,7 +612,39 @@ async fn whoami(
         }
     }
 
+    // KAIROS-T-0337: the grants of `manage_structure`, at the organization
+    // and on live boards.
+    let structure_rows: Vec<(Option<Uuid>, Option<String>)> = schema::structure_grants::table
+        .left_join(schema::boards::table)
+        .filter(schema::structure_grants::user_id.eq(auth.user_id))
+        .filter(
+            schema::structure_grants::board_id
+                .is_null()
+                .or(schema::boards::deleted_at.is_null()),
+        )
+        .order(schema::boards::slug.asc().nulls_first())
+        .select((
+            schema::structure_grants::board_id,
+            schema::boards::slug.nullable(),
+        ))
+        .load(&mut *conn)
+        .await
+        .map_err(ApiError::internal)?;
+    let structure = structure_rows
+        .into_iter()
+        .map(|(board_id, board_slug)| WhoamiStructureGrant {
+            scope: if board_id.is_some() {
+                "board"
+            } else {
+                "organization"
+            },
+            board_id,
+            board_slug,
+        })
+        .collect();
+
     Ok(Json(WhoamiResponse {
+        structure,
         user: WhoamiUser {
             id: auth.user_id,
             external_id: auth.external_id,

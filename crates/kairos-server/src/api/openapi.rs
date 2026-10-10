@@ -219,6 +219,10 @@ use crate::app::AppState;
         crate::api::org::members::add_member,
         crate::api::org::members::update_member,
         crate::api::org::members::remove_member,
+        // The grants of `manage_structure` (KAIROS-T-0337).
+        crate::api::org::structure_grants::list_structure_grants,
+        crate::api::org::structure_grants::create_structure_grant,
+        crate::api::org::structure_grants::delete_structure_grant,
         // Cross-tenant deployment admin (KAIROS-T-0019).
         crate::api::org::admin::list_tenants,
         crate::api::org::admin::create_tenant,
@@ -324,7 +328,10 @@ pub(crate) async fn openapi_json() -> impl IntoResponse {
                 (`crate::app::WhoamiResponse`: `{user: {id, external_id, \
                 email, display_name}, organization: {id, slug, role}, \
                 teams: [{id, slug, name}], capabilities: [{board_id, \
-                board_slug, grants: [..]}]}`)",
+                board_slug, grants: [..]}], structure: [{scope, board_id, \
+                board_slug}]}`). `structure` lists the grants of \
+                manage_structure (KAIROS-T-0337): scope organization or \
+                board.",
         ),
         (status = 401, description = "Missing/invalid token", body = kairos_client::types::ErrorEnvelope),
         (status = 403, description = "Not a member of the organization", body = kairos_client::types::ErrorEnvelope),

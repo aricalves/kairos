@@ -157,6 +157,39 @@ pub const FILE_BACKLOG: &str = "file_backlog";
 /// under `implicit`.
 pub const COMPUTED_CAPABILITIES: &[&str] = &[FILE_BACKLOG];
 
+/// The structure capability (KAIROS-T-0337, amending KAIROS-A-0006 and
+/// KAIROS-A-0017): the work of an organization admin on the structure of
+/// the organization, and no more. An organization admin grants it to a
+/// person or to a service account, at one of two scopes:
+///
+/// - **the organization**: teams, team members, boards, the columns, the
+///   transitions, the members and the grants of each board, and the
+///   repositories;
+/// - **one board**: the columns, the transitions, the members and the
+///   grants of that board ([`STRUCTURE_COVERED_CAPABILITIES`]). Not new
+///   teams, not other boards.
+///
+/// Accounts, API keys, SCIM tokens, the deployment admins and the tenant
+/// stay with the organization admin.
+///
+/// It is NOT in [`CAPABILITIES`], and `board_member_capabilities` never
+/// holds it: the grants are rows of the table `structure_grants`, and the
+/// check reads them by name. So no glob covers it. A holder of `manage_*`
+/// or of `*` on a board does not hold it (KAIROS-T-0183: the name has the
+/// `manage_` prefix, and the glob of that family must not reach board
+/// administration).
+pub const MANAGE_STRUCTURE: &str = "manage_structure";
+
+/// The board capabilities that a grant of [`MANAGE_STRUCTURE`] satisfies on
+/// its board (a board grant), or on each board (an organization grant).
+pub const STRUCTURE_COVERED_CAPABILITIES: &[&str] = &[CONFIGURE_BOARDS, ADMINISTER_MEMBERS];
+
+/// Does a grant of [`MANAGE_STRUCTURE`] satisfy the board capability
+/// `required`? Exact vocabulary membership, as for [`team_implies`].
+pub fn structure_covers(required: &str) -> bool {
+    STRUCTURE_COVERED_CAPABILITIES.contains(&required)
+}
+
 // ---------------------------------------------------------------------------
 // The edit rule and the link rule (COLLIERY-T-0228)
 // ---------------------------------------------------------------------------
@@ -339,6 +372,31 @@ pub fn is_authorized(grants: &[String], required: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- the structure capability (KAIROS-T-0337) ------------------------------
+
+    /// `manage_structure` covers the configuration and the members of a
+    /// board, and no work-item capability. It is not a board capability, so
+    /// no grant of the board vocabulary can carry it.
+    #[test]
+    fn manage_structure_covers_board_configuration_and_members_only() {
+        assert!(structure_covers(CONFIGURE_BOARDS));
+        assert!(structure_covers(ADMINISTER_MEMBERS));
+        for capability in [
+            MANAGE_TASKS,
+            MANAGE_DOCUMENTS,
+            MANAGE_ADRS,
+            MANAGE_STRATEGIES,
+            MANAGE_INITIATIVES,
+            TRANSITION_ITEMS,
+            FILE_BACKLOG,
+            MANAGE_STRUCTURE,
+        ] {
+            assert!(!structure_covers(capability), "{capability}");
+        }
+        assert!(!CAPABILITIES.contains(&MANAGE_STRUCTURE));
+        assert!(!GLOBS.contains(&MANAGE_STRUCTURE));
+    }
 
     // -- the parent of a document (COLLIERY-T-0235) ----------------------------
 

@@ -44,7 +44,7 @@ use kairos_db::repositories::{self, RepositoryError};
 use serde_json::json;
 use uuid::Uuid;
 
-use super::super::{clamp_pagination, parse_enum, require_capability};
+use super::super::{clamp_pagination, parse_enum, require_capability, require_structure};
 use crate::app::AppState;
 use crate::body::ApiJson;
 use crate::error::ApiError;
@@ -155,7 +155,9 @@ fn delivery_board_of(conn: &mut PgConnection, team_id: Uuid) -> Result<Option<Uu
 }
 
 /// Org admin, or `manage_tasks` on the team's delivery board (team
-/// membership implies it). A team with no delivery board is admin-only.
+/// membership implies it), or `manage_structure` at the organization
+/// (KAIROS-T-0337). A team with no delivery board is admin-only, or for a
+/// holder of `manage_structure` at the organization.
 ///
 /// COLLIERY-T-0266: the refusal names the team, and it says who can do the
 /// action. Until then it was the refusal of [`require_capability`], which
@@ -174,6 +176,12 @@ fn require_manage_for_team(
     };
     if refusal.code != "FORBIDDEN" {
         return Err(refusal);
+    }
+    // KAIROS-T-0337: the repositories are part of the structure of the
+    // organization. A grant of `manage_structure` at the organization
+    // covers them (a grant on one board does not).
+    if kairos_db::abac::holds_structure(conn, user, None).map_err(crate::api::map_abac_error)? {
+        return Ok(());
     }
     let team: String = {
         use kairos_db::schema::teams::dsl;
@@ -713,7 +721,8 @@ pub(crate) async fn update_repository(
     Ok(Json(updated.repository))
 }
 
-/// Remove a repository (org admin). Refused with 409 while live tasks or a
+/// Remove a repository (org admin, or `manage_structure` at the
+/// organization, KAIROS-T-0337). Refused with 409 while live tasks or a
 /// live webhook connection still reference it.
 #[utoipa::path(
     delete,
@@ -739,7 +748,7 @@ pub(crate) async fn delete_repository(
         .blocking
         .run(&tenant.slug, move |conn| {
             let current = repositories::resolve(conn, &slug).map_err(map_error)?;
-            require_capability(conn, &tenant_slug, None, user, MANAGE)?;
+            require_structure(conn, &tenant_slug, user)?;
             repositories::soft_delete(conn, current.id, user).map_err(map_error)?;
             Ok(current.id.to_string())
         })

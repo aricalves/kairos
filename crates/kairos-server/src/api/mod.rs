@@ -258,6 +258,36 @@ pub fn require_capability(
     }
 }
 
+/// THE STRUCTURE GATE (KAIROS-T-0337): may this principal change the
+/// structure of the organization? An organization admin may, and a
+/// principal with a grant of `manage_structure` at the organization may. A
+/// grant on one board does not count here. The refusal is
+/// [`ApiError::structure_required`].
+///
+/// The routes that ask it: create, change and delete a team; add and remove
+/// a team member; create a board; reset a code sequence; delete a
+/// repository. Each other change to a board (its settings, columns,
+/// transitions, members and grants) asks [`require_capability`] for
+/// `configure_boards` or `administer_members` on the board, and
+/// [`abac::authorize`] accepts a grant of `manage_structure` on that board
+/// or at the organization for those two.
+///
+/// The account, key, SCIM and tenant routes do not ask it. They stay with
+/// the organization admin ([`require_capability`] with no board).
+pub fn require_structure(
+    conn: &mut PgConnection,
+    slug: &str,
+    user_id: Uuid,
+) -> Result<(), ApiError> {
+    let allowed = abac::is_org_admin(conn, slug, user_id).map_err(map_abac_error)?
+        || abac::holds_structure(conn, user_id, None).map_err(map_abac_error)?;
+    if allowed {
+        Ok(())
+    } else {
+        Err(ApiError::structure_required())
+    }
+}
+
 /// What a principal lacks to edit one item: the `manage_<type>` capability
 /// of its type, on its authorization board. `board_id: None` = the item has
 /// no authorization board, and what is missing is the admin role.

@@ -1,6 +1,7 @@
 //! `/api/teams` (KAIROS-S-0005 Teams family, KAIROS-T-0019): team CRUD and
-//! team membership. Writes are org-admin-only (tenant-wide org structure,
-//! the A-0006 tenant-config fallback); reads are open tenant-wide.
+//! team membership. Writes are for an organization admin, or a principal
+//! with `manage_structure` at the organization (KAIROS-T-0337,
+//! [`require_structure`]); reads are open tenant-wide.
 //!
 //! **Team creation creates the team's delivery board** (the KAIROS-A-0002 /
 //! T-0010 deferred decision: delivery boards are per-team, seeded from the
@@ -24,7 +25,7 @@ use kairos_db::{boards, models::User};
 use uuid::Uuid;
 
 use super::super::convert_org::team_to_dto;
-use super::super::{clamp_pagination, parse_enum, parse_uuid, require_capability};
+use super::super::{clamp_pagination, parse_enum, parse_uuid, require_structure};
 use super::{
     check_slug_form, count_live_board_items, is_unique_violation, map_config_error,
     require_user_exists, run_in_transaction,
@@ -35,10 +36,6 @@ use crate::error::ApiError;
 use crate::input::ApiQuery;
 use crate::middleware::auth::AuthContext;
 use crate::middleware::tenant::TenantContext;
-
-/// The pseudo-capability named in 403s for these org-admin-only writes
-/// (`board_id: null` — the A-0006 tenant-config fallback).
-const MANAGE: &str = "manage_teams";
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -338,7 +335,8 @@ pub(crate) async fn list_work_documents(
 }
 
 /// Create a team AND its delivery board (seeded from the system delivery
-/// defaults, slug `{slug}-delivery`) in one transaction. Org-admin-only.
+/// defaults, slug `{slug}-delivery`) in one transaction. An organization admin,
+/// or `manage_structure` on the organization (KAIROS-T-0337).
 ///
 /// The slug must match `^[a-z][a-z0-9_-]{1,62}$`, and it cannot have the
 /// form of a UUID (COLLIERY-T-0260). If not, the request is a 422
@@ -361,7 +359,7 @@ pub(crate) async fn list_work_documents(
     request_body = dto::CreateTeamRequest,
     responses(
         (status = 201, description = "Created; delivery_board_id names the team's new board", body = dto::Team),
-        (status = 403, description = "Not an org admin", body = kairos_client::types::ErrorEnvelope),
+        (status = 403, description = "Not an org admin, and no manage_structure on the organization", body = kairos_client::types::ErrorEnvelope),
         (status = 409, description = "A live team has the slug, a live board has the slug of the delivery board, or a live delivery board has the prefix", body = kairos_client::types::ErrorEnvelope),
         (status = 422, description = "Bad team_type, the slug does not have the form of a slug, or the code_prefix is absent or does not match the rule", body = kairos_client::types::ErrorEnvelope),
     ),
@@ -372,6 +370,24 @@ pub(crate) async fn create_team(
     Extension(tenant): Extension<TenantContext>,
     ApiJson(body): ApiJson<dto::CreateTeamRequest>,
 ) -> Result<(StatusCode, Json<dto::Team>), ApiError> {
+    let user = auth.user_id;
+    let slug = tenant.slug.clone();
+    let team = state
+        .blocking
+        .run(&tenant.slug, move |conn| create(conn, &slug, user, body))
+        .await?;
+    Ok((StatusCode::CREATED, Json(team)))
+}
+
+/// Create a team and its delivery board as `user`: the ONE implementation
+/// of `POST /api/teams` and of the MCP tool `create_team` (KAIROS-T-0337).
+/// The gate is [`require_structure`].
+pub(crate) fn create(
+    conn: &mut PgConnection,
+    slug: &str,
+    user: Uuid,
+    body: dto::CreateTeamRequest,
+) -> Result<dto::Team, ApiError> {
     let team_type = body
         .team_type
         .as_deref()
@@ -382,84 +398,74 @@ pub(crate) async fn create_team(
     // slug `{slug}-delivery` of the delivery board is a slug that the
     // server makes, so it gets no check.
     check_slug_form("team", &body.slug)?;
-    let user = auth.user_id;
-    let slug = tenant.slug.clone();
-    let team = state
-        .blocking
-        .run(&tenant.slug, move |conn| {
-            require_capability(conn, &slug, None, user, MANAGE)?;
-            run_in_transaction(conn, |conn| {
-                use kairos_db::schema::teams;
-                let team: Team = diesel::insert_into(teams::table)
-                    .values(NewTeam {
-                        name: body.name.clone(),
-                        slug: body.slug.clone(),
-                        team_type,
-                    })
-                    .returning(Team::as_returning())
-                    .get_result(conn)
-                    .map_err(|e| {
-                        if is_unique_violation(&e) {
-                            ApiError::conflict(format!(
-                                "A live team has the slug {:?} already.",
-                                body.slug
-                            ))
-                        } else {
-                            ApiError::internal(e)
-                        }
-                    })?;
-                // The T-0010 deferred decision: the team's delivery board
-                // is created WITH the team, from the seeded defaults.
-                let board = boards::create_board(
-                    conn,
-                    BoardLevel::Delivery,
-                    &format!("{} Delivery", body.name),
-                    &format!("{}-delivery", body.slug),
-                    // COLLIERY-T-3099: the prefix of the delivery board.
-                    boards::CodePrefix::Given(&body.code_prefix),
-                    Some(team.id),
-                    Some(user),
-                )
-                .map_err(|e| match e {
-                    // COLLIERY-T-0255: the caller sent the slug of the
-                    // team, and not that of the board. The refusal says
-                    // where the slug of the board comes from. The
-                    // transaction rolls back, so no team is written.
-                    boards::BoardError::SlugTaken {
-                        slug,
-                        board_id,
-                        board_name,
-                    } => ApiError::conflict(format!(
-                        "The delivery board of the team gets the slug {slug:?}. The live \
-                         board {board_name:?} has that slug. Send a different slug for the \
-                         team, or change the slug of that board."
-                    ))
-                    .with_details(serde_json::json!({
-                        "slug": slug,
-                        "board": { "id": board_id, "name": board_name },
-                    })),
-                    e => map_config_error(e),
-                })?;
-                // KAIROS-T-0082: a team is never born bare — the page
-                // scaffold (charter, support processes, documentation
-                // tree) seeds in this same transaction.
-                kairos_db::team_pages::seed_team_scaffold(conn, team.id, user)
-                    .map_err(ApiError::internal)?;
-                log_team_activity(
-                    conn,
-                    user,
-                    ActivityAction::Create,
-                    team.id,
-                    format!("team:{} delivery_board:{}", team.slug, board.slug),
-                )?;
-                Ok(team_to_dto(team, Some(board.id)))
+    require_structure(conn, slug, user)?;
+    run_in_transaction(conn, |conn| {
+        use kairos_db::schema::teams;
+        let team: Team = diesel::insert_into(teams::table)
+            .values(NewTeam {
+                name: body.name.clone(),
+                slug: body.slug.clone(),
+                team_type,
             })
-        })
-        .await?;
-    Ok((StatusCode::CREATED, Json(team)))
+            .returning(Team::as_returning())
+            .get_result(conn)
+            .map_err(|e| {
+                if is_unique_violation(&e) {
+                    ApiError::conflict(format!("A live team has the slug {:?} already.", body.slug))
+                } else {
+                    ApiError::internal(e)
+                }
+            })?;
+        // The T-0010 deferred decision: the team's delivery board
+        // is created WITH the team, from the seeded defaults.
+        let board = boards::create_board(
+            conn,
+            BoardLevel::Delivery,
+            &format!("{} Delivery", body.name),
+            &format!("{}-delivery", body.slug),
+            // COLLIERY-T-3099: the prefix of the delivery board.
+            boards::CodePrefix::Given(&body.code_prefix),
+            Some(team.id),
+            Some(user),
+        )
+        .map_err(|e| match e {
+            // COLLIERY-T-0255: the caller sent the slug of the
+            // team, and not that of the board. The refusal says
+            // where the slug of the board comes from. The
+            // transaction rolls back, so no team is written.
+            boards::BoardError::SlugTaken {
+                slug,
+                board_id,
+                board_name,
+            } => ApiError::conflict(format!(
+                "The delivery board of the team gets the slug {slug:?}. The live \
+                 board {board_name:?} has that slug. Send a different slug for the \
+                 team, or change the slug of that board."
+            ))
+            .with_details(serde_json::json!({
+                "slug": slug,
+                "board": { "id": board_id, "name": board_name },
+            })),
+            e => map_config_error(e),
+        })?;
+        // KAIROS-T-0082: a team is never born bare — the page
+        // scaffold (charter, support processes, documentation
+        // tree) seeds in this same transaction.
+        kairos_db::team_pages::seed_team_scaffold(conn, team.id, user)
+            .map_err(ApiError::internal)?;
+        log_team_activity(
+            conn,
+            user,
+            ActivityAction::Create,
+            team.id,
+            format!("team:{} delivery_board:{}", team.slug, board.slug),
+        )?;
+        Ok(team_to_dto(team, Some(board.id)))
+    })
 }
 
-/// Update a team (name/slug/team_type). Org-admin-only. The delivery
+/// Update a team (name/slug/team_type). An organization admin, or
+/// `manage_structure` on the organization (KAIROS-T-0337). The delivery
 /// board's name/slug are independent and unchanged.
 ///
 /// A new slug must match `^[a-z][a-z0-9_-]{1,62}$`, and it cannot have the
@@ -474,7 +480,7 @@ pub(crate) async fn create_team(
     request_body = dto::UpdateTeamRequest,
     responses(
         (status = 200, description = "Updated", body = dto::Team),
-        (status = 403, description = "Not an org admin", body = kairos_client::types::ErrorEnvelope),
+        (status = 403, description = "Not an org admin, and no manage_structure on the organization", body = kairos_client::types::ErrorEnvelope),
         (status = 404, description = "Unknown team", body = kairos_client::types::ErrorEnvelope),
         (status = 409, description = "Slug already in use", body = kairos_client::types::ErrorEnvelope),
         (status = 422, description = "Bad team_type, empty body, or the new slug does not have the form of a slug", body = kairos_client::types::ErrorEnvelope),
@@ -504,7 +510,7 @@ pub(crate) async fn update_team(
         .blocking
         .run(&tenant.slug, move |conn| {
             use kairos_db::schema::teams::dsl;
-            require_capability(conn, &slug, None, user, MANAGE)?;
+            require_structure(conn, &slug, user)?;
             let team = load_team(conn, team_id)?;
             // COLLIERY-T-0260: the form of a slug that the caller sent. A
             // team keeps a slug from before the rule, so a request that
@@ -555,7 +561,8 @@ pub(crate) async fn update_team(
 }
 
 /// Soft-delete a team and its delivery board together. The board must be
-/// empty (422 `BOARD_NOT_EMPTY` — the T-0010 empty rule). Org-admin-only.
+/// empty (422 `BOARD_NOT_EMPTY` — the T-0010 empty rule). An organization
+/// admin, or `manage_structure` on the organization (KAIROS-T-0337).
 ///
 /// A team of old data can have 2 or more live delivery boards. The delete
 /// applies the rule to each board, and it removes each board with the team
@@ -567,7 +574,7 @@ pub(crate) async fn update_team(
     params(("id" = String, Path, description = "Team id (UUID)")),
     responses(
         (status = 200, description = "Team and delivery board soft-deleted", body = dto::OrgDeleteResponse),
-        (status = 403, description = "Not an org admin", body = kairos_client::types::ErrorEnvelope),
+        (status = 403, description = "Not an org admin, and no manage_structure on the organization", body = kairos_client::types::ErrorEnvelope),
         (status = 404, description = "Unknown team", body = kairos_client::types::ErrorEnvelope),
         (status = 422, description = "BOARD_NOT_EMPTY, or BOARD_OWNS_DOCUMENTS", body = kairos_client::types::ErrorEnvelope),
     ),
@@ -586,7 +593,7 @@ pub(crate) async fn delete_team(
         .run(&tenant.slug, move |conn| {
             use kairos_db::schema::boards::dsl as boards_dsl;
             use kairos_db::schema::teams::dsl;
-            require_capability(conn, &slug, None, user, MANAGE)?;
+            require_structure(conn, &slug, user)?;
             let team = load_team(conn, team_id)?;
             // KAIROS-T-0112: a team that still OWNS repositories cannot go —
             // symmetric with the repository delete guard; re-home them first.
@@ -750,7 +757,8 @@ pub(crate) async fn list_members(
     Ok(Json(members))
 }
 
-/// Add a member to a team. Org-admin-only.
+/// Add a member to a team. An organization admin, or `manage_structure`
+/// on the organization (KAIROS-T-0337).
 #[utoipa::path(
     post,
     path = "/api/teams/{id}/members",
@@ -761,7 +769,7 @@ pub(crate) async fn list_members(
     request_body = dto::AddTeamMemberRequest,
     responses(
         (status = 201, description = "Added", body = dto::TeamMember),
-        (status = 403, description = "Not an org admin", body = kairos_client::types::ErrorEnvelope),
+        (status = 403, description = "Not an org admin, and no manage_structure on the organization", body = kairos_client::types::ErrorEnvelope),
         (status = 404, description = "Unknown team", body = kairos_client::types::ErrorEnvelope),
         (status = 409, description = "Already a member", body = kairos_client::types::ErrorEnvelope),
         (status = 422, description = "Unknown user", body = kairos_client::types::ErrorEnvelope),
@@ -781,50 +789,64 @@ pub(crate) async fn add_member(
     let member = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            use kairos_db::schema::team_members::dsl;
-            require_capability(conn, &slug, None, user, MANAGE)?;
-            load_team(conn, team_id)?;
-            let identity = require_user_exists(conn, target)?;
-            diesel::insert_into(dsl::team_members)
-                .values(NewTeamMember {
-                    team_id,
-                    user_id: target,
-                })
-                .execute(conn)
-                .map_err(|e| {
-                    if is_unique_violation(&e) {
-                        ApiError::conflict(format!(
-                            "The user {target} is a member of the team {team_id} already."
-                        ))
-                    } else {
-                        ApiError::internal(e)
-                    }
-                })?;
-            let joined_at: chrono::DateTime<chrono::Utc> = dsl::team_members
-                .filter(dsl::team_id.eq(team_id))
-                .filter(dsl::user_id.eq(target))
-                .select(dsl::joined_at)
-                .first(conn)
-                .map_err(ApiError::internal)?;
-            log_team_activity(
-                conn,
-                user,
-                ActivityAction::Create,
-                team_id,
-                format!("team_member_add:{}", identity.email),
-            )?;
-            Ok(dto::TeamMember {
-                user_id: target.to_string(),
-                email: identity.email,
-                display_name: identity.display_name,
-                joined_at: joined_at.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
-            })
+            add_member_as(conn, &slug, user, team_id, target)
         })
         .await?;
     Ok((StatusCode::CREATED, Json(member)))
 }
 
-/// Remove a member from a team. Org-admin-only.
+/// Add `target` to the team `team_id` as `user`: the ONE implementation of
+/// `POST /api/teams/{id}/members` and of the MCP tool `add_team_member`
+/// (KAIROS-T-0337). The gate is [`require_structure`].
+pub(crate) fn add_member_as(
+    conn: &mut PgConnection,
+    slug: &str,
+    user: Uuid,
+    team_id: Uuid,
+    target: Uuid,
+) -> Result<dto::TeamMember, ApiError> {
+    use kairos_db::schema::team_members::dsl;
+    require_structure(conn, slug, user)?;
+    load_team(conn, team_id)?;
+    let identity = require_user_exists(conn, target)?;
+    diesel::insert_into(dsl::team_members)
+        .values(NewTeamMember {
+            team_id,
+            user_id: target,
+        })
+        .execute(conn)
+        .map_err(|e| {
+            if is_unique_violation(&e) {
+                ApiError::conflict(format!(
+                    "The user {target} is a member of the team {team_id} already."
+                ))
+            } else {
+                ApiError::internal(e)
+            }
+        })?;
+    let joined_at: chrono::DateTime<chrono::Utc> = dsl::team_members
+        .filter(dsl::team_id.eq(team_id))
+        .filter(dsl::user_id.eq(target))
+        .select(dsl::joined_at)
+        .first(conn)
+        .map_err(ApiError::internal)?;
+    log_team_activity(
+        conn,
+        user,
+        ActivityAction::Create,
+        team_id,
+        format!("team_member_add:{}", identity.email),
+    )?;
+    Ok(dto::TeamMember {
+        user_id: target.to_string(),
+        email: identity.email,
+        display_name: identity.display_name,
+        joined_at: joined_at.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+    })
+}
+
+/// Remove a member from a team. An organization admin, or
+/// `manage_structure` on the organization (KAIROS-T-0337).
 #[utoipa::path(
     delete,
     path = "/api/teams/{id}/members/{user_id}",
@@ -837,7 +859,7 @@ pub(crate) async fn add_member(
     ),
     responses(
         (status = 200, description = "Removed", body = dto::OrgDeleteResponse),
-        (status = 403, description = "Not an org admin", body = kairos_client::types::ErrorEnvelope),
+        (status = 403, description = "Not an org admin, and no manage_structure on the organization", body = kairos_client::types::ErrorEnvelope),
         (status = 404, description = "Unknown team or not a member", body = kairos_client::types::ErrorEnvelope),
     ),
 )]
@@ -855,7 +877,7 @@ pub(crate) async fn remove_member(
         .blocking
         .run(&tenant.slug, move |conn| {
             use kairos_db::schema::team_members::dsl;
-            require_capability(conn, &slug, None, user, MANAGE)?;
+            require_structure(conn, &slug, user)?;
             load_team(conn, team_id)?;
             let deleted = diesel::delete(
                 dsl::team_members

@@ -70,9 +70,27 @@ pub enum AbacError {
         user_id: Uuid,
         capability: String,
     },
+    /// The principal has the grant of `manage_structure` at this scope
+    /// already (KAIROS-T-0337). No row was written.
+    #[error("The user {user_id} has the capability \"manage_structure\" {} already.", scope_words(*board_id))]
+    StructureAlreadyGranted {
+        user_id: Uuid,
+        board_id: Option<Uuid>,
+    },
+    /// No grant of `manage_structure` has this id (KAIROS-T-0337).
+    #[error("No grant of the capability \"manage_structure\" has the id {0}.")]
+    StructureGrantNotFound(Uuid),
     /// Any other database error.
     #[error("The database gave an error: {0}.")]
     Database(#[from] DieselError),
+}
+
+/// The words for the scope of a grant of `manage_structure`.
+fn scope_words(board_id: Option<Uuid>) -> String {
+    match board_id {
+        Some(board_id) => format!("on the board {board_id}"),
+        None => "at the organization".to_string(),
+    }
 }
 
 #[derive(QueryableByName)]
@@ -225,7 +243,166 @@ pub fn authorize(
     if required == kairos_core::abac::FILE_BACKLOG {
         return check_file_backlog(conn, org_slug, board_id, user_id);
     }
-    check_capability(conn, board_id, user_id, required)
+    if check_capability(conn, board_id, user_id, required)? {
+        return Ok(true);
+    }
+    // KAIROS-T-0337: a grant of `manage_structure` on this board or at the
+    // organization covers the configuration and the members of the board.
+    Ok(kairos_core::abac::structure_covers(required)
+        && holds_structure(conn, user_id, Some(board_id))?)
+}
+
+// ---------------------------------------------------------------------------
+// The structure capability (KAIROS-T-0337)
+// ---------------------------------------------------------------------------
+
+/// One grant of `manage_structure` ([`kairos_core::abac::MANAGE_STRUCTURE`]):
+/// a row of `structure_grants`. `board_id` `None` is a grant at the
+/// organization.
+#[derive(Debug, Clone, PartialEq, Eq, Queryable, Selectable)]
+#[diesel(table_name = crate::schema::structure_grants)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+pub struct StructureGrant {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub board_id: Option<Uuid>,
+    pub granted_by: Uuid,
+    pub granted_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Whether `user_id` holds `manage_structure` at the scope `board_id`.
+///
+/// - `None`: the organization. Only a grant at the organization counts.
+/// - `Some(board)`: that board. A grant at the organization or a grant on
+///   that board counts. A grant on a different board does not.
+///
+/// This does not look at the role: the caller checks the organization
+/// admin first, as [`authorize`] does. No glob is read: the grants are not
+/// rows of `board_member_capabilities`.
+pub fn holds_structure(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+    board_id: Option<Uuid>,
+) -> Result<bool, AbacError> {
+    use crate::schema::structure_grants::dsl;
+    let query = dsl::structure_grants.filter(dsl::user_id.eq(user_id));
+    let held: bool = match board_id {
+        None => diesel::select(diesel::dsl::exists(query.filter(dsl::board_id.is_null())))
+            .get_result(conn)?,
+        Some(board_id) => diesel::select(diesel::dsl::exists(
+            query.filter(dsl::board_id.is_null().or(dsl::board_id.eq(board_id))),
+        ))
+        .get_result(conn)?,
+    };
+    Ok(held)
+}
+
+/// The grants of `manage_structure` of one principal: the grant at the
+/// organization first, then the grants on boards (live boards only).
+pub fn structure_grants_of(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+) -> Result<Vec<StructureGrant>, AbacError> {
+    Ok(list_structure_grants(conn)?
+        .into_iter()
+        .filter(|grant| grant.user_id == user_id)
+        .collect())
+}
+
+/// Each grant of `manage_structure` of the tenant, on live boards and at
+/// the organization: the grants at the organization first, then by board,
+/// then by the time of the grant.
+pub fn list_structure_grants(conn: &mut PgConnection) -> Result<Vec<StructureGrant>, AbacError> {
+    use crate::schema::{boards, structure_grants as sg};
+    Ok(sg::table
+        .left_join(boards::table)
+        .filter(sg::board_id.is_null().or(boards::deleted_at.is_null()))
+        .order((sg::board_id.asc().nulls_first(), sg::granted_at.asc()))
+        .select(StructureGrant::as_select())
+        .load(conn)?)
+}
+
+/// Grant `manage_structure` to `user_id` at the scope `board_id` (`None` =
+/// the organization), and write the `capability_grant` activity row with
+/// `granted_by` as the actor, in one transaction. A second grant at the same
+/// scope is [`AbacError::StructureAlreadyGranted`].
+///
+/// The caller decides who may grant: an organization admin only
+/// (KAIROS-T-0337, decision 2). A holder of the capability cannot grant it.
+pub fn grant_structure(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+    board_id: Option<Uuid>,
+    granted_by: Uuid,
+) -> Result<StructureGrant, AbacError> {
+    use crate::schema::structure_grants::dsl;
+    conn.transaction::<_, AbacError, _>(|conn| {
+        let inserted = diesel::insert_into(dsl::structure_grants)
+            .values((
+                dsl::user_id.eq(user_id),
+                dsl::board_id.eq(board_id),
+                dsl::granted_by.eq(granted_by),
+            ))
+            .returning(StructureGrant::as_returning())
+            .get_result(conn);
+        let grant = match inserted {
+            Err(DieselError::DatabaseError(DatabaseErrorKind::UniqueViolation, _)) => {
+                return Err(AbacError::StructureAlreadyGranted { user_id, board_id });
+            }
+            other => other?,
+        };
+        log_structure_activity(conn, granted_by, ActivityAction::CapabilityGrant, &grant)?;
+        Ok(grant)
+    })
+}
+
+/// Revoke the grant `grant_id` of `manage_structure`, and write the
+/// `capability_revoke` activity row with `revoked_by` as the actor, in one
+/// transaction. An unknown id is [`AbacError::StructureGrantNotFound`].
+pub fn revoke_structure(
+    conn: &mut PgConnection,
+    grant_id: Uuid,
+    revoked_by: Uuid,
+) -> Result<StructureGrant, AbacError> {
+    use crate::schema::structure_grants::dsl;
+    conn.transaction::<_, AbacError, _>(|conn| {
+        let grant = diesel::delete(dsl::structure_grants.filter(dsl::id.eq(grant_id)))
+            .returning(StructureGrant::as_returning())
+            .get_result(conn)
+            .optional()?
+            .ok_or(AbacError::StructureGrantNotFound(grant_id))?;
+        log_structure_activity(conn, revoked_by, ActivityAction::CapabilityRevoke, &grant)?;
+        Ok(grant)
+    })
+}
+
+/// The activity row of a grant or a revoke of `manage_structure`. A grant on
+/// a board is an entry of the board (as a board capability is); a grant at
+/// the organization is an entry of the type `organization`, with no entity.
+fn log_structure_activity(
+    conn: &mut PgConnection,
+    actor_id: Uuid,
+    action: ActivityAction,
+    grant: &StructureGrant,
+) -> Result<(), DieselError> {
+    let (entity_type, scope) = match grant.board_id {
+        Some(board_id) => ("board", format!("board:{board_id}")),
+        None => ("organization", "organization".to_string()),
+    };
+    diesel::insert_into(crate::schema::activity_log::table)
+        .values(NewActivityLogEntry {
+            actor_id,
+            action,
+            entity_id: grant.board_id,
+            entity_type: Some(entity_type.to_string()),
+            details: format!(
+                "capability:{} user:{} scope:{scope}",
+                kairos_core::abac::MANAGE_STRUCTURE,
+                grant.user_id
+            ),
+        })
+        .execute(conn)?;
+    Ok(())
 }
 
 /// Insert one `activity_log` row (current tenant schema; same shape as
