@@ -64,10 +64,20 @@
 //! of a first build at most, and only one model run uses the
 //! `KAIROS_CODE_INDEX_THREADS` threads at a time.
 //!
-//! The work database of a first build is in `first-builds/` of
-//! `KAIROS_CODE_INDEX_DIR`, and each summary is written to it when it is
-//! made. After a restart, the next first build of the repository uses those
-//! summaries again. A repository with `code_index_build = off` gets no build.
+//! Both lanes keep their summaries across a restart (KAIROS-T-0335). The
+//! work database of a first build is in `first-builds/` of
+//! `KAIROS_CODE_INDEX_DIR`, and the work database of an update is in
+//! `updates/`. Each summary is written to it when it is made. After a
+//! restart, the next build of the repository uses those summaries again:
+//! a first build continues in its work database, and an update copies the
+//! summaries of the old work database into the new one before it starts.
+//! The keys of a summary name its input, so a summary of a build that did
+//! not end is right for each later build that needs its key. An index
+//! stores only the summaries that its structure uses, so a summary that no
+//! later index needs never reaches the pool of the repository. The run
+//! row counts the summaries that a run reused. The builder removes a work
+//! database after it stores the index. A repository with
+//! `code_index_build = off` gets no build.
 //!
 //! # The runs
 //!
@@ -249,6 +259,16 @@ impl CodeIndexService {
     fn first_build_db(&self, tenant: &str, repo: &Repository) -> PathBuf {
         self.dir
             .join("first-builds")
+            .join(tenant)
+            .join(format!("{}.db", repo.id))
+    }
+
+    /// The work database of the update of `repo` (KAIROS-T-0335). It stays
+    /// after a failure or a restart, so that the next update reuses its
+    /// summaries.
+    fn update_db(&self, tenant: &str, repo: &Repository) -> PathBuf {
+        self.dir
+            .join("updates")
             .join(tenant)
             .join(format!("{}.db", repo.id))
     }
@@ -1270,6 +1290,11 @@ fn counts_of(report: &UpdateReport) -> runs::Counts {
                 + report.summary.files.summarized
                 + report.summary.modules.summarized,
         ),
+        summaries_reused: clamp(
+            report.summary.symbols.reused
+                + report.summary.files.reused
+                + report.summary.modules.reused,
+        ),
     }
 }
 
@@ -1724,9 +1749,13 @@ async fn build_repository(
     // The update, off the async threads: it runs rust-analyzer and the
     // model for minutes. It holds the gate for the whole build, so a first
     // build does not run a step at the same time (KAIROS-T-0318).
+    let db = service.update_db(tenant, &repo);
     let built = {
         let head = head.clone();
         let service = Arc::clone(service);
+        let db = db.clone();
+        let tenant = tenant.to_string();
+        let slug = repo.slug.clone();
         tokio::task::spawn_blocking(move || -> Result<_, String> {
             // The gate: the whole build for the embedded model; the
             // structure only for a hosted provider (KAIROS-T-0341), whose
@@ -1736,15 +1765,9 @@ async fn build_repository(
                 .prefix("kairos-code-index-")
                 .tempdir()
                 .map_err(|e| format!("no work folder: {e}"))?;
-            let db = work.path().join("index.db");
             let tree = work.path().join("tree");
             std::fs::create_dir(&tree).map_err(|e| format!("no tree folder: {e}"))?;
-            kairos_index::store::assemble(
-                &base.structure,
-                base.pool.into_iter().map(pool_row_of),
-                &db,
-            )
-            .map_err(|e| e.to_string())?;
+            prepare_update_db(&db, &base.structure, base.pool, &tenant, &slug)?;
             git::checkout_tree(&clone, &head, &tree).map_err(|e| e.to_string())?;
             let options = UpdateOptions {
                 // The server runs SCIP for each push (COLLIERY-I-0264,
@@ -1803,9 +1826,54 @@ async fn build_repository(
         return done(outcome, note);
     }
     record_end(blocking, tenant, run, Ok((counts_of(&report), model_name))).await;
+    remove_database(&db);
     outcome.report = Some(report);
     outcome.elapsed = started.elapsed();
     outcome
+}
+
+/// Write the work database `db` of an update (KAIROS-T-0335): the
+/// structure of the base and the pool of the repository, and the summaries
+/// of the work database of an update that did not end, when `db` has one.
+/// Those summaries are of keys that no index stores yet: the model made
+/// them before a restart or a failure. The error is the text of a failed
+/// run.
+fn prepare_update_db(
+    db: &Path,
+    structure: &[u8],
+    pool: Vec<kairos_db::code_indexes::PoolRow>,
+    tenant: &str,
+    slug: &str,
+) -> Result<(), String> {
+    if let Some(parent) = db.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("no folder {}: {e}", parent.display()))?;
+    }
+    let mut next = db.as_os_str().to_owned();
+    next.push(".next");
+    let next = PathBuf::from(next);
+    remove_database(&next);
+    kairos_index::store::assemble(structure, pool.into_iter().map(pool_row_of), &next)
+        .map_err(|e| e.to_string())?;
+    if db.is_file() {
+        // A work database that cannot give its summaries (another schema
+        // version, the vectors of another model) is not used.
+        match kairos_index::store::copy_pool(db, &next) {
+            Ok(()) => tracing::info!(
+                tenant,
+                repository = slug,
+                "code index update reuses the summaries of an update that did not end"
+            ),
+            Err(e) => tracing::warn!(
+                tenant,
+                repository = slug,
+                error = %e,
+                "code index update cannot reuse the summaries of an update that did not end"
+            ),
+        }
+    }
+    remove_database(db);
+    std::fs::rename(&next, db).map_err(|e| format!("no work database {}: {e}", db.display()))
 }
 
 /// A full build of one repository: the first build of a repository that

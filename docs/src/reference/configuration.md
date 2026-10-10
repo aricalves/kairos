@@ -395,10 +395,15 @@ the builder uses the `KAIROS_CODE_INDEX_THREADS` threads one time, not 2
 times. When the 2 lanes need the model at the same time, they use one copy
 of it in memory.
 
-A first build keeps its work in `KAIROS_CODE_INDEX_DIR/first-builds/`. Each
-summary goes into that file when the model writes it. If the server stops
-during a first build, the next first build of the repository uses those
-summaries again. After the builder stores the index, it removes the file.
+A first build keeps its work in `KAIROS_CODE_INDEX_DIR/first-builds/`. An
+update keeps its work in `KAIROS_CODE_INDEX_DIR/updates/`. Each summary goes
+into that file when the model writes it. If the server stops during a build,
+the next build of the repository uses those summaries again. Thus a restart
+during a build of some hours does not lose the work of the model.
+
+After the builder stores the index, it removes the file. An index keeps only the
+summaries that its code needs. The run shows the number of summaries that it
+made and the number that it reused.
 
 If a first build of a commit fails, the builder does not try that commit
 again. It tries again when the head moves or when the server starts again.

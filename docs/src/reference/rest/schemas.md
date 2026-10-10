@@ -315,6 +315,7 @@ One run of the code index builder (KAIROS-T-0331). The trigger says what started
 | `requested_by` | `string`, nullable | no | The user who asked for the run or sent the upload. None for the builder. |
 | `started_at` | `string` | yes | When the run started, RFC 3339. |
 | `summaries_made` | `integer`, nullable | no | The summaries that the run made with the model. |
+| `summaries_reused` | `integer`, nullable | no | The summaries that the run reused with no model call (KAIROS-T-0335): from the pool of the repository, or from the work file of a run that did not end. |
 | `symbols` | `integer`, nullable | no |  |
 | `trigger` | `string` | yes | `push`, `first`, `request` or `upload`. |
 

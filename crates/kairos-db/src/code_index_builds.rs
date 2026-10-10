@@ -64,6 +64,10 @@ pub struct Build {
     /// a run from before that version, and for a run that ended when it
     /// started (an upload, a failure before the run).
     pub server_instance: Option<Uuid>,
+    /// The summaries that the run reused, with no model call
+    /// (KAIROS-T-0335): from the pool of the repository, or from the work
+    /// file of a run that did not end.
+    pub summaries_reused: Option<i32>,
 }
 
 #[derive(Insertable)]
@@ -85,6 +89,7 @@ pub struct Counts {
     pub symbols: i32,
     pub edges: i32,
     pub summaries_made: i32,
+    pub summaries_reused: i32,
 }
 
 /// Start a run: a `running` row. `trigger` is one of [`TRIGGERS`].
@@ -137,6 +142,7 @@ pub fn end_ok(
             code_index_builds::symbols.eq(counts.map(|c| c.symbols)),
             code_index_builds::edges.eq(counts.map(|c| c.edges)),
             code_index_builds::summaries_made.eq(counts.map(|c| c.summaries_made)),
+            code_index_builds::summaries_reused.eq(counts.map(|c| c.summaries_reused)),
             code_index_builds::finished_at.eq(diesel::dsl::now),
         ))
         .returning(Build::as_select())

@@ -2323,3 +2323,196 @@ async fn a_busy_repository_is_not_built_twice_in_a_row() {
     let outcomes = w.sweep_with(summarizers).await;
     assert_eq!(built(&outcomes).len(), 2, "{outcomes:?}");
 }
+
+// ===========================================================================
+// KAIROS-T-0335: an update keeps the summaries that it has made
+// ===========================================================================
+
+/// The fake summarizer, which records the key of each summary and stops
+/// the build (a panic of its thread, as when the server stops) at the call
+/// after `limit` summaries.
+#[derive(Clone)]
+struct StoppingSummarizers {
+    keys: Arc<Mutex<Vec<String>>>,
+    limit: usize,
+}
+
+struct StoppingSummarizer {
+    inner: FakeSummarizer,
+    keys: Arc<Mutex<Vec<String>>>,
+    limit: usize,
+}
+
+impl kairos_index::Summarizer for StoppingSummarizer {
+    fn model(&self) -> String {
+        self.inner.model()
+    }
+
+    fn summarize(&mut self, request: &kairos_index::SummaryRequest) -> Result<String, String> {
+        let mut keys = self.keys.lock().unwrap();
+        if keys.len() == self.limit {
+            drop(keys);
+            panic!("the server stops during the update");
+        }
+        keys.push(request.key.clone());
+        self.inner.summarize(request)
+    }
+}
+
+impl SummarizerSource for StoppingSummarizers {
+    fn run(
+        &self,
+        job: &mut dyn FnMut(
+            &mut dyn kairos_index::Summarizer,
+        )
+            -> Result<kairos_index::UpdateReport, kairos_index::IndexError>,
+    ) -> Result<kairos_index::UpdateReport, kairos_index::IndexError> {
+        job(&mut StoppingSummarizer {
+            inner: FakeSummarizer::default(),
+            keys: Arc::clone(&self.keys),
+            limit: self.limit,
+        })
+    }
+
+    fn model_name(&self) -> String {
+        FakeSummarizer::default().model
+    }
+}
+
+/// A commit of payments-api that adds a file of 6 functions.
+fn commit_extra(dir: &Path) -> String {
+    let code: String = (0..6)
+        .map(|i| format!("def extra_{i}(x):\n    return x - {i}\n\n\n"))
+        .collect();
+    write(dir, "pkg/extra.py", &code);
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "extra"]);
+    git(dir, &["rev-parse", "HEAD"])
+}
+
+/// The keys of the summary pool of payments-api in Kairos.
+fn pool_keys(w: &mut World) -> BTreeSet<String> {
+    use kairos_db::schema::code_index_summaries::dsl;
+    dsl::code_index_summaries
+        .filter(dsl::repository_id.eq(w.repo_id))
+        .select(dsl::key)
+        .load::<String>(&mut w.conn)
+        .unwrap()
+        .into_iter()
+        .collect()
+}
+
+/// An update stopped after N summaries: the next update makes only the
+/// summaries that were not made, and its run row counts the reused ones.
+#[tokio::test]
+async fn the_next_update_makes_only_the_summaries_that_a_stopped_update_did_not_make() {
+    // Given an index of A, and a commit B with new code
+    let w = World::new("kairos_code_index_t0335_resume").await;
+    let a = w.a.clone();
+    w.bob
+        .upload_code_index("payments-api", &a, Some("main"), w.index(&a))
+        .await
+        .expect("the index of A");
+    let b = commit_extra(&w.git);
+    let new_keys: BTreeSet<String> = keys_in(&w.index(&b))
+        .difference(&keys_in(&w.index(&a)))
+        .cloned()
+        .collect();
+    assert!(new_keys.len() > 4, "{new_keys:?}");
+
+    // When the server stops during the update of B, after 3 summaries
+    const MADE: usize = 3;
+    let made = Arc::new(Mutex::new(Vec::new()));
+    let outcomes = w
+        .sweep_with(Arc::new(StoppingSummarizers {
+            keys: Arc::clone(&made),
+            limit: MADE,
+        }))
+        .await;
+    assert!(outcomes[0].report.is_none(), "{outcomes:?}");
+    let made: BTreeSet<String> = made.lock().unwrap().iter().cloned().collect();
+    assert_eq!(made.len(), MADE);
+    let work = databases_below(&w.work().join("clones").join("updates"));
+    assert_eq!(work.len(), 1, "the work database stays: {work:?}");
+
+    // And the next update runs
+    let outcomes = w.sweep().await;
+
+    // Then it makes only the summaries that were not made
+    let report = outcomes[0].report.as_ref().expect("the update of B");
+    assert_eq!(outcomes[0].commit, b);
+    let again: BTreeSet<String> = report.summary.calls.iter().map(|c| c.key.clone()).collect();
+    assert!(again.is_disjoint(&made), "made again: {again:?}");
+    let made_now = report.summary.symbols.summarized
+        + report.summary.files.summarized
+        + report.summary.modules.summarized;
+    let reused =
+        report.summary.symbols.reused + report.summary.files.reused + report.summary.modules.reused;
+    println!(
+        "{} new keys: {MADE} made before the stop, {made_now} made after it, {reused} reused",
+        new_keys.len()
+    );
+    assert_eq!(made_now, new_keys.len() - MADE);
+    let union: BTreeSet<String> = again.union(&made).cloned().collect();
+    assert_eq!(union, new_keys);
+
+    // And the run row counts the summaries that it made and reused
+    let runs = runs_of(&w).await;
+    assert_eq!(runs[0].outcome, "ok", "{runs:?}");
+    assert_eq!(runs[0].summaries_made, Some(made_now as i32));
+    assert_eq!(runs[0].summaries_reused, Some(reused as i32));
+    assert!(reused >= MADE, "{reused}");
+    assert_eq!(runs[1].outcome, "failed", "the stopped run: {runs:?}");
+
+    // And the index of B is the index that a checkout of B builds, and the
+    // work database is removed
+    let built = w
+        .alice
+        .download_code_index("payments-api", &b)
+        .await
+        .expect("the index of B downloads");
+    assert_eq!(content_of(&built), content_of(&w.index(&b)));
+    let work = databases_below(&w.work().join("clones").join("updates"));
+    assert!(work.is_empty(), "{work:?}");
+}
+
+/// A summary of an update that did not end does not appear in an index
+/// that does not need its key.
+#[tokio::test]
+async fn a_summary_of_a_stopped_update_stays_out_of_an_index_that_does_not_need_it() {
+    // Given an update of B that stopped after 3 summaries
+    let mut w = World::new("kairos_code_index_t0335_unused").await;
+    let a = w.a.clone();
+    w.bob
+        .upload_code_index("payments-api", &a, Some("main"), w.index(&a))
+        .await
+        .expect("the index of A");
+    commit_extra(&w.git);
+    let made = Arc::new(Mutex::new(Vec::new()));
+    w.sweep_with(Arc::new(StoppingSummarizers {
+        keys: Arc::clone(&made),
+        limit: 3,
+    }))
+    .await;
+    let made: BTreeSet<String> = made.lock().unwrap().iter().cloned().collect();
+    assert_eq!(made.len(), 3);
+
+    // When the code of B goes away before the next update, and the head
+    // is C
+    git(&w.git, &["rm", "-q", "pkg/extra.py"]);
+    git(&w.git, &["commit", "-q", "-m", "no extra"]);
+    let c = commit_c(&w.git);
+    let outcomes = w.sweep().await;
+    assert!(outcomes[0].report.is_some(), "{outcomes:?}");
+    assert_eq!(outcomes[0].commit, c);
+
+    // Then the index of C and the pool of the repository do not have them
+    let index_c = w
+        .alice
+        .download_code_index("payments-api", &c)
+        .await
+        .expect("the index of C downloads");
+    assert!(keys_in(&index_c).is_disjoint(&made));
+    assert!(pool_keys(&mut w).is_disjoint(&made));
+    assert_eq!(content_of(&index_c), content_of(&w.index(&c)));
+}

@@ -145,6 +145,7 @@ pub(crate) fn build_dto_of(run: Build) -> dto::CodeIndexBuild {
         symbols: run.symbols,
         edges: run.edges,
         summaries_made: run.summaries_made,
+        summaries_reused: run.summaries_reused,
         requested_by: run.requested_by.map(|u| u.to_string()),
         started_at: run.started_at.to_rfc3339(),
         finished_at: run.finished_at.map(|t| t.to_rfc3339()),
