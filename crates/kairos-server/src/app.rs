@@ -437,6 +437,12 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             crate::metrics::track_metrics,
         ))
+        // KAIROS-T-0370: the security headers on each response, the SPA,
+        // the API and each refusal (outermost).
+        .layer(axum_middleware::from_fn_with_state(
+            state.clone(),
+            crate::security_headers::security_headers,
+        ))
         .with_state(state)
 }
 

@@ -264,6 +264,17 @@ pub struct AppConfig {
     /// tab open, and short enough that a token copied off a laptop stops working
     /// without anyone noticing it needed to.
     pub session_ttl_secs: u64,
+    /// `KAIROS_API_KEY_TTL_DAYS` (KAIROS-T-0370): the default life of a new
+    /// API key or agent key, in days, default **90**. A request that names
+    /// `expires_at` sets its own expiry; a request with `no_expiry: true`
+    /// makes a key with no expiry. `0` turns the default off: a new key has
+    /// no expiry unless the request names one.
+    pub api_key_ttl_days: u32,
+    /// `KAIROS_API_KEY_ROTATION_GRACE_SECS` (KAIROS-T-0370): after a
+    /// rotation, the old secret of a key stays valid for this time, default
+    /// **86400** (1 day), so that the agents can change to the new secret.
+    /// `0` ends the old secret at the rotation.
+    pub api_key_rotation_grace_secs: u64,
     /// `KAIROS_BOOTSTRAP_ADMIN` (KAIROS-T-0204): the email of a first-boot admin,
     /// created **only when the deployment has no users at all**.
     ///
@@ -546,6 +557,27 @@ impl AppConfig {
                 })
             })
             .transpose()?;
+        // KAIROS-T-0370: the old keys decrypt during a rotation.
+        let secrets_key = match (secrets_key, get(crate::secrets::SECRETS_KEY_OLD_VAR)) {
+            (key, None) => key,
+            (Some(key), Some(raw)) => {
+                Some(
+                    key.with_old_base64(&raw)
+                        .map_err(|message| ConfigError::Invalid {
+                            var: crate::secrets::SECRETS_KEY_OLD_VAR,
+                            message,
+                        })?,
+                )
+            }
+            (None, Some(_)) => {
+                return Err(ConfigError::Invalid {
+                    var: crate::secrets::SECRETS_KEY_OLD_VAR,
+                    message: "is set, and KAIROS_SECRETS_KEY is not. Set the new key in \
+                              KAIROS_SECRETS_KEY and the old keys in KAIROS_SECRETS_KEY_OLD"
+                        .into(),
+                });
+            }
+        };
 
         Ok(Self {
             database_url,
@@ -582,6 +614,12 @@ impl AppConfig {
             trusted_proxy,
             local_auth,
             session_ttl_secs,
+            api_key_ttl_days: parse_num(&get, "KAIROS_API_KEY_TTL_DAYS", 90)?,
+            api_key_rotation_grace_secs: parse_num(
+                &get,
+                "KAIROS_API_KEY_ROTATION_GRACE_SECS",
+                24 * 60 * 60,
+            )?,
             bootstrap_admin,
             bootstrap_password,
             bootstrap_password_hash,
@@ -676,6 +714,46 @@ mod tests {
         // Local auth is off unless asked for (KAIROS-T-0203).
         assert!(!config.local_auth);
         assert_eq!(config.session_ttl_secs, 14 * 24 * 60 * 60);
+        // KAIROS-T-0370: a new key expires after 90 days; a rotation keeps
+        // the old secret for 1 day.
+        assert_eq!(config.api_key_ttl_days, 90);
+        assert_eq!(config.api_key_rotation_grace_secs, 24 * 60 * 60);
+    }
+
+    #[test]
+    fn the_key_settings_and_the_old_secrets_keys() {
+        let mut vars = MINIMAL.to_vec();
+        vars.push(("KAIROS_API_KEY_TTL_DAYS", "0"));
+        vars.push(("KAIROS_API_KEY_ROTATION_GRACE_SECS", "600"));
+        vars.push((
+            "KAIROS_SECRETS_KEY",
+            "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+        ));
+        vars.push((
+            "KAIROS_SECRETS_KEY_OLD",
+            "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+        ));
+        let config = AppConfig::from_lookup(lookup(&vars)).expect("valid config");
+        assert_eq!(config.api_key_ttl_days, 0);
+        assert_eq!(config.api_key_rotation_grace_secs, 600);
+        let key = config.secrets_key.expect("a key");
+        assert_eq!(
+            key.old_ids(),
+            vec![crate::secrets::SecretsKey::from_bytes([2u8; 32]).id()]
+        );
+
+        // Old keys with no new key: refused.
+        let mut vars = MINIMAL.to_vec();
+        vars.push((
+            "KAIROS_SECRETS_KEY_OLD",
+            "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+        ));
+        let err = AppConfig::from_lookup(lookup(&vars)).unwrap_err();
+        assert!(err.to_string().contains("KAIROS_SECRETS_KEY_OLD"), "{err}");
+
+        let mut vars = MINIMAL.to_vec();
+        vars.push(("KAIROS_API_KEY_TTL_DAYS", "ninety"));
+        assert!(AppConfig::from_lookup(lookup(&vars)).is_err());
     }
 
     // ---------------------------------------------------------------------

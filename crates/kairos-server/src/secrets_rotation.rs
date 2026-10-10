@@ -1,0 +1,157 @@
+//! The rotation of `KAIROS_SECRETS_KEY` (KAIROS-T-0370): encrypt each
+//! sealed row of a tenant again with the new key.
+//!
+//! The sealed columns (each with a `key_id`):
+//!
+//! - `repository_credentials`: the read token of a repository
+//!   (`ciphertext`, `nonce`, `key_id`; associated data
+//!   [`crate::secrets::credential_aad`]);
+//! - `code_index_settings`: the secret of the hosted summary model
+//!   (`summary_*`) and of the hosted vector model (`vector_*`; associated
+//!   data [`crate::api::org::code_index_settings::settings_aad`]).
+//!
+//! The webhook secrets of the forge connections are not stored: Kairos
+//! derives them from `KAIROS_WEBHOOK_SIGNING_KEY`, so they have nothing to
+//! encrypt again. The API keys are hashes, not sealed secrets.
+//!
+//! A row that the new key sealed is left as it is. A row that no key of
+//! the keyring opens is not changed, and the report names it: the operator
+//! sets that secret again.
+
+use diesel::pg::PgConnection;
+use diesel::prelude::*;
+use uuid::Uuid;
+
+use crate::secrets::{SecretsKey, credential_aad};
+
+/// What [`rotate_tenant`] did in one tenant.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RotationReport {
+    /// The rows that the new key seals now.
+    pub resealed: usize,
+    /// The rows that the new key sealed already.
+    pub current: usize,
+    /// The rows that no key of the keyring opens: `table.column (row)`.
+    pub failed: Vec<String>,
+}
+
+/// Encrypt each sealed row of the tenant `slug` again with the key that
+/// encrypts. One transaction for the tenant.
+pub fn rotate_tenant(
+    conn: &mut PgConnection,
+    slug: &str,
+    key: &SecretsKey,
+) -> Result<RotationReport, diesel::result::Error> {
+    let schema = kairos_db::tenant::tenant_schema_name(slug);
+    conn.transaction(|conn| {
+        diesel::sql_query(format!("SET LOCAL search_path TO \"{schema}\", public"))
+            .execute(conn)?;
+        let mut report = RotationReport::default();
+        rotate_credentials(conn, slug, key, &mut report)?;
+        rotate_code_index_settings(conn, slug, key, &mut report)?;
+        Ok(report)
+    })
+}
+
+fn rotate_credentials(
+    conn: &mut PgConnection,
+    slug: &str,
+    key: &SecretsKey,
+    report: &mut RotationReport,
+) -> Result<(), diesel::result::Error> {
+    use kairos_db::schema::repository_credentials as rc;
+    let rows: Vec<(Uuid, Vec<u8>, Vec<u8>, String)> = rc::table
+        .select((rc::repository_id, rc::ciphertext, rc::nonce, rc::key_id))
+        .for_update()
+        .load(conn)?;
+    for (repository_id, ciphertext, nonce, key_id) in rows {
+        if !key.needs_reseal(&key_id) {
+            report.current += 1;
+            continue;
+        }
+        let aad = credential_aad(slug, repository_id);
+        match key.open(&aad, &key_id, &nonce, &ciphertext) {
+            Ok(plain) => {
+                let sealed = key.seal(&aad, &plain);
+                diesel::update(rc::table.filter(rc::repository_id.eq(repository_id)))
+                    .set((
+                        rc::ciphertext.eq(sealed.ciphertext),
+                        rc::nonce.eq(sealed.nonce),
+                        rc::key_id.eq(sealed.key_id),
+                    ))
+                    .execute(conn)?;
+                report.resealed += 1;
+            }
+            Err(e) => report
+                .failed
+                .push(format!("repository_credentials ({repository_id}): {e}")),
+        }
+    }
+    Ok(())
+}
+
+/// The sealed secret of one field of `code_index_settings`.
+type SealedColumns = (Option<Vec<u8>>, Option<Vec<u8>>, Option<String>);
+
+fn rotate_code_index_settings(
+    conn: &mut PgConnection,
+    slug: &str,
+    key: &SecretsKey,
+    report: &mut RotationReport,
+) -> Result<(), diesel::result::Error> {
+    use kairos_db::schema::code_index_settings as cs;
+    let rows: Vec<(i32, SealedColumns, SealedColumns)> = cs::table
+        .select((
+            cs::id,
+            (
+                cs::summary_ciphertext,
+                cs::summary_nonce,
+                cs::summary_key_id,
+            ),
+            (cs::vector_ciphertext, cs::vector_nonce, cs::vector_key_id),
+        ))
+        .for_update()
+        .load(conn)?;
+    for (id, summary, vector) in rows {
+        for (field, sealed) in [("summary.secret", summary), ("vectors.secret", vector)] {
+            let (Some(ciphertext), Some(nonce), Some(key_id)) = sealed else {
+                continue;
+            };
+            if !key.needs_reseal(&key_id) {
+                report.current += 1;
+                continue;
+            }
+            let aad = crate::api::org::code_index_settings::settings_aad(slug, field);
+            let plain = match key.open(&aad, &key_id, &nonce, &ciphertext) {
+                Ok(plain) => plain,
+                Err(e) => {
+                    report
+                        .failed
+                        .push(format!("code_index_settings {field} ({id}): {e}"));
+                    continue;
+                }
+            };
+            let sealed = key.seal(&aad, &plain);
+            let target = cs::table.filter(cs::id.eq(id));
+            if field == "summary.secret" {
+                diesel::update(target)
+                    .set((
+                        cs::summary_ciphertext.eq(Some(sealed.ciphertext)),
+                        cs::summary_nonce.eq(Some(sealed.nonce)),
+                        cs::summary_key_id.eq(Some(sealed.key_id)),
+                    ))
+                    .execute(conn)?;
+            } else {
+                diesel::update(target)
+                    .set((
+                        cs::vector_ciphertext.eq(Some(sealed.ciphertext)),
+                        cs::vector_nonce.eq(Some(sealed.nonce)),
+                        cs::vector_key_id.eq(Some(sealed.key_id)),
+                    ))
+                    .execute(conn)?;
+            }
+            report.resealed += 1;
+        }
+    }
+    Ok(())
+}

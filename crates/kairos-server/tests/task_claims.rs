@@ -59,6 +59,7 @@ fn key_request(name: &str) -> CreateApiKeyRequest {
     CreateApiKeyRequest {
         name: name.into(),
         expires_at: None,
+        no_expiry: false,
     }
 }
 

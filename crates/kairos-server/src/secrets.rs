@@ -12,6 +12,13 @@
 //! now, [`SecretsKey::open`] says so ([`OpenError::OtherKey`]), and the
 //! operator knows to set the secret again. A decryption that fails with the
 //! same key is [`OpenError::Corrupt`]: the row was changed or moved.
+//!
+//! The key can be rotated (KAIROS-T-0370). A [`SecretsKey`] is a keyring:
+//! the key of `KAIROS_SECRETS_KEY` encrypts, and the old keys of
+//! `KAIROS_SECRETS_KEY_OLD` (a list, separated by commas) only decrypt. The
+//! command `kairos-server rotate-secrets` ([`crate::secrets_rotation`])
+//! encrypts each sealed row again with the new key. After it, the operator
+//! removes `KAIROS_SECRETS_KEY_OLD`.
 
 use base64::Engine as _;
 use ring::aead::{AES_256_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
@@ -22,17 +29,53 @@ use uuid::Uuid;
 /// The name of the setting, for the texts that name it.
 pub const SECRETS_KEY_VAR: &str = "KAIROS_SECRETS_KEY";
 
-/// The key of `KAIROS_SECRETS_KEY`. Its `Debug` shows only the fingerprint.
+/// The name of the setting of the old keys (KAIROS-T-0370): a list of keys
+/// in base64, separated by commas. They decrypt; they never encrypt.
+pub const SECRETS_KEY_OLD_VAR: &str = "KAIROS_SECRETS_KEY_OLD";
+
+/// The keyring of `KAIROS_SECRETS_KEY` and `KAIROS_SECRETS_KEY_OLD`. The
+/// first key encrypts; each key decrypts the rows that it encrypted. Its
+/// `Debug` shows only the fingerprints.
 #[derive(Clone)]
 pub struct SecretsKey {
     key: [u8; 32],
     id: String,
+    /// The old keys: `(key, fingerprint)`.
+    old: Vec<([u8; 32], String)>,
 }
 
 impl std::fmt::Debug for SecretsKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SecretsKey").field("id", &self.id).finish()
+        let old: Vec<&str> = self.old.iter().map(|(_, id)| id.as_str()).collect();
+        f.debug_struct("SecretsKey")
+            .field("id", &self.id)
+            .field("old", &old)
+            .finish()
     }
+}
+
+/// The fingerprint of a key of 32 bytes.
+fn fingerprint(key: &[u8; 32]) -> String {
+    let digest = Sha256::new()
+        .chain_update(b"kairos-secrets-key-id\0")
+        .chain_update(key)
+        .finalize();
+    digest[..6].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// 32 bytes from base64. The error says what is wrong, with no part of the
+/// value.
+fn decode_key(raw: &str) -> Result<[u8; 32], String> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(raw.trim())
+        .map_err(|_| "it is not base64. Make a key with `openssl rand -base64 32`".to_string())?;
+    bytes.try_into().map_err(|bytes: Vec<u8>| {
+        format!(
+            "it has {} bytes, and it must have 32 bytes. Make a key with `openssl rand \
+             -base64 32`",
+            bytes.len()
+        )
+    })
 }
 
 /// A secret after [`SecretsKey::seal`].
@@ -61,29 +104,52 @@ impl SecretsKey {
     /// The key from its base64 text. The error says what is wrong, with no
     /// part of the value.
     pub fn from_base64(raw: &str) -> Result<Self, String> {
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(raw.trim())
-            .map_err(|_| {
-                "it is not base64. Make a key with `openssl rand -base64 32`".to_string()
-            })?;
-        let key: [u8; 32] = bytes.try_into().map_err(|bytes: Vec<u8>| {
-            format!(
-                "it has {} bytes, and it must have 32 bytes. Make a key with `openssl rand \
-                 -base64 32`",
-                bytes.len()
-            )
-        })?;
-        Ok(Self::from_bytes(key))
+        Ok(Self::from_bytes(decode_key(raw)?))
     }
 
     /// The key from its 32 bytes.
     pub fn from_bytes(key: [u8; 32]) -> Self {
-        let digest = Sha256::new()
-            .chain_update(b"kairos-secrets-key-id\0")
-            .chain_update(key)
-            .finalize();
-        let id = digest[..6].iter().map(|b| format!("{b:02x}")).collect();
-        Self { key, id }
+        let id = fingerprint(&key);
+        Self {
+            key,
+            id,
+            old: Vec::new(),
+        }
+    }
+
+    /// Add the old keys of `KAIROS_SECRETS_KEY_OLD`: base64 keys separated
+    /// by commas. An empty entry is skipped; the key that encrypts is not
+    /// added twice. The error names the position of the bad entry, with no
+    /// part of the value.
+    pub fn with_old_base64(mut self, raw: &str) -> Result<Self, String> {
+        for (index, entry) in raw.split(',').map(str::trim).enumerate() {
+            if entry.is_empty() {
+                continue;
+            }
+            let key = decode_key(entry).map_err(|e| format!("entry {}: {e}", index + 1))?;
+            self = self.with_old_bytes(key);
+        }
+        Ok(self)
+    }
+
+    /// Add one old key.
+    pub fn with_old_bytes(mut self, key: [u8; 32]) -> Self {
+        let id = fingerprint(&key);
+        if id != self.id && !self.old.iter().any(|(_, old)| *old == id) {
+            self.old.push((key, id));
+        }
+        self
+    }
+
+    /// The fingerprints of the old keys.
+    pub fn old_ids(&self) -> Vec<&str> {
+        self.old.iter().map(|(_, id)| id.as_str()).collect()
+    }
+
+    /// Did a key other than the key that encrypts seal this row? Then
+    /// `rotate-secrets` seals it again.
+    pub fn needs_reseal(&self, key_id: &str) -> bool {
+        key_id != self.id
     }
 
     /// The fingerprint of the key: 12 hex characters. It does not tell the
@@ -92,9 +158,9 @@ impl SecretsKey {
         &self.id
     }
 
-    fn cipher(&self) -> LessSafeKey {
+    fn cipher(key: &[u8; 32]) -> LessSafeKey {
         // A key of 32 bytes is always a correct AES-256 key.
-        LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &self.key).expect("a 32-byte AES key"))
+        LessSafeKey::new(UnboundKey::new(&AES_256_GCM, key).expect("a 32-byte AES key"))
     }
 
     /// Encrypt `secret`, bound to `aad`.
@@ -104,7 +170,7 @@ impl SecretsKey {
             .fill(&mut nonce)
             .expect("the system random source works");
         let mut in_out = secret.to_vec();
-        self.cipher()
+        Self::cipher(&self.key)
             .seal_in_place_append_tag(
                 Nonce::assume_unique_for_key(nonce),
                 Aad::from(aad),
@@ -126,13 +192,17 @@ impl SecretsKey {
         nonce: &[u8],
         ciphertext: &[u8],
     ) -> Result<Vec<u8>, OpenError> {
-        if key_id != self.id {
-            return Err(OpenError::OtherKey);
-        }
+        let key = if key_id == self.id {
+            &self.key
+        } else {
+            match self.old.iter().find(|(_, id)| id == key_id) {
+                Some((key, _)) => key,
+                None => return Err(OpenError::OtherKey),
+            }
+        };
         let nonce: [u8; NONCE_LEN] = nonce.try_into().map_err(|_| OpenError::Corrupt)?;
         let mut in_out = ciphertext.to_vec();
-        let plain = self
-            .cipher()
+        let plain = Self::cipher(key)
             .open_in_place(
                 Nonce::assume_unique_for_key(nonce),
                 Aad::from(aad),
@@ -206,6 +276,45 @@ mod tests {
         assert_eq!(err, OpenError::OtherKey);
         assert!(err.to_string().contains("Set the token again"), "{err}");
         assert!(err.to_string().contains("KAIROS_SECRETS_KEY"), "{err}");
+    }
+
+    /// KAIROS-T-0370: an old key decrypts; the new key encrypts.
+    #[test]
+    fn an_old_key_of_the_keyring_opens_and_the_new_key_seals() {
+        let repo = Uuid::new_v4();
+        let aad = credential_aad("acme", repo);
+        let sealed = key(7).seal(&aad, b"tok");
+        let ring = key(8).with_old_bytes([7u8; 32]);
+        assert_eq!(ring.old_ids(), vec![key(7).id()]);
+        assert!(ring.needs_reseal(&sealed.key_id));
+        let opened = ring
+            .open(&aad, &sealed.key_id, &sealed.nonce, &sealed.ciphertext)
+            .expect("an old key opens");
+        assert_eq!(opened, b"tok");
+        let again = ring.seal(&aad, &opened);
+        assert_eq!(again.key_id, key(8).id());
+        assert!(!ring.needs_reseal(&again.key_id));
+        // A key that is not in the ring is still OtherKey.
+        let stray = key(9).seal(&aad, b"tok");
+        assert_eq!(
+            ring.open(&aad, &stray.key_id, &stray.nonce, &stray.ciphertext),
+            Err(OpenError::OtherKey)
+        );
+    }
+
+    #[test]
+    fn the_old_keys_are_a_list_of_base64() {
+        let b64 = |b: u8| base64::engine::general_purpose::STANDARD.encode([b; 32]);
+        let ring = key(8)
+            .with_old_base64(&format!("{}, ,{},{}", b64(7), b64(6), b64(8)))
+            .expect("a good list");
+        // The key that encrypts is not added as an old key.
+        assert_eq!(ring.old_ids(), vec![key(7).id(), key(6).id()]);
+        let err = key(8)
+            .with_old_base64(&format!("{},short", b64(7)))
+            .unwrap_err();
+        assert!(err.starts_with("entry 2:"), "{err}");
+        assert!(!format!("{ring:?}").contains("[7, 7"), "{ring:?}");
     }
 
     #[test]

@@ -3,12 +3,17 @@
 //! revoke one. An agent key acts as the person, with the capabilities of the
 //! person.
 //!
+//! KAIROS-T-0370: a new key expires after the default life of the deployment
+//! (90 days unless the operator changed it), or never when the person asks
+//! for no expiry. Rotate gives a key a new secret (shown once); the old secret
+//! works until the end of the grace time.
+//!
 //! The data layer is here: three calls on `/api/me/agent-keys`, through the
 //! `crate::api` helpers (envelope-aware errors, the 401 hook).
 
 use aurora_dark::components::{
     Alert, Button, Code, CopyButton, Divider, Empty, ErrorState, Group, Loading, PageHeader, Panel,
-    Pill, Stack, Text, TextInput,
+    Pill, Stack, Switch, Text, TextInput,
 };
 use aurora_dark::tokens::{ApiError, token};
 use leptos::prelude::*;
@@ -28,6 +33,18 @@ pub struct AgentKey {
     pub expires_at: Option<String>,
     pub last_used_at: Option<String>,
     pub revoked_at: Option<String>,
+    /// The key that a rotation made in place of this key (KAIROS-T-0370).
+    #[serde(default)]
+    pub replaced_by: Option<String>,
+}
+
+/// mirror of: `kairos_client::types_service_accounts::ApiKeyRotated`
+/// (partial).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct AgentKeyRotated {
+    name: String,
+    key: String,
+    replaced_key_expires_at: String,
 }
 
 /// mirror of: `kairos_client::types_service_accounts::ApiKeyList`.
@@ -51,16 +68,26 @@ async fn list_agent_keys(auth: Auth) -> Result<Vec<AgentKey>, ApiError> {
         .map(|list| list.items)
 }
 
+/// The body of a new key. Pure, host-tested.
+fn create_body(name: &str, expires_at: Option<&str>, no_expiry: bool) -> serde_json::Value {
+    match (expires_at, no_expiry) {
+        (_, true) => json!({ "name": name, "no_expiry": true }),
+        (Some(expires_at), false) => json!({ "name": name, "expires_at": expires_at }),
+        (None, false) => json!({ "name": name }),
+    }
+}
+
 async fn create_agent_key(
     auth: Auth,
     name: &str,
     expires_at: Option<&str>,
+    no_expiry: bool,
 ) -> Result<AgentKeyCreated, ApiError> {
-    let body = match expires_at {
-        Some(expires_at) => json!({ "name": name, "expires_at": expires_at }),
-        None => json!({ "name": name }),
-    };
-    crate::api::post_json(auth, PATH, &body).await
+    crate::api::post_json(auth, PATH, &create_body(name, expires_at, no_expiry)).await
+}
+
+async fn rotate_agent_key(auth: Auth, key_id: &str) -> Result<AgentKeyRotated, ApiError> {
+    crate::api::post_empty(auth, &format!("{PATH}/{key_id}/rotate")).await
 }
 
 async fn revoke_agent_key(auth: Auth, key_id: &str) -> Result<serde_json::Value, ApiError> {
@@ -72,6 +99,15 @@ fn day(value: Option<&str>) -> String {
     value
         .map(|ts| ts.split('T').next().unwrap_or(ts).to_string())
         .unwrap_or_else(|| "never".to_string())
+}
+
+/// `2027-01-01T10:30:00.000000Z` → `2027-01-01 10:30 UTC`. Pure,
+/// host-tested.
+fn day_and_time(value: &str) -> String {
+    match value.split_once('T') {
+        Some((date, time)) => format!("{date} {} UTC", time.get(..5).unwrap_or(time)),
+        None => value.to_string(),
+    }
 }
 
 /// `/agent-keys`.
@@ -92,6 +128,9 @@ pub fn AgentKeysPage() -> impl IntoView {
 
     let name = RwSignal::new(String::new());
     let expires_at = RwSignal::new(String::new());
+    let no_expiry = RwSignal::new(false);
+    // The end of the old secret after the last rotation.
+    let grace_end: RwSignal<Option<String>> = RwSignal::new(None);
 
     let on_create = move |_| {
         if busy.get_untracked() {
@@ -99,11 +138,13 @@ pub fn AgentKeysPage() -> impl IntoView {
         }
         let key_name = name.get_untracked().trim().to_string();
         let expiry = expires_at.get_untracked().trim().to_string();
+        let forever = no_expiry.get_untracked();
         busy.set(true);
         made.set(None);
+        grace_end.set(None);
         leptos::task::spawn_local(async move {
             let expiry = (!expiry.is_empty()).then_some(expiry);
-            let result = create_agent_key(auth, &key_name, expiry.as_deref()).await;
+            let result = create_agent_key(auth, &key_name, expiry.as_deref(), forever).await;
             busy.set(false);
             match result {
                 Ok(created) => {
@@ -111,6 +152,7 @@ pub fn AgentKeysPage() -> impl IntoView {
                     outcome.set(None);
                     name.set(String::new());
                     expires_at.set(String::new());
+                    no_expiry.set(false);
                     reload.update(|n| *n += 1);
                 }
                 Err(error) => outcome.set(Some(Err(error))),
@@ -132,6 +174,15 @@ pub fn AgentKeysPage() -> impl IntoView {
                             <Text size="sm">
                                 "Copy the key now. Kairos does not show it again."
                             </Text>
+                            {move || grace_end.get().map(|end| view! {
+                                <Text size="sm">
+                                    {format!(
+                                        "The old secret works until {}. Put the new key in \
+                                         the settings of your agent before that time.",
+                                        day_and_time(&end)
+                                    )}
+                                </Text>
+                            })}
                             <Group gap="sm" wrap=true>
                                 <Code>{key}</Code>
                                 <CopyButton value=copied label="Copy key"/>
@@ -153,11 +204,13 @@ pub fn AgentKeysPage() -> impl IntoView {
             })}
             <Panel title="Make an agent key"
                 caption="Give each agent its own key. Then you can revoke one key and keep \
-                         the others.">
+                         the others. With no date, the key expires after the default time of \
+                         this server (90 days unless the operator changed it).">
                 <Group align="end" gap="sm" wrap=true>
                     <TextInput label="Name" value=name placeholder="laptop-claude-code"/>
                     <TextInput label="Expires at (optional)" value=expires_at
                         placeholder="2027-01-01T00:00:00Z"/>
+                    <Switch checked=no_expiry label="No expiry"/>
                     <Button on_click=Callback::new(on_create)>"Make key"</Button>
                 </Group>
             </Panel>
@@ -175,7 +228,29 @@ pub fn AgentKeysPage() -> impl IntoView {
                     Some(Ok(list)) => list.into_iter().map(|key| {
                         let key_id = StoredValue::new(key.id.clone());
                         let revoked = key.revoked_at.is_some();
+                        let replaced = key.replaced_by.is_some();
                         let revoked_name = key.name.clone();
+                        let on_rotate = move |_| {
+                            if busy.get_untracked() {
+                                return;
+                            }
+                            let key_id = key_id.get_value();
+                            busy.set(true);
+                            made.set(None);
+                            leptos::task::spawn_local(async move {
+                                let result = rotate_agent_key(auth, &key_id).await;
+                                busy.set(false);
+                                match result {
+                                    Ok(rotated) => {
+                                        made.set(Some((rotated.name, rotated.key)));
+                                        grace_end.set(Some(rotated.replaced_key_expires_at));
+                                        outcome.set(None);
+                                        reload.update(|n| *n += 1);
+                                    }
+                                    Err(error) => outcome.set(Some(Err(error))),
+                                }
+                            });
+                        };
                         let on_revoke = move |_| {
                             let key_id = key_id.get_value();
                             let revoked_name = revoked_name.clone();
@@ -194,15 +269,25 @@ pub fn AgentKeysPage() -> impl IntoView {
                                         <Code>{key.prefix.clone()}</Code>
                                         {if revoked {
                                             view! { <Pill color=token::BAD>"revoked"</Pill> }.into_any()
+                                        } else if replaced {
+                                            view! { <Pill color=token::GOLD>"rotated"</Pill> }.into_any()
                                         } else {
                                             view! { <Pill color=token::OK>"active"</Pill> }.into_any()
                                         }}
                                     </Group>
                                     {(!revoked).then(|| view! {
-                                        <Button variant="default" size="xs" bad=true
-                                            on_click=Callback::new(on_revoke)>
-                                            "Revoke"
-                                        </Button>
+                                        <Group gap="sm">
+                                            {(!replaced).then(|| view! {
+                                                <Button variant="default" size="xs"
+                                                    on_click=Callback::new(on_rotate)>
+                                                    "Rotate"
+                                                </Button>
+                                            })}
+                                            <Button variant="default" size="xs" bad=true
+                                                on_click=Callback::new(on_revoke)>
+                                                "Revoke"
+                                            </Button>
+                                        </Group>
                                     })}
                                 </Group>
                                 <Text dimmed=true size="sm">
@@ -226,7 +311,31 @@ pub fn AgentKeysPage() -> impl IntoView {
 
 #[cfg(test)]
 mod tests {
-    use super::day;
+    use super::{create_body, day, day_and_time};
+
+    #[test]
+    fn the_body_asks_for_no_expiry_or_a_date() {
+        assert_eq!(
+            create_body("k", None, true),
+            serde_json::json!({"name": "k", "no_expiry": true})
+        );
+        assert_eq!(
+            create_body("k", Some("2027-01-01T00:00:00Z"), false),
+            serde_json::json!({"name": "k", "expires_at": "2027-01-01T00:00:00Z"})
+        );
+        assert_eq!(
+            create_body("k", None, false),
+            serde_json::json!({"name": "k"})
+        );
+    }
+
+    #[test]
+    fn the_end_of_the_grace_time_reads_as_a_day_and_a_time() {
+        assert_eq!(
+            day_and_time("2027-01-01T10:30:00.000000Z"),
+            "2027-01-01 10:30 UTC"
+        );
+    }
 
     #[test]
     fn day_shows_the_date_or_never() {

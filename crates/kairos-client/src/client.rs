@@ -321,6 +321,12 @@ impl KairosClient {
             .await
     }
 
+    /// A `POST` with no body that answers 201.
+    async fn post_empty_created<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
+        self.execute(format!("POST {path}"), 201, self.http.post(self.url(path)))
+            .await
+    }
+
     async fn patch<T: DeserializeOwned>(
         &self,
         path: &str,
@@ -1135,6 +1141,29 @@ impl KairosClient {
         key_id: &str,
     ) -> Result<crate::types_service_accounts::Deleted, Error> {
         self.delete(&format!("/api/me/agent-keys/{key_id}")).await
+    }
+
+    /// `POST /api/me/agent-keys/{key_id}/rotate` (KAIROS-T-0370): a new
+    /// secret for the key; the old one ends after the grace time.
+    pub async fn rotate_agent_key(
+        &self,
+        key_id: &str,
+    ) -> Result<crate::types_service_accounts::ApiKeyRotated, Error> {
+        self.post_empty_created(&format!("/api/me/agent-keys/{key_id}/rotate"))
+            .await
+    }
+
+    /// `POST /api/service-accounts/{id}/keys/{key_id}/rotate`
+    /// (KAIROS-T-0370), org-admin.
+    pub async fn rotate_api_key(
+        &self,
+        service_account: &str,
+        key_id: &str,
+    ) -> Result<crate::types_service_accounts::ApiKeyRotated, Error> {
+        self.post_empty_created(&format!(
+            "/api/service-accounts/{service_account}/keys/{key_id}/rotate"
+        ))
+        .await
     }
 
     // -- organization membership (/api/members) --------------------------------

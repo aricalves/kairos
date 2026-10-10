@@ -7,7 +7,7 @@
 //      move the task, and so she can release a claim that bob has);
 //   4. Cancel with a reason puts the cancel mark on the task;
 //   5. Delete for good (a board manager) removes the task;
-//   6. the Agent keys page makes a key and revokes it.
+//   6. the Agent keys page makes a key, rotates it and revokes it.
 //
 // The task is new for each run (a timestamped title), so a retry starts
 // clean.
@@ -109,7 +109,7 @@ test('a task is claimed, handed off, released, cancelled and deleted', async ({
   });
 });
 
-test('the Agent keys page makes a key and revokes it', async ({ page }) => {
+test('the Agent keys page makes a key, rotates it and revokes it', async ({ page }) => {
   const name = `e2e-key-${Date.now()}`;
   await test.step('login via Dex as alice', () => login(page));
   await page.locator('a[href="/agent-keys"]').first().click();
@@ -122,10 +122,21 @@ test('the Agent keys page makes a key and revokes it', async ({ page }) => {
     await expect(page.getByText('Copy the key now.')).toBeVisible();
   });
 
-  const row = page.locator('[data-testid="agent-key"]', { hasText: name });
+  const rows = page.locator('[data-testid="agent-key"]', { hasText: name });
 
-  await test.step('revoke the key: it stays in the list, marked', async () => {
-    await expect(row).toContainText('active');
+  await test.step('rotate the key: a new secret, the old one ends later', async () => {
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toContainText('active');
+    await rows.first().getByRole('button', { name: 'Rotate', exact: true }).click();
+    await expect(page.getByText('The old secret works until')).toBeVisible();
+    await expect(rows).toHaveCount(2);
+    await expect(rows.filter({ hasText: 'rotated' })).toHaveCount(1);
+  });
+
+  const row = rows.filter({ hasText: 'active' });
+
+  await test.step('revoke the new key: it stays in the list, marked', async () => {
+    await expect(row).toHaveCount(1);
     await row.getByRole('button', { name: 'Revoke', exact: true }).click();
     await expect(page.getByText(`Kairos revoked the key ${name}.`)).toBeVisible();
     const token = await mintToken();
@@ -133,7 +144,11 @@ test('the Agent keys page makes a key and revokes it', async ({ page }) => {
       headers: { authorization: `Bearer ${token}` },
     });
     const keys = (await res.json()).items as any[];
-    const key = keys.find((k) => k.name === name);
-    expect(key?.revoked_at).toBeTruthy();
+    const mine = keys.filter((k) => k.name === name);
+    expect(mine).toHaveLength(2);
+    const fresh = mine.find((k) => !k.replaced_by);
+    const old = mine.find((k) => k.replaced_by);
+    expect(fresh?.revoked_at).toBeTruthy();
+    expect(old?.replaced_by).toBe(fresh?.id);
   });
 });

@@ -558,6 +558,48 @@ async fn the_read_token_of_a_repository() {
     );
 
     // =======================================================================
+    // KAIROS-T-0370: rotate-secrets. The keyring of the new key [8] with the
+    // old key [7] encrypts each row again with [8]; then the server with
+    // [8] opens the token, and the server with [7] alone does not.
+    // =======================================================================
+    let ring = SecretsKey::from_bytes([8u8; 32]).with_old_bytes([7u8; 32]);
+    let report = kairos_server::secrets_rotation::rotate_tenant(&mut conn, "acme", &ring)
+        .expect("rotate-secrets");
+    println!("rotation: {report:?}");
+    // private-repo opens; missing-repo has the ciphertext of private-repo
+    // since AC8, so no key opens it, and the report names it.
+    assert_eq!(report.resealed, 1, "{report:?}");
+    assert_eq!(report.failed.len(), 1, "{report:?}");
+    assert!(report.failed[0].contains("does not decrypt"), "{report:?}");
+    let (status, body) = rekeyed
+        .client(&bob_token, "acme")
+        .raw_request(Method::POST, &format!("{path}/check"), None)
+        .await
+        .unwrap();
+    assert_eq!(status, 200, "the new key opens the token: {body}");
+    let (status, body) = bob
+        .raw_request(Method::POST, &format!("{path}/check"), None)
+        .await
+        .unwrap();
+    assert_eq!(status, 409, "the old key alone does not: {body}");
+    // A second run has nothing to do. A key that is not in the ring is
+    // named, and the row is not changed.
+    let again = kairos_server::secrets_rotation::rotate_tenant(&mut conn, "acme", &ring)
+        .expect("rotate-secrets again");
+    assert_eq!((again.resealed, again.current), (0, 1), "{again:?}");
+    let stray = kairos_server::secrets_rotation::rotate_tenant(
+        &mut conn,
+        "acme",
+        &SecretsKey::from_bytes([9u8; 32]),
+    )
+    .expect("rotate-secrets with a key that opens nothing");
+    assert_eq!(stray.failed.len(), 2, "{stray:?}");
+    assert!(
+        stray.failed[0].starts_with("repository_credentials ("),
+        "{stray:?}"
+    );
+
+    // =======================================================================
     // AC9: remove deletes the row. A second remove, and a check, get 404.
     // =======================================================================
     let removed = bob

@@ -29,7 +29,7 @@ Request body (required): `application/json`, [`CreateApiKeyRequest`](schemas.md#
 |---|---|---|
 | `201` | [`ApiKeyCreatedResponse`](schemas.md#apikeycreatedresponse) | Key made; the secret is shown once |
 | `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The caller is a service account, or the request uses an agent key |
-| `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Empty name or bad expiry |
+| `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Empty name, bad expiry, or expires_at with no_expiry |
 
 ### `DELETE /api/me/agent-keys/{key_id}`
 
@@ -46,6 +46,25 @@ another person, or an unknown id → 404; already revoked → 409.
 | `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The caller is a service account |
 | `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The caller has no key with this id |
 | `409` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Already revoked |
+
+### `POST /api/me/agent-keys/{key_id}/rotate`
+
+Rotate one of the caller's agent keys (KAIROS-T-0370). A new key with a
+new secret takes the place of the key. Kairos shows the secret once. The
+old secret works for the grace time (`KAIROS_API_KEY_ROTATION_GRACE_SECS`,
+1 day by default), then it ends. A request made with an agent key cannot rotate a
+key. No body.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `key_id` | path | yes | `string` | Agent key id (UUID) |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `201` | [`ApiKeyRotatedResponse`](schemas.md#apikeyrotatedresponse) | The new key; the secret is shown once |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The caller is a service account, or the request uses an agent key |
+| `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The caller has no key with this id |
+| `409` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The key is revoked, expired, or rotated already |
 
 ## service-accounts
 
@@ -115,7 +134,7 @@ Request body (required): `application/json`, [`CreateApiKeyRequest`](schemas.md#
 | `201` | [`ApiKeyCreatedResponse`](schemas.md#apikeycreatedresponse) | Key minted; secret shown once |
 | `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Org admin required |
 | `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown service account |
-| `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Empty name or bad expiry |
+| `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Empty name, bad expiry, or expires_at with no_expiry |
 
 ### `DELETE /api/service-accounts/{id}/keys/{key_id}`
 
@@ -133,6 +152,25 @@ already revoked → 409.
 | `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Org admin required |
 | `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown service account or key |
 | `409` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Already revoked |
+
+### `POST /api/service-accounts/{id}/keys/{key_id}/rotate`
+
+Rotate a key of a service account (KAIROS-T-0370). A new key with a new
+secret takes the place of the key. Kairos shows the secret once. The old
+secret works for the grace time (`KAIROS_API_KEY_ROTATION_GRACE_SECS`, 1
+day by default), then it ends. Org-admin-only. No body.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `id` | path | yes | `string` | Service account id (UUID) |
+| `key_id` | path | yes | `string` | API key id (UUID) |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `201` | [`ApiKeyRotatedResponse`](schemas.md#apikeyrotatedresponse) | The new key; the secret is shown once |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Org admin required |
+| `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown service account or key |
+| `409` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The key is revoked, expired, or rotated already |
 
 ## scim-tokens
 

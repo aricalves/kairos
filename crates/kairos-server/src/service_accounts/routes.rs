@@ -12,7 +12,7 @@
 
 use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
-use axum::routing::{delete, get};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use kairos_db::api_keys::{ApiKey, NewApiKey};
 use kairos_db::models::User;
@@ -46,6 +46,10 @@ pub(crate) fn router() -> Router<AppState> {
         .route(
             "/api/service-accounts/{id}/keys/{key_id}",
             delete(revoke_key),
+        )
+        .route(
+            "/api/service-accounts/{id}/keys/{key_id}/rotate",
+            post(rotate_key),
         )
 }
 
@@ -82,9 +86,15 @@ pub(crate) struct ServiceAccountListResponse {
 pub(crate) struct CreateApiKeyRequest {
     /// Operator label for the key ("gha-main", ...).
     pub name: String,
-    /// Optional RFC 3339 expiry; omitted = never expires.
+    /// Optional RFC 3339 expiry. Omitted: the key expires after the
+    /// default life of the deployment (`KAIROS_API_KEY_TTL_DAYS`, 90 days
+    /// by default), or never when that setting is 0.
     #[serde(default)]
     pub expires_at: Option<String>,
+    /// `true`: the key never expires (KAIROS-T-0370). Do not send it with
+    /// `expires_at`.
+    #[serde(default)]
+    pub no_expiry: bool,
 }
 
 /// `POST /api/service-accounts/{id}/keys` response — the ONLY place the secret
@@ -110,6 +120,28 @@ pub(crate) struct ApiKeyView {
     pub expires_at: Option<String>,
     pub last_used_at: Option<String>,
     pub revoked_at: Option<String>,
+    /// The key that a rotation made in place of this key (KAIROS-T-0370).
+    /// The old secret works until `expires_at`, the end of the grace time.
+    pub replaced_by: Option<String>,
+}
+
+/// The response of a rotation (KAIROS-T-0370). It has the new key and its
+/// secret, and the end of the old secret. Kairos shows the secret once.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct ApiKeyRotatedResponse {
+    /// The id of the new key.
+    pub id: String,
+    pub name: String,
+    /// The new secret. Shown once; store it now.
+    pub key: String,
+    pub prefix: String,
+    pub created_at: String,
+    pub expires_at: Option<String>,
+    /// The id of the old key.
+    pub replaced_key_id: String,
+    /// The old secret works until this time (RFC 3339): the end of the
+    /// grace time (`KAIROS_API_KEY_ROTATION_GRACE_SECS`).
+    pub replaced_key_expires_at: String,
 }
 
 /// `GET /api/service-accounts/{id}/keys` envelope.
@@ -142,6 +174,102 @@ fn account_view(u: &User) -> ServiceAccountView {
     }
 }
 
+/// The expiry of a new key (KAIROS-T-0370): `expires_at` when the request
+/// names it, none when the request sends `no_expiry: true`, else `now` plus
+/// the default life of `ttl_days` (none when it is 0).
+pub(super) fn resolve_expiry(
+    body: &CreateApiKeyRequest,
+    ttl_days: u32,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, ApiError> {
+    if body.no_expiry && body.expires_at.is_some() {
+        return Err(ApiError::validation(
+            "The request sends expires_at and no_expiry: true. Send one of the two.",
+        )
+        .with_details(serde_json::json!({ "field": "no_expiry" })));
+    }
+    if body.no_expiry {
+        return Ok(None);
+    }
+    if let Some(at) = parse_expiry(body.expires_at.as_deref())? {
+        return Ok(Some(at));
+    }
+    Ok((ttl_days > 0).then(|| now + chrono::Duration::days(i64::from(ttl_days))))
+}
+
+/// Rotate a key (KAIROS-T-0370): a new key with a new secret, the same
+/// name and the same principal, and the end of the old key after the grace
+/// time. The new key has the life of the old key (its expiry minus its
+/// creation), counted from now; a key with no expiry gives a key with no
+/// expiry. The caller checks the right and the owner of `existing`.
+pub(super) fn rotate(
+    conn: &mut diesel::pg::PgConnection,
+    tenant_slug: &str,
+    existing: &ApiKey,
+    actor: Uuid,
+    grace_secs: u64,
+    activity: &str,
+) -> Result<ApiKeyRotatedResponse, ApiError> {
+    let now = chrono::Utc::now();
+    if existing.revoked_at.is_some() {
+        return Err(ApiError::conflict(format!(
+            "A person revoked the key {}. Make a new key.",
+            existing.id
+        )));
+    }
+    if let Some(next) = existing.replaced_by {
+        return Err(ApiError::conflict(format!(
+            "A rotation replaced the key {} already. Rotate the new key {next}.",
+            existing.id
+        )));
+    }
+    if existing.expires_at.is_some_and(|at| at <= now) {
+        return Err(ApiError::conflict(format!(
+            "The key {} expired. Make a new key.",
+            existing.id
+        )));
+    }
+    let raw_key = generate_key(tenant_slug);
+    let expires_at = existing
+        .expires_at
+        .map(|at| now + (at - existing.created_at));
+    let grace = chrono::Duration::seconds(i64::try_from(grace_secs).unwrap_or(i64::MAX / 1000));
+    let new = NewApiKey {
+        user_id: existing.user_id,
+        name: existing.name.clone(),
+        token_hash: hash_key(&raw_key),
+        prefix: display_prefix(&raw_key),
+        created_by: actor,
+        expires_at,
+    };
+    let (created, old) = kairos_db::api_keys::rotate_key(conn, existing.id, new, now + grace)
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| {
+            ApiError::conflict(format!(
+                "A different request revoked or rotated the key {} already.",
+                existing.id
+            ))
+        })?;
+    log_activity(
+        conn,
+        actor,
+        ActivityAction::Update,
+        old.id,
+        "api_key",
+        format!("{activity}:{}", old.name),
+    )?;
+    Ok(ApiKeyRotatedResponse {
+        id: created.id.to_string(),
+        name: created.name,
+        key: raw_key,
+        prefix: created.prefix,
+        created_at: rfc3339(created.created_at),
+        expires_at: created.expires_at.map(rfc3339),
+        replaced_key_id: old.id.to_string(),
+        replaced_key_expires_at: old.expires_at.map(rfc3339).unwrap_or_default(),
+    })
+}
+
 /// The optional RFC 3339 `expires_at` of a key request.
 pub(super) fn parse_expiry(
     raw: Option<&str>,
@@ -167,6 +295,7 @@ pub(super) fn key_view(k: &ApiKey) -> ApiKeyView {
         expires_at: k.expires_at.map(rfc3339),
         last_used_at: k.last_used_at.map(rfc3339),
         revoked_at: k.revoked_at.map(rfc3339),
+        replaced_by: k.replaced_by.map(|id| id.to_string()),
     }
 }
 
@@ -341,7 +470,7 @@ pub(crate) async fn delete_service_account(
         (status = 201, description = "Key minted; secret shown once", body = ApiKeyCreatedResponse),
         (status = 403, description = "Org admin required", body = kairos_client::types::ErrorEnvelope),
         (status = 404, description = "Unknown service account", body = kairos_client::types::ErrorEnvelope),
-        (status = 422, description = "Empty name or bad expiry", body = kairos_client::types::ErrorEnvelope),
+        (status = 422, description = "Empty name, bad expiry, or expires_at with no_expiry", body = kairos_client::types::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn create_key(
@@ -356,7 +485,7 @@ pub(crate) async fn create_key(
     if name.is_empty() {
         return Err(ApiError::validation("The name is empty. Send a name."));
     }
-    let expires_at = parse_expiry(body.expires_at.as_deref())?;
+    let expires_at = resolve_expiry(&body, state.config.api_key_ttl_days, chrono::Utc::now())?;
 
     let raw_key = generate_key(&tenant.slug);
     let token_hash = hash_key(&raw_key);
@@ -515,4 +644,56 @@ pub(crate) async fn revoke_key(
         })
         .await?;
     Ok(Json(outcome))
+}
+
+/// Rotate a key of a service account (KAIROS-T-0370). A new key with a new
+/// secret takes the place of the key. Kairos shows the secret once. The old
+/// secret works for the grace time (`KAIROS_API_KEY_ROTATION_GRACE_SECS`, 1
+/// day by default), then it ends. Org-admin-only. No body.
+#[utoipa::path(
+    post,
+    path = "/api/service-accounts/{id}/keys/{key_id}/rotate",
+    tag = "service-accounts",
+    params(
+        ("id" = String, Path, description = "Service account id (UUID)"),
+        ("key_id" = String, Path, description = "API key id (UUID)"),
+    ),
+    responses(
+        (status = 201, description = "The new key; the secret is shown once", body = ApiKeyRotatedResponse),
+        (status = 403, description = "Org admin required", body = kairos_client::types::ErrorEnvelope),
+        (status = 404, description = "Unknown service account or key", body = kairos_client::types::ErrorEnvelope),
+        (status = 409, description = "The key is revoked, expired, or rotated already", body = kairos_client::types::ErrorEnvelope),
+    ),
+)]
+pub(crate) async fn rotate_key(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Extension(tenant): Extension<TenantContext>,
+    Path((id, key_id)): Path<(String, String)>,
+) -> Result<(StatusCode, Json<ApiKeyRotatedResponse>), ApiError> {
+    let sa_id = parse_uuid(&id, "id")?;
+    let key_id = parse_uuid(&key_id, "key_id")?;
+    let user = auth.user_id;
+    let org_id = tenant.org_id;
+    let slug = tenant.slug.clone();
+    let grace = state.config.api_key_rotation_grace_secs;
+    let rotated = state
+        .blocking
+        .run(&tenant.slug, move |conn| {
+            require_capability(conn, &slug, None, user, MANAGE)?;
+            kairos_db::service_accounts::find_service_account(conn, org_id, sa_id)
+                .map_err(ApiError::internal)?
+                .ok_or_else(|| {
+                    ApiError::not_found(format!("The service account {sa_id} does not exist."))
+                })?;
+            let existing = kairos_db::api_keys::find_key(conn, key_id)
+                .map_err(ApiError::internal)?
+                .filter(|k| k.user_id == sa_id)
+                .ok_or_else(|| {
+                    ApiError::not_found(format!("The service account {sa_id} has no key {key_id}."))
+                })?;
+            rotate(conn, &slug, &existing, user, grace, "api_key_rotate")
+        })
+        .await?;
+    Ok((StatusCode::CREATED, Json(rotated)))
 }

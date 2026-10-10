@@ -20,7 +20,7 @@
 
 use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
-use axum::routing::{delete, get};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use kairos_db::api_keys::NewApiKey;
 use kairos_db::models::enums::ActivityAction;
@@ -28,8 +28,8 @@ use uuid::Uuid;
 
 use super::auth::{display_prefix, generate_key, hash_key};
 use super::routes::{
-    ApiKeyCreatedResponse, ApiKeyListResponse, CreateApiKeyRequest, DeletedResponse, key_view,
-    log_activity, parse_expiry, rfc3339,
+    ApiKeyCreatedResponse, ApiKeyListResponse, ApiKeyRotatedResponse, CreateApiKeyRequest,
+    DeletedResponse, key_view, log_activity, resolve_expiry, rfc3339, rotate,
 };
 use crate::api::parse_uuid;
 use crate::app::AppState;
@@ -45,6 +45,7 @@ pub(crate) fn router() -> Router<AppState> {
             get(list_agent_keys).post(create_agent_key),
         )
         .route("/api/me/agent-keys/{key_id}", delete(revoke_agent_key))
+        .route("/api/me/agent-keys/{key_id}/rotate", post(rotate_agent_key))
 }
 
 /// Refuse a service account: agent keys are for people.
@@ -76,7 +77,7 @@ fn require_person(conn: &mut diesel::pg::PgConnection, user: Uuid) -> Result<(),
     responses(
         (status = 201, description = "Key made; the secret is shown once", body = ApiKeyCreatedResponse),
         (status = 403, description = "The caller is a service account, or the request uses an agent key", body = kairos_client::types::ErrorEnvelope),
-        (status = 422, description = "Empty name or bad expiry", body = kairos_client::types::ErrorEnvelope),
+        (status = 422, description = "Empty name, bad expiry, or expires_at with no_expiry", body = kairos_client::types::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn create_agent_key(
@@ -95,7 +96,7 @@ pub(crate) async fn create_agent_key(
     if name.is_empty() {
         return Err(ApiError::validation("The name is empty. Send a name."));
     }
-    let expires_at = parse_expiry(body.expires_at.as_deref())?;
+    let expires_at = resolve_expiry(&body, state.config.api_key_ttl_days, chrono::Utc::now())?;
 
     let raw_key = generate_key(&tenant.slug);
     let token_hash = hash_key(&raw_key);
@@ -223,4 +224,51 @@ pub(crate) async fn revoke_agent_key(
         })
         .await?;
     Ok(Json(outcome))
+}
+
+/// Rotate one of the caller's agent keys (KAIROS-T-0370). A new key with a
+/// new secret takes the place of the key. Kairos shows the secret once. The
+/// old secret works for the grace time (`KAIROS_API_KEY_ROTATION_GRACE_SECS`,
+/// 1 day by default), then it ends. A request made with an agent key cannot rotate a
+/// key. No body.
+#[utoipa::path(
+    post,
+    path = "/api/me/agent-keys/{key_id}/rotate",
+    tag = "me",
+    params(("key_id" = String, Path, description = "Agent key id (UUID)")),
+    responses(
+        (status = 201, description = "The new key; the secret is shown once", body = ApiKeyRotatedResponse),
+        (status = 403, description = "The caller is a service account, or the request uses an agent key", body = kairos_client::types::ErrorEnvelope),
+        (status = 404, description = "The caller has no key with this id", body = kairos_client::types::ErrorEnvelope),
+        (status = 409, description = "The key is revoked, expired, or rotated already", body = kairos_client::types::ErrorEnvelope),
+    ),
+)]
+pub(crate) async fn rotate_agent_key(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Extension(tenant): Extension<TenantContext>,
+    Path(key_id): Path<String>,
+) -> Result<(StatusCode, Json<ApiKeyRotatedResponse>), ApiError> {
+    if auth.agent_key.is_some() {
+        return Err(ApiError::forbidden(
+            "An agent key cannot rotate agent keys. Log in as yourself, then rotate the key \
+             with `kairos keys rotate` or on the Agent keys page.",
+        ));
+    }
+    let key_id = parse_uuid(&key_id, "key_id")?;
+    let user = auth.user_id;
+    let slug = tenant.slug.clone();
+    let grace = state.config.api_key_rotation_grace_secs;
+    let rotated = state
+        .blocking
+        .run(&tenant.slug, move |conn| {
+            require_person(conn, user)?;
+            let existing = kairos_db::api_keys::find_key(conn, key_id)
+                .map_err(ApiError::internal)?
+                .filter(|k| k.user_id == user)
+                .ok_or_else(|| ApiError::not_found(format!("You have no agent key {key_id}.")))?;
+            rotate(conn, &slug, &existing, user, grace, "agent_key_rotate")
+        })
+        .await?;
+    Ok((StatusCode::CREATED, Json(rotated)))
 }

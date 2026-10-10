@@ -41,6 +41,8 @@ pub struct ApiKey {
     pub last_used_at: Option<DateTime<Utc>>,
     /// Set on revocation; the row is retained for audit.
     pub revoked_at: Option<DateTime<Utc>>,
+    /// The key that a rotation made in place of this key (KAIROS-T-0370).
+    pub replaced_by: Option<Uuid>,
 }
 
 impl ApiKey {
@@ -116,4 +118,41 @@ pub fn touch_last_used(conn: &mut PgConnection, id: Uuid) -> QueryResult<usize> 
     diesel::update(api_keys::table.filter(api_keys::id.eq(id)))
         .set(api_keys::last_used_at.eq(diesel::dsl::now))
         .execute(conn)
+}
+
+/// Rotate a key (KAIROS-T-0370): insert `new`, and end the old key at
+/// `old_ends_at` (or at its own expiry when that is sooner), with a link to
+/// the new key. One transaction; the old row is locked, so two rotations
+/// of one key do not both succeed. `Ok(None)` when the old key was revoked
+/// or rotated already, or when it does not exist.
+pub fn rotate_key(
+    conn: &mut PgConnection,
+    old_id: Uuid,
+    new: NewApiKey,
+    old_ends_at: DateTime<Utc>,
+) -> QueryResult<Option<(ApiKey, ApiKey)>> {
+    conn.transaction(|conn| {
+        let Some(old) = api_keys::table
+            .filter(api_keys::id.eq(old_id))
+            .select(ApiKey::as_select())
+            .for_update()
+            .first(conn)
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        if old.revoked_at.is_some() || old.replaced_by.is_some() {
+            return Ok(None);
+        }
+        let created = create_key(conn, new)?;
+        let ends = old.expires_at.map_or(old_ends_at, |e| e.min(old_ends_at));
+        let old = diesel::update(api_keys::table.filter(api_keys::id.eq(old_id)))
+            .set((
+                api_keys::expires_at.eq(Some(ends)),
+                api_keys::replaced_by.eq(Some(created.id)),
+            ))
+            .returning(ApiKey::as_returning())
+            .get_result(conn)?;
+        Ok(Some((created, old)))
+    })
 }

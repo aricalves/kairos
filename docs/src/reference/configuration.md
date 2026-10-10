@@ -168,7 +168,7 @@ by definition.
 | `KAIROS_AUTH_MAX_FAILURES` | integer | `5` | Failures inside the window before a lockout. **`0` turns throttling off** — the escape hatch for a throttle that is misfiring, so that the fix does not need a new build. |
 | `KAIROS_AUTH_FAILURE_WINDOW_SECS` | integer | `300` | How long failures accumulate. A failure older than this is forgotten, so someone who mistypes once a week never accumulates a lockout. |
 | `KAIROS_AUTH_LOCKOUT_SECS` | integer | `60` | How long a lockout lasts. Short on purpose — see below. |
-| `KAIROS_TRUSTED_PROXY` | bool | `false` | Whether `X-Forwarded-For` is trusted for the client address. See below. |
+| `KAIROS_TRUSTED_PROXY` | bool | `false` | Whether `X-Forwarded-For` is trusted for the client address. See below. It also lets the server read `X-Forwarded-Proto` for HSTS (see "Security headers"). |
 
 Two things are counted separately: the **identity** being attempted, and the
 **source** it came from. Neither alone is enough. Counting only identities lets an
@@ -197,6 +197,32 @@ ingress controller and the header is the only real client address there is.
 When the header is trusted, the **last** value in the list is used, not the first.
 A proxy appends, so the list reads `<whatever the client sent>, <what the proxy
 saw>`; the first element is the one under the caller's control.
+
+### API keys and agent keys
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `KAIROS_API_KEY_TTL_DAYS` | integer | `90` | The default life of a new API key or agent key, in days. A request that names `expires_at` sets its own expiry. A request with `no_expiry: true` (the CLI flag `--no-expiry`, the switch "No expiry" of the Agent keys page) makes a key with no expiry. `0` turns the default off: a new key has no expiry unless the request names one. |
+| `KAIROS_API_KEY_ROTATION_GRACE_SECS` | integer | `86400` (1 day) | After a rotation of a key, the old secret works for this time. `0` ends the old secret at the rotation. |
+
+The keys that exist keep their expiry: the setting applies to new keys. See
+[Rotate keys](../how-to/rotate-keys.md).
+
+### Security headers
+
+The server sends these headers on each response:
+
+| Header | Value |
+|---|---|
+| `X-Content-Type-Options` | `nosniff` |
+| `X-Frame-Options` | `DENY` |
+| `Referrer-Policy` | `same-origin` |
+| `Content-Security-Policy` | On the page of the GUI: `default-src 'self'`, scripts from the server with the hash of each inline script of the page and `'wasm-unsafe-eval'`, inline styles, images from the server, `data:`, `blob:` and HTTPS sites, fonts from the server and `fonts.gstatic.com`, `object-src 'none'`, `frame-ancestors 'none'`. On each other response: `frame-ancestors 'none'`. |
+| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains`, only when `KAIROS_TRUSTED_PROXY` is on and the proxy sends `X-Forwarded-Proto: https`. |
+
+The server speaks HTTP; a proxy in front of it ends TLS. So the server sends HSTS
+only when a trusted proxy says that the request came over HTTPS. The reference
+compose stack (Caddy) does. No setting turns the headers off.
 
 #### Where the state lives
 
@@ -452,9 +478,15 @@ value. To change the setting, use one of these:
 |---|---|---|---|
 | `KAIROS_SECRETS_KEY` | 32 bytes in base64 | unset | The key that encrypts the read token of each repository (AES-256-GCM). Make it with `openssl rand -base64 32`. When it is not set, the server refuses a token with 501 `SECRETS_NOT_CONFIGURED`, and the builder reads public repositories only. A value that is not 32 bytes of base64 stops the start of the server. Keep the key outside the database, with the database password. |
 
-When you change `KAIROS_SECRETS_KEY`, the stored tokens do not decrypt. Each
-fetch of such a repository then fails with the error "Set the token again".
-After a change of the key, set each token again.
+| `KAIROS_SECRETS_KEY_OLD` | base64 keys, separated by commas | unset | The old keys, during a rotation of `KAIROS_SECRETS_KEY`. They decrypt the rows that they encrypted; they never encrypt. Set it only with `KAIROS_SECRETS_KEY`. |
+
+To change `KAIROS_SECRETS_KEY`, put the new key in `KAIROS_SECRETS_KEY` and the
+old key in `KAIROS_SECRETS_KEY_OLD`, then run `kairos-server rotate-secrets`. It
+encrypts each stored secret again with the new key: the read token of each
+repository, and the secrets of the hosted models of the code index. See
+[Rotate keys](../how-to/rotate-keys.md). A stored secret that no key of the two
+settings decrypts fails with the error "Set the token again". Set that secret
+again.
 
 #### The tools of the builder
 

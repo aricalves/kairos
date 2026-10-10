@@ -31,6 +31,7 @@ checklist.
 - [Build the code index again](how-to/build-the-code-index-again.md)
 - [Use a hosted model for the code index summaries](how-to/use-a-hosted-model-for-the-code-index.md)
 - [Back up and restore](how-to/back-up-and-restore.md)
+- [Rotate keys](how-to/rotate-keys.md)
 - [Export traces to a collector](how-to/export-traces.md)
 - [Provision users with SCIM](how-to/provision-users-with-scim.md)
 

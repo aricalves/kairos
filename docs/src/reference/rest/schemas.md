@@ -111,6 +111,21 @@ An Architecture Decision Record, as returned by `/api/adrs`. Board placement is 
 | `items` | array of [`ApiKeyView`](schemas.md#apikeyview) | yes |  |
 | `total` | `integer` | yes |  |
 
+## ApiKeyRotatedResponse
+
+The response of a rotation (KAIROS-T-0370). It has the new key and its secret, and the end of the old secret. Kairos shows the secret once.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `created_at` | `string` | yes |  |
+| `expires_at` | `string`, nullable | no |  |
+| `id` | `string` | yes | The id of the new key. |
+| `key` | `string` | yes | The new secret. Shown once; store it now. |
+| `name` | `string` | yes |  |
+| `prefix` | `string` | yes |  |
+| `replaced_key_expires_at` | `string` | yes | The old secret works until this time (RFC 3339): the end of the grace time (`KAIROS_API_KEY_ROTATION_GRACE_SECS`). |
+| `replaced_key_id` | `string` | yes | The id of the old key. |
+
 ## ApiKeyView
 
 One row of `GET /api/service-accounts/{id}/keys` — never a secret or hash.
@@ -123,6 +138,7 @@ One row of `GET /api/service-accounts/{id}/keys` — never a secret or hash.
 | `last_used_at` | `string`, nullable | no |  |
 | `name` | `string` | yes |  |
 | `prefix` | `string` | yes |  |
+| `replaced_by` | `string`, nullable | no | The key that a rotation made in place of this key (KAIROS-T-0370). The old secret works until `expires_at`, the end of the grace time. |
 | `revoked_at` | `string`, nullable | no |  |
 
 ## AppendNoteRequest
@@ -400,8 +416,9 @@ The server refuses a body with a field that is not in this table ([Errors](../er
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `expires_at` | `string`, nullable | no | Optional RFC 3339 expiry; omitted = never expires. |
+| `expires_at` | `string`, nullable | no | Optional RFC 3339 expiry. Omitted: the key expires after the default life of the deployment (`KAIROS_API_KEY_TTL_DAYS`, 90 days by default), or never when that setting is 0. |
 | `name` | `string` | yes | Operator label for the key ("gha-main", ...). |
+| `no_expiry` | `boolean` | no | `true`: the key never expires (KAIROS-T-0370). Do not send it with `expires_at`. |
 
 The server refuses a body with a field that is not in this table ([Errors](../errors.md#a-field-of-the-body)).
 

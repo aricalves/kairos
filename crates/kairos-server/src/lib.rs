@@ -32,6 +32,8 @@ pub mod metrics;
 pub mod middleware;
 pub mod rate_limit;
 pub mod secrets;
+pub mod secrets_rotation;
+pub mod security_headers;
 pub mod session_cookie;
 pub mod tenant_readiness;
 pub mod ws;

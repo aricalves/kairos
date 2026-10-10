@@ -460,16 +460,29 @@ fn serve_embedded_or_placeholder(_rel: &str) -> Response {
 /// must always revalidate (it is the pointer to the current hashes).
 fn asset_response(name: &str, bytes: Bytes) -> Response {
     let mime = mime_guess::from_path(name).first_or_octet_stream();
-    let cache = if name == "index.html" {
-        "no-cache"
-    } else {
-        "public, max-age=31536000, immutable"
-    };
+    if name == "index.html" {
+        // KAIROS-T-0370: the CSP of the GUI, with the hash of each inline
+        // script of this page.
+        let csp = crate::security_headers::spa_csp(&bytes);
+        return (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, mime.as_ref().to_string()),
+                (header::CACHE_CONTROL, "no-cache".to_string()),
+                (header::CONTENT_SECURITY_POLICY, csp),
+            ],
+            bytes,
+        )
+            .into_response();
+    }
     (
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, mime.as_ref().to_string()),
-            (header::CACHE_CONTROL, cache.to_string()),
+            (
+                header::CACHE_CONTROL,
+                "public, max-age=31536000, immutable".to_string(),
+            ),
         ],
         bytes,
     )

@@ -1246,7 +1246,8 @@ kairos keys create --name <NAME> [--service-account <SERVICE_ACCOUNT>] [OPTIONS]
 |---|---|---|---|
 | `--name <NAME>` | string | required | Label for the key, for example `laptop-claude-code` or `gha-main`. |
 | `--service-account <SERVICE_ACCOUNT>` | UUID | none | The service account. Without it, the command makes an agent key for you. |
-| `--expires-at <EXPIRES_AT>` | RFC 3339 instant | no expiry | Expiry, for example `2027-01-01T00:00:00Z`. |
+| `--expires-at <EXPIRES_AT>` | RFC 3339 instant | the default life | Expiry, for example `2027-01-01T00:00:00Z`. Without it, the key expires after the default life of the server: 90 days, unless the operator changed `KAIROS_API_KEY_TTL_DAYS`. |
+| `--no-expiry` | flag | off | The key never expires. Do not use it with `--expires-at`. |
 
 Without `--service-account`, the command makes an **agent key**. An agent key acts
 as you, with your capabilities. Each member can make agent keys. Log in as
@@ -1271,6 +1272,25 @@ kairos keys list [--service-account <SERVICE_ACCOUNT>] [OPTIONS]
 | `--service-account <SERVICE_ACCOUNT>` | UUID | none | The service account. Without it, the command lists your agent keys. |
 
 The list shows the start of each key only. It never shows the secret.
+
+### `kairos keys rotate`
+
+```
+kairos keys rotate <KEY_ID> [--service-account <SERVICE_ACCOUNT>] [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<KEY_ID>` | UUID | required | Key id, from `kairos keys list`. |
+| `--service-account <SERVICE_ACCOUNT>` | UUID | none | The service account of the key. Without it, the command rotates your agent key. |
+
+The command makes a new key with the same name and a new secret. It shows the new
+secret one time only. The old secret works until the end of the grace time: 1
+day, unless the operator changed `KAIROS_API_KEY_ROTATION_GRACE_SECS`. The
+command shows that time. Put the new key in the settings of the agent before it.
+
+The new key has the life of the old key, from now. A key with no expiry gives a
+key with no expiry. The list shows the old key with `REPLACED_BY`.
 
 ### `kairos keys revoke`
 
