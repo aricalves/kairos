@@ -26,11 +26,11 @@ use serde_json::Value;
 
 use crate::error::Error;
 use crate::types::{
-    Adr, CascadePreviewResponse, CreateAdrRequest, CreateDocumentRequest, CreateInitiativeRequest,
-    CreateStrategyRequest, CreateTaskRequest, DeleteResponse, Document, ErrorEnvelope,
-    ImpactListQuery, Initiative, ListEnvelope, ListQuery, Pagination, RestoreResponse,
-    SetDocumentBoardRequest, SetLifecycleRequest, SetWorkClassRequest, Strategy, Task,
-    TransitionRequest, UpdateContentRequest,
+    Adr, AppendNoteRequest, AppendNoteResponse, CascadePreviewResponse, CreateAdrRequest,
+    CreateDocumentRequest, CreateInitiativeRequest, CreateStrategyRequest, CreateTaskRequest,
+    DeleteResponse, Document, ErrorEnvelope, ImpactListQuery, Initiative, ListEnvelope, ListQuery,
+    Pagination, RestoreResponse, SetDocumentBoardRequest, SetLifecycleRequest, SetWorkClassRequest,
+    Strategy, Task, TransitionRequest, UpdateContentRequest,
 };
 use crate::types_auth::{DeploymentConfig, LoginRequest, LoginResponse};
 use crate::types_meta::{
@@ -2018,6 +2018,25 @@ impl KairosClient {
                 version: Some(version),
                 limit: None,
                 offset: None,
+            },
+        )
+        .await
+    }
+
+    // -- notes (KAIROS-T-0367) ---------------------------------------------------------------
+
+    /// `POST /api/{family}/{short_code}/notes` — append a note at the end
+    /// of the item's content (no version, no anchor).
+    pub async fn append_note(
+        &self,
+        kind: EntityKind,
+        short_code: &str,
+        text: &str,
+    ) -> Result<AppendNoteResponse, Error> {
+        self.post_ok(
+            &format!("/api/{kind}/{short_code}/notes"),
+            &AppendNoteRequest {
+                text: text.to_string(),
             },
         )
         .await

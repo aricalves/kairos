@@ -377,6 +377,16 @@ pub struct EditItemParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
+pub struct AppendNoteParams {
+    /// The item's short code.
+    pub short_code: String,
+    /// The markdown text of the note.
+    pub text: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 pub struct TransitionItemParams {
     /// The item's short code.
     pub short_code: String,
@@ -1815,6 +1825,38 @@ impl KairosMcp {
                 }
             }
             unreachable!("edit_item loop returns within two attempts");
+        })
+        .await
+    }
+
+    // KAIROS-T-0367: a note in one call, with no version and no anchor.
+    #[tool(
+        description = "Append a note at the end of an item's content. The note gets a heading with the date and your name: `## Note (2026-10-11, Robin)`. Send no version and no anchor text: the server locks the item, adds the note to the current content, and writes one new version. Two notes at the same time both stay. Use it to record work, a finding or a decision on an item. You can append to an item that you created, or with `manage_<type>` on its board."
+    )]
+    pub async fn append_note(
+        &self,
+        Parameters(params): Parameters<AppendNoteParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
+            require_item_edit(conn, &slug, user, item.id, item.item_type)?;
+            let version = items::append_note(
+                conn,
+                item.item_type,
+                item.id,
+                &params.text,
+                user,
+                chrono::Utc::now().date_naive(),
+            )
+            .map_err(crate::api::map_note_error)?;
+            Ok(format!(
+                "Appended a note to {} (version {version}).",
+                item.short_code
+            ))
         })
         .await
     }

@@ -799,6 +799,14 @@ pub fn map_abac_error(e: AbacError) -> ApiError {
 /// handlers catch it themselves to attach the full current entity as
 /// `details.current`; this fallback still returns a correct 409 from the
 /// typed fields should another path surface one.
+/// [`kairos_db::items::NoteError`] → API error (KAIROS-T-0367).
+pub fn map_note_error(e: kairos_db::items::NoteError) -> ApiError {
+    match e {
+        kairos_db::items::NoteError::EmptyText => ApiError::validation(e.to_string()),
+        kairos_db::items::NoteError::Item(inner) => map_item_error(inner),
+    }
+}
+
 pub fn map_item_error(e: ItemError) -> ApiError {
     match e {
         ItemError::ItemNotFound { entity_type, id } => {

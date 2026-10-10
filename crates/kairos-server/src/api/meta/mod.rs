@@ -53,6 +53,8 @@ pub mod impacts;
 // KAIROS-T-0321: the teams of an initiative or a strategy.
 pub mod item_teams;
 pub mod metadata;
+// KAIROS-T-0367: append a note to an item.
+pub mod notes;
 pub mod relationships;
 pub mod restore;
 pub mod templates;
@@ -83,6 +85,7 @@ pub fn router() -> Router<AppState> {
         .merge(definitions::router())
         .merge(templates::router())
         .merge(history::router())
+        .merge(notes::router())
         .merge(activity::router())
 }
 

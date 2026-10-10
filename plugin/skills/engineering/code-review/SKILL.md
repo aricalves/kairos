@@ -8,7 +8,7 @@ Two-axis review of the diff between `HEAD` and a fixed point the user supplies:
 - **Standards** — does the code conform to this repo's documented coding standards?
 - **Spec** — does the code faithfully implement the originating Kairos item's acceptance criteria?
 
-Both axes run as **parallel sub-agents** so they don't pollute each other's context; this skill aggregates their findings and posts a review record back to the Kairos item. Kairos is reached only through its MCP tools (`get_item`, `edit_item`) — the sub-agents have no Kairos access, so paste content into their prompts, never short codes alone.
+Both axes run as **parallel sub-agents** so they don't pollute each other's context; this skill aggregates their findings and posts a review record back to the Kairos item. Kairos is reached only through its MCP tools (`get_item`, `append_note`) — the sub-agents have no Kairos access, so paste content into their prompts, never short codes alone.
 
 ## Process
 
@@ -79,7 +79,7 @@ Present the two reports under `## Standards` and `## Spec` headings, verbatim or
 
 ### 6. Post the review record
 
-Skip this step when no originating item was found. Otherwise append a structured record to the item via `edit_item`, so the review outlives this conversation:
+Skip this step when no originating item was found. Otherwise append a structured record to the item with `append_note`, so the review outlives this conversation:
 
 ```markdown
 ### Code review — <date> (diff vs <fixed-point>)
@@ -88,4 +88,4 @@ Skip this step when no originating item was found. Otherwise append a structured
 - <one bullet per significant finding, prefixed [standards] or [spec]>
 ```
 
-Anchor on the item's `## Status Updates` heading (search for the heading, replace with the heading plus the record beneath it); if the item has no such section, anchor on its final line and append the record after it. If `edit_item` reports the search text missing — the content moved underneath you — `get_item` again and re-anchor. Keep the record compact: findings in full live in the conversation; the item carries the durable summary.
+`append_note` puts the record at the end of the item, under a heading with the date and your name, in one call: no version and no anchor text. Keep the record compact: findings in full live in the conversation; the item carries the durable summary.

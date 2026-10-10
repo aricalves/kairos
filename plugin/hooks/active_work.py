@@ -21,6 +21,7 @@ the tool result that Claude Code gives the PostToolUse hook:
     transition_item   column
     edit_item         next step (from the `replace` text)
     update_item       title, next step (from the `content`)
+    append_note       next step (from the `text`)
 
 The record is `$KAIROS_WORK_STATE_DIR/<session_id>.json`, default
 `~/.claude/kairos-work/`. `compact` reads it and the Ralph state of the
@@ -55,7 +56,7 @@ TASK_CODE = re.compile(r"^[A-Z][A-Z0-9]*-T-[0-9]+$")
 SESSION_ID = re.compile(r"^[A-Za-z0-9_.-]+$")
 KAIROS_TOOL = re.compile(
     r"^mcp__(?:plugin_kairos_)?kairos[A-Za-z0-9_-]*__"
-    r"(get_item|transition_item|edit_item|update_item)$"
+    r"(get_item|transition_item|edit_item|update_item|append_note)$"
 )
 DONE_COLUMNS = ("completed", "done")
 SHOWN_COLUMNS = ("active", "blocked")
@@ -245,8 +246,9 @@ def changes_from(tool, tool_input, text):
         column = moved.group(1) if moved else tool_input.get("to_column")
         if isinstance(column, str) and column.strip():
             changes["column"] = column.strip()
-    elif tool in ("edit_item", "update_item"):
-        written = tool_input.get("replace" if tool == "edit_item" else "content")
+    elif tool in ("edit_item", "update_item", "append_note"):
+        field = {"edit_item": "replace", "update_item": "content", "append_note": "text"}[tool]
+        written = tool_input.get(field)
         if isinstance(written, str):
             step = next_step(written)
             if step:
@@ -403,7 +405,7 @@ def build_context(values, record, session):
     else:
         lines.append(f"To find your Active tasks, {read_live}.")
     lines.append(
-        "Write progress notes on the task with `edit_item`, and end each note "
+        "Write progress notes on the task with `append_note`, and end each note "
         "with a `Next step:` line."
     )
     return "\n".join(lines)

@@ -125,6 +125,25 @@ One row of `GET /api/service-accounts/{id}/keys` — never a secret or hash.
 | `prefix` | `string` | yes |  |
 | `revoked_at` | `string`, nullable | no |  |
 
+## AppendNoteRequest
+
+Body of `POST /api/{entity_type}/{short_code}/notes` (KAIROS-T-0367): the text of a note to append at the end of the item's content.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `text` | `string` | yes | The markdown text of the note. It must not be empty. |
+
+The server refuses a body with a field that is not in this table ([Errors](../errors.md#a-field-of-the-body)).
+
+## AppendNoteResponse
+
+Response of `POST /api/{entity_type}/{short_code}/notes` (KAIROS-T-0367): the version that the note made.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `short_code` | `string` | yes | The item's short code. |
+| `version` | `integer` | yes | The new version of the item. |
+
 ## ArchiveCompletedResponse
 
 Response of `POST /api/boards/{id}/archive-completed` (KAIROS-T-0363): the tasks of the done columns that the call archived.

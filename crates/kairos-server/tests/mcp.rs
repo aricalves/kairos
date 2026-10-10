@@ -83,8 +83,8 @@ const TENANT: &str = "acme";
 
 /// How many tools `tools/list` returns, and the word the reference pages
 /// use for that number (COLLIERY-T-0220, COLLIERY-T-0266).
-const TOOL_COUNT: usize = 35;
-const TOOL_COUNT_WORD: &str = "thirty-five";
+const TOOL_COUNT: usize = 36;
+const TOOL_COUNT_WORD: &str = "thirty-six";
 
 /// Every request carries a real `Host` header and the tenant resolves from
 /// its subdomain against the configured base domain — the S-0006 REQ-1.2
@@ -618,6 +618,8 @@ async fn mcp_endpoint_against_live_stack() {
         "create_board",
         "add_team_member",
         "grant_capability",
+        // KAIROS-T-0367: a note in one call, with no version and no anchor.
+        "append_note",
     ];
     expected.sort_unstable();
     assert_eq!(names, expected, "tools/list is exactly the S-0006 surface");
@@ -1668,6 +1670,40 @@ async fn mcp_endpoint_against_live_stack() {
         )
         .await;
     assert!(text.contains("to version 3"), "{text}");
+    // KAIROS-T-0367: append_note, with no version and no anchor. The edit
+    // rule: the creator can, a member who did not create the card cannot.
+    let text = bob_session
+        .call_ok(
+            "append_note",
+            json!({"short_code": filed, "text": "The filer adds a note."}),
+        )
+        .await;
+    assert!(
+        text.contains(&format!("Appended a note to {filed} (version 4).")),
+        "{text}"
+    );
+    let text = session
+        .call_ok("get_item", json!({"short_code": filed}))
+        .await;
+    assert!(
+        text.contains("edited again by the filer\n\n## Note (")
+            && text.contains(")\n\nThe filer adds a note."),
+        "the note is at the end, under a dated heading: {text}"
+    );
+    let text = bob_session
+        .call_err("append_note", json!({"short_code": filed, "text": "  "}))
+        .await;
+    assert!(text.contains("VALIDATION"), "{text}");
+    let text = bob_session
+        .call_err(
+            "append_note",
+            json!({"short_code": unbound_code, "text": "not his"}),
+        )
+        .await;
+    assert!(
+        text.contains("FORBIDDEN") && text.contains("manage_tasks"),
+        "{text}"
+    );
     let text = bob_session
         .call_ok("delete_item", json!({"short_code": filed, "confirm": true}))
         .await;

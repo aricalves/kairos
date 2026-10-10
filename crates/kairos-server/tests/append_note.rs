@@ -1,0 +1,240 @@
+//! KAIROS-T-0367 — `POST /api/{entity_type}/{short_code}/notes`: a note
+//! goes at the end of the content under a heading with the date and the
+//! name of the caller, in one call with no version, as one history
+//! version; notes sent at the same time all stay; the edit rule applies.
+//! The MCP tool `append_note` is in `tests/mcp.rs`.
+//!
+//! Runs against the LIVE compose stack (`angreal services up`). Owns the
+//! scratch database `kairos_append_note_t0367_test`.
+
+mod common;
+
+use std::sync::Arc;
+
+use axum::http::{Method, StatusCode};
+use diesel::pg::PgConnection;
+use diesel::prelude::*;
+use serde_json::{Value, json};
+use uuid::Uuid;
+
+use common::{
+    AUDIENCE, ISSUER, base_config, drop_scratch_db, recreate_scratch_db, request, user_token,
+    with_database,
+};
+use kairos_db::models::{NewOrganizationMember, OrgRole};
+use kairos_db::schema::{item_history, organization_members, organizations, users};
+use kairos_db::{TenantPool, provision_tenant, run_public_migrations};
+use kairos_server::app;
+use kairos_server::middleware::auth::Authenticator;
+
+const SCRATCH_DB: &str = "kairos_append_note_t0367_test";
+const TENANT: [(&str, &str); 1] = [("x-tenant", "acme")];
+/// How many notes the test sends at the same time.
+const AT_ONCE: usize = 8;
+
+#[tokio::test]
+async fn append_note_adds_a_dated_note_in_one_version_against_live_stack() {
+    let mut admin_conn = recreate_scratch_db(SCRATCH_DB);
+    let scratch_url = with_database(&common::admin_database_url(), SCRATCH_DB);
+    let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
+    run_public_migrations(&mut conn).expect("running public migrations");
+    provision_tenant(&mut conn, "acme", "Acme Inc").expect("provisioning acme");
+    let org_id: Uuid = organizations::table
+        .filter(organizations::slug.eq("acme"))
+        .select(organizations::id)
+        .first(&mut conn)
+        .expect("acme org row");
+
+    let http = reqwest::Client::new();
+    let token = user_token(&http, "svc").await;
+    let bob_token = user_token(&http, "bob").await;
+    let pool = TenantPool::new(&scratch_url, 8).await.expect("pool");
+    let auth = Arc::new(
+        Authenticator::discover(ISSUER, AUDIENCE)
+            .await
+            .expect("OIDC discovery against live Dex"),
+    );
+    let router = app::router(app::state_with(
+        base_config(&scratch_url),
+        pool.clone(),
+        auth,
+    ));
+    for (user, user_token, role) in [
+        ("svc", &token, OrgRole::Admin),
+        ("bob", &bob_token, OrgRole::Member),
+    ] {
+        let _ = request(
+            &router,
+            Method::GET,
+            "/api/whoami",
+            Some(user_token),
+            &TENANT,
+            None,
+        )
+        .await;
+        let user_id: Uuid = users::table
+            .filter(users::email.eq(format!("{user}@kairos.test")))
+            .select(users::id)
+            .first(&mut conn)
+            .expect("user provisioned");
+        diesel::insert_into(organization_members::table)
+            .values(NewOrganizationMember {
+                organization_id: org_id,
+                user_id,
+                role,
+            })
+            .execute(&mut conn)
+            .expect("granting membership");
+    }
+    let svc_name: String = users::table
+        .filter(users::email.eq("svc@kairos.test"))
+        .select(users::display_name)
+        .first(&mut conn)
+        .expect("svc display name");
+
+    let send = |method: Method, uri: String, token: String, body: Option<Value>| {
+        let router = router.clone();
+        async move { request(&router, method, &uri, Some(&token), &TENANT, body).await }
+    };
+
+    let (status, team) = send(
+        Method::POST,
+        "/api/teams".into(),
+        token.clone(),
+        Some(json!({"name": "Payments", "slug": "payments", "code_prefix": "PAYMENTS"})),
+    )
+    .await;
+    assert!(status.is_success(), "{status} {team}");
+    let (status, task) = send(
+        Method::POST,
+        "/api/tasks".into(),
+        token.clone(),
+        Some(json!({
+            "board_id": "payments-delivery",
+            "title": "Pay",
+            "content": "# Pay\n\nThe body.\n",
+        })),
+    )
+    .await;
+    assert!(status.is_success(), "{status} {task}");
+    let code = task["short_code"].as_str().expect("short code").to_string();
+    let id: Uuid = task["id"].as_str().expect("id").parse().expect("uuid");
+    let notes = format!("/api/tasks/{code}/notes");
+
+    // --- one note: one call, no version, one new version ---------------------
+    let (status, answer) = send(
+        Method::POST,
+        notes.clone(),
+        token.clone(),
+        Some(json!({"text": "Found the cause.\n"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer["short_code"], code.as_str());
+    assert_eq!(answer["version"], 2);
+    let today = chrono::Utc::now().date_naive().format("%Y-%m-%d");
+    let (_, got) = send(
+        Method::GET,
+        format!("/api/tasks/{code}"),
+        token.clone(),
+        None,
+    )
+    .await;
+    assert_eq!(
+        got["content"],
+        format!("# Pay\n\nThe body.\n\n## Note ({today}, {svc_name})\n\nFound the cause."),
+        "{got}"
+    );
+    let history = |conn: &mut PgConnection| -> i64 {
+        item_history::table
+            .filter(item_history::item_id.eq(id))
+            .count()
+            .get_result(conn)
+            .expect("history count")
+    };
+    diesel::sql_query("SET search_path TO org_acme, public")
+        .execute(&mut conn)
+        .expect("pinning search_path");
+    assert_eq!(history(&mut conn), 2, "one note is one history version");
+
+    // --- refusals: an empty text, an unknown field, the edit rule ------------
+    let (status, answer) = send(
+        Method::POST,
+        notes.clone(),
+        token.clone(),
+        Some(json!({"text": " \n "})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
+    assert_eq!(answer["error"]["code"], "VALIDATION", "{answer}");
+    let (status, answer) = send(
+        Method::POST,
+        notes.clone(),
+        token.clone(),
+        Some(json!({"text": "x", "version": 2})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
+    let (status, answer) = send(
+        Method::POST,
+        notes.clone(),
+        bob_token.clone(),
+        Some(json!({"text": "Not mine."})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
+    let (status, answer) = send(
+        Method::POST,
+        format!("/api/documents/{code}/notes"),
+        token.clone(),
+        Some(json!({"text": "Wrong family."})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{answer}");
+    assert_eq!(history(&mut conn), 2, "a refused note writes nothing");
+
+    // --- notes at the same time: each one stays ------------------------------
+    let calls = (0..AT_ONCE).map(|n| {
+        send(
+            Method::POST,
+            notes.clone(),
+            token.clone(),
+            Some(json!({"text": format!("Note number {n}.")})),
+        )
+    });
+    let answers = futures_util::future::join_all(calls).await;
+    let mut versions: Vec<i64> = answers
+        .iter()
+        .map(|(status, answer)| {
+            assert_eq!(*status, StatusCode::OK, "{answer}");
+            answer["version"].as_i64().expect("version")
+        })
+        .collect();
+    versions.sort_unstable();
+    assert_eq!(versions, (3..3 + AT_ONCE as i64).collect::<Vec<_>>());
+    let (_, got) = send(
+        Method::GET,
+        format!("/api/tasks/{code}"),
+        token.clone(),
+        None,
+    )
+    .await;
+    let content = got["content"].as_str().expect("content");
+    for n in 0..AT_ONCE {
+        assert_eq!(
+            content.matches(&format!("Note number {n}.")).count(),
+            1,
+            "note {n} is lost: {content}"
+        );
+    }
+    assert_eq!(
+        content.matches("## Note (").count(),
+        AT_ONCE + 1,
+        "{content}"
+    );
+    assert_eq!(history(&mut conn), 2 + AT_ONCE as i64);
+
+    drop(pool);
+    drop(conn);
+    drop_scratch_db(&mut admin_conn, SCRATCH_DB);
+}

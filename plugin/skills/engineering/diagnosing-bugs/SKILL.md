@@ -7,7 +7,7 @@ description: Diagnosis loop for hard bugs and performance regressions. Use when 
 
 A discipline for hard bugs. Skip phases only when explicitly justified.
 
-The diagnosis log lives on the Kairos item tracking the bug (short code from session context, or `my_boards` to find it; no item → ask the user or `create_item` a task for it). As each phase completes, append its outcome via `edit_item` — the loop command, the minimal repro, the ranked hypotheses, the confirmed cause. The item survives context loss; the conversation doesn't.
+The diagnosis log lives on the Kairos item tracking the bug (short code from session context, or `my_boards` to find it; no item → ask the user or `create_item` a task for it). As each phase completes, append its outcome with `append_note` — the loop command, the minimal repro, the ranked hypotheses, the confirmed cause. The item survives context loss; the conversation doesn't.
 
 When exploring the codebase, pull that item and its relationships (`get_item`) to get a clear mental model of the relevant modules, and check ADR documents linked in the area you're touching.
 
@@ -132,6 +132,6 @@ Required before declaring done:
 - [ ] All `[DEBUG-...]` instrumentation removed (`grep` the prefix)
 - [ ] Throwaway prototypes deleted (or moved to a clearly-marked debug location)
 - [ ] The hypothesis that turned out correct is stated in the commit / PR message — so the next debugger learns
-- [ ] The diagnosis log on the Kairos item is current through the fix — confirmed cause, fix, regression-test status (`edit_item`)
+- [ ] The diagnosis log on the Kairos item is current through the fix — confirmed cause, fix, regression-test status (`append_note`)
 
 **Then ask: what would have prevented this bug?** If the answer involves architectural change (no good test seam, tangled callers, hidden coupling) hand off to the `codebase-design` skill with the specifics. Make the recommendation **after** the fix is in, not before — you have more information now than when you started.

@@ -330,6 +330,22 @@ The edit is version-checked. The CLI fetches the item and bases the PATCH on
 its current version; a concurrent edit is rejected with 409 `CONFLICT`. A
 `--version` value that is already stale is rejected the same way.
 
+### `<noun> note`
+
+```
+kairos <noun> note <SHORT_CODE> --text <TEXT> [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<SHORT_CODE>` | string | required | The item's short code. |
+| `--text <TEXT>` | string | required | The markdown text of the note. Must not be empty. |
+
+Appends a note at the end of the item's content, under a heading with the
+date and your name: `## Note (2026-10-11, Robin)`. Send no version: the server
+locks the item and writes one new version. Two notes at the same time both
+stay. The edit rule applies, as for `edit`.
+
 ### `<noun> transition`
 
 ```

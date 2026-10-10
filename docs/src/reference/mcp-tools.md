@@ -1,8 +1,8 @@
 # MCP tools
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-thirty-five tools. A drift gate in the test suite
-asserts that `tools/list` returns these thirty-five and no others. The same
+thirty-six tools. A drift gate in the test suite
+asserts that `tools/list` returns these thirty-six and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -686,6 +686,41 @@ Refuses: `VALIDATION` for an empty `search`, for a `search` not found in the
 current content, and for a `search` matching more than once while
 `replace_all` is false — the refusal states the occurrence count. Otherwise as
 `update_item`, and the same edit rule applies.
+
+### `append_note`
+
+Appends a note at the end of the item's content, in one call. Send no
+version and no anchor text.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `short_code` | string | yes | — | The item's short code. |
+| `text` | string | yes | — | The markdown text of the note. Must not be empty. |
+
+The note gets a heading with the date (UTC) and the display name of the
+caller:
+
+```text
+## Note (2026-10-11, Robin)
+
+The text of the note.
+```
+
+The server locks the item, adds the note to the current content, and writes
+one new version. Two notes at the same time both stay: the server adds the
+second one after the first one. The result is one line:
+
+```text
+Appended a note to ACME-T-0012 (version 4).
+```
+
+The edit rule applies, as for `update_item`. REST: `POST
+/api/{entity_type}/{short_code}/notes`. CLI: `kairos <noun> note <SHORT_CODE>
+--text <TEXT>`.
+
+Refuses: `VALIDATION` for an empty `text`. `NOT_FOUND` for an unknown short
+code or an archived item. `FORBIDDEN` when the
+[edit rule](capabilities.md#the-edit-rule) refuses the caller.
 
 ### `set_metadata`
 
