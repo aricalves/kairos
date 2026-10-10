@@ -524,9 +524,9 @@ Filters:
 |---|---|---|---|
 | `-q`, `--query <QUERY>` | string | none | Full-text query. Websearch semantics: quoted phrases, `OR`, `-negation`. |
 | `--type <ENTITY_TYPE>` | `strategy` \| `initiative` \| `task` \| `document` \| `adr` | all | Entity type filter. Repeatable. |
-| `--board <BOARD_ID>` | UUID | none | Restrict to items on this board. A document is not a card, so this filter gives no document. |
+| `--board <BOARD>` | slug or UUID | none | Restrict to items on this board. A document is not a card, so this filter gives no document. |
 | `--column <COLUMN_ID>` | UUID | none | Restrict to items in this column. |
-| `--team <TEAM_ID>` | UUID | none | Restrict to tasks assigned to this team. |
+| `--team <TEAM>` | slug or UUID | none | Restrict to tasks assigned to this team. |
 | `--repo <REPOSITORY>` | slug or UUID | none | Restrict to the items of this repository: the tasks that link to it, and the documents and the ADRs that impact it. |
 | `--task-type <TASK_TYPE>` | `task` \| `bug` \| `tech_debt` \| `support` | all | Task type filter. Repeatable. |
 | `--work-class <WORK_CLASS>` | `planned` \| `support` | all | Lane filter. Repeatable. |
@@ -534,6 +534,9 @@ Filters:
 | `--metadata <KEY=VALUE>` | `slug=value` | none | Metadata condition. Repeatable. Values support trailing-`*` globs, e.g. `component=auth*`. |
 | `--after <RFC3339>` | RFC 3339 instant | none | Only items created strictly after this instant. |
 | `--before <RFC3339>` | RFC 3339 instant | none | Only items created strictly before this instant. |
+| `--updated-after <RFC3339>` | RFC 3339 instant | none | Only items with a last change strictly after this instant. |
+| `--updated-before <RFC3339>` | RFC 3339 instant | none | Only items with a last change strictly before this instant. For the items with no change in 90 days, give the time 90 days ago. |
+| `--metadata-missing <SLUG>` | metadata-definition slug | none | Only items with no value for this definition, e.g. `--metadata-missing priority`. Repeatable. An unknown slug is refused. |
 | `--include-deleted` | flag | off | Include archived items. Composes with `--query` and `--from`; archived hits are marked in the output. |
 
 Traversal:
@@ -585,6 +588,7 @@ kairos boards show <BOARD> [OPTIONS]
 | `--offset <OFFSET>` | integer | 0 | Items to skip. |
 | `--team <TEAM>` | slug or UUID | all | Show only the strategies and the initiatives of this team, from tasks or set by hand. Tasks and ADRs do not change. Do not use with `--no-team`. |
 | `--no-team` | flag | off | Show only the strategies and the initiatives that have no team. |
+| `--details` | flag | off | Show more on each item: the date of its last change, the claim of a task, and the metadata values, for example `{updated 2026-10-08; claimed by Alice; priority: high}`. |
 
 Shows one page of the board's live items grouped by column. A strategy or an
 initiative that has teams shows them after its title, for example

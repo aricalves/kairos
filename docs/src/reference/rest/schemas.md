@@ -220,6 +220,7 @@ Response of `GET /api/boards/{id}/items`: one page of the items on the board, gr
 | `board` | [`Board`](schemas.md#board) | yes |  |
 | `children_progress` | `object` | yes | `(done, total)` direct-children counts keyed by the PARENT item's short code, for every item on this board that has children (KAIROS-T-0080) — computed in one grouped query, never per item. The server sends it in each response, so the schema shows it as required (COLLIERY-T-0254). It is an empty map when no item has children. The default is for the client only. |
 | `columns` | array of [`BoardColumnItems`](schemas.md#boardcolumnitems) | yes |  |
+| `item_metadata` | `object`, nullable | no | With `with_metadata=true` only (KAIROS-T-0368): the metadata values of each item of the page, keyed by short code and then by the slug of the definition. An item with no value has no entry. Absent when the query did not ask for it. |
 | `item_teams` | `object` | yes | The teams of each strategy and initiative of the page, keyed by short code (KAIROS-T-0321), by slug — one query for the board. An item with no team has no entry. The server sends it in each response, so the schema shows it as required. It is an empty map when no item has a team. The default is for the client only. |
 | `limit` | `integer` | yes | The `limit` that the server applied. |
 | `offset` | `integer` | yes | The `offset` that the server applied. |
@@ -1559,7 +1560,8 @@ The `filter` capability. Fields are AND with each other; array values are OR wit
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `board_id` | `string`, nullable | no | Restrict to items on this board (UUID; excludes documents, which do not live on boards). |
+| `board` | `string`, nullable | no | Restrict to items on this board, by slug or UUID (KAIROS-T-0368). Not with `board_id`. |
+| `board_id` | `string`, nullable | no | Restrict to items on this board (UUID; excludes documents, which do not live on boards). Not with `board`. |
 | `column_id` | `string`, nullable | no | Restrict to items in this board column (UUID; excludes documents). |
 | `created_after` | `string`, nullable | no | Only items created strictly after this instant (RFC 3339). |
 | `created_before` | `string`, nullable | no | Only items created strictly before this instant (RFC 3339). |
@@ -1567,9 +1569,13 @@ The `filter` capability. Fields are AND with each other; array values are OR wit
 | `include_deleted` | `boolean` | no | Include archived (soft-deleted) items (default false). Composes with every other capability — `q` and `traverse` included since KAIROS-T-0157 — and is a complete request on its own. Archived hits are served with `archived_at` set (KAIROS-A-0020). |
 | `is_bucket` | `boolean`, nullable | no | Restrict to (non-)bucket initiatives (initiative-level attribute; other entity types are excluded). |
 | `metadata` | `object`, nullable | no | Metadata conditions keyed by definition slug; string values support trailing-`*` globs (e.g. `"component": "auth*"`). All entries must match (AND). |
+| `metadata_missing` | `array`, nullable | no | Only items with NO value for each of these metadata definitions, by slug (KAIROS-T-0368): "bugs without a priority" is `["priority"]`. An unknown slug is refused. |
 | `repository` | `string`, nullable | no | Restrict to the items of this repository (slug or UUID of a live repository — KAIROS-T-0115 made every repository reference on the wire the same shape; the old name `repository_id` is refused, COLLIERY-T-0259). The items of a repository are the tasks that link to it, and the documents and the ADRs that impact it (COLLIERY-T-0269). Strategies and initiatives are excluded. With `team_id`, `task_type` or `work_class`, only tasks match. |
 | `task_type` | `array`, nullable | no | Restrict to tasks of these types (`task|bug|tech_debt|support`; excludes non-task entities). |
+| `team` | `string`, nullable | no | Restrict to tasks of this team, by slug or UUID (KAIROS-T-0368). Not with `team_id`. |
 | `team_id` | `string`, nullable | no | Restrict to tasks assigned to this team (UUID; task-level attribute, other entity types are excluded). |
+| `updated_after` | `string`, nullable | no | Only items last changed strictly after this instant (RFC 3339, `updated_at`; KAIROS-T-0368). |
+| `updated_before` | `string`, nullable | no | Only items last changed strictly before this instant (RFC 3339, `updated_at`; KAIROS-T-0368). "Untouched for 90 days" is now minus 90 days. |
 | `work_class` | `array`, nullable | no | Restrict to tasks in these Planned/Support lanes (`planned|support`, KAIROS-T-0077; task-level attribute, other entity types are excluded). |
 
 The server refuses a body with a field that is not in this table ([Errors](../errors.md#a-field-of-the-body)).

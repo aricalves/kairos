@@ -115,6 +115,12 @@ pub enum SearchError {
         /// The submitted `short_code` or `id`, for the error envelope.
         reference: String,
     },
+    /// A slug of `filter.metadata_missing` names no metadata definition
+    /// (KAIROS-T-0368). Refused, so that a typo does not match each item.
+    #[error(
+        "The slug {0:?} of filter.metadata_missing is not a metadata definition. Send the slug of a metadata definition of the organization."
+    )]
+    UnknownMetadataDefinition(String),
     /// Any other database error.
     #[error("The database gave an error: {0}.")]
     Database(#[from] DieselError),
@@ -209,6 +215,13 @@ pub fn execute_search_with_stats(
         intersect(&mut candidates, ids);
     }
 
+    // KAIROS-T-0368: the items that HAVE a value for one of the slugs of
+    // `metadata_missing` leave the result after hydration.
+    let excluded: HashSet<Uuid> = match filter.and_then(|f| f.metadata_missing.as_ref()) {
+        Some(slugs) => metadata_present_ids(conn, slugs, &mut stats)?,
+        None => HashSet::new(),
+    };
+
     // -- step 5: type resolution + partition ---------------------------------
     let types = applicable_types(filter);
     let per_type: HashMap<ItemType, Option<Vec<Uuid>>> = match candidates {
@@ -253,6 +266,10 @@ pub fn execute_search_with_stats(
                     .map(AnyItem::Adr),
             ),
         }
+    }
+
+    if !excluded.is_empty() {
+        combined.retain(|item| !excluded.contains(&item.id()));
     }
 
     // -- step 7: sort, count, paginate, regroup by type -----------------------
@@ -500,6 +517,39 @@ fn metadata_match_ids(
     Ok(rows.into_iter().map(|r| r.id).collect())
 }
 
+/// The ids of the items that have a value (not empty) for one or more of
+/// `slugs` (KAIROS-T-0368, `filter.metadata_missing`). Each slug must name a
+/// metadata definition: an unknown slug is
+/// [`SearchError::UnknownMetadataDefinition`].
+fn metadata_present_ids(
+    conn: &mut PgConnection,
+    slugs: &[String],
+    stats: &mut SearchStats,
+) -> Result<HashSet<Uuid>, SearchError> {
+    use crate::schema::metadata_definitions::dsl as md;
+    let wanted: Vec<String> = slugs.iter().map(|s| s.trim().to_string()).collect();
+    stats.total_queries += 1;
+    let known: HashSet<String> = md::metadata_definitions
+        .filter(md::slug.eq_any(&wanted))
+        .select(md::slug)
+        .load::<String>(conn)?
+        .into_iter()
+        .collect();
+    if let Some(unknown) = wanted.iter().find(|s| !known.contains(*s)) {
+        return Err(SearchError::UnknownMetadataDefinition(unknown.clone()));
+    }
+    stats.total_queries += 1;
+    let rows: Vec<IdRow> = sql_query(
+        "SELECT DISTINCT im.item_id AS id
+         FROM item_metadata im
+         JOIN metadata_definitions md ON md.id = im.metadata_definition_id
+         WHERE md.slug = ANY($1) AND btrim(im.value) <> ''",
+    )
+    .bind::<Array<Text>, _>(wanted)
+    .load(conn)?;
+    Ok(rows.into_iter().map(|r| r.id).collect())
+}
+
 // ---------------------------------------------------------------------------
 // Step 5: type resolution + partition
 // ---------------------------------------------------------------------------
@@ -673,6 +723,12 @@ fn hydrate_strategies(
         if let Some(before) = filter.created_before {
             query = query.filter(dsl::created_at.lt(before));
         }
+        if let Some(after) = filter.updated_after {
+            query = query.filter(dsl::updated_at.gt(after));
+        }
+        if let Some(before) = filter.updated_before {
+            query = query.filter(dsl::updated_at.lt(before));
+        }
     } else {
         query = query.filter(dsl::deleted_at.is_null());
     }
@@ -713,6 +769,12 @@ fn hydrate_initiatives(
         }
         if let Some(before) = filter.created_before {
             query = query.filter(dsl::created_at.lt(before));
+        }
+        if let Some(after) = filter.updated_after {
+            query = query.filter(dsl::updated_at.gt(after));
+        }
+        if let Some(before) = filter.updated_before {
+            query = query.filter(dsl::updated_at.lt(before));
         }
     } else {
         query = query.filter(dsl::deleted_at.is_null());
@@ -765,6 +827,12 @@ fn hydrate_tasks(
         if let Some(before) = filter.created_before {
             query = query.filter(dsl::created_at.lt(before));
         }
+        if let Some(after) = filter.updated_after {
+            query = query.filter(dsl::updated_at.gt(after));
+        }
+        if let Some(before) = filter.updated_before {
+            query = query.filter(dsl::updated_at.lt(before));
+        }
     } else {
         query = query.filter(dsl::deleted_at.is_null());
     }
@@ -798,6 +866,12 @@ fn hydrate_documents(
         }
         if let Some(before) = filter.created_before {
             query = query.filter(dsl::created_at.lt(before));
+        }
+        if let Some(after) = filter.updated_after {
+            query = query.filter(dsl::updated_at.gt(after));
+        }
+        if let Some(before) = filter.updated_before {
+            query = query.filter(dsl::updated_at.lt(before));
         }
     } else {
         query = query.filter(dsl::deleted_at.is_null());
@@ -838,6 +912,12 @@ fn hydrate_adrs(
         }
         if let Some(before) = filter.created_before {
             query = query.filter(dsl::created_at.lt(before));
+        }
+        if let Some(after) = filter.updated_after {
+            query = query.filter(dsl::updated_at.gt(after));
+        }
+        if let Some(before) = filter.updated_before {
+            query = query.filter(dsl::updated_at.lt(before));
         }
     } else {
         query = query.filter(dsl::deleted_at.is_null());

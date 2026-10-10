@@ -90,7 +90,10 @@ fn metadata_fields(
 }
 
 /// The detail payload (template + hydrated metadata fields).
-fn detail(conn: &mut PgConnection, template: Template) -> Result<dto::TemplateDetail, ApiError> {
+pub(crate) fn detail(
+    conn: &mut PgConnection,
+    template: Template,
+) -> Result<dto::TemplateDetail, ApiError> {
     let metadata = metadata_fields(conn, template.id)?;
     Ok(template_detail_dto(template, metadata))
 }

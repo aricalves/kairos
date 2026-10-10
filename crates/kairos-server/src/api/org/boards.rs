@@ -1182,6 +1182,24 @@ pub(crate) async fn board_items(
             // the page, one query for the board.
             let item_teams =
                 crate::api::meta::item_teams::board_item_teams(conn, board_id, &item_codes)?;
+            // KAIROS-T-0368: the metadata values of the page, one query,
+            // only when the query asks for them.
+            let item_metadata = if query.with_metadata {
+                let values = kairos_db::board_items::metadata_of_items(conn, &item_ids)
+                    .map_err(ApiError::internal)?;
+                Some(
+                    item_codes
+                        .iter()
+                        .filter_map(|(id, code)| {
+                            values
+                                .get(id)
+                                .map(|pairs| (code.clone(), pairs.iter().cloned().collect()))
+                        })
+                        .collect(),
+                )
+            } else {
+                None
+            };
             let children_progress: std::collections::BTreeMap<String, dto::ProgressCounts> =
                 item_codes
                     .into_iter()
@@ -1208,6 +1226,7 @@ pub(crate) async fn board_items(
                 children_progress,
                 blocks_summary,
                 item_teams,
+                item_metadata,
             })
         })
         .await?;

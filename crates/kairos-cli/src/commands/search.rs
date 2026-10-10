@@ -27,14 +27,14 @@ pub struct SearchArgs {
     /// strategy|initiative|task|document|adr
     #[arg(long = "type", value_name = "ENTITY_TYPE")]
     pub entity_type: Vec<String>,
-    /// Restrict to items on this board (UUID)
-    #[arg(long, value_name = "BOARD_ID")]
+    /// Restrict to items on this board (slug or UUID)
+    #[arg(long, value_name = "BOARD")]
     pub board: Option<String>,
     /// Restrict to items in this column (UUID)
     #[arg(long, value_name = "COLUMN_ID")]
     pub column: Option<String>,
-    /// Restrict to tasks assigned to this team (UUID)
-    #[arg(long, value_name = "TEAM_ID")]
+    /// Restrict to tasks assigned to this team (slug or UUID)
+    #[arg(long, value_name = "TEAM")]
     pub team: Option<String>,
     /// Restrict to tasks that link to this repository (slug or UUID)
     #[arg(long, value_name = "REPOSITORY")]
@@ -59,6 +59,17 @@ pub struct SearchArgs {
     /// Only items created strictly before this instant (RFC 3339)
     #[arg(long, value_name = "RFC3339")]
     pub before: Option<String>,
+    /// Only items last changed strictly after this instant (RFC 3339)
+    #[arg(long, value_name = "RFC3339")]
+    pub updated_after: Option<String>,
+    /// Only items last changed strictly before this instant (RFC 3339),
+    /// e.g. 90 days ago for the items untouched for 90 days
+    #[arg(long, value_name = "RFC3339")]
+    pub updated_before: Option<String>,
+    /// Only items with no value for this metadata definition (slug),
+    /// repeatable, e.g. --metadata-missing priority
+    #[arg(long, value_name = "SLUG")]
+    pub metadata_missing: Vec<String>,
     /// Include archived (soft-deleted) items; composes with --query and
     /// --from, and archived hits are marked
     #[arg(long)]
@@ -172,12 +183,17 @@ impl SearchArgs {
             || metadata.is_some()
             || self.after.is_some()
             || self.before.is_some()
+            || self.updated_after.is_some()
+            || self.updated_before.is_some()
+            || !self.metadata_missing.is_empty()
             || self.include_deleted;
         let filter = has_filter.then(|| SearchFilter {
             entity_type: non_empty(&self.entity_type),
-            board_id: self.board.clone(),
+            board_id: None,
+            board: self.board.clone(),
             column_id: self.column.clone(),
-            team_id: self.team.clone(),
+            team_id: None,
+            team: self.team.clone(),
             repository: self.repo.clone(),
             task_type: non_empty(&self.task_type),
             work_class: non_empty(&self.work_class),
@@ -185,6 +201,9 @@ impl SearchArgs {
             metadata,
             created_after: self.after.clone(),
             created_before: self.before.clone(),
+            updated_after: self.updated_after.clone(),
+            updated_before: self.updated_before.clone(),
+            metadata_missing: non_empty(&self.metadata_missing),
             include_deleted: self.include_deleted,
         });
 
@@ -345,6 +364,8 @@ mod tests {
             metadata: vec!["priority=critical".into(), "component=auth*".into()],
             after: Some("2026-01-01T00:00:00Z".into()),
             before: Some("2026-03-01T00:00:00Z".into()),
+            updated_before: Some("2026-02-01T00:00:00Z".into()),
+            metadata_missing: vec!["priority".into()],
             sort: Some("updated_at".into()),
             limit: Some(10),
             ..Default::default()
@@ -356,7 +377,17 @@ mod tests {
             filter.entity_type.as_deref(),
             Some(&["task".to_string(), "initiative".to_string()][..])
         );
-        assert_eq!(filter.board_id.as_deref(), Some("b-1"));
+        // KAIROS-T-0368: --board is a slug or a UUID, sent as `board`.
+        assert_eq!(filter.board.as_deref(), Some("b-1"));
+        assert_eq!(filter.board_id, None);
+        assert_eq!(
+            filter.updated_before.as_deref(),
+            Some("2026-02-01T00:00:00Z")
+        );
+        assert_eq!(
+            filter.metadata_missing.as_deref(),
+            Some(&["priority".to_string()][..])
+        );
         assert_eq!(filter.task_type.as_deref(), Some(&["bug".to_string()][..]));
         let metadata = filter.metadata.expect("metadata");
         assert_eq!(metadata["priority"], "critical");

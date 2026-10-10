@@ -77,14 +77,16 @@ const SCRATCH_DB: &str = "kairos_mcp_t0026_test";
 /// `update_repository` (COLLIERY-T-0266). The two tests of this file run at
 /// the same time, so each has a database of its own.
 const REPOSITORY_TOOLS_DB: &str = "kairos_mcp_t0266_test";
+/// The scratch database of the triage test (KAIROS-T-0368).
+const TRIAGE_TOOLS_DB: &str = "kairos_mcp_t0368_test";
 
 /// The tenant slug.
 const TENANT: &str = "acme";
 
 /// How many tools `tools/list` returns, and the word the reference pages
 /// use for that number (COLLIERY-T-0220, COLLIERY-T-0266).
-const TOOL_COUNT: usize = 36;
-const TOOL_COUNT_WORD: &str = "thirty-six";
+const TOOL_COUNT: usize = 38;
+const TOOL_COUNT_WORD: &str = "thirty-eight";
 
 /// Every request carries a real `Host` header and the tenant resolves from
 /// its subdomain against the configured base domain — the S-0006 REQ-1.2
@@ -620,6 +622,9 @@ async fn mcp_endpoint_against_live_stack() {
         "grant_capability",
         // KAIROS-T-0367: a note in one call, with no version and no anchor.
         "append_note",
+        // KAIROS-T-0368: the scales and the templates, for triage.
+        "list_metadata_definitions",
+        "list_templates",
     ];
     expected.sort_unstable();
     assert_eq!(names, expected, "tools/list is exactly the S-0006 surface");
@@ -1793,9 +1798,9 @@ async fn mcp_endpoint_against_live_stack() {
         text,
         "VALIDATION: The call has the argument \"no_such_argument\". This tool does not \
          accept that argument. The arguments of this tool are: board, column, repository, \
-         include_deleted, limit, offset, team, no_team.\n\
+         include_deleted, limit, offset, team, no_team, details.\n\
          details: {\"allowed\":[\"board\",\"column\",\"repository\",\"include_deleted\",\
-         \"limit\",\"offset\",\"team\",\"no_team\"],\"argument\":\"no_such_argument\"}"
+         \"limit\",\"offset\",\"team\",\"no_team\",\"details\"],\"argument\":\"no_such_argument\"}"
     );
     let full = session
         .call_ok(
@@ -1885,12 +1890,12 @@ async fn mcp_endpoint_against_live_stack() {
     let text = session
         .call_err(
             "search",
-            json!({"q": "cache", "filter": {"board": "platform-delivery"}}),
+            json!({"q": "cache", "filter": {"board_slug": "platform-delivery"}}),
         )
         .await;
     assert!(
         text.starts_with(
-            "VALIDATION: The call has the argument \"board\". This tool does not accept \
+            "VALIDATION: The call has the argument \"board_slug\". This tool does not accept \
              that argument. The arguments of this tool are: entity_type, board_id, "
         ),
         "{text}"
@@ -3437,4 +3442,264 @@ async fn repository_tools_against_live_stack() {
     // --- teardown ------------------------------------------------------------
     drop(conn);
     drop_scratch_db(&mut admin_conn, REPOSITORY_TOOLS_DB);
+}
+
+/// KAIROS-T-0368: a triage pass with no `get_item` for each card. `search`
+/// alone answers "the bugs without a priority, untouched for 90 days";
+/// `board_items` with `details` shows the priority, the last change and the
+/// claim of each card; `list_metadata_definitions` gives the scale of
+/// `priority`, and `list_templates` the templates.
+#[tokio::test]
+async fn triage_tools_against_live_stack() {
+    let mut admin_conn = recreate_scratch_db(TRIAGE_TOOLS_DB);
+    let scratch_url = with_database(&common::admin_database_url(), TRIAGE_TOOLS_DB);
+    let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
+    run_public_migrations(&mut conn).expect("running public migrations");
+    provision_tenant(&mut conn, TENANT, "Acme Inc").expect("provisioning acme");
+    let org_id: Uuid = organizations::table
+        .filter(organizations::slug.eq(TENANT))
+        .select(organizations::id)
+        .first(&mut conn)
+        .expect("acme org row");
+
+    let http = reqwest::Client::new();
+    let pool = TenantPool::new(&scratch_url, 4).await.expect("pool");
+    let auth = Arc::new(
+        Authenticator::discover(ISSUER, AUDIENCE)
+            .await
+            .expect("OIDC discovery against live Dex"),
+    );
+    let router = app::router(app::state_with(
+        base_config(&scratch_url),
+        pool.clone(),
+        auth.clone(),
+    ));
+    let token = user_token(&http, "svc").await;
+    let (status, _, _) = raw_request(
+        &router,
+        Method::POST,
+        "/mcp",
+        Some(&token),
+        None,
+        Some(
+            json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "t", "version": "0"}}}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let svc = user_id(&mut conn, "svc@kairos.test");
+    diesel::insert_into(organization_members::table)
+        .values(NewOrganizationMember {
+            organization_id: org_id,
+            user_id: svc,
+            role: OrgRole::Admin,
+        })
+        .execute(&mut conn)
+        .expect("granting membership");
+    sql_query("SET search_path TO org_acme, public")
+        .execute(&mut conn)
+        .expect("pinning search_path");
+    let platform = team_with_board(&mut conn, "Platform", "platform", true);
+    let (mut session, _) = McpSession::connect(&router, &token).await;
+
+    // Four cards: the triage question must find `old_bug` only.
+    let mut codes = std::collections::HashMap::new();
+    for (name, task_type) in [
+        ("old_bug", "bug"),
+        ("old_bug_with_priority", "bug"),
+        ("new_bug", "bug"),
+        ("old_task", "task"),
+    ] {
+        let text = session
+            .call_ok(
+                "create_item",
+                json!({
+                    "item_type": "task",
+                    "board": "platform-delivery",
+                    "title": name,
+                    "task_type": task_type,
+                }),
+            )
+            .await;
+        codes.insert(name, extract_code(&text, "PLATFORMDE-T-"));
+    }
+    session
+        .call_ok(
+            "set_metadata",
+            json!({"short_code": codes["old_bug_with_priority"], "values": {"priority": "high"}}),
+        )
+        .await;
+    // 120 days without a change, for the three "old" cards.
+    for name in ["old_bug", "old_bug_with_priority", "old_task"] {
+        sql_query(
+            "UPDATE tasks SET updated_at = now() - interval '120 days' WHERE short_code = $1",
+        )
+        .bind::<diesel::sql_types::Text, _>(&codes[name])
+        .execute(&mut conn)
+        .expect("backdating a task");
+    }
+    let cutoff = (chrono::Utc::now() - chrono::Duration::days(90)).to_rfc3339();
+
+    // --- search alone answers the triage question ----------------------------
+    let text = session
+        .call_ok(
+            "search",
+            json!({"filter": {
+                "entity_type": ["task"],
+                "task_type": ["bug"],
+                "board": "platform-delivery",
+                "metadata_missing": ["priority"],
+                "updated_before": cutoff,
+            }}),
+        )
+        .await;
+    assert!(text.contains(&codes["old_bug"]), "{text}");
+    for other in ["old_bug_with_priority", "new_bug", "old_task"] {
+        assert!(!text.contains(&codes[other]), "{other}: {text}");
+    }
+    // The team by slug, and the board by UUID, give the same answer.
+    let board_id: Uuid = kairos_db::schema::boards::table
+        .filter(kairos_db::schema::boards::slug.eq("platform-delivery"))
+        .select(kairos_db::schema::boards::id)
+        .first(&mut conn)
+        .expect("board id");
+    for filter in [
+        json!({"task_type": ["bug"], "team": "platform", "metadata_missing": ["priority"],
+               "updated_before": cutoff}),
+        json!({"task_type": ["bug"], "board_id": board_id.to_string(),
+               "metadata_missing": ["priority"], "updated_before": cutoff}),
+    ] {
+        let text = session.call_ok("search", json!({"filter": filter})).await;
+        assert!(text.contains(&codes["old_bug"]), "{text}");
+        assert!(!text.contains(&codes["new_bug"]), "{text}");
+    }
+    // updated_after gives the recent card only.
+    let text = session
+        .call_ok(
+            "search",
+            json!({"filter": {"task_type": ["bug"], "updated_after": cutoff}}),
+        )
+        .await;
+    assert!(text.contains(&codes["new_bug"]), "{text}");
+    assert!(!text.contains(&codes["old_bug"]), "{text}");
+    // Refusals: an unknown slug, a board with board_id, an unknown board.
+    let text = session
+        .call_err(
+            "search",
+            json!({"filter": {"metadata_missing": ["priorty"]}}),
+        )
+        .await;
+    assert!(
+        text.contains("VALIDATION") && text.contains("priorty"),
+        "{text}"
+    );
+    let text = session
+        .call_err(
+            "search",
+            json!({"filter": {"board": "platform-delivery", "board_id": board_id.to_string()}}),
+        )
+        .await;
+    assert!(text.contains("VALIDATION"), "{text}");
+    let text = session
+        .call_err("search", json!({"filter": {"board": "no-such-board"}}))
+        .await;
+    assert!(
+        text.contains("VALIDATION") && text.contains("no-such-board"),
+        "{text}"
+    );
+
+    // --- board_items: compact by default, details on request -----------------
+    let compact = session
+        .call_ok("board_items", json!({"board": "platform-delivery"}))
+        .await;
+    assert!(!compact.contains("priority: high"), "{compact}");
+    assert!(!compact.contains("{updated "), "{compact}");
+    session
+        .call_ok(
+            "transition_item",
+            json!({"short_code": codes["new_bug"], "to_column": "Todo"}),
+        )
+        .await;
+    session
+        .call_ok(
+            "transition_item",
+            json!({"short_code": codes["new_bug"], "to_column": "Active"}),
+        )
+        .await;
+    let detailed = session
+        .call_ok(
+            "board_items",
+            json!({"board": "platform-delivery", "details": true}),
+        )
+        .await;
+    let line = |code: &str| {
+        detailed
+            .lines()
+            .find(|l| l.contains(code))
+            .unwrap_or_else(|| panic!("no line for {code}: {detailed}"))
+            .to_string()
+    };
+    let with_priority = line(&codes["old_bug_with_priority"]);
+    assert!(
+        with_priority.contains("priority: high") && with_priority.contains("{updated "),
+        "{with_priority}"
+    );
+    let old = (chrono::Utc::now() - chrono::Duration::days(120))
+        .format("%Y-%m-%d")
+        .to_string();
+    assert!(
+        line(&codes["old_bug"]).contains(&format!("{{updated {old}}}")),
+        "{detailed}"
+    );
+    assert!(
+        line(&codes["new_bug"]).contains("[claimed by "),
+        "{detailed}"
+    );
+
+    // --- the scales and the templates ----------------------------------------
+    let text = session
+        .call_ok("list_metadata_definitions", json!({}))
+        .await;
+    assert!(
+        text.contains("- `priority` Priority (enum) — values, in order: low, medium, high, critical — applies to: all types"),
+        "{text}"
+    );
+    assert!(text.contains("`document_type`"), "{text}");
+    let text = session
+        .call_ok("list_metadata_definitions", json!({"entity_type": "task"}))
+        .await;
+    assert!(
+        text.contains("`priority`") && !text.contains("`document_type`"),
+        "{text}"
+    );
+    let text = session
+        .call_err("list_metadata_definitions", json!({"entity_type": "card"}))
+        .await;
+    assert!(text.contains("VALIDATION"), "{text}");
+    let text = session.call_ok("list_templates", json!({})).await;
+    assert!(text.contains("## `prd` PRD"), "{text}");
+    assert!(
+        text.contains("- `document_type` (enum) default: prd"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("## Problem"),
+        "the list has no content: {text}"
+    );
+    let text = session
+        .call_ok("list_templates", json!({"slug": "prd"}))
+        .await;
+    assert!(text.contains("## Problem"), "{text}");
+    let text = session
+        .call_err("list_templates", json!({"slug": "nope"}))
+        .await;
+    assert!(text.contains("NOT_FOUND"), "{text}");
+
+    drop(session);
+    drop(pool);
+    drop(conn);
+    let _ = platform;
+    drop_scratch_db(&mut admin_conn, TRIAGE_TOOLS_DB);
 }

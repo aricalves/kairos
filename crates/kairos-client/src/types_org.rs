@@ -254,6 +254,10 @@ pub struct BoardItemsQuery {
     /// (KAIROS-T-0321). Tasks and ADRs are unaffected. Not with `team`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_team: bool,
+    /// Add `item_metadata` to the response: the metadata values of each
+    /// item of the page (KAIROS-T-0368). Default false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub with_metadata: bool,
 }
 
 /// One team of an initiative or a strategy (KAIROS-T-0321). The item gets
@@ -358,6 +362,13 @@ pub struct BoardItemsResponse {
     #[serde(default)]
     #[schema(required = true)]
     pub item_teams: std::collections::BTreeMap<String, Vec<ItemTeam>>,
+    /// With `with_metadata=true` only (KAIROS-T-0368): the metadata values
+    /// of each item of the page, keyed by short code and then by the slug
+    /// of the definition. An item with no value has no entry. Absent when
+    /// the query did not ask for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_metadata:
+        Option<std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>>,
 }
 
 impl BoardItemsResponse {

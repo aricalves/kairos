@@ -157,6 +157,29 @@ pub struct BoardItemsParams {
     /// Restrict the STRATEGIES and the INITIATIVES to those with no team.
     /// Not with `team`.
     pub no_team: Option<bool>,
+    /// Show more on each card (default false: the compact list): the date
+    /// of the last change and each metadata value of the card, e.g.
+    /// `{updated 2026-10-08; priority: high}`.
+    pub details: Option<bool>,
+}
+
+/// Parameters for `list_metadata_definitions` (KAIROS-T-0368).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct ListMetadataDefinitionsParams {
+    /// Only the definitions that apply to this entity type: strategy |
+    /// initiative | task | document | adr.
+    pub entity_type: Option<String>,
+}
+
+/// Parameters for `list_templates` (KAIROS-T-0368).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct ListTemplatesParams {
+    /// Show this one template (by slug) with its full content.
+    pub slug: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -233,12 +256,16 @@ pub struct SearchParams {
 pub struct SearchFilterParams {
     /// Restrict to entity types: strategy | initiative | task | document | adr.
     pub entity_type: Option<Vec<String>>,
-    /// Restrict to items on this board (UUID).
+    /// Restrict to items on this board (UUID). Not with `board`.
     pub board_id: Option<String>,
+    /// Restrict to items on this board, by slug or UUID. Not with `board_id`.
+    pub board: Option<String>,
     /// Restrict to items in this column (UUID).
     pub column_id: Option<String>,
-    /// Restrict to tasks of this team (UUID).
+    /// Restrict to tasks of this team (UUID). Not with `team`.
     pub team_id: Option<String>,
+    /// Restrict to tasks of this team, by slug or UUID. Not with `team_id`.
+    pub team: Option<String>,
     /// Restrict to the items of this repository (slug or UUID): the tasks
     /// that link to it, and the documents and the ADRs that impact it.
     pub repository: Option<String>,
@@ -255,6 +282,15 @@ pub struct SearchFilterParams {
     pub created_after: Option<String>,
     /// Only items created strictly before this RFC 3339 instant.
     pub created_before: Option<String>,
+    /// Only items last changed (updated_at) strictly after this RFC 3339
+    /// instant.
+    pub updated_after: Option<String>,
+    /// Only items last changed (updated_at) strictly before this RFC 3339
+    /// instant. "Untouched for 90 days": now minus 90 days.
+    pub updated_before: Option<String>,
+    /// Only items with NO value for each of these metadata definitions
+    /// (slugs), e.g. ["priority"]. An unknown slug is refused.
+    pub metadata_missing: Option<Vec<String>>,
     /// Include archived (soft-deleted) items (default false). Composes with
     /// everything, `q` and `traverse` included; archived hits come back
     /// marked `[archived]`.
@@ -1160,7 +1196,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "List the items on a board grouped by column: short code, type, and title. `board` is a slug or UUID; optional `column` (name or UUID) restricts to one column; optional `repository` (slug or UUID) narrows the tasks to one repository — pass the repository you are checked out in to see your queue. Live cards only unless `include_deleted` is true, which adds the archived ones back in the column they were put away in, each marked [archived]. A card with open dependencies is tagged [blocked by N] and [blocks N]. A task with a claim is tagged [claimed by NAME]: the person who works on it, and \"(agent)\" when the agent of the person made the claim. A strategy or an initiative with teams is tagged [teams: a, b]: the teams of the boards of its tasks (two levels down for a strategy), plus the teams set on it by hand (`set_team`). Optional `team` (slug or UUID) restricts the strategies and the initiatives to those of one team, and `no_team: true` to those with no team. Only open `blocks` edges are counted: an edge with either end in a done column, or with an archived item at the other end, is not. The result has 200 items at most by default: optional `limit` (maximum 1000) and `offset` give a different part of the board. When the result is not the full board, its first lines say so and give the `offset` of the next part. Call the tool again with that `offset` until you have each part."
+        description = "List the items on a board grouped by column: short code, type, and title. `board` is a slug or UUID; optional `column` (name or UUID) restricts to one column; optional `repository` (slug or UUID) narrows the tasks to one repository — pass the repository you are checked out in to see your queue. Live cards only unless `include_deleted` is true, which adds the archived ones back in the column they were put away in, each marked [archived]. A card with open dependencies is tagged [blocked by N] and [blocks N]. A task with a claim is tagged [claimed by NAME]: the person who works on it, and \"(agent)\" when the agent of the person made the claim. A strategy or an initiative with teams is tagged [teams: a, b]: the teams of the boards of its tasks (two levels down for a strategy), plus the teams set on it by hand (`set_team`). Optional `team` (slug or UUID) restricts the strategies and the initiatives to those of one team, and `no_team: true` to those with no team. Only open `blocks` edges are counted: an edge with either end in a done column, or with an archived item at the other end, is not. The result has 200 items at most by default: optional `limit` (maximum 1000) and `offset` give a different part of the board. When the result is not the full board, its first lines say so and give the `offset` of the next part. Call the tool again with that `offset` until you have each part. Optional `details: true` adds to each card the date of its last change and its metadata values (for example the priority): `{updated 2026-10-08; priority: high}`. Use it to pick or triage work without `get_item` for each card."
     )]
     pub async fn board_items(
         &self,
@@ -1267,6 +1303,15 @@ impl KairosMcp {
             // KAIROS-T-0362: the cancelled tasks, one query.
             let cancelled = kairos_db::task_cancellations::marks_of(conn, &item_ids)
                 .map_err(ApiError::internal)?;
+            // KAIROS-T-0368: with `details`, the metadata of the cards, one
+            // query.
+            let details = params.details.unwrap_or(false);
+            let metadata = if details {
+                kairos_db::board_items::metadata_of_items(conn, &item_ids)
+                    .map_err(ApiError::internal)?
+            } else {
+                HashMap::new()
+            };
 
             let mut out = format!(
                 "# Board {} — {} ({})\n",
@@ -1295,7 +1340,7 @@ impl KairosMcp {
                     // tell put-away work from live work will pick one up
                     // and start on it (KAIROS-A-0020 rule 2).
                     out.push_str(&format!(
-                        "- {} [{}] {}{}{}{}{}{}{}\n",
+                        "- {} [{}] {}{}{}{}{}{}{}{}\n",
                         item.short_code,
                         item.kind,
                         item.title,
@@ -1327,8 +1372,135 @@ impl KairosMcp {
                             .get(&item.id)
                             .map(|counts| blocks_marker(*counts))
                             .unwrap_or_default(),
-                        if item.archived { " [archived]" } else { "" }
+                        if item.archived { " [archived]" } else { "" },
+                        if details {
+                            card_details(item.updated_at, metadata.get(&item.id))
+                        } else {
+                            String::new()
+                        }
                     ));
+                }
+            }
+            Ok(out)
+        })
+        .await
+    }
+
+    // KAIROS-T-0368: the metadata definitions and the templates, so that an
+    // agent knows the scales (the values of `priority`, in order) and the
+    // slugs that `set_metadata` and `search` take.
+    #[tool(
+        description = "List the metadata definitions of the organization: slug, name, type, the values of an enum in their order (the scale, for example the priorities from the first to the last), and the entity types that each definition applies to (all types when none is named). Optional `entity_type` gives only the definitions of that type. Use the slugs in `set_metadata`, and in `search` (`filter.metadata`, `filter.metadata_missing`)."
+    )]
+    pub async fn list_metadata_definitions(
+        &self,
+        Parameters(params): Parameters<ListMetadataDefinitionsParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (_, tenant) = Self::caller(&context)?;
+        self.run_tool(&tenant, move |conn| {
+            use crate::api::meta::definitions::ENTITY_TYPES;
+            use kairos_db::models::templates::MetadataDefinition;
+            use kairos_db::schema::metadata_definitions as definitions;
+            if let Some(entity_type) = params.entity_type.as_deref()
+                && !ENTITY_TYPES.contains(&entity_type)
+            {
+                return Err(ApiError::validation(format!(
+                    "The value {entity_type:?} of entity_type is not an entity type. The entity \
+                     types are: {}.",
+                    ENTITY_TYPES.join(", ")
+                )));
+            }
+            let rows: Vec<MetadataDefinition> = definitions::table
+                .order(definitions::slug.asc())
+                .select(MetadataDefinition::as_select())
+                .load(conn)
+                .map_err(ApiError::internal)?;
+            let mut out = String::from("# Metadata definitions\n\n");
+            let mut shown = 0;
+            for row in rows {
+                let definition = crate::api::meta::definitions::hydrate(conn, row)?;
+                if let Some(entity_type) = params.entity_type.as_deref()
+                    && !definition.entity_types.is_empty()
+                    && !definition.entity_types.iter().any(|t| t == entity_type)
+                {
+                    continue;
+                }
+                shown += 1;
+                out.push_str(&format!(
+                    "- `{}` {} ({})",
+                    definition.slug, definition.name, definition.field_type
+                ));
+                if !definition.enum_options.is_empty() {
+                    out.push_str(&format!(
+                        " — values, in order: {}",
+                        definition.enum_options.join(", ")
+                    ));
+                }
+                out.push_str(&if definition.entity_types.is_empty() {
+                    " — applies to: all types".to_string()
+                } else {
+                    format!(" — applies to: {}", definition.entity_types.join(", "))
+                });
+                out.push('\n');
+            }
+            if shown == 0 {
+                out.push_str("The organization has no metadata definition for this.\n");
+            }
+            Ok(out)
+        })
+        .await
+    }
+
+    #[tool(
+        description = "List the templates of the organization: slug, name, and the metadata that each template stamps on an item (the default value, and whether the field is required). With `slug`, show that one template with its full content."
+    )]
+    pub async fn list_templates(
+        &self,
+        Parameters(params): Parameters<ListTemplatesParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (_, tenant) = Self::caller(&context)?;
+        self.run_tool(&tenant, move |conn| {
+            use kairos_db::models::templates::Template;
+            use kairos_db::schema::templates;
+            let mut query = templates::table
+                .order(templates::slug.asc())
+                .select(Template::as_select())
+                .into_boxed();
+            if let Some(slug) = params.slug.as_deref() {
+                query = query.filter(templates::slug.eq(slug));
+            }
+            let rows: Vec<Template> = query.load(conn).map_err(ApiError::internal)?;
+            if rows.is_empty()
+                && let Some(slug) = params.slug.as_deref()
+            {
+                return Err(ApiError::not_found(format!(
+                    "The organization has no template with the slug {slug:?}."
+                )));
+            }
+            let mut out = String::from("# Templates\n");
+            for row in rows {
+                let template = crate::api::meta::templates::detail(conn, row)?;
+                out.push_str(&format!("\n## `{}` {}\n", template.slug, template.name));
+                if template.metadata.is_empty() {
+                    out.push_str("- metadata: none\n");
+                }
+                for field in &template.metadata {
+                    out.push_str(&format!(
+                        "- `{}` ({}){}{}\n",
+                        field.slug,
+                        field.field_type,
+                        field
+                            .default_value
+                            .as_deref()
+                            .map(|v| format!(" default: {v}"))
+                            .unwrap_or_default(),
+                        if field.required { " required" } else { "" }
+                    ));
+                }
+                if params.slug.is_some() {
+                    out.push_str(&format!("\n{}\n", template.content));
                 }
             }
             Ok(out)
@@ -1657,7 +1829,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Unified search: full-text `q`, structured `filter` (types, board, column, team, repository, task_type, metadata, dates), and graph `traverse` compose freely (at least one required). `filter.repository` gives the items of a repository: the tasks that link to it, and the documents and the ADRs that impact it. `traverse` follows the edges between items, so `impacts` is not a relationship of `traverse`. Compact results grouped by type; use get_item for full content."
+        description = "Unified search: full-text `q`, structured `filter` (types, board, column, team, repository, task_type, metadata, dates), and graph `traverse` compose freely (at least one required). `filter.board` and `filter.team` take a slug or a UUID. `filter.updated_before` and `filter.updated_after` compare the time of the last change: \"untouched for 90 days\" is `updated_before` = now minus 90 days. `filter.metadata_missing` gives the items with no value for each named definition: \"bugs without a priority\" is `{entity_type: [task], task_type: [bug], metadata_missing: [priority]}`. `filter.repository` gives the items of a repository: the tasks that link to it, and the documents and the ADRs that impact it. `traverse` follows the edges between items, so `impacts` is not a relationship of `traverse`. Compact results grouped by type; use get_item for full content."
     )]
     pub async fn search(
         &self,
@@ -1669,23 +1841,29 @@ impl KairosMcp {
             Ok(request) => request,
             Err(e) => return Ok(tool_error(e)),
         };
-        let repository = params.filter.as_ref().and_then(|f| f.repository.clone());
-        if repository.is_none()
+        let refs = match params.filter.as_ref().map(|f| {
+            crate::api::search::FilterRefs::new(
+                f.repository.clone(),
+                (f.board.clone(), f.board_id.is_some()),
+                (f.team.clone(), f.team_id.is_some()),
+            )
+        }) {
+            None => crate::api::search::FilterRefs::default(),
+            Some(Ok(refs)) => refs,
+            Some(Err(e)) => return Ok(tool_error(e)),
+        };
+        if refs.is_empty()
             && let Err(e) = core_search::validate(&request)
         {
             // Invalid requests never cost a connection checkout.
             return Ok(tool_error(ApiError::validation(e.to_string())));
         }
         self.run_tool(&tenant, move |conn| {
-            // KAIROS-T-0107: the slug-or-UUID repository filter needs a conn
-            // to resolve, so it joins the core filter here — then validate.
-            if let Some(reference) = repository.as_deref() {
-                let repo = repositories::resolve(conn, reference)
-                    .map_err(crate::api::tasks::map_repository_error)?;
-                request
-                    .filter
-                    .get_or_insert_with(Default::default)
-                    .repository_id = Some(repo.id);
+            // KAIROS-T-0107, KAIROS-T-0368: the slug-or-UUID repository,
+            // board and team need a conn to resolve, so they join the core
+            // filter here — then validate.
+            if !refs.is_empty() {
+                refs.resolve_into(conn, &mut request)?;
                 core_search::validate(&request).map_err(|e| ApiError::validation(e.to_string()))?;
             }
             let results = search::execute_search(conn, &request).map_err(map_search_error)?;
@@ -3434,6 +3612,8 @@ struct BoardItemRow {
     /// Put away (KAIROS-A-0020). Only ever true when the caller asked for
     /// archived rows, and the renderer MUST mark it.
     archived: bool,
+    /// The last change (KAIROS-T-0368: `board_items` with `details`).
+    updated_at: DateTime<Utc>,
 }
 
 /// What each family's board listing selects. The trailing
@@ -3441,8 +3621,23 @@ struct BoardItemRow {
 /// than only the widened one: the live mode must still be able to prove
 /// it served nothing archived, and a marker that is only fetched when it
 /// might be set is a marker nobody checks (KAIROS-T-0159).
-type BoardStrategySelect = (Uuid, Uuid, String, String, Option<DateTime<Utc>>);
-type BoardInitiativeSelect = (Uuid, Uuid, String, String, bool, Option<DateTime<Utc>>);
+type BoardStrategySelect = (
+    Uuid,
+    Uuid,
+    String,
+    String,
+    Option<DateTime<Utc>>,
+    DateTime<Utc>,
+);
+type BoardInitiativeSelect = (
+    Uuid,
+    Uuid,
+    String,
+    String,
+    bool,
+    Option<DateTime<Utc>>,
+    DateTime<Utc>,
+);
 type BoardTaskSelect = (
     Uuid,
     Uuid,
@@ -3452,8 +3647,16 @@ type BoardTaskSelect = (
     WorkClass,
     Option<Uuid>,
     Option<DateTime<Utc>>,
+    DateTime<Utc>,
 );
-type BoardAdrSelect = (Uuid, Option<Uuid>, String, String, Option<DateTime<Utc>>);
+type BoardAdrSelect = (
+    Uuid,
+    Option<Uuid>,
+    String,
+    String,
+    Option<DateTime<Utc>>,
+    DateTime<Utc>,
+);
 
 /// Every item placed on a board (strategies, initiatives, tasks, and
 /// on-board ADRs — documents have no placement), unified for listing.
@@ -3495,22 +3698,22 @@ fn board_item_rows(
             strategies::short_code,
             strategies::title,
             strategies::deleted_at,
+            strategies::updated_at,
         ))
         .load(conn)
         .map_err(ApiError::internal)?;
-    rows.extend(
-        strategies.into_iter().map(
-            |(id, column_id, short_code, title, deleted_at)| BoardItemRow {
-                id,
-                column_id,
-                short_code,
-                title,
-                repository_id: None,
-                kind: "strategy".to_string(),
-                archived: deleted_at.is_some(),
-            },
-        ),
-    );
+    rows.extend(strategies.into_iter().map(
+        |(id, column_id, short_code, title, deleted_at, updated_at)| BoardItemRow {
+            id,
+            column_id,
+            short_code,
+            title,
+            repository_id: None,
+            kind: "strategy".to_string(),
+            archived: deleted_at.is_some(),
+            updated_at,
+        },
+    ));
 
     let mut initiative_query = initiatives::table
         .filter(initiatives::board_id.eq(board_id))
@@ -3530,11 +3733,12 @@ fn board_item_rows(
             initiatives::title,
             initiatives::is_bucket,
             initiatives::deleted_at,
+            initiatives::updated_at,
         ))
         .load(conn)
         .map_err(ApiError::internal)?;
     rows.extend(initiatives.into_iter().map(
-        |(id, column_id, short_code, title, is_bucket, deleted_at)| BoardItemRow {
+        |(id, column_id, short_code, title, is_bucket, deleted_at, updated_at)| BoardItemRow {
             id,
             column_id,
             short_code,
@@ -3542,6 +3746,7 @@ fn board_item_rows(
             repository_id: None,
             kind: if is_bucket { "bucket" } else { "initiative" }.to_string(),
             archived: deleted_at.is_some(),
+            updated_at,
         },
     ));
 
@@ -3568,11 +3773,22 @@ fn board_item_rows(
             tasks::work_class,
             tasks::repository_id,
             tasks::deleted_at,
+            tasks::updated_at,
         ))
         .load(conn)
         .map_err(ApiError::internal)?;
     rows.extend(tasks.into_iter().map(
-        |(id, column_id, short_code, title, task_type, work_class, repository_id, deleted_at)| {
+        |(
+            id,
+            column_id,
+            short_code,
+            title,
+            task_type,
+            work_class,
+            repository_id,
+            deleted_at,
+            updated_at,
+        )| {
             BoardItemRow {
                 id,
                 column_id,
@@ -3586,6 +3802,7 @@ fn board_item_rows(
                     WorkClass::Planned => task_type.to_string(),
                 },
                 archived: deleted_at.is_some(),
+                updated_at,
             }
         },
     ));
@@ -3605,25 +3822,36 @@ fn board_item_rows(
             adrs::short_code,
             adrs::title,
             adrs::deleted_at,
+            adrs::updated_at,
         ))
         .load(conn)
         .map_err(ApiError::internal)?;
-    rows.extend(
-        adrs.into_iter()
-            .filter_map(|(id, column_id, short_code, title, deleted_at)| {
-                column_id.map(|column_id| BoardItemRow {
-                    id,
-                    column_id,
-                    short_code,
-                    title,
-                    repository_id: None,
-                    kind: "adr".to_string(),
-                    archived: deleted_at.is_some(),
-                })
-            }),
-    );
+    rows.extend(adrs.into_iter().filter_map(
+        |(id, column_id, short_code, title, deleted_at, updated_at)| {
+            column_id.map(|column_id| BoardItemRow {
+                id,
+                column_id,
+                short_code,
+                title,
+                repository_id: None,
+                kind: "adr".to_string(),
+                archived: deleted_at.is_some(),
+                updated_at,
+            })
+        },
+    ));
 
     Ok(rows)
+}
+
+/// The details of one `board_items` line (KAIROS-T-0368):
+/// ` {updated 2026-10-08; priority: high; size: m}`.
+fn card_details(updated_at: DateTime<Utc>, metadata: Option<&Vec<(String, String)>>) -> String {
+    let mut parts = vec![format!("updated {}", updated_at.format("%Y-%m-%d"))];
+    for (slug, value) in metadata.into_iter().flatten() {
+        parts.push(format!("{slug}: {value}"));
+    }
+    format!(" {{{}}}", parts.join("; "))
 }
 
 /// The open-dependency tags of one `board_items` line: `" [blocked by
@@ -4752,6 +4980,17 @@ fn search_to_core(params: &SearchParams) -> Result<core_search::SearchRequest, A
                     .as_deref()
                     .map(|v| timestamp_field(v, "filter.created_before"))
                     .transpose()?,
+                updated_after: filter
+                    .updated_after
+                    .as_deref()
+                    .map(|v| timestamp_field(v, "filter.updated_after"))
+                    .transpose()?,
+                updated_before: filter
+                    .updated_before
+                    .as_deref()
+                    .map(|v| timestamp_field(v, "filter.updated_before"))
+                    .transpose()?,
+                metadata_missing: filter.metadata_missing.clone(),
                 include_deleted: filter.include_deleted,
             })
         })
@@ -4819,6 +5058,7 @@ fn search_to_core(params: &SearchParams) -> Result<core_search::SearchRequest, A
 fn map_search_error(e: SearchError) -> ApiError {
     match e {
         SearchError::Invalid(e) => ApiError::validation(e.to_string()),
+        SearchError::UnknownMetadataDefinition(_) => ApiError::validation(e.to_string()),
         SearchError::TraverseRootNotFound { reference } => ApiError::not_found(format!(
             "The item {reference:?} of traverse.from does not exist."
         )),

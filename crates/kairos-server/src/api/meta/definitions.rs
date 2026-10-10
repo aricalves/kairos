@@ -70,7 +70,7 @@ fn load(conn: &mut PgConnection, id: Uuid) -> Result<MetadataDefinition, ApiErro
 
 /// The entity-type vocabulary for scope rows (KAIROS-T-0078) — matches
 /// the DDL CHECK and `kairos_core::short_code::ItemType::entity_type()`.
-const ENTITY_TYPES: &[&str] = &["strategy", "initiative", "task", "document", "adr"];
+pub(crate) const ENTITY_TYPES: &[&str] = &["strategy", "initiative", "task", "document", "adr"];
 
 /// Load a definition's scope rows in vocabulary order (empty = applies
 /// to every entity type).
@@ -134,7 +134,7 @@ fn replace_scopes(
 }
 
 /// Hydrate a definition row with its option values and scopes.
-fn hydrate(
+pub(crate) fn hydrate(
     conn: &mut PgConnection,
     definition: MetadataDefinition,
 ) -> Result<dto::MetadataDefinition, ApiError> {

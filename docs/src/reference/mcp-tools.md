@@ -1,8 +1,8 @@
 # MCP tools
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-thirty-six tools. A drift gate in the test suite
-asserts that `tools/list` returns these thirty-six and no others. The same
+thirty-eight tools. A drift gate in the test suite
+asserts that `tools/list` returns these thirty-eight and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -323,6 +323,7 @@ The items on a board, grouped by column: short code, type and title.
 | `offset` | integer | no | `0` | The number of items to skip. |
 | `team` | string | no | all | Narrow the strategies and the initiatives to those of this team, from tasks or set by hand. Slug or UUID. Tasks and ADRs do not change. Do not send with `no_team`. |
 | `no_team` | boolean | no | `false` | Narrow the strategies and the initiatives to those with no team. Do not send with `team`. |
+| `details` | boolean | no | `false` | Add to each card the date of its last change and its metadata values. See below. |
 
 The result has 200 items at most by default. The filters (`column`,
 `repository`, `team`, `no_team`, `include_deleted`) apply before `limit` and
@@ -349,6 +350,16 @@ A task with a claim carries `[claimed by Alice]`, or `[claimed by Alice
 (agent)]` when the agent of the person made the claim.
 
 A [cancelled](glossary.md#cancel) task carries `[cancelled]`.
+
+With `details: true`, each card ends with the date (UTC) of its last change
+and its metadata values, in slug order:
+
+```text
+- ACME-T-0012 [bug] Refunds lose the currency [claimed by Alice] {updated 2026-10-08; priority: high}
+```
+
+Use it to pick or triage work without a `get_item` for each card. Without
+`details`, the list stays compact.
 
 A card with dependencies that count carries `[blocked by N]`, `[blocks N]`, or
 both. A `blocks` edge does not count when the item at either end is in a done
@@ -455,6 +466,40 @@ The list of an item that a move renamed has the section **Renames**. Each
 line has the old code, the new code, the time and who did the move:
 
 ```text
+### `list_metadata_definitions`
+
+The metadata definitions of the organization, by slug. For each one: the
+name, the type, the values of an enum in their order (the scale, for example
+the priorities from the first to the last), and the entity types that it
+applies to.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `entity_type` | string | no | all | Only the definitions that apply to this type: `strategy`, `initiative`, `task`, `document`, `adr`. |
+
+```text
+- `priority` Priority (enum) — values, in order: low, medium, high, critical — applies to: all types
+```
+
+Use the slugs in `set_metadata`, and in `search` (`filter.metadata`,
+`filter.metadata_missing`). REST: `GET /api/metadata-definitions`.
+
+Refuses: `VALIDATION` for an unknown `entity_type`.
+
+### `list_templates`
+
+The templates of the organization, by slug. For each one: the name, and the
+metadata that it puts on an item, with the default value and the required
+flag.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `slug` | string | no | all | Show this one template, with its full content. |
+
+REST: `GET /api/templates` and `GET /api/templates/{id}`.
+
+Refuses: `NOT_FOUND` for a `slug` that names no template.
+
 ## Renames
 - COLLIERY-T-0100 -> SKADI-T-0001 — 2026-10-03T18:20:00Z by Dylan
 ```
@@ -484,9 +529,11 @@ are compact and grouped by type.
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `entity_type` | array of string | no | all | `strategy`, `initiative`, `task`, `document`, `adr`. Must not be an empty array. |
-| `board_id` | UUID string | no | — | Items on this board. A document is not a card, so this filter gives no document. |
+| `board_id` | UUID string | no | — | Items on this board. A document is not a card, so this filter gives no document. Do not send with `board`. |
+| `board` | string | no | — | Items on this board, by slug or UUID. Do not send with `board_id`. |
 | `column_id` | UUID string | no | — | Items in this column. |
-| `team_id` | UUID string | no | — | Tasks of this team. |
+| `team_id` | UUID string | no | — | Tasks of this team. Do not send with `team`. |
+| `team` | string | no | — | Tasks of this team, by slug or UUID. Do not send with `team_id`. |
 | `repository` | string | no | — | The items of this repository: see below. Slug or UUID of a live repository. |
 | `task_type` | array of string | no | all | `task`, `bug`, `tech_debt`, `support`. Must not be an empty array. |
 | `work_class` | array of string | no | all | `planned`, `support`. Must not be an empty array. |
@@ -494,6 +541,9 @@ are compact and grouped by type.
 | `metadata` | object of string to string | no | — | Conditions keyed by metadata-definition slug. Values allow a trailing `*` glob. Keys must not be blank. |
 | `created_after` | RFC 3339 string | no | — | Items created strictly after. |
 | `created_before` | RFC 3339 string | no | — | Items created strictly before. Must be later than `created_after`. |
+| `updated_after` | RFC 3339 string | no | — | Items with a last change strictly after. |
+| `updated_before` | RFC 3339 string | no | — | Items with a last change strictly before. Must be later than `updated_after`. For the items with no change in 90 days, send the time 90 days ago. |
+| `metadata_missing` | array of string | no | — | Items with no value for each of these metadata-definition slugs. Must not be empty, and each slug must name a definition. |
 | `include_deleted` | boolean | no | `false` | Include archived items, marked `[archived]`. Composes with everything, `q` and `traverse` included, and counts on its own as a constraining filter. |
 
 `filter.repository` gives three types of item:
@@ -505,6 +555,14 @@ are compact and grouped by type.
 The filter gives no strategy and no initiative. With `team_id`, `task_type` or
 `work_class`, only tasks match. `entity_type` makes the result smaller, as for
 each filter.
+
+A triage pass reads the bugs with no priority and no change in 90 days with
+one call:
+
+```json
+{"filter": {"entity_type": ["task"], "task_type": ["bug"], "board": "platform-delivery",
+            "metadata_missing": ["priority"], "updated_before": "2026-07-13T00:00:00Z"}}
+```
 
 `traverse`:
 
@@ -527,16 +585,19 @@ repository, so `impacts` is not a value of `relationships`. Use
 | `order` | string | yes | `asc`, `desc`. |
 
 Refuses: `VALIDATION` for a blank `q`, an empty enum array, a blank metadata
-key, an inverted date range, a
+key, an inverted date range, an empty `metadata_missing` or a slug in it that
+names no definition, `board` with `board_id`, `team` with `team_id`, an
+unknown `board` or `team`, a
 missing `traverse.depth`, a `depth` of 0 or above 10, an empty
 `relationships`, a request with no query, no constraining filter and no
 traversal, or an unknown `filter.repository`. `NOT_FOUND` for a `traverse.from`
 that does not resolve — the one reference on this surface that answers
 `NOT_FOUND` rather than `VALIDATION`.
 
-Every request except one carrying `filter.repository` is validated before a
-database connection is taken; that one filter needs a connection to resolve the
-slug, so it is validated afterwards.
+Every request except one carrying `filter.repository`, `filter.board` or
+`filter.team` is validated before a database connection is taken. These
+filters need a connection to resolve the slug, so the server validates the
+request after it resolves them.
 
 ## Writing content
 

@@ -367,6 +367,7 @@ unknown slug and an unknown id are a 404.
 | `offset` | query | no | `integer` | The number of items to skip (default 0). |
 | `team` | query | no | `string` | Narrow the STRATEGIES and the INITIATIVES to those of this team (slug or UUID), from tasks or set by hand (KAIROS-T-0321). Tasks and ADRs are unaffected. Unknown team → 422. Not with `no_team`. |
 | `no_team` | query | no | `boolean` | Narrow the STRATEGIES and the INITIATIVES to those with no team (KAIROS-T-0321). Tasks and ADRs are unaffected. Not with `team`. |
+| `with_metadata` | query | no | `boolean` | Add `item_metadata` to the response: the metadata values of each item of the page (KAIROS-T-0368). Default false. |
 
 | Response | Body | Meaning |
 |---|---|---|

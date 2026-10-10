@@ -57,6 +57,11 @@ pub enum BoardsCommand {
         /// Show only the strategies and the initiatives that have no team
         #[arg(long)]
         no_team: bool,
+        /// Show more on each item: the date of the last change, the claim
+        /// of a task and the metadata values, e.g. {updated 2026-10-08;
+        /// priority: high}
+        #[arg(long)]
+        details: bool,
         #[command(flatten)]
         common: Common,
     },
@@ -149,6 +154,7 @@ impl BoardsCommand {
                 offset,
                 team,
                 no_team,
+                details,
                 common,
             } => {
                 let client = client(&common)?;
@@ -158,13 +164,14 @@ impl BoardsCommand {
                     offset,
                     team,
                     no_team,
+                    with_metadata: details,
                     ..BoardItemsQuery::default()
                 };
                 let items = client.board_items(&board_id, &query).await?;
                 if common.json {
                     return print_json(&items);
                 }
-                print_board_items(&items);
+                print_board_items(&items, details);
                 println!();
                 println!(
                     "total: {} (limit {}, offset {})",
@@ -202,7 +209,33 @@ impl BoardsCommand {
 
 /// The human board rendering: one section per column (in position order),
 /// every live item listed with its kind, short code, and title.
-fn print_board_items(items: &BoardItemsResponse) {
+fn print_board_items(items: &BoardItemsResponse, details: bool) {
+    // KAIROS-T-0368: with --details, the date of the last change, the
+    // claim of a task and the metadata values.
+    let more = |code: &str, updated_at: &str, claim: Option<&kairos_client::types::TaskClaim>| {
+        if !details {
+            return String::new();
+        }
+        let mut parts = vec![format!(
+            "updated {}",
+            updated_at.get(..10).unwrap_or(updated_at)
+        )];
+        if let Some(claim) = claim {
+            parts.push(format!(
+                "claimed by {}{}",
+                claim.display_name,
+                if claim.agent { " (agent)" } else { "" }
+            ));
+        }
+        if let Some(values) = items.item_metadata.as_ref().and_then(|m| m.get(code)) {
+            parts.extend(
+                values
+                    .iter()
+                    .map(|(slug, value)| format!("{slug}: {value}")),
+            );
+        }
+        format!("  {{{}}}", parts.join("; "))
+    };
     println!(
         "Board: {} (slug {}, level {}, id {})",
         items.board.name, items.board.slug, items.board.board_level, items.board.id
@@ -223,18 +256,20 @@ fn print_board_items(items: &BoardItemsResponse) {
         }
         for item in &column.strategies {
             println!(
-                "   {}  [strategy] {}{}",
+                "   {}  [strategy] {}{}{}",
                 item.short_code(),
                 item.title(),
-                teams_suffix(items, item.short_code())
+                teams_suffix(items, item.short_code()),
+                more(item.short_code(), &item.updated_at, None)
             );
         }
         for item in &column.initiatives {
             println!(
-                "   {}  [initiative] {}{}",
+                "   {}  [initiative] {}{}{}",
                 item.short_code(),
                 item.title(),
-                teams_suffix(items, item.short_code())
+                teams_suffix(items, item.short_code()),
+                more(item.short_code(), &item.updated_at, None)
             );
         }
         for item in &column.tasks {
@@ -246,14 +281,20 @@ fn print_board_items(items: &BoardItemsResponse) {
                 ""
             };
             println!(
-                "   {}  [{}]{lane} {}",
+                "   {}  [{}]{lane} {}{}",
                 item.short_code(),
                 item.task_type,
-                item.title()
+                item.title(),
+                more(item.short_code(), &item.updated_at, item.claim.as_ref())
             );
         }
         for item in &column.adrs {
-            println!("   {}  [adr] {}", item.short_code(), item.title());
+            println!(
+                "   {}  [adr] {}{}",
+                item.short_code(),
+                item.title(),
+                more(item.short_code(), &item.updated_at, None)
+            );
         }
     }
 }

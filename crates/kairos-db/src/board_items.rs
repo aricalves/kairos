@@ -245,3 +245,30 @@ pub fn live_column_counts(
         .bind::<Array<SqlUuid>, _>(board_ids)
         .load(conn)
 }
+
+/// The metadata values of each item of `ids` (KAIROS-T-0368): one query,
+/// keyed by item id, each list as `(definition slug, value)` in slug order.
+/// An item with no value has no entry. `board_items` with `details` and
+/// `GET /api/boards/{id}/items?with_metadata=true` show them per card, so
+/// an agent does not call `get_item` for each card to read its priority.
+pub fn metadata_of_items(
+    conn: &mut PgConnection,
+    ids: &[Uuid],
+) -> Result<std::collections::HashMap<Uuid, Vec<(String, String)>>, DieselError> {
+    use crate::schema::{item_metadata as im, metadata_definitions as md};
+    let mut out: std::collections::HashMap<Uuid, Vec<(String, String)>> =
+        std::collections::HashMap::new();
+    if ids.is_empty() {
+        return Ok(out);
+    }
+    let rows: Vec<(Uuid, String, String)> = im::table
+        .inner_join(md::table)
+        .filter(im::item_id.eq_any(ids))
+        .order((im::item_id.asc(), md::slug.asc()))
+        .select((im::item_id, md::slug, im::value))
+        .load(conn)?;
+    for (id, slug, value) in rows {
+        out.entry(id).or_default().push((slug, value));
+    }
+    Ok(out)
+}
