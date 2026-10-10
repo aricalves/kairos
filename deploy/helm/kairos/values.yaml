@@ -7,10 +7,11 @@
 # from a single container (KAIROS-A-0015). It requires two things this chart does
 # NOT provide (KAIROS-A-0016): an external PostgreSQL and an external OIDC issuer.
 
-# -- Number of server replicas. The server is stateless (all state is in
-# Postgres, KAIROS-A-0013), so it scales horizontally. Ignored when
-# autoscaling.enabled is true.
-replicaCount: 2
+# -- Number of server replicas. Ignored when autoscaling.enabled is true.
+# Keep 1 until the job queue of COLLIERY-I-0613 ships. With 2 or more, each
+# pod runs its own code-index builder, embedding refresher and login
+# throttle: a build can run twice, and the throttle allows more failed logins.
+replicaCount: 1
 
 image:
   # -- Image repository. The release image published by CI (KAIROS-T-0047).
@@ -129,6 +130,8 @@ ingress:
 
 autoscaling:
   # -- Enable a HorizontalPodAutoscaler. When true, replicaCount is ignored.
+  # Keep it off until the job queue of COLLIERY-I-0613 ships: the HPA runs 2
+  # or more pods (see replicaCount).
   enabled: false
   minReplicas: 2
   maxReplicas: 6

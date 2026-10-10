@@ -145,7 +145,7 @@ did the wildcard routing; on Kubernetes the Ingress replaces Caddy.
 | `image.variant` | `""` | `"hosted"` runs the image with no embedded summary model (`<version>-hosted`), for a deployment whose organizations use a hosted provider (KAIROS-T-0344). |
 | `image.pullPolicy` | `IfNotPresent` | |
 | `imagePullSecrets` | `[]` | Private-registry pull secrets. |
-| `replicaCount` | `2` | Stateless server; ignored when autoscaling on. |
+| `replicaCount` | `1` | Keep 1 until the job queue (COLLIERY-I-0613) ships: with 2 or more, each pod runs its own code-index builder, embedding refresher and login throttle. Ignored when autoscaling is on. |
 | `resources` | 100m/128Mi … 1/512Mi | Requests/limits. |
 | `nodeSelector` / `tolerations` / `affinity` / `topologySpreadConstraints` | `{}` / `[]` | Scheduling. |
 | `podSecurityContext` / `containerSecurityContext` | non-root, read-only rootfs, drop ALL caps | Hardened defaults. |
@@ -162,7 +162,7 @@ did the wildcard routing; on Kubernetes the Ingress replaces Caddy.
 | `ingress.host` | `kairos.example.com` | Host for `single` mode. |
 | `ingress.annotations` | `{}` | e.g. cert-manager issuer. |
 | `ingress.tls.enabled` / `ingress.tls.secretName` | `false` / `""` | TLS block. |
-| `autoscaling.enabled` | `false` | HPA (min/max/target CPU/memory). |
+| `autoscaling.enabled` | `false` | HPA (min/max/target CPU/memory). Keep it off until the job queue (COLLIERY-I-0613) ships: the HPA runs 2 or more pods. |
 | `metrics.serviceMonitor.enabled` | `false` | Prometheus Operator ServiceMonitor scraping `/metrics`. |
 
 ### Application config (env surface, KAIROS-A-0013)
