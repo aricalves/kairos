@@ -15,9 +15,9 @@ So the scope follows the Diátaxis split this repository already uses
 
 | Surface | Why |
 |---|---|
-| `docs/src/tutorials/` | The reader is following steps. |
-| `docs/src/how-to/` | The reader is following steps. |
-| `docs/src/reference/` | The reader is looking one fact up. |
+| `docs/src/content/docs/tutorials/` | The reader is following steps. |
+| `docs/src/content/docs/how-to/` | The reader is following steps. |
+| `docs/src/content/docs/reference/` | The reader is looking one fact up. |
 | Acceptance criteria | Each one is a testable instruction. |
 | Error messages | The reader is stuck and reads under stress. |
 | CLI help text | The reader wants the flag, not prose. |
@@ -26,7 +26,7 @@ So the scope follows the Diátaxis split this repository already uses
 
 | Surface | Why |
 |---|---|
-| `docs/src/explanation/` | It argues a position. STE cannot. |
+| `docs/src/content/docs/explanation/` | It argues a position. STE cannot. |
 | ADRs | They record why a decision beat the alternatives. |
 | Task Status Updates | They record reasoning, surprises and rejected options. |
 | Commit messages | They explain a change to a future reader. |
@@ -200,7 +200,7 @@ not is worse than an acknowledged aspiration. So this section is explicit.
 
 ### 6.1 Checked mechanically — `angreal docs ste`
 
-The checker reads `docs/src/{tutorials,how-to,reference}` and reports these rules:
+The checker reads `docs/src/content/docs/{tutorials,how-to,reference}` and reports these rules:
 
 | ID | How |
 |---|---|
@@ -260,7 +260,7 @@ specification. Everything else on this page is either mechanical or reviewable.
 
 ### 6.4 Not in scope of any check
 
-`docs/src/explanation/`, ADRs, Status Updates, commit messages and code comments —
+`docs/src/content/docs/explanation/`, ADRs, Status Updates, commit messages and code comments —
 section 1.2. The checker does not read them. If it ever starts to, that is a defect in
 the checker.
 

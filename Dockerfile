@@ -119,7 +119,7 @@ RUN cargo run --release -p kairos-embed --bin fetch-model -- /build/models
 # rust-analyzer, the std source and a Rust toolchain, about 2.7 GB) are NOT
 # in the image (COLLIERY-T-2525). The server downloads them on its first
 # start into KAIROS_CODE_INDEX_DIR/tools/, checked by sha256, and only when
-# KAIROS_CODE_INDEX_DIR is set. See docs/src/reference/configuration.md.
+# KAIROS_CODE_INDEX_DIR is set. See docs/src/content/docs/reference/configuration.md.
 
 # ---------------------------------------------------------------------------
 # Stage 2 — runtime: minimal Debian + libpq only

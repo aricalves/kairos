@@ -840,7 +840,7 @@ async fn a_link_gives_no_authority_over_a_document_against_live_stack() {
     // =======================================================================
     // The reference pages give the rule of today
     // =======================================================================
-    let docs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/src");
+    let docs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/src/content/docs");
     let page = |name: &str| {
         std::fs::read_to_string(docs.join(name)).unwrap_or_else(|e| panic!("reading {name}: {e}"))
     };

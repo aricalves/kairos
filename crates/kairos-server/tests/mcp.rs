@@ -646,7 +646,8 @@ async fn mcp_endpoint_against_live_stack() {
     // The reference page is hand-written. Until this task it gave a count
     // that was two tools behind, and no test read it.
     {
-        let docs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/src");
+        let docs =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/src/content/docs");
         let read = |rel: &str| {
             std::fs::read_to_string(docs.join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
         };

@@ -1,0 +1,130 @@
+---
+title: "Give an agent your key"
+---
+
+Let an agent, for example Claude Code, work in Kairos as you. The agent uses an
+**agent key**. The key acts as you. The agent gets your capabilities and no
+more. The history and the activity show each change of the agent with your name
+and a mark. For example, they show "Alice (agent)".
+
+**Before you start:** you are a member of the organization. You do not need to
+be an admin.
+
+Use an agent key for an agent that works for you. Use a service account for
+machine work with no person, for example a CI pipeline. See
+[Give an agent machine access](../give-an-agent-machine-access/).
+
+## 1. Log in as yourself
+
+```sh
+kairos login --url https://kairos.example.com
+kairos whoami
+```
+
+`whoami` shows your name. Log in with your own login, not with an agent key. A
+request with an agent key cannot make an agent key.
+
+Sometimes `kairos login` does not work, for example with Google as the issuer.
+Then sign in to the web app, and do step 2 on the **Agent keys** page.
+
+## 2. Make the key
+
+Give each agent its own key. Then you can revoke one key and keep the others.
+
+```sh
+kairos keys create --name laptop-claude-code
+#
+#     kairos_sk_acme_9f8e7d6c5b4a…            ← copy it now
+#
+# Keep the key in a safe place now. Kairos does NOT show it again.
+```
+
+You can also make the key on the **Agent keys** page of the GUI.
+
+A new key expires after 90 days, unless the operator changed
+`KAIROS_API_KEY_TTL_DAYS`. The option `--expires-at 2027-01-01T00:00:00Z` sets
+a different expiry. The flag `--no-expiry` makes a key with no expiry. Kairos keeps a
+hash of the key only. It cannot show the key again. If you lose the key, make a
+new key and revoke the old key.
+
+## 3. Put the key in the settings of the agent
+
+For Claude Code, put the key in the `env` section of your user settings,
+`~/.claude/settings.json`:
+
+```json
+{ "env": { "KAIROS_MCP_KEY": "kairos_sk_acme_9f8e7d6c5b4a…" } }
+```
+
+Do not put the key in a repository. Do not put the key in a chat.
+
+The MCP configuration of the repository holds the name of the variable only:
+
+```json
+{
+  "mcpServers": {
+    "kairos": {
+      "type": "http",
+      "url": "https://kairos.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${KAIROS_MCP_KEY}" }
+    }
+  }
+}
+```
+
+The key holds its tenant. The entry needs no `X-Tenant` header. The
+`/kairos:bootstrap` skill of the plugin writes this entry.
+
+## 4. Make sure that it works
+
+Start a new session of the agent, so that it reads the variable. Then call the
+`whoami` tool. It shows your name.
+
+## 5. Revoke a key
+
+```sh
+kairos keys list
+kairos keys revoke <KEY_ID> --confirm
+```
+
+After the revocation, the key gets `401`. To replace a key, make the new key
+first. Put the new key in the settings of the agent. Then revoke the old key.
+
+## Who can revoke your key
+
+A key with no expiry works until a person revokes it. These persons can revoke
+your key:
+
+- You, with `kairos keys revoke` or on the **Agent keys** page.
+- An organization admin, with `kairos admin agent-keys revoke <KEY_ID> --confirm`
+  or in the section **Agent keys of the people** of the page **Admin >
+  Members**. Kairos then gives you a notification that names the key.
+
+When an admin removes you from the organization, Kairos revokes each of your
+agent keys. A SCIM deprovision does the same.
+
+## Use the key with the CLI
+
+The CLI can use the key in place of `kairos login`. This is the route when the
+issuer gives the CLI no device grant, for example Google. Keep the key in a
+file that only you can read, and not in the history of your shell:
+
+```sh
+install -m 600 /dev/null ~/.kairos-agent-key   # then paste the key into the file
+export KAIROS_URL=https://kairos.example.com
+export KAIROS_KEY="$(cat ~/.kairos-agent-key)"
+kairos whoami
+```
+
+The CLI also reads `KAIROS_MCP_KEY`, so a shell that has the variable of
+Claude Code needs only `KAIROS_URL`. When a key is set, it wins over a login.
+Unset it to use the login again. The key cannot make or revoke agent keys:
+use your login or the **Agent keys** page for that.
+
+## What you cannot do
+
+| You try to | Kairos answers |
+|---|---|
+| make an agent key with an agent key | `403` |
+| revoke the key of a different person | `404` |
+| make an agent key as a service account | `403` |

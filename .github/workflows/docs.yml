@@ -1,24 +1,26 @@
 # The Kairos documentation book — KAIROS-T-0167 (KAIROS-I-0016), laid out as
-# the four Diátaxis modes per KAIROS-S-0008.
+# the four Diátaxis modes per KAIROS-S-0008. Since KAIROS-T-0389 the book is an
+# Astro Starlight site with the Colliery theme starlight-aurora, and this file
+# follows the Pages workflow of its starter.
 #
-# Builds the mdBook at docs/ and publishes it to this repository's GitHub
-# Pages. Triggered by pushes touching docs/** ONLY, which is deliberate:
-# documentation ships independently of release tags, so a typo fix does not
-# wait for a version bump and a release does not wait for prose. The release
-# workflow (release.yml) is untouched by this.
+# Builds the site in docs/ on each pull request that changes it, and publishes
+# it to the GitHub Pages of this repository on a push to main. Triggered by
+# changes to docs/** ONLY, which is deliberate: documentation ships
+# independently of release tags, so a typo fix does not wait for a version
+# bump and a release does not wait for prose. The release workflow
+# (release.yml) is untouched by this.
 #
-# Pattern follows colliery-io/squire-core's docs.yml, with one difference:
-# Squire's source is private, so it pushes the rendered site to a separate
-# public dist repo with a PAT. Kairos is already public, so it publishes to
-# its own Pages through the first-party actions — no secret, no branch.
-#
-# One-time setup: repository Settings → Pages → Source = "GitHub Actions".
+# One-time setup: Settings → Pages → Source = "GitHub Actions".
 
 name: docs
 
 on:
   push:
     branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/docs.yml"
+  pull_request:
     paths:
       - "docs/**"
       - ".github/workflows/docs.yml"
@@ -29,47 +31,55 @@ permissions:
   pages: write
   id-token: write
 
-# One publish at a time; a newer push supersedes an in-flight build.
+# One build per ref; a newer push supersedes an in-flight one.
 concurrency:
-  group: docs-publish
+  group: docs-${{ github.ref }}
   cancel-in-progress: true
-
-env:
-  # Pinned to the version `angreal docs build` installs, so a local render
-  # and CI produce the same book.
-  MDBOOK_VERSION: "0.5.2"
 
 jobs:
   build:
     name: build the book
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: docs
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Install mdBook
-        # Curl from the GitHub release rather than an action, matching
-        # squire-core and keeping the dependency surface small.
-        run: |
-          mkdir -p "$HOME/.local/bin"
-          url="https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
-          curl -fsSL "$url" | tar -xz -C "$HOME/.local/bin"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Build
-        run: mdbook build docs
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
 
       - name: Configure Pages
+        id: pages
+        if: github.event_name != 'pull_request'
         uses: actions/configure-pages@v6
 
-      - name: Upload the rendered site
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      # The Pages base path (/kairos) comes from configure-pages. A pull
+      # request builds at /, which is enough to prove the book builds.
+      - name: Build
+        run: npm run build
+        env:
+          DOCS_SITE: ${{ steps.pages.outputs.origin }}
+          DOCS_BASE: ${{ steps.pages.outputs.base_path }}
+
+      - name: Upload the built site
+        if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v5
         with:
-          path: docs/book
+          path: docs/dist
 
   deploy:
     name: publish to Pages
+    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 10
