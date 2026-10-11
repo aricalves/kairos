@@ -1,8 +1,8 @@
 # MCP tools
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-thirty-nine tools. A drift gate in the test suite
-asserts that `tools/list` returns these thirty-nine and no others. The same
+forty-one tools. A drift gate in the test suite
+asserts that `tools/list` returns these forty-one and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -26,6 +26,7 @@ These hold for every tool.
 | Listing weight | Listings are compact: short code, title and key fields. Full markdown content arrives only from `get_item` and from `get_history` with a `version`. |
 | Errors | A refusal comes back as an MCP tool error whose text is `CODE: message`, the code being the same stable one as the REST API's error envelope. Where that code has structured `details`, a second line follows: `details: ` and the JSON object. See [Errors](errors.md) for what each code's `details` carries. |
 | Audit | Writes are recorded in the activity log by the same code path as the REST API. |
+| Notifications | While the person of the key has unread [notifications](#your-notifications), each answer (not a refusal) ends with a block: the 5 newest, then `N more: call get_events` when there are more. The block stops when the person marks them read. `get_events` itself has no block, because it lists them. A service account gets no notifications. |
 | Claims | A task in Active has a [claim](glossary.md#claim): the person who works on it. A write to a task that a different person has the claim on succeeds and is recorded. The text of the tool then ends with a line: `Warning: Alice (agent) has the claim on ACME-T-0012 (since 2026-10-09T10:00:00Z). Your change is recorded.` A write by the person who has the claim, also with the agent key of the person, gets no warning. |
 
 ### Refusal codes
@@ -1555,6 +1556,57 @@ details: {"board_id":"0193a1c2-0000-7000-8000-000000000003","or_capability":"man
 
 `FORBIDDEN` for `manage_structure` from a principal that is not an
 organization admin.
+
+## Your notifications
+
+A notification tells a person about an event of their work (KAIROS-T-0381):
+
+| Kind | You get it when |
+|---|---|
+| `hand_off` | A person or a service account gives you the claim of a task. |
+| `blocker_cleared` | An item that blocks a task that you have the claim on goes into a done column, or is archived. |
+| `cancelled` | A person cancels a task that you created. The text has the reason. |
+| `mention` | A person writes `@your_user_name` in a note or in the content of an item. A mention in code does not count. An update tells only the new mentions. |
+| `p0_bug` | A bug with the priority `critical` (or `p0`) lands on the board of your team: its priority changes to P0, or it moves to the board. |
+
+You get no notification for a change that you made. You can turn a kind off
+with `PUT /api/me/notification-settings` or on the Notifications page of the
+GUI.
+
+The block at the end of an answer:
+
+```text
+## Your notifications (7 unread)
+- 6f1a1f9e-... · 2026-10-12 09:15Z · hand_off · ACME-T-0012: Robin gave you the claim on ACME-T-0012: Fix the login
+- ...
+2 more: call get_events
+Mark them read with mark_events_read when you have acted on them.
+```
+
+### `get_events`
+
+Gives your notifications: each unread one first (newest first, 100 at most),
+then the 20 newest read ones. Each line has the id, the time, the kind, the
+item and the text. No arguments.
+
+REST: `GET /api/me/notifications`.
+
+### `mark_events_read`
+
+Marks your notifications read. Send `ids` or `all`, not both.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `ids` | array of strings | no | — | The ids of your notifications, as `get_events` gives them. |
+| `all` | boolean | no | — | `true`: each of your unread notifications. |
+
+The result is one line: `Marked 2 notification(s) read. You have 5 unread.`
+
+Refuses: `VALIDATION` when the call has neither `ids` nor `all: true`, or has
+both. `NOT_FOUND` when an id is not one of your notifications; the message
+names the id, and nothing changes. An id that is read already does not change.
+
+REST: `POST /api/me/notifications/read`.
 
 ## Related reading
 

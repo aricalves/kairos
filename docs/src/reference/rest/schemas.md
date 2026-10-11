@@ -1294,6 +1294,26 @@ The `user` object of [`LoginResponse`].
 | `email` | `string` | yes |  |
 | `id` | `string` | yes |  |
 
+## MarkNotificationsReadRequest
+
+`POST /api/me/notifications/read` body: `ids`, or `all: true`. Not both.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `all` | `boolean`, nullable | no | `true`: each unread notification of the caller. |
+| `ids` | `array`, nullable | no | The ids of notifications of the caller. |
+
+The server refuses a body with a field that is not in this table ([Errors](../errors.md#a-field-of-the-body)).
+
+## MarkNotificationsReadResponse
+
+`POST /api/me/notifications/read` response.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `marked` | array of `string` | yes | The ids that changed from unread to read. |
+| `unread` | `integer` | yes | The count of the unread notifications after the change. |
+
 ## MetadataDefinition
 
 A metadata field definition, as returned by `/api/metadata-definitions`.
@@ -1353,6 +1373,31 @@ One live descendant that an archive does not reach (COLLIERY-T-0234). The archiv
 | `board_id` | `string`, nullable | no | The authorization board of the descendant (UUID). |
 | `required_capability` | `string`, nullable | no | The `manage_<type>` capability that the caller does not hold. |
 | `short_code` | `string` | yes | The short code of the descendant. |
+
+## Notification
+
+One notification of the caller (KAIROS-T-0382).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `actor_id` | `string`, nullable | no | The person or the service account that made the change (UUID). |
+| `created_at` | `string` | yes | When Kairos made the notification (RFC 3339). |
+| `entity_type` | `string`, nullable | no | `strategy|initiative|task|document|adr`; `null` when the item is gone. |
+| `id` | `string` | yes | The id (UUID). `POST /api/me/notifications/read` takes it. |
+| `kind` | `string` | yes | `hand_off|blocker_cleared|cancelled|mention|p0_bug`. |
+| `read_at` | `string`, nullable | no | When the person read it (RFC 3339); `null` while unread. |
+| `short_code` | `string`, nullable | no | The code of the item now; `null` when the item is gone. |
+| `text` | `string` | yes | What happened, in one sentence or two. |
+| `title` | `string`, nullable | no | The title of the item now; `null` when the item is gone. |
+
+## NotificationList
+
+`GET /api/me/notifications` response: each unread notification (newest first, 100 at most), then the 20 newest read ones.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `items` | array of [`Notification`](schemas.md#notification) | yes |  |
+| `unread` | `integer` | yes | The count of all the unread notifications of the caller. |
 
 ## NotificationSettings
 

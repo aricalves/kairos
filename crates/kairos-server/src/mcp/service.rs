@@ -83,6 +83,11 @@ impl ServerHandler for KairosMcp {
             .get::<Parts>()
             .and_then(|parts| parts.extensions.get::<AuthContext>())
             .and_then(|auth| auth.agent_key);
+        // KAIROS-T-0382: the unread notifications of the person ride along
+        // on each answer, but not on `get_events`, which lists them.
+        let ride_along = (request.name != "get_events")
+            .then(|| Self::caller(&context).ok())
+            .flatten();
         let call = ToolCallContext::new(self, request, context);
         // KAIROS-T-0359: a write to a task that a different person has the
         // claim on gets a warning line (`crate::claims`).
@@ -101,6 +106,33 @@ impl ServerHandler for KairosMcp {
                             text.text.push_str(&lines.join("\n"));
                         }
                         _ => result.content.push(ContentBlock::text(lines.join("\n"))),
+                    }
+                }
+                if result.is_error != Some(true)
+                    && let Some((auth, tenant)) = ride_along
+                {
+                    let user = auth.user_id;
+                    let block = self
+                        .state
+                        .blocking
+                        .run(&tenant.slug, move |conn| {
+                            super::tools::ride_along(conn, user)
+                        })
+                        .await;
+                    match block {
+                        Ok(Some(block)) => match result.content.first_mut() {
+                            Some(ContentBlock::Text(text)) => {
+                                text.text.push_str("\n\n");
+                                text.text.push_str(&block);
+                            }
+                            _ => result.content.push(ContentBlock::text(block)),
+                        },
+                        Ok(None) => {}
+                        // The answer of the tool stands: the notifications
+                        // come with the next answer.
+                        Err(e) => {
+                            tracing::warn!(error = %e.message, "notifications ride-along failed")
+                        }
                     }
                 }
                 Ok(result)

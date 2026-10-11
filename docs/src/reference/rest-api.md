@@ -5,7 +5,7 @@
 
 # REST API
 
-OpenAPI 3.1.0, Kairos 0.10.0. 116 paths, 196 schemas.
+OpenAPI 3.1.0, Kairos 0.10.0. 118 paths, 200 schemas.
 
 Every endpoint is served under the tenant resolved from the request host and requires a bearer token; see [Configuration](configuration.md) for how a deployment resolves both. The live spec is at `/api/openapi.json`.
 
@@ -18,8 +18,8 @@ This page is generated from that spec, so it cannot drift from the router — bu
 - [Boards and teams](rest/boards-and-teams.md) — 54 operations. Board configuration, membership, the team structures that own boards, and the grants of `manage_structure` (KAIROS-T-0337).
 - [Execution scope](rest/execution-scope.md) — 21 operations. Repositories as first-class execution scope (KAIROS-A-0019) and the git forges behind them.
 - [Tenant configuration](rest/tenant-configuration.md) — 12 operations. Org-admin surfaces: the metadata and template definitions that shape what work items can carry.
-- [Machine access](rest/machine-access.md) — 16 operations. Agent keys of a person, service accounts and their API keys, and the SCIM tokens for directory sync.
+- [Machine access](rest/machine-access.md) — 18 operations. Agent keys of a person, service accounts and their API keys, and the SCIM tokens for directory sync.
 - [The deployment itself](rest/the-deployment-itself.md) — 8 operations. Activity, administration, and what the deployment reports about itself.
 - [Signing in](rest/signing-in.md) — 7 operations. Sessions, and local password accounts (KAIROS-I-0018). `/api/login` and `/api/local-accounts` are only on a deployment with `KAIROS_LOCAL_AUTH` on. `/api/session` and `/api/logout` are on each deployment (KAIROS-T-0364). `/api/login` and `/api/logout` are unauthenticated by nature. Everything under `/api/local-accounts` is org-admin only, including the reads: a list of somebody's live sessions is a security surface rather than work content.
-- [Schemas](rest/schemas.md) — 196 wire shapes, referenced from the operations above.
+- [Schemas](rest/schemas.md) — 200 wire shapes, referenced from the operations above.
 

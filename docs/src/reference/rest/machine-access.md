@@ -88,6 +88,29 @@ Request body (required): `application/json`, [`UpdateNotificationSettingsRequest
 | `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The caller is a service account |
 | `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The body names no kind |
 
+### `GET /api/me/notifications`
+
+The caller's notifications: each unread one (newest first, 100 at most),
+then the 20 newest read ones. A service account has none.
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`NotificationList`](schemas.md#notificationlist) | The unread notifications, then the newest read ones |
+
+### `POST /api/me/notifications/read`
+
+Mark notifications of the caller read: `ids`, or `all: true`. An id that
+is not a notification of the caller is a 404 that names it, and nothing
+changes. An id that is read already does not change.
+
+Request body (required): `application/json`, [`MarkNotificationsReadRequest`](schemas.md#marknotificationsreadrequest)
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`MarkNotificationsReadResponse`](schemas.md#marknotificationsreadresponse) | The ids that changed, and the unread count after |
+| `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | An id is not a notification of the caller |
+| `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Neither ids nor all, or both |
+
 ## service-accounts
 
 ### `GET /api/service-accounts`

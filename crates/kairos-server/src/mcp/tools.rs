@@ -3,9 +3,8 @@
 //! (KAIROS-I-0012), `restore_item` (KAIROS-A-0020), `related_work`
 //! (KAIROS-T-0191), `propose_edge` (KAIROS-T-0192), `set_repository`
 //! (COLLIERY-T-0220), and `add_repository` and `update_repository`
-//! (COLLIERY-T-0266); later tasks added more (35 in all since KAIROS-T-0337
-//! added `create_team`, `create_board`, `add_team_member` and
-//! `grant_capability`) — each a
+//! (COLLIERY-T-0266); later tasks added more (41 in all since KAIROS-T-0382
+//! added `get_events` and `mark_events_read`) — each a
 //! thin wrapper over the same `kairos-core`/`kairos-db` services the REST
 //! handlers call — through [`crate::blocking::BlockingTenantPool`], never
 //! HTTP (A-0011). Contracts:
@@ -424,6 +423,23 @@ pub struct EditItemParams {
     pub replace_all: bool,
 }
 
+/// `get_events` has no arguments (KAIROS-T-0382).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct GetEventsParams {}
+
+/// Parameters for `mark_events_read` (KAIROS-T-0382): `ids`, or `all: true`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct MarkEventsReadParams {
+    /// The ids of your notifications, as `get_events` gives them.
+    pub ids: Option<Vec<String>>,
+    /// `true`: each of your unread notifications.
+    pub all: Option<bool>,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
@@ -736,7 +752,7 @@ pub struct GrantCapabilityParams {
 }
 
 // ---------------------------------------------------------------------------
-// The tools (35; the list is asserted in tests/mcp.rs)
+// The tools (41; the list is asserted in tests/mcp.rs)
 // ---------------------------------------------------------------------------
 
 #[tool_router(vis = "pub(super)")]
@@ -2083,6 +2099,60 @@ impl KairosMcp {
             Ok(format!(
                 "Appended a note to {} (version {version}).",
                 item.short_code
+            ))
+        })
+        .await
+    }
+
+    // KAIROS-T-0382: the notifications of the person of the key.
+    #[tool(
+        description = "Your notifications (the events of a person): a claim handed off to you, a blocker of your claimed task that is done or archived, a task that you created that someone cancelled, a mention of your user name (`@name`), and a P0 bug on the board of your team. Gives each unread notification first (newest first, 100 at most), then the 20 newest read ones, each with its id. While you have unread notifications, each answer of the other tools ends with the 5 newest. Mark them read with `mark_events_read` when you have acted on them. A service account has no notifications."
+    )]
+    pub async fn get_events(
+        &self,
+        Parameters(GetEventsParams {}): Parameters<GetEventsParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        self.run_tool(&tenant, move |conn| {
+            let (items, unread) = crate::api::notifications::list_for(conn, user)?;
+            if items.is_empty() {
+                return Ok("# Your notifications\n(none)\n".to_string());
+            }
+            let mut out = format!("# Your notifications ({unread} unread)\n");
+            let mut read_heading = false;
+            for n in &items {
+                if n.read_at.is_some() && !read_heading {
+                    out.push_str("\n## Read\n");
+                    read_heading = true;
+                }
+                out.push_str(&notification_line(n));
+            }
+            if unread > 0 {
+                out.push_str("\nMark them read with mark_events_read (`ids`, or `all: true`).\n");
+            }
+            Ok(out)
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Mark your notifications read: `ids` (the ids that `get_events` gives) or `all: true`, not both. A read notification no longer comes at the end of each answer. An id that is not one of your notifications is refused and named, and nothing changes."
+    )]
+    pub async fn mark_events_read(
+        &self,
+        Parameters(params): Parameters<MarkEventsReadParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        self.run_tool(&tenant, move |conn| {
+            let (changed, unread) =
+                crate::api::notifications::mark_for(conn, user, params.ids, params.all)?;
+            Ok(format!(
+                "Marked {} notification(s) read. You have {unread} unread.",
+                changed.len()
             ))
         })
         .await
@@ -5302,6 +5372,44 @@ fn render_search_results(results: &SearchResults, repo_slugs: &BTreeMap<Uuid, St
         }
     }
     out
+}
+
+/// One line of a notification (KAIROS-T-0382): the id, the time, the kind,
+/// the item and the text; `(read)` for a read one.
+pub(super) fn notification_line(n: &kairos_db::notifications::Notification) -> String {
+    format!(
+        "- {} · {} · {} · {}: {}{}\n",
+        n.id,
+        n.created_at.format("%Y-%m-%d %H:%MZ"),
+        n.kind,
+        n.short_code.as_deref().unwrap_or("(item gone)"),
+        n.text,
+        if n.read_at.is_some() { " (read)" } else { "" }
+    )
+}
+
+/// How many unread notifications come at the end of an answer.
+pub(super) const RIDE_ALONG: i64 = 5;
+
+/// The block at the end of an answer to a person with unread notifications
+/// (KAIROS-T-0382): the [`RIDE_ALONG`] newest, then "N more". `None` when
+/// the person has none (a service account never has one). One query.
+pub(super) fn ride_along(conn: &mut PgConnection, user: Uuid) -> Result<Option<String>, ApiError> {
+    let unread =
+        kairos_db::notifications::unread(conn, user, RIDE_ALONG).map_err(ApiError::internal)?;
+    if unread.total == 0 {
+        return Ok(None);
+    }
+    let mut out = format!("## Your notifications ({} unread)\n", unread.total);
+    for n in &unread.newest {
+        out.push_str(&notification_line(n));
+    }
+    let more = unread.total - unread.newest.len() as i64;
+    if more > 0 {
+        out.push_str(&format!("{more} more: call get_events\n"));
+    }
+    out.push_str("Mark them read with mark_events_read when you have acted on them.\n");
+    Ok(Some(out))
 }
 
 #[cfg(test)]

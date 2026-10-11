@@ -1163,6 +1163,23 @@ impl KairosClient {
         self.put_ok("/api/me/notification-settings", request).await
     }
 
+    /// `GET /api/me/notifications` (KAIROS-T-0382): the unread
+    /// notifications of the caller, then the newest read ones.
+    pub async fn notifications(
+        &self,
+    ) -> Result<crate::types_notifications::NotificationList, Error> {
+        self.get("/api/me/notifications").await
+    }
+
+    /// `POST /api/me/notifications/read` (KAIROS-T-0382): mark notifications
+    /// of the caller read.
+    pub async fn mark_notifications_read(
+        &self,
+        request: &crate::types_notifications::MarkNotificationsReadRequest,
+    ) -> Result<crate::types_notifications::MarkNotificationsReadResponse, Error> {
+        self.post_ok("/api/me/notifications/read", request).await
+    }
+
     /// `DELETE /api/me/agent-keys/{key_id}` — revoke one of the caller's keys.
     pub async fn revoke_agent_key(
         &self,

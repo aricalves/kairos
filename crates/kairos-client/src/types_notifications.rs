@@ -1,5 +1,6 @@
 //! Wire types of the notifications of a person (KAIROS-T-0381,
-//! COLLIERY-I-0614): the settings that turn a kind off.
+//! COLLIERY-I-0614): the settings that turn a kind off, the list, and the
+//! mark as read (KAIROS-T-0382).
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -37,4 +38,58 @@ pub struct UpdateNotificationSettingsRequest {
     pub mention: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub p0_bug: Option<bool>,
+}
+
+/// One notification of the caller (KAIROS-T-0382).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Notification {
+    /// The id (UUID). `POST /api/me/notifications/read` takes it.
+    pub id: String,
+    /// `hand_off|blocker_cleared|cancelled|mention|p0_bug`.
+    pub kind: String,
+    /// The code of the item now; `null` when the item is gone.
+    pub short_code: Option<String>,
+    /// `strategy|initiative|task|document|adr`; `null` when the item is
+    /// gone.
+    pub entity_type: Option<String>,
+    /// The title of the item now; `null` when the item is gone.
+    pub title: Option<String>,
+    /// What happened, in one sentence or two.
+    pub text: String,
+    /// The person or the service account that made the change (UUID).
+    pub actor_id: Option<String>,
+    /// When Kairos made the notification (RFC 3339).
+    pub created_at: String,
+    /// When the person read it (RFC 3339); `null` while unread.
+    pub read_at: Option<String>,
+}
+
+/// `GET /api/me/notifications` response: each unread notification (newest
+/// first, 100 at most), then the 20 newest read ones.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct NotificationList {
+    /// The count of all the unread notifications of the caller.
+    pub unread: i64,
+    pub items: Vec<Notification>,
+}
+
+/// `POST /api/me/notifications/read` body: `ids`, or `all: true`. Not both.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MarkNotificationsReadRequest {
+    /// The ids of notifications of the caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ids: Option<Vec<String>>,
+    /// `true`: each unread notification of the caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub all: Option<bool>,
+}
+
+/// `POST /api/me/notifications/read` response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct MarkNotificationsReadResponse {
+    /// The ids that changed from unread to read.
+    pub marked: Vec<String>,
+    /// The count of the unread notifications after the change.
+    pub unread: i64,
 }

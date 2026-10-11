@@ -25,6 +25,8 @@ The task must be workable: acceptance criteria present and independently verifia
 
 `transition_item` to **Active** before the first change. The move gives the task your **claim**: the board and `get_item` show that you (or your agent) work on it. If `get_item` shows a claim of a different person, the task is theirs: ask before you start, and do not take it over. A change to a task that a different person has the claim on succeeds, and the answer ends with a `Warning:` line that names the person; stop and tell the lead.
 
+**Read your notifications.** While you have unread notifications, each answer of a Kairos tool ends with a block `## Your notifications (N unread)`: the 5 newest, then `N more: call get_events`. A notification tells you of a claim handed off to you, a blocker of your claimed task that is done or archived, a task that you created that someone cancelled, a mention of your user name, or a P0 bug on the board of your team. `get_events` lists them with their ids. Act on each one that changes your work (a cleared blocker can make a task workable; a P0 bug can come before your pick), tell the lead about the others, then `mark_events_read` (`ids`, or `all: true`). Do not mark a notification read before you have read it.
+
 To give the task to a different person, `hand_off_item` (`to`: a user id, an email or a user name). To stop work on a task and leave it in Active for anyone, `release_item`. The claim ends by itself when the task leaves Active.
 
 ## Work

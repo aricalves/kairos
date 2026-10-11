@@ -453,12 +453,13 @@ pub fn on_p0_bug(conn: &mut PgConnection, item_id: Uuid, actor: Uuid) -> Result<
 /// The newest `limit` unread notifications of `user`, and the count of all
 /// the unread ones. One query, on the partial index of the unread rows.
 pub fn unread(conn: &mut PgConnection, user: Uuid, limit: i64) -> Result<Unread, DieselError> {
-    let rows: Vec<UnreadRow> = sql_query(format!(
-        "{SELECT_NOTIFICATION}, (SELECT count(*) FROM notifications \
-                                  WHERE user_id = $1 AND read_at IS NULL) AS total \
+    let rows: Vec<UnreadRow> = sql_query(
+        "SELECT n.id, n.kind, n.item_id, d.short_code, d.entity_type, d.title, n.text, \
+                n.actor_id, n.created_at, n.read_at, count(*) OVER () AS total \
+           FROM notifications n LEFT JOIN entity_directory d ON d.id = n.item_id \
           WHERE n.user_id = $1 AND n.read_at IS NULL \
-          ORDER BY n.created_at DESC, n.id DESC LIMIT $2"
-    ))
+          ORDER BY n.created_at DESC, n.id DESC LIMIT $2",
+    )
     .bind::<SqlUuid, _>(user)
     .bind::<BigInt, _>(limit)
     .load(conn)?;
@@ -528,6 +529,32 @@ pub fn mark_read(
         events::emit_notification_event(conn, events::NOTIFICATIONS_READ, user, "", user)?;
     }
     Ok(changed)
+}
+
+/// The ids in `ids` that are not notifications of `user`: unknown ids, and
+/// the ids of the notifications of a different person. One query.
+pub fn not_of(conn: &mut PgConnection, user: Uuid, ids: &[Uuid]) -> Result<Vec<Uuid>, DieselError> {
+    use crate::schema::notifications::dsl;
+    let found: Vec<Uuid> = dsl::notifications
+        .filter(dsl::user_id.eq(user))
+        .filter(dsl::id.eq_any(ids))
+        .select(dsl::id)
+        .load(conn)?;
+    Ok(ids
+        .iter()
+        .copied()
+        .filter(|id| !found.contains(id))
+        .collect())
+}
+
+/// The count of the unread notifications of `user`.
+pub fn unread_count(conn: &mut PgConnection, user: Uuid) -> Result<i64, DieselError> {
+    use crate::schema::notifications::dsl;
+    dsl::notifications
+        .filter(dsl::user_id.eq(user))
+        .filter(dsl::read_at.is_null())
+        .count()
+        .get_result(conn)
 }
 
 /// The settings of `user`: each kind, and whether it is on.
