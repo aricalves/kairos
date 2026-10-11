@@ -284,6 +284,24 @@ def release_check():
     else:
         print(f"  • {tag} does not exist yet")
 
+    # KAIROS-T-0390: the image builds run cargo with --locked. A version
+    # bump that left Cargo.lock at the old version built the tarballs (no
+    # --locked) and no image (v0.11.0). Refuse it here.
+    locked = subprocess.run(
+        ["cargo", "metadata", "--locked", "--format-version", "1"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if locked.returncode != 0:
+        problems.append(
+            "Cargo.lock does not match the workspace (the image builds use --locked). "
+            "Run `cargo update --workspace` and commit Cargo.lock:\n"
+            + locked.stderr.strip()
+        )
+    else:
+        print("  ✓ Cargo.lock matches the workspace (cargo metadata --locked)")
+
     dirty = _git("status", "--porcelain")
     if dirty:
         problems.append(
@@ -385,6 +403,18 @@ def release_version(to: str):
         if after != before:
             path.write_text(after)
             changed[rel] = changed.get(rel, 0) + n
+
+    # KAIROS-T-0390: the workspace crates take their version from
+    # Cargo.toml; Cargo.lock names it too. Update it, or the --locked image
+    # builds refuse the tag.
+    if "Cargo.toml" in changed:
+        upd = subprocess.run(
+            ["cargo", "update", "--workspace"], cwd=PROJECT_ROOT, capture_output=True, text=True
+        )
+        if upd.returncode != 0:
+            print("cargo update --workspace failed:\n" + upd.stderr, file=sys.stderr)
+            return 1
+        changed["Cargo.lock"] = 1
 
     for rel, n in sorted(changed.items()):
         print(f"  {rel}: {n} occurrence(s) -> {to}")
