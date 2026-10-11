@@ -90,6 +90,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("activity") view=pages::ActivityPage/>
                     <Route path=path!("activity/history/:code") view=pages::ItemHistoryPage/>
                     <Route path=path!("agent-keys") view=pages::AgentKeysPage/>
+                    <Route path=path!("notifications") view=pages::NotificationsPage/>
                 </ParentRoute>
             </Routes>
         </Router>
@@ -124,6 +125,7 @@ fn Shell() -> impl IntoView {
                 }.into_any())
                 header=Box::new(move || view! {
                     <Group justify="end" gap="sm">
+                        <pages::NotificationBell/>
                         <WhoamiBadge whoami/>
                         <ThemeToggle/>
                         <LogoutButton/>
