@@ -7,7 +7,8 @@ import starlightAurora from 'starlight-aurora';
 import oldBookRedirects from './old-book-redirects.mjs';
 
 // The Pages workflow sets DOCS_SITE and DOCS_BASE. Locally the site is at /.
-const site = process.env.DOCS_SITE;
+// On a pull request the workflow sets them empty: an empty site is not a URL.
+const site = process.env.DOCS_SITE || undefined;
 const base = process.env.DOCS_BASE || '/';
 
 const PROJECT = 'Kairos';
