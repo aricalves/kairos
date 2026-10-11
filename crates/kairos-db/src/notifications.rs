@@ -104,7 +104,8 @@ const SELECT_NOTIFICATION: &str = "SELECT n.id, n.kind, n.item_id, d.short_code,
 /// Make one notification of `kind` for each person in `recipients` who may
 /// get it (module docs: a person of the organization, not the actor, the
 /// kind not turned off), and send each one the event. `short_code` is the
-/// code of the item for the event. Returns the persons told.
+/// code of the item for the event. Returns the persons told. An `actor`
+/// of [`Uuid::nil`] is Kairos itself (KAIROS-T-0384): the row has no actor.
 pub fn notify(
     conn: &mut PgConnection,
     recipients: &[Uuid],
@@ -118,7 +119,7 @@ pub fn notify(
     }
     let told: Vec<Recipient> = sql_query(
         "INSERT INTO notifications (user_id, kind, item_id, text, actor_id) \
-         SELECT DISTINCT u.id, $2, $3, $4, $5 \
+         SELECT DISTINCT u.id, $2, $3, $4, NULLIF($5, '00000000-0000-0000-0000-000000000000'::uuid) \
            FROM public.users u \
            JOIN public.organization_members m ON m.user_id = u.id \
            JOIN public.organizations o ON o.id = m.organization_id \

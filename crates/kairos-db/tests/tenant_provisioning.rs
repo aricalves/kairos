@@ -41,7 +41,7 @@ const SCRATCH_DB: &str = "kairos_tenant_provisioning_test";
 /// The tenant tables (sorted): the 21 from the KAIROS-S-0004 DDL plus
 /// `scim_tokens` (KAIROS-T-0025 / A-0016) and `api_keys` (KAIROS-T-0057 /
 /// A-0017 service-account API keys).
-const EXPECTED_TABLES: [&str; 46] = [
+const EXPECTED_TABLES: [&str; 49] = [
     "activity_log",
     "adrs",
     "api_keys",
@@ -103,6 +103,10 @@ const EXPECTED_TABLES: [&str; 46] = [
     "teams",
     "template_metadata",
     "templates",
+    // KAIROS-T-0384: the webhook targets, the deliveries and their tries.
+    "webhook_deliveries",
+    "webhook_delivery_tries",
+    "webhook_targets",
 ];
 
 const EXPECTED_VIEWS: [&str; 2] = ["entity_directory", "searchable_items"];

@@ -219,6 +219,12 @@ pub fn credential_aad(tenant: &str, repository_id: Uuid) -> Vec<u8> {
     format!("kairos/repository-credential/v1\0{tenant}\0{repository_id}").into_bytes()
 }
 
+/// The associated data of the secret of a webhook target (KAIROS-T-0384):
+/// the tenant and the target.
+pub fn webhook_target_aad(tenant: &str, target_id: Uuid) -> Vec<u8> {
+    format!("kairos/webhook-target/v1\0{tenant}\0{target_id}").into_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

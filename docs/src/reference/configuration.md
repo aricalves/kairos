@@ -638,6 +638,40 @@ that is out of range, stops the start of the server.
 | `KAIROS_JOB_LIMIT_HOSTED_BUILD` | whole number | `4` | The code-index builds with a hosted provider that one server runs at the same time. |
 | `KAIROS_JOB_LIMIT_EMBEDDING_BATCH` | whole number | `2` | The embedding batches that one server runs at the same time. |
 | `KAIROS_JOB_LIMIT_PERIODIC` | whole number | `1` | The periodic passes that one server runs at the same time. |
+| `KAIROS_JOB_LIMIT_WEBHOOK_DELIVERY` | whole number | `4` | The webhook deliveries that one server sends at the same time. |
+
+### Webhook deliveries
+
+Kairos sends signed webhook deliveries to the targets of a board
+(KAIROS-T-0384). Each delivery is a job of the job queue, with a priority
+between the embedding batches and the periodic passes. Thus 2 servers send a
+delivery one time. For the request and its signature, see
+[Webhook deliveries](webhooks.md).
+
+A failed try is tried again. The first wait is `KAIROS_WEBHOOK_RETRY_BASE_SECS`.
+Each wait is 2 times the wait before it, to a maximum of 12 hours. With the
+defaults, the 12 tries of a delivery last about 17 hours.
+
+Each failed try adds one to the failures in a row of the target. A good try
+sets the count to 0. At `KAIROS_WEBHOOK_DISABLE_AFTER`, Kairos turns off the
+target. Then the owners of the target get a notification of the kind
+`delivery_failing`.
+
+Before each try, Kairos resolves the host of the URL. It refuses a loopback,
+private, link-local, shared (`100.64.0.0/10`), multicast or unspecified
+address. The request goes to the address that Kairos checked.
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `KAIROS_WEBHOOK_MAX_TRIES` | whole number, 1 or more | `12` | The number of tries of a delivery. After the last try, the delivery is `failed`. |
+| `KAIROS_WEBHOOK_RETRY_BASE_SECS` | whole number | `30` | The wait after the first failed try. |
+| `KAIROS_WEBHOOK_TIMEOUT_SECS` | whole number, 1 or more | `10` | The time that Kairos waits for the answer of a target. |
+| `KAIROS_WEBHOOK_DISABLE_AFTER` | whole number | `24` | The failed tries in a row that turn off a target. `0`: Kairos does not turn off a target. |
+| `KAIROS_WEBHOOK_ALLOW_PRIVATE` | `true` or `false` | `false` | Send deliveries to loopback, private, link-local and shared addresses too. Use it only for a receiver on your own network. |
+
+The secret of each target is sealed with `KAIROS_SECRETS_KEY`. Without that
+key, a board manager cannot make a target. `kairos-server rotate-secrets`
+seals the secrets of the targets again.
 
 ## Default board configurations
 

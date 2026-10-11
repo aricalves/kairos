@@ -441,3 +441,24 @@ pub fn defer(
     .execute(conn)?;
     Ok(n == 1)
 }
+
+/// Set the `max_tries` of the job `id` of the server `instance`: a kind
+/// whose tries are a setting of the server (KAIROS-T-0384, the webhook
+/// deliveries) writes it at each lease. False: the server did not hold the
+/// lease.
+pub fn set_max_tries(
+    conn: &mut PgConnection,
+    id: Uuid,
+    instance: Uuid,
+    max_tries: i32,
+) -> QueryResult<bool> {
+    let n = sql_query(
+        "UPDATE public.jobs SET max_tries = GREATEST($3, 1) \
+         WHERE id = $1 AND leased_by = $2 AND state = 'leased'",
+    )
+    .bind::<SqlUuid, _>(id)
+    .bind::<SqlUuid, _>(instance)
+    .bind::<Integer, _>(max_tries)
+    .execute(conn)?;
+    Ok(n == 1)
+}

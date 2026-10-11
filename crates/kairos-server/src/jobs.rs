@@ -57,11 +57,13 @@ pub mod kinds {
     pub const EMBEDDING_BATCH: &str = "embedding_batch";
     /// A periodic pass (retention, the new-commits sweep).
     pub const PERIODIC: &str = "periodic";
+    /// A signed webhook delivery (KAIROS-T-0384).
+    pub const WEBHOOK_DELIVERY: &str = kairos_db::webhooks::JOB_KIND;
 }
 
 /// The priorities of the jobs (COLLIERY-I-0613): a higher one runs first.
 /// The order: a requested rebuild, an update, a first build, an embedding
-/// batch, a periodic pass.
+/// batch, a webhook delivery, a periodic pass.
 pub mod priority {
     /// A code-index build that a person asked for.
     pub const REQUESTED_BUILD: i32 = 50;
@@ -71,6 +73,8 @@ pub mod priority {
     pub const FIRST_BUILD: i32 = 30;
     /// A batch of the embedding refresh.
     pub const EMBEDDING_BATCH: i32 = 20;
+    /// A signed webhook delivery (KAIROS-T-0384).
+    pub const WEBHOOK_DELIVERY: i32 = kairos_db::webhooks::JOB_PRIORITY;
     /// A periodic pass.
     pub const PERIODIC: i32 = 10;
 }
@@ -112,6 +116,7 @@ impl Default for JobSettings {
                 (kinds::HOSTED_BUILD, 4),
                 (kinds::EMBEDDING_BATCH, 2),
                 (kinds::PERIODIC, 1),
+                (kinds::WEBHOOK_DELIVERY, 4),
             ]
             .into_iter()
             .map(|(kind, limit)| (kind.to_string(), limit))
@@ -151,6 +156,10 @@ pub struct JobError {
     /// ([`JobError::not_here`]). It is queued again after
     /// [`JobSettings::retry_after`], and no try is counted.
     pub deferred: bool,
+    /// The wait before the next try of a [`JobError::retry`]; `None`:
+    /// [`JobSettings::retry_after`]. A kind with growing waits sets it
+    /// ([`JobError::retry_in`], KAIROS-T-0384).
+    pub retry_after: Option<Duration>,
 }
 
 impl JobError {
@@ -161,6 +170,15 @@ impl JobError {
             retry: true,
             yielded: false,
             deferred: false,
+            retry_after: None,
+        }
+    }
+
+    /// A failure that a later try can mend, with the next try after `wait`.
+    pub fn retry_in(reason: impl Into<String>, wait: Duration) -> Self {
+        JobError {
+            retry_after: Some(wait),
+            ..JobError::retry(reason)
         }
     }
 
@@ -171,6 +189,7 @@ impl JobError {
             retry: false,
             yielded: false,
             deferred: false,
+            retry_after: None,
         }
     }
 
@@ -182,6 +201,7 @@ impl JobError {
             retry: true,
             yielded: true,
             deferred: false,
+            retry_after: None,
         }
     }
 
@@ -194,6 +214,7 @@ impl JobError {
             retry: true,
             yielded: false,
             deferred: true,
+            retry_after: None,
         }
     }
 }
@@ -716,7 +737,14 @@ impl Worker {
         result: Result<(), JobError>,
     ) -> Ended {
         let (id, instance) = (job.id, self.instance);
-        let retry_after = self.settings.retry_after.as_secs_f64();
+        let deferred_after = self.settings.retry_after.as_secs_f64();
+        let retry_after = match &result {
+            Err(JobError {
+                retry_after: Some(wait),
+                ..
+            }) => wait.as_secs_f64(),
+            _ => deferred_after,
+        };
         let next = handler.next(job);
         if let Err(JobError { reason, .. }) = &result {
             tracing::warn!(job = %job.id, kind = %job.kind, %reason, "job try ended with an error");
@@ -745,7 +773,7 @@ impl Worker {
                             deferred: true,
                             ..
                         }) => {
-                            if db::defer(conn, id, instance, &reason, retry_after)? {
+                            if db::defer(conn, id, instance, &reason, deferred_after)? {
                                 Ended::Deferred
                             } else {
                                 Ended::Lost

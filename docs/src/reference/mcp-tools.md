@@ -1568,6 +1568,7 @@ A notification tells a person about an event of their work (KAIROS-T-0381):
 | `cancelled` | A person cancels a task that you created. The text has the reason. |
 | `mention` | A person writes `@your_user_name` in a note or in the content of an item. A mention in code does not count. An update tells only the new mentions. |
 | `p0_bug` | A bug with the priority `critical` (or `p0`) lands on the board of your team: its priority changes to P0, or it moves to the board. |
+| `delivery_failing` | Kairos turns off a webhook target that you made, or a target of a board that you manage, after failed deliveries. See [Webhook deliveries](webhooks.md). |
 
 You get no notification for a change that you made. You can turn a kind off
 with `PUT /api/me/notification-settings` or on the Notifications page of the

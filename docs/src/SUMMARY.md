@@ -66,6 +66,7 @@ checklist.
   - [Signing in](reference/rest/signing-in.md)
   - [Schemas](reference/rest/schemas.md)
 - [Events](reference/events.md)
+- [Webhook deliveries](reference/webhooks.md)
 - [SCIM](reference/scim.md)
 - [Capabilities](reference/capabilities.md)
 - [Short codes](reference/short-codes.md)

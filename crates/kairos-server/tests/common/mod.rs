@@ -235,6 +235,7 @@ pub fn base_config(scratch_url: &str) -> AppConfig {
         api_key_ttl_days: 90,
         api_key_rotation_grace_secs: 24 * 60 * 60,
         jobs: Default::default(),
+        webhooks: Default::default(),
         bootstrap_admin: None,
         bootstrap_password: None,
         bootstrap_password_hash: None,

@@ -46,6 +46,7 @@ pub mod task_claims;
 pub mod team_pages;
 pub mod tenant;
 pub mod tls;
+pub mod webhooks;
 
 pub use abac::{
     AbacError, StructureGrant, authorize, check_capability, grant_capability, holds_structure,

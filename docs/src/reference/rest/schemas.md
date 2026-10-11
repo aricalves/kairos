@@ -1384,7 +1384,7 @@ One notification of the caller (KAIROS-T-0382).
 | `created_at` | `string` | yes | When Kairos made the notification (RFC 3339). |
 | `entity_type` | `string`, nullable | no | `strategy|initiative|task|document|adr`; `null` when the item is gone. |
 | `id` | `string` | yes | The id (UUID). `POST /api/me/notifications/read` takes it. |
-| `kind` | `string` | yes | `hand_off|blocker_cleared|cancelled|mention|p0_bug`. |
+| `kind` | `string` | yes | `hand_off|blocker_cleared|cancelled|mention|p0_bug|delivery_failing`. |
 | `read_at` | `string`, nullable | no | When the person read it (RFC 3339); `null` while unread. |
 | `short_code` | `string`, nullable | no | The code of the item now; `null` when the item is gone. |
 | `text` | `string` | yes | What happened, in one sentence or two. |
@@ -1407,6 +1407,7 @@ One notification of the caller (KAIROS-T-0382).
 |---|---|---|---|
 | `blocker_cleared` | `boolean` | yes | A blocker of a task that you have the claim on is done or archived. |
 | `cancelled` | `boolean` | yes | A person cancelled a task that you created. |
+| `delivery_failing` | `boolean` | yes | A webhook target that you own was turned off after failed deliveries (KAIROS-T-0384). |
 | `hand_off` | `boolean` | yes | A person handed off the claim of a task to you. |
 | `mention` | `boolean` | yes | A person wrote `@your_user_name` in a note or in the content of an item. |
 | `p0_bug` | `boolean` | yes | A bug with the priority P0 (critical) is on the board of your team. |
@@ -2309,6 +2310,7 @@ The server refuses a body with a field that is not in this table ([Errors](../er
 |---|---|---|---|
 | `blocker_cleared` | `boolean`, nullable | no |  |
 | `cancelled` | `boolean`, nullable | no |  |
+| `delivery_failing` | `boolean`, nullable | no |  |
 | `hand_off` | `boolean`, nullable | no |  |
 | `mention` | `boolean`, nullable | no |  |
 | `p0_bug` | `boolean`, nullable | no |  |

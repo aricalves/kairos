@@ -38,6 +38,7 @@ pub mod secrets_rotation;
 pub mod security_headers;
 pub mod session_cookie;
 pub mod tenant_readiness;
+pub mod webhooks;
 pub mod ws;
 
 pub mod mcp;

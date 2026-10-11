@@ -18,16 +18,20 @@ pub enum NotificationKind {
     Mention,
     /// A bug with the priority P0 (critical) is on the board of your team.
     P0Bug,
+    /// A webhook target that you own was turned off after failed deliveries
+    /// (KAIROS-T-0384).
+    DeliveryFailing,
 }
 
 impl NotificationKind {
     /// Each kind, in the order of the settings.
-    pub const ALL: [NotificationKind; 5] = [
+    pub const ALL: [NotificationKind; 6] = [
         NotificationKind::HandOff,
         NotificationKind::BlockerCleared,
         NotificationKind::Cancelled,
         NotificationKind::Mention,
         NotificationKind::P0Bug,
+        NotificationKind::DeliveryFailing,
     ];
 
     /// The wire name (`kind` column and API field).
@@ -38,6 +42,7 @@ impl NotificationKind {
             NotificationKind::Cancelled => "cancelled",
             NotificationKind::Mention => "mention",
             NotificationKind::P0Bug => "p0_bug",
+            NotificationKind::DeliveryFailing => "delivery_failing",
         }
     }
 

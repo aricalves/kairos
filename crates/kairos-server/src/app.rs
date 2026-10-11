@@ -109,6 +109,13 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
         instance,
         config.jobs.clone(),
     ));
+    // KAIROS-T-0384: the signed webhook deliveries are jobs of the queue.
+    crate::webhooks::WebhookService::new(
+        blocking.clone(),
+        config.secrets_key.clone(),
+        config.webhooks.clone(),
+    )
+    .register(&jobs);
     Ok(AppState {
         config: Arc::new(config),
         pool,
@@ -266,6 +273,13 @@ pub fn state_with(config: AppConfig, pool: TenantPool, auth: Arc<Authenticator>)
         uuid::Uuid::new_v4(),
         config.jobs.clone(),
     ));
+    // KAIROS-T-0384: a test that drains the worker sends the deliveries.
+    crate::webhooks::WebhookService::new(
+        blocking.clone(),
+        config.secrets_key.clone(),
+        config.webhooks.clone(),
+    )
+    .register(&jobs);
     AppState {
         config: Arc::new(config),
         pool,

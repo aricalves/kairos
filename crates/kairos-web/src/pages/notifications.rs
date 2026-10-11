@@ -51,6 +51,7 @@ struct NotificationSettings {
     cancelled: bool,
     mention: bool,
     p0_bug: bool,
+    delivery_failing: bool,
 }
 
 /// mirror of: `kairos_client::types_notifications::MarkNotificationsReadResponse`
@@ -88,6 +89,7 @@ fn kind_label(kind: &str) -> &'static str {
         "cancelled" => "Cancelled",
         "mention" => "Mention",
         "p0_bug" => "P0 bug",
+        "delivery_failing" => "Delivery failing",
         _ => "Notification",
     }
 }
@@ -311,6 +313,7 @@ pub fn NotificationsPage() -> impl IntoView {
     let cancelled = RwSignal::new(true);
     let mention = RwSignal::new(true);
     let p0_bug = RwSignal::new(true);
+    let delivery_failing = RwSignal::new(true);
     let settings_reload = RwSignal::new(0u32);
     let settings = LocalResource::new(move || {
         let _ = auth.token();
@@ -324,6 +327,7 @@ pub fn NotificationsPage() -> impl IntoView {
             cancelled.set(s.cancelled);
             mention.set(s.mention);
             p0_bug.set(s.p0_bug);
+            delivery_failing.set(s.delivery_failing);
         }
     });
     let on_save = move |_| {
@@ -333,6 +337,7 @@ pub fn NotificationsPage() -> impl IntoView {
             "cancelled": cancelled.get_untracked(),
             "mention": mention.get_untracked(),
             "p0_bug": p0_bug.get_untracked(),
+            "delivery_failing": delivery_failing.get_untracked(),
         });
         run_mutation(
             busy,
@@ -366,8 +371,9 @@ pub fn NotificationsPage() -> impl IntoView {
         <PageHeader title="Notifications" sub="Kairos tells you when a person hands off a task \
                                                to you, when a blocker of your task clears, when \
                                                a person cancels a task that you created, when a \
-                                               person writes your user name, and when a P0 bug \
-                                               lands on the board of your team."/>
+                                               person writes your user name, when a P0 bug \
+                                               lands on the board of your team, and when Kairos \
+                                               turns off a webhook target that you own."/>
         <Stack gap="md">
             <MutationNotice outcome/>
             <Panel title="Your notifications"
@@ -404,6 +410,8 @@ pub fn NotificationsPage() -> impl IntoView {
                                     label="A person cancels a task that you created"/>
                                 <Switch checked=mention label="A person writes your user name"/>
                                 <Switch checked=p0_bug label="A P0 bug lands on the board of your team"/>
+                                <Switch checked=delivery_failing
+                                    label="Kairos turns off a webhook target that you own after failed deliveries"/>
                                 <Group justify="end">
                                     <Button on_click=Callback::new(on_save)>"Save"</Button>
                                 </Group>
@@ -434,6 +442,7 @@ mod tests {
             "cancelled",
             "mention",
             "p0_bug",
+            "delivery_failing",
         ] {
             assert_ne!(kind_label(kind), "Notification", "{kind}");
         }

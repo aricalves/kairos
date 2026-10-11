@@ -279,6 +279,11 @@ pub struct AppConfig {
     /// `KAIROS_JOB_*` (KAIROS-T-0373): the heartbeat, the lease, the tries
     /// and the limits per kind of the job queue ([`crate::jobs`]).
     pub jobs: crate::jobs::JobSettings,
+    /// `KAIROS_WEBHOOK_*` (KAIROS-T-0384): the tries, the waits, the time
+    /// out, the failures in a row that turn a target off, and the guard of
+    /// the addresses of the signed webhook deliveries
+    /// ([`crate::webhooks`]).
+    pub webhooks: crate::webhooks::WebhookSettings,
     /// `KAIROS_BOOTSTRAP_ADMIN` (KAIROS-T-0204): the email of a first-boot admin,
     /// created **only when the deployment has no users at all**.
     ///
@@ -625,6 +630,7 @@ impl AppConfig {
                 24 * 60 * 60,
             )?,
             jobs: parse_jobs(&get)?,
+            webhooks: parse_webhooks(&get)?,
             bootstrap_admin,
             bootstrap_password,
             bootstrap_password_hash,
@@ -675,12 +681,67 @@ fn parse_jobs(
         ("KAIROS_JOB_LIMIT_HOSTED_BUILD", kinds::HOSTED_BUILD),
         ("KAIROS_JOB_LIMIT_EMBEDDING_BATCH", kinds::EMBEDDING_BATCH),
         ("KAIROS_JOB_LIMIT_PERIODIC", kinds::PERIODIC),
+        ("KAIROS_JOB_LIMIT_WEBHOOK_DELIVERY", kinds::WEBHOOK_DELIVERY),
     ] {
         let default = settings.limit(kind);
         let limit: usize = parse_num(get, var, default)?;
         settings.limits.insert(kind.to_string(), limit);
     }
     Ok(settings)
+}
+
+/// The settings of the webhook deliveries (KAIROS-T-0384):
+/// `KAIROS_WEBHOOK_MAX_TRIES` (12), `KAIROS_WEBHOOK_RETRY_BASE_SECS` (30),
+/// `KAIROS_WEBHOOK_TIMEOUT_SECS` (10), `KAIROS_WEBHOOK_DISABLE_AFTER` (24)
+/// and `KAIROS_WEBHOOK_ALLOW_PRIVATE` (false).
+fn parse_webhooks(
+    get: &impl Fn(&str) -> Option<String>,
+) -> Result<crate::webhooks::WebhookSettings, ConfigError> {
+    let defaults = crate::webhooks::WebhookSettings::default();
+    let max_tries: i32 = parse_num(get, "KAIROS_WEBHOOK_MAX_TRIES", defaults.max_tries)?;
+    if max_tries < 1 {
+        return Err(ConfigError::Invalid {
+            var: "KAIROS_WEBHOOK_MAX_TRIES",
+            message: "must be 1 or more".into(),
+        });
+    }
+    let timeout: u64 = parse_num(
+        get,
+        "KAIROS_WEBHOOK_TIMEOUT_SECS",
+        defaults.timeout.as_secs(),
+    )?;
+    if timeout == 0 {
+        return Err(ConfigError::Invalid {
+            var: "KAIROS_WEBHOOK_TIMEOUT_SECS",
+            message: "must be 1 or more".into(),
+        });
+    }
+    let allow_private = match get("KAIROS_WEBHOOK_ALLOW_PRIVATE")
+        .as_deref()
+        .map(str::trim)
+    {
+        None => defaults.allow_private,
+        Some("true" | "1") => true,
+        Some("false" | "0") => false,
+        Some(other) => {
+            return Err(ConfigError::Invalid {
+                var: "KAIROS_WEBHOOK_ALLOW_PRIVATE",
+                message: format!("{other:?} is not true or false"),
+            });
+        }
+    };
+    Ok(crate::webhooks::WebhookSettings {
+        max_tries,
+        retry_base: std::time::Duration::from_secs(parse_num(
+            get,
+            "KAIROS_WEBHOOK_RETRY_BASE_SECS",
+            defaults.retry_base.as_secs(),
+        )?),
+        timeout: std::time::Duration::from_secs(timeout),
+        disable_after: parse_num(get, "KAIROS_WEBHOOK_DISABLE_AFTER", defaults.disable_after)?,
+        allow_private,
+        ..defaults
+    })
 }
 
 /// `KAIROS_AUTO_JOIN_DOMAINS`: comma-separated, trimmed, lowercased, a
@@ -924,6 +985,48 @@ mod tests {
             ("KAIROS_JOB_LEASE_SECS", "45"),
             ("KAIROS_JOB_MAX_TRIES", "0"),
             ("KAIROS_JOB_LIMIT_PERIODIC", "one"),
+        ] {
+            let mut vars = MINIMAL.to_vec();
+            vars.push((var, value));
+            let err = AppConfig::from_lookup(lookup(&vars)).expect_err(var);
+            assert!(err.to_string().contains(var), "{var}={value}: {err}");
+        }
+    }
+
+    /// KAIROS-T-0384: the settings of the webhook deliveries.
+    #[test]
+    fn the_webhook_settings_have_defaults_and_refuse_a_bad_value() {
+        let config = AppConfig::from_lookup(lookup(MINIMAL)).expect("valid config");
+        assert_eq!(config.webhooks, crate::webhooks::WebhookSettings::default());
+        assert_eq!(config.webhooks.max_tries, 12);
+        assert!(!config.webhooks.allow_private);
+        assert_eq!(config.jobs.limit("webhook_delivery"), 4);
+
+        let mut vars = MINIMAL.to_vec();
+        vars.extend([
+            ("KAIROS_WEBHOOK_MAX_TRIES", "5"),
+            ("KAIROS_WEBHOOK_RETRY_BASE_SECS", "2"),
+            ("KAIROS_WEBHOOK_TIMEOUT_SECS", "3"),
+            ("KAIROS_WEBHOOK_DISABLE_AFTER", "7"),
+            ("KAIROS_WEBHOOK_ALLOW_PRIVATE", "true"),
+            ("KAIROS_JOB_LIMIT_WEBHOOK_DELIVERY", "9"),
+        ]);
+        let config = AppConfig::from_lookup(lookup(&vars)).expect("valid config");
+        assert_eq!(config.webhooks.max_tries, 5);
+        assert_eq!(
+            config.webhooks.retry_base,
+            std::time::Duration::from_secs(2)
+        );
+        assert_eq!(config.webhooks.timeout, std::time::Duration::from_secs(3));
+        assert_eq!(config.webhooks.disable_after, 7);
+        assert!(config.webhooks.allow_private);
+        assert_eq!(config.jobs.limit("webhook_delivery"), 9);
+
+        for (var, value) in [
+            ("KAIROS_WEBHOOK_MAX_TRIES", "0"),
+            ("KAIROS_WEBHOOK_TIMEOUT_SECS", "0"),
+            ("KAIROS_WEBHOOK_ALLOW_PRIVATE", "yes"),
+            ("KAIROS_WEBHOOK_DISABLE_AFTER", "many"),
         ] {
             let mut vars = MINIMAL.to_vec();
             vars.push((var, value));

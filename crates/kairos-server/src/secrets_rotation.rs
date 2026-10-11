@@ -8,7 +8,9 @@
 //!   [`crate::secrets::credential_aad`]);
 //! - `code_index_settings`: the secret of the hosted summary model
 //!   (`summary_*`) and of the hosted vector model (`vector_*`; associated
-//!   data [`crate::api::org::code_index_settings::settings_aad`]).
+//!   data [`crate::api::org::code_index_settings::settings_aad`]);
+//! - `webhook_targets`: the secret of a webhook target (`secret_*`;
+//!   associated data [`crate::secrets::webhook_target_aad`], KAIROS-T-0384).
 //!
 //! The webhook secrets of the forge connections are not stored: Kairos
 //! derives them from `KAIROS_WEBHOOK_SIGNING_KEY`, so they have nothing to
@@ -49,6 +51,7 @@ pub fn rotate_tenant(
         let mut report = RotationReport::default();
         rotate_credentials(conn, slug, key, &mut report)?;
         rotate_code_index_settings(conn, slug, key, &mut report)?;
+        rotate_webhook_targets(conn, slug, key, &mut report)?;
         Ok(report)
     })
 }
@@ -85,6 +88,41 @@ fn rotate_credentials(
             Err(e) => report
                 .failed
                 .push(format!("repository_credentials ({repository_id}): {e}")),
+        }
+    }
+    Ok(())
+}
+
+/// KAIROS-T-0384: the secrets of the webhook targets.
+fn rotate_webhook_targets(
+    conn: &mut PgConnection,
+    slug: &str,
+    key: &SecretsKey,
+    report: &mut RotationReport,
+) -> Result<(), diesel::result::Error> {
+    for (id, sealed) in kairos_db::webhooks::secrets_for_update(conn)? {
+        if !key.needs_reseal(&sealed.key_id) {
+            report.current += 1;
+            continue;
+        }
+        let aad = crate::secrets::webhook_target_aad(slug, id);
+        match key.open(&aad, &sealed.key_id, &sealed.nonce, &sealed.ciphertext) {
+            Ok(plain) => {
+                let again = key.seal(&aad, &plain);
+                kairos_db::webhooks::set_secret(
+                    conn,
+                    id,
+                    &kairos_db::webhooks::SealedSecret {
+                        ciphertext: again.ciphertext,
+                        nonce: again.nonce,
+                        key_id: again.key_id,
+                    },
+                )?;
+                report.resealed += 1;
+            }
+            Err(e) => report
+                .failed
+                .push(format!("webhook_targets.secret ({id}): {e}")),
         }
     }
     Ok(())
