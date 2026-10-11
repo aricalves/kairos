@@ -41,6 +41,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+use diesel::Connection;
 use kairos_db::jobs::{self as db, Job, NewJob};
 
 use crate::blocking::BlockingTenantPool;
@@ -146,6 +147,10 @@ pub struct JobError {
     /// ([`JobHandle::should_yield`]). It is queued again, and no try is
     /// counted.
     pub yielded: bool,
+    /// True: this server cannot run the job, and another server can
+    /// ([`JobError::not_here`]). It is queued again after
+    /// [`JobSettings::retry_after`], and no try is counted.
+    pub deferred: bool,
 }
 
 impl JobError {
@@ -155,6 +160,7 @@ impl JobError {
             reason: reason.into(),
             retry: true,
             yielded: false,
+            deferred: false,
         }
     }
 
@@ -164,6 +170,7 @@ impl JobError {
             reason: reason.into(),
             retry: false,
             yielded: false,
+            deferred: false,
         }
     }
 
@@ -174,6 +181,19 @@ impl JobError {
             reason: "The job gave its slot to a job of a higher priority.".into(),
             retry: true,
             yielded: true,
+            deferred: false,
+        }
+    }
+
+    /// This server cannot run the job now (KAIROS-T-0376: a periodic pass
+    /// that it does not run, or not yet). The job is queued again for any
+    /// server, after [`JobSettings::retry_after`], and no try is counted.
+    pub fn not_here(reason: impl Into<String>) -> Self {
+        JobError {
+            reason: reason.into(),
+            retry: true,
+            yielded: false,
+            deferred: true,
         }
     }
 }
@@ -197,6 +217,15 @@ pub trait JobHandler: Send + Sync {
     fn failed(&self, job: Job) -> UnitFuture {
         let _ = job;
         Box::pin(async {})
+    }
+
+    /// The job that follows `job` when `job` ends, done or failed: a
+    /// periodic pass adds its next run (KAIROS-T-0376). The worker adds it
+    /// in the transaction that writes the end, so the next job exists
+    /// exactly when the end is written. `None`: no job follows.
+    fn next(&self, job: &Job) -> Option<NewJob> {
+        let _ = job;
+        None
     }
 }
 
@@ -309,6 +338,8 @@ pub struct Worker {
     running: Mutex<HashMap<String, usize>>,
     wake: tokio::sync::Notify,
     last_purge: Mutex<Option<Instant>>,
+    /// The periodic passes of this server (KAIROS-T-0376).
+    pub(crate) periodic: Arc<crate::periodic::Passes>,
 }
 
 impl std::fmt::Debug for Worker {
@@ -327,6 +358,8 @@ enum Ended {
     Requeued,
     /// Queued again with no try counted: it gave its slot.
     Yielded,
+    /// Queued again for another server, with no try counted.
+    Deferred,
     Failed,
     /// Another server holds the lease now.
     Lost,
@@ -344,6 +377,7 @@ impl Worker {
             running: Mutex::default(),
             wake: tokio::sync::Notify::new(),
             last_purge: Mutex::default(),
+            periodic: Arc::default(),
         }
     }
 
@@ -495,9 +529,26 @@ impl Worker {
         if kinds.is_empty() {
             return;
         }
+        let handlers: HashMap<String, Arc<dyn JobHandler>> = kinds
+            .iter()
+            .filter_map(|kind| self.handler(kind).map(|h| (kind.clone(), h)))
+            .collect();
+        // The job that follows each failed job is added in the transaction
+        // of the failure (KAIROS-T-0376).
         let failed = self
             .blocking
-            .run_public(move |conn| db::fail_expired(conn, &kinds).map_err(ApiError::internal))
+            .run_public(move |conn| {
+                conn.transaction::<_, diesel::result::Error, _>(|conn| {
+                    let jobs = db::fail_expired(conn, &kinds)?;
+                    for job in &jobs {
+                        if let Some(next) = handlers.get(&job.kind).and_then(|h| h.next(job)) {
+                            db::enqueue(conn, &next)?;
+                        }
+                    }
+                    Ok(jobs)
+                })
+                .map_err(ApiError::internal)
+            })
             .await;
         match failed {
             Ok(jobs) => {
@@ -656,7 +707,8 @@ impl Worker {
         }
     }
 
-    /// Write the end of `job`.
+    /// Write the end of `job`, and add the job that follows it
+    /// ([`JobHandler::next`]) in the same transaction when the job ended.
     async fn finish(
         &self,
         job: &Job,
@@ -665,51 +717,69 @@ impl Worker {
     ) -> Ended {
         let (id, instance) = (job.id, self.instance);
         let retry_after = self.settings.retry_after.as_secs_f64();
-        let written = match result {
-            Ok(()) => self
-                .blocking
-                .run_public(move |conn| {
-                    db::complete(conn, id, instance).map_err(ApiError::internal)
+        let next = handler.next(job);
+        if let Err(JobError { reason, .. }) = &result {
+            tracing::warn!(job = %job.id, kind = %job.kind, %reason, "job try ended with an error");
+        }
+        let written = self
+            .blocking
+            .run_public(move |conn| {
+                conn.transaction::<_, diesel::result::Error, _>(|conn| {
+                    let ended = match result {
+                        Ok(()) => {
+                            if db::complete(conn, id, instance)? {
+                                Ended::Done
+                            } else {
+                                Ended::Lost
+                            }
+                        }
+                        Err(JobError { yielded: true, .. }) => {
+                            if db::requeue(conn, id, instance)? {
+                                Ended::Yielded
+                            } else {
+                                Ended::Lost
+                            }
+                        }
+                        Err(JobError {
+                            reason,
+                            deferred: true,
+                            ..
+                        }) => {
+                            if db::defer(conn, id, instance, &reason, retry_after)? {
+                                Ended::Deferred
+                            } else {
+                                Ended::Lost
+                            }
+                        }
+                        Err(JobError {
+                            reason,
+                            retry: true,
+                            ..
+                        }) => match db::release(conn, id, instance, &reason, retry_after)? {
+                            Some(row) if row.state == "queued" => Ended::Requeued,
+                            Some(_) => Ended::Failed,
+                            None => Ended::Lost,
+                        },
+                        Err(JobError {
+                            reason,
+                            retry: false,
+                            ..
+                        }) => {
+                            if db::fail(conn, id, instance, &reason)? {
+                                Ended::Failed
+                            } else {
+                                Ended::Lost
+                            }
+                        }
+                    };
+                    if let (Ended::Done | Ended::Failed, Some(next)) = (ended, &next) {
+                        db::enqueue(conn, next)?;
+                    }
+                    Ok(ended)
                 })
-                .await
-                .map(|held| if held { Ended::Done } else { Ended::Lost }),
-            Err(JobError { yielded: true, .. }) => self
-                .blocking
-                .run_public(move |conn| db::requeue(conn, id, instance).map_err(ApiError::internal))
-                .await
-                .map(|held| if held { Ended::Yielded } else { Ended::Lost }),
-            Err(JobError {
-                reason,
-                retry: true,
-                ..
-            }) => {
-                tracing::warn!(job = %job.id, kind = %job.kind, %reason, "job try failed");
-                self.blocking
-                    .run_public(move |conn| {
-                        db::release(conn, id, instance, &reason, retry_after)
-                            .map_err(ApiError::internal)
-                    })
-                    .await
-                    .map(|row| match row {
-                        Some(row) if row.state == "queued" => Ended::Requeued,
-                        Some(_) => Ended::Failed,
-                        None => Ended::Lost,
-                    })
-            }
-            Err(JobError {
-                reason,
-                retry: false,
-                ..
-            }) => {
-                tracing::warn!(job = %job.id, kind = %job.kind, %reason, "job failed");
-                self.blocking
-                    .run_public(move |conn| {
-                        db::fail(conn, id, instance, &reason).map_err(ApiError::internal)
-                    })
-                    .await
-                    .map(|held| if held { Ended::Failed } else { Ended::Lost })
-            }
-        };
+                .map_err(ApiError::internal)
+            })
+            .await;
         let ended = match written {
             Ok(ended) => ended,
             Err(e) => {

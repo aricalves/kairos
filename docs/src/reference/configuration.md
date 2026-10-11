@@ -310,7 +310,7 @@ the index after each push to the default branch.
 | Variable | Type | Default | Description |
 |---|---|---|---|
 | `KAIROS_CODE_INDEX_DIR` | directory path | unset | The folder for a bare clone of each repository, the tools of the builder and the work folders of the builder. Put it on a volume. When it is not set, the server cannot find the nearest indexed commit, does not build and downloads nothing. Uploads and downloads of indexes still work. |
-| `KAIROS_CODE_INDEX_POLL_SECS` | whole number | `300` | How often each server fetches each indexed repository and adds the build jobs. `0` turns the builder off on that server. |
+| `KAIROS_CODE_INDEX_POLL_SECS` | whole number | `300` | How often the sweep fetches each indexed repository and adds the build jobs. The sweep is a periodic job: one server runs it at each interval. `0` turns the builder off on that server. |
 | `KAIROS_CODE_INDEX_THREADS` | whole number, 1 or more | `4` | The number of CPU threads that the summary model of the builder uses. More threads make the summaries faster, but they take CPU from the other services on the host. `0` or a value that is not a number stops the start of the server. |
 | `KAIROS_CODE_INDEX_MIN_REBUILD_SECS` | whole number | `0` | The least time in seconds between 2 updates of one repository. `0` turns the limit off. On a slow host, a repository with many pushes then waits, and the other stale repositories get their updates. A value that is not a number stops the start of the server. |
 
@@ -394,11 +394,12 @@ share the builds, and each build runs one time. There are 3 types of build:
 - **A requested build.** A person asks for it (`kairos repos reindex`, or
   the button "Build again" of the panel of the repository). It is a full index of the head
   of the default branch.
-- **An update.** At each interval of `KAIROS_CODE_INDEX_POLL_SECS`, each
-  server fetches each repository that has an index. If the head of the
-  default branch has no index, the server adds an update job. The update
-  changes the nearest index to that head.
-- **A first build.** At the same interval, each server adds a job for each
+- **An update.** At each interval of `KAIROS_CODE_INDEX_POLL_SECS`, the
+  sweep fetches each repository that has an index. If the head of the
+  default branch has no index, the sweep adds an update job. The update
+  changes the nearest index to that head. The sweep is a periodic job (see
+  [Job queue](#job-queue)): at each interval, one server runs it.
+- **A first build.** At the same interval, the sweep adds a job for each
   repository that has no index. The job makes a full index of the head of
   the default branch. The index has the structure, the SCIP edges and the
   summaries.
@@ -553,8 +554,9 @@ the folder. Then the server downloads nothing.
 
 ### Retention
 
-The server runs a retention pass at startup and then each 24 hours. The
-interval is fixed. One pass:
+The retention pass runs each 24 hours. The interval is fixed. The pass is a
+periodic job (see [Job queue](#job-queue)): one server runs each pass. The
+first start of a deployment runs the pass at once. One pass:
 
 - In each tenant, removes the `item_history` rows and the `activity_log` rows
   that the five variables below make prune candidates. The mode sets what
@@ -566,10 +568,9 @@ interval is fixed. One pass:
   it sweeps, with the counts of the rows it archived and removed.
 - Logs the counts for each tenant and the number of deleted sessions.
 
-When there are 2 or more replicas, only one replica runs a pass at a time. A
-pass takes a Postgres advisory lock. A replica that cannot get the lock skips
-that pass. A failed pass is logged, and the next pass runs on time. A value
-that the server cannot parse stops the start.
+When there are 2 or more replicas, only one replica runs a pass. A failed
+pass is logged and tried again. The next pass runs on time. A value that the
+server cannot parse stops the start.
 
 Their parsing differs from the sixteen variables above: empty is not treated as
 unset. An empty `KAIROS_HISTORY_HOT_DAYS`, `KAIROS_HISTORY_KEEP_LATEST`,
@@ -611,6 +612,14 @@ organization has one open batch at a time, and the next batch starts one
 interval after the last batch ended. Thus 2 servers do not embed an item two
 times. When a batch fails after its tries, its items stay stale, and the next
 batch starts at the same item.
+
+A periodic pass (retention, and the sweep of the code index) is a job that
+adds its next run when it ends. A pass has one open run at a time. The next
+run is due one interval after the last run was due. When a server starts, it
+adds a run of each pass that has no open run. When a server stops during a
+pass, another server runs the pass again after the lease. A server that
+cannot run a pass (for example, its code-index tools are not ready) gives
+the pass back to the queue, and no try is counted.
 
 A worker removes a job 7 days after it ends. A value that is not a number, or
 that is out of range, stops the start of the server.

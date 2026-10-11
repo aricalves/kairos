@@ -1,0 +1,253 @@
+//! The periodic passes as jobs (KAIROS-T-0376, COLLIERY-I-0613).
+//!
+//! A periodic pass (retention, the new-commits sweep of the code index) is
+//! a job of the kind `periodic` ([`crate::jobs::kinds::PERIODIC`]) with no
+//! tenant. Its dedupe key names the pass ([`key`]), so each pass has one
+//! open run at most. When a run ends, done or failed, the worker adds the
+//! next run of the pass in the transaction of the end
+//! ([`crate::jobs::JobHandler::next`]): one interval after the time the run
+//! was due. So each pass runs once for each interval, whatever the number
+//! of servers, and a pass whose server stopped is taken again by another
+//! server when its lease runs out.
+//!
+//! Each server adds the passes that it runs with [`Worker::add_periodic`]:
+//! that registers the pass, and adds a run that is due now when the pass
+//! has no open run (an insert that the dedupe key refuses when a run is
+//! open). So the first start of a deployment runs each pass at once, and a
+//! later start changes nothing.
+//!
+//! A server that takes the run of a pass that it does not run (not yet: the
+//! tools of the code index are not ready) gives it back with no try
+//! counted ([`crate::jobs::JobError::not_here`]).
+
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
+
+use kairos_db::jobs::{Job, NewJob};
+use serde::{Deserialize, Serialize};
+
+use crate::error::ApiError;
+use crate::jobs::{JobError, JobFuture, JobHandle, JobHandler, Worker, kinds, priority};
+
+/// The pass of retention (KAIROS-T-0366).
+pub const RETENTION: &str = "retention";
+
+/// The new-commits sweep of the code index (KAIROS-T-0374).
+pub const CODE_INDEX_SWEEP: &str = "code-index-sweep";
+
+/// The dedupe key of the runs of the pass `pass`.
+pub fn key(pass: &str) -> String {
+    format!("periodic:{pass}")
+}
+
+/// The payload of a periodic run: the pass, and its interval.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PeriodicPayload {
+    pub pass: String,
+    pub interval_secs: f64,
+}
+
+/// The work of one run of a pass. It calls [`JobHandle::progress`] as it
+/// goes on.
+pub type PassFn = Arc<dyn Fn(JobHandle) -> JobFuture + Send + Sync>;
+
+/// The passes that a server runs.
+#[derive(Default)]
+pub struct Passes {
+    passes: RwLock<HashMap<String, PassFn>>,
+}
+
+impl std::fmt::Debug for Passes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names: Vec<String> = self
+            .passes
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .cloned()
+            .collect();
+        f.debug_struct("Passes").field("passes", &names).finish()
+    }
+}
+
+impl Passes {
+    fn get(&self, pass: &str) -> Option<PassFn> {
+        self.passes
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(pass)
+            .cloned()
+    }
+
+    fn insert(&self, pass: &str, run: PassFn) {
+        self.passes
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(pass.to_string(), run);
+    }
+}
+
+/// The first run of `pass`, due now.
+fn first_run(pass: &str, interval: Duration, max_tries: i32) -> NewJob {
+    NewJob {
+        kind: kinds::PERIODIC.to_string(),
+        tenant: None,
+        payload: serde_json::json!(PeriodicPayload {
+            pass: pass.to_string(),
+            interval_secs: interval.as_secs_f64(),
+        }),
+        priority: priority::PERIODIC,
+        dedupe_key: Some(key(pass)),
+        run_after: None,
+        max_tries: max_tries.max(1),
+    }
+}
+
+/// The run that follows `job`: one interval after the time `job` was due,
+/// or now when that time is past.
+pub fn next_run(job: &Job) -> Option<NewJob> {
+    let payload: PeriodicPayload = serde_json::from_str(&job.payload).ok()?;
+    let interval = Duration::try_from_secs_f64(payload.interval_secs).ok()?;
+    let mut next = first_run(&payload.pass, interval, job.max_tries);
+    let due = job.run_after + chrono::Duration::from_std(interval).ok()?;
+    next.run_after = Some(due.max(chrono::Utc::now()));
+    Some(next)
+}
+
+/// The handler of the kind `periodic`: it runs the pass that the payload
+/// names.
+struct PeriodicHandler {
+    passes: Arc<Passes>,
+    instance: uuid::Uuid,
+}
+
+impl JobHandler for PeriodicHandler {
+    fn run(&self, handle: JobHandle) -> JobFuture {
+        let payload: Result<PeriodicPayload, _> = serde_json::from_str(&handle.job().payload);
+        let payload = match payload {
+            Ok(payload) => payload,
+            Err(e) => {
+                let reason = format!("The payload of the periodic run is wrong: {e}");
+                return Box::pin(async move { Err(JobError::fail(reason)) });
+            }
+        };
+        match self.passes.get(&payload.pass) {
+            Some(run) => run(handle),
+            None => {
+                let reason = format!(
+                    "The server {} does not run the pass {}.",
+                    self.instance, payload.pass
+                );
+                Box::pin(async move { Err(JobError::not_here(reason)) })
+            }
+        }
+    }
+
+    fn next(&self, job: &Job) -> Option<NewJob> {
+        next_run(job)
+    }
+}
+
+impl Worker {
+    /// Run the pass `pass` on this server at each `interval`
+    /// (KAIROS-T-0376): register it, and add a run that is due now when the
+    /// pass has no open run. The run that was added; `None`: a run is open.
+    pub async fn add_periodic(
+        &self,
+        pass: &str,
+        interval: Duration,
+        run: PassFn,
+    ) -> Result<Option<Job>, ApiError> {
+        self.periodic.insert(pass, run);
+        self.register(
+            kinds::PERIODIC,
+            Arc::new(PeriodicHandler {
+                passes: Arc::clone(&self.periodic),
+                instance: self.instance(),
+            }),
+        );
+        let added = self
+            .enqueue(first_run(pass, interval, self.settings().max_tries))
+            .await?;
+        match &added {
+            Some(job) => {
+                tracing::info!(pass, job = %job.id, interval_secs = interval.as_secs_f64(), "periodic pass: the first run is added")
+            }
+            None => {
+                tracing::info!(
+                    pass,
+                    interval_secs = interval.as_secs_f64(),
+                    "periodic pass: a run is open"
+                )
+            }
+        }
+        Ok(added)
+    }
+}
+
+/// How often the retention pass runs (KAIROS-T-0366).
+pub const RETENTION_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// The pass of retention (KAIROS-T-0366): on a connection of its own,
+/// [`kairos_db::retention::run_retention_pass`] sweeps `item_history` and
+/// `activity_log` of each tenant by the retention settings, and deletes the
+/// expired password sessions. A failed pass is tried again, and the next
+/// run is due one interval later all the same.
+pub fn retention_pass(
+    database_url: String,
+    config: kairos_core::retention::RetentionConfig,
+) -> PassFn {
+    Arc::new(move |handle: JobHandle| {
+        let (url, config) = (database_url.clone(), config.clone());
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || retention_run(&url, &config, &handle))
+                .await
+                .map_err(|e| JobError::retry(format!("The retention pass stopped: {e}")))?
+        })
+    })
+}
+
+/// One run of the retention pass: connect, run the pass, log the result.
+fn retention_run(
+    database_url: &str,
+    config: &kairos_core::retention::RetentionConfig,
+    handle: &JobHandle,
+) -> Result<(), JobError> {
+    let mut conn = kairos_db::establish_migration_connection(database_url).map_err(|e| {
+        tracing::error!(error = %e, "retention: the pass cannot connect to the database");
+        JobError::retry(format!(
+            "The retention pass cannot connect to the database: {e}"
+        ))
+    })?;
+    let pass = kairos_db::retention::run_retention_pass(
+        &mut conn,
+        config,
+        chrono::Utc::now(),
+        &mut || {
+            handle.progress();
+        },
+    )
+    .map_err(|e| {
+        tracing::error!(error = %e, "retention: the pass failed");
+        JobError::retry(format!("The retention pass failed: {e}"))
+    })?;
+    for report in &pass.tenants {
+        tracing::info!(
+            tenant = %report.slug,
+            mode = %report.mode,
+            item_history_archived = report.item_history.rows_archived,
+            item_history_pruned = report.item_history.rows_pruned,
+            activity_log_archived = report.activity_log.rows_archived,
+            activity_log_pruned = report.activity_log.rows_pruned,
+            warnings = report.item_history.warnings + report.activity_log.warnings,
+            "retention: tenant swept"
+        );
+    }
+    tracing::info!(
+        tenants = pass.tenants.len(),
+        expired_sessions_deleted = pass.expired_sessions_deleted,
+        "retention: pass done"
+    );
+    Ok(())
+}

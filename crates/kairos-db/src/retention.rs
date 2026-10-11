@@ -44,13 +44,12 @@
 //! endpoint (KAIROS-A-0013) will export them as Prometheus counters
 //! (`rows_archived`/`rows_pruned`/`warnings` per table, labelled by tenant)
 //! when it is wired — no metrics crate is taken here on purpose. The
-//! server runs [`run_retention_pass`] from [`spawn_retention_loop`]
-//! (KAIROS-T-0366).
+//! server runs [`run_retention_pass`] as a periodic job
+//! (KAIROS-T-0366, KAIROS-T-0376).
 
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::Write as _;
-use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Duration, Utc};
@@ -500,11 +499,6 @@ pub fn sweep_all_tenants(
     Ok(reports)
 }
 
-/// The key of the Postgres advisory lock that lets one server at a time
-/// run a retention pass (KAIROS-T-0366): "kretain" in ASCII. It is a
-/// different key from [`crate::tenant::MIGRATION_LOCK_KEY`].
-pub const RETENTION_LOCK_KEY: i64 = 0x006b_7265_7461_696e;
-
 /// What one [`run_retention_pass`] did (KAIROS-T-0366).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetentionPass {
@@ -515,89 +509,35 @@ pub struct RetentionPass {
     pub expired_sessions_deleted: u64,
 }
 
-/// One retention pass of the server loop (KAIROS-T-0366): sweep each tenant
-/// ([`sweep_all_tenants`], which obeys the mode) and delete the password
+/// One retention pass of the server (KAIROS-T-0366): sweep each tenant (as
+/// [`sweep_all_tenants`], which obeys the mode) and delete the password
 /// sessions that expired before `now`. The session delete runs in every
 /// mode, also `off`: an expired session cannot authenticate, so the row has
-/// no use.
+/// no use. `progress` is called before each tenant and at the end.
 ///
-/// Only one connection at a time runs a pass. The pass takes the
-/// session-level advisory lock [`RETENTION_LOCK_KEY`] with
-/// `pg_try_advisory_lock`, and does not wait: when a different server holds
-/// the lock, the call returns `Ok(None)` and does nothing. The lock is
-/// released after the pass, also when the pass fails.
+/// The pass is a periodic job of the job queue of the server
+/// (KAIROS-T-0376): the queue gives each run to one server, so the pass
+/// takes no lock of its own.
 pub fn run_retention_pass(
     conn: &mut PgConnection,
     config: &RetentionConfig,
     now: DateTime<Utc>,
-) -> Result<Option<RetentionPass>, RetentionError> {
-    #[derive(QueryableByName)]
-    struct Locked {
-        #[diesel(sql_type = Bool)]
-        locked: bool,
-    }
-    let got: Locked = sql_query("SELECT pg_try_advisory_lock($1) AS locked")
-        .bind::<diesel::sql_types::BigInt, _>(RETENTION_LOCK_KEY)
-        .get_result(conn)?;
-    if !got.locked {
-        return Ok(None);
-    }
-    let result = (|| -> Result<RetentionPass, RetentionError> {
-        let tenants = sweep_all_tenants(conn, config, now)?;
-        let expired = crate::local_auth::delete_expired_sessions(conn, now)?;
-        Ok(RetentionPass {
-            tenants,
-            expired_sessions_deleted: expired as u64,
-        })
-    })();
-    let unlocked = sql_query("SELECT pg_advisory_unlock($1)")
-        .bind::<diesel::sql_types::BigInt, _>(RETENTION_LOCK_KEY)
-        .execute(conn);
-    let pass = result?;
-    unlocked?;
-    Ok(Some(pass))
-}
-
-/// Spawn the in-process retention scheduler (KAIROS-A-0004: "in-process
-/// scheduled task in the server binary"): a tokio task that invokes `tick`
-/// immediately and then every `interval` until `tick` returns
-/// [`ControlFlow::Break`].
-///
-/// The tick runs on the blocking pool (`spawn_blocking`), because a real
-/// tick does database I/O on a sync connection. A tick that panics stops
-/// the loop.
-///
-/// The tick body is injected so the loop stays unit-testable without a
-/// database (and sweeps stay testable without the loop — call
-/// [`sweep_all_tenants`] directly with an injected clock). The server
-/// wires this at startup (KAIROS-T-0366) with a closure that opens a
-/// connection of its own and calls [`run_retention_pass`] with
-/// `Utc::now()`.
-pub fn spawn_retention_loop<F>(
-    interval: std::time::Duration,
-    mut tick: F,
-) -> tokio::task::JoinHandle<()>
-where
-    F: FnMut() -> ControlFlow<()> + Send + 'static,
-{
-    tokio::spawn(async move {
-        let mut timer = tokio::time::interval(interval);
-        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            timer.tick().await;
-            let Ok((back, flow)) = tokio::task::spawn_blocking(move || {
-                let flow = tick();
-                (tick, flow)
-            })
-            .await
-            else {
-                tracing::error!("retention: a pass panicked; the retention loop stops");
-                break;
-            };
-            tick = back;
-            if flow.is_break() {
-                break;
+    progress: &mut dyn FnMut(),
+) -> Result<RetentionPass, RetentionError> {
+    let mut tenants = Vec::new();
+    if config.mode != RetentionMode::Off {
+        for tenant_info in tenant::list_tenants(conn)? {
+            progress();
+            if !tenant_info.schema_exists {
+                return Err(RetentionError::TenantNotFound(tenant_info.slug));
             }
+            tenants.push(sweep_tenant(conn, &tenant_info.slug, config, now)?);
         }
+    }
+    let expired = crate::local_auth::delete_expired_sessions(conn, now)?;
+    progress();
+    Ok(RetentionPass {
+        tenants,
+        expired_sessions_deleted: expired as u64,
     })
 }

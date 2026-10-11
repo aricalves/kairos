@@ -26,13 +26,10 @@
 //!   counts; sweeps are idempotent (second run prunes nothing)
 //! - `discard` prunes without archive files; `off` is a full no-op
 //! - `sweep_all_tenants` iterates every provisioned org (fleet pattern)
-//! - `spawn_retention_loop` ticks until its closure breaks (manual-tick
-//!   scheduler test, no database)
+//! - `run_retention_pass` (the periodic job of the server, KAIROS-T-0376)
+//!   removes the old rows and the expired sessions, and reports progress
 
-use std::ops::ControlFlow;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use diesel::pg::PgConnection;
@@ -45,7 +42,7 @@ use kairos_core::short_code::ItemType;
 use kairos_db::items::{self, ContentUpdate, CreateStrategy};
 use kairos_db::models::{ItemHistory, NewUser, User};
 use kairos_db::retention::{
-    RetentionError, SweepReport, TableCounts, spawn_retention_loop, sweep_all_tenants, sweep_tenant,
+    RetentionError, SweepReport, TableCounts, sweep_all_tenants, sweep_tenant,
 };
 use kairos_db::{provision_tenant, run_public_migrations, schema};
 
@@ -578,37 +575,14 @@ fn retention_sweeper_lifecycle() {
     );
 }
 
-/// The in-process scheduler (KAIROS-A-0004 "in-process scheduled task"):
-/// the loop ticks its injected body until it breaks. Sweep logic itself is
-/// exercised above by calling the sweep functions directly — the loop and
-/// the sweep are deliberately decoupled (manual-tick testability).
-#[tokio::test]
-async fn retention_loop_ticks_until_break() {
-    let ticks = Arc::new(AtomicUsize::new(0));
-    let counter = Arc::clone(&ticks);
-    let handle = spawn_retention_loop(std::time::Duration::from_millis(1), move || {
-        if counter.fetch_add(1, Ordering::SeqCst) + 1 >= 3 {
-            ControlFlow::Break(())
-        } else {
-            ControlFlow::Continue(())
-        }
-    });
-    handle.await.expect("loop task joins cleanly");
-    assert_eq!(
-        ticks.load(Ordering::SeqCst),
-        3,
-        "ticked exactly until break"
-    );
-}
-
-/// KAIROS-T-0366: the pass of the server loop. Rows older than the setting
-/// go and newer rows stay; expired password sessions go and live sessions
-/// stay; while a different connection holds the retention lock, a pass does
-/// nothing.
+/// KAIROS-T-0366: the pass of the server. Rows older than the setting go
+/// and newer rows stay; expired password sessions go and live sessions
+/// stay. The pass takes no lock: the job queue gives each run to one server
+/// (KAIROS-T-0376). It reports progress before each tenant and at the end.
 #[test]
-fn retention_pass_removes_old_rows_and_expired_sessions_on_one_server_at_a_time() {
+fn retention_pass_removes_old_rows_and_expired_sessions() {
     use kairos_db::local_auth::{NewLocalSession, create_session};
-    use kairos_db::retention::{RETENTION_LOCK_KEY, run_retention_pass};
+    use kairos_db::retention::run_retention_pass;
 
     const PASS_DB: &str = "kairos_retention_pass_test";
     let admin_url = admin_database_url();
@@ -691,56 +665,17 @@ fn retention_pass_removes_old_rows_and_expired_sessions_on_one_server_at_a_time(
         actions
     };
 
-    // A different server holds the lock: the pass does nothing.
-    let mut other = PgConnection::establish(&url).expect("second connection");
-    sql_query("SELECT pg_advisory_lock($1)")
-        .bind::<diesel::sql_types::BigInt, _>(RETENTION_LOCK_KEY)
-        .execute(&mut other)
-        .expect("taking the retention lock");
-    let skipped = run_retention_pass(&mut conn, &config, now).expect("pass while locked");
-    assert_eq!(
-        skipped, None,
-        "a second server does not sweep at the same time"
-    );
-    assert_eq!(session_hashes(&mut conn), vec!["expired", "live"]);
-    assert_eq!(activity_actions(&mut conn), vec!["new_row", "old_row"]);
-
-    // Two passes at the same time: at most one runs.
-    sql_query("SELECT pg_advisory_unlock($1)")
-        .bind::<diesel::sql_types::BigInt, _>(RETENTION_LOCK_KEY)
-        .execute(&mut other)
-        .expect("releasing the retention lock");
-    let barrier = Arc::new(std::sync::Barrier::new(2));
-    let ran = Arc::new(AtomicUsize::new(0));
-    let threads: Vec<_> = (0..2)
-        .map(|_| {
-            let (barrier, ran, url, config) =
-                (barrier.clone(), ran.clone(), url.clone(), config.clone());
-            std::thread::spawn(move || {
-                let mut conn = PgConnection::establish(&url).expect("pass connection");
-                barrier.wait();
-                if run_retention_pass(&mut conn, &config, now)
-                    .expect("concurrent pass")
-                    .is_some()
-                {
-                    ran.fetch_add(1, Ordering::SeqCst);
-                }
-            })
-        })
-        .collect();
-    for t in threads {
-        t.join().expect("pass thread");
-    }
-    assert!(ran.load(Ordering::SeqCst) >= 1, "one of the passes runs");
-
-    // Whatever ran: the old rows are gone and the new rows stay.
+    let mut steps = 0;
+    let pass = run_retention_pass(&mut conn, &config, now, &mut || steps += 1).expect("pass");
+    assert_eq!(steps, 2, "one tenant and the end");
+    assert_eq!(pass.expired_sessions_deleted, 1);
+    assert_eq!(pass.tenants.len(), 1);
+    assert_eq!(pass.tenants[0].activity_log.rows_pruned, 1);
     assert_eq!(session_hashes(&mut conn), vec!["live"]);
     assert_eq!(activity_actions(&mut conn), vec!["new_row"]);
 
-    // The lock was released: a later pass runs, and finds nothing to remove.
-    let pass = run_retention_pass(&mut conn, &config, now)
-        .expect("pass")
-        .expect("the lock is free");
+    // A second pass finds nothing to remove.
+    let pass = run_retention_pass(&mut conn, &config, now, &mut || {}).expect("pass");
     assert_eq!(pass.expired_sessions_deleted, 0);
     assert_eq!(pass.tenants.len(), 1);
     assert_eq!(pass.tenants[0].activity_log.rows_pruned, 0);
@@ -760,14 +695,11 @@ fn retention_pass_removes_old_rows_and_expired_sessions_on_one_server_at_a_time(
         mode: RetentionMode::Off,
         ..RetentionConfig::default()
     };
-    let pass = run_retention_pass(&mut conn, &off, now)
-        .expect("pass")
-        .expect("the lock is free");
+    let pass = run_retention_pass(&mut conn, &off, now, &mut || {}).expect("pass");
     assert!(pass.tenants.is_empty());
     assert_eq!(pass.expired_sessions_deleted, 1);
 
     drop(conn);
-    drop(other);
     sql_query(format!("DROP DATABASE IF EXISTS {PASS_DB} WITH (FORCE)"))
         .execute(&mut admin_conn)
         .expect("dropping scratch database");

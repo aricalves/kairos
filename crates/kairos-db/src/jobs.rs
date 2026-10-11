@@ -416,3 +416,28 @@ pub fn remove_done_except(
         .bind::<SqlUuid, _>(keep)
         .execute(conn)
 }
+
+/// Put the job `id` of the server `instance` back in the queue with no try
+/// counted, to run after `after_secs`, with `reason` in `last_error`: this
+/// server cannot run it, and another server can (KAIROS-T-0376). False:
+/// the server did not hold the lease.
+pub fn defer(
+    conn: &mut PgConnection,
+    id: Uuid,
+    instance: Uuid,
+    reason: &str,
+    after_secs: f64,
+) -> QueryResult<bool> {
+    let n = sql_query(
+        "UPDATE public.jobs SET state = 'queued', leased_by = NULL, lease_until = NULL, \
+             tries = GREATEST(tries - 1, 0), last_error = $3, \
+             run_after = now() + make_interval(secs => $4) \
+         WHERE id = $1 AND leased_by = $2 AND state = 'leased'",
+    )
+    .bind::<SqlUuid, _>(id)
+    .bind::<SqlUuid, _>(instance)
+    .bind::<Text, _>(reason)
+    .bind::<Double, _>(after_secs)
+    .execute(conn)?;
+    Ok(n == 1)
+}

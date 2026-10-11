@@ -36,8 +36,9 @@
 //! - a first build of a repository that has no index (KAIROS-T-0318):
 //!   [`jobs::enqueue_first_builds`], a full build of the head.
 //!
-//! [`jobs::run_builder`] adds the update jobs and the first-build jobs at
-//! each `KAIROS_CODE_INDEX_POLL_SECS`, on each server. The dedupe key of a
+//! [`jobs::run_builder`] adds the periodic pass of the sweep
+//! (KAIROS-T-0376): at each `KAIROS_CODE_INDEX_POLL_SECS`, one server adds
+//! the update jobs and the first-build jobs. The dedupe key of a
 //! build job is the repository: a repository has one open build job at
 //! most, whatever server adds it.
 //!

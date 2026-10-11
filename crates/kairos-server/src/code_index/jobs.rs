@@ -10,11 +10,12 @@
 //! ([`job_key`]): one open build job for each repository, so a repository
 //! never has 2 runs at the same time (KAIROS-T-0354).
 //!
-//! [`run_builder`] adds the jobs on a timer on each server: the
-//! new-commits sweep ([`enqueue_updates`]) and the first builds
-//! ([`enqueue_first_builds`]). The periodic passes become jobs that add
-//! their next run in KAIROS-T-0376; until then the timer stays. The API adds
-//! a requested build ([`crate::api::org::code_indexes::request_rebuild`]).
+//! [`run_builder`] adds the periodic pass of the new-commits sweep
+//! (KAIROS-T-0376, [`crate::periodic::CODE_INDEX_SWEEP`]): one run at each
+//! interval for all the servers, which adds the update jobs
+//! ([`enqueue_updates`]) and the first-build jobs ([`enqueue_first_builds`]).
+//! The API adds a requested build
+//! ([`crate::api::org::code_indexes::request_rebuild`]).
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -192,9 +193,23 @@ pub async fn enqueue_updates(
     service: &Arc<CodeIndexService>,
     worker: &Worker,
 ) -> Vec<BuildOutcome> {
+    enqueue_updates_with(blocking, service, worker, None).await
+}
+
+/// [`enqueue_updates`], with the progress of the periodic job of the sweep
+/// for each repository (KAIROS-T-0376).
+async fn enqueue_updates_with(
+    blocking: &BlockingTenantPool,
+    service: &Arc<CodeIndexService>,
+    worker: &Worker,
+    progress: Option<&JobHandle>,
+) -> Vec<BuildOutcome> {
     let max_tries = worker.settings().max_tries;
     let mut notes = Vec::new();
     for (tenant, repo, newest) in update_order(blocking).await {
+        if let Some(handle) = progress {
+            handle.progress();
+        }
         if !repo.code_index_build_on() {
             notes.push(note_of(&tenant, &repo, "", OPTED_OUT.into()));
             continue;
@@ -577,11 +592,13 @@ fn log_outcome(service: &CodeIndexService, trigger: &str, repo: Uuid, outcome: &
     }
 }
 
-/// Run the builder for ever (KAIROS-T-0374): end the stale runs, run the
-/// build jobs on `worker`, and at each `interval` add the update jobs of
-/// the new commits and the first-build jobs. The worker of the server runs
-/// the jobs; this loop only adds them. An error is logged and the next
-/// pass tries again; it never stops the server.
+/// Start the builder (KAIROS-T-0374, KAIROS-T-0376): end the stale runs,
+/// run the build jobs on `worker`, and add the periodic pass of the
+/// new-commits sweep, at each `interval`. A run of the pass adds the update
+/// jobs of the new commits and the first-build jobs; the queue gives each
+/// run to one server, so one server fetches the repositories for each
+/// interval. The worker of the server runs the jobs. An error is logged;
+/// it never stops the server.
 pub async fn run_builder(
     worker: Arc<Worker>,
     blocking: BlockingTenantPool,
@@ -602,13 +619,35 @@ pub async fn run_builder(
         embedder,
     )
     .register(&worker);
-    let mut ticker = tokio::time::interval(interval);
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    loop {
-        ticker.tick().await;
-        enqueue_updates(&blocking, &service, &worker).await;
-        enqueue_first_builds(&blocking, &service, &worker).await;
+    let pass = sweep_pass(blocking, service, Arc::downgrade(&worker));
+    if let Err(e) = worker
+        .add_periodic(crate::periodic::CODE_INDEX_SWEEP, interval, pass)
+        .await
+    {
+        tracing::warn!(error = ?e, "the first run of the code index sweep was not added");
     }
+}
+
+/// The periodic pass of the new-commits sweep (KAIROS-T-0376):
+/// [`enqueue_updates`], then [`enqueue_first_builds`], on the worker of the
+/// server. It holds the worker weakly: the worker holds the pass.
+fn sweep_pass(
+    blocking: BlockingTenantPool,
+    service: Arc<CodeIndexService>,
+    worker: std::sync::Weak<Worker>,
+) -> crate::periodic::PassFn {
+    Arc::new(move |handle: JobHandle| {
+        let (blocking, service, worker) = (blocking.clone(), Arc::clone(&service), worker.clone());
+        Box::pin(async move {
+            let Some(worker) = worker.upgrade() else {
+                return Err(JobError::not_here("The worker of this server stopped."));
+            };
+            enqueue_updates_with(&blocking, &service, &worker, Some(&handle)).await;
+            handle.progress();
+            enqueue_first_builds(&blocking, &service, &worker).await;
+            Ok(())
+        })
+    })
 }
 
 /// A worker of the server of `service` that runs the build jobs once, and
