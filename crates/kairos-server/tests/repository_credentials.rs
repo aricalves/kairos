@@ -117,7 +117,6 @@ struct Mcp {
     http: reqwest::Client,
     url: String,
     token: String,
-    session_id: String,
 }
 
 impl Mcp {
@@ -140,17 +139,10 @@ impl Mcp {
             .await
             .expect("initialize");
         assert_eq!(response.status(), 200);
-        let session_id = response
-            .headers()
-            .get("mcp-session-id")
-            .and_then(|v| v.to_str().ok())
-            .expect("session id")
-            .to_string();
         let mcp = Self {
             http,
             url,
             token: token.to_string(),
-            session_id,
         };
         let response = mcp
             .post(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
@@ -164,7 +156,6 @@ impl Mcp {
             .post(&self.url)
             .bearer_auth(&self.token)
             .header("X-Tenant", "acme")
-            .header("mcp-session-id", &self.session_id)
             .header("accept", "application/json, text/event-stream")
             .json(&body)
             .send()

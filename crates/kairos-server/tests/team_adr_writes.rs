@@ -96,8 +96,9 @@ fn rpc_message(body: &str) -> Value {
     panic!("no JSON-RPC message in response body: {body:?}");
 }
 
-/// Start an MCP session. Returns the id of the session.
-async fn connect(router: &Router, token: &str) -> String {
+/// Start an MCP session. Returns the id of the session, when the server
+/// issues one (the endpoint is stateless, KAIROS-T-0392).
+async fn connect(router: &Router, token: &str) -> Option<String> {
     let (status, headers, body) = mcp_request(
         router,
         token,
@@ -118,12 +119,11 @@ async fn connect(router: &Router, token: &str) -> String {
     let session = headers
         .get("mcp-session-id")
         .and_then(|v| v.to_str().ok())
-        .expect("initialize returns Mcp-Session-Id")
-        .to_string();
+        .map(str::to_string);
     let (status, _, body) = mcp_request(
         router,
         token,
-        Some(&session),
+        session.as_deref(),
         json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
     )
     .await;
@@ -135,14 +135,14 @@ async fn connect(router: &Router, token: &str) -> String {
 async fn call(
     router: &Router,
     token: &str,
-    session: &str,
+    session: Option<&str>,
     tool: &str,
     arguments: Value,
 ) -> (bool, String) {
     let (status, _, body) = mcp_request(
         router,
         token,
-        Some(session),
+        session,
         json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -363,7 +363,7 @@ async fn team_members_write_adrs_on_the_adr_board_of_their_team_against_live_sta
     let (is_error, text) = call(
         &router,
         &alice,
-        &session,
+        session.as_deref(),
         "create_item",
         json!({ "item_type": "adr", "title": "Use Tokio", "board": "skadi-adrs" }),
     )
@@ -372,7 +372,7 @@ async fn team_members_write_adrs_on_the_adr_board_of_their_team_against_live_sta
     assert!(text.contains("SKADI-A-"), "{text}");
 
     // --- AC4: whoami and my_boards show the capability.
-    let (is_error, text) = call(&router, &alice, &session, "whoami", json!({})).await;
+    let (is_error, text) = call(&router, &alice, session.as_deref(), "whoami", json!({})).await;
     assert!(!is_error, "{text}");
     assert!(
         text.contains(&format!(
@@ -387,7 +387,7 @@ async fn team_members_write_adrs_on_the_adr_board_of_their_team_against_live_sta
             ),
         "the delivery board of the team gives the delivery set: {text}"
     );
-    let (is_error, text) = call(&router, &alice, &session, "my_boards", json!({})).await;
+    let (is_error, text) = call(&router, &alice, session.as_deref(), "my_boards", json!({})).await;
     assert!(!is_error, "{text}");
     let block = board_block(&text, "skadi-adrs");
     assert!(
@@ -404,9 +404,9 @@ async fn team_members_write_adrs_on_the_adr_board_of_their_team_against_live_sta
 
     // bob is not in skadi: no team capabilities on skadi-adrs.
     let session = connect(&router, &bob).await;
-    let (_, text) = call(&router, &bob, &session, "whoami", json!({})).await;
+    let (_, text) = call(&router, &bob, session.as_deref(), "whoami", json!({})).await;
     assert!(!text.contains("skadi-adrs"), "{text}");
-    let (_, text) = call(&router, &bob, &session, "my_boards", json!({})).await;
+    let (_, text) = call(&router, &bob, session.as_deref(), "my_boards", json!({})).await;
     assert!(
         !board_block(&text, "skadi-adrs")
             .iter()

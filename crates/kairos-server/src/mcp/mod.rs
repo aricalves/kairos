@@ -35,10 +35,13 @@
 //!
 //! # Sessions (NFR-1.2)
 //!
-//! The transport runs in stateful streamable-HTTP mode with the in-memory
-//! [`LocalSessionManager`] — MCP protocol session state only. No Kairos
-//! state (working board, team, …) is held server-side; agents discover
-//! context via `whoami`/`my_boards` (A-0011 "Session context").
+//! The transport runs in stateless streamable-HTTP mode: each POST is served
+//! on its own and no `Mcp-Session-Id` is issued, so a restart, a deploy or
+//! idle time does not break a client (KAIROS-T-0392). An old session id
+//! from a client is ignored. No Kairos state (working board, team, …) is
+//! held server-side; agents discover context via `whoami`/`my_boards`
+//! (A-0011 "Session context"). The session manager is required by the
+//! constructor and is not used in this mode.
 
 mod arguments;
 mod service;
@@ -74,7 +77,9 @@ pub fn router(state: AppState) -> Router<AppState> {
             move || Ok(KairosMcp::new(state.clone()))
         },
         Arc::new(LocalSessionManager::default()),
-        StreamableHttpServerConfig::default().disable_allowed_hosts(),
+        StreamableHttpServerConfig::default()
+            .disable_allowed_hosts()
+            .with_stateful_mode(false),
     );
 
     Router::new()

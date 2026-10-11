@@ -1,9 +1,9 @@
 //! MCP session driver over streamable HTTP (KAIROS-S-0006 transport,
 //! mirroring `kairos-server/examples/e2e_golden_path.rs`): JSON-RPC over
-//! POST `/mcp` with `Accept: application/json, text/event-stream`, the
-//! `Mcp-Session-Id` header from `initialize`, SSE-framed responses, and a
-//! best-effort DELETE at the end so hours-scale runs do not accumulate
-//! server-side sessions.
+//! POST `/mcp` with `Accept: application/json, text/event-stream` and
+//! SSE-framed responses. The server keeps no sessions (KAIROS-T-0392); when
+//! a server issues an `Mcp-Session-Id`, the driver sends it back and ends
+//! with a best-effort DELETE.
 
 use serde_json::{Value, json};
 
@@ -68,7 +68,7 @@ async fn call_tool(
     base_url: &str,
     tenant: &str,
     token: &str,
-    session: &str,
+    session: Option<&str>,
     id: i64,
     tool: &str,
     arguments: Value,
@@ -78,7 +78,7 @@ async fn call_tool(
         base_url,
         tenant,
         token,
-        Some(session),
+        session,
         json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -132,14 +132,14 @@ pub async fn run_session(
         return Err(format!("initialize: HTTP {status}: {body}"));
     }
     rpc_message(&body).map_err(|e| format!("initialize: {e}"))?;
-    let session = session.ok_or("initialize returned no Mcp-Session-Id")?;
+    let session = session.as_deref();
 
     let (status, _, body) = post(
         http,
         base_url,
         tenant,
         token,
-        Some(&session),
+        session,
         json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
     )
     .await?;
@@ -152,7 +152,7 @@ pub async fn run_session(
         base_url,
         tenant,
         token,
-        &session,
+        session,
         1,
         "whoami",
         json!({}),
@@ -163,7 +163,7 @@ pub async fn run_session(
         base_url,
         tenant,
         token,
-        &session,
+        session,
         2,
         "board_items",
         json!({"board": board_slug}),
@@ -174,21 +174,23 @@ pub async fn run_session(
         base_url,
         tenant,
         token,
-        &session,
+        session,
         3,
         "get_item",
         json!({"short_code": item_short_code}),
     )
     .await?;
 
-    // Best-effort session teardown (rmcp streamable HTTP supports DELETE);
-    // an error here never fails the op.
-    let _ = http
-        .delete(format!("{base_url}/mcp"))
-        .bearer_auth(token)
-        .header("x-tenant", tenant)
-        .header("mcp-session-id", &session)
-        .send()
-        .await;
+    // Best-effort session teardown when the server issued a session; an
+    // error here never fails the op.
+    if let Some(session) = session {
+        let _ = http
+            .delete(format!("{base_url}/mcp"))
+            .bearer_auth(token)
+            .header("x-tenant", tenant)
+            .header("mcp-session-id", session)
+            .send()
+            .await;
+    }
     Ok(())
 }

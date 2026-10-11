@@ -43,8 +43,10 @@ the first tool call.
   "clientInfo":{"name":"my-agent","version":"1.0.0"}}}
 ```
 
-The 200 response carries an **`Mcp-Session-Id` header**. Keep it and send it on
-every subsequent request; without it the server has no session. The result's
+The server keeps **no sessions**. The response has no `Mcp-Session-Id` header.
+When a client sends that header, the server ignores it. Each request stands
+alone, thus a restart of the server or a long idle time does not break the
+connection. The result's
 `serverInfo.name` is `kairos` and `serverInfo.version` is the deployment's
 version — a useful assertion that you are talking to what you think you are.
 

@@ -119,7 +119,7 @@ fn rpc_message(body: &str) -> Value {
 struct Mcp<'a> {
     router: &'a Router,
     token: String,
-    session: String,
+    session: Option<String>,
     next_id: i64,
 }
 
@@ -140,11 +140,10 @@ impl<'a> Mcp<'a> {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "initialize: {body}");
-        let session = session.expect("Mcp-Session-Id");
         let (status, _, body) = post_mcp(
             router,
             token,
-            Some(&session),
+            session.as_deref(),
             json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
         )
         .await;
@@ -162,7 +161,7 @@ impl<'a> Mcp<'a> {
         let (status, _, body) = post_mcp(
             self.router,
             &self.token,
-            Some(&self.session),
+            self.session.as_deref(),
             json!({
                 "jsonrpc": "2.0", "id": self.next_id, "method": "tools/call",
                 "params": {"name": tool, "arguments": arguments},
