@@ -694,6 +694,14 @@ def e2e():
             "KAIROS_BASE_DOMAIN": "kairos.test",
             # Both sign-in paths at once (KAIROS-T-0203, KAIROS-T-0205).
             "KAIROS_LOCAL_AUTH": "true",
+            # This server keeps running during the GUI leg, on the same
+            # database, so its job worker takes jobs of the GUI server too
+            # (COLLIERY-I-0613: one job queue for every server). Each server
+            # of one database needs the same job settings: without these,
+            # it refused the delivery of the dispatch spec to 127.0.0.1 and
+            # put it back for 30 s.
+            "KAIROS_WEBHOOK_ALLOW_PRIVATE": "true",
+            "KAIROS_WEBHOOK_RETRY_BASE_SECS": "1",
         })
         server = subprocess.Popen(
             [str(SERVER_BIN), "serve"],

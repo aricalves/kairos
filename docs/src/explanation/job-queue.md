@@ -177,6 +177,11 @@ delivery job in its own transaction, and the answer comes back at once.
 - The event sockets (`/ws/events`) of the browsers and the agents that
   connect to this server.
 
+Each server of one database takes jobs of every kind, so give each server
+the same settings. A server with a different setting does the job in its
+own way. For example, a server with no `KAIROS_WEBHOOK_ALLOW_PRIVATE`
+refuses a delivery to a private address that another server sends.
+
 ## What to watch
 
 The table is the record of the background work. These queries need a
