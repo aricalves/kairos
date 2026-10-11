@@ -49,6 +49,17 @@ def is_from_kairos(secret: str, body: bytes, header: str) -> bool:
     return hmac.compare_digest(expected, header)
 ```
 
+In a shell, with the raw body in `body.json` and the secret in `SECRET`:
+
+```sh
+expected="sha256=$(openssl dgst -sha256 -hmac "$SECRET" < body.json | sed 's/^.* //')"
+[ "$expected" = "$SIGNATURE" ] && echo "from Kairos"
+```
+
+`SIGNATURE` is the value of `X-Kairos-Signature`. Use the shell check to
+find a problem. Do not use it in a runner: its comparison is not in
+constant time.
+
 Use the raw body. When you parse the body and write it again, the bytes can
 change.
 

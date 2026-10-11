@@ -42,6 +42,7 @@ checklist.
 - [Move work between boards](how-to/move-work-between-boards.md)
 - [Wind down a team](how-to/wind-down-a-team.md)
 - [Find archived work](how-to/find-archived-work.md)
+- [Read your notifications](how-to/read-your-notifications.md)
 
 ## For agent authors
 
@@ -49,6 +50,7 @@ checklist.
 - [Give an agent machine access](how-to/give-an-agent-machine-access.md)
 - [Run an admin agent](how-to/run-an-admin-agent.md)
 - [Connect over MCP](how-to/connect-over-mcp.md)
+- [Read notifications as an agent](how-to/read-notifications-as-an-agent.md)
 - [Dispatch tasks to an agent runner](how-to/dispatch-tasks-to-an-agent.md)
 - [Configure semantic retrieval](how-to/configure-retrieval.md)
 

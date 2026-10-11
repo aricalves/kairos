@@ -121,7 +121,13 @@ notification. Repair the runner, then turn on the target again:
 kairos boards dispatch enable-target platform-delivery 6f1a…
 ```
 
-The board settings page of the GUI has the same targets, rules and log.
+The GUI has the same targets, rules and log. Open **Admin**, then
+**Boards**, and select the board. Use the section **Agent dispatch**:
+
+1. Put a name and the URL of the runner, and select **Add target**. Copy
+   the secret that the page shows.
+2. Select the column, the target and a filter, and select **Add rule**.
+3. Read the **Delivery log**. Select **Refresh** to read it again.
 
 ## Related reading
 
@@ -129,3 +135,5 @@ The board settings page of the GUI has the same targets, rules and log.
   signature, the tries and the addresses that Kairos refuses.
 - [MCP tools](../reference/mcp-tools.md#agent-dispatch): the dispatch tools.
 - [CLI](../reference/cli.md#kairos-boards-dispatch): the dispatch commands.
+- [Read your notifications](read-your-notifications.md): the notification
+  of a target that Kairos turned off.
