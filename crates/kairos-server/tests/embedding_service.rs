@@ -415,7 +415,16 @@ async fn the_refresher_picks_up_work_created_after_it_started() {
     let model = service.model().clone();
     let blocking = kairos_server::blocking::BlockingTenantPool::new(&url, 4);
 
+    // KAIROS-T-0375: the pages of the sweep are jobs; the worker of the
+    // server runs them.
+    let worker = Arc::new(kairos_server::jobs::Worker::new(
+        blocking.clone(),
+        Uuid::new_v4(),
+        kairos_server::jobs::JobSettings::default(),
+    ));
+    let worker_loop = tokio::spawn(Arc::clone(&worker).run());
     let sweeper = tokio::spawn(kairos_server::embedding::run_refresher(
+        Arc::clone(&worker),
         blocking,
         Arc::clone(&service),
         std::time::Duration::from_millis(200),
@@ -455,4 +464,5 @@ async fn the_refresher_picks_up_work_created_after_it_started() {
     assert_eq!(embedded, 1, "the item the sweep found");
 
     sweeper.abort();
+    worker_loop.abort();
 }

@@ -388,3 +388,31 @@ pub fn higher_waits(conn: &mut PgConnection, kind: &str, priority: i32) -> Query
     .get_result::<Found>(conn)
     .map(|f| f.found)
 }
+
+/// The `done` job with `dedupe_key` that ended last. A chain of jobs that
+/// carries a cursor (the embedding refresh, KAIROS-T-0375) reads where the
+/// last job stopped from it.
+pub fn last_done(conn: &mut PgConnection, dedupe_key: &str) -> QueryResult<Option<Job>> {
+    sql_query(format!(
+        "SELECT {COLUMNS} FROM public.jobs \
+         WHERE dedupe_key = $1 AND state = 'done' \
+         ORDER BY finished_at DESC, created_at DESC LIMIT 1"
+    ))
+    .bind::<Text, _>(dedupe_key)
+    .get_result(conn)
+    .optional()
+}
+
+/// Remove the `done` jobs with `dedupe_key`, except the job `keep`. A chain
+/// of short jobs keeps one finished row, not one row for each run. The
+/// number removed.
+pub fn remove_done_except(
+    conn: &mut PgConnection,
+    dedupe_key: &str,
+    keep: Uuid,
+) -> QueryResult<usize> {
+    sql_query("DELETE FROM public.jobs WHERE dedupe_key = $1 AND state = 'done' AND id <> $2")
+        .bind::<Text, _>(dedupe_key)
+        .bind::<SqlUuid, _>(keep)
+        .execute(conn)
+}

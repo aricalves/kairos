@@ -736,11 +736,14 @@ pub async fn serve(
     bootstrap_first_admin(&state).await?;
 
     // The background refresher (KAIROS-T-0190): embedding happens off the write
-    // path, so a create never waits on a model. Detached deliberately — it is
-    // not part of graceful shutdown, because there is nothing to drain: a sweep
-    // interrupted mid-page simply re-derives what is stale on the next pass.
+    // path, so a create never waits on a model. Its pages are jobs of the queue
+    // (KAIROS-T-0375), so 2 servers do not embed one page twice. Detached
+    // deliberately — it is not part of graceful shutdown, because there is
+    // nothing to drain: a batch interrupted mid-page keeps its lease until it
+    // runs out, and a server takes it again.
     if let (Some(service), true) = (state.embedding.clone(), refresh_secs > 0) {
         tokio::spawn(crate::embedding::run_refresher(
+            Arc::clone(&state.jobs),
             state.blocking.clone(),
             service,
             std::time::Duration::from_secs(refresh_secs),

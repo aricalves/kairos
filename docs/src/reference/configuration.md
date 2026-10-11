@@ -605,6 +605,13 @@ When a server stops, the lease of its jobs runs out. Then another worker takes
 those jobs. After the last try, the job fails, and the
 row keeps the reason.
 
+The embedding refresh uses the queue too. At each `KAIROS_EMBED_REFRESH_SECS`,
+each server adds the next embedding batch of each organization. An
+organization has one open batch at a time, and the next batch starts one
+interval after the last batch ended. Thus 2 servers do not embed an item two
+times. When a batch fails after its tries, its items stay stale, and the next
+batch starts at the same item.
+
 A worker removes a job 7 days after it ends. A value that is not a number, or
 that is out of range, stops the start of the server.
 

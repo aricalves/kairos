@@ -136,9 +136,10 @@ pub struct AppConfig {
     /// `0` disables it, which is what tests and any deployment that prefers to
     /// drive `embed-backfill` itself should use.
     ///
-    /// There is no queue behind this on purpose. Staleness is *derived* — a
-    /// content hash that no longer matches — so a sweep is self-healing, where a
-    /// queue would be a second source of truth able to drift from the first.
+    /// There is no queue of items behind this on purpose. Staleness is
+    /// *derived* — a content hash that no longer matches — so a sweep is
+    /// self-healing. Each page of the sweep is a job of the job queue
+    /// (KAIROS-T-0375), so 2 servers do not embed one page twice.
     pub embed_refresh_secs: u64,
     /// `KAIROS_CODE_INDEX_DIR` — the folder of the base code indexes
     /// (COLLIERY-T-1853): a bare clone of each indexed repository, and the
