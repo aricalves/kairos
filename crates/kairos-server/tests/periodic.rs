@@ -168,12 +168,15 @@ async fn two_workers_run_each_pass_once_for_each_interval() {
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), runs.len(), "{name}: a job ran twice");
+        // The next run is due one interval after the previous run was DUE,
+        // not after it started (no drift). So when a run starts late (a slow
+        // runner: PR #25 saw 169 ms for an interval of 300 ms), the gap
+        // between two starts is shorter than the interval. A pass that ran
+        // twice for one interval starts twice at almost the same time; the
+        // count above proves one run for each interval.
         for pair in runs.windows(2) {
             let gap = pair[1].2 - pair[0].2;
-            assert!(
-                gap >= Duration::from_millis(200),
-                "{name}: 2 runs {gap:?} apart"
-            );
+            assert!(gap >= INTERVAL / 3, "{name}: 2 runs {gap:?} apart");
         }
         // One open run at the end, and the next run is due one interval
         // after the last.
