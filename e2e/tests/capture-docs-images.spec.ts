@@ -31,7 +31,7 @@ import { boardItems } from '../helpers/board-items';
 
 // The suite is an ES module, so __dirname is not defined here.
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const OUT = path.resolve(HERE, '../../docs/src/images');
+const OUT = path.resolve(HERE, '../../docs/src/assets/images');
 
 // A viewport wide enough to show a five-column board without horizontal
 // scrolling, and short enough that the shot is readable inline in a book.

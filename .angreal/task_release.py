@@ -87,22 +87,22 @@ VERSION_SITES = [
         "the chart README's install example",
     ),
     (
-        "docs/src/how-to/install-with-helm.md",
+        "docs/src/content/docs/how-to/install-with-helm.md",
         rf"Get a Kairos {SEMVER} deployment",
         "the how-to's stated goal",
     ),
     (
-        "docs/src/how-to/install-with-helm.md",
+        "docs/src/content/docs/how-to/install-with-helm.md",
         rf"--version {SEMVER}",
         "the how-to's install command",
     ),
     (
-        "docs/src/tutorials/deploy-to-kubernetes.md",
+        "docs/src/content/docs/tutorials/deploy-to-kubernetes.md",
         rf"--version {SEMVER}",
         "the tutorial's install command",
     ),
     (
-        "docs/src/tutorials/deploy-to-kubernetes.md",
+        "docs/src/content/docs/tutorials/deploy-to-kubernetes.md",
         rf"^Pulled: ghcr\.io/colliery-io/charts/kairos:{SEMVER}$",
         "the output the tutorial promises the reader will see",
     ),
@@ -112,27 +112,27 @@ VERSION_SITES = [
     # table exists to prevent, and they were missed because the table was built
     # from the sites a release had already touched rather than from a search.
     (
-        "docs/src/reference/cli.md",
+        "docs/src/content/docs/reference/cli.md",
         rf"This page describes `kairos` {SEMVER}\.",
         "the CLI reference's stated version",
     ),
     (
-        "docs/src/reference/mcp-tools.md",
+        "docs/src/content/docs/reference/mcp-tools.md",
         rf"This page describes Kairos {SEMVER}\.",
         "the MCP reference's stated version",
     ),
     (
-        "docs/src/reference/events.md",
+        "docs/src/content/docs/reference/events.md",
         rf"^This page describes Kairos {SEMVER}\.",
         "the events reference's stated version",
     ),
     (
-        "docs/src/reference/scim.md",
+        "docs/src/content/docs/reference/scim.md",
         rf"^This page describes Kairos {SEMVER}\.",
         "the SCIM reference's stated version",
     ),
     (
-        "docs/src/reference/configuration.md",
+        "docs/src/content/docs/reference/configuration.md",
         rf"in one place\. Kairos {SEMVER}\.",
         "the configuration reference's stated version",
     ),
@@ -140,27 +140,27 @@ VERSION_SITES = [
     # The three sentences that said retention is inert went with KAIROS-T-0366:
     # the server runs the retention pass now.
     (
-        "docs/src/how-to/read-your-notifications.md",
+        "docs/src/content/docs/how-to/read-your-notifications.md",
         rf"This page describes Kairos {SEMVER}\.",
         "the notifications how-to's stated version",
     ),
     (
-        "docs/src/how-to/read-notifications-as-an-agent.md",
+        "docs/src/content/docs/how-to/read-notifications-as-an-agent.md",
         rf"This page describes Kairos {SEMVER}\.",
         "the agent notifications how-to's stated version",
     ),
     (
-        "docs/src/how-to/dispatch-tasks-to-an-agent.md",
+        "docs/src/content/docs/how-to/dispatch-tasks-to-an-agent.md",
         rf"This page describes Kairos {SEMVER}\.",
         "the dispatch how-to's stated version",
     ),
     (
-        "docs/src/how-to/turn-on-github-write-back.md",
+        "docs/src/content/docs/how-to/turn-on-github-write-back.md",
         rf"This page describes Kairos {SEMVER}\.",
         "the GitHub write-back how-to's stated version",
     ),
     (
-        "docs/src/reference/webhooks.md",
+        "docs/src/content/docs/reference/webhooks.md",
         rf"This page describes Kairos {SEMVER}\.",
         "the webhooks reference's stated version",
     ),
@@ -170,12 +170,12 @@ VERSION_SITES = [
     # v0.1.1" and "releases up to and including 0.2.0 offered …" are facts about
     # those versions and must never move.
     (
-        "docs/src/reference/configuration.md",
+        "docs/src/content/docs/reference/configuration.md",
         rf"An explicit value pins a published release, e\.g\. `\"{SEMVER}\"`",
         "the image.tag example",
     ),
     (
-        "docs/src/reference/configuration.md",
+        "docs/src/content/docs/reference/configuration.md",
         rf"\| `KAIROS_VERSION` \| `{SEMVER}` \|",
         "the KAIROS_VERSION example in the Compose table",
     ),
@@ -185,7 +185,7 @@ VERSION_SITES = [
         "the image.tag example in values.yaml",
     ),
     (
-        "docs/src/reference/rest-api.md",
+        "docs/src/content/docs/reference/rest-api.md",
         rf"OpenAPI 3\.1\.0, Kairos {SEMVER}\.",
         "the generated REST reference header (regenerate with "
         "`angreal docs api`; patched here so `check` agrees either way)",

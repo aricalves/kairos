@@ -1,12 +1,11 @@
 """
-Documentation book tasks — KAIROS-T-0167 (KAIROS-I-0016).
+Documentation book tasks — KAIROS-T-0167 (KAIROS-I-0016), KAIROS-T-0389.
 
-`angreal docs build` renders the mdBook at docs/ into docs/book; `angreal
-docs serve` runs the live-reloading dev server. `angreal docs images` makes
-the screenshots of the book from a new demo seed (COLLIERY-T-0252). mdBook is acquired the same
-way task_web.py acquires trunk and task_db.py acquires diesel: a pinned
-project-local install under target/tools, an existing binary on PATH, or a
-cargo install as a last resort — cargo-native, no Homebrew.
+The book is an Astro Starlight site in docs/, with the Colliery theme
+starlight-aurora. `angreal docs build` builds it into docs/dist; `angreal docs
+serve` runs the live-reloading dev server. Both need Node 22 or later, and
+install the npm dependencies on the first run. `angreal docs images` makes the
+screenshots of the book from a new demo seed (COLLIERY-T-0252).
 
 The published site is built by .github/workflows/docs.yml on pushes touching
 docs/**, deliberately decoupled from release tags so documentation ships
@@ -17,7 +16,6 @@ import os
 import shutil
 import subprocess
 import sys
-from pathlib import Path
 
 import angreal  # type: ignore
 
@@ -31,55 +29,40 @@ from utils import PROJECT_ROOT, docker_down, docker_up
 docs = angreal.command_group(name="docs", about="documentation book commands")
 
 BOOK_ROOT = PROJECT_ROOT / "docs"
-BOOK_OUT = BOOK_ROOT / "book"
-TOOLS_ROOT = PROJECT_ROOT / "target" / "tools"
-# Pinned to the version .github/workflows/docs.yml installs, so a local
-# build and CI render the same book.
-MDBOOK_VERSION = "0.5.2"
+BOOK_OUT = BOOK_ROOT / "dist"
+IMAGES = BOOK_ROOT / "src" / "assets" / "images"
 
 
-def _acquire_mdbook():
-    """Locate or install mdbook. Returns the binary path, or None."""
-    local = TOOLS_ROOT / "bin" / "mdbook"
-    if local.exists():
-        return str(local)
-
-    on_path = shutil.which("mdbook")
-    if on_path:
-        return on_path
-
-    print(
-        f"No mdbook found; installing mdbook {MDBOOK_VERSION} into "
-        f"{TOOLS_ROOT} via cargo (first run only)..."
-    )
-    result = subprocess.run(
-        [
-            "cargo", "install", "mdbook",
-            "--version", MDBOOK_VERSION,
-            "--root", str(TOOLS_ROOT),
-            "--locked",
-        ],
-        cwd=str(PROJECT_ROOT),
-    )
-    if result.returncode != 0:
-        return None
-    return str(local) if local.exists() else shutil.which("mdbook")
+def _npm(*args):
+    """Run npm in docs/. Install the dependencies first if they are missing."""
+    npm = shutil.which("npm")
+    if not npm:
+        print("npm not found: install Node 22 or later", file=sys.stderr)
+        return 1
+    if not (BOOK_ROOT / "node_modules").exists():
+        result = subprocess.run(
+            [npm, "install", "--no-audit", "--no-fund"], cwd=str(BOOK_ROOT)
+        )
+        if result.returncode != 0:
+            return result.returncode
+    return subprocess.run([npm, *args], cwd=str(BOOK_ROOT)).returncode
 
 
 @docs()
 @angreal.command(
-    name="build", about="render the documentation book into docs/book"
+    name="build",
+    about="build the documentation book into docs/dist",
+    tool=angreal.ToolDescription(
+        "Builds the Starlight book in docs/ into docs/dist. Installs the npm "
+        "dependencies on the first run. Fails when a page does not build.",
+        risk_level="safe",
+    ),
 )
 def docs_build():
-    mdbook = _acquire_mdbook()
-    if not mdbook:
-        print("could not acquire mdbook", file=sys.stderr)
-        return 1
-    result = subprocess.run([mdbook, "build"], cwd=str(BOOK_ROOT))
-    if result.returncode != 0:
-        return result.returncode
-    print(f"book written to {BOOK_OUT}")
-    return 0
+    result = _npm("run", "build")
+    if result == 0:
+        print(f"book written to {BOOK_OUT}")
+    return result
 
 
 @docs()
@@ -88,7 +71,7 @@ def docs_build():
     about="check procedural docs against KAIROS-S-0009 (Simplified Technical English)",
     tool=angreal.ToolDescription(
         """
-        Check docs/src/{tutorials,how-to,reference} against the mechanical half of
+        Check docs/src/content/docs/{tutorials,how-to,reference} against the mechanical half of
         KAIROS-S-0009 (ASD-STE100): sentence length, paragraph length, passive voice,
         gerund chains, and the banned domain synonyms in section 4.1.
 
@@ -159,7 +142,7 @@ def docs_ste(list_all=False, baseline=False, code=False):
     about="regenerate the REST reference pages from the OpenAPI spec",
 )
 def docs_api():
-    """Render docs/src/reference/rest{-api.md,/*.md} from the spec.
+    """Render docs/src/content/docs/reference/rest{-api.md,/*.md} from the spec.
 
     The spec comes from the same pure test CI uses (no services needed), so
     this works on a laptop with nothing running.
@@ -186,21 +169,23 @@ def docs_api():
 
 @docs()
 @angreal.command(
-    name="serve", about="serve the book locally with live reload"
+    name="serve",
+    about="serve the book locally with live reload",
+    tool=angreal.ToolDescription(
+        "Serves the book at http://localhost:4321 (or --port) and reloads on "
+        "each change. Runs until stopped.",
+        risk_level="safe",
+    ),
 )
 @angreal.argument(
     name="port", long="port", takes_value=True,
-    help="port to serve on (default 3000)",
+    help="port to serve on (default 4321)",
 )
 def docs_serve(port=None):
-    mdbook = _acquire_mdbook()
-    if not mdbook:
-        print("could not acquire mdbook", file=sys.stderr)
-        return 1
-    cmd = [mdbook, "serve"]
+    args = ["run", "dev"]
     if port:
-        cmd += ["--port", str(port)]
-    return subprocess.run(cmd, cwd=str(BOOK_ROOT)).returncode
+        args += ["--", "--port", str(port)]
+    return _npm(*args)
 
 
 def _images_phase(name, exit_code):
@@ -219,7 +204,7 @@ def _images_phase(name, exit_code):
     about="make the screenshots of the book from a new demo seed",
     tool=angreal.ToolDescription(
         """
-        Make the images of docs/src/images (COLLIERY-T-0252). The images come from
+        Make the images of docs/src/assets/images (COLLIERY-T-0252). The images come from
         e2e/tests/capture-docs-images.spec.ts, which `angreal test e2e` does not run.
 
         The task uses the start, seed and stop code of the GUI leg of
@@ -232,9 +217,10 @@ def _images_phase(name, exit_code):
         5. `npx playwright test capture-docs-images --grep @docs` in e2e/
         6. stop the server, compose down -v
 
-        The task writes the PNG files in docs/src/images. Look at each image and at
-        the text near it in the book before you commit. docs/src/images/README.md
-        lists the images and the pages that show them.
+        The task writes the PNG files in docs/src/assets/images. Look at each image
+        and at the text near it in the book before you commit.
+        docs/src/assets/images/README.md lists the images and the pages that show
+        them.
 
         DESTRUCTIVE for the `demo` tenant of the dev database (seed --force), and it
         removes the compose volumes of the dev stack at the end. Port 41080 must be
@@ -303,7 +289,7 @@ def docs_images():
             ).returncode,
         )
         if exit_code == 0:
-            print(f"images written to {BOOK_ROOT / 'src' / 'images'}", flush=True)
+            print(f"images written to {IMAGES}", flush=True)
         return exit_code
     finally:
         if server is not None:

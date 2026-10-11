@@ -137,7 +137,7 @@ fn bad_session() -> ApiError {
 /// bearer that changes something must come from the Kairos page (its `Origin`).
 //
 // NOTE, and it is not a doc comment on purpose: the rustdoc above is PUBLISHED. It
-// becomes `docs/src/reference/rest/signing-in.md` through the OpenAPI spec, so
+// becomes `docs/src/content/docs/reference/rest/signing-in.md` through the OpenAPI spec, so
 // implementation reasoning in it ends up in front of an operator. That is how this
 // paragraph got moved.
 //

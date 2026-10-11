@@ -368,7 +368,7 @@ fn one_line(text: &str) -> String {
 /// sentences that carry the rule are read here.
 #[test]
 fn the_book_gives_the_rule_in_both_forms() {
-    let docs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/src");
+    let docs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/src/content/docs");
     let read = |rel: &str| {
         std::fs::read_to_string(docs.join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
     };

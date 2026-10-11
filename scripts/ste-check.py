@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ste-check.py — the mechanical half of KAIROS-S-0009 (ASD-STE100).
 
-Reads `docs/src/{tutorials,how-to,reference}` and reports the rules a script can
+Reads `docs/src/content/docs/{tutorials,how-to,reference}` and reports the rules a script can
 actually check. What it does NOT check is as important as what it does, and
 KAIROS-S-0009 section 6 is the contract:
 
@@ -45,7 +45,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DOCS = REPO_ROOT / "docs" / "src"
+DOCS = REPO_ROOT / "docs" / "src" / "content" / "docs"
 # Section 1.1. `explanation/` is deliberately absent.
 SCOPE = ["tutorials", "how-to", "reference"]
 BASELINE_PATH = REPO_ROOT / "scripts" / "ste-baseline.json"
@@ -123,6 +123,8 @@ def prose_blocks(text):
     invocation or a table row, and pretending otherwise produces noise rather than
     findings.
     """
+    # The front matter of a page (its title) is data, not prose.
+    text = re.sub(r"\A---\n.*?\n---\n", "", text, flags=re.DOTALL)
     text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
     text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
     def clean(chunk):
