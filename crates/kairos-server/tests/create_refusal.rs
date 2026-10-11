@@ -92,7 +92,6 @@ struct McpSession {
     http: reqwest::Client,
     url: String,
     token: String,
-    session_id: String,
     next_id: u64,
 }
 
@@ -116,17 +115,10 @@ impl McpSession {
             .await
             .expect("initialize");
         assert_eq!(response.status(), 200, "initialize failed");
-        let session_id = response
-            .headers()
-            .get("mcp-session-id")
-            .and_then(|v| v.to_str().ok())
-            .expect("session id")
-            .to_string();
         let session = Self {
             http,
             url,
             token: token.to_string(),
-            session_id,
             next_id: 0,
         };
         let response = session
@@ -134,7 +126,6 @@ impl McpSession {
             .post(&session.url)
             .bearer_auth(&session.token)
             .header("X-Tenant", "acme")
-            .header("mcp-session-id", &session.session_id)
             .header("accept", "application/json, text/event-stream")
             .json(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
             .send()
@@ -152,7 +143,6 @@ impl McpSession {
             .post(&self.url)
             .bearer_auth(&self.token)
             .header("X-Tenant", "acme")
-            .header("mcp-session-id", &self.session_id)
             .header("accept", "application/json, text/event-stream")
             .json(&json!({
                 "jsonrpc": "2.0", "id": self.next_id, "method": "tools/call",

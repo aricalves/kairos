@@ -96,8 +96,9 @@ fn rpc_message(body: &str) -> Value {
     panic!("no JSON-RPC message in response body: {body:?}");
 }
 
-/// Start an MCP session. Returns the id of the session.
-async fn connect(router: &Router, token: &str) -> String {
+/// Start an MCP session. Returns the id of the session, when the server
+/// issues one (the endpoint is stateless, KAIROS-T-0392).
+async fn connect(router: &Router, token: &str) -> Option<String> {
     let (status, headers, body) = mcp_request(
         router,
         token,
@@ -118,12 +119,11 @@ async fn connect(router: &Router, token: &str) -> String {
     let session = headers
         .get("mcp-session-id")
         .and_then(|v| v.to_str().ok())
-        .expect("initialize returns Mcp-Session-Id")
-        .to_string();
+        .map(str::to_string);
     let (status, _, body) = mcp_request(
         router,
         token,
-        Some(&session),
+        session.as_deref(),
         json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
     )
     .await;
@@ -135,14 +135,14 @@ async fn connect(router: &Router, token: &str) -> String {
 async fn call(
     router: &Router,
     token: &str,
-    session: &str,
+    session: Option<&str>,
     tool: &str,
     arguments: Value,
 ) -> (bool, String) {
     let (status, _, body) = mcp_request(
         router,
         token,
-        Some(session),
+        session,
         json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -442,7 +442,7 @@ async fn the_teams_of_an_initiative_on_rest_and_mcp_against_live_stack() {
     let (is_error, text) = call(
         &router,
         &svc,
-        &session,
+        session.as_deref(),
         "get_item",
         json!({ "short_code": i1 }),
     )
@@ -452,7 +452,7 @@ async fn the_teams_of_an_initiative_on_rest_and_mcp_against_live_stack() {
     let (_, text) = call(
         &router,
         &svc,
-        &session,
+        session.as_deref(),
         "get_item",
         json!({ "short_code": i3 }),
     )
@@ -462,7 +462,7 @@ async fn the_teams_of_an_initiative_on_rest_and_mcp_against_live_stack() {
     let (is_error, text) = call(
         &router,
         &svc,
-        &session,
+        session.as_deref(),
         "set_team",
         json!({ "short_code": i3, "team": "weir" }),
     )
@@ -472,7 +472,7 @@ async fn the_teams_of_an_initiative_on_rest_and_mcp_against_live_stack() {
     let (_, text) = call(
         &router,
         &svc,
-        &session,
+        session.as_deref(),
         "get_item",
         json!({ "short_code": i3 }),
     )
@@ -482,7 +482,7 @@ async fn the_teams_of_an_initiative_on_rest_and_mcp_against_live_stack() {
     let (_, text) = call(
         &router,
         &svc,
-        &session,
+        session.as_deref(),
         "board_items",
         json!({ "board": "initiatives", "team": "weir" }),
     )
@@ -495,7 +495,7 @@ async fn the_teams_of_an_initiative_on_rest_and_mcp_against_live_stack() {
     let (_, text) = call(
         &router,
         &svc,
-        &session,
+        session.as_deref(),
         "board_items",
         json!({ "board": "initiatives", "no_team": true }),
     )
@@ -506,7 +506,7 @@ async fn the_teams_of_an_initiative_on_rest_and_mcp_against_live_stack() {
     let (is_error, text) = call(
         &router,
         &svc,
-        &session,
+        session.as_deref(),
         "set_team",
         json!({ "short_code": task, "team": "weir" }),
     )
@@ -516,7 +516,7 @@ async fn the_teams_of_an_initiative_on_rest_and_mcp_against_live_stack() {
     let (is_error, text) = call(
         &router,
         &svc,
-        &session,
+        session.as_deref(),
         "clear_team",
         json!({ "short_code": i3, "team": "weir" }),
     )

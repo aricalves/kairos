@@ -137,7 +137,7 @@ struct McpSession<'a> {
     http: &'a reqwest::Client,
     base_url: &'a str,
     token: &'a str,
-    session_id: String,
+    session_id: Option<String>,
 }
 
 impl McpSession<'_> {
@@ -149,7 +149,7 @@ impl McpSession<'_> {
             self.http,
             self.base_url,
             self.token,
-            Some(&self.session_id),
+            self.session_id.as_deref(),
             json!({
                 "jsonrpc": "2.0",
                 "id": id,
@@ -452,8 +452,8 @@ async fn main() -> ExitCode {
         status == 200,
         &format!("initialize HTTP {status}: {body}"),
     );
-    let session_id =
-        session_id.unwrap_or_else(|| step.fail("initialize returned no Mcp-Session-Id"));
+    // KAIROS-T-0392: the endpoint is stateless; a session id is sent back
+    // only when a server issues one.
     let init = rpc_message(&step, &body);
     require(
         &step,
@@ -465,7 +465,7 @@ async fn main() -> ExitCode {
         &http,
         &base_url,
         &token,
-        Some(&session_id),
+        session_id.as_deref(),
         json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
     )
     .await;

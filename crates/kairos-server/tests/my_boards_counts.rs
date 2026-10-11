@@ -145,8 +145,9 @@ fn rpc_message(body: &str) -> Value {
     panic!("no JSON-RPC message in response body: {body:?}");
 }
 
-/// Start an MCP session. Returns the id of the session.
-async fn connect(router: &Router, token: &str) -> String {
+/// Start an MCP session. Returns the id of the session, when the server
+/// issues one (the endpoint is stateless, KAIROS-T-0392).
+async fn connect(router: &Router, token: &str) -> Option<String> {
     let (status, headers, body) = raw_request(
         router,
         token,
@@ -167,12 +168,11 @@ async fn connect(router: &Router, token: &str) -> String {
     let session = headers
         .get("mcp-session-id")
         .and_then(|v| v.to_str().ok())
-        .expect("initialize returns Mcp-Session-Id")
-        .to_string();
+        .map(str::to_string);
     let (status, _, body) = raw_request(
         router,
         token,
-        Some(&session),
+        session.as_deref(),
         json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
     )
     .await;
@@ -181,11 +181,11 @@ async fn connect(router: &Router, token: &str) -> String {
 }
 
 /// The text of the result of `my_boards`.
-async fn my_boards(router: &Router, token: &str, session: &str) -> String {
+async fn my_boards(router: &Router, token: &str, session: Option<&str>) -> String {
     let (status, _, body) = raw_request(
         router,
         token,
-        Some(session),
+        session,
         json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -361,7 +361,7 @@ async fn my_boards_counts_in_the_database_against_live_stack() {
 
     // --- the text and the queries, with 1 board of mine ----------------------
     let start = query_count();
-    let text = my_boards(&router, &token, &session).await;
+    let text = my_boards(&router, &token, session.as_deref()).await;
     let with_one_board = query_count() - start;
     let reads = card_queries(start);
     let payments_line = columns_line(&mut conn, "payments-delivery");
@@ -415,7 +415,7 @@ async fn my_boards_counts_in_the_database_against_live_stack() {
     .await;
 
     let start = query_count();
-    let text = my_boards(&router, &token, &session).await;
+    let text = my_boards(&router, &token, session.as_deref()).await;
     let with_two_boards = query_count() - start;
     let reads_of_columns = column_queries(start);
     let billing_line = columns_line(&mut conn, "billing-delivery");

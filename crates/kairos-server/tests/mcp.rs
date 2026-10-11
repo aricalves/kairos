@@ -10,8 +10,8 @@
 //! `kairos` database is never touched (shared-services discipline).
 //!
 //! Transport: the raw streamable-HTTP protocol — JSON-RPC over POST with
-//! `Accept: application/json, text/event-stream`, the `Mcp-Session-Id`
-//! header from `initialize`, and SSE-framed responses — driven in-process
+//! `Accept: application/json, text/event-stream`, no `Mcp-Session-Id`
+//! (the endpoint is stateless, KAIROS-T-0392), and SSE-framed responses — driven in-process
 //! via `tower::ServiceExt::oneshot`, so the exact production `/mcp`
 //! mounting (auth → tenant middleware included) is what's under test.
 //!
@@ -170,7 +170,7 @@ impl<'a> McpSession<'a> {
     /// Drive `initialize` + `notifications/initialized`; returns the
     /// InitializeResult.
     async fn connect(router: &'a Router, token: &str) -> (McpSession<'a>, Value) {
-        let mut session = McpSession {
+        let session = McpSession {
             router,
             token: token.to_string(),
             session_id: None,
@@ -195,12 +195,11 @@ impl<'a> McpSession<'a> {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "initialize failed: {body}");
-        let session_id = headers
-            .get("mcp-session-id")
-            .and_then(|v| v.to_str().ok())
-            .expect("initialize returns Mcp-Session-Id")
-            .to_string();
-        session.session_id = Some(session_id);
+        // KAIROS-T-0392: the endpoint is stateless and issues no session id.
+        assert!(
+            headers.get("mcp-session-id").is_none(),
+            "initialize issued an Mcp-Session-Id: the endpoint must keep no sessions"
+        );
         let init = rpc_message(&body);
 
         // The handshake completes with notifications/initialized (202).
@@ -551,6 +550,31 @@ async fn mcp_endpoint_against_live_stack() {
          `add_repository` and `update_repository` write it, and `set_repository` links a \
          task to one."
     );
+
+    // --- KAIROS-T-0392: stateless — no handshake, a stale session id -------
+    // A client that reconnects after a restart sends calls with no
+    // initialize before them, or with the session id of the old process.
+    for stale in [None, Some("a-session-from-before-a-restart")] {
+        let (status, headers, body) = raw_request(
+            &router,
+            Method::POST,
+            "/mcp",
+            Some(&alice_token),
+            stale,
+            Some(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "whoami", "arguments": {}},
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "session {stale:?}: {body}");
+        assert!(headers.get("mcp-session-id").is_none(), "{headers:?}");
+        let message = rpc_message(&body);
+        assert!(message.get("error").is_none(), "{message}");
+        assert_eq!(message["result"]["isError"], false, "{message}");
+    }
 
     // --- tools/list: EXACTLY the S-0006 inventory ----------------------------
     let listed = session.request("tools/list", json!({})).await;

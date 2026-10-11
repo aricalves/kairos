@@ -32,7 +32,10 @@ export class McpToolError extends Error {
 }
 
 export class McpSession {
+  // The server keeps no sessions (KAIROS-T-0392): an id is sent back only
+  // when a server issues one.
   private sessionId: string | undefined;
+  private initialized = false;
   private nextId = 1;
 
   constructor(
@@ -58,7 +61,7 @@ export class McpSession {
   }
 
   async initialize(): Promise<void> {
-    if (this.sessionId) return;
+    if (this.initialized) return;
     const init = await this.post({
       jsonrpc: '2.0',
       id: 0,
@@ -70,14 +73,14 @@ export class McpSession {
       },
     });
     if (init.status !== 200) throw new Error(`MCP initialize HTTP ${init.status}: ${init.text}`);
-    if (!init.session) throw new Error('MCP initialize returned no mcp-session-id');
-    this.sessionId = init.session;
+    this.sessionId = init.session ?? undefined;
     const message = rpcMessage(init.text);
     if (message.result?.serverInfo?.name !== 'kairos') {
       throw new Error(`unexpected MCP serverInfo: ${init.text}`);
     }
     const notified = await this.post({ jsonrpc: '2.0', method: 'notifications/initialized' });
     if (notified.status !== 202) throw new Error(`MCP initialized notification HTTP ${notified.status}`);
+    this.initialized = true;
   }
 
   /**
