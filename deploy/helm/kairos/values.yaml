@@ -8,10 +8,12 @@
 # NOT provide (KAIROS-A-0016): an external PostgreSQL and an external OIDC issuer.
 
 # -- Number of server replicas. Ignored when autoscaling.enabled is true.
-# Keep 1 until the job queue of COLLIERY-I-0613 ships. With 2 or more, each
-# pod runs its own code-index builder, embedding refresher and login
-# throttle: a build can run twice, and the throttle allows more failed logins.
-replicaCount: 1
+# The pods share the background work through the job queue in Postgres
+# (COLLIERY-I-0613): each code-index build, embedding batch, periodic pass,
+# webhook delivery and GitHub write-back runs on one pod, and the login
+# throttle counts failed logins in Postgres. The limits of the job kinds
+# (KAIROS_JOB_LIMIT_*) are for each pod. See the book, "The job queue".
+replicaCount: 2
 
 image:
   # -- Image repository. The release image published by CI (KAIROS-T-0047).
@@ -130,8 +132,9 @@ ingress:
 
 autoscaling:
   # -- Enable a HorizontalPodAutoscaler. When true, replicaCount is ignored.
-  # Keep it off until the job queue of COLLIERY-I-0613 ships: the HPA runs 2
-  # or more pods (see replicaCount).
+  # The pods share the background work through the job queue, so the HPA can
+  # add and remove pods. A pod that the HPA removes during a job loses its
+  # lease; another pod takes the job when the lease runs out.
   enabled: false
   minReplicas: 2
   maxReplicas: 6

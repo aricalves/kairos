@@ -176,13 +176,15 @@ separate migrate step.
 kubectl -n kairos get pods
 ```
 
-The Kairos pod should be `1/1 Running`, alongside Postgres and Dex. The chart
-runs 1 replica by default:
+The 2 Kairos pods should be `1/1 Running`, alongside Postgres and Dex. The
+chart runs 2 replicas by default. They share the background work through the
+job queue in the database:
 
 ```
 NAME                        READY   STATUS    RESTARTS   AGE
 dex-6d556d5f6d-nh6ww        1/1     Running   0          3m
 kairos-5785ff87b8-52d9d     1/1     Running   0          1m
+kairos-5785ff87b8-7nqvk     1/1     Running   0          1m
 postgres-6f59b65747-djxn8   1/1     Running   0          3m
 ```
 

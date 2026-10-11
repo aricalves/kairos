@@ -104,11 +104,11 @@ Then apply whichever of these describe your deployment:
 - **You want `KAIROS_PUBLIC_URL` or `KAIROS_WEBHOOK_SIGNING_KEY`** (needed for
   [Connect a git forge](connect-a-git-forge.md)): neither has a dedicated chart
   value. Set them through `extraEnv`.
-- **You want more than one replica:** wait. The chart runs 1 replica
-  (`replicaCount: 1`), and `autoscaling.enabled` stays `false`. With 2 or more
-  pods, each pod runs its own code-index builder and embedding refresher. Each
-  pod also has its own login throttle. A build can thus run twice. The job queue of COLLIERY-I-0613 removes
-  this limit.
+- **You want a different number of replicas:** set `replicaCount` (default
+  2). The pods share the background work through the job queue in the
+  database, and each job runs on one pod. The `KAIROS_JOB_LIMIT_*` limits are
+  for each pod. To let the cluster set the number of pods, set
+  `autoscaling.enabled: true`. See [The job queue](../explanation/job-queue.md).
 - **You scrape with the Prometheus Operator:** set
   `metrics.serviceMonitor.enabled: true`, which scrapes `/metrics`. Liveness
   probes go at `/healthz`, readiness at `/readyz`; the chart wires both already.

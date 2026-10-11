@@ -84,3 +84,4 @@ checklist.
 - [Archiving](explanation/archiving.md)
 - [Repositories as execution scope](explanation/repositories-as-execution-scope.md)
 - [Finding related work](explanation/finding-related-work.md)
+- [The job queue](explanation/job-queue.md)

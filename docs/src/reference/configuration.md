@@ -641,7 +641,8 @@ cannot run a pass (for example, its code-index tools are not ready) gives
 the pass back to the queue, and no try is counted.
 
 A worker removes a job 7 days after it ends. A value that is not a number, or
-that is out of range, stops the start of the server.
+that is out of range, stops the start of the server. For the table, the order,
+the limits and what to watch, see [The job queue](../explanation/job-queue.md).
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
@@ -877,7 +878,7 @@ the image sets it to `/var/lib/kairos/models`) and `KAIROS_EMBED_REFRESH_SECS`
 
 | Value | Type | Default | Description |
 |---|---|---|---|
-| `replicaCount` | integer | `1` | Server replicas. Ignored when `autoscaling.enabled` is true. Keep 1 until the job queue (COLLIERY-I-0613) ships: with 2 or more, each pod runs its own code-index builder, embedding refresher and login throttle. |
+| `replicaCount` | integer | `2` | Server replicas. Ignored when `autoscaling.enabled` is true. The replicas share the background work through the [job queue](#job-queue), and the login throttle counts in the database. The `KAIROS_JOB_LIMIT_*` limits are for each replica. |
 | `image.repository` | string | `ghcr.io/colliery-io/kairos` | Image repository. |
 | `image.tag` | string | `""` | Empty tracks the chart's `appVersion`. An explicit value pins a published release, e.g. `"0.10.0"`. The chart never pins `latest`. |
 | `image.pullPolicy` | string | `IfNotPresent` | Image pull policy. |
@@ -944,7 +945,7 @@ The read-only root filesystem is compatible with a filesystem
 
 | Value | Type | Default | Description |
 |---|---|---|---|
-| `autoscaling.enabled` | bool | `false` | When true, `replicaCount` is ignored. Keep it off until the job queue (COLLIERY-I-0613) ships: the HPA runs 2 or more pods. |
+| `autoscaling.enabled` | bool | `false` | When true, `replicaCount` is ignored. The HPA can add and remove pods. When it removes a pod during a job, another pod takes the job after its lease. |
 | `autoscaling.minReplicas` | integer | `2` | HorizontalPodAutoscaler floor. |
 | `autoscaling.maxReplicas` | integer | `6` | HorizontalPodAutoscaler ceiling. |
 | `autoscaling.targetCPUUtilizationPercentage` | integer | `70` | Percentage of the CPU request. |
