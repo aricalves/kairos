@@ -14,6 +14,7 @@ pub mod bedrock_http;
 pub mod chat_http;
 pub mod embed_http;
 pub mod git_http;
+pub mod hook_http;
 
 use axum::Router;
 use axum::body::Body;

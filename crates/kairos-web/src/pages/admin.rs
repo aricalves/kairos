@@ -46,6 +46,7 @@ mod api;
 mod boards;
 mod capabilities;
 mod code_index;
+mod dispatch;
 mod members;
 mod metadata;
 mod repositories;

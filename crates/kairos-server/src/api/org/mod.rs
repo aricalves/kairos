@@ -27,6 +27,7 @@ pub mod boards;
 pub mod code_index_query;
 pub mod code_index_settings;
 pub mod code_indexes;
+pub mod dispatch;
 pub mod flow;
 pub mod forge;
 pub mod members;
@@ -55,6 +56,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .merge(boards::router())
         .merge(flow::router())
+        .merge(dispatch::router())
         .merge(forge::router())
         .merge(repositories::router())
         .merge(code_indexes::router())

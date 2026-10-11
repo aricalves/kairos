@@ -266,6 +266,21 @@ pub fn new_target(
     )
 }
 
+/// The body with each `data.link` that is a path (`/items/<code>`) made a
+/// URL with `public_url`. `None`: the body does not change (no link that is
+/// a path, or no `public_url`).
+pub fn absolute_links(body: &str, public_url: Option<&str>) -> Option<String> {
+    let base = public_url?;
+    let mut value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let link = value.get_mut("data")?.get_mut("link")?;
+    let path = link.as_str()?;
+    if !path.starts_with('/') {
+        return None;
+    }
+    *link = serde_json::Value::String(format!("{base}{path}"));
+    Some(value.to_string())
+}
+
 /// What one try gave.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Sent {
@@ -280,6 +295,9 @@ pub struct WebhookService {
     blocking: BlockingTenantPool,
     secrets: Option<SecretsKey>,
     settings: WebhookSettings,
+    /// `KAIROS_PUBLIC_URL`: a `link` of the data that is a path becomes a
+    /// URL ([`absolute_links`]).
+    public_url: Option<String>,
 }
 
 impl std::fmt::Debug for WebhookService {
@@ -301,7 +319,14 @@ impl WebhookService {
             blocking,
             secrets,
             settings,
+            public_url: None,
         }
+    }
+
+    /// The base URL of the links (`KAIROS_PUBLIC_URL`, KAIROS-T-0385).
+    pub fn with_public_url(mut self, public_url: Option<String>) -> Self {
+        self.public_url = public_url.map(|url| url.trim_end_matches('/').to_string());
+        self
     }
 
     /// Run the deliveries on `worker`.
@@ -448,6 +473,25 @@ impl WebhookService {
                 }
             },
         };
+        // KAIROS-T-0385: the link of the data is a path in the database; the
+        // body that is sent, and kept for each next try, has the URL.
+        let mut delivery = delivery;
+        if let Some(body) = absolute_links(&delivery.body, self.public_url.as_deref()) {
+            let kept = body.clone();
+            let written = self
+                .blocking
+                .run(&tenant, move |conn| {
+                    db::set_body(conn, delivery_id, &kept).map_err(ApiError::internal)
+                })
+                .await;
+            if let Err(e) = written {
+                return Err(JobError::retry(format!(
+                    "The database did not answer: {}",
+                    e.message
+                )));
+            }
+            delivery.body = body;
+        }
         handle.progress();
         let started = Instant::now();
         let sent = self.send(&target.url, &secret, &delivery).await;
@@ -538,6 +582,24 @@ impl JobHandler for WebhookService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_link_that_is_a_path_becomes_a_url() {
+        let body = r#"{"data":{"code":"K-T-1","link":"/items/K-T-1"},"event":"x","id":"1"}"#;
+        let out = absolute_links(body, Some("https://kairos.example.com")).expect("changed");
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            value["data"]["link"],
+            "https://kairos.example.com/items/K-T-1"
+        );
+        assert_eq!(value["data"]["code"], "K-T-1");
+        assert_eq!(absolute_links(body, None), None);
+        assert_eq!(absolute_links(&out, Some("https://other.example")), None);
+        assert_eq!(
+            absolute_links(r#"{"data":{"n":1}}"#, Some("https://k")),
+            None
+        );
+    }
 
     #[test]
     fn the_waits_double_to_the_cap() {

@@ -1,8 +1,8 @@
 # MCP tools
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-forty-one tools. A drift gate in the test suite
-asserts that `tools/list` returns these forty-one and no others. The same
+forty-four tools. A drift gate in the test suite
+asserts that `tools/list` returns these forty-four and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -1608,6 +1608,102 @@ both. `NOT_FOUND` when an id is not one of your notifications; the message
 names the id, and nothing changes. An id that is read already does not change.
 
 REST: `POST /api/me/notifications/read`.
+
+## Agent dispatch
+
+A board manager sets rules that send a task to an agent runner
+(KAIROS-T-0385). A task can enter the column of a rule and match its filter.
+Then Kairos sends one signed delivery to a webhook target. Kairos does not
+start a session itself: the runner does. See
+[Webhook deliveries](webhooks.md) for the request, the signature and the
+tries.
+
+The event is `task.entered_column`. Its `data` has these fields:
+
+| Field | Description |
+|---|---|
+| `code`, `title`, `task_type` | The task. |
+| `link` | The URL of the task in the GUI. |
+| `board` | `id`, `slug` and `name` of the board. |
+| `column` | `id` and `name` of the column. |
+| `repository` | `slug`, `full_name`, `forge` and `url` of the repository of the task, or `null`. |
+| `actor` | `id` and `name` of the person who moved the task. |
+| `rule_id` | The rule. |
+
+A task enters a column in 3 ways:
+
+- a transition;
+- a move to the board, into its entry column;
+- a cancel, into the done column.
+
+### `list_dispatch_rules`
+
+Gives the rules of a board, the webhook targets of the board, and the 20
+newest deliveries of the log. A person who belongs to the board can read
+them:
+
+- an organization admin;
+- a person with a grant on the board;
+- a member of the team of the board.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `board` | string | yes | — | Slug or UUID. |
+
+A person who cannot configure the board gets the URL of a target with no
+query.
+
+Refuses: `NOT_FOUND` for an unknown board; `FORBIDDEN` for a person who does
+not belong to the board.
+
+REST: `GET /api/boards/{id}/dispatch-rules`, `GET /api/boards/{id}/webhook-targets`
+and `GET /api/boards/{id}/webhook-deliveries`.
+
+### `create_dispatch_rule`
+
+Makes a rule. Send `target_id` or `url`, not both. With `url`, Kairos makes a
+new target, and the result has its secret. Kairos shows the secret this one
+time. Requires `configure_boards` on the board.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `board` | string | yes | — | Slug or UUID. |
+| `column` | string | yes | — | The name or the UUID of a column of the board. |
+| `target_id` | string | no | — | A webhook target of the board. |
+| `url` | string | no | — | The URL of a new target (`http` or `https`). |
+| `target_name` | string | no | `Agent runner` | The name of the new target. |
+| `task_type` | string | no | — | Only tasks of this type: `task`, `bug`, `tech_debt` or `support`. |
+| `metadata_slug` | string | no | — | Only tasks with this metadata. Send it with `metadata_value`. |
+| `metadata_value` | string | no | — | The value that matches. Case is not significant. |
+| `repository` | string | no | — | Only tasks of this repository: its slug or UUID. |
+
+Each part of the filter that you set must match.
+
+Refuses:
+
+- `FORBIDDEN` without `configure_boards`;
+- `NOT_FOUND` for an unknown board, target or repository;
+- `VALIDATION` for an unknown column, task type or metadata definition;
+- `VALIDATION` for a URL that is not `http` or `https`, or a private address;
+- `SECRETS_NOT_CONFIGURED` for a new target with no `KAIROS_SECRETS_KEY`.
+
+REST: `POST /api/boards/{id}/webhook-targets` and
+`POST /api/boards/{id}/dispatch-rules`.
+
+### `delete_dispatch_rule`
+
+Removes a rule. Its deliveries stay in the log, and its target stays.
+Requires `configure_boards` on the board.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `board` | string | yes | — | Slug or UUID. |
+| `rule_id` | string | yes | — | The id of the rule, from `list_dispatch_rules`. |
+
+Refuses: `FORBIDDEN` without `configure_boards`; `NOT_FOUND` for an unknown
+board or rule.
+
+REST: `DELETE /api/boards/{id}/dispatch-rules/{rule_id}`.
 
 ## Related reading
 

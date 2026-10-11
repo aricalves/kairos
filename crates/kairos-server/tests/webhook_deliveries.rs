@@ -205,6 +205,7 @@ fn queue(f: &Fixture, target: Uuid, n: usize) -> db::Delivery {
         target,
         "ping",
         None,
+        None,
         &serde_json::json!({ "n": n }),
     )
     .expect("queue")

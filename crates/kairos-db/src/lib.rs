@@ -16,6 +16,7 @@ pub mod code_index_builds;
 pub mod code_index_settings;
 pub mod code_indexes;
 pub mod code_rename;
+pub mod dispatch;
 pub mod embeddings;
 pub mod events;
 pub mod flow;

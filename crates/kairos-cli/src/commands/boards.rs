@@ -102,6 +102,13 @@ pub enum BoardsCommand {
         #[command(flatten)]
         common: Common,
     },
+    /// Send tasks to agent runners: the webhook targets, the dispatch rules
+    /// and the delivery log of a board. A task that enters the column of a
+    /// rule and matches its filter sends one signed delivery
+    Dispatch {
+        #[command(subcommand)]
+        command: crate::commands::dispatch::DispatchCommand,
+    },
     /// Archive each task in the done columns of a delivery board, cancelled
     /// tasks too (requires --confirm). You can restore each task
     #[command(name = "archive-completed")]
@@ -221,6 +228,7 @@ impl BoardsCommand {
                 }
                 Ok(())
             }
+            Self::Dispatch { command } => command.run().await,
             Self::Flow {
                 board,
                 from,

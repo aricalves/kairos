@@ -330,6 +330,56 @@ Request body (required): `application/json`, [`UpdateColumnRequest`](schemas.md#
 | `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown board/column |
 | `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | DUPLICATE_COLUMN_NAME / VALIDATION |
 
+### `GET /api/boards/{id}/dispatch-rules`
+
+The dispatch rules of a board (KAIROS-T-0385). A person who belongs to
+the board reads them.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `id` | path | yes | `string` | The slug or the id (UUID) of the board |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | array of [`DispatchRule`](schemas.md#dispatchrule) | The rules of the board |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The caller does not belong to the board |
+| `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown board |
+
+### `POST /api/boards/{id}/dispatch-rules`
+
+Make a dispatch rule. A task can enter the column and match the
+filter. Then Kairos sends one signed delivery to the target. Needs
+`configure_boards` on the board.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `id` | path | yes | `string` | The slug or the id (UUID) of the board |
+
+Request body (required): `application/json`, [`CreateDispatchRuleRequest`](schemas.md#createdispatchrulerequest)
+
+| Response | Body | Meaning |
+|---|---|---|
+| `201` | [`DispatchRule`](schemas.md#dispatchrule) | The rule |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Missing configure_boards |
+| `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown board, target or repository |
+| `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | VALIDATION: an unknown column, task type or metadata definition |
+
+### `DELETE /api/boards/{id}/dispatch-rules/{rule_id}`
+
+Remove a dispatch rule. Its deliveries stay in the log. Needs
+`configure_boards` on the board.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `id` | path | yes | `string` | The slug or the id (UUID) of the board |
+| `rule_id` | path | yes | `string` | The id (UUID) of the rule |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`DispatchRule`](schemas.md#dispatchrule) | The rule that was removed |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Missing configure_boards |
+| `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown board or rule |
+
 ### `GET /api/boards/{id}/flow`
 
 The flow metrics of a board for a range of days (KAIROS-T-0372). They are
@@ -446,6 +496,109 @@ Remove a transition edge by id. Requires `configure_boards`.
 | `200` | [`OrgDeleteResponse`](schemas.md#orgdeleteresponse) | Removed |
 | `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Missing capability |
 | `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown board/transition |
+
+### `GET /api/boards/{id}/webhook-deliveries`
+
+The delivery log of a board, newest first: each delivery with its
+status and its tries. A person who belongs to the board reads it.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `id` | path | yes | `string` | The slug or the id (UUID) of the board |
+| `target_id` | query | no | `string` | Only the deliveries of this target (id). |
+| `rule_id` | query | no | `string` | Only the deliveries of this rule (id). |
+| `limit` | query | no | `integer` | The newest deliveries to give, 1 to 200 (50). |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | array of [`WebhookDelivery`](schemas.md#webhookdelivery) | The deliveries, newest first |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The caller does not belong to the board |
+| `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown board or target |
+| `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | VALIDATION: a limit out of range, or an id that is not a UUID |
+
+### `GET /api/boards/{id}/webhook-targets`
+
+The webhook targets of a board (KAIROS-T-0384). A person who belongs to
+the board reads them. A person who cannot configure the board gets each
+URL with no query.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `id` | path | yes | `string` | The slug or the id (UUID) of the board |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | array of [`WebhookTarget`](schemas.md#webhooktarget) | The targets of the board |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The caller does not belong to the board |
+| `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown board |
+
+### `POST /api/boards/{id}/webhook-targets`
+
+Make a webhook target on a board. Kairos makes the secret, and shows it
+in this answer only. Needs `configure_boards` on the board, and
+`KAIROS_SECRETS_KEY` on the deployment.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `id` | path | yes | `string` | The slug or the id (UUID) of the board |
+
+Request body (required): `application/json`, [`CreateWebhookTargetRequest`](schemas.md#createwebhooktargetrequest)
+
+| Response | Body | Meaning |
+|---|---|---|
+| `201` | [`CreatedWebhookTarget`](schemas.md#createdwebhooktarget) | The target, and its secret (shown this one time) |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Missing configure_boards |
+| `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown board |
+| `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | VALIDATION: a bad name, a URL that is not http(s), or a private address |
+| `501` | [`ErrorEnvelope`](schemas.md#errorenvelope) | SECRETS_NOT_CONFIGURED: the deployment has no KAIROS_SECRETS_KEY |
+
+### `DELETE /api/boards/{id}/webhook-targets/{target_id}`
+
+Remove a webhook target of a board, with its dispatch rules and its
+delivery log. Needs `configure_boards` on the board.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `id` | path | yes | `string` | The slug or the id (UUID) of the board |
+| `target_id` | path | yes | `string` | The id (UUID) of the target |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`WebhookTarget`](schemas.md#webhooktarget) | The target that was removed |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Missing configure_boards |
+| `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown board or target |
+
+### `POST /api/boards/{id}/webhook-targets/{target_id}/enable`
+
+Turn a webhook target on again, with its failed tries in a row at 0.
+Needs `configure_boards` on the board.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `id` | path | yes | `string` | The slug or the id (UUID) of the board |
+| `target_id` | path | yes | `string` | The id (UUID) of the target |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`WebhookTarget`](schemas.md#webhooktarget) | The target, on |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Missing configure_boards |
+| `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown board or target |
+
+### `POST /api/boards/{id}/webhook-targets/{target_id}/test`
+
+Send a test delivery (the event `ping`) to a webhook target. Needs
+`configure_boards` on the board.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `id` | path | yes | `string` | The slug or the id (UUID) of the board |
+| `target_id` | path | yes | `string` | The id (UUID) of the target |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `201` | [`WebhookDelivery`](schemas.md#webhookdelivery) | The delivery, queued (or skipped when the target is off) |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Missing configure_boards |
+| `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown board or target |
 
 ## board-members
 

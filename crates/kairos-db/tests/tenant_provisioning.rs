@@ -41,7 +41,7 @@ const SCRATCH_DB: &str = "kairos_tenant_provisioning_test";
 /// The tenant tables (sorted): the 21 from the KAIROS-S-0004 DDL plus
 /// `scim_tokens` (KAIROS-T-0025 / A-0016) and `api_keys` (KAIROS-T-0057 /
 /// A-0017 service-account API keys).
-const EXPECTED_TABLES: [&str; 49] = [
+const EXPECTED_TABLES: [&str; 50] = [
     "activity_log",
     "adrs",
     "api_keys",
@@ -58,6 +58,8 @@ const EXPECTED_TABLES: [&str; 49] = [
     "code_index_summaries",
     "code_indexes",
     "delivery_streams",
+    // KAIROS-T-0385: the agent dispatch rules of a board.
+    "dispatch_rules",
     "documents",
     // KAIROS-T-0192 (A-0021 rule 6): edges an agent proposed, awaiting a human.
     "edge_proposals",

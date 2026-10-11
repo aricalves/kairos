@@ -151,6 +151,17 @@ use crate::app::AppState;
         crate::api::org::boards::delete_board,
         crate::api::org::boards::board_items,
         crate::api::org::flow::board_flow,
+        // The webhook targets, the dispatch rules and the delivery log of a
+        // board (KAIROS-T-0384, KAIROS-T-0385).
+        crate::api::org::dispatch::list_webhook_targets,
+        crate::api::org::dispatch::create_webhook_target,
+        crate::api::org::dispatch::delete_webhook_target,
+        crate::api::org::dispatch::enable_webhook_target,
+        crate::api::org::dispatch::test_webhook_target,
+        crate::api::org::dispatch::list_dispatch_rules,
+        crate::api::org::dispatch::create_dispatch_rule,
+        crate::api::org::dispatch::delete_dispatch_rule,
+        crate::api::org::dispatch::list_webhook_deliveries,
         crate::api::org::boards::archive_completed,
         crate::api::org::boards::set_code_sequence,
         crate::api::org::boards::list_columns,

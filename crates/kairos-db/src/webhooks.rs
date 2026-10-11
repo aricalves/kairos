@@ -122,6 +122,10 @@ pub struct Delivery {
     pub event: String,
     #[diesel(sql_type = Nullable<SqlUuid>)]
     pub item_id: Option<Uuid>,
+    /// The dispatch rule that queued the delivery (KAIROS-T-0385); `None`
+    /// for a test delivery.
+    #[diesel(sql_type = Nullable<SqlUuid>)]
+    pub rule_id: Option<Uuid>,
     /// The JSON text that is signed and sent.
     #[diesel(sql_type = Text)]
     pub body: String,
@@ -143,7 +147,7 @@ pub struct Delivery {
 }
 
 /// The columns of a [`Delivery`].
-const DELIVERY_COLUMNS: &str = "d.id, d.target_id, d.event, d.item_id, d.body, d.status, \
+const DELIVERY_COLUMNS: &str = "d.id, d.target_id, d.event, d.item_id, d.rule_id, d.body, d.status, \
      d.tries, d.response_code, d.last_error, d.next_try_at, d.created_at, d.finished_at";
 
 /// One try of a delivery: a row of the log.
@@ -347,8 +351,9 @@ pub fn delivery_body(
     .to_string()
 }
 
-/// Add a delivery of `event` with `data` to the target `target_id`, and
-/// its job, in the transaction of the caller. A target that is off gets a
+/// Add a delivery of `event` with `data` to the target `target_id` (for the
+/// dispatch rule `rule_id`, if any), and its job, in the transaction of the
+/// caller. A target that is off gets a
 /// delivery with the status `skipped` and no job. The finished deliveries
 /// of the target older than [`KEEP_DAYS`] are removed. `None`: no such
 /// target.
@@ -357,6 +362,7 @@ pub fn queue_delivery(
     target_id: Uuid,
     event: &str,
     item_id: Option<Uuid>,
+    rule_id: Option<Uuid>,
     data: &serde_json::Value,
 ) -> Result<Option<Delivery>, DieselError> {
     conn.transaction(|conn| {
@@ -377,9 +383,9 @@ pub fn queue_delivery(
         };
         let delivery: Delivery = sql_query(format!(
             "INSERT INTO webhook_deliveries AS d (id, target_id, event, item_id, body, status, \
-                 last_error, created_at, finished_at) \
+                 last_error, created_at, finished_at, rule_id) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, \
-                 CASE WHEN $6 = 'pending' THEN NULL ELSE $8 END) \
+                 CASE WHEN $6 = 'pending' THEN NULL ELSE $8 END, $9) \
              RETURNING {DELIVERY_COLUMNS}"
         ))
         .bind::<SqlUuid, _>(id)
@@ -390,6 +396,7 @@ pub fn queue_delivery(
         .bind::<Text, _>(status)
         .bind::<Nullable<Text>, _>(error)
         .bind::<Timestamptz, _>(now)
+        .bind::<Nullable<SqlUuid>, _>(rule_id)
         .get_result(conn)?;
         if delivery.status == "pending" {
             jobs::enqueue(
@@ -429,10 +436,11 @@ pub fn get_delivery(conn: &mut PgConnection, id: Uuid) -> Result<Option<Delivery
 }
 
 /// The newest `limit` deliveries of the targets `target_ids`, newest
-/// first.
+/// first; with `rule_id`, only the deliveries of that rule.
 pub fn list_deliveries(
     conn: &mut PgConnection,
     target_ids: &[Uuid],
+    rule_id: Option<Uuid>,
     limit: i64,
 ) -> Result<Vec<Delivery>, DieselError> {
     if target_ids.is_empty() {
@@ -440,9 +448,11 @@ pub fn list_deliveries(
     }
     sql_query(format!(
         "SELECT {DELIVERY_COLUMNS} FROM webhook_deliveries d WHERE d.target_id = ANY($1) \
-         ORDER BY d.created_at DESC, d.id LIMIT $2"
+           AND ($2::uuid IS NULL OR d.rule_id = $2) \
+         ORDER BY d.created_at DESC, d.id LIMIT $3"
     ))
     .bind::<Array<SqlUuid>, _>(target_ids)
+    .bind::<Nullable<SqlUuid>, _>(rule_id)
     .bind::<diesel::sql_types::BigInt, _>(limit)
     .load(conn)
 }
@@ -620,6 +630,18 @@ fn turn_off(
         Uuid::nil(),
     )?;
     Ok(())
+}
+
+/// Replace the body of the `pending` delivery `id` (KAIROS-T-0385: the
+/// link of the data becomes a URL before the first try). False: the
+/// delivery is not pending.
+pub fn set_body(conn: &mut PgConnection, id: Uuid, body: &str) -> Result<bool, DieselError> {
+    let n =
+        sql_query("UPDATE webhook_deliveries SET body = $2 WHERE id = $1 AND status = 'pending'")
+            .bind::<SqlUuid, _>(id)
+            .bind::<Text, _>(body)
+            .execute(conn)?;
+    Ok(n == 1)
 }
 
 /// End a `pending` delivery with `status` (`failed` or `skipped`) and

@@ -687,6 +687,52 @@ mod tests {
         );
     }
 
+    /// KAIROS-T-0385: `boards dispatch` parses its subcommands.
+    #[test]
+    fn boards_dispatch_parses() {
+        for args in [
+            &["kairos", "boards", "dispatch", "list", "web"][..],
+            &[
+                "kairos",
+                "boards",
+                "dispatch",
+                "add-target",
+                "web",
+                "--name",
+                "Runner",
+                "--hook-url",
+                "https://hooks.example.com/k",
+            ][..],
+            &[
+                "kairos",
+                "boards",
+                "dispatch",
+                "add-rule",
+                "web",
+                "--column",
+                "Todo",
+                "--target",
+                "t1",
+                "--task-type",
+                "bug",
+                "--metadata",
+                "priority=high",
+            ][..],
+            &["kairos", "boards", "dispatch", "remove-rule", "web", "r1"][..],
+            &["kairos", "boards", "dispatch", "remove-target", "web", "t1"][..],
+            &["kairos", "boards", "dispatch", "enable-target", "web", "t1"][..],
+            &["kairos", "boards", "dispatch", "test-target", "web", "t1"][..],
+            &["kairos", "boards", "dispatch", "log", "web", "--limit", "5"][..],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
+            assert!(matches!(cli.command, Command::Boards(_)));
+        }
+        assert!(
+            Cli::try_parse_from(["kairos", "boards", "dispatch", "add-rule", "web"]).is_err(),
+            "--column and --target are required"
+        );
+    }
+
     /// KAIROS-T-0318: `repos update --code-index-build` takes on and off
     /// only, and the error names the refused value.
     #[test]

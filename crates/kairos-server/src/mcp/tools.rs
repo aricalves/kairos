@@ -143,6 +143,53 @@ pub struct BoardFlowParams {
     pub to: Option<String>,
 }
 
+/// `list_dispatch_rules` (KAIROS-T-0385).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct ListDispatchRulesParams {
+    /// The board, by slug (e.g. "platform-delivery") or UUID.
+    pub board: String,
+}
+
+/// `create_dispatch_rule` (KAIROS-T-0385).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct CreateDispatchRuleParams {
+    /// The board, by slug (e.g. "platform-delivery") or UUID.
+    pub board: String,
+    /// The column, by name (e.g. "Todo") or UUID.
+    pub column: String,
+    /// The id of a webhook target of the board. Send it, or send `url`
+    /// (and `target_name`) to make a new target.
+    pub target_id: Option<String>,
+    /// The URL of a new webhook target (http or https).
+    pub url: Option<String>,
+    /// The name of the new target. Default: "Agent runner".
+    pub target_name: Option<String>,
+    /// Only tasks of this type: task | bug | tech_debt | support.
+    pub task_type: Option<String>,
+    /// Only tasks with this metadata: the slug of a definition. Send it with
+    /// `metadata_value`.
+    pub metadata_slug: Option<String>,
+    /// The value of `metadata_slug` that matches (no case).
+    pub metadata_value: Option<String>,
+    /// Only tasks of this repository: its slug or UUID.
+    pub repository: Option<String>,
+}
+
+/// `delete_dispatch_rule` (KAIROS-T-0385).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct DeleteDispatchRuleParams {
+    /// The board, by slug (e.g. "platform-delivery") or UUID.
+    pub board: String,
+    /// The id of the rule (from `list_dispatch_rules`).
+    pub rule_id: String,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
@@ -1447,6 +1494,142 @@ impl KairosMcp {
                 params.to.as_deref(),
             )?;
             Ok(flow_text(&flow))
+        })
+        .await
+    }
+
+    // KAIROS-T-0385: the agent dispatch rules of a board.
+    #[tool(
+        description = "The agent dispatch rules of a board: for each rule, the column, the filter (task type, metadata value, repository) and the webhook target; then the webhook targets (on or off, with the failed tries in a row); then the 20 newest deliveries of the log (status, tries, response code, error). When a task enters the column of a rule and matches its filter, Kairos sends one signed delivery to the target. A person who belongs to the board reads them. `board` is a slug or UUID."
+    )]
+    pub async fn list_dispatch_rules(
+        &self,
+        Parameters(params): Parameters<ListDispatchRulesParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let (user, slug) = (auth.user_id, tenant.slug.clone());
+        self.run_tool(&tenant, move |conn| {
+            use crate::api::org::dispatch as d;
+            let rules = d::list_rules_as(conn, &slug, user, &params.board)?;
+            let targets = d::list_targets_as(conn, &slug, user, &params.board)?;
+            let log = d::list_deliveries_as(
+                conn,
+                &slug,
+                user,
+                &params.board,
+                &kairos_client::types_dispatch::WebhookDeliveriesQuery {
+                    limit: Some(20),
+                    ..Default::default()
+                },
+            )?;
+            Ok(dispatch_text(&params.board, &rules, &targets, &log))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Make an agent dispatch rule on a board: when a task enters `column` and matches the filter, Kairos sends one signed delivery (event task.entered_column: code, title, task type, link, board, column, repository, actor) to a webhook target. Send `target_id` (a target of the board), or `url` (and optional `target_name`) to make a new target: then the answer has its secret, shown this one time; keep it in the receiver to check X-Kairos-Signature. Optional filter: `task_type` (task | bug | tech_debt | support), `metadata_slug` with `metadata_value`, `repository` (slug or UUID); each part that is set must match. Requires configure_boards on the board."
+    )]
+    pub async fn create_dispatch_rule(
+        &self,
+        Parameters(params): Parameters<CreateDispatchRuleParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let (user, slug) = (auth.user_id, tenant.slug.clone());
+        let key = self.state.config.secrets_key.clone();
+        let allow_private = self.state.config.webhooks.allow_private;
+        self.run_tool(&tenant, move |conn| {
+            use crate::api::org::dispatch as d;
+            use kairos_client::types_dispatch as dto;
+            crate::api::org::run_in_transaction(conn, |conn| {
+                let (target_id, created) = match (params.target_id.as_deref(), params.url.as_deref()) {
+                    (Some(id), None) => (id.to_string(), None),
+                    (None, Some(url)) => {
+                        let created = d::create_target_as(
+                            conn,
+                            &slug,
+                            user,
+                            &params.board,
+                            &dto::CreateWebhookTargetRequest {
+                                name: params
+                                    .target_name
+                                    .clone()
+                                    .unwrap_or_else(|| "Agent runner".to_string()),
+                                url: url.to_string(),
+                            },
+                            key.as_ref(),
+                            allow_private,
+                        )?;
+                        (created.target.id.clone(), Some(created))
+                    }
+                    _ => {
+                        return Err(ApiError::validation(
+                            "Send target_id (a webhook target of the board) or url (a new                              target), and not both.",
+                        )
+                        .with_details(serde_json::json!({ "argument": "target_id" })));
+                    }
+                };
+                let rule = d::create_rule_as(
+                    conn,
+                    &slug,
+                    user,
+                    &params.board,
+                    &dto::CreateDispatchRuleRequest {
+                        column: params.column.clone(),
+                        target_id,
+                        task_type: params.task_type.clone(),
+                        metadata_slug: params.metadata_slug.clone(),
+                        metadata_value: params.metadata_value.clone(),
+                        repository: params.repository.clone(),
+                    },
+                )?;
+                let mut out = format!(
+                    "Made the dispatch rule {}: a task that enters {} {}goes to the target {} \
+                     ({}).",
+                    rule.id,
+                    rule.column,
+                    rule_filter_text(&rule),
+                    rule.target,
+                    rule.target_id
+                );
+                if let Some(created) = created {
+                    out.push_str(&format!(
+                        "\nMade the webhook target {} ({}) for {}.\nsecret: {}\nKairos shows the \
+                         secret this one time. Keep it in the receiver: X-Kairos-Signature is \
+                         sha256=<hex HMAC-SHA256 of the body with this secret>.",
+                        created.target.name, created.target.id, created.target.url, created.secret
+                    ));
+                }
+                Ok(out)
+            })
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Remove an agent dispatch rule of a board. Its deliveries stay in the log, and its webhook target stays. `board` is a slug or UUID; `rule_id` comes from list_dispatch_rules. Requires configure_boards on the board."
+    )]
+    pub async fn delete_dispatch_rule(
+        &self,
+        Parameters(params): Parameters<DeleteDispatchRuleParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let (user, slug) = (auth.user_id, tenant.slug.clone());
+        self.run_tool(&tenant, move |conn| {
+            let rule = crate::api::org::dispatch::delete_rule_as(
+                conn,
+                &slug,
+                user,
+                &params.board,
+                &params.rule_id,
+            )?;
+            Ok(format!(
+                "Removed the dispatch rule {} (column {}, target {}).",
+                rule.id, rule.column, rule.target
+            ))
         })
         .await
     }
@@ -3982,6 +4165,90 @@ fn card_details(updated_at: DateTime<Utc>, metadata: Option<&Vec<(String, String
         parts.push(format!("{slug}: {value}"));
     }
     format!(" {{{}}}", parts.join("; "))
+}
+
+/// The filter of a rule, for a sentence: `"and is a bug "`, or empty. Pure.
+fn rule_filter_text(rule: &kairos_client::types_dispatch::DispatchRule) -> String {
+    let mut parts = Vec::new();
+    if let Some(t) = &rule.task_type {
+        parts.push(format!("has the type {t}"));
+    }
+    if let (Some(slug), Some(value)) = (&rule.metadata_slug, &rule.metadata_value) {
+        parts.push(format!("has {slug}={value}"));
+    }
+    if let Some(repo) = &rule.repository {
+        parts.push(format!("has the repository {repo}"));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("and {} ", parts.join(" and "))
+    }
+}
+
+/// The text of `list_dispatch_rules` (KAIROS-T-0385). Pure.
+fn dispatch_text(
+    board: &str,
+    rules: &[kairos_client::types_dispatch::DispatchRule],
+    targets: &[kairos_client::types_dispatch::WebhookTarget],
+    log: &[kairos_client::types_dispatch::WebhookDelivery],
+) -> String {
+    let mut out = format!("Dispatch rules of {board} ({}):\n", rules.len());
+    if rules.is_empty() {
+        out.push_str("  (none)\n");
+    }
+    for rule in rules {
+        out.push_str(&format!(
+            "- {}: a task that enters {} {}-> {} ({})\n",
+            rule.id,
+            rule.column,
+            rule_filter_text(rule),
+            rule.target,
+            rule.target_id
+        ));
+    }
+    out.push_str(&format!("Webhook targets ({}):\n", targets.len()));
+    if targets.is_empty() {
+        out.push_str("  (none)\n");
+    }
+    for target in targets {
+        let state = if target.enabled {
+            format!("on, {} failed tries in a row", target.consecutive_failures)
+        } else {
+            format!(
+                "OFF: {}",
+                target.disabled_reason.as_deref().unwrap_or("turned off")
+            )
+        };
+        out.push_str(&format!(
+            "- {} {} <{}>: {state}\n",
+            target.id, target.name, target.url
+        ));
+    }
+    out.push_str(&format!("Newest deliveries ({}):\n", log.len()));
+    if log.is_empty() {
+        out.push_str("  (none)\n");
+    }
+    for d in log {
+        out.push_str(&format!(
+            "- {} {} {} {}: {}, {} {}{}{}\n",
+            d.created_at,
+            d.id,
+            d.event,
+            d.short_code.as_deref().unwrap_or("-"),
+            d.status,
+            d.tries,
+            if d.tries == 1 { "try" } else { "tries" },
+            d.response_code
+                .map(|c| format!(", code {c}"))
+                .unwrap_or_default(),
+            d.last_error
+                .as_deref()
+                .map(|e| format!(", {e}"))
+                .unwrap_or_default()
+        ));
+    }
+    out
 }
 
 /// The text of `board_flow` (KAIROS-T-0372). Pure.

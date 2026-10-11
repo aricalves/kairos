@@ -115,6 +115,7 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
         config.secrets_key.clone(),
         config.webhooks.clone(),
     )
+    .with_public_url(config.public_url.clone())
     .register(&jobs);
     Ok(AppState {
         config: Arc::new(config),
@@ -279,6 +280,7 @@ pub fn state_with(config: AppConfig, pool: TenantPool, auth: Arc<Authenticator>)
         config.secrets_key.clone(),
         config.webhooks.clone(),
     )
+    .with_public_url(config.public_url.clone())
     .register(&jobs);
     AppState {
         config: Arc::new(config),

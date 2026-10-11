@@ -198,6 +198,8 @@ pub fn cancel_task(
             crate::notifications::Cleared::Done,
             actor_id,
         )?;
+        // KAIROS-T-0385: the dispatch rules of the done column.
+        crate::dispatch::on_task_entered_column(conn, task_id, to_column_id, actor_id)?;
         events::emit_item_event_by_id(
             conn,
             EventKind::ItemTransitioned,

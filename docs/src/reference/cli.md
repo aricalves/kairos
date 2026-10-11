@@ -648,6 +648,46 @@ board. Kairos does not refuse a move into a column over its limit. The REST
 answer has the header `Kairos-Warning`, and the MCP answer has a warning line.
 The board marks the column.
 
+### `kairos boards dispatch`
+
+```
+kairos boards dispatch list <BOARD> [OPTIONS]
+kairos boards dispatch add-target <BOARD> --name <NAME> --hook-url <URL> [OPTIONS]
+kairos boards dispatch remove-target <BOARD> <TARGET> [OPTIONS]
+kairos boards dispatch enable-target <BOARD> <TARGET> [OPTIONS]
+kairos boards dispatch test-target <BOARD> <TARGET> [OPTIONS]
+kairos boards dispatch add-rule <BOARD> --column <COLUMN> --target <TARGET> [--task-type <TYPE>] [--metadata <SLUG=VALUE>] [--repository <REPO>] [OPTIONS]
+kairos boards dispatch remove-rule <BOARD> <RULE> [OPTIONS]
+kairos boards dispatch log <BOARD> [--target <TARGET>] [--rule <RULE>] [--limit <N>] [OPTIONS]
+```
+
+Sends tasks to agent runners (KAIROS-T-0385). A rule names a column, a filter
+and a webhook target. When a task enters the column and matches the filter,
+Kairos sends one signed delivery to the target. See
+[Webhook deliveries](webhooks.md).
+
+| Subcommand | Needs | Does |
+|---|---|---|
+| `list` | a place on the board | Shows the rules and the targets of the board. |
+| `add-target` | `configure_boards` | Makes a target. The command shows its secret one time. |
+| `remove-target` | `configure_boards` | Removes a target, with its rules and its log. |
+| `enable-target` | `configure_boards` | Turns on a target that Kairos turned off. |
+| `test-target` | `configure_boards` | Sends the event `ping` to a target. |
+| `add-rule` | `configure_boards` | Makes a rule. |
+| `remove-rule` | `configure_boards` | Removes a rule. Its deliveries stay in the log. |
+| `log` | a place on the board | Shows the newest deliveries, with the status, the tries and the response code. |
+
+A place on the board is a grant on the board, a place in its team, or the
+admin role.
+
+| Option of `add-rule` | Type | Default | Description |
+|---|---|---|---|
+| `--column <COLUMN>` | name or UUID | required | The column. |
+| `--target <TARGET>` | UUID | required | A target of the board. |
+| `--task-type <TYPE>` | string | none | Only tasks of this type: `task`, `bug`, `tech_debt` or `support`. |
+| `--metadata <SLUG=VALUE>` | string | none | Only tasks with this metadata value, for example `priority=high`. |
+| `--repository <REPO>` | slug or UUID | none | Only tasks of this repository. |
+
 ### `kairos boards archive-completed`
 
 ```

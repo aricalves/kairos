@@ -470,6 +470,21 @@ Body of `POST /api/boards/{id}/columns`.
 
 The server refuses a body with a field that is not in this table ([Errors](../errors.md#a-field-of-the-body)).
 
+## CreateDispatchRuleRequest
+
+`POST /api/boards/{id}/dispatch-rules` body.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `column` | `string` | yes | The name or the id of a column of the board. |
+| `metadata_slug` | `string`, nullable | no | Only tasks with this metadata: the slug of a definition. Send it with `metadata_value`. |
+| `metadata_value` | `string`, nullable | no | The value of `metadata_slug` that matches. |
+| `repository` | `string`, nullable | no | Only tasks of this repository: its slug or its id. |
+| `target_id` | `string` | yes | The id of a webhook target of the board. |
+| `task_type` | `string`, nullable | no | Only tasks of this type: `task|bug|tech_debt|support`. |
+
+The server refuses a body with a field that is not in this table ([Errors](../errors.md#a-field-of-the-body)).
+
 ## CreateDocumentRequest
 
 Body of `POST /api/documents`. A document has an owner board from its create (COLLIERY-T-0269), and `board` is required (COLLIERY-T-3109). The document names that board as its owner, and its code gets the prefix of that board. The caller needs `manage_documents` on that board. With `parent_short_code`, the document also supports that item: a strategy, an initiative, or a task. The server creates the `supports` edge. The parent gives no authority over the document. The server refuses a body with no `board`, or with a null or empty `board`: 422 `VALIDATION`, and `details.field` is `board`.
@@ -723,9 +738,29 @@ Body of `POST /api/boards/{id}/transitions`.
 
 The server refuses a body with a field that is not in this table ([Errors](../errors.md#a-field-of-the-body)).
 
+## CreateWebhookTargetRequest
+
+`POST /api/boards/{id}/webhook-targets` body.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | `string` | yes | A name for people, for example `Agent runner`. |
+| `url` | `string` | yes | An `http://` or `https://` URL. A loopback, private, link-local or shared address is refused unless the deployment sets `KAIROS_WEBHOOK_ALLOW_PRIVATE`. |
+
+The server refuses a body with a field that is not in this table ([Errors](../errors.md#a-field-of-the-body)).
+
 ## CreatedForgeConnection
 
 Response of connection creation and rotation: the connection plus the delivery URL and secret to paste into the forge. **The secret is shown here and nowhere else** — it is derived, never stored, so it cannot be re-read later (rotate to get a new one).
+
+## CreatedWebhookTarget
+
+`POST /api/boards/{id}/webhook-targets` response: the target, and its secret. Kairos shows the secret this one time.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `secret` | `string` | yes | The key of the HMAC-SHA256 of `X-Kairos-Signature`. Keep it in the receiver. Kairos does not show it again. |
+| `target` | [`WebhookTarget`](schemas.md#webhooktarget) | yes |  |
 
 ## CumulativeFlow
 
@@ -786,6 +821,25 @@ A delivery stream (`/api/delivery-streams`).
 | `name` | `string` | yes |  |
 | `slug` | `string` | yes |  |
 | `updated_at` | `string` | yes | RFC 3339. |
+
+## DispatchRule
+
+A dispatch rule of a board. A task can enter `column` and match the filter. Then Kairos sends one signed delivery to the target.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `board_id` | `string` | yes |  |
+| `column` | `string` | yes | The name of the column. |
+| `column_id` | `string` | yes |  |
+| `created_at` | `string` | yes |  |
+| `created_by` | `string` | yes |  |
+| `id` | `string` | yes |  |
+| `metadata_slug` | `string`, nullable | no | The slug of a metadata definition; `null`: no metadata filter. |
+| `metadata_value` | `string`, nullable | no | The value of the metadata that matches (no case, no space at the ends). |
+| `repository` | `string`, nullable | no | The slug of the repository; `null`: each repository, and none. |
+| `target` | `string` | yes | The name of the target. |
+| `target_id` | `string` | yes |  |
+| `task_type` | `string`, nullable | no | `task|bug|tech_debt|support`; `null`: each type. |
 
 ## Document
 
@@ -2416,4 +2470,54 @@ Where the vectors of the code index summaries are made.
 | `model` | `string`, nullable | no |  |
 | `provider` | `string` | yes | `embedded` (the model in the server) or `remote` (an OpenAI-compatible embeddings endpoint). |
 | `secret` | [`SecretStatus`](schemas.md#secretstatus) | yes | The API key of the endpoint. A local Ollama needs none. |
+
+## WebhookDelivery
+
+One delivery of the log, with its tries.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `created_at` | `string` | yes |  |
+| `event` | `string` | yes | `task.entered_column` or `ping`. |
+| `finished_at` | `string`, nullable | no |  |
+| `id` | `string` | yes | The id; the value of `X-Kairos-Delivery`. |
+| `last_error` | `string`, nullable | no |  |
+| `log` | array of [`WebhookDeliveryTry`](schemas.md#webhookdeliverytry) | yes | Each try, oldest first. |
+| `next_try_at` | `string`, nullable | no |  |
+| `response_code` | `integer`, nullable | no |  |
+| `rule_id` | `string`, nullable | no | The rule that sent it; `null` for a test delivery. |
+| `short_code` | `string`, nullable | no | The code of the task now; `null` when there is no task. |
+| `status` | `string` | yes | `pending|delivered|failed|skipped`. |
+| `target_id` | `string` | yes |  |
+| `tries` | `integer` | yes |  |
+
+## WebhookDeliveryTry
+
+One try of a delivery.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `at` | `string` | yes |  |
+| `duration_ms` | `integer` | yes |  |
+| `error` | `string`, nullable | no |  |
+| `ok` | `boolean` | yes | True: the target answered with a 2xx code. |
+| `response_code` | `integer`, nullable | no |  |
+| `try_number` | `integer` | yes | 1 for the first try. |
+
+## WebhookTarget
+
+A webhook target of a board: a URL. Kairos sends signed deliveries to it. The secret is never in this type: Kairos shows it one time, in [`CreatedWebhookTarget`].
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `board_id` | `string` | yes |  |
+| `consecutive_failures` | `integer` | yes | The failed tries in a row. |
+| `created_at` | `string` | yes |  |
+| `created_by` | `string` | yes |  |
+| `disabled_at` | `string`, nullable | no |  |
+| `disabled_reason` | `string`, nullable | no |  |
+| `enabled` | `boolean` | yes | False: Kairos turned the target off after failed tries, and sends nothing to it until a board manager turns it on again. |
+| `id` | `string` | yes |  |
+| `name` | `string` | yes |  |
+| `url` | `string` | yes | The URL. A person who cannot configure the board gets it with no query and no fragment. |
 

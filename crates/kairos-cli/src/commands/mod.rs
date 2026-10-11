@@ -4,6 +4,7 @@
 
 pub mod admin;
 pub mod boards;
+pub mod dispatch;
 pub mod entities;
 pub mod grants;
 pub mod keys;

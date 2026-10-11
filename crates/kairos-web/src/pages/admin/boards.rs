@@ -371,6 +371,9 @@ pub fn AdminBoardPage() -> impl IntoView {
             Some(Ok(detail)) => {
                 let id = detail.board.id.clone();
                 let level = detail.board.board_level.clone();
+                let column_names: Vec<String> =
+                    detail.columns.iter().map(|c| c.name.clone()).collect();
+                let dispatch_board = id.clone();
                 view! {
                     <PageHeader title=detail.board.name.clone() sub="board configuration"/>
                     <Stack gap="md">
@@ -390,6 +393,9 @@ pub fn AdminBoardPage() -> impl IntoView {
                             transitions=detail.transitions.clone() busy outcome reload
                             from_name to_name/>
                         <MembersPanel board_id=id board_level=level
+                            busy outcome reload/>
+                        // KAIROS-T-0385: the agent dispatch of the board.
+                        <super::dispatch::DispatchPanel board_id=dispatch_board column_names
                             busy outcome reload/>
                     </Stack>
                 }.into_any()

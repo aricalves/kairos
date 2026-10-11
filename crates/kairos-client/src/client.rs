@@ -757,6 +757,100 @@ impl KairosClient {
             .await
     }
 
+    /// `GET /api/boards/{id}/webhook-targets` (KAIROS-T-0384).
+    pub async fn list_webhook_targets(
+        &self,
+        board: &str,
+    ) -> Result<Vec<crate::types_dispatch::WebhookTarget>, Error> {
+        self.get(&format!("/api/boards/{board}/webhook-targets"))
+            .await
+    }
+
+    /// `POST /api/boards/{id}/webhook-targets`: the target and its secret,
+    /// shown this one time.
+    pub async fn create_webhook_target(
+        &self,
+        board: &str,
+        request: &crate::types_dispatch::CreateWebhookTargetRequest,
+    ) -> Result<crate::types_dispatch::CreatedWebhookTarget, Error> {
+        self.post_created(&format!("/api/boards/{board}/webhook-targets"), request)
+            .await
+    }
+
+    /// `DELETE /api/boards/{id}/webhook-targets/{target_id}`.
+    pub async fn delete_webhook_target(
+        &self,
+        board: &str,
+        target_id: &str,
+    ) -> Result<crate::types_dispatch::WebhookTarget, Error> {
+        self.delete(&format!("/api/boards/{board}/webhook-targets/{target_id}"))
+            .await
+    }
+
+    /// `POST /api/boards/{id}/webhook-targets/{target_id}/enable`.
+    pub async fn enable_webhook_target(
+        &self,
+        board: &str,
+        target_id: &str,
+    ) -> Result<crate::types_dispatch::WebhookTarget, Error> {
+        self.post_empty(&format!(
+            "/api/boards/{board}/webhook-targets/{target_id}/enable"
+        ))
+        .await
+    }
+
+    /// `POST /api/boards/{id}/webhook-targets/{target_id}/test`: a `ping`
+    /// delivery.
+    pub async fn test_webhook_target(
+        &self,
+        board: &str,
+        target_id: &str,
+    ) -> Result<crate::types_dispatch::WebhookDelivery, Error> {
+        self.post_empty_created(&format!(
+            "/api/boards/{board}/webhook-targets/{target_id}/test"
+        ))
+        .await
+    }
+
+    /// `GET /api/boards/{id}/dispatch-rules` (KAIROS-T-0385).
+    pub async fn list_dispatch_rules(
+        &self,
+        board: &str,
+    ) -> Result<Vec<crate::types_dispatch::DispatchRule>, Error> {
+        self.get(&format!("/api/boards/{board}/dispatch-rules"))
+            .await
+    }
+
+    /// `POST /api/boards/{id}/dispatch-rules`.
+    pub async fn create_dispatch_rule(
+        &self,
+        board: &str,
+        request: &crate::types_dispatch::CreateDispatchRuleRequest,
+    ) -> Result<crate::types_dispatch::DispatchRule, Error> {
+        self.post_created(&format!("/api/boards/{board}/dispatch-rules"), request)
+            .await
+    }
+
+    /// `DELETE /api/boards/{id}/dispatch-rules/{rule_id}`.
+    pub async fn delete_dispatch_rule(
+        &self,
+        board: &str,
+        rule_id: &str,
+    ) -> Result<crate::types_dispatch::DispatchRule, Error> {
+        self.delete(&format!("/api/boards/{board}/dispatch-rules/{rule_id}"))
+            .await
+    }
+
+    /// `GET /api/boards/{id}/webhook-deliveries`: the delivery log.
+    pub async fn list_webhook_deliveries(
+        &self,
+        board: &str,
+        query: &crate::types_dispatch::WebhookDeliveriesQuery,
+    ) -> Result<Vec<crate::types_dispatch::WebhookDelivery>, Error> {
+        self.get_query(&format!("/api/boards/{board}/webhook-deliveries"), query)
+            .await
+    }
+
     /// Each item of a board: `GET /api/boards/{id}/items`, page after
     /// page, as one response (COLLIERY-T-0261). `limit` and `offset` of
     /// `query` have no effect: the pages have the maximum size, and the
