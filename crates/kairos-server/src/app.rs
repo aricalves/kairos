@@ -175,6 +175,7 @@ fn start_code_index_builder(state: &AppState) {
     // (COLLIERY-T-2525), off the start of the server: a download of about
     // 2.7 GB must not keep the server from serving.
     let blocking = state.blocking.clone();
+    let worker = Arc::clone(&state.jobs);
     let threads = state.config.code_index_threads;
     tokio::spawn(async move {
         let dir = service.dir().to_path_buf();
@@ -203,6 +204,7 @@ fn start_code_index_builder(state: &AppState) {
             }
         };
         crate::code_index::run_builder(
+            worker,
             blocking,
             service,
             summarizers,

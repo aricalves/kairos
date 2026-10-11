@@ -58,6 +58,22 @@ pub mod kinds {
     pub const PERIODIC: &str = "periodic";
 }
 
+/// The priorities of the jobs (COLLIERY-I-0613): a higher one runs first.
+/// The order: a requested rebuild, an update, a first build, an embedding
+/// batch, a periodic pass.
+pub mod priority {
+    /// A code-index build that a person asked for.
+    pub const REQUESTED_BUILD: i32 = 50;
+    /// A code-index update after a push.
+    pub const UPDATE: i32 = 40;
+    /// The first code-index build of a repository.
+    pub const FIRST_BUILD: i32 = 30;
+    /// A batch of the embedding refresh.
+    pub const EMBEDDING_BATCH: i32 = 20;
+    /// A periodic pass.
+    pub const PERIODIC: i32 = 10;
+}
+
 /// The limit of a kind that has no setting.
 pub const DEFAULT_LIMIT: usize = 1;
 
@@ -126,6 +142,10 @@ pub struct JobError {
     /// True: the job is queued again while it has tries. False: it fails
     /// now.
     pub retry: bool,
+    /// True: the job gave its slot to a job of a higher priority
+    /// ([`JobHandle::should_yield`]). It is queued again, and no try is
+    /// counted.
+    pub yielded: bool,
 }
 
 impl JobError {
@@ -134,6 +154,7 @@ impl JobError {
         JobError {
             reason: reason.into(),
             retry: true,
+            yielded: false,
         }
     }
 
@@ -142,6 +163,17 @@ impl JobError {
         JobError {
             reason: reason.into(),
             retry: false,
+            yielded: false,
+        }
+    }
+
+    /// The job stopped at a step boundary because
+    /// [`JobHandle::should_yield`] said so.
+    pub fn yielded() -> Self {
+        JobError {
+            reason: "The job gave its slot to a job of a higher priority.".into(),
+            retry: true,
+            yielded: true,
         }
     }
 }
@@ -182,6 +214,10 @@ struct HandleInner {
     /// The number of progress calls.
     count: AtomicU64,
     cancelled: AtomicBool,
+    /// The job can give its slot to a job of a higher priority.
+    yieldable: AtomicBool,
+    /// A job of a higher priority waits for the slot of this job.
+    yield_now: AtomicBool,
 }
 
 impl std::fmt::Debug for JobHandle {
@@ -202,6 +238,8 @@ impl JobHandle {
                 last_progress: AtomicU64::new(0),
                 count: AtomicU64::new(0),
                 cancelled: AtomicBool::new(false),
+                yieldable: AtomicBool::new(false),
+                yield_now: AtomicBool::new(false),
             }),
         }
     }
@@ -225,6 +263,26 @@ impl JobHandle {
     /// step that runs on a thread checks this and stops.
     pub fn cancelled(&self) -> bool {
         self.inner.cancelled.load(Ordering::Relaxed)
+    }
+
+    /// The job can stop at a step boundary and give its slot to a job of
+    /// the same kind with a higher priority (KAIROS-T-0374: a first build
+    /// of hours lets an update go first). The watchdog then sets
+    /// [`Self::should_yield`] when such a job waits and this server has no
+    /// free slot of the kind.
+    pub fn allow_yield(&self) {
+        self.inner.yieldable.store(true, Ordering::Relaxed);
+    }
+
+    /// True when a job of a higher priority waits for the slot of this job.
+    /// The job stops at its next step boundary, keeps what it made, and
+    /// ends with [`JobError::yielded`].
+    pub fn should_yield(&self) -> bool {
+        self.inner.yield_now.load(Ordering::Relaxed)
+    }
+
+    fn yieldable(&self) -> bool {
+        self.inner.yieldable.load(Ordering::Relaxed)
     }
 
     fn since_progress(&self) -> Duration {
@@ -267,6 +325,8 @@ impl std::fmt::Debug for Worker {
 enum Ended {
     Done,
     Requeued,
+    /// Queued again with no try counted: it gave its slot.
+    Yielded,
     Failed,
     /// Another server holds the lease now.
     Lost,
@@ -412,6 +472,12 @@ impl Worker {
         started
     }
 
+    /// True when this server has a free slot of `kind`.
+    fn has_free_slot(&self, kind: &str) -> bool {
+        let running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+        running.get(kind).copied().unwrap_or(0) < self.settings.limit(kind)
+    }
+
     /// Run passes until no job is queued for this worker and none runs
     /// here. For tests and for a one-shot command.
     pub async fn drain(self: &Arc<Self>) {
@@ -515,7 +581,9 @@ impl Worker {
     async fn supervise(&self, job: Job, handler: Arc<dyn JobHandler>) -> Ended {
         let handle = JobHandle::new(job.clone());
         let mut task = tokio::spawn(handler.run(handle.clone()));
-        let mut ticker = tokio::time::interval(self.settings.heartbeat);
+        // The watchdog looks at each heartbeat, and at each poll for a job
+        // that can give its slot.
+        let mut ticker = tokio::time::interval(self.settings.heartbeat.min(self.settings.poll));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         ticker.tick().await;
         let mut written = handle.count();
@@ -552,8 +620,19 @@ impl Worker {
                         tracing::warn!(job = %job.id, kind = %job.kind, "job heartbeat not written for the lease time; stopped here");
                         return Ended::Lost;
                     }
+                    if handle.yieldable() && !handle.should_yield() && !self.has_free_slot(&job.kind) {
+                        let (kind, priority) = (job.kind.clone(), job.priority);
+                        if let Ok(true) = self
+                            .blocking
+                            .run_public(move |conn| db::higher_waits(conn, &kind, priority).map_err(ApiError::internal))
+                            .await
+                        {
+                            tracing::info!(job = %job.id, kind = %job.kind, "a job of a higher priority waits: this job gives its slot at its next step");
+                            handle.inner.yield_now.store(true, Ordering::Relaxed);
+                        }
+                    }
                     let count = handle.count();
-                    if count == written {
+                    if count == written || lease_written.elapsed() < self.settings.heartbeat {
                         continue;
                     }
                     written = count;
@@ -594,9 +673,15 @@ impl Worker {
                 })
                 .await
                 .map(|held| if held { Ended::Done } else { Ended::Lost }),
+            Err(JobError { yielded: true, .. }) => self
+                .blocking
+                .run_public(move |conn| db::requeue(conn, id, instance).map_err(ApiError::internal))
+                .await
+                .map(|held| if held { Ended::Yielded } else { Ended::Lost }),
             Err(JobError {
                 reason,
                 retry: true,
+                ..
             }) => {
                 tracing::warn!(job = %job.id, kind = %job.kind, %reason, "job try failed");
                 self.blocking
@@ -614,6 +699,7 @@ impl Worker {
             Err(JobError {
                 reason,
                 retry: false,
+                ..
             }) => {
                 tracing::warn!(job = %job.id, kind = %job.kind, %reason, "job failed");
                 self.blocking

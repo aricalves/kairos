@@ -54,7 +54,7 @@ use kairos_index::{FakeSummarizer, Index, Level, UpdateOptions};
 use kairos_server::app;
 use kairos_server::code_index::{
     ACTIVE_RUN, CodeIndexService, FakeSummarizers, MIN_REBUILD, OPTED_OUT, SummarizerSource,
-    end_stale_runs, first_builds, requested_builds, run_builder, sweep,
+    end_stale_runs, first_builds, job_key, requested_builds, run_builder, sweep,
 };
 use kairos_server::middleware::auth::Authenticator;
 
@@ -1179,7 +1179,19 @@ async fn a_first_build_does_not_stop_the_updates() {
         delay: std::time::Duration::from_millis(100),
     };
     let embedder: Arc<dyn EmbeddingProvider> = Arc::new(DeterministicProvider::default());
+    // KAIROS-T-0374: the builder adds the jobs, and the job worker of the
+    // server runs them, one build with the embedded model at a time.
+    let worker = Arc::new(kairos_server::jobs::Worker::new(
+        w.state.blocking.clone(),
+        w.service.instance(),
+        kairos_server::jobs::JobSettings {
+            poll: std::time::Duration::from_millis(200),
+            ..Default::default()
+        },
+    ));
+    let jobs = tokio::spawn(Arc::clone(&worker).run());
     let builder = tokio::spawn(run_builder(
+        Arc::clone(&worker),
         w.state.blocking.clone(),
         Arc::clone(&w.service),
         Some(Arc::new(summarizers)),
@@ -1235,6 +1247,7 @@ async fn a_first_build_does_not_stop_the_updates() {
     assert_eq!(big_index[0].source, "build");
     assert!(count() >= FUNCTIONS);
     builder.abort();
+    jobs.abort();
 }
 
 // ===========================================================================
@@ -1372,8 +1385,9 @@ async fn a_run_that_the_server_did_not_end_is_failed_at_the_next_run() {
     assert_eq!(runs[0].trigger, "push");
 }
 
-// KAIROS-T-0354: the update lane does not start a run on a repository
-// whose requested run is active, and the requested run keeps its row.
+// KAIROS-T-0354, KAIROS-T-0374: the update lane does not add a second job
+// of a repository whose requested build waits, and the requested run keeps
+// its row and ends ok.
 #[tokio::test]
 async fn the_update_lane_does_not_start_a_run_while_a_requested_run_is_active() {
     // Given an index of commit A, and a requested run that waits for the
@@ -1394,22 +1408,18 @@ async fn the_update_lane_does_not_start_a_run_while_a_requested_run_is_active() 
     // When the update lane runs
     let outcomes = w.sweep().await;
 
-    // Then it makes no run of the repository, and says why
-    assert_eq!(outcomes.len(), 1, "{outcomes:?}");
-    assert!(outcomes[0].report.is_none(), "{outcomes:?}");
+    // Then it adds no job of the repository, and says why
+    assert_eq!(outcomes.len(), 2, "{outcomes:?}");
     let note = outcomes[0].note.clone().expect("a note");
+    assert!(outcomes[0].report.is_none(), "{outcomes:?}");
     assert!(note.starts_with(ACTIVE_RUN), "{note}");
     assert!(note.contains(&requested.id), "{note}");
+
+    // And the requested run is the one build, and ends ok with the index of
+    // the head
+    assert!(outcomes[1].report.is_some(), "{outcomes:?}");
     let runs = runs_of(&w).await;
     assert_eq!(runs.len(), 2, "the upload and the request: {runs:?}");
-    assert_eq!(runs[0].id, requested.id);
-    assert_eq!(runs[0].outcome, "running", "the request keeps its row");
-
-    // And the requested run ends ok, with the index of the head
-    let outcomes = w.requested_builds().await;
-    assert!(outcomes[0].report.is_some(), "{outcomes:?}");
-    let runs = runs_of(&w).await;
-    assert_eq!(runs.len(), 2, "{runs:?}");
     assert_eq!(runs[0].id, requested.id);
     assert_eq!(runs[0].outcome, "ok", "{runs:?}");
     assert_eq!(runs[0].commit.as_deref(), Some(b.as_str()));
@@ -1417,15 +1427,16 @@ async fn the_update_lane_does_not_start_a_run_while_a_requested_run_is_active() 
     assert_eq!(outcomes[0].note.as_deref(), Some("the head has an index"));
 }
 
-// KAIROS-T-0354: the stale-run rule ends only the runs of a server that
-// stopped.
+// KAIROS-T-0354, KAIROS-T-0374: the stale-run rule ends only the runs that
+// no open job names; the run of a job that runs, or waits for a server,
+// stays.
 #[tokio::test]
 async fn only_the_runs_of_a_server_that_stopped_are_ended() {
     use kairos_db::code_index_builds as runs;
     let mut w = World::new("kairos_code_index_t0354_stale").await;
     // Given a running run of a server that stopped, a running run from
-    // before the servers recorded their start, and a running run of this
-    // server
+    // before the servers recorded their start, and a running run of a
+    // build job that another server holds
     let stopped = runs::start(
         &mut w.conn,
         w.repo_id,
@@ -1437,21 +1448,31 @@ async fn only_the_runs_of_a_server_that_stopped_are_ended() {
     .expect("a run of a server that stopped");
     let old = runs::start(&mut w.conn, w.repo_id, "push", None, None, None)
         .expect("a run with no server");
-    let ours = runs::start(
+    let other = Uuid::new_v4();
+    let ours = runs::start(&mut w.conn, w.repo_id, "first", None, None, Some(other))
+        .expect("a run of a job");
+    let job = kairos_db::jobs::enqueue(
         &mut w.conn,
-        w.repo_id,
-        "first",
-        None,
-        None,
-        Some(w.service.instance()),
+        &kairos_db::jobs::NewJob {
+            tenant: Some("acme".into()),
+            payload: serde_json::json!({
+                "repository_id": w.repo_id, "trigger": "first", "run": ours.id
+            }),
+            dedupe_key: Some(job_key("acme", w.repo_id)),
+            ..kairos_db::jobs::NewJob::new("embedded_build")
+        },
     )
-    .expect("a run of this server");
+    .unwrap()
+    .expect("the job");
+    kairos_db::jobs::take(&mut w.conn, other, &["embedded_build".to_string()], 600.0)
+        .unwrap()
+        .expect("the other server holds the job");
 
     // When the builder of this server starts
-    end_stale_runs(&w.state.blocking, &w.service).await;
+    end_stale_runs(&w.state.blocking).await;
 
-    // Then the runs of the server that stopped are ended, and the run of
-    // this server is not
+    // Then the runs that no job names are ended, and the run of the job is
+    // not
     let runs = runs_of(&w).await;
     let of = |id: Uuid| {
         runs.iter()
@@ -1465,11 +1486,9 @@ async fn only_the_runs_of_a_server_that_stopped_are_ended() {
     assert_eq!(of(ours.id).outcome, "running", "{runs:?}");
     assert_eq!(of(ours.id).error, None);
 
-    // And at the next start of the server, the run is of a server that
-    // stopped
-    let next = CodeIndexService::from_repo_url(w.work().join("next"));
-    assert_ne!(next.instance(), w.service.instance());
-    end_stale_runs(&w.state.blocking, &next).await;
+    // And when the job ended without its run, the next start ends it
+    assert!(kairos_db::jobs::fail(&mut w.conn, job.id, other, "gone").unwrap());
+    end_stale_runs(&w.state.blocking).await;
     let runs = runs_of(&w).await;
     let ended = runs
         .iter()
@@ -1595,7 +1614,18 @@ async fn a_member_of_the_owner_team_asks_for_a_rebuild() {
         .rebuild_code_index("payments-api")
         .await
         .expect("the run ended, so a new request goes");
-    assert!(w.service.pending_rebuilds().len() == 1);
+    let mut conn = PgConnection::establish(&with_database(
+        &common::admin_database_url(),
+        "kairos_code_index_t0332_rebuild",
+    ))
+    .unwrap();
+    let open = kairos_db::jobs::open_by_key(&mut conn, &job_key("acme", w.repo_id))
+        .unwrap()
+        .expect("the request is a job");
+    assert_eq!(
+        open.priority,
+        kairos_server::jobs::priority::REQUESTED_BUILD
+    );
 }
 
 #[tokio::test]
@@ -2290,10 +2320,16 @@ async fn a_busy_repository_is_not_built_twice_in_a_row() {
     let summarizers: Arc<dyn SummarizerSource> = Arc::new(HookSummarizers {
         hook: Arc::new(hook),
     });
+    // A pass fetches each repository when it adds the jobs (KAIROS-T-0374),
+    // so a push during the pass waits for the next pass: up to 8 passes for
+    // 6 builds.
     let mut sequence = Vec::new();
-    for _ in 0..3 {
+    for _ in 0..8 {
         let outcomes = w.sweep_with(Arc::clone(&summarizers)).await;
         sequence.extend(built(&outcomes).into_iter().map(str::to_string));
+        if sequence.len() >= 6 {
+            break;
+        }
     }
 
     // Then the builds alternate: no repository gets 2 builds in a row
@@ -2515,4 +2551,399 @@ async fn a_summary_of_a_stopped_update_stays_out_of_an_index_that_does_not_need_
     assert!(keys_in(&index_c).is_disjoint(&made));
     assert!(pool_keys(&mut w).is_disjoint(&made));
     assert_eq!(content_of(&index_c), content_of(&w.index(&c)));
+}
+
+// ===========================================================================
+// KAIROS-T-0374: the builds run as jobs; 2 servers share them
+// ===========================================================================
+
+/// Short job times, so that a lease runs out in a second.
+fn quick_jobs() -> kairos_server::jobs::JobSettings {
+    kairos_server::jobs::JobSettings {
+        heartbeat: std::time::Duration::from_millis(250),
+        lease: std::time::Duration::from_secs(1),
+        poll: std::time::Duration::from_millis(100),
+        retry_after: std::time::Duration::ZERO,
+        ..Default::default()
+    }
+}
+
+/// A second server of the world: a service with the clones in `dir`, and
+/// its own start id.
+fn second_service(w: &World, dir: &Path) -> Arc<CodeIndexService> {
+    let root = w.work().to_path_buf();
+    Arc::new(
+        CodeIndexService::new(
+            dir.to_path_buf(),
+            Arc::new(move |repo: &kairos_db::models::repositories::Repository| {
+                root.join(&repo.slug).display().to_string()
+            }),
+        )
+        .with_secrets_key(w.service.secrets_key().cloned()),
+    )
+}
+
+/// A job worker of the server of `service` that runs the builds with
+/// `summarizers`, and the outcomes of its builds.
+fn build_worker(
+    blocking: kairos_server::blocking::BlockingTenantPool,
+    service: &Arc<CodeIndexService>,
+    summarizers: Arc<dyn SummarizerSource>,
+    settings: kairos_server::jobs::JobSettings,
+) -> (
+    Arc<kairos_server::jobs::Worker>,
+    Arc<Mutex<Vec<kairos_server::code_index::BuildOutcome>>>,
+) {
+    let worker = Arc::new(kairos_server::jobs::Worker::new(
+        blocking.clone(),
+        service.instance(),
+        settings,
+    ));
+    let outcomes = Arc::new(Mutex::new(Vec::new()));
+    let embedder: Arc<dyn EmbeddingProvider> = Arc::new(DeterministicProvider::default());
+    kairos_server::code_index::BuildHandler::new(
+        blocking,
+        Arc::clone(service),
+        Some(summarizers),
+        embedder,
+    )
+    .with_outcomes(Arc::clone(&outcomes))
+    .register(&worker);
+    (worker, outcomes)
+}
+
+fn reports(outcomes: &Mutex<Vec<kairos_server::code_index::BuildOutcome>>) -> usize {
+    outcomes
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|o| o.report.is_some())
+        .count()
+}
+
+fn scratch_conn(db: &str) -> PgConnection {
+    let mut conn =
+        PgConnection::establish(&with_database(&common::admin_database_url(), db)).unwrap();
+    diesel::sql_query("SET search_path TO org_acme, public")
+        .execute(&mut conn)
+        .unwrap();
+    conn
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_servers_build_a_pushed_repository_once() {
+    // Given an index of commit A, and commit B pushed
+    const DB: &str = "kairos_code_index_t0374_two";
+    let w = World::new(DB).await;
+    let a = w.a.clone();
+    w.bob
+        .upload_code_index("payments-api", &a, Some("main"), w.index(&a))
+        .await
+        .expect("the index of A");
+    let b = commit_b(&w.git);
+
+    // And 2 servers, each with its job worker
+    let other = second_service(&w, &w.work().join("clones-2"));
+    assert_ne!(other.instance(), w.service.instance());
+    let fake: Arc<dyn SummarizerSource> = Arc::new(FakeSummarizers);
+    let (one, one_out) = build_worker(
+        w.state.blocking.clone(),
+        &w.service,
+        Arc::clone(&fake),
+        quick_jobs(),
+    );
+    let (two, two_out) = build_worker(
+        kairos_server::blocking::BlockingTenantPool::new(
+            &with_database(&common::admin_database_url(), DB),
+            4,
+        ),
+        &other,
+        fake,
+        quick_jobs(),
+    );
+    let loops = [
+        tokio::spawn(Arc::clone(&one).run()),
+        tokio::spawn(Arc::clone(&two).run()),
+    ];
+
+    // When the sweep of each server adds its jobs at the same time, twice
+    for _ in 0..2 {
+        tokio::join!(
+            enqueue_updates_of(&w, &w.service, &one),
+            enqueue_updates_of(&w, &other, &two),
+        );
+    }
+
+    // Then the index of B is built once, by one server
+    let key = job_key("acme", w.repo_id);
+    wait_for(
+        std::time::Duration::from_secs(60),
+        "the end of the job",
+        || {
+            let key = key.clone();
+            async move {
+                kairos_db::jobs::open_by_key(&mut scratch_conn(DB), &key)
+                    .unwrap()
+                    .is_none()
+            }
+        },
+    )
+    .await;
+    for l in loops {
+        l.abort();
+    }
+    assert_eq!(
+        reports(&one_out) + reports(&two_out),
+        1,
+        "one build: {:?} {:?}",
+        one_out.lock().unwrap(),
+        two_out.lock().unwrap()
+    );
+    let runs = runs_of(&w).await;
+    let pushes: Vec<_> = runs.iter().filter(|r| r.trigger == "push").collect();
+    assert_eq!(pushes.len(), 1, "{runs:?}");
+    assert_eq!(pushes[0].outcome, "ok");
+    assert_eq!(pushes[0].commit.as_deref(), Some(b.as_str()));
+    let jobs = kairos_db::jobs::list(&mut scratch_conn(DB), "embedded_build").unwrap();
+    assert_eq!(
+        jobs.len(),
+        1,
+        "the second sweep and the other server added no job"
+    );
+    assert_eq!(jobs[0].state, "done");
+    assert_eq!(jobs[0].tries, 1);
+}
+
+async fn enqueue_updates_of(
+    w: &World,
+    service: &Arc<CodeIndexService>,
+    worker: &kairos_server::jobs::Worker,
+) {
+    kairos_server::code_index::enqueue_updates(&w.state.blocking, service, worker).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_requested_rebuild_is_not_started_twice() {
+    // Given a repository with no index, and a request
+    const DB: &str = "kairos_code_index_t0374_request";
+    let w = World::new(DB).await;
+    let run = w
+        .bob
+        .rebuild_code_index("payments-api")
+        .await
+        .expect("202 with the run");
+
+    // And 2 servers, whose first-build passes and second requests come
+    // while the request waits
+    let other = second_service(&w, &w.work().join("clones-2"));
+    let fake: Arc<dyn SummarizerSource> = Arc::new(FakeSummarizers);
+    let (one, one_out) = build_worker(
+        w.state.blocking.clone(),
+        &w.service,
+        Arc::clone(&fake),
+        quick_jobs(),
+    );
+    let (two, two_out) = build_worker(w.state.blocking.clone(), &other, fake, quick_jobs());
+    for (service, worker) in [(&w.service, &one), (&other, &two)] {
+        let notes =
+            kairos_server::code_index::enqueue_first_builds(&w.state.blocking, service, worker)
+                .await;
+        let note = notes[0].note.clone().unwrap_or_default();
+        assert!(note.starts_with(ACTIVE_RUN), "{note}");
+        assert!(note.contains(&run.id), "the note names the run: {note}");
+    }
+    let err = w
+        .bob
+        .rebuild_code_index("payments-api")
+        .await
+        .expect_err("one run at a time");
+    assert!(matches!(err, Error::Conflict { .. }), "{err}");
+
+    // When both workers run
+    let loops = [
+        tokio::spawn(Arc::clone(&one).run()),
+        tokio::spawn(Arc::clone(&two).run()),
+    ];
+    wait_for(
+        std::time::Duration::from_secs(60),
+        "the end of the run",
+        || async { runs_of(&w).await[0].outcome != "running" },
+    )
+    .await;
+    for l in loops {
+        l.abort();
+    }
+
+    // Then the request was built once, and its run ended ok
+    assert_eq!(reports(&one_out) + reports(&two_out), 1);
+    let runs = runs_of(&w).await;
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    assert_eq!(runs[0].id, run.id);
+    assert_eq!(runs[0].outcome, "ok");
+    assert_eq!(runs[0].trigger, "request");
+    let jobs = kairos_db::jobs::list(&mut scratch_conn(DB), "embedded_build").unwrap();
+    assert_eq!(jobs.len(), 1, "{jobs:?}");
+    assert_eq!(jobs[0].state, "done");
+    assert_eq!(jobs[0].tries, 1);
+}
+
+/// The fake summarizer, which records the key of each summary, and blocks
+/// for ever at the call after `limit` summaries: the server is frozen.
+#[derive(Clone)]
+struct FrozenSummarizers {
+    keys: Arc<Mutex<Vec<String>>>,
+    limit: usize,
+}
+
+struct FrozenSummarizer {
+    inner: FakeSummarizer,
+    keys: Arc<Mutex<Vec<String>>>,
+    limit: usize,
+}
+
+impl kairos_index::Summarizer for FrozenSummarizer {
+    fn model(&self) -> String {
+        self.inner.model()
+    }
+
+    fn summarize(&mut self, request: &kairos_index::SummaryRequest) -> Result<String, String> {
+        let mut keys = self.keys.lock().unwrap();
+        if keys.len() == self.limit {
+            drop(keys);
+            loop {
+                std::thread::park();
+            }
+        }
+        keys.push(request.key.clone());
+        self.inner.summarize(request)
+    }
+}
+
+impl SummarizerSource for FrozenSummarizers {
+    fn run(
+        &self,
+        job: &mut dyn FnMut(
+            &mut dyn kairos_index::Summarizer,
+        )
+            -> Result<kairos_index::UpdateReport, kairos_index::IndexError>,
+    ) -> Result<kairos_index::UpdateReport, kairos_index::IndexError> {
+        job(&mut FrozenSummarizer {
+            inner: FakeSummarizer::default(),
+            keys: Arc::clone(&self.keys),
+            limit: self.limit,
+        })
+    }
+
+    fn model_name(&self) -> String {
+        FakeSummarizer::default().model
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_killed_servers_build_is_re_leased_and_ends_ok_with_its_summaries() {
+    // Given a repository with no index, whose first build starts on a
+    // server that stops after 3 summaries
+    const DB: &str = "kairos_code_index_t0374_killed";
+    const MADE: usize = 3;
+    let w = World::new(DB).await;
+    let url = with_database(&common::admin_database_url(), DB);
+    let frozen = FrozenSummarizers {
+        keys: Arc::new(Mutex::new(Vec::new())),
+        limit: MADE,
+    };
+    let dead = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let dead_service = second_service(&w, &w.work().join("clones"));
+    let (dead_worker, _) = build_worker(
+        kairos_server::blocking::BlockingTenantPool::new(&url, 4),
+        &dead_service,
+        Arc::new(frozen.clone()),
+        quick_jobs(),
+    );
+    {
+        let (blocking, service, worker) = (
+            w.state.blocking.clone(),
+            Arc::clone(&dead_service),
+            Arc::clone(&dead_worker),
+        );
+        dead.spawn(async move {
+            kairos_server::code_index::enqueue_first_builds(&blocking, &service, &worker).await;
+            worker.run().await;
+        });
+    }
+    wait_for(
+        std::time::Duration::from_secs(60),
+        "3 summaries",
+        || async { frozen.keys.lock().unwrap().len() == MADE },
+    )
+    .await;
+    // The server stops: no heartbeat, no end of its job.
+    dead.shutdown_background();
+    let made: BTreeSet<String> = frozen.keys.lock().unwrap().iter().cloned().collect();
+    let key = job_key("acme", w.repo_id);
+    let leased = kairos_db::jobs::open_by_key(&mut scratch_conn(DB), &key)
+        .unwrap()
+        .expect("the job of the stopped server");
+    assert_eq!(leased.leased_by, Some(dead_service.instance()));
+
+    // When another server's worker runs, after the lease ran out
+    let keys = Arc::new(Mutex::new(Vec::new()));
+    let alive = StoppingSummarizers {
+        keys: Arc::clone(&keys),
+        limit: usize::MAX,
+    };
+    let (worker, outcomes) = build_worker(
+        w.state.blocking.clone(),
+        &w.service,
+        Arc::new(alive),
+        quick_jobs(),
+    );
+    let jobs = tokio::spawn(Arc::clone(&worker).run());
+    wait_for(
+        std::time::Duration::from_secs(60),
+        "the end of the job",
+        || {
+            let key = key.clone();
+            async move {
+                kairos_db::jobs::open_by_key(&mut scratch_conn(DB), &key)
+                    .unwrap()
+                    .is_none()
+            }
+        },
+    )
+    .await;
+    jobs.abort();
+
+    // Then the job was taken again and ended ok, in the one run, with the
+    // summaries of the stopped server kept
+    let job = kairos_db::jobs::get(&mut scratch_conn(DB), leased.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(job.state, "done", "{job:?}");
+    assert_eq!(job.tries, 2);
+    assert_eq!(job.leased_by, Some(w.service.instance()));
+    assert_eq!(reports(&outcomes), 1, "{:?}", outcomes.lock().unwrap());
+    let again: BTreeSet<String> = keys.lock().unwrap().iter().cloned().collect();
+    assert!(again.is_disjoint(&made), "made again: {again:?}");
+    let runs = runs_of(&w).await;
+    assert_eq!(runs.len(), 1, "one run: {runs:?}");
+    assert_eq!(runs[0].trigger, "first");
+    assert_eq!(runs[0].outcome, "ok", "{runs:?}");
+    assert!(
+        runs[0].summaries_reused.is_some_and(|n| n as usize >= MADE),
+        "{runs:?}"
+    );
+    let row = kairos_db::code_index_builds::get(&mut scratch_conn(DB), runs[0].id.parse().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.server_instance, Some(w.service.instance()));
+    let built = w
+        .alice
+        .download_code_index("payments-api", &w.a)
+        .await
+        .expect("the index of A");
+    assert_eq!(content_of(&built), content_of(&w.index(&w.a)));
 }

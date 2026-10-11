@@ -123,7 +123,7 @@ impl NewJob {
 /// nothing was added.
 pub fn enqueue(conn: &mut PgConnection, job: &NewJob) -> QueryResult<Option<Job>> {
     sql_query(format!(
-        "INSERT INTO jobs (kind, tenant, payload, priority, dedupe_key, run_after, max_tries) \
+        "INSERT INTO public.jobs (kind, tenant, payload, priority, dedupe_key, run_after, max_tries) \
          VALUES ($1, $2, $3::jsonb, $4, $5, COALESCE($6, now()), $7) \
          ON CONFLICT (dedupe_key) WHERE state IN ('queued', 'leased') AND dedupe_key IS NOT NULL \
          DO NOTHING \
@@ -154,7 +154,7 @@ pub fn take(
         return Ok(None);
     }
     sql_query(format!(
-        "UPDATE jobs SET \
+        "UPDATE public.jobs SET \
              last_error = CASE WHEN state = 'leased' \
                  THEN 'The lease ran out: the server ' || leased_by::text || \
                       ' stopped or stalled.' \
@@ -163,7 +163,7 @@ pub fn take(
              lease_until = now() + make_interval(secs => $2), \
              heartbeat_at = now(), tries = tries + 1 \
          WHERE id = ( \
-             SELECT id FROM jobs \
+             SELECT id FROM public.jobs \
              WHERE kind = ANY($3) AND run_after <= now() \
                AND (state = 'queued' \
                     OR (state = 'leased' AND lease_until < now() AND tries < max_tries)) \
@@ -189,7 +189,7 @@ pub fn heartbeat(
     lease_secs: f64,
 ) -> QueryResult<bool> {
     let n = sql_query(
-        "UPDATE jobs SET heartbeat_at = now(), lease_until = now() + make_interval(secs => $3) \
+        "UPDATE public.jobs SET heartbeat_at = now(), lease_until = now() + make_interval(secs => $3) \
          WHERE id = $1 AND leased_by = $2 AND state = 'leased'",
     )
     .bind::<SqlUuid, _>(id)
@@ -203,7 +203,7 @@ pub fn heartbeat(
 /// server did not hold the lease.
 pub fn complete(conn: &mut PgConnection, id: Uuid, instance: Uuid) -> QueryResult<bool> {
     let n = sql_query(
-        "UPDATE jobs SET state = 'done', finished_at = now(), lease_until = NULL \
+        "UPDATE public.jobs SET state = 'done', finished_at = now(), lease_until = NULL \
          WHERE id = $1 AND leased_by = $2 AND state = 'leased'",
     )
     .bind::<SqlUuid, _>(id)
@@ -224,7 +224,7 @@ pub fn release(
     retry_after_secs: f64,
 ) -> QueryResult<Option<Job>> {
     sql_query(format!(
-        "UPDATE jobs SET \
+        "UPDATE public.jobs SET \
              state = CASE WHEN tries < max_tries THEN 'queued' ELSE 'failed' END, \
              finished_at = CASE WHEN tries < max_tries THEN NULL ELSE now() END, \
              run_after = CASE WHEN tries < max_tries \
@@ -246,7 +246,7 @@ pub fn release(
 /// `error`, with no more tries. False: the server did not hold the lease.
 pub fn fail(conn: &mut PgConnection, id: Uuid, instance: Uuid, error: &str) -> QueryResult<bool> {
     let n = sql_query(
-        "UPDATE jobs SET state = 'failed', finished_at = now(), lease_until = NULL, \
+        "UPDATE public.jobs SET state = 'failed', finished_at = now(), lease_until = NULL, \
              last_error = $3 \
          WHERE id = $1 AND leased_by = $2 AND state = 'leased'",
     )
@@ -261,11 +261,11 @@ pub fn fail(conn: &mut PgConnection, id: Uuid, instance: Uuid, error: &str) -> Q
 /// will take it again. The failed jobs.
 pub fn fail_expired(conn: &mut PgConnection, kinds: &[String]) -> QueryResult<Vec<Job>> {
     sql_query(format!(
-        "UPDATE jobs SET state = 'failed', finished_at = now(), lease_until = NULL, \
+        "UPDATE public.jobs SET state = 'failed', finished_at = now(), lease_until = NULL, \
              last_error = 'The lease ran out on the last try (' || tries || ' of ' || \
                  max_tries || '): the server ' || leased_by::text || ' stopped or stalled.' \
          WHERE id IN ( \
-             SELECT id FROM jobs \
+             SELECT id FROM public.jobs \
              WHERE kind = ANY($1) AND state = 'leased' AND lease_until < now() \
                AND tries >= max_tries \
              FOR UPDATE SKIP LOCKED) \
@@ -278,14 +278,14 @@ pub fn fail_expired(conn: &mut PgConnection, kinds: &[String]) -> QueryResult<Ve
 /// Remove the `done` and `failed` jobs that ended before `before`. The
 /// number removed.
 pub fn purge_finished(conn: &mut PgConnection, before: DateTime<Utc>) -> QueryResult<usize> {
-    sql_query("DELETE FROM jobs WHERE state IN ('done', 'failed') AND finished_at < $1")
+    sql_query("DELETE FROM public.jobs WHERE state IN ('done', 'failed') AND finished_at < $1")
         .bind::<Timestamptz, _>(before)
         .execute(conn)
 }
 
 /// The job `id`.
 pub fn get(conn: &mut PgConnection, id: Uuid) -> QueryResult<Option<Job>> {
-    sql_query(format!("SELECT {COLUMNS} FROM jobs WHERE id = $1"))
+    sql_query(format!("SELECT {COLUMNS} FROM public.jobs WHERE id = $1"))
         .bind::<SqlUuid, _>(id)
         .get_result(conn)
         .optional()
@@ -294,7 +294,7 @@ pub fn get(conn: &mut PgConnection, id: Uuid) -> QueryResult<Option<Job>> {
 /// The jobs of `kind`, oldest first.
 pub fn list(conn: &mut PgConnection, kind: &str) -> QueryResult<Vec<Job>> {
     sql_query(format!(
-        "SELECT {COLUMNS} FROM jobs WHERE kind = $1 ORDER BY created_at, id"
+        "SELECT {COLUMNS} FROM public.jobs WHERE kind = $1 ORDER BY created_at, id"
     ))
     .bind::<Text, _>(kind)
     .load(conn)
@@ -303,10 +303,88 @@ pub fn list(conn: &mut PgConnection, kind: &str) -> QueryResult<Vec<Job>> {
 /// The `queued` or `leased` job with `dedupe_key`.
 pub fn open_by_key(conn: &mut PgConnection, dedupe_key: &str) -> QueryResult<Option<Job>> {
     sql_query(format!(
-        "SELECT {COLUMNS} FROM jobs \
+        "SELECT {COLUMNS} FROM public.jobs \
          WHERE dedupe_key = $1 AND state IN ('queued', 'leased')"
     ))
     .bind::<Text, _>(dedupe_key)
     .get_result(conn)
     .optional()
+}
+
+/// Put the job `id` of the server `instance` back in the queue with no
+/// try counted: it gave its slot to a job of a higher priority
+/// (KAIROS-T-0374). It keeps its `run_after`, so it keeps its place in its
+/// priority. False: the server did not hold the lease.
+pub fn requeue(conn: &mut PgConnection, id: Uuid, instance: Uuid) -> QueryResult<bool> {
+    let n = sql_query(
+        "UPDATE public.jobs SET state = 'queued', leased_by = NULL, lease_until = NULL, \
+             tries = GREATEST(tries - 1, 0) \
+         WHERE id = $1 AND leased_by = $2 AND state = 'leased'",
+    )
+    .bind::<SqlUuid, _>(id)
+    .bind::<SqlUuid, _>(instance)
+    .execute(conn)?;
+    Ok(n == 1)
+}
+
+/// Add the fields of `patch` (a JSON object) to the payload of the job
+/// `id` of the server `instance`, so that a later lease of the job reads
+/// them. False: the server did not hold the lease.
+pub fn merge_payload(
+    conn: &mut PgConnection,
+    id: Uuid,
+    instance: Uuid,
+    patch: &serde_json::Value,
+) -> QueryResult<bool> {
+    let n = sql_query(
+        "UPDATE public.jobs SET payload = payload || $3::jsonb \
+         WHERE id = $1 AND leased_by = $2 AND state = 'leased'",
+    )
+    .bind::<SqlUuid, _>(id)
+    .bind::<SqlUuid, _>(instance)
+    .bind::<Text, _>(patch.to_string())
+    .execute(conn)?;
+    Ok(n == 1)
+}
+
+/// Give the `queued` job `id` a higher `priority`, and add the fields of
+/// `patch` to its payload: a request for the work of a job that waits. The
+/// job after the write; `None`: the job is not queued now.
+pub fn raise(
+    conn: &mut PgConnection,
+    id: Uuid,
+    priority: i32,
+    patch: &serde_json::Value,
+) -> QueryResult<Option<Job>> {
+    sql_query(format!(
+        "UPDATE public.jobs SET priority = GREATEST(priority, $2), \
+             payload = payload || $3::jsonb, run_after = LEAST(run_after, now()) \
+         WHERE id = $1 AND state = 'queued' \
+         RETURNING {COLUMNS}"
+    ))
+    .bind::<SqlUuid, _>(id)
+    .bind::<Integer, _>(priority)
+    .bind::<Text, _>(patch.to_string())
+    .get_result(conn)
+    .optional()
+}
+
+/// True when a `queued` job of `kind` with a priority higher than
+/// `priority` is ready to run.
+pub fn higher_waits(conn: &mut PgConnection, kind: &str, priority: i32) -> QueryResult<bool> {
+    #[derive(QueryableByName)]
+    struct Found {
+        #[diesel(sql_type = diesel::sql_types::Bool)]
+        found: bool,
+    }
+    sql_query(
+        "SELECT EXISTS ( \
+             SELECT 1 FROM public.jobs \
+             WHERE kind = $1 AND state = 'queued' AND priority > $2 AND run_after <= now()) \
+         AS found",
+    )
+    .bind::<Text, _>(kind)
+    .bind::<Integer, _>(priority)
+    .get_result::<Found>(conn)
+    .map(|f| f.found)
 }

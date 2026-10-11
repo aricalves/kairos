@@ -2440,22 +2440,19 @@ impl KairosMcp {
         let slug = tenant.slug.clone();
         let reference = params.repository;
         let instance = service.instance();
+        let max_tries = self.state.config.jobs.max_tries;
         let requested = self
             .state
             .blocking
             .run(&tenant.slug, move |conn| {
                 crate::api::org::code_indexes::request_rebuild(
-                    conn, &slug, user, &reference, instance,
+                    conn, &slug, user, &reference, instance, max_tries,
                 )
             })
             .await;
         match requested {
             Ok((repo, run)) => {
-                service.request_rebuild(crate::code_index::RebuildRequest {
-                    tenant: tenant.slug.clone(),
-                    repository_id: repo.id,
-                    run: run.id,
-                });
+                self.state.jobs.wake();
                 Ok(tool_text(format!(
                     "Kairos builds the code index of the repository {} again: run {}, started {}. \
                      Read the runs with GET /api/repositories/{}/code-indexes/builds or \

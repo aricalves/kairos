@@ -310,7 +310,7 @@ the index after each push to the default branch.
 | Variable | Type | Default | Description |
 |---|---|---|---|
 | `KAIROS_CODE_INDEX_DIR` | directory path | unset | The folder for a bare clone of each repository, the tools of the builder and the work folders of the builder. Put it on a volume. When it is not set, the server cannot find the nearest indexed commit, does not build and downloads nothing. Uploads and downloads of indexes still work. |
-| `KAIROS_CODE_INDEX_POLL_SECS` | whole number | `300` | How often the builder fetches each indexed repository. `0` turns the builder off. |
+| `KAIROS_CODE_INDEX_POLL_SECS` | whole number | `300` | How often each server fetches each indexed repository and adds the build jobs. `0` turns the builder off on that server. |
 | `KAIROS_CODE_INDEX_THREADS` | whole number, 1 or more | `4` | The number of CPU threads that the summary model of the builder uses. More threads make the summaries faster, but they take CPU from the other services on the host. `0` or a value that is not a number stops the start of the server. |
 | `KAIROS_CODE_INDEX_MIN_REBUILD_SECS` | whole number | `0` | The least time in seconds between 2 updates of one repository. `0` turns the limit off. On a slow host, a repository with many pushes then waits, and the other stale repositories get their updates. A value that is not a number stops the start of the server. |
 
@@ -388,72 +388,82 @@ token, the clone has no credential, and a fetch that needs one fails at once.
 
 #### The work of the builder
 
-The builder has 2 lanes:
+Each build is a job of the [job queue](#job-queue). Thus 2 or more servers
+share the builds, and each build runs one time. There are 3 types of build:
 
-- **The update lane.** At each interval of `KAIROS_CODE_INDEX_POLL_SECS`, it
-  fetches each repository that has an index. If the head of the default
-  branch has no index, the lane updates the nearest index to that head. Then
-  it starts the first-build lane.
-- **The first-build lane.** It finds each repository that has no index. For
-  each one, it makes a full index of the head of the default branch. The
-  index has the structure, the SCIP edges and the summaries. The lane builds
-  one repository at a time. A first build of a large repository can take some hours on a CPU.
+- **A requested build.** A person asks for it (`kairos repos reindex`, or
+  the button "Build again" of the panel of the repository). It is a full index of the head
+  of the default branch.
+- **An update.** At each interval of `KAIROS_CODE_INDEX_POLL_SECS`, each
+  server fetches each repository that has an index. If the head of the
+  default branch has no index, the server adds an update job. The update
+  changes the nearest index to that head.
+- **A first build.** At the same interval, each server adds a job for each
+  repository that has no index. The job makes a full index of the head of
+  the default branch. The index has the structure, the SCIP edges and the
+  summaries.
+  A first build of a large repository can take some hours on a CPU.
 
-The update lane does not wait for the first-build lane. Thus, during a long
-first build, the updates of the other repositories continue at each
-interval.
+A repository has one build job at a time. A server does not add a second
+job for a repository that has a job. The note of the pass names that job.
 
-The update lane serves the repositories in this order: the repository with
-the oldest newest index first. The order of the list and the time of the
-pushes do not change it. Thus the repository that has been stale longest
-gets its update first. A repository that got an update goes to the end of
-the next pass. A repository with many pushes does not get 2 updates in a
-row while another repository is stale.
+The jobs run in this order: a requested build, then an update, then a first
+build. Inside one type, the repository that has been stale longest goes
+first. The order of the list and the time of the pushes do not change it. A
+repository that got an update goes to the end of the next pass. A repository
+with many pushes does not get 2 updates in a row while another repository is
+stale.
 
 With `KAIROS_CODE_INDEX_MIN_REBUILD_SECS`, a repository whose newest index
-is younger than that time gets no update in the pass. A later pass updates
-it. This order is for the update lane only. An update still goes before the
-next step of a first build.
+is younger than that time gets no update job in the pass. A later pass adds
+the job.
 
-The 2 lanes do not run the summary model at the same time. An update goes
-first: a first build stops between 2 summaries while an update runs. Thus
-the builder uses the `KAIROS_CODE_INDEX_THREADS` threads one time, not 2
-times. When the 2 lanes need the model at the same time, they use one copy
-of it in memory.
+A build with the embedded model is a job of the type `embedded_build`. One
+server runs one of them at a time (`KAIROS_JOB_LIMIT_EMBEDDED_BUILD`). Thus
+the builds use the `KAIROS_CODE_INDEX_THREADS` threads one time, not 2
+times. A build with a hosted provider is a job of the type `hosted_build`.
+One server runs 4 of them at a time (`KAIROS_JOB_LIMIT_HOSTED_BUILD`).
+
+A first build gives its place to an update or a requested build of the same
+type. The first build stops after its next summary, and goes back to the
+queue. It keeps its summaries and its run. Thus, during a long first build,
+the updates continue.
+
+A build tells the job queue about its progress at each summary and at each
+batch of vectors. When a build makes no progress for the lease time, its
+server stops it. Then a server starts it again. When a server stops during a
+build, another server takes the job when the lease runs out.
 
 A first build keeps its work in `KAIROS_CODE_INDEX_DIR/first-builds/`. An
 update keeps its work in `KAIROS_CODE_INDEX_DIR/updates/`. Each summary goes
-into that file when the model writes it. If the server stops during a build,
-the next build of the repository uses those summaries again. Thus a restart
-during a build of some hours does not lose the work of the model.
+into that file when the model writes it. The next build of the repository
+uses those summaries again. Thus a restart during a build of some hours does
+not lose the work of the model. When the servers do not share
+`KAIROS_CODE_INDEX_DIR`, a build that another server takes starts its
+summaries again.
 
 After the builder stores the index, it removes the file. An index keeps only the
 summaries that its code needs. The run shows the number of summaries that it
 made and the number that it reused.
 
-If a first build of a commit fails, the builder does not try that commit
+If a first build of a commit fails, the server does not try that commit
 again. It tries again when the head moves or when the server starts again.
 
-The builder makes one run of a repository at a time. When a run of the
-repository is active, the update lane does not start a run of it. For
-example, a requested build waits for its turn, or a first build runs. The
-update waits for the next pass, and its note says which run is active.
+Each run records the server that runs it. When a server takes the job of a
+run again, the run continues on that server. When a server starts, its
+builder ends each run that no open job names. Such a run gets the text "The
+server stopped during the run". When a job fails after its last try, its run
+fails with the reason.
 
-Each run records the start of its server. When the server starts, the
-builder ends each run of an earlier start as failed. Such a run gets the text
-"The server stopped during the run". A run of the server that runs now does
-not get that text.
+The log has these lines for each build:
 
-The log has these lines for each first build:
-
-- `code index first build started`, with the repository and the commit.
-- `code index first build ended`, with the time in seconds and the number
-  of summaries.
-- `code index first build failed`, with the error.
-- `code index first build not started`, with the reason. For example, the
-  repository has no default branch, the fetch failed, or the repository
-  has `code_index_build` off. The builder logs a reason one time, and again
-  only when the reason changes.
+- `code index full build started`, with the repository, the commit and the
+  type.
+- `code index built`, with the time in seconds and the number of summaries.
+- `code index not built`, with the error.
+- `code index build not done`, with the reason. For example, the head has an
+  index, or the repository has `code_index_build` off. The builder logs a
+  reason one time, and again only when the reason changes.
 
 You can also make the first index on a computer and upload it
 (`kairos index build`, then the upload). Then the builder does not make a

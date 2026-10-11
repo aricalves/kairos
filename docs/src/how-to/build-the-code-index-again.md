@@ -25,9 +25,10 @@ shows the newest index, the last runs and the indexed commits. It updates
 when a run starts or ends. The REST route is
 `GET /api/repositories/{slug}/code-indexes/builds`.
 
-A run can have the text "The server stopped during the run." That run was
-active when the server stopped. The next run of the repository replaces
-it.
+A run can have the text "The server stopped during the run". Then no build
+job of the repository had that run any more. The next run of the repository
+replaces it. When a server stops during a build, another server takes the
+job, and the run continues there.
 
 A new version of Kairos can change the format of the index. Then the
 builder makes a full index of each repository on its own, at its next
@@ -44,7 +45,9 @@ kairos repos reindex <slug>
 ```
 
 The builder makes a full index of the head of the default branch. The new
-index replaces the index of that commit. The command shows the run. Follow
+index replaces the index of that commit. The request goes before the
+updates and the first builds that wait. When an update or a first build of
+the repository waits, the request takes its place. The command shows the run. Follow
 it with `kairos repos builds <slug>`.
 
 In the GUI, the button "Build again" of the panel asks for the build. The
@@ -56,7 +59,7 @@ tool `rebuild_code_index`. The REST route is
 
 | Code | Cause | What to do |
 |---|---|---|
-| `CODE_INDEX_BUILD_RUNNING` | A run of the repository is active. | Wait for its end. `kairos repos builds <slug>` shows it. |
+| `CODE_INDEX_BUILD_RUNNING` | A run of the repository is active, or a build of it runs now. | Wait for its end. `kairos repos builds <slug>` shows it. |
 | `CODE_INDEX_BUILD_OFF` | The repository has the builder off. | Run `kairos repos update <slug> --code-index-build on`, then ask again. |
 | `CODE_INDEX_BUILDER_OFF` | The deployment has no builder. | An operator sets `KAIROS_CODE_INDEX_DIR`. See [Configuration](../reference/configuration.md). |
 | `FORBIDDEN` | You cannot change the repository. | Ask an organization admin, or a member of the owner team. |
