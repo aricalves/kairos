@@ -1,6 +1,6 @@
 # Turn on GitHub write-back
 
-This page describes Kairos 0.10.0.
+This page describes Kairos 0.11.0.
 
 Show the state of a Kairos item on its GitHub pull requests. With a write
 token on the repository, Kairos writes 2 things on each pull request that
