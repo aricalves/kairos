@@ -1678,6 +1678,7 @@ One repository, as returned by `/api/repositories` (KAIROS-T-0106).
 | `slug` | `string` | yes | Tenant-unique slug (`^[a-z0-9][a-z0-9-]{1,62}$`). |
 | `team` | [`RepositoryTeam`](schemas.md#repositoryteam) | yes | The one owning team. |
 | `updated_at` | `string` | yes | RFC 3339. |
+| `write_back` | [`RepositoryWriteBack`](schemas.md#repositorywriteback) | no | The GitHub write-back of the repository (KAIROS-T-0386): on when the repository has a write token. It never has the token. |
 
 ## RepositoryCredential
 
@@ -1718,6 +1719,20 @@ The owning team, embedded on [`Repository`].
 | `id` | `string` | yes | Team id (UUID). |
 | `name` | `string` | yes |  |
 | `slug` | `string` | yes |  |
+
+## RepositoryWriteBack
+
+The GitHub write-back of a repository (KAIROS-T-0386), as [`Repository`] carries it. With a write token, Kairos writes a comment and the status `kairos` on each linked pull request. Kairos keeps the token encrypted, and no read gives it back.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `enabled` | `boolean` | yes | True: the repository has a write token, and Kairos writes to GitHub. |
+| `last_write_at` | `string`, nullable | no | When the last write ran, RFC 3339. |
+| `last_write_error` | `string`, nullable | no | The error of the last write, with no token in it. |
+| `last_write_ok` | `boolean`, nullable | no | Whether the last write worked. |
+| `set_at` | `string`, nullable | no | When the token was set, RFC 3339. |
+| `set_by` | `string`, nullable | no | The user who set the token (UUID). |
+| `set_by_name` | `string`, nullable | no | The name of that user, else the email. |
 
 ## RestoreResponse
 

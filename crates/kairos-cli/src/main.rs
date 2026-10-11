@@ -687,6 +687,30 @@ mod tests {
         );
     }
 
+    /// KAIROS-T-0386: `repos write-token` parses its subcommands, and takes
+    /// no token as an argument.
+    #[test]
+    fn repos_write_token_parses() {
+        for verb in ["set", "remove", "status"] {
+            let cli = Cli::try_parse_from(["kairos", "repos", "write-token", verb, "site"])
+                .unwrap_or_else(|e| panic!("{verb}: {e}"));
+            assert!(matches!(cli.command, Command::Repos(_)));
+        }
+        assert!(
+            Cli::try_parse_from([
+                "kairos",
+                "repos",
+                "write-token",
+                "set",
+                "site",
+                "--token",
+                "x"
+            ])
+            .is_err(),
+            "the token is never an argument"
+        );
+    }
+
     /// KAIROS-T-0385: `boards dispatch` parses its subcommands.
     #[test]
     fn boards_dispatch_parses() {

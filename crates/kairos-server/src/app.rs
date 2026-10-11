@@ -117,6 +117,14 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
     )
     .with_public_url(config.public_url.clone())
     .register(&jobs);
+    // KAIROS-T-0386: the GitHub write-back is a job of the queue too.
+    crate::forge::writeback::WriteBackService::new(
+        blocking.clone(),
+        config.secrets_key.clone(),
+        config.writeback.clone(),
+        config.public_url.clone(),
+    )
+    .register(&jobs);
     Ok(AppState {
         config: Arc::new(config),
         pool,
@@ -281,6 +289,13 @@ pub fn state_with(config: AppConfig, pool: TenantPool, auth: Arc<Authenticator>)
         config.webhooks.clone(),
     )
     .with_public_url(config.public_url.clone())
+    .register(&jobs);
+    crate::forge::writeback::WriteBackService::new(
+        blocking.clone(),
+        config.secrets_key.clone(),
+        config.writeback.clone(),
+        config.public_url.clone(),
+    )
     .register(&jobs);
     AppState {
         config: Arc::new(config),

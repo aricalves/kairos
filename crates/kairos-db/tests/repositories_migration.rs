@@ -38,12 +38,18 @@ const CREDENTIALS_DOWN_SQL: &str =
     include_str!("../migrations/tenant/2026-10-03-000001_repository_credentials/down.sql");
 const CREDENTIALS_VERSION: &str = "20261003000001";
 /// Later migrations whose tables have a foreign key to `repositories`
-/// (KAIROS-T-0385: `dispatch_rules`), newest first. Reverted and applied
-/// again as the credentials above.
-const LATER_DEPENDENTS: &[(&str, &str)] = &[(
-    include_str!("../migrations/tenant/2026-10-12-000003_dispatch_rules/down.sql"),
-    "20261012000003",
-)];
+/// (KAIROS-T-0385: `dispatch_rules`; KAIROS-T-0386: the GitHub write-back),
+/// newest first. Reverted and applied again as the credentials above.
+const LATER_DEPENDENTS: &[(&str, &str)] = &[
+    (
+        include_str!("../migrations/tenant/2026-10-12-000004_github_write_back/down.sql"),
+        "20261012000004",
+    ),
+    (
+        include_str!("../migrations/tenant/2026-10-12-000003_dispatch_rules/down.sql"),
+        "20261012000003",
+    ),
+];
 /// A later migration that adds a column to `repositories` (KAIROS-T-0318).
 /// The down.sql of `repositories` drops the table with the column, so this
 /// test forgets the migration too, and `migrate_all_tenants` applies it

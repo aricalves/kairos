@@ -419,6 +419,9 @@ pub(crate) fn render(
     // COLLIERY-T-3105: the status of the read token, never the token.
     let credentials =
         kairos_db::repository_credentials::statuses(conn, &ids).map_err(ApiError::internal)?;
+    // KAIROS-T-0386: the write-back, never the write token.
+    let write_tokens =
+        kairos_db::writeback::token_statuses(conn, &ids).map_err(ApiError::internal)?;
     // KAIROS-T-0358: where the summaries of each repository are made now.
     let code_index_settings =
         kairos_db::code_index_settings::load_or_default(conn).map_err(ApiError::internal)?;
@@ -447,6 +450,7 @@ pub(crate) fn render(
                 open_tasks,
                 has_webhook,
                 credential: crate::credentials::status_dto(credentials.get(&repo.id)),
+                write_back: crate::credentials::write_back_dto(write_tokens.get(&repo.id)),
                 code_index_build: dto::CodeIndexBuild::parse(&repo.code_index_build)
                     .unwrap_or_default(),
                 code_index_summaries: dto::CodeIndexSummaries::parse(&repo.code_index_summaries)

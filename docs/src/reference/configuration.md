@@ -639,6 +639,7 @@ that is out of range, stops the start of the server.
 | `KAIROS_JOB_LIMIT_EMBEDDING_BATCH` | whole number | `2` | The embedding batches that one server runs at the same time. |
 | `KAIROS_JOB_LIMIT_PERIODIC` | whole number | `1` | The periodic passes that one server runs at the same time. |
 | `KAIROS_JOB_LIMIT_WEBHOOK_DELIVERY` | whole number | `4` | The webhook deliveries that one server sends at the same time. |
+| `KAIROS_JOB_LIMIT_GITHUB_WRITEBACK` | whole number | `2` | The GitHub write-backs that one server runs at the same time. |
 
 ### Webhook deliveries
 
@@ -672,6 +673,20 @@ address. The request goes to the address that Kairos checked.
 The secret of each target is sealed with `KAIROS_SECRETS_KEY`. Without that
 key, a board manager cannot make a target. `kairos-server rotate-secrets`
 seals the secrets of the targets again.
+
+### GitHub write-back
+
+A GitHub repository can have a write token (KAIROS-T-0386). Then Kairos writes
+a comment and the status `kairos` on each linked pull request. Each write is a job of the job queue. A failed write is
+tried again. See [Turn on GitHub write-back](../how-to/turn-on-github-write-back.md).
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `KAIROS_GITHUB_API_URL` | URL | `https://api.github.com` | The REST API of GitHub. For GitHub Enterprise Server, use `https://<host>/api/v3`. |
+
+Kairos seals the write token with `KAIROS_SECRETS_KEY`, as it seals the read
+token.
+`kairos-server rotate-secrets` seals the write tokens again.
 
 ## Default board configurations
 

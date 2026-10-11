@@ -163,6 +163,10 @@ pub struct Repository {
     /// It never has the token.
     #[serde(default)]
     pub credential: RepositoryCredential,
+    /// The GitHub write-back of the repository (KAIROS-T-0386): on when the
+    /// repository has a write token. It never has the token.
+    #[serde(default)]
+    pub write_back: RepositoryWriteBack,
     /// Whether the code index builder works on the repository
     /// (KAIROS-T-0318): `on` (the default) or `off`.
     #[serde(default)]
@@ -412,6 +416,59 @@ impl RepositoryCredential {
             _ => "; not checked".to_string(),
         };
         format!("set by {by} at {at}{check}")
+    }
+}
+
+/// The GitHub write-back of a repository (KAIROS-T-0386), as
+/// [`Repository`] carries it. With a write token, Kairos writes a comment
+/// and the status `kairos` on each linked pull request. Kairos keeps the
+/// token encrypted, and no read gives it back.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RepositoryWriteBack {
+    /// True: the repository has a write token, and Kairos writes to GitHub.
+    pub enabled: bool,
+    /// The user who set the token (UUID).
+    #[serde(default)]
+    pub set_by: Option<String>,
+    /// The name of that user, else the email.
+    #[serde(default)]
+    pub set_by_name: Option<String>,
+    /// When the token was set, RFC 3339.
+    #[serde(default)]
+    pub set_at: Option<String>,
+    /// When the last write ran, RFC 3339.
+    #[serde(default)]
+    pub last_write_at: Option<String>,
+    /// Whether the last write worked.
+    #[serde(default)]
+    pub last_write_ok: Option<bool>,
+    /// The error of the last write, with no token in it.
+    #[serde(default)]
+    pub last_write_error: Option<String>,
+}
+
+impl RepositoryWriteBack {
+    /// One line about the write-back, for the CLI and the MCP tools: `off
+    /// (no write token)`, or on, who set the token, and the last write.
+    pub fn summary(&self) -> String {
+        if !self.enabled {
+            return "off (no write token)".to_string();
+        }
+        let by = self
+            .set_by_name
+            .as_deref()
+            .or(self.set_by.as_deref())
+            .unwrap_or("-");
+        let at = self.set_at.as_deref().unwrap_or("-");
+        let last = match (self.last_write_ok, self.last_write_at.as_deref()) {
+            (Some(true), Some(when)) => format!("; the last write at {when} worked"),
+            (Some(false), Some(when)) => format!(
+                "; the last write at {when} failed: {}",
+                self.last_write_error.as_deref().unwrap_or("-")
+            ),
+            _ => "; no write yet".to_string(),
+        };
+        format!("on (token set by {by} at {at}{last})")
     }
 }
 

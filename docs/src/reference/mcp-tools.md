@@ -152,6 +152,11 @@ One repository in full. The output has these parts:
 - `read token`: `not set`, or who set the read token of the builder of the
   code index, when, and the result of the last check. No tool gives or sets
   the token.
+- `write-back`: `off (no write token)`, or `on` with who set the write token,
+  when, and the result of the last write. With the token, Kairos writes a
+  comment and the commit status `kairos` on each GitHub pull request that
+  links to an item. No tool gives or sets the token. See
+  [Turn on GitHub write-back](../how-to/turn-on-github-write-back.md).
 - the team's description of how to work in the repository
 - the documents and the ADRs that impact the repository
 - the in-flight branches and pull requests, each with its work item

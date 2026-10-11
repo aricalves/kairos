@@ -1682,6 +1682,42 @@ impl KairosClient {
         self.delete(&format!("/api/repositories/{reference}")).await
     }
 
+    /// `GET /api/repositories/{slug}/write-token` — the status of the
+    /// GitHub write-back (KAIROS-T-0386). It never has the token.
+    pub async fn get_repository_write_back(
+        &self,
+        reference: &str,
+    ) -> Result<crate::types_repositories::RepositoryWriteBack, Error> {
+        self.get(&format!("/api/repositories/{reference}/write-token"))
+            .await
+    }
+
+    /// `PUT /api/repositories/{slug}/write-token` — set or replace the
+    /// write token of the GitHub write-back.
+    pub async fn set_repository_write_token(
+        &self,
+        reference: &str,
+        token: &crate::types_auth::Secret,
+    ) -> Result<crate::types_repositories::RepositoryWriteBack, Error> {
+        self.put_ok(
+            &format!("/api/repositories/{reference}/write-token"),
+            &crate::types_repositories::SetRepositoryCredentialRequest {
+                token: token.clone(),
+            },
+        )
+        .await
+    }
+
+    /// `DELETE /api/repositories/{slug}/write-token` — remove the write
+    /// token: Kairos writes nothing more to GitHub.
+    pub async fn remove_repository_write_token(
+        &self,
+        reference: &str,
+    ) -> Result<crate::types_repositories::RepositoryWriteBack, Error> {
+        self.delete(&format!("/api/repositories/{reference}/write-token"))
+            .await
+    }
+
     /// `GET /api/repositories/{slug}/credential` — the status of the read
     /// token of a repository (COLLIERY-T-3105). It never has the token.
     pub async fn get_repository_credential(

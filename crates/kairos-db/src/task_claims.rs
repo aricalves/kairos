@@ -320,6 +320,8 @@ pub fn hand_off(
         )?;
         // KAIROS-T-0381: the person who gets the claim is told.
         crate::notifications::on_hand_off(conn, task_id, to_user, actor_id)?;
+        // KAIROS-T-0386: the comment shows the claim.
+        crate::writeback::on_item_changed(conn, task_id)?;
         events::emit_item_event_by_id(conn, EventKind::ItemUpdated, "task", task_id, actor_id)?;
         Ok(claim)
     })
@@ -337,6 +339,8 @@ pub fn release(
         let short_code = claimable_task(conn, task_id)?;
         let ended = end_claim(conn, task_id, actor_id, "release")?
             .ok_or(ClaimError::NoClaim { short_code })?;
+        // KAIROS-T-0386: the comment shows the claim.
+        crate::writeback::on_item_changed(conn, task_id)?;
         events::emit_item_event_by_id(conn, EventKind::ItemUpdated, "task", task_id, actor_id)?;
         Ok(ended)
     })

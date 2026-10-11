@@ -83,6 +83,7 @@ mod tests {
             open_tasks: 0,
             has_webhook: false,
             credential: Default::default(),
+            write_back: Default::default(),
             code_index_build: "on".to_string(),
             code_index_summaries: "embedded".to_string(),
             code_index_summaries_resolved: "embedded".to_string(),

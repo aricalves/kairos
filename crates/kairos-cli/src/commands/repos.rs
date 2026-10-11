@@ -182,6 +182,14 @@ pub enum ReposCommand {
         #[command(subcommand)]
         command: CredentialCommand,
     },
+    /// Set, remove or show the write token of the GitHub write-back. With
+    /// it, Kairos writes a comment and the commit status `kairos` on each
+    /// pull request that links to an item. No command shows the token
+    #[command(name = "write-token")]
+    WriteToken {
+        #[command(subcommand)]
+        command: WriteTokenCommand,
+    },
     /// Ask Kairos to build the code index of a repository again. The builder
     /// of the server makes a full index of the head of the default branch.
     /// The command shows the run; `kairos repos builds` follows it
@@ -282,6 +290,81 @@ impl CredentialCommand {
                          sure that the token can read the repository, and set it again."
                     ))),
                 }
+            }
+        }
+    }
+}
+
+/// The write token of the GitHub write-back (KAIROS-T-0386).
+#[derive(clap::Subcommand, Debug)]
+pub enum WriteTokenCommand {
+    /// Set or replace the write token. The command reads the token from
+    /// standard input, or asks for it on the terminal. Use a GitHub
+    /// fine-grained token with "Pull requests: write" and "Commit statuses:
+    /// write" on the one repository
+    Set {
+        /// Repository slug (or UUID)
+        repository: String,
+        #[command(flatten)]
+        common: Common,
+    },
+    /// Remove the write token. Kairos writes nothing more to GitHub
+    Remove {
+        /// Repository slug (or UUID)
+        repository: String,
+        #[command(flatten)]
+        common: Common,
+    },
+    /// Show the status of the write-back: on or off, and the last write
+    Status {
+        /// Repository slug (or UUID)
+        repository: String,
+        #[command(flatten)]
+        common: Common,
+    },
+}
+
+impl WriteTokenCommand {
+    async fn run(self) -> Result<(), CliError> {
+        match self {
+            Self::Set { repository, common } => {
+                let token = crate::password::read_secret(
+                    &format!("Write token for the repository {repository}: "),
+                    "token",
+                )?;
+                let client = client(&common)?;
+                let status = client
+                    .set_repository_write_token(&repository, &token)
+                    .await?;
+                if common.json {
+                    return print_json(&status);
+                }
+                println!(
+                    "Kairos keeps the write token of the repository {repository}, encrypted. \
+                     The write-back is on."
+                );
+                Ok(())
+            }
+            Self::Remove { repository, common } => {
+                let client = client(&common)?;
+                let status = client.remove_repository_write_token(&repository).await?;
+                if common.json {
+                    return print_json(&status);
+                }
+                println!(
+                    "Kairos removed the write token of the repository {repository}. The \
+                     write-back is off."
+                );
+                Ok(())
+            }
+            Self::Status { repository, common } => {
+                let client = client(&common)?;
+                let status = client.get_repository_write_back(&repository).await?;
+                if common.json {
+                    return print_json(&status);
+                }
+                println!("write-back: {}", status.summary());
+                Ok(())
             }
         }
     }
@@ -415,6 +498,7 @@ impl ReposCommand {
                     detail.connection_id.as_deref().unwrap_or("not connected")
                 );
                 println!("read token:     {}", detail.repository.credential.summary());
+                println!("write-back:     {}", detail.repository.write_back.summary());
                 println!("index builder:  {}", detail.repository.code_index_build);
                 println!(
                     "summaries:      {} (now: {})",
@@ -631,6 +715,7 @@ impl ReposCommand {
                 Ok(())
             }
             Self::Credential { command } => command.run().await,
+            Self::WriteToken { command } => command.run().await,
             Self::Reindex { repository, common } => {
                 let client = client(&common)?;
                 let run = client.rebuild_code_index(&repository).await?;

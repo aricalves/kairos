@@ -219,6 +219,13 @@ pub fn credential_aad(tenant: &str, repository_id: Uuid) -> Vec<u8> {
     format!("kairos/repository-credential/v1\0{tenant}\0{repository_id}").into_bytes()
 }
 
+/// The associated data of the write token of a repository (KAIROS-T-0386):
+/// the tenant and the repository. It is not the data of the read token, so
+/// one ciphertext does not open as the other.
+pub fn write_token_aad(tenant: &str, repository_id: Uuid) -> Vec<u8> {
+    format!("kairos/repository-write-token/v1\0{tenant}\0{repository_id}").into_bytes()
+}
+
 /// The associated data of the secret of a webhook target (KAIROS-T-0384):
 /// the tenant and the target.
 pub fn webhook_target_aad(tenant: &str, target_id: Uuid) -> Vec<u8> {

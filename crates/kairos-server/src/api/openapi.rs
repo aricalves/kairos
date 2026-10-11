@@ -198,6 +198,10 @@ use crate::app::AppState;
         crate::api::org::code_index_query::query_vector,
         // The read token of a repository (COLLIERY-T-3105).
         crate::api::org::repository_credentials::get_credential,
+        // The GitHub write-back of a repository (KAIROS-T-0386).
+        crate::api::org::repository_write_tokens::get_write_back,
+        crate::api::org::repository_write_tokens::set_write_token,
+        crate::api::org::repository_write_tokens::remove_write_token,
         crate::api::org::repository_credentials::set_credential,
         crate::api::org::repository_credentials::remove_credential,
         crate::api::org::repository_credentials::check_credential,

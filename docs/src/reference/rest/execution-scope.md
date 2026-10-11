@@ -294,6 +294,57 @@ token removed.
 | `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown repository, or the repository has no token |
 | `409` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The stored token does not decrypt with the key of the deployment |
 
+### `GET /api/repositories/{slug}/write-token`
+
+The status of the GitHub write-back of a repository. It never has the
+token.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `slug` | path | yes | `string` | Repository slug (or UUID) |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`RepositoryWriteBack`](schemas.md#repositorywriteback) | The status of the write-back |
+| `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown repository |
+
+### `PUT /api/repositories/{slug}/write-token`
+
+Set or replace the write token of a GitHub repository. An organization
+admin or a member of the owner team can do it. Kairos encrypts the
+token, and writes each open pull request that links to an item. The
+response is the status, with no token.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `slug` | path | yes | `string` | Repository slug (or UUID) |
+
+Request body (required): `application/json`, [`SetRepositoryCredentialRequest`](schemas.md#setrepositorycredentialrequest)
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`RepositoryWriteBack`](schemas.md#repositorywriteback) | The token is set |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Not an organization admin, and not a member of the owner team |
+| `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown repository |
+| `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Not a GitHub repository, an unknown field, or a token that is empty, too long or has a space |
+| `501` | [`ErrorEnvelope`](schemas.md#errorenvelope) | This deployment has no KAIROS_SECRETS_KEY |
+
+### `DELETE /api/repositories/{slug}/write-token`
+
+Remove the write token of a repository (an organization admin, or a
+member of the owner team). Kairos writes nothing more to its pull
+requests.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `slug` | path | yes | `string` | Repository slug (or UUID) |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`RepositoryWriteBack`](schemas.md#repositorywriteback) | The token is removed |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Not an organization admin, and not a member of the owner team |
+| `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown repository, or the repository has no write token |
+
 ## forge
 
 ### `GET /api/forge-connections`

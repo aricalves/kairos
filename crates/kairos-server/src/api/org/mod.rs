@@ -33,6 +33,7 @@ pub mod forge;
 pub mod members;
 pub mod repositories;
 pub mod repository_credentials;
+pub mod repository_write_tokens;
 pub mod streams;
 pub mod structure_grants;
 pub mod team_pages;
@@ -63,6 +64,7 @@ pub fn router() -> Router<AppState> {
         .merge(code_index_settings::router())
         .merge(code_index_query::router())
         .merge(repository_credentials::router())
+        .merge(repository_write_tokens::router())
         .merge(teams::router())
         .merge(team_pages::router())
         .merge(streams::router())

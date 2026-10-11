@@ -1048,6 +1048,8 @@ macro_rules! transition_item_fn {
                         actor_id,
                     )?;
                 }
+                // KAIROS-T-0386: the GitHub write-back of its pull requests.
+                crate::writeback::on_item_changed(conn, item_id)?;
                 // KAIROS-T-0022: thin event (new column), delivered on
                 // commit.
                 crate::events::emit_item_event_by_id(
@@ -1208,6 +1210,8 @@ pub fn move_task_with(
         // KAIROS-T-0385: the dispatch rules of the entry column, after the
         // rename, so the delivery has the new code.
         crate::dispatch::on_task_entered_column(conn, task_id, to_column_id, actor_id)?;
+        // KAIROS-T-0386: the GitHub write-back of its pull requests.
+        crate::writeback::on_item_changed(conn, task_id)?;
         // The board it LEFT gets the event with the source board so its
         // subscribers refetch; the board it joined gets the placement.
         let short_code: String = dsl::tasks
@@ -1306,6 +1310,8 @@ pub fn transition_adr(
                 actor_id,
             )?;
         }
+        // KAIROS-T-0386: the GitHub write-back of its pull requests.
+        crate::writeback::on_item_changed(conn, item_id)?;
         // KAIROS-T-0022: thin event (new column), delivered on commit.
         crate::events::emit_item_event_by_id(
             conn,

@@ -10,7 +10,9 @@
 //!   (`summary_*`) and of the hosted vector model (`vector_*`; associated
 //!   data [`crate::api::org::code_index_settings::settings_aad`]);
 //! - `webhook_targets`: the secret of a webhook target (`secret_*`;
-//!   associated data [`crate::secrets::webhook_target_aad`], KAIROS-T-0384).
+//!   associated data [`crate::secrets::webhook_target_aad`], KAIROS-T-0384);
+//! - `repository_write_tokens`: the write token of a repository (associated
+//!   data [`crate::secrets::write_token_aad`], KAIROS-T-0386).
 //!
 //! The webhook secrets of the forge connections are not stored: Kairos
 //! derives them from `KAIROS_WEBHOOK_SIGNING_KEY`, so they have nothing to
@@ -52,6 +54,7 @@ pub fn rotate_tenant(
         rotate_credentials(conn, slug, key, &mut report)?;
         rotate_code_index_settings(conn, slug, key, &mut report)?;
         rotate_webhook_targets(conn, slug, key, &mut report)?;
+        rotate_write_tokens(conn, slug, key, &mut report)?;
         Ok(report)
     })
 }
@@ -88,6 +91,42 @@ fn rotate_credentials(
             Err(e) => report
                 .failed
                 .push(format!("repository_credentials ({repository_id}): {e}")),
+        }
+    }
+    Ok(())
+}
+
+/// KAIROS-T-0386: the write tokens of the repositories.
+fn rotate_write_tokens(
+    conn: &mut PgConnection,
+    slug: &str,
+    key: &SecretsKey,
+    report: &mut RotationReport,
+) -> Result<(), diesel::result::Error> {
+    for token in kairos_db::writeback::tokens_for_update(conn)? {
+        if !key.needs_reseal(&token.key_id) {
+            report.current += 1;
+            continue;
+        }
+        let aad = crate::secrets::write_token_aad(slug, token.repository_id);
+        match key.open(&aad, &token.key_id, &token.nonce, &token.ciphertext) {
+            Ok(plain) => {
+                let again = key.seal(&aad, &plain);
+                kairos_db::writeback::reseal_token(
+                    conn,
+                    &kairos_db::writeback::StoredWriteToken {
+                        repository_id: token.repository_id,
+                        ciphertext: again.ciphertext,
+                        nonce: again.nonce,
+                        key_id: again.key_id,
+                    },
+                )?;
+                report.resealed += 1;
+            }
+            Err(e) => report.failed.push(format!(
+                "repository_write_tokens ({}): {e}",
+                token.repository_id
+            )),
         }
     }
     Ok(())

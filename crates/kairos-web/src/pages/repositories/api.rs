@@ -53,6 +53,9 @@ pub struct Repository {
     /// The status of the read token (COLLIERY-T-3105). Never the token.
     #[serde(default)]
     pub credential: RepositoryCredential,
+    /// The GitHub write-back (KAIROS-T-0386). Never the write token.
+    #[serde(default)]
+    pub write_back: RepositoryWriteBack,
     /// `on` or `off` (KAIROS-T-0318): whether the code index builder
     /// works on the repository.
     #[serde(default = "code_index_build_on")]
@@ -153,6 +156,51 @@ impl RepositoryCredential {
             _ => " Not checked.".to_string(),
         };
         format!("Read token: set by {by} at {at}.{check}")
+    }
+}
+
+/// mirror of: `kairos_client::types_repositories::RepositoryWriteBack`:
+/// the GitHub write-back of a repository (KAIROS-T-0386). The server never
+/// sends the write token.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+pub struct RepositoryWriteBack {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub set_by_name: Option<String>,
+    #[serde(default)]
+    pub set_by: Option<String>,
+    #[serde(default)]
+    pub set_at: Option<String>,
+    #[serde(default)]
+    pub last_write_at: Option<String>,
+    #[serde(default)]
+    pub last_write_ok: Option<bool>,
+    #[serde(default)]
+    pub last_write_error: Option<String>,
+}
+
+impl RepositoryWriteBack {
+    /// The text of the status on the admin page. Pure, host-tested.
+    pub fn summary(&self) -> String {
+        if !self.enabled {
+            return "GitHub write-back: off. The repository has no write token.".to_string();
+        }
+        let by = self
+            .set_by_name
+            .as_deref()
+            .or(self.set_by.as_deref())
+            .unwrap_or("-");
+        let at = self.set_at.as_deref().unwrap_or("-");
+        let last = match (self.last_write_ok, self.last_write_at.as_deref()) {
+            (Some(true), Some(when)) => format!(" The last write at {when} worked."),
+            (Some(false), Some(when)) => format!(
+                " The last write at {when} failed: {}",
+                self.last_write_error.as_deref().unwrap_or("-")
+            ),
+            _ => " No write yet.".to_string(),
+        };
+        format!("GitHub write-back: on. {by} set the write token at {at}.{last}")
     }
 }
 
@@ -263,6 +311,26 @@ mod tests {
         assert!(bare.delivery_board_id.is_none());
         assert!(!bare.credential.set);
         assert_eq!(bare.credential.summary(), "Read token: not set.");
+        // KAIROS-T-0386: an older server sends no write-back: off.
+        assert!(!bare.write_back.enabled);
+        assert_eq!(
+            bare.write_back.summary(),
+            "GitHub write-back: off. The repository has no write token."
+        );
+        let on = RepositoryWriteBack {
+            enabled: true,
+            set_by_name: Some("Ada".into()),
+            set_at: Some("2026-10-12T00:00:00+00:00".into()),
+            last_write_at: Some("2026-10-12T01:00:00+00:00".into()),
+            last_write_ok: Some(false),
+            last_write_error: Some("GitHub answered 502.".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            on.summary(),
+            "GitHub write-back: on. Ada set the write token at 2026-10-12T00:00:00+00:00. \
+             The last write at 2026-10-12T01:00:00+00:00 failed: GitHub answered 502."
+        );
 
         // COLLIERY-T-3105: the status of the read token.
         let with_token: Repository = serde_json::from_value(serde_json::json!({

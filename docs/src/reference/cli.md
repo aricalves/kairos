@@ -1259,6 +1259,29 @@ and keeps the result. The command prints the status. It fails when git cannot
 read the repository with the token. The error of git does not contain the
 token.
 
+### `kairos repos write-token`
+
+```
+kairos repos write-token set <REPOSITORY> [OPTIONS]
+kairos repos write-token remove <REPOSITORY> [OPTIONS]
+kairos repos write-token status <REPOSITORY> [OPTIONS]
+```
+
+Sets, removes or shows the write token of the GitHub write-back
+(KAIROS-T-0386). With the token, Kairos writes a comment and the status
+`kairos` on each linked pull request. You must be an organization admin or a
+member of the owner team.
+
+`set` reads the token from standard input, as `kairos repos credential set`
+does. Then Kairos writes each open pull request that links to an item. Use a
+GitHub fine-grained token with "Pull requests: write" and "Commit statuses:
+write" on the one repository. Only a GitHub repository takes a write token.
+
+`remove` removes the token, and Kairos writes nothing more. `status` prints
+`off (no write token)`, or `on` with the last write. `kairos repos get` shows
+the same line. No command shows the token. See
+[Turn on GitHub write-back](../how-to/turn-on-github-write-back.md).
+
 Repositories are the codebases that tasks link to. See
 [Repositories as execution scope](../explanation/repositories-as-execution-scope.md).
 

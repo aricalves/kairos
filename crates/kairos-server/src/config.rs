@@ -284,6 +284,9 @@ pub struct AppConfig {
     /// the addresses of the signed webhook deliveries
     /// ([`crate::webhooks`]).
     pub webhooks: crate::webhooks::WebhookSettings,
+    /// `KAIROS_GITHUB_API_URL` (KAIROS-T-0386): the REST API of GitHub for
+    /// the write-back ([`crate::forge::writeback`]).
+    pub writeback: crate::forge::writeback::WriteBackSettings,
     /// `KAIROS_BOOTSTRAP_ADMIN` (KAIROS-T-0204): the email of a first-boot admin,
     /// created **only when the deployment has no users at all**.
     ///
@@ -631,6 +634,14 @@ impl AppConfig {
             )?,
             jobs: parse_jobs(&get)?,
             webhooks: parse_webhooks(&get)?,
+            writeback: crate::forge::writeback::WriteBackSettings {
+                api_url: get("KAIROS_GITHUB_API_URL")
+                    .map(|url| url.trim().trim_end_matches('/').to_string())
+                    .unwrap_or_else(|| {
+                        crate::forge::writeback::WriteBackSettings::default().api_url
+                    }),
+                ..Default::default()
+            },
             bootstrap_admin,
             bootstrap_password,
             bootstrap_password_hash,
@@ -682,6 +693,7 @@ fn parse_jobs(
         ("KAIROS_JOB_LIMIT_EMBEDDING_BATCH", kinds::EMBEDDING_BATCH),
         ("KAIROS_JOB_LIMIT_PERIODIC", kinds::PERIODIC),
         ("KAIROS_JOB_LIMIT_WEBHOOK_DELIVERY", kinds::WEBHOOK_DELIVERY),
+        ("KAIROS_JOB_LIMIT_GITHUB_WRITEBACK", kinds::GITHUB_WRITEBACK),
     ] {
         let default = settings.limit(kind);
         let limit: usize = parse_num(get, var, default)?;
@@ -1001,6 +1013,8 @@ mod tests {
         assert_eq!(config.webhooks.max_tries, 12);
         assert!(!config.webhooks.allow_private);
         assert_eq!(config.jobs.limit("webhook_delivery"), 4);
+        assert_eq!(config.jobs.limit("github_writeback"), 2);
+        assert_eq!(config.writeback.api_url, "https://api.github.com");
 
         let mut vars = MINIMAL.to_vec();
         vars.extend([
@@ -1010,6 +1024,10 @@ mod tests {
             ("KAIROS_WEBHOOK_DISABLE_AFTER", "7"),
             ("KAIROS_WEBHOOK_ALLOW_PRIVATE", "true"),
             ("KAIROS_JOB_LIMIT_WEBHOOK_DELIVERY", "9"),
+            (
+                "KAIROS_GITHUB_API_URL",
+                "https://github.example.com/api/v3/",
+            ),
         ]);
         let config = AppConfig::from_lookup(lookup(&vars)).expect("valid config");
         assert_eq!(config.webhooks.max_tries, 5);
@@ -1021,6 +1039,10 @@ mod tests {
         assert_eq!(config.webhooks.disable_after, 7);
         assert!(config.webhooks.allow_private);
         assert_eq!(config.jobs.limit("webhook_delivery"), 9);
+        assert_eq!(
+            config.writeback.api_url,
+            "https://github.example.com/api/v3"
+        );
 
         for (var, value) in [
             ("KAIROS_WEBHOOK_MAX_TRIES", "0"),

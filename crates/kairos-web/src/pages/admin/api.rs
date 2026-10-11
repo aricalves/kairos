@@ -844,6 +844,26 @@ pub async fn remove_repository_credential(
     delete_json(auth, &format!("/api/repositories/{reference}/credential")).await
 }
 
+/// `PUT /api/repositories/{slug}/write-token` — set or replace the write
+/// token of the GitHub write-back (KAIROS-T-0386). A 422 names the field.
+pub async fn set_repository_write_token(
+    auth: Auth,
+    reference: &str,
+    token: &str,
+) -> Result<Value, Refusal> {
+    put_json_refusal(
+        auth,
+        &format!("/api/repositories/{reference}/write-token"),
+        &json!({ "token": token }),
+    )
+    .await
+}
+
+/// `DELETE /api/repositories/{slug}/write-token` — the write-back is off.
+pub async fn remove_repository_write_token(auth: Auth, reference: &str) -> Result<Value, ApiError> {
+    delete_json(auth, &format!("/api/repositories/{reference}/write-token")).await
+}
+
 /// `POST /api/repositories/{slug}/credential/check` — test the read token
 /// with `git ls-remote` on the server.
 pub async fn check_repository_credential(
