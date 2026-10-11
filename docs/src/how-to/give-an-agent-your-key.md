@@ -39,7 +39,9 @@ kairos keys create --name laptop-claude-code
 
 You can also make the key on the **Agent keys** page of the GUI.
 
-The option `--expires-at 2027-01-01T00:00:00Z` sets an expiry. Kairos keeps a
+A new key expires after 90 days, unless the operator changed
+`KAIROS_API_KEY_TTL_DAYS`. The option `--expires-at 2027-01-01T00:00:00Z` sets
+a different expiry. The flag `--no-expiry` makes a key with no expiry. Kairos keeps a
 hash of the key only. It cannot show the key again. If you lose the key, make a
 new key and revoke the old key.
 
@@ -85,6 +87,19 @@ kairos keys revoke <KEY_ID> --confirm
 
 After the revocation, the key gets `401`. To replace a key, make the new key
 first. Put the new key in the settings of the agent. Then revoke the old key.
+
+## Who can revoke your key
+
+A key with no expiry works until a person revokes it. These persons can revoke
+your key:
+
+- You, with `kairos keys revoke` or on the **Agent keys** page.
+- An organization admin, with `kairos admin agent-keys revoke <KEY_ID> --confirm`
+  or in the section **Agent keys of the people** of the page **Admin >
+  Members**. Kairos then gives you a notification that names the key.
+
+When an admin removes you from the organization, Kairos revokes each of your
+agent keys. A SCIM deprovision does the same.
 
 ## Use the key with the CLI
 

@@ -225,7 +225,8 @@ fn resolve_or_create_user(
 }
 
 /// Revoke the org membership (deprovision): LAST_ADMIN-guarded, activity-
-/// logged, users row retained. Shared by PATCH `active:false`, PUT
+/// logged, users row retained; the agent keys of the person are revoked
+/// (KAIROS-T-0388). Shared by PATCH `active:false`, PUT
 /// `active:false`, and DELETE.
 pub(crate) fn revoke_membership(
     conn: &mut PgConnection,
@@ -252,7 +253,23 @@ pub(crate) fn revoke_membership(
         user.id,
         "membership",
         format!("member_remove:{}", user.email),
-    )
+    )?;
+    // KAIROS-T-0388: a person who leaves keeps no working agent key. The
+    // caller runs this in the transaction of the deprovision.
+    for key in
+        kairos_db::api_keys::revoke_person_keys(conn, user.id).map_err(ScimError::internal)?
+    {
+        log_scim_activity(
+            conn,
+            ctx.actor_id,
+            &ctx.token_name,
+            ActivityAction::Delete,
+            key.id,
+            "api_key",
+            format!("agent_key_revoke_on_remove:{}", key.name),
+        )?;
+    }
+    Ok(())
 }
 
 /// Load the member (membership + user) or 404 — the resource set is the

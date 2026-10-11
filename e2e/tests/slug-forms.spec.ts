@@ -83,13 +83,13 @@ test('slug forms: each form gives the rule and shows the refusal below the field
     const res = await fetch(GUI + path, { headers: { authorization: `Bearer ${alice}` } });
     expect(res.status, `GET ${path}`).toBe(200);
     const body = await res.json();
-    return ((body.items ?? body) as any[]).map((row) => row.slug as string).sort();
+    return (body.items as any[]).map((row) => row.slug as string).sort();
   };
   const lists = [
     '/api/teams?limit=200',
     '/api/delivery-streams?limit=200',
     '/api/boards?limit=200',
-    '/api/repositories',
+    '/api/repositories?limit=200',
   ];
   const before = await Promise.all(lists.map(slugsOf));
 
@@ -181,7 +181,8 @@ test('slug forms: each form gives the rule and shows the refusal below the field
     );
     const message =
       'The repository slug "under_score" is not correct. A repository slug must match ' +
-      '^[a-z0-9][a-z0-9-]{1,62}$.';
+      '^[a-z0-9][a-z0-9-]{1,62}$. Use 2 to 63 characters: lowercase letters, digits and ' +
+      'hyphens. The first character is a letter or a digit. An example is acme-payments-api.';
     await field(form, 'Full name').locator('input').fill('acme/slug-form');
     await field(form, 'URL').locator('input').fill('https://github.com/acme/slug-form');
     await field(form, 'Slug (optional)').locator('input').fill('under_score');

@@ -53,6 +53,8 @@ pub mod impacts;
 // KAIROS-T-0321: the teams of an initiative or a strategy.
 pub mod item_teams;
 pub mod metadata;
+// KAIROS-T-0367: append a note to an item.
+pub mod notes;
 pub mod relationships;
 pub mod restore;
 pub mod templates;
@@ -83,6 +85,7 @@ pub fn router() -> Router<AppState> {
         .merge(definitions::router())
         .merge(templates::router())
         .merge(history::router())
+        .merge(notes::router())
         .merge(activity::router())
 }
 
@@ -102,6 +105,28 @@ pub fn require_org_admin(tenant: &TenantContext) -> Result<(), ApiError> {
         )
         .with_details(json!({ "required_role": "admin" })))
     }
+}
+
+/// The activity entry of a change of the configuration of the tenant: a
+/// template or a metadata definition (KAIROS-T-0268). The caller's
+/// transaction. The action is `update`.
+pub(crate) fn log_meta_activity(
+    conn: &mut PgConnection,
+    actor_id: Uuid,
+    entity_type: &str,
+    entity_id: Uuid,
+    details: String,
+) -> Result<(), diesel::result::Error> {
+    diesel::insert_into(kairos_db::schema::activity_log::table)
+        .values(kairos_db::models::NewActivityLogEntry {
+            actor_id,
+            action: kairos_db::models::enums::ActivityAction::Update,
+            entity_id: Some(entity_id),
+            entity_type: Some(entity_type.to_string()),
+            details,
+        })
+        .execute(conn)?;
+    Ok(())
 }
 
 /// Map a plural `{entity_type}` path segment (the S-0005 family names, as

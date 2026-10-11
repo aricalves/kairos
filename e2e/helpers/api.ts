@@ -15,6 +15,21 @@ async function json(server: string, token: string, path: string): Promise<any> {
   return res.json();
 }
 
+/**
+ * Each row of a list route, page after page (KAIROS-T-0268). A list gives
+ * `{items, total, limit, offset}`, and one read is one page. `path` can
+ * have a query; this function adds `limit` and `offset`.
+ */
+export async function readEachPage(server: string, token: string, path: string): Promise<any[]> {
+  const rows: any[] = [];
+  const separator = path.includes('?') ? '&' : '?';
+  for (;;) {
+    const page = await json(server, token, `${path}${separator}limit=200&offset=${rows.length}`);
+    rows.push(...page.items);
+    if (page.items.length === 0 || rows.length >= page.total) return rows;
+  }
+}
+
 export interface BoardSnapshot {
   boardId: string;
   columnName: Map<string, string>; // column id -> name
@@ -277,18 +292,17 @@ export async function createRepository(
   return toRepository(await res.json());
 }
 
-/** The repository directory, optionally one team's. */
+/**
+ * The repository directory, optionally one team's: each page of the list
+ * (KAIROS-T-0268).
+ */
 export async function listRepositories(
   server: string,
   token: string,
   team?: string,
 ): Promise<Repository[]> {
   const query = team ? `?team=${encodeURIComponent(team)}` : '';
-  const res = await fetch(`${server}/api/repositories${query}`, { headers: bearer(token) });
-  if (!res.ok) {
-    throw new Error(`list repositories -> ${res.status}: ${await res.text()}`);
-  }
-  return ((await res.json()) as any[]).map(toRepository);
+  return (await readEachPage(server, token, `/api/repositories${query}`)).map(toRepository);
 }
 
 /**
@@ -495,7 +509,7 @@ export async function loadBoard(
   token: string,
   pick: (board: any) => boolean,
 ): Promise<BoardColumns> {
-  const boards = (await json(server, token, '/api/boards?limit=100')).items as any[];
+  const boards = await readEachPage(server, token, '/api/boards');
   const board = boards.find(pick);
   if (!board) throw new Error('no board matches');
   const detail = await json(server, token, `/api/boards/${board.id}`);

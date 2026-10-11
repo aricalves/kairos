@@ -1,0 +1,722 @@
+//! The code-index builds as jobs of the job queue (KAIROS-T-0374,
+//! COLLIERY-I-0613).
+//!
+//! A build job has the kind of its model: `embedded_build` or
+//! `hosted_build` ([`crate::jobs::kinds`]), so the limit of each kind on a
+//! server replaces the gate of KAIROS-T-0318. Its payload names the
+//! repository, the trigger (`request`, `push` for an update, `first`) and,
+//! once the build has a run row, the run. Its priority comes from the
+//! trigger ([`crate::jobs::priority`]). Its dedupe key is the repository
+//! ([`job_key`]): one open build job for each repository, so a repository
+//! never has 2 runs at the same time (KAIROS-T-0354).
+//!
+//! [`run_builder`] adds the periodic pass of the new-commits sweep
+//! (KAIROS-T-0376, [`crate::periodic::CODE_INDEX_SWEEP`]): one run at each
+//! interval for all the servers, which adds the update jobs
+//! ([`enqueue_updates`]) and the first-build jobs ([`enqueue_first_builds`]).
+//! The API adds a requested build
+//! ([`crate::api::org::code_indexes::request_rebuild`]).
+
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use chrono::{DateTime, Utc};
+use diesel::pg::PgConnection;
+use kairos_db::code_index_builds as runs;
+use kairos_db::jobs::{self as queue, Job, NewJob};
+use kairos_db::models::repositories::Repository;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use super::{
+    ACTIVE_RUN, BuildCtx, BuildOutcome, CodeIndexService, Fetched, MIN_REBUILD, OPTED_OUT, Pass,
+    STOPPED, SummarizerSource, YIELDED, build_repository, fetch_head, full_build_repository,
+    notify_run, repositories_of, update_order,
+};
+use crate::blocking::BlockingTenantPool;
+use crate::error::ApiError;
+use crate::jobs::{
+    JobError, JobFuture, JobHandle, JobHandler, JobSettings, UnitFuture, Worker, kinds, priority,
+};
+
+/// The trigger of a requested build (KAIROS-T-0332).
+pub const REQUEST: &str = "request";
+/// The trigger of an update after a push.
+pub const PUSH: &str = "push";
+/// The trigger of a first build (KAIROS-T-0318).
+pub const FIRST: &str = "first";
+
+/// The dedupe key of the build jobs of a repository.
+pub fn job_key(tenant: &str, repository: Uuid) -> String {
+    format!("code-index:{tenant}:{repository}")
+}
+
+/// The payload of a build job.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildPayload {
+    pub repository_id: Uuid,
+    /// `request`, `push` or `first`.
+    pub trigger: String,
+    /// The run of the job, once it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<Uuid>,
+}
+
+fn priority_of(trigger: &str) -> i32 {
+    match trigger {
+        REQUEST => priority::REQUESTED_BUILD,
+        PUSH => priority::UPDATE,
+        _ => priority::FIRST_BUILD,
+    }
+}
+
+/// The kind of the build jobs of `repo`: a build with a hosted summary
+/// provider, or with the embedded model. Read from the settings of the
+/// tenant of `conn`.
+pub(crate) fn build_kind(
+    conn: &mut PgConnection,
+    repo: &Repository,
+) -> Result<&'static str, ApiError> {
+    let settings =
+        kairos_db::code_index_settings::load_or_default(conn).map_err(ApiError::internal)?;
+    Ok(if super::hosted_summaries(repo, &settings) {
+        kinds::HOSTED_BUILD
+    } else {
+        kinds::EMBEDDED_BUILD
+    })
+}
+
+/// Add a build job of `repo`, on a connection of the tenant `tenant`.
+/// `Err(job)`: the repository has an open build job, and nothing was added.
+pub(crate) fn enqueue_build(
+    conn: &mut PgConnection,
+    tenant: &str,
+    repo: &Repository,
+    trigger: &str,
+    run: Option<Uuid>,
+    run_after: Option<DateTime<Utc>>,
+    max_tries: i32,
+) -> Result<Result<Job, Job>, ApiError> {
+    let kind = build_kind(conn, repo)?;
+    let payload = BuildPayload {
+        repository_id: repo.id,
+        trigger: trigger.to_string(),
+        run,
+    };
+    let job = NewJob {
+        kind: kind.to_string(),
+        tenant: Some(tenant.to_string()),
+        payload: serde_json::to_value(&payload).map_err(ApiError::internal)?,
+        priority: priority_of(trigger),
+        dedupe_key: Some(job_key(tenant, repo.id)),
+        run_after,
+        max_tries,
+    };
+    // A job that ends between the insert and the read: try once more.
+    for _ in 0..2 {
+        if let Some(added) = queue::enqueue(conn, &job).map_err(ApiError::internal)? {
+            return Ok(Ok(added));
+        }
+        if let Some(open) =
+            queue::open_by_key(conn, &job_key(tenant, repo.id)).map_err(ApiError::internal)?
+        {
+            return Ok(Err(open));
+        }
+    }
+    Err(ApiError::internal(
+        "the build job is neither added nor open",
+    ))
+}
+
+/// The note of a repository whose build job `job` is open.
+fn open_note(job: &Job) -> String {
+    let payload: Option<BuildPayload> = serde_json::from_str(&job.payload).ok();
+    let trigger = payload
+        .as_ref()
+        .map(|p| p.trigger.clone())
+        .unwrap_or_default();
+    let run = payload
+        .and_then(|p| p.run)
+        .map(|run| format!(", run {run}"))
+        .unwrap_or_default();
+    format!(
+        "{ACTIVE_RUN}: the build job {} is {} (trigger {trigger}{run})",
+        job.id, job.state
+    )
+}
+
+fn note_of(tenant: &str, repo: &Repository, commit: &str, note: String) -> BuildOutcome {
+    BuildOutcome {
+        tenant: tenant.to_string(),
+        repository: repo.slug.clone(),
+        commit: commit.to_string(),
+        base: None,
+        report: None,
+        note: Some(note),
+        elapsed: Duration::ZERO,
+    }
+}
+
+/// True when the head `head` of `repo` has an index of the schema version
+/// of this server: an update has nothing to do.
+async fn head_indexed(blocking: &BlockingTenantPool, tenant: &str, repo: Uuid, head: &str) -> bool {
+    let head = head.to_string();
+    blocking
+        .run(tenant, move |conn| {
+            let listed = kairos_db::code_indexes::list(conn, repo).map_err(ApiError::internal)?;
+            if !listed.iter().any(|i| i.commit_sha == head) {
+                return Ok(false);
+            }
+            let prefix = kairos_db::code_indexes::structure_prefix(
+                conn,
+                repo,
+                &head,
+                kairos_index::store::VERSION_PREFIX_BYTES as i32,
+            )
+            .map_err(ApiError::internal)?
+            .unwrap_or_default();
+            Ok(kairos_index::store::structure_version(&prefix)
+                .is_none_or(|found| found == kairos_index::SCHEMA_VERSION))
+        })
+        .await
+        .unwrap_or(false)
+}
+
+/// The new-commits sweep: fetch each repository that has an index, and add
+/// an update job when the head of its default branch has no index. The
+/// `run_after` of the job is the time of the newest index of the
+/// repository, so the repository that has been stale longest goes first
+/// (KAIROS-T-0334). A repository whose fetch fails gets a job too: the job
+/// records the failure. A note for each repository that got no job.
+pub async fn enqueue_updates(
+    blocking: &BlockingTenantPool,
+    service: &Arc<CodeIndexService>,
+    worker: &Worker,
+) -> Vec<BuildOutcome> {
+    enqueue_updates_with(blocking, service, worker, None).await
+}
+
+/// [`enqueue_updates`], with the progress of the periodic job of the sweep
+/// for each repository (KAIROS-T-0376).
+async fn enqueue_updates_with(
+    blocking: &BlockingTenantPool,
+    service: &Arc<CodeIndexService>,
+    worker: &Worker,
+    progress: Option<&JobHandle>,
+) -> Vec<BuildOutcome> {
+    let max_tries = worker.settings().max_tries;
+    let mut notes = Vec::new();
+    for (tenant, repo, newest) in update_order(blocking).await {
+        if let Some(handle) = progress {
+            handle.progress();
+        }
+        if !repo.code_index_build_on() {
+            notes.push(note_of(&tenant, &repo, "", OPTED_OUT.into()));
+            continue;
+        }
+        let mut commit = String::new();
+        if let Ok(Fetched { head, .. }) = fetch_head(blocking, service, &tenant, &repo, false).await
+        {
+            if service.failed_before(&(repo.id, head.clone())) {
+                notes.push(note_of(
+                    &tenant,
+                    &repo,
+                    &head,
+                    "an earlier build of this commit failed".into(),
+                ));
+                continue;
+            }
+            if head_indexed(blocking, &tenant, repo.id, &head).await {
+                notes.push(note_of(
+                    &tenant,
+                    &repo,
+                    &head,
+                    "the head has an index".into(),
+                ));
+                continue;
+            }
+            // The least time between 2 updates of one repository
+            // (KAIROS-T-0334): a repository updated a short time ago waits
+            // for a later pass.
+            if let (Some(min), Some(newest)) = (service.min_rebuild(), newest) {
+                let age = (Utc::now() - newest).to_std().unwrap_or_default();
+                if age < min {
+                    let note = format!(
+                        "{MIN_REBUILD}: the newest index is {} s old, and \
+                         KAIROS_CODE_INDEX_MIN_REBUILD_SECS is {}",
+                        age.as_secs(),
+                        min.as_secs()
+                    );
+                    tracing::debug!(tenant = %tenant, repository = %repo.slug, %note, "code index update waits");
+                    notes.push(note_of(&tenant, &repo, &head, note));
+                    continue;
+                }
+            }
+            commit = head;
+        }
+        let (slug, added) = {
+            let tenant = tenant.clone();
+            let repo = repo.clone();
+            let slug = repo.slug.clone();
+            let added = blocking
+                .run(&tenant.clone(), move |conn| {
+                    enqueue_build(conn, &tenant, &repo, PUSH, None, newest, max_tries)
+                })
+                .await;
+            (slug, added)
+        };
+        match added {
+            Ok(Ok(job)) => {
+                tracing::info!(tenant = %tenant, repository = %slug, job = %job.id, kind = %job.kind, "code index update job added")
+            }
+            Ok(Err(open)) => {
+                let note = open_note(&open);
+                tracing::info!(tenant = %tenant, repository = %slug, %note, "code index update job not added");
+                notes.push(note_of(&tenant, &repo, &commit, note));
+            }
+            Err(e) => {
+                tracing::warn!(tenant = %tenant, repository = %slug, error = ?e, "code index update job not added")
+            }
+        }
+    }
+    worker.wake();
+    notes
+}
+
+/// Add a first-build job for each repository that has no index
+/// (KAIROS-T-0318). The `run_after` of the job is the time at which the
+/// repository was registered. A note for each repository that got no job.
+pub async fn enqueue_first_builds(
+    blocking: &BlockingTenantPool,
+    service: &Arc<CodeIndexService>,
+    worker: &Worker,
+) -> Vec<BuildOutcome> {
+    let max_tries = worker.settings().max_tries;
+    let mut notes = Vec::new();
+    for (tenant, repos) in repositories_of(blocking, Pass::FirstBuilds).await {
+        for repo in repos {
+            if !repo.code_index_build_on() {
+                if service.note_changed(repo.id, OPTED_OUT) {
+                    tracing::info!(tenant = %tenant, repository = %repo.slug, note = OPTED_OUT, "code index first build not started");
+                }
+                notes.push(note_of(&tenant, &repo, "", OPTED_OUT.into()));
+                continue;
+            }
+            let added = {
+                let tenant = tenant.clone();
+                let repo = repo.clone();
+                let at = repo.created_at;
+                blocking
+                    .run(&tenant.clone(), move |conn| {
+                        enqueue_build(conn, &tenant, &repo, FIRST, None, Some(at), max_tries)
+                    })
+                    .await
+            };
+            match added {
+                Ok(Ok(job)) => {
+                    tracing::debug!(tenant = %tenant, repository = %repo.slug, job = %job.id, "code index first-build job added")
+                }
+                Ok(Err(open)) => notes.push(note_of(&tenant, &repo, "", open_note(&open))),
+                Err(e) => {
+                    tracing::warn!(tenant = %tenant, repository = %repo.slug, error = ?e, "code index first-build job not added")
+                }
+            }
+        }
+    }
+    worker.wake();
+    notes
+}
+
+/// End the `running` runs of each tenant that no open job names, when the
+/// builder of a server starts (KAIROS-T-0331, KAIROS-T-0354,
+/// KAIROS-T-0374): their server stopped before this version, or their job
+/// ended without them. A run of a job that a server runs, or that waits for
+/// a server, stays.
+pub async fn end_stale_runs(blocking: &BlockingTenantPool) {
+    let tenants = match blocking
+        .run_public(|conn| kairos_db::list_tenants(conn).map_err(ApiError::internal))
+        .await
+    {
+        Ok(tenants) => tenants,
+        Err(e) => {
+            tracing::warn!(error = ?e, "code index builder could not list tenants");
+            return;
+        }
+    };
+    for tenant in tenants.into_iter().filter(|t| t.schema_exists) {
+        let slug = tenant.slug.clone();
+        match blocking
+            .run(&tenant.slug, move |conn| {
+                runs::end_without_job(conn, &slug).map_err(ApiError::internal)
+            })
+            .await
+        {
+            Ok(0) => {}
+            Ok(n) => {
+                tracing::info!(tenant = %tenant.slug, runs = n, "code index runs ended: no job runs them")
+            }
+            Err(e) => {
+                tracing::warn!(tenant = %tenant.slug, error = ?e, "code index stale runs not ended")
+            }
+        }
+    }
+}
+
+/// The handler of the build jobs (KAIROS-T-0374).
+#[derive(Clone)]
+pub struct BuildHandler {
+    blocking: BlockingTenantPool,
+    service: Arc<CodeIndexService>,
+    summarizers: Option<Arc<dyn SummarizerSource>>,
+    embedder: Arc<dyn kairos_embed::EmbeddingProvider>,
+    /// The outcome of each build, when the caller reads them (a one-pass
+    /// run, and the tests).
+    outcomes: Option<Arc<Mutex<Vec<BuildOutcome>>>>,
+}
+
+impl BuildHandler {
+    /// The handler of the builds of `service`, with the embedded summarizer
+    /// `summarizers` (none: the image has no embedded model) and the
+    /// embedder of the vectors.
+    pub fn new(
+        blocking: BlockingTenantPool,
+        service: Arc<CodeIndexService>,
+        summarizers: Option<Arc<dyn SummarizerSource>>,
+        embedder: Arc<dyn kairos_embed::EmbeddingProvider>,
+    ) -> Self {
+        BuildHandler {
+            blocking,
+            service,
+            summarizers,
+            embedder,
+            outcomes: None,
+        }
+    }
+
+    /// Keep the outcome of each build in `outcomes`.
+    pub fn with_outcomes(mut self, outcomes: Arc<Mutex<Vec<BuildOutcome>>>) -> Self {
+        self.outcomes = Some(outcomes);
+        self
+    }
+
+    /// Run the build jobs of both kinds on `worker`.
+    pub fn register(self, worker: &Worker) {
+        let handler: Arc<dyn JobHandler> = Arc::new(self);
+        worker.register(kinds::EMBEDDED_BUILD, Arc::clone(&handler));
+        worker.register(kinds::HOSTED_BUILD, handler);
+    }
+
+    async fn build(self, handle: JobHandle) -> Result<(), JobError> {
+        let job = handle.job().clone();
+        let tenant = job
+            .tenant
+            .clone()
+            .ok_or_else(|| JobError::fail("The build job has no tenant."))?;
+        let payload: BuildPayload = serde_json::from_str(&job.payload)
+            .map_err(|e| JobError::fail(format!("The payload of the build job is wrong: {e}")))?;
+        let instance = job
+            .leased_by
+            .ok_or_else(|| JobError::fail("The build job has no lease."))?;
+        let repo_id = payload.repository_id;
+        let repo = match self
+            .blocking
+            .run(&tenant, move |conn| {
+                kairos_db::repositories::load(conn, repo_id).map_err(ApiError::internal)
+            })
+            .await
+        {
+            Ok(repo) => repo,
+            Err(e) => {
+                let note = format!("failed: the repository is not readable: {e:?}");
+                super::record_end(&self.blocking, &tenant, payload.run, Err(&note)).await;
+                return Err(JobError::fail(note));
+            }
+        };
+        let ctx = BuildCtx {
+            handle: handle.clone(),
+            instance,
+            run: payload.run,
+        };
+        let outcome = match payload.trigger.as_str() {
+            PUSH => {
+                build_repository(
+                    &self.blocking,
+                    &self.service,
+                    &tenant,
+                    repo,
+                    self.summarizers.clone(),
+                    Arc::clone(&self.embedder),
+                    &ctx,
+                )
+                .await
+            }
+            REQUEST | FIRST => {
+                let trigger = if payload.trigger == REQUEST {
+                    REQUEST
+                } else {
+                    // A first build of hours gives its slot to an update.
+                    handle.allow_yield();
+                    FIRST
+                };
+                full_build_repository(
+                    &self.blocking,
+                    &self.service,
+                    &tenant,
+                    repo,
+                    self.summarizers.clone(),
+                    Arc::clone(&self.embedder),
+                    trigger,
+                    &ctx,
+                )
+                .await
+            }
+            other => {
+                return Err(JobError::fail(format!(
+                    "The build job has an unknown trigger {other:?}."
+                )));
+            }
+        };
+        log_outcome(&self.service, &payload.trigger, repo_id, &outcome);
+        let result = match (&outcome.report, outcome.note.as_deref()) {
+            (Some(_), _) => Ok(()),
+            (None, Some(YIELDED)) => Err(JobError::yielded()),
+            (None, Some(STOPPED)) => Err(JobError::retry(STOPPED)),
+            (None, Some(note)) if note.starts_with("failed") => Err(JobError::fail(note)),
+            _ => Ok(()),
+        };
+        if let Some(outcomes) = &self.outcomes {
+            outcomes
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(outcome);
+        }
+        result
+    }
+
+    /// The job failed after its last try: end its run as failed, with the
+    /// reason.
+    async fn end_run(self, job: Job) {
+        let (Some(tenant), Ok(payload)) = (
+            job.tenant.clone(),
+            serde_json::from_str::<BuildPayload>(&job.payload),
+        ) else {
+            return;
+        };
+        let Some(run) = payload.run else { return };
+        let reason = format!(
+            "failed: {}",
+            job.last_error
+                .unwrap_or_else(|| "the build job failed".to_string())
+        );
+        if let Err(e) = self
+            .blocking
+            .run(&tenant, move |conn| {
+                crate::api::org::run_in_transaction(conn, |conn| {
+                    let Some(found) = runs::get(conn, run).map_err(ApiError::internal)? else {
+                        return Ok(());
+                    };
+                    if found.outcome != "running" {
+                        return Ok(());
+                    }
+                    let ended = runs::end_failed(conn, run, &reason).map_err(ApiError::internal)?;
+                    if let Ok(repo) = kairos_db::repositories::load(conn, ended.repository_id) {
+                        notify_run(conn, &repo.slug, ended.requested_by)?;
+                    }
+                    Ok(())
+                })
+            })
+            .await
+        {
+            tracing::warn!(tenant = %tenant, run = %run, error = ?e, "code index run end not recorded");
+        }
+    }
+}
+
+impl JobHandler for BuildHandler {
+    fn run(&self, handle: JobHandle) -> JobFuture {
+        Box::pin(self.clone().build(handle))
+    }
+
+    fn failed(&self, job: Job) -> UnitFuture {
+        Box::pin(self.clone().end_run(job))
+    }
+}
+
+/// Log the outcome of a build job.
+fn log_outcome(service: &CodeIndexService, trigger: &str, repo: Uuid, outcome: &BuildOutcome) {
+    match (&outcome.report, &outcome.note) {
+        (Some(report), _) => {
+            service.forget_note(repo);
+            tracing::info!(
+                tenant = %outcome.tenant,
+                repository = %outcome.repository,
+                commit = %outcome.commit,
+                base = ?outcome.base,
+                trigger,
+                files = report.build.files,
+                symbols = report.build.symbols,
+                summaries = report.summary.symbols.summarized
+                    + report.summary.files.summarized
+                    + report.summary.modules.summarized,
+                reused = report.summary.symbols.reused
+                    + report.summary.files.reused
+                    + report.summary.modules.reused,
+                elapsed_secs = outcome.elapsed.as_secs_f64(),
+                "code index built"
+            );
+        }
+        (None, Some(note)) if note.starts_with("failed") => {
+            service.note_changed(repo, note);
+            tracing::warn!(
+                tenant = %outcome.tenant,
+                repository = %outcome.repository,
+                commit = %outcome.commit,
+                trigger,
+                note = %note,
+                elapsed_secs = outcome.elapsed.as_secs_f64(),
+                "code index not built"
+            );
+        }
+        (None, Some(note)) => {
+            if service.note_changed(repo, note) {
+                tracing::info!(
+                    tenant = %outcome.tenant,
+                    repository = %outcome.repository,
+                    trigger,
+                    note = %note,
+                    "code index build not done"
+                );
+            }
+        }
+        (None, None) => {}
+    }
+}
+
+/// Start the builder (KAIROS-T-0374, KAIROS-T-0376): end the stale runs,
+/// run the build jobs on `worker`, and add the periodic pass of the
+/// new-commits sweep, at each `interval`. A run of the pass adds the update
+/// jobs of the new commits and the first-build jobs; the queue gives each
+/// run to one server, so one server fetches the repositories for each
+/// interval. The worker of the server runs the jobs. An error is logged;
+/// it never stops the server.
+pub async fn run_builder(
+    worker: Arc<Worker>,
+    blocking: BlockingTenantPool,
+    service: Arc<CodeIndexService>,
+    summarizers: Option<Arc<dyn SummarizerSource>>,
+    embedder: Arc<dyn kairos_embed::EmbeddingProvider>,
+    interval: Duration,
+) {
+    tracing::info!(
+        interval_secs = interval.as_secs(),
+        "code index builder started"
+    );
+    end_stale_runs(&blocking).await;
+    BuildHandler::new(
+        blocking.clone(),
+        Arc::clone(&service),
+        summarizers,
+        embedder,
+    )
+    .register(&worker);
+    let pass = sweep_pass(blocking, service, Arc::downgrade(&worker));
+    if let Err(e) = worker
+        .add_periodic(crate::periodic::CODE_INDEX_SWEEP, interval, pass)
+        .await
+    {
+        tracing::warn!(error = ?e, "the first run of the code index sweep was not added");
+    }
+}
+
+/// The periodic pass of the new-commits sweep (KAIROS-T-0376):
+/// [`enqueue_updates`], then [`enqueue_first_builds`], on the worker of the
+/// server. It holds the worker weakly: the worker holds the pass.
+fn sweep_pass(
+    blocking: BlockingTenantPool,
+    service: Arc<CodeIndexService>,
+    worker: std::sync::Weak<Worker>,
+) -> crate::periodic::PassFn {
+    Arc::new(move |handle: JobHandle| {
+        let (blocking, service, worker) = (blocking.clone(), Arc::clone(&service), worker.clone());
+        Box::pin(async move {
+            let Some(worker) = worker.upgrade() else {
+                return Err(JobError::not_here("The worker of this server stopped."));
+            };
+            enqueue_updates_with(&blocking, &service, &worker, Some(&handle)).await;
+            handle.progress();
+            enqueue_first_builds(&blocking, &service, &worker).await;
+            Ok(())
+        })
+    })
+}
+
+/// A worker of the server of `service` that runs the build jobs once, and
+/// keeps their outcomes.
+fn pass_worker(
+    blocking: &BlockingTenantPool,
+    service: &Arc<CodeIndexService>,
+    summarizers: Option<Arc<dyn SummarizerSource>>,
+    embedder: Arc<dyn kairos_embed::EmbeddingProvider>,
+) -> (Arc<Worker>, Arc<Mutex<Vec<BuildOutcome>>>) {
+    let worker = Arc::new(Worker::new(
+        blocking.clone(),
+        service.instance(),
+        JobSettings::default(),
+    ));
+    let outcomes = Arc::new(Mutex::new(Vec::new()));
+    BuildHandler::new(blocking.clone(), Arc::clone(service), summarizers, embedder)
+        .with_outcomes(Arc::clone(&outcomes))
+        .register(&worker);
+    (worker, outcomes)
+}
+
+async fn drain(
+    worker: Arc<Worker>,
+    outcomes: Arc<Mutex<Vec<BuildOutcome>>>,
+    mut notes: Vec<BuildOutcome>,
+) -> Vec<BuildOutcome> {
+    worker.drain().await;
+    notes.extend(outcomes.lock().unwrap_or_else(|e| e.into_inner()).drain(..));
+    notes
+}
+
+/// One pass of the new-commits sweep on the job path: [`enqueue_updates`], then
+/// run the build jobs that are ready on a worker of this server until none
+/// is left. The notes of the repositories that got no job, then the
+/// outcome of each job, in the order of their ends. For a one-shot run and
+/// the tests; a server runs [`run_builder`].
+pub async fn sweep(
+    blocking: &BlockingTenantPool,
+    service: &Arc<CodeIndexService>,
+    summarizers: Option<Arc<dyn SummarizerSource>>,
+    embedder: Arc<dyn kairos_embed::EmbeddingProvider>,
+) -> Vec<BuildOutcome> {
+    let (worker, outcomes) = pass_worker(blocking, service, summarizers, embedder);
+    let notes = enqueue_updates(blocking, service, &worker).await;
+    drain(worker, outcomes, notes).await
+}
+
+/// One pass of the first builds on the job path: [`enqueue_first_builds`],
+/// then run the build jobs that are ready, as [`sweep`] does.
+pub async fn first_builds(
+    blocking: &BlockingTenantPool,
+    service: &Arc<CodeIndexService>,
+    summarizers: Option<Arc<dyn SummarizerSource>>,
+    embedder: Arc<dyn kairos_embed::EmbeddingProvider>,
+) -> Vec<BuildOutcome> {
+    let (worker, outcomes) = pass_worker(blocking, service, summarizers, embedder);
+    let notes = enqueue_first_builds(blocking, service, &worker).await;
+    drain(worker, outcomes, notes).await
+}
+
+/// Run the build jobs that are ready (the requested builds, KAIROS-T-0332,
+/// first), as [`sweep`] does, with no new job.
+pub async fn requested_builds(
+    blocking: &BlockingTenantPool,
+    service: &Arc<CodeIndexService>,
+    summarizers: Option<Arc<dyn SummarizerSource>>,
+    embedder: Arc<dyn kairos_embed::EmbeddingProvider>,
+) -> Vec<BuildOutcome> {
+    let (worker, outcomes) = pass_worker(blocking, service, summarizers, embedder);
+    drain(worker, outcomes, Vec::new()).await
+}

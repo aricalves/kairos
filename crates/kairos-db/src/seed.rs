@@ -55,7 +55,7 @@ use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::result::Error as DieselError;
 use diesel::sql_query;
-use diesel::sql_types::{Bool, Text};
+use diesel::sql_types::{BigInt, Bool, Text};
 use uuid::Uuid;
 
 use crate::boards::{BoardError, CodePrefix, create_board};
@@ -157,6 +157,9 @@ pub struct SeedDemoReport {
     pub schema: String,
     /// Whether an existing demo tenant was dropped first (`force`).
     pub recreated: bool,
+    /// What the dropped demo tenant held (KAIROS-T-0346), so a caller can
+    /// say what it reset. `None` when there was no tenant to drop.
+    pub dropped: Option<DroppedDemo>,
     /// Users upserted into `public.users` (alice, bob, carol).
     pub users: usize,
     /// Teams created (each with its delivery board).
@@ -185,6 +188,48 @@ pub struct SeedDemoReport {
     /// Short codes of the seeded strategy, initiatives, tasks, document,
     /// and ADRs, in creation order — handy for demos and assertions.
     pub short_codes: Vec<String>,
+}
+
+/// The live rows of a demo tenant that a forced seed drops (KAIROS-T-0346).
+/// The rows that a test or a person made are in these counts too.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, QueryableByName)]
+pub struct DroppedDemo {
+    /// Live teams.
+    #[diesel(sql_type = BigInt)]
+    pub teams: i64,
+    /// Live boards.
+    #[diesel(sql_type = BigInt)]
+    pub boards: i64,
+    /// Live work items: strategies, initiatives, tasks, documents and ADRs.
+    #[diesel(sql_type = BigInt)]
+    pub items: i64,
+}
+
+/// Count the live rows of the demo tenant schema. Zero for each when the
+/// schema is missing (an organization row with no schema).
+fn count_demo(conn: &mut PgConnection) -> Result<DroppedDemo, SeedError> {
+    let schema_present: BoolRow = sql_query(
+        "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'org_' || $1) AS present",
+    )
+    .bind::<Text, _>(DEMO_SLUG)
+    .get_result(conn)?;
+    if !schema_present.present {
+        return Ok(DroppedDemo::default());
+    }
+    let live = |table: &str| {
+        format!("(SELECT COUNT(*) FROM org_{DEMO_SLUG}.{table} WHERE deleted_at IS NULL)")
+    };
+    Ok(sql_query(format!(
+        "SELECT {} AS teams, {} AS boards, {} + {} + {} + {} + {} AS items",
+        live("teams"),
+        live("boards"),
+        live("strategies"),
+        live("initiatives"),
+        live("tasks"),
+        live("documents"),
+        live("adrs"),
+    ))
+    .get_result(conn)?)
 }
 
 #[derive(QueryableByName)]
@@ -346,10 +391,12 @@ pub fn seed_demo(conn: &mut PgConnection, force: bool) -> Result<SeedDemoReport,
         use crate::schema::{organization_members, organizations, team_delivery_streams};
 
         let mut recreated = false;
+        let mut dropped = None;
         if demo_tenant_exists(conn)? {
             if !force {
                 return Err(SeedError::AlreadySeeded);
             }
+            dropped = Some(count_demo(conn)?);
             // No FK cascade from organization_members → organizations:
             // clear memberships first (same order as the admin
             // delete-tenant handler), then drop schema + org row.
@@ -1075,6 +1122,7 @@ pub fn seed_demo(conn: &mut PgConnection, force: bool) -> Result<SeedDemoReport,
             slug: DEMO_SLUG.to_string(),
             schema: report.schema,
             recreated,
+            dropped,
             users: user_ids.len(),
             teams: 2,
             boards: report.boards_created.len() + 2,

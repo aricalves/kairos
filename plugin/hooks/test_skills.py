@@ -178,5 +178,16 @@ class GrillDecomposition(unittest.TestCase):
         self.assertIn("/kairos:grill-decomposition", step5)
 
 
+class NotificationsInTheSkills(unittest.TestCase):
+    """KAIROS-T-0382: implement and triage read and mark the events."""
+
+    def test_implement_and_triage_read_and_mark_events(self):
+        for rel in ("workflow/implement", "workflow/triage"):
+            with self.subTest(skill=rel):
+                text = read(os.path.join(SKILLS, rel, "SKILL.md"))
+                self.assertIn("`get_events`", text)
+                self.assertIn("`mark_events_read`", text)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -60,9 +60,14 @@ export class Api {
 
   whoami() { return this.get('/api/whoami'); }
 
-  /** Boards list (first 100). */
+  /** Each board, page after page (KAIROS-T-0268). */
   async boards(): Promise<any[]> {
-    return (await this.get('/api/boards?limit=100')).items;
+    const boards: any[] = [];
+    for (;;) {
+      const page = await this.get(`/api/boards?limit=200&offset=${boards.length}`);
+      boards.push(...page.items);
+      if (page.items.length === 0 || boards.length >= page.total) return boards;
+    }
   }
   /** One board by its slug: the read routes take a slug (COLLIERY-T-0265). */
   boardBySlug(slug: string): Promise<any> {

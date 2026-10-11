@@ -3,10 +3,13 @@
 //! configuration over the T-0010 services (typed rule violations → 422),
 //! and capability administration over the T-0011 grant/revoke services.
 //!
-//! Gating: board creation/deletion is org-admin-only (no/whole-board
-//! context → the A-0006 tenant-config fallback); PATCH board + column +
-//! transition writes require `configure_boards` on the board; member/
-//! capability writes require `administer_members`. Reads are open tenant-wide.
+//! Gating: board creation is for an org admin or a holder of
+//! `manage_structure` at the organization (KAIROS-T-0337,
+//! [`require_structure`]); PATCH/DELETE board + column + transition writes
+//! require `configure_boards` on the board; member/capability writes
+//! require `administer_members`. A grant of `manage_structure` on the board
+//! or at the organization covers those two (`kairos_db::abac::authorize`).
+//! Reads are open tenant-wide.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -28,7 +31,9 @@ use serde_json::json;
 use uuid::Uuid;
 
 use super::super::convert::{IntoDto, attach_repositories};
-use super::super::{clamp_pagination, parse_enum, parse_uuid, require_capability};
+use super::super::{
+    clamp_pagination, parse_enum, parse_uuid, require_capability, require_structure,
+};
 use super::{
     check_slug_form, count_live_board_items, load_board, load_board_by_ref, map_config_error,
     map_grant_error, require_user_exists, run_in_transaction, validate_capabilities,
@@ -414,8 +419,9 @@ pub(crate) fn archive_completed_tasks(
 }
 
 /// Create a board seeded with the system default columns/transitions for
-/// its level (KAIROS-A-0002). Org-admin-only: a new board has no capability
-/// context yet (A-0006 tenant-config fallback).
+/// its level (KAIROS-A-0002). An organization admin, or `manage_structure`
+/// on the organization (KAIROS-T-0337). A grant on one board does not count:
+/// the new board is not that board.
 ///
 /// A delivery board needs a team (COLLIERY-T-0230). A request for a
 /// delivery board with no `team_id` is a 422. The board of a task decides
@@ -470,7 +476,7 @@ pub(crate) fn archive_completed_tasks(
     request_body = dto::CreateBoardRequest,
     responses(
         (status = 201, description = "Created, with the seeded configuration", body = dto::BoardDetail),
-        (status = 403, description = "Not an org admin", body = kairos_client::types::ErrorEnvelope),
+        (status = 403, description = "Not an org admin, and no manage_structure on the organization", body = kairos_client::types::ErrorEnvelope),
         (status = 409, description = "A live board has the slug, or a live board of the same level has the prefix; details.board names it", body = kairos_client::types::ErrorEnvelope),
         (status = 422, description = "Bad level/team reference, a slug that does not have the form of a board slug, a code_prefix that is absent or does not match the rule, a delivery board with no team, a strategy or initiative board with a team, the prefix of a team ADR board that is not the prefix of the team, TEAM_HAS_DELIVERY_BOARD, or TEAM_HAS_ADR_BOARD", body = kairos_client::types::ErrorEnvelope),
     ),
@@ -481,6 +487,25 @@ pub(crate) async fn create_board(
     Extension(tenant): Extension<TenantContext>,
     ApiJson(body): ApiJson<dto::CreateBoardRequest>,
 ) -> Result<(StatusCode, Json<dto::BoardDetail>), ApiError> {
+    let user = auth.user_id;
+    let slug = tenant.slug.clone();
+    let detail = state
+        .blocking
+        .run(&tenant.slug, move |conn| create(conn, &slug, user, body))
+        .await?;
+    Ok((StatusCode::CREATED, Json(detail)))
+}
+
+/// Create a board as `user`: the ONE implementation of `POST /api/boards`
+/// and of the MCP tool `create_board` (KAIROS-T-0337). The gate is
+/// [`require_structure`]: a grant of `manage_structure` on one board does
+/// not make a new board.
+pub(crate) fn create(
+    conn: &mut PgConnection,
+    slug: &str,
+    user: Uuid,
+    body: dto::CreateBoardRequest,
+) -> Result<dto::BoardDetail, ApiError> {
     let level = parse_enum::<BoardLevel>(&body.board_level, "board_level", BoardLevel::ALL)?;
     let team_id = body
         .team_id
@@ -489,46 +514,38 @@ pub(crate) async fn create_board(
         .transpose()?;
     // COLLIERY-T-0258: the form of the slug that the caller sent.
     check_slug_form("board", &body.slug)?;
-    let user = auth.user_id;
-    let slug = tenant.slug.clone();
-    let detail = state
-        .blocking
-        .run(&tenant.slug, move |conn| {
-            require_capability(conn, &slug, None, user, CONFIGURE)?;
-            if let Some(team_id) = team_id {
-                use kairos_db::schema::teams::dsl;
-                let exists: Option<Uuid> = dsl::teams
-                    .filter(dsl::id.eq(team_id))
-                    .filter(dsl::deleted_at.is_null())
-                    .select(dsl::id)
-                    .first(conn)
-                    .optional()
-                    .map_err(ApiError::internal)?;
-                if exists.is_none() {
-                    return Err(ApiError::validation(format!(
-                        "The team {team_id} is not in the organization. Send the id of a \
-                         team of the organization as team_id."
-                    )));
-                }
-            }
-            // COLLIERY-T-0255: a slug that a live board has is a 409 that
-            // names the board (`BoardError::SlugTaken`).
-            // COLLIERY-T-3099: a bad prefix is a 422, and a prefix that a
-            // live board of the same level has is a 409 that names the board.
-            let board = boards::create_board(
-                conn,
-                level,
-                &body.name,
-                &body.slug,
-                boards::CodePrefix::Given(&body.code_prefix),
-                team_id,
-                Some(user),
-            )
-            .map_err(map_config_error)?;
-            board_detail(conn, board, false)
-        })
-        .await?;
-    Ok((StatusCode::CREATED, Json(detail)))
+    require_structure(conn, slug, user)?;
+    if let Some(team_id) = team_id {
+        use kairos_db::schema::teams::dsl;
+        let exists: Option<Uuid> = dsl::teams
+            .filter(dsl::id.eq(team_id))
+            .filter(dsl::deleted_at.is_null())
+            .select(dsl::id)
+            .first(conn)
+            .optional()
+            .map_err(ApiError::internal)?;
+        if exists.is_none() {
+            return Err(ApiError::validation(format!(
+                "The team {team_id} is not in the organization. Send the id of a \
+                 team of the organization as team_id."
+            )));
+        }
+    }
+    // COLLIERY-T-0255: a slug that a live board has is a 409 that
+    // names the board (`BoardError::SlugTaken`).
+    // COLLIERY-T-3099: a bad prefix is a 422, and a prefix that a
+    // live board of the same level has is a 409 that names the board.
+    let board = boards::create_board(
+        conn,
+        level,
+        &body.name,
+        &body.slug,
+        boards::CodePrefix::Given(&body.code_prefix),
+        team_id,
+        Some(user),
+    )
+    .map_err(map_config_error)?;
+    board_detail(conn, board, false)
 }
 
 /// Update board settings (name/slug). Requires `configure_boards` on the
@@ -623,20 +640,24 @@ pub(crate) async fn update_board(
             {
                 check_slug_form("board", new_slug)?;
             }
+            // KAIROS-T-0268: only a value that is different from the value
+            // of the row goes to the write. When no value is different, the
+            // route writes nothing and makes no activity entry.
+            let changes = kairos_db::models::boards::BoardChangeset {
+                name: body.name.clone().filter(|name| *name != board.name),
+                slug: body.slug.clone().filter(|new| *new != board.slug),
+                ..Default::default()
+            };
+            if changes.name.is_none() && changes.slug.is_none() {
+                return Ok(board.into_dto());
+            }
             // COLLIERY-T-0255: two live boards cannot have the same slug.
-            if let Some(new_slug) = body.slug.as_deref() {
+            if let Some(new_slug) = changes.slug.as_deref() {
                 boards::check_board_slug(conn, new_slug, Some(board_id))
                     .map_err(map_config_error)?;
             }
             let updated = diesel::update(dsl::boards.filter(dsl::id.eq(board_id)))
-                .set((
-                    kairos_db::models::boards::BoardChangeset {
-                        name: body.name.clone(),
-                        slug: body.slug.clone(),
-                        ..Default::default()
-                    },
-                    dsl::updated_at.eq(diesel::dsl::now),
-                ))
+                .set((changes, dsl::updated_at.eq(diesel::dsl::now)))
                 .returning(Board::as_returning())
                 .get_result::<Board>(conn);
             // An update at the same time got the slug first: the index
@@ -767,7 +788,8 @@ fn types_of_level(level: BoardLevel) -> &'static [ItemType] {
 }
 
 /// Set the number of the next code of a type on a board (COLLIERY-T-3104).
-/// Org-admin-only.
+/// An organization admin, or `manage_structure` on the organization
+/// (KAIROS-T-0337).
 ///
 /// The next create of `item_type` on the board gets the code
 /// `{code_prefix}-{type letter}-{next_number}`. The Metis import uses this
@@ -800,7 +822,7 @@ fn types_of_level(level: BoardLevel) -> &'static [ItemType] {
     request_body = dto::SetCodeSequenceRequest,
     responses(
         (status = 200, description = "The sequence; next_code is the code of the next create", body = dto::CodeSequence),
-        (status = 403, description = "Not an org admin", body = kairos_client::types::ErrorEnvelope),
+        (status = 403, description = "Not an org admin, and no manage_structure on the organization", body = kairos_client::types::ErrorEnvelope),
         (status = 404, description = "Unknown board", body = kairos_client::types::ErrorEnvelope),
         (status = 409, description = "CODE_IN_USE, CODE_RETIRED, or SEQUENCE_IS_PAST", body = kairos_client::types::ErrorEnvelope),
         (status = 422, description = "An item_type that the board does not hold, a next_number below 1, or an unknown field", body = kairos_client::types::ErrorEnvelope),
@@ -818,7 +840,7 @@ pub(crate) async fn set_code_sequence(
     let sequence = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            require_capability(conn, &slug, None, user, CONFIGURE)?;
+            require_structure(conn, &slug, user)?;
             let board = load_board_by_ref(conn, &id)?;
             let allowed = types_of_level(board.board_level);
             let Some(item_type) = allowed
@@ -1017,15 +1039,33 @@ pub(crate) async fn board_items(
             )
             .map_err(ApiError::internal)?;
 
+            // KAIROS-T-0371: the live count of each column (all pages, no
+            // filter), for the WIP limit. 1 query.
+            let counts: HashMap<Uuid, i64> =
+                kairos_db::board_items::live_column_counts(conn, &[board_id])
+                    .map_err(ApiError::internal)?
+                    .into_iter()
+                    .map(|c| (c.column_id, c.count))
+                    .collect();
             let mut groups: Vec<dto::BoardColumnItems> = columns
                 .into_iter()
-                .map(|column| dto::BoardColumnItems {
-                    column: column.into_dto(),
-                    strategies: vec![],
-                    initiatives: vec![],
-                    tasks: vec![],
-                    adrs: vec![],
+                .map(|column| {
+                    let item_count = counts.get(&column.id).copied().unwrap_or(0);
+                    let over_wip_limit =
+                        kairos_db::board_items::over_wip_limit(item_count, column.wip_limit);
+                    (column, item_count, over_wip_limit)
                 })
+                .map(
+                    |(column, item_count, over_wip_limit)| dto::BoardColumnItems {
+                        column: column.into_dto(),
+                        item_count,
+                        over_wip_limit,
+                        strategies: vec![],
+                        initiatives: vec![],
+                        tasks: vec![],
+                        adrs: vec![],
+                    },
+                )
                 .collect();
             let index_of: HashMap<String, usize> = groups
                 .iter()
@@ -1160,6 +1200,24 @@ pub(crate) async fn board_items(
             // the page, one query for the board.
             let item_teams =
                 crate::api::meta::item_teams::board_item_teams(conn, board_id, &item_codes)?;
+            // KAIROS-T-0368: the metadata values of the page, one query,
+            // only when the query asks for them.
+            let item_metadata = if query.with_metadata {
+                let values = kairos_db::board_items::metadata_of_items(conn, &item_ids)
+                    .map_err(ApiError::internal)?;
+                Some(
+                    item_codes
+                        .iter()
+                        .filter_map(|(id, code)| {
+                            values
+                                .get(id)
+                                .map(|pairs| (code.clone(), pairs.iter().cloned().collect()))
+                        })
+                        .collect(),
+                )
+            } else {
+                None
+            };
             let children_progress: std::collections::BTreeMap<String, dto::ProgressCounts> =
                 item_codes
                     .into_iter()
@@ -1186,6 +1244,7 @@ pub(crate) async fn board_items(
                 children_progress,
                 blocks_summary,
                 item_teams,
+                item_metadata,
             })
         })
         .await?;
@@ -1273,6 +1332,11 @@ pub(crate) async fn add_column(
 /// A person who moves a task into a column with `claims` gets the claim of
 /// the task. When the flag goes off, the claims of the tasks in the column
 /// end.
+///
+/// It also sets the WIP limit of the column (`wip_limit`, KAIROS-T-0371): a
+/// number above 0, or `null` to remove it. Kairos does not refuse a move into
+/// a column over its limit. The answer of the move has a warning in the
+/// header `Kairos-Warning`.
 #[utoipa::path(
     patch,
     path = "/api/boards/{id}/columns/{col_id}",
@@ -1302,11 +1366,21 @@ pub(crate) async fn update_column(
         && body.position.is_none()
         && body.is_done.is_none()
         && body.claims.is_none()
+        && body.wip_limit.is_none()
     {
         return Err(ApiError::validation(
-            "The request has no field to change. Send one or more of name, position, is_done \
-             and claims.",
+            "The request has no field to change. Send one or more of name, position, is_done, \
+             claims and wip_limit.",
         ));
+    }
+    if let Some(Some(limit)) = body.wip_limit
+        && limit < 1
+    {
+        return Err(ApiError::validation(format!(
+            "The wip_limit {limit} is not correct. Send a number above 0, or null to remove \
+             the limit."
+        ))
+        .with_details(serde_json::json!({ "field": "wip_limit" })));
     }
     let user = auth.user_id;
     let slug = tenant.slug.clone();
@@ -1314,35 +1388,47 @@ pub(crate) async fn update_column(
         .blocking
         .run(&tenant.slug, move |conn| {
             let board = load_board(conn, board_id)?;
-            load_column_of_board(conn, board_id, column_id)?;
+            let column = load_column_of_board(conn, board_id, column_id)?;
             require_capability(conn, &slug, Some(board.id), user, CONFIGURE)?;
+            if let Some(position) = body.position
+                && position < 0
+            {
+                return Err(ApiError::validation(format!(
+                    "The position {position} is not correct. A position is 0 or more."
+                )));
+            }
 
-            if let Some(name) = &body.name {
+            // KAIROS-T-0268: only a value that is different from the value
+            // of the row goes to the write. When no value is different, the
+            // route writes nothing and makes no activity entry.
+            if let Some(name) = body.name.as_ref().filter(|name| **name != column.name) {
                 boards::rename_column(conn, column_id, name, user).map_err(map_config_error)?;
             }
-            if let Some(is_done) = body.is_done {
+            if let Some(is_done) = body.is_done.filter(|done| *done != column.is_done) {
                 boards::set_column_done(conn, column_id, is_done, user)
                     .map_err(map_config_error)?;
             }
             // KAIROS-T-0359: the same path and capability as `is_done`.
-            if let Some(claims) = body.claims {
+            if let Some(claims) = body.claims.filter(|claims| *claims != column.claims) {
                 boards::set_column_claims(conn, column_id, claims, user)
                     .map_err(map_config_error)?;
             }
+            // KAIROS-T-0371: the same path and capability as `claims`.
+            if let Some(limit) = body.wip_limit.filter(|limit| *limit != column.wip_limit) {
+                boards::set_column_wip_limit(conn, column_id, limit, user)
+                    .map_err(map_config_error)?;
+            }
             if let Some(position) = body.position {
-                if position < 0 {
-                    return Err(ApiError::validation(format!(
-                        "The position {position} is not correct. A position is 0 or more."
-                    )));
-                }
-                let mut order: Vec<Uuid> = load_columns(conn, board_id)?
-                    .into_iter()
-                    .map(|c| c.id)
-                    .collect();
+                let columns = load_columns(conn, board_id)?;
+                let now_at = columns.iter().position(|c| c.id == column_id);
+                let mut order: Vec<Uuid> = columns.into_iter().map(|c| c.id).collect();
                 order.retain(|&c| c != column_id);
                 let index = (position as usize).min(order.len());
-                order.insert(index, column_id);
-                boards::reorder_columns(conn, board_id, &order, user).map_err(map_config_error)?;
+                if now_at != Some(index) {
+                    order.insert(index, column_id);
+                    boards::reorder_columns(conn, board_id, &order, user)
+                        .map_err(map_config_error)?;
+                }
             }
             Ok(load_column_of_board(conn, board_id, column_id)?.into_dto())
         })
@@ -1663,23 +1749,41 @@ pub(crate) async fn add_board_member(
 ) -> Result<(StatusCode, Json<dto::BoardMember>), ApiError> {
     let board_id = parse_uuid(&id, "id")?;
     let target = parse_uuid(&body.user_id, "user_id")?;
-    validate_capabilities(&body.capabilities)?;
     let user = auth.user_id;
     let slug = tenant.slug.clone();
     let member = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            let board = load_board(conn, board_id)?;
-            require_capability(conn, &slug, Some(board.id), user, ADMINISTER_MEMBERS)?;
-            require_user_exists(conn, target)?;
-            for capability in &body.capabilities {
-                abac::grant_capability(conn, board_id, target, capability, user)
-                    .map_err(map_grant_error)?;
-            }
-            board_member_view(conn, board_id, target)
+            grant_as(conn, &slug, user, board_id, target, &body.capabilities)
         })
         .await?;
     Ok((StatusCode::CREATED, Json(member)))
+}
+
+/// Grant `capabilities` on the board `board_id` to `target` as `user`: the
+/// ONE implementation of `POST /api/boards/{id}/members` and of the board
+/// grants of the MCP tool `grant_capability` (KAIROS-T-0337). The gate is
+/// `administer_members` on the board, which a grant of `manage_structure`
+/// on the board or at the organization covers. Each grant is one
+/// transaction with its activity row; a grant that the member has already
+/// is a 409, and the grants before it stay.
+pub(crate) fn grant_as(
+    conn: &mut PgConnection,
+    slug: &str,
+    user: Uuid,
+    board_id: Uuid,
+    target: Uuid,
+    capabilities: &[String],
+) -> Result<dto::BoardMember, ApiError> {
+    validate_capabilities(capabilities)?;
+    let board = load_board(conn, board_id)?;
+    require_capability(conn, slug, Some(board.id), user, ADMINISTER_MEMBERS)?;
+    require_user_exists(conn, target)?;
+    for capability in capabilities {
+        abac::grant_capability(conn, board_id, target, capability, user)
+            .map_err(map_grant_error)?;
+    }
+    board_member_view(conn, board_id, target)
 }
 
 /// Replace a member's capability set (revokes what is absent, grants what

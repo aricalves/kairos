@@ -3,7 +3,7 @@
 `kairos` is the command-line client. It talks to the same HTTP API as the GUI
 and the MCP server.
 
-This page describes `kairos` 0.10.0. The command tree below mirrors
+This page describes `kairos` 0.11.0. The command tree below mirrors
 `kairos --help`.
 
 ## Invocation
@@ -26,7 +26,7 @@ Command groups, each detailed below:
 | Authentication | `login`, `logout`, `whoami` |
 | Work items | `strategies`, `initiatives`, `tasks`, `documents`, `adrs` |
 | Finding work | `search`, `boards` |
-| Organization | `orgs`, `members`, `teams`, `streams`, `repos` |
+| Organization | `orgs`, `members`, `teams`, `streams`, `repos`, `grants`, `boards create` |
 | Machine access | `service-accounts`, `keys` |
 | Deployment administration | `admin` |
 
@@ -163,7 +163,9 @@ Also accepts `--url` and `--tenant`.
 
 The default rendering prints three lines: `user:` with display name and email,
 `org:` with the organization slug and the caller's role, and `teams:` with the
-team names, or `(none)`.
+team names, or `(none)`. A caller with a grant of `manage_structure` gets a
+fourth line, `manage_structure:`. It gives the scope of each grant:
+`organization` or `board <slug>`.
 
 The `/api/whoami` response carries more than the default rendering prints. The
 board capabilities the principal holds, the capabilities every member holds
@@ -272,15 +274,15 @@ Board placement per noun:
 
 | Noun | Option | Type | Default | Description |
 |---|---|---|---|---|
-| `strategies` | `--board <BOARD_ID>` | UUID | required | Board to create the strategy on. |
+| `strategies` | `--board <BOARD>` | slug or UUID | required | Board to create the strategy on. |
 | `strategies` | `--column <COLUMN_ID>` | UUID | the board's first column | Column to place it in. |
-| `initiatives` | `--board <BOARD_ID>` | UUID | required | Board to create the initiative on. |
+| `initiatives` | `--board <BOARD>` | slug or UUID | required | Board to create the initiative on. |
 | `initiatives` | `--column <COLUMN_ID>` | UUID | the board's first column | Column to place it in. |
 | `tasks` | `--board <BOARD>` | slug or UUID | required unless `--team` is given | Delivery board to create the task on. The board decides the team of the task. With `--team` and no `--board`, the task goes to the delivery board of that team. |
 | `tasks` | `--column <COLUMN_ID>` | UUID | the board's first column | Column to place it in. |
 | `documents` | `--board <BOARD>` | slug or UUID | required | The owner board of the document. It gives the right to edit the document, and the code of the document gets the prefix of this board. The document is not a card of the board. |
 | `documents` | `--parent <SHORT_CODE>` | string | none | The workflow item the document supports. It does not give the document an owner board. |
-| `adrs` | `--board <BOARD_ID>` | UUID | none | ADR board. Omitting it creates an off-board ADR, which is an org-admin operation. |
+| `adrs` | `--board <BOARD>` | slug or UUID | none | ADR board. Omitting it creates an off-board ADR, which is an org-admin operation. |
 | `adrs` | `--column <COLUMN_ID>` | UUID | the board's first column | Column to place it in. |
 
 Options specific to one noun:
@@ -327,6 +329,22 @@ kairos <noun> edit <SHORT_CODE> [OPTIONS]
 The edit is version-checked. The CLI fetches the item and bases the PATCH on
 its current version; a concurrent edit is rejected with 409 `CONFLICT`. A
 `--version` value that is already stale is rejected the same way.
+
+### `<noun> note`
+
+```
+kairos <noun> note <SHORT_CODE> --text <TEXT> [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<SHORT_CODE>` | string | required | The item's short code. |
+| `--text <TEXT>` | string | required | The markdown text of the note. Must not be empty. |
+
+Appends a note at the end of the item's content, under a heading with the
+date and your name: `## Note (2026-10-11, Robin)`. Send no version: the server
+locks the item and writes one new version. Two notes at the same time both
+stay. The edit rule applies, as for `edit`.
 
 ### `<noun> transition`
 
@@ -506,9 +524,9 @@ Filters:
 |---|---|---|---|
 | `-q`, `--query <QUERY>` | string | none | Full-text query. Websearch semantics: quoted phrases, `OR`, `-negation`. |
 | `--type <ENTITY_TYPE>` | `strategy` \| `initiative` \| `task` \| `document` \| `adr` | all | Entity type filter. Repeatable. |
-| `--board <BOARD_ID>` | UUID | none | Restrict to items on this board. A document is not a card, so this filter gives no document. |
+| `--board <BOARD>` | slug or UUID | none | Restrict to items on this board. A document is not a card, so this filter gives no document. |
 | `--column <COLUMN_ID>` | UUID | none | Restrict to items in this column. |
-| `--team <TEAM_ID>` | UUID | none | Restrict to tasks assigned to this team. |
+| `--team <TEAM>` | slug or UUID | none | Restrict to tasks assigned to this team. |
 | `--repo <REPOSITORY>` | slug or UUID | none | Restrict to the items of this repository: the tasks that link to it, and the documents and the ADRs that impact it. |
 | `--task-type <TASK_TYPE>` | `task` \| `bug` \| `tech_debt` \| `support` | all | Task type filter. Repeatable. |
 | `--work-class <WORK_CLASS>` | `planned` \| `support` | all | Lane filter. Repeatable. |
@@ -516,6 +534,9 @@ Filters:
 | `--metadata <KEY=VALUE>` | `slug=value` | none | Metadata condition. Repeatable. Values support trailing-`*` globs, e.g. `component=auth*`. |
 | `--after <RFC3339>` | RFC 3339 instant | none | Only items created strictly after this instant. |
 | `--before <RFC3339>` | RFC 3339 instant | none | Only items created strictly before this instant. |
+| `--updated-after <RFC3339>` | RFC 3339 instant | none | Only items with a last change strictly after this instant. |
+| `--updated-before <RFC3339>` | RFC 3339 instant | none | Only items with a last change strictly before this instant. For the items with no change in 90 days, give the time 90 days ago. |
+| `--metadata-missing <SLUG>` | metadata-definition slug | none | Only items with no value for this definition, e.g. `--metadata-missing priority`. Repeatable. An unknown slug is refused. |
 | `--include-deleted` | flag | off | Include archived items. Composes with `--query` and `--from`; archived hits are marked in the output. |
 
 Traversal:
@@ -567,6 +588,7 @@ kairos boards show <BOARD> [OPTIONS]
 | `--offset <OFFSET>` | integer | 0 | Items to skip. |
 | `--team <TEAM>` | slug or UUID | all | Show only the strategies and the initiatives of this team, from tasks or set by hand. Tasks and ADRs do not change. Do not use with `--no-team`. |
 | `--no-team` | flag | off | Show only the strategies and the initiatives that have no team. |
+| `--details` | flag | off | Show more on each item: the date of its last change, the claim of a task, and the metadata values, for example `{updated 2026-10-08; claimed by Alice; priority: high}`. |
 
 Shows one page of the board's live items grouped by column. A strategy or an
 initiative that has teams shows them after its title, for example
@@ -581,6 +603,90 @@ The board has 340 items. This result shows 200 (limit 200, offset 0). To read th
 
 Board capability grants are not part of the CLI surface. See
 [Capabilities and access](../explanation/capabilities-and-access.md).
+
+A column with a WIP limit shows its live count against the limit after its
+name, for example `[WIP 2/3]`. When it has more items than the limit, it shows
+`[WIP 4/3, over the limit]`.
+
+### `kairos boards flow`
+
+```
+kairos boards flow <BOARD> [--from <YYYY-MM-DD>] [--to <YYYY-MM-DD>] [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<BOARD>` | slug or UUID | required | The board. |
+| `--from <DATE>` | `YYYY-MM-DD` | 89 days before `--to` | The first day of the range (UTC). |
+| `--to <DATE>` | `YYYY-MM-DD` | today | The last day of the range (UTC). |
+
+Shows the flow metrics of the board for the range:
+
+- the cycle time: the count, the mean, the median and the 85th percentile;
+- the throughput per week;
+- the work in progress, with its age;
+- the cumulative flow of the last 14 days. `--json` gives each day.
+
+A cancelled task counts apart from the done items. A range has 366 days at
+most. The definitions are in [`board_flow`](mcp-tools.md#board_flow).
+
+### `kairos boards wip-limit`
+
+```
+kairos boards wip-limit <BOARD> <COLUMN> (--limit <N> | --none) [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<BOARD>` | slug or UUID | required | The board. |
+| `<COLUMN>` | name or UUID | required | The column. |
+| `--limit <N>` | integer | none | The WIP limit, a number above 0. |
+| `--none` | flag | off | Remove the limit. |
+
+Sets or removes the WIP limit of a column. You need `configure_boards` on the
+board. Kairos does not refuse a move into a column over its limit. The REST
+answer has the header `Kairos-Warning`, and the MCP answer has a warning line.
+The board marks the column.
+
+### `kairos boards dispatch`
+
+```
+kairos boards dispatch list <BOARD> [OPTIONS]
+kairos boards dispatch add-target <BOARD> --name <NAME> --hook-url <URL> [OPTIONS]
+kairos boards dispatch remove-target <BOARD> <TARGET> [OPTIONS]
+kairos boards dispatch enable-target <BOARD> <TARGET> [OPTIONS]
+kairos boards dispatch test-target <BOARD> <TARGET> [OPTIONS]
+kairos boards dispatch add-rule <BOARD> --column <COLUMN> --target <TARGET> [--task-type <TYPE>] [--metadata <SLUG=VALUE>] [--repository <REPO>] [OPTIONS]
+kairos boards dispatch remove-rule <BOARD> <RULE> [OPTIONS]
+kairos boards dispatch log <BOARD> [--target <TARGET>] [--rule <RULE>] [--limit <N>] [OPTIONS]
+```
+
+Sends tasks to agent runners (KAIROS-T-0385). A rule names a column, a filter
+and a webhook target. When a task enters the column and matches the filter,
+Kairos sends one signed delivery to the target. See
+[Webhook deliveries](webhooks.md).
+
+| Subcommand | Needs | Does |
+|---|---|---|
+| `list` | a place on the board | Shows the rules and the targets of the board. |
+| `add-target` | `configure_boards` | Makes a target. The command shows its secret one time. |
+| `remove-target` | `configure_boards` | Removes a target, with its rules and its log. |
+| `enable-target` | `configure_boards` | Turns on a target that Kairos turned off. |
+| `test-target` | `configure_boards` | Sends the event `ping` to a target. |
+| `add-rule` | `configure_boards` | Makes a rule. |
+| `remove-rule` | `configure_boards` | Removes a rule. Its deliveries stay in the log. |
+| `log` | a place on the board | Shows the newest deliveries, with the status, the tries and the response code. |
+
+A place on the board is a grant on the board, a place in its team, or the
+admin role.
+
+| Option of `add-rule` | Type | Default | Description |
+|---|---|---|---|
+| `--column <COLUMN>` | name or UUID | required | The column. |
+| `--target <TARGET>` | UUID | required | A target of the board. |
+| `--task-type <TYPE>` | string | none | Only tasks of this type: `task`, `bug`, `tech_debt` or `support`. |
+| `--metadata <SLUG=VALUE>` | string | none | Only tasks with this metadata value, for example `priority=high`. |
+| `--repository <REPO>` | slug or UUID | none | Only tasks of this repository. |
 
 ### `kairos boards archive-completed`
 
@@ -597,6 +703,24 @@ Archives each task in the done columns of the board, cancelled tasks too. Each
 task goes through the same archive as `tasks archive`. The call archives each
 task, or none. You need `manage_tasks` on the board. The command prints the
 count and the codes. To get a task back, use `kairos tasks restore <code>`.
+
+### `kairos boards create`
+
+```
+kairos boards create --name <NAME> --slug <SLUG> --level <LEVEL> --code-prefix <PREFIX> [--team <TEAM>] [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--name <NAME>` | string | required | Board name. |
+| `--slug <SLUG>` | string | required | Board slug. It must match `^[a-z][a-z0-9_-]{1,62}$`. |
+| `--level <LEVEL>` | `strategy` \| `initiative` \| `delivery` \| `adr` | required | The level of the board. |
+| `--code-prefix <PREFIX>` | string | required | The short-code prefix of the board. A capital letter, then 1 to 9 capital letters or digits. The ADR board of a team takes the prefix of the team. |
+| `--team <TEAM>` | slug or UUID | none | The owner team. A delivery board needs a team. An ADR board with a team is the ADR board of that team. |
+
+`POST /api/boards`. The board gets the default columns and transitions of its
+level. You need the organization admin role or `manage_structure` on the
+organization.
 
 ## Organization
 
@@ -869,6 +993,12 @@ kairos repos list [OPTIONS]
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--team <TEAM>` | slug or UUID | all teams | Only this team's repositories. |
+| `--limit <LIMIT>` | integer | server default 50, maximum 200 | Page size. |
+| `--offset <OFFSET>` | integer | 0 | Rows to skip. |
+
+After the table, the command prints the count of the repositories and the
+page: `total: 12 (limit 50, offset 0)`. With `--json`, the command prints
+the page: `items`, `total`, `limit` and `offset`.
 
 ### `kairos repos get`
 
@@ -1129,8 +1259,53 @@ and keeps the result. The command prints the status. It fails when git cannot
 read the repository with the token. The error of git does not contain the
 token.
 
+### `kairos repos write-token`
+
+```
+kairos repos write-token set <REPOSITORY> [OPTIONS]
+kairos repos write-token remove <REPOSITORY> [OPTIONS]
+kairos repos write-token status <REPOSITORY> [OPTIONS]
+```
+
+Sets, removes or shows the write token of the GitHub write-back
+(KAIROS-T-0386). With the token, Kairos writes a comment and the status
+`kairos` on each linked pull request. You must be an organization admin or a
+member of the owner team.
+
+`set` reads the token from standard input, as `kairos repos credential set`
+does. Then Kairos writes each open pull request that links to an item. Use a
+GitHub fine-grained token with "Pull requests: write" and "Commit statuses:
+write" on the one repository. Only a GitHub repository takes a write token.
+
+`remove` removes the token, and Kairos writes nothing more. `status` prints
+`off (no write token)`, or `on` with the last write. `kairos repos get` shows
+the same line. No command shows the token. See
+[Turn on GitHub write-back](../how-to/turn-on-github-write-back.md).
+
 Repositories are the codebases that tasks link to. See
 [Repositories as execution scope](../explanation/repositories-as-execution-scope.md).
+
+### `kairos grants`
+
+```
+kairos grants list [OPTIONS]
+kairos grants add --user <USER> [--capability <CAPABILITY>] [--board <BOARD>] [OPTIONS]
+kairos grants remove <GRANT_ID> --confirm [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `--user <USER>` | string | required on `add` | For `manage_structure`: a user id, an email, a user name, or the name of a service account. For a board capability: the user id. |
+| `--capability <CAPABILITY>` | string | `manage_structure` | `manage_structure`, or a board capability such as `manage_tasks` or `configure_boards`. |
+| `--board <BOARD>` | slug or UUID | none | For `manage_structure`: the one board of the grant. With no `--board`, the grant is on the organization. A board capability needs it. |
+| `<GRANT_ID>` | UUID | required on `remove` | A grant of `manage_structure`, from `kairos grants list`. |
+| `--confirm` | flag | off | Required for the revoke to happen. |
+
+`list` shows each grant of
+[`manage_structure`](capabilities.md#manage_structure). Only an organization
+admin can add or remove a grant of `manage_structure`. A board capability
+needs `administer_members` on the board, or `manage_structure` on the board or
+on the organization. See [Run an admin agent](../how-to/run-an-admin-agent.md).
 
 ## Machine access
 
@@ -1178,7 +1353,8 @@ kairos keys create --name <NAME> [--service-account <SERVICE_ACCOUNT>] [OPTIONS]
 |---|---|---|---|
 | `--name <NAME>` | string | required | Label for the key, for example `laptop-claude-code` or `gha-main`. |
 | `--service-account <SERVICE_ACCOUNT>` | UUID | none | The service account. Without it, the command makes an agent key for you. |
-| `--expires-at <EXPIRES_AT>` | RFC 3339 instant | no expiry | Expiry, for example `2027-01-01T00:00:00Z`. |
+| `--expires-at <EXPIRES_AT>` | RFC 3339 instant | the default life | Expiry, for example `2027-01-01T00:00:00Z`. Without it, the key expires after the default life of the server: 90 days, unless the operator changed `KAIROS_API_KEY_TTL_DAYS`. |
+| `--no-expiry` | flag | off | The key never expires. Do not use it with `--expires-at`. |
 
 Without `--service-account`, the command makes an **agent key**. An agent key acts
 as you, with your capabilities. Each member can make agent keys. Log in as
@@ -1204,6 +1380,25 @@ kairos keys list [--service-account <SERVICE_ACCOUNT>] [OPTIONS]
 
 The list shows the start of each key only. It never shows the secret.
 
+### `kairos keys rotate`
+
+```
+kairos keys rotate <KEY_ID> [--service-account <SERVICE_ACCOUNT>] [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<KEY_ID>` | UUID | required | Key id, from `kairos keys list`. |
+| `--service-account <SERVICE_ACCOUNT>` | UUID | none | The service account of the key. Without it, the command rotates your agent key. |
+
+The command makes a new key with the same name and a new secret. It shows the new
+secret one time only. The old secret works until the end of the grace time: 1
+day, unless the operator changed `KAIROS_API_KEY_ROTATION_GRACE_SECS`. The
+command shows that time. Put the new key in the settings of the agent before it.
+
+The new key has the life of the old key, from now. A key with no expiry gives a
+key with no expiry. The list shows the old key with `REPLACED_BY`.
+
 ### `kairos keys revoke`
 
 ```
@@ -1215,6 +1410,43 @@ kairos keys revoke <KEY_ID> [--service-account <SERVICE_ACCOUNT>] --confirm [OPT
 | `<KEY_ID>` | UUID | required | Key id, from `kairos keys list`. |
 | `--service-account <SERVICE_ACCOUNT>` | UUID | none | The service account of the key. Without it, the command revokes your agent key. |
 | `--confirm` | flag | off | Required for the revocation to happen. |
+
+## Agent keys of each person
+
+An organization admin lists the agent keys of each person of the organization,
+and revokes any one. Another person gets `403`.
+
+### `kairos admin agent-keys list`
+
+```
+kairos admin agent-keys list [--user <USER>] [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--user <USER>` | UUID or email | none | Only the keys of this person. A value that names no person gets `422`. |
+| `--limit <LIMIT>` | integer | server default 50, maximum 200 | Page size. |
+| `--offset <OFFSET>` | integer | 0 | Rows to skip. |
+
+The newest key is first. Each row shows the id, the owner, the name and the
+prefix. It also shows the dates of creation, expiry, last use and revocation.
+The list never shows a secret. A revoked key stays in the list. The keys of a service account are not
+in the list: see `kairos keys list --service-account`.
+
+### `kairos admin agent-keys revoke`
+
+```
+kairos admin agent-keys revoke <KEY_ID> --confirm [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<KEY_ID>` | UUID | required | Key id, from `kairos admin agent-keys list`. |
+| `--confirm` | flag | off | Required for the revocation to happen. |
+
+The key then gets `401`. Kairos writes an activity row and gives the owner a
+notification of the kind `agent_key_revoked` that names the key. An unknown id
+gets `404`. A revoked key gets `409`.
 
 ## Deployment administration
 

@@ -30,11 +30,11 @@ permissions:
 jobs:
   e2e:
     name: e2e smoke
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust toolchain (from rust-toolchain.toml)
         run: |
@@ -55,7 +55,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends libpq-dev
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -67,7 +67,7 @@ jobs:
       - name: Set up Node.js
         # The GUI leg runs Playwright from e2e/ (npx playwright test); the
         # angreal task installs the npm deps + chromium itself, guarded.
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "22"
 

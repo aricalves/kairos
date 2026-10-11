@@ -90,6 +90,9 @@ pub struct BoardColumn {
     /// [`crate::task_claims`]). The seed sets it on the Active column of a
     /// delivery board. Admin-set afterwards.
     pub claims: bool,
+    /// The most live items that the column should hold (KAIROS-T-0371);
+    /// `None`: no limit. A move over the limit is allowed, with a warning.
+    pub wip_limit: Option<i32>,
 }
 
 /// Insert for [`BoardColumn`].

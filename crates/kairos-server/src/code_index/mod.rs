@@ -24,32 +24,85 @@
 //!
 //! # The builder
 //!
-//! [`sweep`] fetches each repository that has an index. When the head of its
-//! default branch has no index, it updates the index of the nearest indexed
-//! commit below it to that head ([`kairos_index::update`] with a SCIP run),
-//! and stores the result.
+//! Each build is a job of the job queue of the servers ([`crate::jobs`],
+//! KAIROS-T-0374, COLLIERY-I-0613), so 2 or more servers share the builds
+//! and each build runs once. The jobs are in [`jobs`]:
 //!
-//! [`first_builds`] makes the first index of each repository that has none
-//! (KAIROS-T-0318): a full build of the head of its default branch. A full
-//! build of Kairos takes about 12 hours on a CPU, so it must not stop the
-//! updates. [`run_builder`] has two lanes:
+//! - a build that a person asks for (KAIROS-T-0332): the API adds the job;
+//! - an update after a push: [`jobs::enqueue_updates`] fetches each
+//!   repository that has an index, and adds a job when the head of its
+//!   default branch has no index ([`kairos_index::update`] with a SCIP run
+//!   from the nearest indexed commit below it);
+//! - a first build of a repository that has no index (KAIROS-T-0318):
+//!   [`jobs::enqueue_first_builds`], a full build of the head.
 //!
-//! - the update lane runs a [`sweep`] on an interval, as the embedding
-//!   refresher does, and then wakes the first-build lane;
-//! - the first-build lane runs [`first_builds`], one repository at a time.
-//!   The update lane never waits for it.
+//! [`jobs::run_builder`] adds the periodic pass of the sweep
+//! (KAIROS-T-0376): at each `KAIROS_CODE_INDEX_POLL_SECS`, one server adds
+//! the update jobs and the first-build jobs. The dedupe key of a
+//! build job is the repository: a repository has one open build job at
+//! most, whatever server adds it.
 //!
-//! The two lanes share the CPU through [`WorkGate`]: one heavy step at a
-//! time, and an update goes first. An update holds the gate for its whole
-//! build; a first build takes it for its structure step and then for each
-//! summary call and each embedding batch. So an update waits for one step
-//! of a first build at most, and only one model run uses the
-//! `KAIROS_CODE_INDEX_THREADS` threads at a time.
+//! The order (KAIROS-T-0334): by priority, a requested build first, then
+//! an update, then a first build. Inside a priority, the job with the
+//! oldest `run_after` first. The `run_after` of an update is the time of
+//! the newest index of the repository, which is the earliest time at which
+//! it became stale; the `run_after` of a first build is the time at which
+//! the repository was registered. So the repository that has been stale
+//! longest goes first, whatever the order of the list or of the pushes. A
+//! repository that a build just updated goes last in the next pass. With
+//! `KAIROS_CODE_INDEX_MIN_REBUILD_SECS` (off by default), a repository whose
+//! newest index is younger than that time gets no update job in the pass.
 //!
-//! The work database of a first build is in `first-builds/` of
-//! `KAIROS_CODE_INDEX_DIR`, and each summary is written to it when it is
-//! made. After a restart, the next first build of the repository uses those
-//! summaries again. A repository with `code_index_build = off` gets no build.
+//! The limits per kind of job replace the gate of KAIROS-T-0318: a build
+//! with the embedded model is of the kind `embedded_build` (1 on each
+//! server, `KAIROS_JOB_LIMIT_EMBEDDED_BUILD`), and a build with a hosted
+//! provider is of the kind `hosted_build` (4). A first build gives its slot
+//! to an update or a requested build of its kind that waits
+//! ([`crate::jobs::JobHandle::should_yield`]): it stops after its next
+//! summary, and goes back to the queue with no try counted. So a first
+//! build of hours does not stop the updates.
+//!
+//! A build reports progress for each summary call, each embedding batch,
+//! and while its structure step runs ([`STRUCTURE_STEP_LIMIT`]). With no
+//! progress for the lease time, its server kills it, and a server takes the
+//! job again. A server that stops loses its leases, and another server
+//! takes those jobs when the leases run out.
+//!
+//! Each build keeps its summaries across a stop, also on another server
+//! (KAIROS-T-0335, KAIROS-T-0378). Each summary is written to the pool of
+//! the repository in Postgres when the model makes it ([`PoolSink`]), with
+//! no vector and no index that uses it yet. The next build of the
+//! repository, on any server, links the summaries of the pool first: an
+//! update assembles its work database from the base structure and the
+//! whole pool, and a full build adds the pool to its work database before
+//! it summarizes. So a build that stops on one server and goes on on
+//! another server, with an empty `KAIROS_CODE_INDEX_DIR`, makes only the
+//! summaries that were not made. The structure is not stored: the next
+//! build makes it again (minutes).
+//!
+//! The work databases in `first-builds/` and `updates/` of
+//! `KAIROS_CODE_INDEX_DIR` are a local cache: they hold the summaries too,
+//! and an update copies the summaries of the old work database into the
+//! new one. The keys of a summary name its input, so a summary of a build
+//! that did not end is right for each later build that needs its key. An
+//! index uses only the summaries that its structure uses: a download never
+//! has a summary that its structure does not use. A stored index marks
+//! the rows that it uses (`last_used_at`); the retention pass deletes the
+//! rows that no index used, `KAIROS_CODE_INDEX_POOL_DAYS` (30) after a
+//! build made them. The run row counts the summaries that a run reused.
+//! The builder removes a work database after it stores the index. A
+//! repository with `code_index_build = off` gets no build.
+//!
+//! # The runs
+//!
+//! Each run has a row ([`kairos_db::code_index_builds`]) with the server
+//! that runs it (KAIROS-T-0354). The job of the run names the run in its
+//! payload: when a server takes the job again, the run goes on, on that
+//! server ([`kairos_db::code_index_builds::adopt`]). A `running` run that no
+//! open job names is stale: the next run of the repository ends it as
+//! failed, and so does the builder of each server when it starts
+//! ([`jobs::end_stale_runs`]). A job that fails after its last try ends its
+//! run as failed, with the reason.
 //!
 //! # The tools
 //!
@@ -60,10 +113,16 @@
 //! downloaded.
 
 pub mod git;
+pub mod jobs;
+
+pub use jobs::{
+    BuildHandler, end_stale_runs, enqueue_first_builds, enqueue_updates, first_builds, job_key,
+    requested_builds, run_builder, sweep,
+};
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use kairos_db::code_index_builds as runs;
@@ -75,6 +134,7 @@ use kairos_index::{
 
 use crate::blocking::BlockingTenantPool;
 use crate::error::ApiError;
+use crate::jobs::JobHandle;
 use crate::secrets::SecretsKey;
 
 /// The most commits that a search for the nearest indexed commit reads
@@ -102,27 +162,15 @@ pub struct CodeIndexService {
     /// `KAIROS_SECRETS_KEY`, to decrypt the read token of a repository
     /// (COLLIERY-T-3105).
     secrets: Option<SecretsKey>,
-    /// One heavy step at a time for the two lanes of the builder
-    /// (KAIROS-T-0318).
-    gate: WorkGate,
-    /// The last reason why the first-build lane did not build each
-    /// repository, so that the log gets a reason once, not at each pass.
+    /// The last reason why the builder did not build each repository, so
+    /// that the log gets a reason once, not at each pass.
     notes: Mutex<HashMap<uuid::Uuid, String>>,
-    /// The builds that a person asked for (KAIROS-T-0332), in the sequence
-    /// of the requests. The builder takes them when `wake` says so.
-    requests: Mutex<std::collections::VecDeque<RebuildRequest>>,
-    /// Woken for each request.
-    wake: tokio::sync::Notify,
-}
-
-/// A build that a person asked for (KAIROS-T-0332). Its run row exists
-/// already, as `running` with `trigger = request`.
-#[derive(Debug, Clone)]
-pub struct RebuildRequest {
-    pub tenant: String,
-    pub repository_id: uuid::Uuid,
-    /// The id of the run row.
-    pub run: uuid::Uuid,
+    /// The start of this server (KAIROS-T-0354): a random id, recorded on
+    /// each run. A `running` run of another id is of a server that stopped.
+    instance: uuid::Uuid,
+    /// `KAIROS_CODE_INDEX_MIN_REBUILD_SECS` (KAIROS-T-0334): the least time
+    /// between 2 updates of one repository. 0: off.
+    min_rebuild_secs: std::sync::atomic::AtomicU64,
 }
 
 impl std::fmt::Debug for CodeIndexService {
@@ -144,39 +192,45 @@ impl CodeIndexService {
             failed: Mutex::default(),
             build: OnceLock::new(),
             secrets: None,
-            gate: WorkGate::default(),
             notes: Mutex::default(),
-            requests: Mutex::default(),
-            wake: tokio::sync::Notify::new(),
+            instance: uuid::Uuid::new_v4(),
+            min_rebuild_secs: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
-    /// Queue a build that a person asked for, and wake the builder.
-    pub fn request_rebuild(&self, request: RebuildRequest) {
-        self.requests
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push_back(request);
-        self.wake.notify_one();
+    /// The least time between 2 updates of one repository
+    /// (`KAIROS_CODE_INDEX_MIN_REBUILD_SECS`, KAIROS-T-0334). 0: off.
+    pub fn with_min_rebuild_secs(self, secs: u64) -> Self {
+        self.set_min_rebuild_secs(secs);
+        self
     }
 
-    /// Take each queued request, in the sequence of the requests.
-    pub fn pending_rebuilds(&self) -> Vec<RebuildRequest> {
-        self.requests
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .drain(..)
-            .collect()
+    /// Change the time of [`Self::with_min_rebuild_secs`].
+    pub fn set_min_rebuild_secs(&self, secs: u64) {
+        self.min_rebuild_secs
+            .store(secs, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Woken by [`Self::request_rebuild`].
-    pub fn wake(&self) -> &tokio::sync::Notify {
-        &self.wake
+    fn min_rebuild(&self) -> Option<Duration> {
+        match self
+            .min_rebuild_secs
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            0 => None,
+            secs => Some(Duration::from_secs(secs)),
+        }
     }
 
-    /// The gate of the heavy steps of the builder (KAIROS-T-0318).
-    pub fn gate(&self) -> &WorkGate {
-        &self.gate
+    /// Record `instance` as the start of this server on each run, in place
+    /// of a random id (KAIROS-T-0373: the id of the job worker).
+    pub fn with_instance(mut self, instance: uuid::Uuid) -> Self {
+        self.instance = instance;
+        self
+    }
+
+    /// The start of this server, as the runs record it (KAIROS-T-0354).
+    pub fn instance(&self) -> uuid::Uuid {
+        self.instance
     }
 
     /// The work database of the first build of `repo`. It stays after a
@@ -184,6 +238,16 @@ impl CodeIndexService {
     fn first_build_db(&self, tenant: &str, repo: &Repository) -> PathBuf {
         self.dir
             .join("first-builds")
+            .join(tenant)
+            .join(format!("{}.db", repo.id))
+    }
+
+    /// The work database of the update of `repo` (KAIROS-T-0335). It stays
+    /// after a failure or a restart, so that the next update reuses its
+    /// summaries.
+    fn update_db(&self, tenant: &str, repo: &Repository) -> PathBuf {
+        self.dir
+            .join("updates")
             .join(tenant)
             .join(format!("{}.db", repo.id))
     }
@@ -374,82 +438,123 @@ impl SummarizerSource for FakeSummarizers {
     }
 }
 
-/// One heavy step of the builder at a time, and an update goes first
-/// (KAIROS-T-0318).
-///
-/// The update lane and the first-build lane of [`run_builder`] run at the
-/// same time. Without the gate, a first build and an update would each run
-/// the model on `KAIROS_CODE_INDEX_THREADS` threads, or 2 SCIP runs, at the
-/// same time. An update holds the gate for its whole build. A first build
-/// takes it for each short step, and waits while an update holds it or
-/// waits for it.
-///
-/// The gate blocks the thread: use it only off the async threads.
-#[derive(Debug, Default)]
-pub struct WorkGate {
-    state: Mutex<GateState>,
-    changed: Condvar,
+/// The text of a summary call or an embedding batch of a build that its
+/// server killed (KAIROS-T-0374).
+pub const STOPPED: &str = "the job of the build was stopped";
+
+/// The text of a summary call of a first build that gives its slot to a
+/// job of a higher priority (KAIROS-T-0374).
+pub const YIELDED: &str = "the build gave its slot to a build of a higher priority";
+
+/// The longest time for which the structure step of a build counts as
+/// progress (KAIROS-T-0374). The step (a SCIP run of rust-analyzer) gives no
+/// progress of its own, so the build reports progress while the step runs,
+/// for this time at most; a step that takes longer counts as a stall, and
+/// the watchdog kills the build one lease later.
+pub const STRUCTURE_STEP_LIMIT: Duration = Duration::from_secs(2 * 60 * 60);
+
+/// Writes each summary that a build makes to the pool of its repository in
+/// Postgres when the model makes it (KAIROS-T-0378). So a build that stops
+/// keeps its summaries also when the next lease of its job runs on another
+/// server, with another `KAIROS_CODE_INDEX_DIR`. A write that fails is
+/// logged: the summary stays in the work database of this server.
+#[derive(Clone)]
+pub(crate) struct PoolSink {
+    blocking: BlockingTenantPool,
+    tenant: String,
+    repository: uuid::Uuid,
+    runtime: tokio::runtime::Handle,
 }
 
-#[derive(Debug, Default)]
-struct GateState {
-    busy: bool,
-    updates_waiting: usize,
-}
-
-/// The gate is held until this is dropped.
-#[derive(Debug)]
-pub struct GateHeld<'g>(&'g WorkGate);
-
-impl Drop for GateHeld<'_> {
-    fn drop(&mut self) {
-        let mut state = self.0.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.busy = false;
-        self.0.changed.notify_all();
-    }
-}
-
-impl WorkGate {
-    /// Hold the gate for an update. It waits only for the step that holds
-    /// the gate now.
-    pub fn update(&self) -> GateHeld<'_> {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.updates_waiting += 1;
-        while state.busy {
-            state = self.changed.wait(state).unwrap_or_else(|e| e.into_inner());
+impl PoolSink {
+    /// The sink of the builds of `repository`, on the runtime of the
+    /// caller. Call it on a thread of the runtime; [`Self::write`] runs on
+    /// a blocking thread.
+    pub(crate) fn new(blocking: &BlockingTenantPool, tenant: &str, repository: uuid::Uuid) -> Self {
+        PoolSink {
+            blocking: blocking.clone(),
+            tenant: tenant.to_string(),
+            repository,
+            runtime: tokio::runtime::Handle::current(),
         }
-        state.updates_waiting -= 1;
-        state.busy = true;
-        GateHeld(self)
     }
 
-    /// Hold the gate for one step of a first build. It waits while an
-    /// update holds the gate or waits for it.
-    pub fn first_build(&self) -> GateHeld<'_> {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        while state.busy || state.updates_waiting > 0 {
-            state = self.changed.wait(state).unwrap_or_else(|e| e.into_inner());
+    /// Add the summaries of `requests` that came back in `results` to the
+    /// pool. A summary that is empty or an error is not written, as the
+    /// work database does not take it.
+    fn write(&self, model: &str, requests: &[SummaryRequest], results: &[Result<String, String>]) {
+        let made: Vec<kairos_db::code_indexes::MadeSummary> = requests
+            .iter()
+            .zip(results)
+            .filter_map(|(request, result)| {
+                let text = result.as_ref().ok()?.trim();
+                (!text.is_empty()).then(|| kairos_db::code_indexes::MadeSummary {
+                    key: request.key.clone(),
+                    level: request.level.as_str().to_string(),
+                    summary: text.to_string(),
+                    model: model.to_string(),
+                })
+            })
+            .collect();
+        if made.is_empty() {
+            return;
         }
-        state.busy = true;
-        GateHeld(self)
+        let repository = self.repository;
+        let written = self
+            .runtime
+            .block_on(self.blocking.run(&self.tenant, move |conn| {
+                kairos_db::code_indexes::add_made(conn, repository, &made)
+                    .map_err(ApiError::internal)
+            }));
+        if let Err(e) = written {
+            tracing::warn!(
+                tenant = %self.tenant,
+                repository = %self.repository,
+                error = ?e,
+                "code index summaries not written to the pool; the work database keeps them"
+            );
+        }
     }
 }
 
-/// A summarizer that holds the gate for each call, for a first build.
-struct GatedSummarizer<'a> {
+/// A summarizer that reports the progress of its build for each call
+/// (KAIROS-T-0374), and writes each summary to the pool of the repository
+/// ([`PoolSink`], KAIROS-T-0378). A call of a build that was killed, or
+/// that must give its slot, fails with [`STOPPED`] or [`YIELDED`]: the
+/// summaries made before stay in the pool and in the work database.
+struct ProgressSummarizer<'a> {
     inner: &'a mut dyn Summarizer,
-    /// None for a hosted provider (KAIROS-T-0341): the calls pass through.
-    gate: Option<&'a WorkGate>,
+    handle: &'a JobHandle,
+    pool: &'a PoolSink,
 }
 
-impl Summarizer for GatedSummarizer<'_> {
+impl ProgressSummarizer<'_> {
+    fn check(&self) -> Result<(), String> {
+        if !self.handle.progress() {
+            return Err(STOPPED.to_string());
+        }
+        if self.handle.should_yield() {
+            return Err(YIELDED.to_string());
+        }
+        Ok(())
+    }
+}
+
+impl Summarizer for ProgressSummarizer<'_> {
     fn model(&self) -> String {
         self.inner.model()
     }
 
     fn summarize(&mut self, request: &SummaryRequest) -> Result<String, String> {
-        let _held = self.gate.map(|gate| gate.first_build());
-        self.inner.summarize(request)
+        self.check()?;
+        let summary = self.inner.summarize(request);
+        self.handle.progress();
+        self.pool.write(
+            &self.inner.model(),
+            std::slice::from_ref(request),
+            std::slice::from_ref(&summary),
+        );
+        summary
     }
 
     fn concurrency(&self) -> usize {
@@ -457,19 +562,24 @@ impl Summarizer for GatedSummarizer<'_> {
     }
 
     fn summarize_many(&mut self, requests: &[SummaryRequest]) -> Vec<Result<String, String>> {
-        let _held = self.gate.map(|gate| gate.first_build());
-        self.inner.summarize_many(requests)
+        if let Err(why) = self.check() {
+            return requests.iter().map(|_| Err(why.clone())).collect();
+        }
+        let summaries = self.inner.summarize_many(requests);
+        self.handle.progress();
+        self.pool.write(&self.inner.model(), requests, &summaries);
+        summaries
     }
 }
 
-/// An embedder that holds the gate for each batch, for a first build.
-struct GatedEmbedder<'a> {
+/// An embedder that reports the progress of its build for each batch
+/// (KAIROS-T-0374).
+struct ProgressEmbedder<'a> {
     inner: &'a dyn kairos_embed::EmbeddingProvider,
-    /// None for a remote endpoint: the calls pass through.
-    gate: Option<&'a WorkGate>,
+    handle: &'a JobHandle,
 }
 
-impl kairos_embed::EmbeddingProvider for GatedEmbedder<'_> {
+impl kairos_embed::EmbeddingProvider for ProgressEmbedder<'_> {
     fn model_id(&self) -> &kairos_embed::ModelId {
         self.inner.model_id()
     }
@@ -478,17 +588,44 @@ impl kairos_embed::EmbeddingProvider for GatedEmbedder<'_> {
         &self,
         texts: &[String],
     ) -> Result<Vec<kairos_embed::Embedding>, kairos_embed::EmbedError> {
-        let _held = self.gate.map(|gate| gate.first_build());
-        self.inner.embed(texts)
+        if !self.handle.progress() {
+            return Err(kairos_embed::EmbedError::Failed(STOPPED.to_string()));
+        }
+        let vectors = self.inner.embed(texts);
+        self.handle.progress();
+        vectors
     }
+}
+
+/// Run `step` (the structure step of a build) and report progress while it
+/// runs, for [`STRUCTURE_STEP_LIMIT`] at most (KAIROS-T-0374).
+fn with_progress<T>(handle: &JobHandle, step: impl FnOnce() -> T) -> T {
+    let done = std::sync::atomic::AtomicBool::new(false);
+    handle.progress();
+    let out = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let started = Instant::now();
+            while !done.load(std::sync::atomic::Ordering::Relaxed)
+                && started.elapsed() < STRUCTURE_STEP_LIMIT
+            {
+                handle.progress();
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        });
+        let out = step();
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        out
+    });
+    handle.progress();
+    out
 }
 
 /// Qwen3-4B through llama.cpp, from the model file at `model`, on `threads`
 /// CPU threads (`KAIROS_CODE_INDEX_THREADS`). The model is loaded for a
 /// build and freed when no build uses it, so the server does not keep about
-/// 3 GB of memory between pushes. When the 2 lanes of the builder run at
-/// the same time, they share one loaded model, each with its own context
-/// (KAIROS-T-0318).
+/// 3 GB of memory between pushes. When 2 builds run at the same time
+/// (`KAIROS_JOB_LIMIT_EMBEDDED_BUILD` above 1), they share one loaded model,
+/// each with its own context (KAIROS-T-0318).
 #[cfg(feature = "llama")]
 #[derive(Debug, Clone)]
 pub struct LlamaSummarizers {
@@ -622,6 +759,10 @@ pub struct BuildOutcome {
     pub elapsed: Duration,
 }
 
+/// The note of a first-build job of a repository that has an index
+/// (KAIROS-T-0378).
+pub const HAS_INDEX: &str = "the repository has an index";
+
 /// The note of a repository with `code_index_build = off`.
 pub const OPTED_OUT: &str = "the repository has code_index_build off";
 
@@ -637,12 +778,6 @@ pub const NO_EMBEDDED_MODEL: &str = "failed: This image has no embedded model. S
 pub(crate) struct Models {
     pub summarizers: Arc<dyn SummarizerSource>,
     pub embedder: Arc<dyn kairos_embed::EmbeddingProvider>,
-    /// The summaries come from a hosted provider: the summarizer does not
-    /// take the CPU gate of the builder.
-    pub hosted_summaries: bool,
-    /// The vectors come from a remote endpoint: the embedder does not take
-    /// the CPU gate.
-    pub hosted_vectors: bool,
 }
 
 /// Choose the models of a build (KAIROS-T-0341). `embedded` is the
@@ -775,8 +910,6 @@ async fn models_for(
     Ok(Models {
         summarizers,
         embedder,
-        hosted_summaries,
-        hosted_vectors,
     })
 }
 
@@ -874,191 +1007,36 @@ async fn repositories_of(
     out
 }
 
-/// Fetch each repository that has an index, and update the index of the
-/// head of its default branch when it has none. One repository at a time.
-/// A repository with `code_index_build = off` is not fetched.
-pub async fn sweep(
+/// The repositories of a pass of the new-commits sweep, over all tenants, the
+/// repository with the oldest newest index first (KAIROS-T-0334), with the
+/// time of its newest index. A tie keeps the order of the tenants and of
+/// the slugs.
+async fn update_order(
     blocking: &BlockingTenantPool,
-    service: &Arc<CodeIndexService>,
-    summarizers: Option<Arc<dyn SummarizerSource>>,
-    embedder: Arc<dyn kairos_embed::EmbeddingProvider>,
-) -> Vec<BuildOutcome> {
-    let mut outcomes = Vec::new();
+) -> Vec<(String, Repository, Option<chrono::DateTime<chrono::Utc>>)> {
+    let mut order = Vec::new();
     for (tenant, repos) in repositories_of(blocking, Pass::Updates).await {
-        for repo in repos {
-            let outcome = build_repository(
-                blocking,
-                service,
-                &tenant,
-                repo,
-                summarizers.clone(),
-                Arc::clone(&embedder),
-            )
-            .await;
-            match (&outcome.report, &outcome.note) {
-                (Some(report), _) => tracing::info!(
-                    tenant = %outcome.tenant,
-                    repository = %outcome.repository,
-                    commit = %outcome.commit,
-                    base = ?outcome.base,
-                    symbols = report.summary.symbols.summarized,
-                    files = report.summary.files.summarized,
-                    modules = report.summary.modules.summarized,
-                    elapsed_secs = outcome.elapsed.as_secs_f64(),
-                    "code index built"
-                ),
-                (None, Some(note)) if note.starts_with("failed") => tracing::warn!(
-                    tenant = %outcome.tenant,
-                    repository = %outcome.repository,
-                    commit = %outcome.commit,
-                    note = %note,
-                    "code index not built"
-                ),
-                _ => {}
-            }
-            outcomes.push(outcome);
-        }
-    }
-    outcomes
-}
-
-/// Make the first index of each repository that has no index
-/// (KAIROS-T-0318): a full build of the head of its default branch, with
-/// the SCIP edges and the summaries. One repository at a time. A
-/// repository with `code_index_build = off` gets no build.
-///
-/// The log has the start, the end and the time of each build, and the
-/// reason when a repository gets no build. A reason is logged once, until
-/// it changes.
-pub async fn first_builds(
-    blocking: &BlockingTenantPool,
-    service: &Arc<CodeIndexService>,
-    summarizers: Option<Arc<dyn SummarizerSource>>,
-    embedder: Arc<dyn kairos_embed::EmbeddingProvider>,
-) -> Vec<BuildOutcome> {
-    let mut outcomes = Vec::new();
-    for (tenant, repos) in repositories_of(blocking, Pass::FirstBuilds).await {
-        for repo in repos {
-            let repo_id = repo.id;
-            let outcome = full_build_repository(
-                blocking,
-                service,
-                &tenant,
-                repo,
-                summarizers.clone(),
-                Arc::clone(&embedder),
-                "first",
-                None,
-            )
-            .await;
-            match (&outcome.report, &outcome.note) {
-                (Some(report), _) => {
-                    service.forget_note(repo_id);
-                    tracing::info!(
-                        tenant = %outcome.tenant,
-                        repository = %outcome.repository,
-                        commit = %outcome.commit,
-                        files = report.build.files,
-                        symbols = report.build.symbols,
-                        summaries = report.summary.symbols.summarized
-                            + report.summary.files.summarized
-                            + report.summary.modules.summarized,
-                        reused = report.summary.symbols.reused
-                            + report.summary.files.reused
-                            + report.summary.modules.reused,
-                        elapsed_secs = outcome.elapsed.as_secs_f64(),
-                        "code index first build ended"
-                    );
-                }
-                (None, Some(note)) if note.starts_with("failed") => {
-                    service.note_changed(repo_id, note);
-                    tracing::warn!(
-                        tenant = %outcome.tenant,
-                        repository = %outcome.repository,
-                        commit = %outcome.commit,
-                        note = %note,
-                        elapsed_secs = outcome.elapsed.as_secs_f64(),
-                        "code index first build failed"
-                    );
-                }
-                (None, Some(note)) => {
-                    if service.note_changed(repo_id, note) {
-                        tracing::info!(
-                            tenant = %outcome.tenant,
-                            repository = %outcome.repository,
-                            note = %note,
-                            "code index first build not started"
-                        );
-                    }
-                }
-                (None, None) => {}
-            }
-            outcomes.push(outcome);
-        }
-    }
-    outcomes
-}
-
-/// Build the index of each repository that a person asked for
-/// (KAIROS-T-0332): a full build of the head of its default branch, as a
-/// first build, which replaces the index of that commit. One at a time, in
-/// the sequence of the requests. The run row of each request is ended with
-/// the result.
-pub async fn requested_builds(
-    blocking: &BlockingTenantPool,
-    service: &Arc<CodeIndexService>,
-    summarizers: Option<Arc<dyn SummarizerSource>>,
-    embedder: Arc<dyn kairos_embed::EmbeddingProvider>,
-) -> Vec<BuildOutcome> {
-    let mut outcomes = Vec::new();
-    for request in service.pending_rebuilds() {
-        let repo_id = request.repository_id;
-        let repo = blocking
-            .run(&request.tenant, move |conn| {
-                kairos_db::repositories::load(conn, repo_id).map_err(ApiError::internal)
+        let newest: HashMap<uuid::Uuid, chrono::DateTime<chrono::Utc>> = blocking
+            .run(&tenant, |conn| {
+                kairos_db::code_indexes::newest_writes(conn).map_err(ApiError::internal)
             })
-            .await;
-        let repo = match repo {
-            Ok(repo) => repo,
-            Err(e) => {
-                let note = format!("failed: the repository is not readable: {e:?}");
-                record_end(blocking, &request.tenant, Some(request.run), Err(&note)).await;
-                tracing::warn!(tenant = %request.tenant, repository = %repo_id, note = %note, "code index requested build failed");
-                continue;
-            }
-        };
-        let outcome = full_build_repository(
-            blocking,
-            service,
-            &request.tenant,
-            repo,
-            summarizers.clone(),
-            Arc::clone(&embedder),
-            "request",
-            Some(request.run),
-        )
-        .await;
-        match (&outcome.report, &outcome.note) {
-            (Some(report), _) => tracing::info!(
-                tenant = %outcome.tenant,
-                repository = %outcome.repository,
-                commit = %outcome.commit,
-                files = report.build.files,
-                symbols = report.build.symbols,
-                elapsed_secs = outcome.elapsed.as_secs_f64(),
-                "code index requested build ended"
-            ),
-            (None, Some(note)) => tracing::warn!(
-                tenant = %outcome.tenant,
-                repository = %outcome.repository,
-                note = %note,
-                "code index requested build failed"
-            ),
-            (None, None) => {}
+            .await
+            .map(|rows| rows.into_iter().collect())
+            .unwrap_or_else(|e| {
+                tracing::warn!(tenant = %tenant, error = ?e, "code index builder could not read the times of the indexes");
+                HashMap::new()
+            });
+        for repo in repos {
+            let at = newest.get(&repo.id).copied();
+            order.push((at, tenant.clone(), repo));
         }
-        outcomes.push(outcome);
     }
-    outcomes
+    // No time sorts first: such a repository is not known to be fresh.
+    order.sort_by_key(|(at, _, _)| *at);
+    order
+        .into_iter()
+        .map(|(at, tenant, repo)| (tenant, repo, at))
+        .collect()
 }
 
 /// The clone of a repository, fetched, and the head of its default branch.
@@ -1163,6 +1141,11 @@ fn counts_of(report: &UpdateReport) -> runs::Counts {
                 + report.summary.files.summarized
                 + report.summary.modules.summarized,
         ),
+        summaries_reused: clamp(
+            report.summary.symbols.reused
+                + report.summary.files.reused
+                + report.summary.modules.reused,
+        ),
     }
 }
 
@@ -1195,31 +1178,71 @@ fn slug_of_run(conn: &mut diesel::pg::PgConnection, run: &runs::Build) -> Option
         .map(|repo| repo.slug)
 }
 
-/// Start the record of a run (KAIROS-T-0331): a `running` row, after the
-/// stale rows of the repository are ended. None when the write fails: the
-/// failure is logged, and the build goes on with no record.
+/// The start of the note of a repository that waits for the least time
+/// between 2 updates (KAIROS-T-0334).
+pub const MIN_REBUILD: &str = "the repository was updated a short time ago";
+
+/// The start of the note of a repository that has an open build job
+/// (KAIROS-T-0354, KAIROS-T-0374): it gets no second job.
+pub const ACTIVE_RUN: &str = "a run of the repository is active";
+
+/// The context of a build that runs as a job (KAIROS-T-0374): the handle
+/// of the job, the server that runs it, and the run that the job names,
+/// when it names one (the run of a request, or the run of an earlier lease
+/// of the job).
+#[derive(Clone)]
+pub(crate) struct BuildCtx {
+    pub handle: JobHandle,
+    pub instance: uuid::Uuid,
+    pub run: Option<uuid::Uuid>,
+}
+
+/// Start the record of a run (KAIROS-T-0331, KAIROS-T-0374): the run that
+/// the job names goes on, on this server; else a new `running` row of this
+/// server, which the payload of the job then names. The other `running`
+/// rows of the repository are stale (no open job names them) and end as
+/// failed. One transaction, with the row of the repository locked. `None`
+/// when the write failed: the failure is logged, and the build goes on with
+/// no record.
 async fn record_start(
     blocking: &BlockingTenantPool,
     tenant: &str,
     repo: &Repository,
     trigger: &'static str,
+    ctx: &BuildCtx,
 ) -> Option<uuid::Uuid> {
     let repo_id = repo.id;
     let branch = repo.default_branch.clone();
     let slug = repo.slug.clone();
+    let instance = ctx.instance;
+    let keep = ctx.run;
+    let job = ctx.handle.job().id;
     let written = blocking
         .run(tenant, move |conn| {
             crate::api::org::run_in_transaction(conn, |conn| {
-                runs::end_stale(conn, repo_id).map_err(ApiError::internal)?;
-                let run = runs::start(conn, repo_id, trigger, Some(&branch), None)
+                runs::lock_repository(conn, repo_id).map_err(ApiError::internal)?;
+                runs::end_stale_except(conn, repo_id, keep).map_err(ApiError::internal)?;
+                if let Some(id) = keep
+                    && runs::adopt(conn, id, instance).map_err(ApiError::internal)?
+                {
+                    return Ok(id);
+                }
+                let run = runs::start(conn, repo_id, trigger, Some(&branch), None, Some(instance))
                     .map_err(ApiError::internal)?;
+                kairos_db::jobs::merge_payload(
+                    conn,
+                    job,
+                    instance,
+                    &serde_json::json!({ "run": run.id }),
+                )
+                .map_err(ApiError::internal)?;
                 notify_run(conn, &slug, None)?;
-                Ok(run)
+                Ok(run.id)
             })
         })
         .await;
     match written {
-        Ok(run) => Some(run.id),
+        Ok(run) => Some(run),
         Err(e) => {
             tracing::warn!(tenant, repository = %repo.slug, error = ?e, "code index run not recorded");
             None
@@ -1316,37 +1339,6 @@ async fn record_failure_once(
     }
 }
 
-/// End the `running` rows of each tenant when the builder starts: the
-/// server stopped during those runs (KAIROS-T-0331).
-async fn end_stale_runs(blocking: &BlockingTenantPool) {
-    let tenants = match blocking
-        .run_public(|conn| kairos_db::list_tenants(conn).map_err(ApiError::internal))
-        .await
-    {
-        Ok(tenants) => tenants,
-        Err(e) => {
-            tracing::warn!(error = ?e, "code index builder could not list tenants");
-            return;
-        }
-    };
-    for tenant in tenants.into_iter().filter(|t| t.schema_exists) {
-        match blocking
-            .run(&tenant.slug, |conn| {
-                runs::end_all_stale(conn).map_err(ApiError::internal)
-            })
-            .await
-        {
-            Ok(0) => {}
-            Ok(n) => {
-                tracing::info!(tenant = %tenant.slug, runs = n, "code index runs ended: the server stopped during them")
-            }
-            Err(e) => {
-                tracing::warn!(tenant = %tenant.slug, error = ?e, "code index stale runs not ended")
-            }
-        }
-    }
-}
-
 async fn store_built(
     blocking: &BlockingTenantPool,
     tenant: &str,
@@ -1366,22 +1358,27 @@ async fn store_built(
         created_by: None,
     };
     let pool = used_rows(split.pool, &split.keys);
+    let keys = split.keys;
     blocking
         .run(tenant, move |conn| {
-            kairos_db::code_indexes::put(conn, &index, &pool).map_err(ApiError::internal)
+            kairos_db::code_indexes::put(conn, &index, &pool, &keys).map_err(ApiError::internal)
         })
         .await
         .map(|_| ())
         .map_err(|e| format!("failed: {e:?}"))
 }
 
-async fn build_repository(
+/// The update of the index of one repository after a push, as a job
+/// (KAIROS-T-0374): from the nearest indexed commit below the head of its
+/// default branch.
+pub(crate) async fn build_repository(
     blocking: &BlockingTenantPool,
     service: &Arc<CodeIndexService>,
     tenant: &str,
     repo: Repository,
     summarizers: Option<Arc<dyn SummarizerSource>>,
     embedder: Arc<dyn kairos_embed::EmbeddingProvider>,
+    ctx: &BuildCtx,
 ) -> BuildOutcome {
     let started = Instant::now();
     let mut outcome = BuildOutcome {
@@ -1399,6 +1396,7 @@ async fn build_repository(
         outcome
     };
     if !repo.code_index_build_on() {
+        record_end(blocking, tenant, ctx.run, Err(OPTED_OUT)).await;
         return done(outcome, OPTED_OUT.into());
     }
 
@@ -1409,13 +1407,23 @@ async fn build_repository(
     } = match fetch_head(blocking, service, tenant, &repo, true).await {
         Ok(fetched) => fetched,
         Err(note) => {
-            record_failure_once(blocking, tenant, &repo, "push", None, &note).await;
+            match ctx.run {
+                Some(_) => record_end(blocking, tenant, ctx.run, Err(&note)).await,
+                None => record_failure_once(blocking, tenant, &repo, "push", None, &note).await,
+            }
             return done(outcome, note);
         }
     };
     outcome.commit = head.clone();
     let key = (repo.id, head.clone());
     if service.failed_before(&key) {
+        record_end(
+            blocking,
+            tenant,
+            ctx.run,
+            Err("an earlier build of this commit failed"),
+        )
+        .await;
         return done(outcome, "an earlier build of this commit failed".into());
     }
 
@@ -1426,11 +1434,9 @@ async fn build_repository(
     let repo_id = repo.id;
     let start = blocking
         .run(tenant, move |conn| {
-            let indexed: HashSet<String> = kairos_db::code_indexes::list(conn, repo_id)
-                .map_err(ApiError::internal)?
-                .into_iter()
-                .map(|i| i.commit_sha)
-                .collect();
+            let listed =
+                kairos_db::code_indexes::list(conn, repo_id).map_err(ApiError::internal)?;
+            let indexed: HashSet<String> = listed.into_iter().map(|i| i.commit_sha).collect();
             let Some(nearest) = ancestors.iter().find(|c| indexed.contains(*c)) else {
                 return Ok(None);
             };
@@ -1467,7 +1473,10 @@ async fn build_repository(
         .await;
     let base = match start {
         Ok(Some(Start::Base(base))) => base,
-        Ok(Some(Start::HeadIndexed)) => return done(outcome, "the head has an index".into()),
+        Ok(Some(Start::HeadIndexed)) => {
+            record_end(blocking, tenant, ctx.run, Err("the head has an index")).await;
+            return done(outcome, "the head has an index".into());
+        }
         Ok(Some(Start::OldSchema { commit, found })) => {
             tracing::warn!(
                 tenant = %tenant,
@@ -1477,7 +1486,7 @@ async fn build_repository(
                 reads = kairos_index::SCHEMA_VERSION,
                 "code index of another schema version: a full build"
             );
-            return full_build_repository(
+            return Box::pin(full_build_repository(
                 blocking,
                 service,
                 tenant,
@@ -1485,8 +1494,8 @@ async fn build_repository(
                 summarizers,
                 embedder,
                 "push",
-                None,
-            )
+                ctx,
+            ))
             .await;
         }
         // No indexed commit is an ancestor of the head within the limit: the
@@ -1501,7 +1510,7 @@ async fn build_repository(
                 limit = MAX_DISTANCE,
                 "no indexed commit is below the head: a full build"
             );
-            return full_build_repository(
+            return Box::pin(full_build_repository(
                 blocking,
                 service,
                 tenant,
@@ -1509,18 +1518,23 @@ async fn build_repository(
                 summarizers,
                 embedder,
                 "push",
-                None,
-            )
+                ctx,
+            ))
             .await;
         }
         Err(e) => {
             let note = format!("failed: {e:?}");
-            record_failure_once(blocking, tenant, &repo, "push", Some(&head), &note).await;
+            match ctx.run {
+                Some(_) => record_end(blocking, tenant, ctx.run, Err(&note)).await,
+                None => {
+                    record_failure_once(blocking, tenant, &repo, "push", Some(&head), &note).await
+                }
+            }
             return done(outcome, note);
         }
     };
     outcome.base = Some(base.commit.clone());
-    let run = record_start(blocking, tenant, &repo, "push").await;
+    let run = record_start(blocking, tenant, &repo, "push", ctx).await;
     record_commit(blocking, tenant, run, &head).await;
     let models = match models_for(blocking, service, tenant, &repo, &summarizers, &embedder).await {
         Ok(models) => models,
@@ -1532,228 +1546,55 @@ async fn build_repository(
     let model_name = models.summarizers.model_name();
 
     // The update, off the async threads: it runs rust-analyzer and the
-    // model for minutes. It holds the gate for the whole build, so a first
-    // build does not run a step at the same time (KAIROS-T-0318).
-    let built = {
-        let head = head.clone();
-        let service = Arc::clone(service);
-        tokio::task::spawn_blocking(move || -> Result<_, String> {
-            // The gate: the whole build for the embedded model; the
-            // structure only for a hosted provider (KAIROS-T-0341), whose
-            // summaries take no CPU of the host.
-            let mut held = Some(service.gate().update());
-            let work = tempfile::Builder::new()
-                .prefix("kairos-code-index-")
-                .tempdir()
-                .map_err(|e| format!("no work folder: {e}"))?;
-            let db = work.path().join("index.db");
-            let tree = work.path().join("tree");
-            std::fs::create_dir(&tree).map_err(|e| format!("no tree folder: {e}"))?;
-            kairos_index::store::assemble(
-                &base.structure,
-                base.pool.into_iter().map(pool_row_of),
-                &db,
-            )
-            .map_err(|e| e.to_string())?;
-            git::checkout_tree(&clone, &head, &tree).map_err(|e| e.to_string())?;
-            let options = UpdateOptions {
-                // The server runs SCIP for each push (COLLIERY-I-0264,
-                // decision 5 of 2026-10-01).
-                rust_edges: true,
-                build: service.build_options(),
-                ..Default::default()
-            };
-            let build =
-                kairos_index::update_structure(&tree, &db, &options).map_err(|e| e.to_string())?;
-            if models.hosted_summaries && models.hosted_vectors {
-                held.take();
-            }
-            let Models {
-                summarizers,
-                embedder,
-                ..
-            } = models;
-            let report = summarizers
-                .run(&mut |summarizer| {
-                    let summary = kairos_index::summarize(
-                        &tree,
-                        &db,
-                        summarizer,
-                        embedder.as_ref(),
-                        &SummarizeOptions::default(),
-                    )?;
-                    Ok(UpdateReport {
-                        build: build.clone(),
-                        summary,
-                    })
-                })
-                .map_err(|e| e.to_string())?;
-            drop(held);
-            let split = kairos_index::store::split(&db).map_err(|e| e.to_string())?;
-            Ok((report, split))
-        })
-        .await
-    };
-    let (report, split) = match built {
-        Ok(Ok(built)) => built,
-        Ok(Err(e)) => {
-            service.record_failure(key);
-            let note = format!("failed: {e}");
-            record_end(blocking, tenant, run, Err(&note)).await;
-            return done(outcome, note);
-        }
-        Err(e) => {
-            let note = format!("failed: {e}");
-            record_end(blocking, tenant, run, Err(&note)).await;
-            return done(outcome, note);
-        }
-    };
-    if let Err(note) = store_built(blocking, tenant, &repo, head, split).await {
-        record_end(blocking, tenant, run, Err(&note)).await;
-        return done(outcome, note);
-    }
-    record_end(blocking, tenant, run, Ok((counts_of(&report), model_name))).await;
-    outcome.report = Some(report);
-    outcome.elapsed = started.elapsed();
-    outcome
-}
-
-/// A full build of one repository: the first build of a repository that
-/// has no index (KAIROS-T-0318, `trigger = first`), or a build that a
-/// person asked for (KAIROS-T-0332, `trigger = request`, with the run row
-/// `run` that the request made). A requested build skips the memory of
-/// the commits that failed before: the person asks for one more try.
-#[allow(clippy::too_many_arguments)]
-async fn full_build_repository(
-    blocking: &BlockingTenantPool,
-    service: &Arc<CodeIndexService>,
-    tenant: &str,
-    repo: Repository,
-    summarizers: Option<Arc<dyn SummarizerSource>>,
-    embedder: Arc<dyn kairos_embed::EmbeddingProvider>,
-    trigger: &'static str,
-    run: Option<uuid::Uuid>,
-) -> BuildOutcome {
-    let started = Instant::now();
-    let mut outcome = BuildOutcome {
-        tenant: tenant.to_string(),
-        repository: repo.slug.clone(),
-        commit: String::new(),
-        base: None,
-        report: None,
-        note: None,
-        elapsed: Duration::ZERO,
-    };
-    let done = |mut outcome: BuildOutcome, note: String| {
-        outcome.note = Some(note);
-        outcome.elapsed = started.elapsed();
-        outcome
-    };
-    if !repo.code_index_build_on() {
-        record_end(blocking, tenant, run, Err(OPTED_OUT)).await;
-        return done(outcome, OPTED_OUT.into());
-    }
-
-    let Fetched { clone, head, .. } = match fetch_head(blocking, service, tenant, &repo, false)
-        .await
-    {
-        Ok(fetched) => fetched,
-        Err(note) => {
-            match run {
-                Some(_) => record_end(blocking, tenant, run, Err(&note)).await,
-                None => record_failure_once(blocking, tenant, &repo, trigger, None, &note).await,
-            }
-            return done(outcome, note);
-        }
-    };
-    outcome.commit = head.clone();
-    let key = (repo.id, head.clone());
-    if run.is_none() && service.failed_before(&key) {
-        return done(outcome, "an earlier build of this commit failed".into());
-    }
-    tracing::info!(
-        tenant = %tenant,
-        repository = %repo.slug,
-        commit = %head,
-        trigger,
-        "code index full build started"
-    );
-    let run = match run {
-        Some(id) => Some(id),
-        None => record_start(blocking, tenant, &repo, trigger).await,
-    };
-    record_commit(blocking, tenant, run, &head).await;
-    let models = match models_for(blocking, service, tenant, &repo, &summarizers, &embedder).await {
-        Ok(models) => models,
-        Err(note) => {
-            record_end(blocking, tenant, run, Err(&note)).await;
-            return done(outcome, note);
-        }
-    };
-    let model_name = models.summarizers.model_name();
-
-    // The build, off the async threads: it runs for hours on a large
-    // repository. It takes the gate for each step, so the updates of the
-    // other repositories go between the steps.
-    let db = service.first_build_db(tenant, &repo);
+    // model for minutes. The limit of its kind of job keeps the other
+    // builds of the model off the CPU (KAIROS-T-0374).
+    let db = service.update_db(tenant, &repo);
     let built = {
         let head = head.clone();
         let service = Arc::clone(service);
         let db = db.clone();
+        let tenant = tenant.to_string();
+        let slug = repo.slug.clone();
+        let handle = ctx.handle.clone();
+        let sink = PoolSink::new(blocking, &tenant, repo.id);
         tokio::task::spawn_blocking(move || -> Result<_, String> {
-            if let Some(parent) = db.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("no folder {}: {e}", parent.display()))?;
-            }
             let work = tempfile::Builder::new()
-                .prefix("kairos-code-index-first-")
+                .prefix("kairos-code-index-")
                 .tempdir()
                 .map_err(|e| format!("no work folder: {e}"))?;
             let tree = work.path().join("tree");
             std::fs::create_dir(&tree).map_err(|e| format!("no tree folder: {e}"))?;
-            git::checkout_tree(&clone, &head, &tree).map_err(|e| e.to_string())?;
-            let options = UpdateOptions {
-                rust_edges: true,
-                build: service.build_options(),
-                ..Default::default()
-            };
-            let build = {
-                let _held = service.gate().first_build();
-                kairos_index::update_structure(&tree, &db, &options)
-            };
-            let build = match build {
-                Ok(build) => build,
-                Err(e) => {
-                    // A work database that the build cannot read (for
-                    // example of another schema version) is removed, so
-                    // that the next build starts again from nothing.
-                    remove_database(&db);
-                    return Err(e.to_string());
-                }
-            };
-            let gate = service.gate();
+            let build = with_progress(&handle, || -> Result<_, String> {
+                prepare_update_db(&db, &base.structure, base.pool, &tenant, &slug)?;
+                git::checkout_tree(&clone, &head, &tree).map_err(|e| e.to_string())?;
+                let options = UpdateOptions {
+                    // The server runs SCIP for each push (COLLIERY-I-0264,
+                    // decision 5 of 2026-10-01).
+                    rust_edges: true,
+                    build: service.build_options(),
+                    ..Default::default()
+                };
+                kairos_index::update_structure(&tree, &db, &options).map_err(|e| e.to_string())
+            })?;
             let Models {
                 summarizers,
                 embedder,
-                hosted_summaries,
-                hosted_vectors,
             } = models;
             let report = summarizers
                 .run(&mut |summarizer| {
-                    // The gate for each call of a model on the CPU; none for
-                    // a hosted provider (KAIROS-T-0341).
-                    let mut gated = GatedSummarizer {
+                    let mut summarizer = ProgressSummarizer {
                         inner: summarizer,
-                        gate: (!hosted_summaries).then_some(gate),
+                        handle: &handle,
+                        pool: &sink,
                     };
-                    let embedder = GatedEmbedder {
+                    let embedder = ProgressEmbedder {
                         inner: embedder.as_ref(),
-                        gate: (!hosted_vectors).then_some(gate),
+                        handle: &handle,
                     };
                     let summary = kairos_index::summarize(
                         &tree,
                         &db,
-                        &mut gated,
+                        &mut summarizer,
                         &embedder,
                         &SummarizeOptions::default(),
                     )?;
@@ -1770,6 +1611,9 @@ async fn full_build_repository(
     };
     let (report, split) = match built {
         Ok(Ok(built)) => built,
+        // The job was killed: its run goes on when a server takes the job
+        // again.
+        Ok(Err(_)) if ctx.handle.cancelled() => return done(outcome, STOPPED.into()),
         Ok(Err(e)) => {
             service.record_failure(key);
             let note = format!("failed: {e}");
@@ -1793,6 +1637,313 @@ async fn full_build_repository(
     outcome
 }
 
+/// Write the work database `db` of an update (KAIROS-T-0335): the
+/// structure of the base and the pool of the repository, and the summaries
+/// of the work database of an update that did not end, when `db` has one.
+/// Those summaries are of keys that no index stores yet: the model made
+/// them before a restart or a failure. The error is the text of a failed
+/// run.
+fn prepare_update_db(
+    db: &Path,
+    structure: &[u8],
+    pool: Vec<kairos_db::code_indexes::PoolRow>,
+    tenant: &str,
+    slug: &str,
+) -> Result<(), String> {
+    if let Some(parent) = db.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("no folder {}: {e}", parent.display()))?;
+    }
+    let mut next = db.as_os_str().to_owned();
+    next.push(".next");
+    let next = PathBuf::from(next);
+    remove_database(&next);
+    kairos_index::store::assemble(structure, pool.into_iter().map(pool_row_of), &next)
+        .map_err(|e| e.to_string())?;
+    if db.is_file() {
+        // A work database that cannot give its summaries (another schema
+        // version, the vectors of another model) is not used.
+        match kairos_index::store::copy_pool(db, &next) {
+            Ok(()) => tracing::info!(
+                tenant,
+                repository = slug,
+                "code index update reuses the summaries of an update that did not end"
+            ),
+            Err(e) => tracing::warn!(
+                tenant,
+                repository = slug,
+                error = %e,
+                "code index update cannot reuse the summaries of an update that did not end"
+            ),
+        }
+    }
+    remove_database(db);
+    std::fs::rename(&next, db).map_err(|e| format!("no work database {}: {e}", db.display()))
+}
+
+/// A full build of one repository, as a job (KAIROS-T-0374): the first
+/// build of a repository that has no index (KAIROS-T-0318, `trigger =
+/// first`), a build that a person asked for (KAIROS-T-0332, `trigger =
+/// request`, with the run row that the request made), or the full build of
+/// an update that cannot start from an index (`trigger = push`). A
+/// requested build skips the memory of the commits that failed before: the
+/// person asks for one more try. A first build gives its slot to a job of
+/// a higher priority when [`JobHandle::should_yield`] says so: it ends
+/// with the note [`YIELDED`], and its run stays `running` for the next
+/// lease of its job.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn full_build_repository(
+    blocking: &BlockingTenantPool,
+    service: &Arc<CodeIndexService>,
+    tenant: &str,
+    repo: Repository,
+    summarizers: Option<Arc<dyn SummarizerSource>>,
+    embedder: Arc<dyn kairos_embed::EmbeddingProvider>,
+    trigger: &'static str,
+    ctx: &BuildCtx,
+) -> BuildOutcome {
+    let started = Instant::now();
+    let mut outcome = BuildOutcome {
+        tenant: tenant.to_string(),
+        repository: repo.slug.clone(),
+        commit: String::new(),
+        base: None,
+        report: None,
+        note: None,
+        elapsed: Duration::ZERO,
+    };
+    let done = |mut outcome: BuildOutcome, note: String| {
+        outcome.note = Some(note);
+        outcome.elapsed = started.elapsed();
+        outcome
+    };
+    if !repo.code_index_build_on() {
+        record_end(blocking, tenant, ctx.run, Err(OPTED_OUT)).await;
+        return done(outcome, OPTED_OUT.into());
+    }
+    // A first-build job that a sweep added from a list it read before the
+    // first build of the repository ended (KAIROS-T-0378): the repository
+    // has an index now, and the updates follow it.
+    if trigger == jobs::FIRST {
+        let repo_id = repo.id;
+        let indexed = blocking
+            .run(tenant, move |conn| {
+                kairos_db::code_indexes::list(conn, repo_id).map_err(ApiError::internal)
+            })
+            .await
+            .map(|listed| !listed.is_empty())
+            .unwrap_or(false);
+        if indexed {
+            record_end(blocking, tenant, ctx.run, Err(HAS_INDEX)).await;
+            return done(outcome, HAS_INDEX.into());
+        }
+    }
+
+    let Fetched { clone, head, .. } = match fetch_head(blocking, service, tenant, &repo, false)
+        .await
+    {
+        Ok(fetched) => fetched,
+        Err(note) => {
+            match ctx.run {
+                Some(_) => record_end(blocking, tenant, ctx.run, Err(&note)).await,
+                None => record_failure_once(blocking, tenant, &repo, trigger, None, &note).await,
+            }
+            return done(outcome, note);
+        }
+    };
+    outcome.commit = head.clone();
+    let key = (repo.id, head.clone());
+    if trigger != "request" && service.failed_before(&key) {
+        record_end(
+            blocking,
+            tenant,
+            ctx.run,
+            Err("an earlier build of this commit failed"),
+        )
+        .await;
+        return done(outcome, "an earlier build of this commit failed".into());
+    }
+    tracing::info!(
+        tenant = %tenant,
+        repository = %repo.slug,
+        commit = %head,
+        trigger,
+        "code index full build started"
+    );
+    let run = record_start(blocking, tenant, &repo, trigger, ctx).await;
+    record_commit(blocking, tenant, run, &head).await;
+    let models = match models_for(blocking, service, tenant, &repo, &summarizers, &embedder).await {
+        Ok(models) => models,
+        Err(note) => {
+            record_end(blocking, tenant, run, Err(&note)).await;
+            return done(outcome, note);
+        }
+    };
+    let model_name = models.summarizers.model_name();
+
+    // The pool of the repository in Postgres (KAIROS-T-0378): the summaries
+    // that an earlier lease of this job made, on any server, and those of
+    // the indexes of the repository. The build links them first, so it
+    // makes only the rest. A vector of another model than the one of this
+    // build is left out: the build embeds that summary again.
+    let pool = match linkable_pool(blocking, tenant, repo.id, models.embedder.as_ref()).await {
+        Ok(pool) => pool,
+        Err(note) => {
+            record_end(blocking, tenant, run, Err(&note)).await;
+            return done(outcome, note);
+        }
+    };
+
+    // The build, off the async threads: it runs for hours on a large
+    // repository. It reports progress for each summary and each embedding
+    // batch, and stops at the next one when it must give its slot.
+    let db = service.first_build_db(tenant, &repo);
+    let built = {
+        let head = head.clone();
+        let service = Arc::clone(service);
+        let db = db.clone();
+        let handle = ctx.handle.clone();
+        let sink = PoolSink::new(blocking, tenant, repo.id);
+        let (tenant, slug) = (tenant.to_string(), repo.slug.clone());
+        tokio::task::spawn_blocking(move || -> Result<_, String> {
+            if let Some(parent) = db.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("no folder {}: {e}", parent.display()))?;
+            }
+            let work = tempfile::Builder::new()
+                .prefix("kairos-code-index-first-")
+                .tempdir()
+                .map_err(|e| format!("no work folder: {e}"))?;
+            let tree = work.path().join("tree");
+            std::fs::create_dir(&tree).map_err(|e| format!("no tree folder: {e}"))?;
+            let build = with_progress(&handle, || -> Result<_, String> {
+                git::checkout_tree(&clone, &head, &tree).map_err(|e| e.to_string())?;
+                let options = UpdateOptions {
+                    rust_edges: true,
+                    build: service.build_options(),
+                    ..Default::default()
+                };
+                match kairos_index::update_structure(&tree, &db, &options) {
+                    Ok(build) => Ok(build),
+                    Err(e) => {
+                        // A work database that the build cannot read (for
+                        // example of another schema version) is removed, so
+                        // that the next build starts again from nothing.
+                        remove_database(&db);
+                        Err(e.to_string())
+                    }
+                }
+            })?;
+            match kairos_index::store::add_pool(&db, pool) {
+                Ok(0) => {}
+                Ok(added) => tracing::info!(
+                    tenant,
+                    repository = slug,
+                    added,
+                    "code index full build links the summaries of the pool"
+                ),
+                Err(e) => return Err(format!("the pool of the repository: {e}")),
+            }
+            let Models {
+                summarizers,
+                embedder,
+            } = models;
+            let report = summarizers
+                .run(&mut |summarizer| {
+                    let mut summarizer = ProgressSummarizer {
+                        inner: summarizer,
+                        handle: &handle,
+                        pool: &sink,
+                    };
+                    let embedder = ProgressEmbedder {
+                        inner: embedder.as_ref(),
+                        handle: &handle,
+                    };
+                    let summary = kairos_index::summarize(
+                        &tree,
+                        &db,
+                        &mut summarizer,
+                        &embedder,
+                        &SummarizeOptions::default(),
+                    )?;
+                    Ok(UpdateReport {
+                        build: build.clone(),
+                        summary,
+                    })
+                })
+                .map_err(|e| e.to_string())?;
+            let split = kairos_index::store::split(&db).map_err(|e| e.to_string())?;
+            Ok((report, split))
+        })
+        .await
+    };
+    let (report, split) = match built {
+        Ok(Ok(built)) => built,
+        // The job was killed: its run goes on when a server takes the job
+        // again.
+        Ok(Err(_)) if ctx.handle.cancelled() => return done(outcome, STOPPED.into()),
+        // The build gives its slot: the run stays, and the summaries stay
+        // in the work database for the next lease of the job.
+        Ok(Err(e)) if ctx.handle.should_yield() && e.contains(YIELDED) => {
+            return done(outcome, YIELDED.into());
+        }
+        Ok(Err(e)) => {
+            service.record_failure(key);
+            let note = format!("failed: {e}");
+            record_end(blocking, tenant, run, Err(&note)).await;
+            return done(outcome, note);
+        }
+        Err(e) => {
+            let note = format!("failed: {e}");
+            record_end(blocking, tenant, run, Err(&note)).await;
+            return done(outcome, note);
+        }
+    };
+    if let Err(note) = store_built(blocking, tenant, &repo, head, split).await {
+        record_end(blocking, tenant, run, Err(&note)).await;
+        return done(outcome, note);
+    }
+    record_end(blocking, tenant, run, Ok((counts_of(&report), model_name))).await;
+    remove_database(&db);
+    outcome.report = Some(report);
+    outcome.elapsed = started.elapsed();
+    outcome
+}
+
+/// The rows of the pool of `repository` in Postgres for a build whose
+/// vectors come from `embedder` (KAIROS-T-0378): each row, with its vector
+/// when the vectors of the pool are of the model of `embedder`. The error
+/// is the note of a failed run.
+async fn linkable_pool(
+    blocking: &BlockingTenantPool,
+    tenant: &str,
+    repository: uuid::Uuid,
+    embedder: &dyn kairos_embed::EmbeddingProvider,
+) -> Result<Vec<kairos_index::store::PoolRow>, String> {
+    let model = kairos_index::vector_model_name(embedder);
+    let (rows, pool_model) = blocking
+        .run(tenant, move |conn| {
+            let rows = kairos_db::code_indexes::whole_pool(conn, repository)
+                .map_err(ApiError::internal)?;
+            let model = kairos_db::code_indexes::vector_model(conn, repository)
+                .map_err(ApiError::internal)?;
+            Ok((rows, model))
+        })
+        .await
+        .map_err(|e| format!("failed: the pool of the repository is not readable: {e:?}"))?;
+    let keep_vectors = pool_model.is_none_or(|pool| pool == model);
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let mut row = pool_row_of(row);
+            if !keep_vectors {
+                row.vector = None;
+            }
+            row
+        })
+        .collect())
+}
+
 /// Remove the SQLite database at `path` and its journal files. A file that
 /// is not there is not an error.
 fn remove_database(path: &Path) {
@@ -1801,72 +1952,6 @@ fn remove_database(path: &Path) {
         file.push(suffix);
         let _ = std::fs::remove_file(PathBuf::from(file));
     }
-}
-
-/// Run the builder for ever, in 2 lanes (KAIROS-T-0318):
-///
-/// - the update lane runs a [`sweep`] on `interval`, then wakes the
-///   first-build lane;
-/// - the first-build lane runs [`first_builds`] each time it is woken. A
-///   wake that comes during a pass starts one more pass after it.
-///
-/// The update lane does not wait for the first-build lane, so a first build
-/// of hours does not stop the updates. An error is logged and the next pass
-/// tries again; it never stops the server.
-pub async fn run_builder(
-    blocking: BlockingTenantPool,
-    service: Arc<CodeIndexService>,
-    summarizers: Option<Arc<dyn SummarizerSource>>,
-    embedder: Arc<dyn kairos_embed::EmbeddingProvider>,
-    interval: Duration,
-) {
-    tracing::info!(
-        interval_secs = interval.as_secs(),
-        "code index builder started"
-    );
-    end_stale_runs(&blocking).await;
-    let wake = tokio::sync::Notify::new();
-    let updates = async {
-        let mut ticker = tokio::time::interval(interval);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            // A request (KAIROS-T-0332) goes before the next sweep.
-            tokio::select! {
-                _ = ticker.tick() => {
-                    sweep(
-                        &blocking,
-                        &service,
-                        summarizers.clone(),
-                        Arc::clone(&embedder),
-                    )
-                    .await;
-                    wake.notify_one();
-                }
-                _ = service.wake().notified() => {
-                    requested_builds(
-                        &blocking,
-                        &service,
-                        summarizers.clone(),
-                        Arc::clone(&embedder),
-                    )
-                    .await;
-                }
-            }
-        }
-    };
-    let firsts = async {
-        loop {
-            wake.notified().await;
-            first_builds(
-                &blocking,
-                &service,
-                summarizers.clone(),
-                Arc::clone(&embedder),
-            )
-            .await;
-        }
-    };
-    tokio::join!(updates, firsts);
 }
 
 /// Whether the summaries of `repo` come from the hosted provider of the
@@ -1928,47 +2013,5 @@ mod tests {
         let summarizers = llama_summarizers(&tools, 6);
         assert_eq!(summarizers.model, PathBuf::from("/tools/model.gguf"));
         assert_eq!(summarizers.threads, 6);
-    }
-}
-
-#[cfg(test)]
-mod gate_tests {
-    use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    #[test]
-    fn an_update_goes_before_the_next_step_of_a_first_build() {
-        let gate = Arc::new(WorkGate::default());
-        // A first build holds the gate for one step.
-        let step = gate.first_build();
-        // An update comes, and waits for that step.
-        let updated = Arc::new(AtomicBool::new(false));
-        let update = {
-            let (gate, updated) = (Arc::clone(&gate), Arc::clone(&updated));
-            std::thread::spawn(move || {
-                let _held = gate.update();
-                std::thread::sleep(Duration::from_millis(100));
-                updated.store(true, Ordering::SeqCst);
-            })
-        };
-        while gate.state.lock().unwrap().updates_waiting == 0 {
-            std::thread::yield_now();
-        }
-        assert!(!updated.load(Ordering::SeqCst), "the step holds the gate");
-        drop(step);
-        // The next step of the first build waits until the update ends.
-        let next = gate.first_build();
-        assert!(updated.load(Ordering::SeqCst), "the update went first");
-        drop(next);
-        update.join().unwrap();
-    }
-
-    #[test]
-    fn a_first_build_takes_the_gate_when_no_update_wants_it() {
-        let gate = WorkGate::default();
-        drop(gate.first_build());
-        drop(gate.first_build());
-        drop(gate.update());
-        drop(gate.first_build());
     }
 }

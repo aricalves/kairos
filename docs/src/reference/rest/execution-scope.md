@@ -27,15 +27,21 @@ Request body (required): `application/json`, [`QueryVectorRequest`](schemas.md#q
 The repository directory (open tenant-wide), by slug. `?team=` narrows
 to one owning team.
 
+The response is a page, `{items, total, limit, offset}`, as for each
+other list (KAIROS-T-0268). Until 0.11 it was an array of each
+repository.
+
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
 | `team` | query | no | `string` | Only this team's repositories (UUID or slug). |
 | `forge` | query | no | `string` | With `name`: the ONE repository registered under this forge (`github|gitlab|other`) and full name — how a checkout matches its git remote (KAIROS-T-0116). Returns an empty list when unknown. |
 | `name` | query | no | `string` | `owner/repo`, paired with `forge`. |
+| `limit` | query | no | `integer` | Page size (default 50, max 200). |
+| `offset` | query | no | `integer` | Rows to skip (default 0). |
 
 | Response | Body | Meaning |
 |---|---|---|
-| `200` | array of [`Repository`](schemas.md#repository) | Repositories, by slug |
+| `200` | [`ListEnvelope_Repository`](schemas.md#listenvelope_repository) | Page of repositories, by slug |
 | `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown team |
 
 ### `POST /api/repositories`
@@ -77,7 +83,8 @@ decisions about it. It has the live items only.
 
 ### `DELETE /api/repositories/{slug}`
 
-Remove a repository (org admin). Refused with 409 while live tasks or a
+Remove a repository (org admin, or `manage_structure` at the
+organization, KAIROS-T-0337). Refused with 409 while live tasks or a
 live webhook connection still reference it.
 
 | Parameter | In | Required | Type | Description |
@@ -286,6 +293,57 @@ token removed.
 | `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Not an organization admin, and not a member of the owner team |
 | `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown repository, or the repository has no token |
 | `409` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The stored token does not decrypt with the key of the deployment |
+
+### `GET /api/repositories/{slug}/write-token`
+
+The status of the GitHub write-back of a repository. It never has the
+token.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `slug` | path | yes | `string` | Repository slug (or UUID) |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`RepositoryWriteBack`](schemas.md#repositorywriteback) | The status of the write-back |
+| `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown repository |
+
+### `PUT /api/repositories/{slug}/write-token`
+
+Set or replace the write token of a GitHub repository. An organization
+admin or a member of the owner team can do it. Kairos encrypts the
+token, and writes each open pull request that links to an item. The
+response is the status, with no token.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `slug` | path | yes | `string` | Repository slug (or UUID) |
+
+Request body (required): `application/json`, [`SetRepositoryCredentialRequest`](schemas.md#setrepositorycredentialrequest)
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`RepositoryWriteBack`](schemas.md#repositorywriteback) | The token is set |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Not an organization admin, and not a member of the owner team |
+| `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown repository |
+| `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Not a GitHub repository, an unknown field, or a token that is empty, too long or has a space |
+| `501` | [`ErrorEnvelope`](schemas.md#errorenvelope) | This deployment has no KAIROS_SECRETS_KEY |
+
+### `DELETE /api/repositories/{slug}/write-token`
+
+Remove the write token of a repository (an organization admin, or a
+member of the owner team). Kairos writes nothing more to its pull
+requests.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `slug` | path | yes | `string` | Repository slug (or UUID) |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`RepositoryWriteBack`](schemas.md#repositorywriteback) | The token is removed |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Not an organization admin, and not a member of the owner team |
+| `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown repository, or the repository has no write token |
 
 ## forge
 

@@ -26,13 +26,10 @@
 //!   counts; sweeps are idempotent (second run prunes nothing)
 //! - `discard` prunes without archive files; `off` is a full no-op
 //! - `sweep_all_tenants` iterates every provisioned org (fleet pattern)
-//! - `spawn_retention_loop` ticks until its closure breaks (manual-tick
-//!   scheduler test, no database)
+//! - `run_retention_pass` (the periodic job of the server, KAIROS-T-0376)
+//!   removes the old rows and the expired sessions, and reports progress
 
-use std::ops::ControlFlow;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use diesel::pg::PgConnection;
@@ -45,7 +42,7 @@ use kairos_core::short_code::ItemType;
 use kairos_db::items::{self, ContentUpdate, CreateStrategy};
 use kairos_db::models::{ItemHistory, NewUser, User};
 use kairos_db::retention::{
-    RetentionError, SweepReport, TableCounts, spawn_retention_loop, sweep_all_tenants, sweep_tenant,
+    RetentionError, SweepReport, TableCounts, sweep_all_tenants, sweep_tenant,
 };
 use kairos_db::{provision_tenant, run_public_migrations, schema};
 
@@ -336,6 +333,8 @@ fn retention_sweeper_lifecycle() {
     // ---- archive mode with NO target: prune NOTHING, warn ------------------
     let no_target = RetentionConfig {
         mode: RetentionMode::Archive,
+        notifications_read_days: 30,
+        code_index_pool_days: 30,
         archive_target: None,
         ..RetentionConfig::default()
     };
@@ -359,6 +358,8 @@ fn retention_sweeper_lifecycle() {
     // ---- S3 target: recognized, typed NOT IMPLEMENTED ----------------------
     let s3 = RetentionConfig {
         mode: RetentionMode::Archive,
+        notifications_read_days: 30,
+        code_index_pool_days: 30,
         archive_target: Some(ArchiveTarget::S3("s3://kairos-archive/acme".into())),
         ..RetentionConfig::default()
     };
@@ -382,6 +383,8 @@ fn retention_sweeper_lifecycle() {
     }
     let fs_config = RetentionConfig {
         mode: RetentionMode::Archive,
+        notifications_read_days: 30,
+        code_index_pool_days: 30,
         archive_target: Some(ArchiveTarget::Filesystem(archive_base.clone())),
         ..RetentionConfig::default()
     };
@@ -482,6 +485,8 @@ fn retention_sweeper_lifecycle() {
     // ---- off: full no-op ----------------------------------------------------
     let off = RetentionConfig {
         mode: RetentionMode::Off,
+        notifications_read_days: 30,
+        code_index_pool_days: 30,
         archive_target: Some(ArchiveTarget::Filesystem(archive_base.clone())),
         history_hot_days: 0, // even a maximally aggressive policy is inert
         activity_retention_days: 0,
@@ -533,6 +538,8 @@ fn retention_sweeper_lifecycle() {
 
     let discard = RetentionConfig {
         mode: RetentionMode::Discard,
+        notifications_read_days: 30,
+        code_index_pool_days: 30,
         archive_target: None,
         ..RetentionConfig::default()
     };
@@ -578,25 +585,153 @@ fn retention_sweeper_lifecycle() {
     );
 }
 
-/// The in-process scheduler (KAIROS-A-0004 "in-process scheduled task"):
-/// the loop ticks its injected body until it breaks. Sweep logic itself is
-/// exercised above by calling the sweep functions directly — the loop and
-/// the sweep are deliberately decoupled (manual-tick testability).
-#[tokio::test]
-async fn retention_loop_ticks_until_break() {
-    let ticks = Arc::new(AtomicUsize::new(0));
-    let counter = Arc::clone(&ticks);
-    let handle = spawn_retention_loop(std::time::Duration::from_millis(1), move || {
-        if counter.fetch_add(1, Ordering::SeqCst) + 1 >= 3 {
-            ControlFlow::Break(())
-        } else {
-            ControlFlow::Continue(())
-        }
+/// KAIROS-T-0366: the pass of the server. Rows older than the setting go
+/// and newer rows stay; expired password sessions go and live sessions
+/// stay. The pass takes no lock: the job queue gives each run to one server
+/// (KAIROS-T-0376). It reports progress before each tenant and at the end.
+#[test]
+fn retention_pass_removes_old_rows_and_expired_sessions() {
+    use kairos_db::local_auth::{NewLocalSession, create_session};
+    use kairos_db::retention::run_retention_pass;
+
+    const PASS_DB: &str = "kairos_retention_pass_test";
+    let admin_url = admin_database_url();
+    let mut admin_conn = PgConnection::establish(&admin_url).unwrap_or_else(|e| {
+        panic!("cannot connect to compose postgres at {admin_url}: {e} (`angreal services up`)")
     });
-    handle.await.expect("loop task joins cleanly");
+    sql_query(format!("DROP DATABASE IF EXISTS {PASS_DB} WITH (FORCE)"))
+        .execute(&mut admin_conn)
+        .expect("dropping scratch database");
+    sql_query(format!("CREATE DATABASE {PASS_DB}"))
+        .execute(&mut admin_conn)
+        .expect("creating scratch database");
+    let url = with_database(&admin_url, PASS_DB);
+    let mut conn = PgConnection::establish(&url).expect("connecting to scratch database");
+    run_public_migrations(&mut conn).expect("running public migrations");
+    provision_tenant(&mut conn, "acme", "Acme Inc").expect("provisioning acme");
+
+    let now = at(2026, 10, 11, 12, 0, 0);
+    let config = RetentionConfig {
+        activity_retention_days: 30,
+        mode: RetentionMode::Discard,
+        notifications_read_days: 30,
+        code_index_pool_days: 30,
+        ..RetentionConfig::default()
+    };
+
+    // activity_log: one row older than the 30-day setting, one newer.
+    pin(&mut conn, "org_acme");
+    for (action, ts) in [
+        ("old_row", now - Duration::days(31)),
+        ("new_row", now - Duration::days(29)),
+    ] {
+        diesel::insert_into(schema::activity_log::table)
+            .values((
+                schema::activity_log::actor_id.eq(Uuid::nil()),
+                schema::activity_log::action.eq(action),
+                schema::activity_log::details.eq(""),
+                schema::activity_log::occurred_at.eq(ts),
+            ))
+            .execute(&mut conn)
+            .expect("inserting activity row");
+    }
+
+    // local_sessions: one expired before `now`, one live after it.
+    let robin = insert_user(&mut conn, "local|robin", "robin@acme.test", "Robin");
+    for (hash, expires_at) in [
+        ("expired", now - Duration::hours(1)),
+        ("live", now + Duration::hours(1)),
+    ] {
+        create_session(
+            &mut conn,
+            NewLocalSession {
+                user_id: robin,
+                token_hash: hash.to_string(),
+                expires_at,
+            },
+        )
+        .expect("inserting session");
+    }
+    sql_query("SET search_path TO DEFAULT")
+        .execute(&mut conn)
+        .expect("resetting search_path");
+
+    let session_hashes = |conn: &mut PgConnection| -> Vec<String> {
+        schema::local_sessions::table
+            .order(schema::local_sessions::token_hash.asc())
+            .select(schema::local_sessions::token_hash)
+            .load(conn)
+            .expect("loading sessions")
+    };
+    let activity_actions = |conn: &mut PgConnection| -> Vec<String> {
+        pin(conn, "org_acme");
+        let actions = schema::activity_log::table
+            .filter(schema::activity_log::action.ne("retention_sweep"))
+            .order(schema::activity_log::action.asc())
+            .select(schema::activity_log::action)
+            .load(conn)
+            .expect("loading activity");
+        sql_query("SET search_path TO DEFAULT")
+            .execute(conn)
+            .expect("resetting search_path");
+        actions
+    };
+
+    // KAIROS-T-0377: one row of the login throttle that can change no
+    // decision, and one that can.
+    sql_query(
+        "INSERT INTO public.auth_failures \
+             (kind, subject, failures, window_started, expires_at) \
+         VALUES ('source', 'old', 1, $1, $1), ('source', 'new', 1, $2, $2)",
+    )
+    .bind::<diesel::sql_types::Timestamptz, _>(now - Duration::hours(1))
+    .bind::<diesel::sql_types::Timestamptz, _>(now + Duration::hours(1))
+    .execute(&mut conn)
+    .expect("inserting throttle rows");
+
+    let mut steps = 0;
+    let pass = run_retention_pass(&mut conn, &config, now, &mut || steps += 1).expect("pass");
     assert_eq!(
-        ticks.load(Ordering::SeqCst),
-        3,
-        "ticked exactly until break"
+        steps, 3,
+        "one tenant, after the notifications, and after the pool summaries"
     );
+    assert_eq!(pass.expired_sessions_deleted, 1);
+    assert_eq!(pass.unused_summaries_deleted, 0);
+    assert_eq!(pass.expired_auth_failures_deleted, 1);
+    assert_eq!(pass.tenants.len(), 1);
+    assert_eq!(pass.tenants[0].activity_log.rows_pruned, 1);
+    assert_eq!(session_hashes(&mut conn), vec!["live"]);
+    assert_eq!(activity_actions(&mut conn), vec!["new_row"]);
+
+    // A second pass finds nothing to remove.
+    let pass = run_retention_pass(&mut conn, &config, now, &mut || {}).expect("pass");
+    assert_eq!(pass.expired_sessions_deleted, 0);
+    assert_eq!(pass.tenants.len(), 1);
+    assert_eq!(pass.tenants[0].activity_log.rows_pruned, 0);
+
+    // `off` sweeps no tenant but still deletes expired sessions.
+    pin(&mut conn, "org_acme");
+    create_session(
+        &mut conn,
+        NewLocalSession {
+            user_id: robin,
+            token_hash: "expired-2".to_string(),
+            expires_at: now - Duration::minutes(5),
+        },
+    )
+    .expect("inserting session");
+    let off = RetentionConfig {
+        mode: RetentionMode::Off,
+        notifications_read_days: 30,
+        code_index_pool_days: 30,
+        ..RetentionConfig::default()
+    };
+    let pass = run_retention_pass(&mut conn, &off, now, &mut || {}).expect("pass");
+    assert!(pass.tenants.is_empty());
+    assert_eq!(pass.expired_sessions_deleted, 1);
+
+    drop(conn);
+    sql_query(format!("DROP DATABASE IF EXISTS {PASS_DB} WITH (FORCE)"))
+        .execute(&mut admin_conn)
+        .expect("dropping scratch database");
 }

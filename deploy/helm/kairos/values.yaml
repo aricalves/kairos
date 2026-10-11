@@ -7,9 +7,12 @@
 # from a single container (KAIROS-A-0015). It requires two things this chart does
 # NOT provide (KAIROS-A-0016): an external PostgreSQL and an external OIDC issuer.
 
-# -- Number of server replicas. The server is stateless (all state is in
-# Postgres, KAIROS-A-0013), so it scales horizontally. Ignored when
-# autoscaling.enabled is true.
+# -- Number of server replicas. Ignored when autoscaling.enabled is true.
+# The pods share the background work through the job queue in Postgres
+# (COLLIERY-I-0613): each code-index build, embedding batch, periodic pass,
+# webhook delivery and GitHub write-back runs on one pod, and the login
+# throttle counts failed logins in Postgres. The limits of the job kinds
+# (KAIROS_JOB_LIMIT_*) are for each pod. See the book, "The job queue".
 replicaCount: 2
 
 image:
@@ -17,7 +20,7 @@ image:
   repository: ghcr.io/colliery-io/kairos
   # -- Image tag. LEAVE EMPTY to track the chart's appVersion (recommended —
   # the chart never pins `latest`, per KAIROS-A-0013). Set explicitly to run a
-  # specific published release, e.g. "0.10.0".
+  # specific published release, e.g. "0.11.0".
   tag: ""
   # -- Image variant. Empty is the full image, with the embedded summary
   # model of the code index. "hosted" is the image with no embedded model,
@@ -129,6 +132,9 @@ ingress:
 
 autoscaling:
   # -- Enable a HorizontalPodAutoscaler. When true, replicaCount is ignored.
+  # The pods share the background work through the job queue, so the HPA can
+  # add and remove pods. A pod that the HPA removes during a job loses its
+  # lease; another pod takes the job when the lease runs out.
   enabled: false
   minReplicas: 2
   maxReplicas: 6
@@ -243,6 +249,13 @@ config:
     historyKeepLatest: null
     # -- KAIROS_ACTIVITY_RETENTION_DAYS — activity_log window (default 365).
     activityRetentionDays: null
+    # -- KAIROS_NOTIFICATIONS_READ_DAYS — days a read notification stays
+    # (server default 30; 0 keeps them). Emitted when not null, also for 0.
+    notificationsReadDays: null
+    # -- KAIROS_CODE_INDEX_POOL_DAYS — days a code-index summary that no
+    # stored index uses stays in the pool (server default 30; 0 keeps them).
+    # Emitted when not null, also for 0.
+    codeIndexPoolDays: null
     # -- KAIROS_ARCHIVE_TARGET — NDJSON offload target: a filesystem path or an
     # s3://… URL. Empty means no target (archive mode then prunes nothing).
     archiveTarget: ""

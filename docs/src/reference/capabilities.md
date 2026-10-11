@@ -128,6 +128,42 @@ check rather than by a stored row:
   team, so `manage_adrs` on it needs a grant. The MCP tools `whoami` and
   `my_boards` show the capabilities that each team board gives.
 
+## `manage_structure`
+
+`manage_structure` is the structure of the organization: teams, boards and
+grants. It is the work of an organization admin on that structure, and no
+more. An organization admin grants it to a person or to a service account, at
+one of two scopes.
+
+| Scope | Authorises |
+|---|---|
+| The organization | Create, change and delete teams. Add and remove team members. Create boards, and set a code sequence. On each board: `configure_boards` and `administer_members`. Add, change and delete repositories. |
+| One board | On that board only: `configure_boards` and `administer_members`. `configure_boards` includes the delete of the board when it is empty. No new team, no new board, no other board. |
+
+It does not authorise these. They stay with the organization admin:
+
+- accounts: organization members, local accounts and service accounts,
+- API keys and SCIM tokens,
+- the grants of `manage_structure`,
+- the deployment admins and the tenant,
+- templates, metadata definitions and delivery streams,
+- the connections to a git forge and the read tokens of a repository.
+
+The grants are not rows of `board_member_capabilities`. They are rows of
+`structure_grants`, and the check reads them by name. Thus no glob covers
+`manage_structure`: a holder of `*` or of `manage_*` on a board does not hold
+it.
+
+Grant it with `POST /api/structure-grants`, `kairos grants add`, or the MCP
+tool `grant_capability`. Revoke it with `DELETE /api/structure-grants/{id}` or
+`kairos grants remove`. `whoami` shows the grants of the caller under
+`structure`.
+
+A refusal names the capability and the scope. A refusal on the structure of
+the organization has `details.scope` = `organization`. A refusal of
+`configure_boards` or `administer_members` has `details.or_capability` =
+`manage_structure`.
+
 ## How a board is resolved
 
 Authorisation needs a board, and not every item carries one directly.

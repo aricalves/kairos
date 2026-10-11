@@ -147,20 +147,29 @@ migrated is not a supported configuration, and `/readyz` will not catch it.
 When you roll an image back, roll the database back to a dump taken before the
 upgrade.
 
-## Size for unbounded growth
+## Size for the growth
 
-**Nothing prunes anything in 0.10.0.** The five retention variables are inert —
-setting `KAIROS_RETENTION_MODE`, `KAIROS_ARCHIVE_TARGET` or any of the windows
-has no effect, and configuring an archive target will not reclaim a byte
-([Configuration → Retention: recognised but
-inert](../reference/configuration.md#retention--recognised-but-inert)).
-Archiving work does not reclaim anything either — it is a soft delete
-([Archiving](../explanation/archiving.md)).
+The server runs a retention pass at startup and then each 24 hours
+([Configuration → Retention](../reference/configuration.md#retention)). With
+the defaults (`KAIROS_RETENTION_MODE=archive` and no `KAIROS_ARCHIVE_TARGET`),
+the pass removes no history and no activity. It logs a warning, because the
+server does not remove a row that it has not copied to an archive. It deletes
+only the expired password sessions.
 
-So plan for it: `item_history` grows by a row per edit and `activity_log` by a
-row per write, forever, and your dumps grow with them. Size the volume and the
-backup window against the deployment's lifetime to date, and alarm on the growth
-rate rather than on a threshold.
+To make the database smaller, set one of these:
+
+- `KAIROS_ARCHIVE_TARGET` to a directory. The pass writes the old rows to NDJSON
+  files in that directory, and then removes them from the database. Back up
+  that directory too: the rows are not in the dumps after the pass.
+- `KAIROS_RETENTION_MODE=discard`. The pass removes the old rows and keeps no
+  copy.
+
+The pass does not remove items. Archiving work does not make the database
+smaller either, because it is a soft delete
+([Archiving](../explanation/archiving.md)). So `item_history` grows by a row
+for each edit in the hot window (90 days by default), and items grow with the
+work. Size the volume and the backup window for that growth, and alarm on the
+growth rate, not on a threshold.
 
 ## Related
 

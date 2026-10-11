@@ -110,6 +110,33 @@ pub fn status_dto(status: Option<&CredentialStatus>) -> dto::RepositoryCredentia
     }
 }
 
+/// The write-back of a repository as a read shows it (KAIROS-T-0386).
+pub fn write_back_dto(
+    status: Option<&kairos_db::writeback::WriteTokenStatus>,
+) -> dto::RepositoryWriteBack {
+    match status {
+        None => dto::RepositoryWriteBack::default(),
+        Some(status) => dto::RepositoryWriteBack {
+            enabled: true,
+            set_by: Some(status.set_by.to_string()),
+            set_by_name: status.set_by_name.clone(),
+            set_at: Some(status.set_at.to_rfc3339()),
+            last_write_at: status.last_write_at.map(|at| at.to_rfc3339()),
+            last_write_ok: status.last_write_ok,
+            last_write_error: status.last_write_error.clone(),
+        },
+    }
+}
+
+/// The write-back of one repository.
+pub fn write_back_of(
+    conn: &mut PgConnection,
+    repository_id: Uuid,
+) -> Result<dto::RepositoryWriteBack, diesel::result::Error> {
+    let statuses = kairos_db::writeback::token_statuses(conn, &[repository_id])?;
+    Ok(write_back_dto(statuses.get(&repository_id)))
+}
+
 /// The status of the credential of one repository.
 pub fn status_of(
     conn: &mut PgConnection,

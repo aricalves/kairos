@@ -654,18 +654,18 @@ pub async fn require_auth(
         // to the password endpoint, where the account being guessed belongs to one
         // person.
         let source = crate::rate_limit::client_addr(&req, state.config.trusted_proxy);
-        let attempt = crate::rate_limit::Attempt::begin(&state, source, None);
-        if let Some(refused) = attempt.refuse_if_locked_out() {
+        let mut attempt = crate::rate_limit::Attempt::begin(&state, source, None);
+        if let Some(refused) = attempt.refuse_if_locked_out().await {
             return Ok(refused);
         }
         let (auth, slug) =
             match crate::service_accounts::auth::authenticate_api_key(&state, &token).await {
                 Ok(resolved) => {
-                    attempt.succeeded();
+                    attempt.succeeded().await;
                     resolved
                 }
                 Err(e) => {
-                    attempt.failed();
+                    attempt.failed().await;
                     return Err(e);
                 }
             };

@@ -9,10 +9,12 @@ use std::path::{Path, PathBuf};
 
 use clap::Args;
 
+use kairos_client::EntityKind;
 use kairos_client::types::{
-    Adr, CreateAdrRequest, CreateDocumentRequest, CreateInitiativeRequest, CreateStrategyRequest,
-    CreateTaskRequest, DeleteResponse, Document, ImpactListQuery, Initiative, ListEnvelope,
-    ListQuery, Pagination, RestoreResponse, Strategy, Task, UpdateContentRequest,
+    Adr, AppendNoteResponse, CreateAdrRequest, CreateDocumentRequest, CreateInitiativeRequest,
+    CreateStrategyRequest, CreateTaskRequest, DeleteResponse, Document, ImpactListQuery,
+    Initiative, ListEnvelope, ListQuery, Pagination, RestoreResponse, Strategy, Task,
+    UpdateContentRequest,
 };
 use kairos_client::types_repositories::Impact;
 
@@ -145,6 +147,19 @@ pub struct EditArgs {
     /// (a stale value is rejected with 409 CONFLICT)
     #[arg(long)]
     pub version: Option<i32>,
+    #[command(flatten)]
+    pub common: Common,
+}
+
+/// Arguments of `note` (KAIROS-T-0367): append a note at the end of the
+/// item's content, with a heading that has the date and your name.
+#[derive(Args, Debug)]
+pub struct NoteArgs {
+    /// The item's short code (e.g. ACME-T-0001)
+    pub short_code: String,
+    /// The markdown text of the note
+    #[arg(long)]
+    pub text: String,
     #[command(flatten)]
     pub common: Common,
 }
@@ -848,6 +863,18 @@ fn document_moved_line(short_code: &str, before: &str, after: &str) -> String {
     }
 }
 
+/// `note` output (KAIROS-T-0367): the new version.
+pub fn emit_noted(common: &Common, response: &AppendNoteResponse) -> Result<(), CliError> {
+    if common.json {
+        return print_json(response);
+    }
+    println!(
+        "Kairos appended a note to {} (version {}).",
+        response.short_code, response.version
+    );
+    Ok(())
+}
+
 /// `restore` output: what came back, and what deliberately did not.
 pub fn emit_restored(common: &Common, response: &RestoreResponse) -> Result<(), CliError> {
     if common.json {
@@ -1143,7 +1170,8 @@ macro_rules! entity_family_cli {
     (
         $enum_name:ident, $noun:literal, $create_args:ty, list_args = $list_args:ty,
         list = $list:ident, get = $get:ident, create = $create_fn:ident,
-        update = $update:ident, delete = $delete:ident, restore = $restore:ident
+        update = $update:ident, delete = $delete:ident, restore = $restore:ident,
+        kind = $kind:expr
         $(, transition($transition_variant:ident) = $transition_fn:ident)?
         $(, board_move($move_variant:ident) = $move_fn:ident)?
         $(, owner_move($owner_variant:ident) = $owner_fn:ident)?
@@ -1167,6 +1195,10 @@ macro_rules! entity_family_cli {
             #[command(about = concat!("Edit a ", $noun, "'s title and/or content ",
                                       "(version-checked; a concurrent edit gets 409)"))]
             Edit(EditArgs),
+            #[command(about = concat!("Append a note at the end of a ", $noun,
+                                      "'s content, under a heading with the date ",
+                                      "and your name (no version needed)"))]
+            Note(NoteArgs),
             $(
             #[command(about = concat!("Move a ", $noun, " to another board column ",
                                       "(an invalid move lists the allowed targets)"))]
@@ -1242,6 +1274,12 @@ macro_rules! entity_family_cli {
                             args.build_request(current.version, &current.content)?;
                         let item = client.$update(&args.short_code, &request).await?;
                         emit_edited(&args.common, &item)
+                    }
+                    Self::Note(args) => {
+                        let client = client(&args.common)?;
+                        let response =
+                            client.append_note($kind, &args.short_code, &args.text).await?;
+                        emit_noted(&args.common, &response)
                     }
                     $(
                     Self::$transition_variant(args) => {
@@ -1333,6 +1371,7 @@ entity_family_cli!(
     update = update_strategy,
     delete = delete_strategy,
     restore = restore_strategy,
+    kind = EntityKind::Strategy,
     transition(Transition) = transition_strategy
 );
 
@@ -1347,6 +1386,7 @@ entity_family_cli!(
     update = update_initiative,
     delete = delete_initiative,
     restore = restore_initiative,
+    kind = EntityKind::Initiative,
     transition(Transition) = transition_initiative
 );
 
@@ -1361,6 +1401,7 @@ entity_family_cli!(
     update = update_task,
     delete = delete_task,
     restore = restore_task,
+    kind = EntityKind::Task,
     transition(Transition) = transition_task,
     board_move(Move) = move_task_with,
     claims(HandOff = hand_off_task, Release = release_task),
@@ -1378,6 +1419,7 @@ entity_family_cli!(
     update = update_document,
     delete = delete_document,
     restore = restore_document,
+    kind = EntityKind::Document,
     owner_move(Move) = set_document_board_with
 );
 
@@ -1392,6 +1434,7 @@ entity_family_cli!(
     update = update_adr,
     delete = delete_adr,
     restore = restore_adr,
+    kind = EntityKind::Adr,
     transition(Transition) = transition_adr
 );
 

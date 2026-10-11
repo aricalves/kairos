@@ -53,7 +53,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Derive version from tag and check it matches Cargo.toml
         # Tag `v0.1.0` -> version `0.1.0`. Guard: the workspace version
@@ -113,7 +113,7 @@ jobs:
           (cd dist && shasum -a 256 "${archive}.tar.gz" | tee "${archive}.tar.gz.sha256")
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: kairos-${{ env.VERSION }}-${{ matrix.target }}
           path: |
@@ -132,14 +132,14 @@ jobs:
       # record that GitHub stored badly failed the download of everything
       # at 0.7.0.
       - name: Download the CLI tarballs
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: dist
           pattern: kairos-*
           merge-multiple: true
 
       - name: Create GitHub release and attach tarballs
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/*.tar.gz
@@ -203,7 +203,7 @@ jobs:
       packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Derive version from tag and check it matches Cargo.toml
         run: |
@@ -216,10 +216,10 @@ jobs:
           echo "VERSION=${version}" >> "$GITHUB_ENV"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -227,7 +227,7 @@ jobs:
 
       - name: Build and push by digest
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         env:
           # No build record artifact: nothing reads it, and a bad one
           # failed the release of 0.7.0.
@@ -245,6 +245,17 @@ jobs:
           cache-from: type=gha,scope=image-${{ matrix.variant }}-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=image-${{ matrix.variant }}-${{ matrix.arch }}
 
+      # KAIROS-T-0336: start the image that was just pushed, next to a
+      # Postgres, and check it: healthy, tini as PID 1, no zombie after a
+      # minute of healthchecks, and a clean stop on SIGTERM. A failure here
+      # stops the job before its digest goes to the manifest, so no tag gets
+      # the image.
+      - name: Smoke check the image
+        run: |
+          image="ghcr.io/colliery-io/kairos@${{ steps.build.outputs.digest }}"
+          docker pull "${image}"
+          scripts/image-smoke.sh "${image}"
+
       - name: Export the digest
         run: |
           mkdir -p "/tmp/digests/${{ matrix.variant }}"
@@ -252,7 +263,7 @@ jobs:
           touch "/tmp/digests/${{ matrix.variant }}/${digest#sha256:}"
 
       - name: Upload the digest
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: image-digest-${{ matrix.variant }}-${{ matrix.arch }}
           path: /tmp/digests/${{ matrix.variant }}/*
@@ -271,24 +282,24 @@ jobs:
       packages: write
     steps:
       - name: Download the digests of the full image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: /tmp/digests/full
           pattern: image-digest-full-*
           merge-multiple: true
 
       - name: Download the digests of the hosted image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: /tmp/digests/hosted
           pattern: image-digest-hosted-*
           merge-multiple: true
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -349,7 +360,7 @@ jobs:
       packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Check the chart's appVersion matches the tag
         # Same class of guard as the binary and image jobs. `appVersion` is
@@ -373,7 +384,7 @@ jobs:
           echo "CHART_VERSION=${chart_version}" >> "$GITHUB_ENV"
 
       - name: Set up Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
 
       - name: Lint the chart
         # The chart renders with required values missing reported as INFO,

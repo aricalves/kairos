@@ -5,7 +5,11 @@
 //! - `code_index_summaries`: one row for each summary key of a repository.
 //!   The same key always means the same input (COLLIERY-T-1851), so a key
 //!   that is there keeps its row, and a write of it changes nothing. A
-//!   vector that the row does not have is added.
+//!   vector that the row does not have is added. A build writes each
+//!   summary when the model makes it ([`add_made`], KAIROS-T-0378), so a
+//!   row can be there before an index uses it. `last_used_at` is the time
+//!   of the last stored index that uses the row; [`delete_unused`] removes
+//!   the rows that no index has used.
 //! - `code_indexes`: one row for each commit, with the structure as the
 //!   gzip of the SQLite index file with no summaries. A second write for a
 //!   commit replaces the row.
@@ -104,11 +108,15 @@ pub struct PutOutcome {
 }
 
 /// Write the structure of one commit and add the rows of `pool` that the
-/// pool of the repository does not have, in one transaction.
+/// pool of the repository does not have, in one transaction. Each row of
+/// the pool whose key is in `keys` (the summary keys that the structure
+/// uses) gets the time of this write as its `last_used_at`
+/// (KAIROS-T-0378).
 pub fn put(
     conn: &mut PgConnection,
     index: &NewCodeIndex,
     pool: &[PoolRow],
+    keys: &[String],
 ) -> QueryResult<PutOutcome> {
     conn.transaction(|conn| {
         let mut new_summaries = 0;
@@ -144,6 +152,15 @@ pub fn put(
                 .set(code_index_summaries::vector.eq(vector))
                 .execute(conn)?;
             }
+        }
+        for chunk in keys.chunks(INSERT_CHUNK) {
+            diesel::update(
+                code_index_summaries::table
+                    .filter(code_index_summaries::repository_id.eq(index.repository_id))
+                    .filter(code_index_summaries::key.eq_any(chunk)),
+            )
+            .set(code_index_summaries::last_used_at.eq(diesel::dsl::now))
+            .execute(conn)?;
         }
         let existed = code_indexes::table
             .filter(code_indexes::repository_id.eq(index.repository_id))
@@ -182,6 +199,61 @@ pub fn put(
             new_summaries,
         })
     })
+}
+
+/// One summary that a build made (KAIROS-T-0378): the pool gets it at once,
+/// before an index uses it, with no vector.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MadeSummary {
+    pub key: String,
+    pub level: String,
+    pub summary: String,
+    pub model: String,
+}
+
+/// Add the summaries that a build of `repository_id` made to its pool, at
+/// the time they are made (KAIROS-T-0378). A key that is there keeps its
+/// row. The new rows have no `last_used_at`: no stored index uses them
+/// yet. So a build that stops keeps its summaries in Postgres, and the
+/// next build of the repository, on any server, links them. Returns the
+/// rows added.
+pub fn add_made(
+    conn: &mut PgConnection,
+    repository_id: Uuid,
+    made: &[MadeSummary],
+) -> QueryResult<usize> {
+    let mut added = 0;
+    for chunk in made.chunks(INSERT_CHUNK) {
+        let rows: Vec<NewPoolRow<'_>> = chunk
+            .iter()
+            .map(|m| NewPoolRow {
+                repository_id,
+                key: &m.key,
+                level: &m.level,
+                summary: &m.summary,
+                vector: None,
+                model: &m.model,
+            })
+            .collect();
+        added += diesel::insert_into(code_index_summaries::table)
+            .values(&rows)
+            .on_conflict_do_nothing()
+            .execute(conn)?;
+    }
+    Ok(added)
+}
+
+/// Delete the rows of the pool that no stored index has used and that were
+/// made before `before` (KAIROS-T-0378): the summaries of builds that did
+/// not end, or of code that went away before the build ended. A row that a
+/// stored index used stays. Returns the count.
+pub fn delete_unused(conn: &mut PgConnection, before: DateTime<Utc>) -> QueryResult<usize> {
+    diesel::delete(
+        code_index_summaries::table
+            .filter(code_index_summaries::last_used_at.is_null())
+            .filter(code_index_summaries::created_at.lt(before)),
+    )
+    .execute(conn)
 }
 
 /// The structure of one commit (the gzip of the SQLite file), if the
@@ -295,6 +367,24 @@ pub fn vector_model(conn: &mut PgConnection, repository_id: Uuid) -> QueryResult
         .first::<Option<String>>(conn)
         .optional()
         .map(Option::flatten)
+}
+
+/// The time of the newest index write of each repository that has an
+/// index (KAIROS-T-0334): the newest `updated_at` of its indexes. The
+/// update lane serves the repository with the oldest time first.
+pub fn newest_writes(conn: &mut PgConnection) -> QueryResult<Vec<(Uuid, DateTime<Utc>)>> {
+    code_indexes::table
+        .group_by(code_indexes::repository_id)
+        .select((
+            code_indexes::repository_id,
+            diesel::dsl::max(code_indexes::updated_at),
+        ))
+        .load::<(Uuid, Option<DateTime<Utc>>)>(conn)
+        .map(|rows| {
+            rows.into_iter()
+                .filter_map(|(id, at)| at.map(|at| (id, at)))
+                .collect()
+        })
 }
 
 /// The ids of the live repositories that have one index or more: the

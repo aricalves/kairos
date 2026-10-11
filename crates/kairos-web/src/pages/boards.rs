@@ -22,6 +22,7 @@
 //!   attach to strategies/initiatives/tasks only).
 
 pub(crate) mod data;
+mod flow;
 pub(crate) mod live;
 
 use aurora_dark::components::{
@@ -791,10 +792,26 @@ fn band_models(
     bands
 }
 
+/// The tiles of one band, in the order of its groups (KAIROS-T-0319). The
+/// band renders as one grid. Each tile keeps the heading of its group (the
+/// team and the href of the team page), so each tile names its team. Pure,
+/// host-tested.
+fn band_tiles(groups: Vec<BoardGroup>) -> Vec<(Option<(String, String)>, data::Board)> {
+    groups
+        .into_iter()
+        .flat_map(|(heading, boards)| {
+            boards
+                .into_iter()
+                .map(move |board| (heading.clone(), board))
+        })
+        .collect()
+}
+
 /// `/boards` — boards in flight-level bands (strategy above initiatives
-/// above delivery, KAIROS-T-0069/T-0063), the delivery band grouped by
-/// owning team with headings linking into `/teams/:slug`, and the boards
-/// of the organization under "Organization" (COLLIERY-T-0230).
+/// above delivery, KAIROS-T-0069/T-0063). Each band is one grid of tiles
+/// that wraps across the page width (KAIROS-T-0319). Each tile names the
+/// team of its board with a link into `/teams/:slug`, or "Organization"
+/// for a board of the organization (COLLIERY-T-0230).
 #[component]
 pub fn BoardsPage() -> impl IntoView {
     let auth = use_auth();
@@ -831,9 +848,13 @@ pub fn BoardsPage() -> impl IntoView {
                                     <Group gap="sm">
                                         <Pill color=level_color(&level)>{label}</Pill>
                                     </Group>
-                                    <Stack gap="sm">
-                                        {groups.into_iter().map(|(heading, group_boards)| view! {
-                                            {heading.map(|(team_name, team_href)| {
+                                    // KAIROS-T-0319: one grid for the band, so it
+                                    // wraps across the page width. Each tile names
+                                    // the team of its board (a link to the team).
+                                    <div class="kairos-board-grid">
+                                        {band_tiles(groups).into_iter().map(|(team, board)| {
+                                            let href = format!("/boards/{}", board.slug);
+                                            let team_view = team.map(|(team_name, team_href)| {
                                                 if team_href.is_empty() {
                                                     view! {
                                                         <Text dimmed=true size="xs">{team_name}</Text>
@@ -843,32 +864,32 @@ pub fn BoardsPage() -> impl IntoView {
                                                         <Anchor href=team_href>{team_name}</Anchor>
                                                     }.into_any()
                                                 }
-                                            })}
-                                            <div class="kairos-board-grid">
-                                                {group_boards.into_iter().map(|board| {
-                                                    let href = format!("/boards/{}", board.slug);
-                                                    view! {
-                                                        // COLLIERY-T-1836: an Aurora `Card`; the
-                                                        // wrapper keeps the `kairos-board-tile`
-                                                        // hook of the e2e/UAT specs.
-                                                        <div class="kairos-board-tile">
-                                                            <Card href=href>
-                                                                <Stack gap="xs">
-                                                                    <Group justify="between">
-                                                                        <Text bright=true bold=true>{board.name.clone()}</Text>
-                                                                        <Pill color=level_color(&board.board_level)>
-                                                                            {board.board_level.clone()}
-                                                                        </Pill>
-                                                                    </Group>
-                                                                    <Text mono=true dimmed=true size="xs">{board.slug.clone()}</Text>
-                                                                </Stack>
-                                                            </Card>
-                                                        </div>
-                                                    }
-                                                }).collect_view()}
-                                            </div>
+                                            });
+                                            view! {
+                                                // COLLIERY-T-1836: an Aurora `Card`; the
+                                                // wrapper keeps the `kairos-board-tile`
+                                                // hook of the e2e/UAT specs. The team is
+                                                // under the card: a link in the link of
+                                                // the card is not valid HTML.
+                                                <div class="kairos-board-tile">
+                                                    <Card href=href>
+                                                        <Stack gap="xs">
+                                                            <Group justify="between">
+                                                                <Text bright=true bold=true>{board.name.clone()}</Text>
+                                                                <Pill color=level_color(&board.board_level)>
+                                                                    {board.board_level.clone()}
+                                                                </Pill>
+                                                            </Group>
+                                                            <Text mono=true dimmed=true size="xs">{board.slug.clone()}</Text>
+                                                        </Stack>
+                                                    </Card>
+                                                    {team_view.map(|v| view! {
+                                                        <div class="kairos-board-tile__team">{v}</div>
+                                                    })}
+                                                </div>
+                                            }
                                         }).collect_view()}
-                                    </Stack>
+                                    </div>
                                 </section>
                             }
                         }).collect_view()}
@@ -921,6 +942,9 @@ const CANCELLED_CHIP: &str = "Cancelled";
 struct ColumnModel {
     id: String,
     name: String,
+    /// The WIP chip and whether the column is over its limit
+    /// (KAIROS-T-0371); `None` for a column with no limit.
+    wip: Option<(String, bool)>,
     targets: Vec<(String, String)>,
     cards: Vec<CardModel>,
     key: String,
@@ -1053,10 +1077,16 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                     None,
                 )
             }));
+            let wip = data::wip_label(group.item_count, group.column.wip_limit)
+                .map(|label| (label, group.over_wip_limit));
             ColumnModel {
                 id: group.column.id.clone(),
                 name: group.column.name.clone(),
-                key: format!("{}|{}|{:?}", group.column.id, group.column.name, targets),
+                key: format!(
+                    "{}|{}|{:?}|{:?}",
+                    group.column.id, group.column.name, targets, wip
+                ),
+                wip,
                 targets,
                 cards,
             }
@@ -1307,6 +1337,9 @@ fn BoardBody(
     let create_open = RwSignal::new(false);
     let doc_open = RwSignal::new(false);
     let archive_open = RwSignal::new(false);
+    // KAIROS-T-0372: the flow panel, open or not.
+    let flow_open = RwSignal::new(false);
+    let flow_board = StoredValue::new(board.slug.clone());
     // KAIROS-T-0363: the tasks that "Archive completed" takes.
     let completed = Memo::new(move |_| {
         model.with(|m| {
@@ -1555,6 +1588,11 @@ fn BoardBody(
                             "New document"
                         </Button>
                     })}
+                    // KAIROS-T-0372: the flow metrics, for each reader.
+                    <Button variant="default" size="xs"
+                        on_click=Callback::new(move |_| flow_open.update(|open| *open = !*open))>
+                        {move || if flow_open.get() { "Hide flow" } else { "Flow" }}
+                    </Button>
                     // KAIROS-T-0363: only for a person who may archive each
                     // task of the board (`manage_tasks`).
                     {move || (is_delivery && powers.get().create).then(|| view! {
@@ -1568,6 +1606,9 @@ fn BoardBody(
             }.into_any());
             view! { <PageHeader title sub right=header_right/> }
         }}
+        {move || flow_open.get().then(|| view! {
+            <flow::FlowPanel board=flow_board.get_value()/>
+        })}
         {move || {
             // COLLIERY-T-0261: the board has 2000 cards at most. A board
             // with more cards says so, with the numbers.
@@ -2080,7 +2121,7 @@ fn LaneColumns(
                 each=move || columns.get()
                 key=|column| column.key.clone()
                 children=move |column: ColumnModel| {
-                    let ColumnModel { id, name, targets, key: _, cards: _ } = column;
+                    let ColumnModel { id, name, wip, targets, key: _, cards: _ } = column;
                     // This column's live card list — this lane's slice of
                     // it: the column node itself persists across
                     // refetches; only its cards diff.
@@ -2147,6 +2188,24 @@ fn LaneColumns(
                                 <Group gap="xs">
                                     <Text bright=true bold=true size="sm">{name}</Text>
                                     <Text dimmed=true size="xs">{move || cards.with(Vec::len).to_string()}</Text>
+                                    // KAIROS-T-0371: the live count against
+                                    // the WIP limit, marked when over it.
+                                    {wip.map(|(label, over)| {
+                                        let title = if over {
+                                            "The column holds more items than its WIP limit."
+                                        } else {
+                                            "The live items of the column and its WIP limit."
+                                        };
+                                        view! {
+                                            <span class="kairos-board__wip"
+                                                class:kairos-board__wip--over=over
+                                                data-testid="wip" title=title>
+                                                <Pill color=if over { token::BAD } else { token::MUTED }>
+                                                    {if over { format!("{label} over") } else { label }}
+                                                </Pill>
+                                            </span>
+                                        }
+                                    })}
                                 </Group>
                             </header>
                             // KAIROS-T-0328: the cards of a column scroll on
@@ -2870,6 +2929,42 @@ mod tests {
             Some("/teams/platform")
         );
         assert_eq!(platform_group.1[0].slug, "platform-delivery");
+    }
+
+    /// KAIROS-T-0319: a band is one grid. Its tiles keep the order of the
+    /// groups, and each tile has the team of its group and its link.
+    #[test]
+    fn band_tiles_puts_the_boards_of_a_band_in_one_list_with_their_team() {
+        let boards = vec![
+            board("web-delivery", "delivery", Some("t2")),
+            board("platform-delivery", "delivery", Some("t1")),
+            board("orphan-delivery", "delivery", None),
+        ];
+        let teams = vec![team("t1", "platform"), team("t2", "web")];
+        let mut bands = band_models(boards, &teams);
+        let tiles = band_tiles(bands.remove(0).groups);
+        let got: Vec<(&str, Option<&str>, Option<&str>)> = tiles
+            .iter()
+            .map(|(team, board)| {
+                (
+                    board.slug.as_str(),
+                    team.as_ref().map(|(name, _)| name.as_str()),
+                    team.as_ref().map(|(_, href)| href.as_str()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (
+                    "platform-delivery",
+                    Some("platform"),
+                    Some("/teams/platform")
+                ),
+                ("web-delivery", Some("web"), Some("/teams/web")),
+                ("orphan-delivery", Some("Needs a team"), Some("")),
+            ]
+        );
     }
 
     /// COLLIERY-T-0230: the board list has no group "No team", for any

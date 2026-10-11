@@ -37,6 +37,19 @@ const REPOSITORIES_VERSION: &str = "20260922000000";
 const CREDENTIALS_DOWN_SQL: &str =
     include_str!("../migrations/tenant/2026-10-03-000001_repository_credentials/down.sql");
 const CREDENTIALS_VERSION: &str = "20261003000001";
+/// Later migrations whose tables have a foreign key to `repositories`
+/// (KAIROS-T-0385: `dispatch_rules`; KAIROS-T-0386: the GitHub write-back),
+/// newest first. Reverted and applied again as the credentials above.
+const LATER_DEPENDENTS: &[(&str, &str)] = &[
+    (
+        include_str!("../migrations/tenant/2026-10-12-000004_github_write_back/down.sql"),
+        "20261012000004",
+    ),
+    (
+        include_str!("../migrations/tenant/2026-10-12-000003_dispatch_rules/down.sql"),
+        "20261012000003",
+    ),
+];
 /// A later migration that adds a column to `repositories` (KAIROS-T-0318).
 /// The down.sql of `repositories` drops the table with the column, so this
 /// test forgets the migration too, and `migrate_all_tenants` applies it
@@ -87,6 +100,14 @@ fn revert_repositories_migration(conn: &mut PgConnection) {
     sql_query("SET search_path TO org_acme, public")
         .execute(conn)
         .expect("pinning search_path");
+    for (down, version) in LATER_DEPENDENTS {
+        conn.batch_execute(down)
+            .expect("running the down.sql of a later dependent");
+        sql_query("DELETE FROM org_acme.__diesel_schema_migrations WHERE version = $1")
+            .bind::<Text, _>(*version)
+            .execute(conn)
+            .expect("forgetting a later dependent");
+    }
     conn.batch_execute(CREDENTIALS_DOWN_SQL)
         .expect("running the down.sql of repository_credentials");
     sql_query("DELETE FROM org_acme.__diesel_schema_migrations WHERE version = $1")
@@ -242,8 +263,8 @@ fn repositories_migration_on_populated_tables() {
     assert_eq!(outcomes.len(), 1);
     assert_eq!(
         outcomes[0].applied.len(),
-        3,
-        "exactly the repositories migration, and the 2 migrations after it that use it"
+        3 + LATER_DEPENDENTS.len(),
+        "exactly the repositories migration, and the migrations after it that use it"
     );
 
     let mut slugs = texts(
@@ -339,8 +360,8 @@ fn repositories_migration_on_populated_tables() {
 
     // ---- 4. up re-applies cleanly (re-runnability) -------------------------
     let outcomes = migrate_all_tenants(&mut conn).expect("re-applying up after down");
-    // The repositories migration, and repository_credentials after it.
-    assert_eq!(outcomes[0].applied.len(), 3);
+    // The repositories migration, and the later migrations that use it.
+    assert_eq!(outcomes[0].applied.len(), 3 + LATER_DEPENDENTS.len());
     assert_eq!(
         count(
             &mut conn,

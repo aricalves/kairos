@@ -166,8 +166,8 @@ pub async fn login(State(state): State<AppState>, req: Request) -> Result<Respon
     // Throttled by BOTH the account being attempted and the address attempting it
     // (KAIROS-T-0202). This endpoint is the reason that task exists: a password is
     // guessable in a way that an API key is not.
-    let attempt = Attempt::begin(&state, source, Some(email.clone()));
-    if let Some(refused) = attempt.refuse_if_locked_out() {
+    let mut attempt = Attempt::begin(&state, source, Some(email.clone()));
+    if let Some(refused) = attempt.refuse_if_locked_out().await {
         return Ok(refused);
     }
 
@@ -216,7 +216,7 @@ pub async fn login(State(state): State<AppState>, req: Request) -> Result<Respon
 
     match outcome {
         Ok(response) => {
-            attempt.succeeded();
+            attempt.succeeded().await;
             Ok(session_response(&state, response))
         }
         Err(e) => {
@@ -224,7 +224,7 @@ pub async fn login(State(state): State<AppState>, req: Request) -> Result<Respon
             // database that is down is not a failed guess, and counting it would
             // turn an outage into a lockout on top of the outage.
             if e.status == StatusCode::UNAUTHORIZED {
-                attempt.failed();
+                attempt.failed().await;
             }
             Err(e)
         }

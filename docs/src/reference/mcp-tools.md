@@ -1,15 +1,15 @@
 # MCP tools
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-thirty-one tools. A drift gate in the test suite
-asserts that `tools/list` returns these thirty-one and no others. The same
+forty-four tools. A drift gate in the test suite
+asserts that `tools/list` returns these forty-four and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
 is not a promise for later releases. A later release can add a tool or an
 argument.
 
-This page describes Kairos 0.10.0. Argument names, types and defaults are those
+This page describes Kairos 0.11.0. Argument names, types and defaults are those
 of the JSON schema the server sends in `tools/list`.
 
 ## Conventions
@@ -26,6 +26,7 @@ These hold for every tool.
 | Listing weight | Listings are compact: short code, title and key fields. Full markdown content arrives only from `get_item` and from `get_history` with a `version`. |
 | Errors | A refusal comes back as an MCP tool error whose text is `CODE: message`, the code being the same stable one as the REST API's error envelope. Where that code has structured `details`, a second line follows: `details: ` and the JSON object. See [Errors](errors.md) for what each code's `details` carries. |
 | Audit | Writes are recorded in the activity log by the same code path as the REST API. |
+| Notifications | While the person of the key has unread [notifications](#your-notifications), each answer (not a refusal) ends with a block: the 5 newest, then `N more: call get_events` when there are more. The block stops when the person marks them read. `get_events` itself has no block, because it lists them. A service account gets no notifications. |
 | Claims | A task in Active has a [claim](glossary.md#claim): the person who works on it. A write to a task that a different person has the claim on succeeds and is recorded. The text of the tool then ends with a line: `Warning: Alice (agent) has the claim on ACME-T-0012 (since 2026-10-09T10:00:00Z). Your change is recorded.` A write by the person who has the claim, also with the agent key of the person, gets no warning. |
 
 ### Refusal codes
@@ -36,7 +37,7 @@ Codes an agent can receive, and what each means.
 |---|---|
 | `NOT_FOUND` | A short code, board or repository named as the subject of the call does not exist; an `unlink_items` edge does not exist; or a `search` `traverse.from` does not resolve. On a write tool it also means the item exists but is archived: writes resolve live items only, and the message reads `no live item with short code …`. |
 | `VALIDATION` | An argument is malformed, an enum value is outside its vocabulary, an argument does not apply to the item type, or something named as a *filter or reference* — a team, a repository filter, a parent, a metadata definition, a column — does not exist. A reference that does not resolve is `VALIDATION`; the call's own subject not existing is `NOT_FOUND`. **One exception:** `search`'s `traverse.from` is a reference and still answers `NOT_FOUND`, because a traversal's root is the subject of that traversal. |
-| `FORBIDDEN` | The rule for the write refuses the principal. For an edit, the [edit rule](capabilities.md#the-edit-rule): the principal did not create the item and lacks `manage_<type>` on its board. For an edge, the [link rule](capabilities.md#who-can-write-relationships): the principal can edit neither end. For a move or a create: the principal lacks the board capability. The message names the capability. For `add_repository` and `update_repository`: the principal is not a member of the owner team and is not an organization admin. The message names the team. One case has a longer message: a move (`transition_item`, `move_item`) of a request that the caller created, while the request is in the entry column. That message says that the item is a request, that the team of the board moves it, that the caller can edit, link and archive it, and which capability the move needs. A `create_item` that sends `work_class: planned` to a board that the caller does not manage is also `FORBIDDEN`. |
+| `FORBIDDEN` | The rule for the write refuses the principal. For an edit, the [edit rule](capabilities.md#the-edit-rule): the principal did not create the item and lacks `manage_<type>` on its board. For an edge, the [link rule](capabilities.md#who-can-write-relationships): the principal can edit neither end. For a move or a create: the principal lacks the board capability. The message names the capability. For `add_repository` and `update_repository`: the principal is not a member of the owner team and is not an organization admin. The message names the team. For `create_team`, `create_board` and `add_team_member`: the principal is not an organization admin and has no `manage_structure` on the organization. The message names the capability and the scope. One case has a longer message: a move (`transition_item`, `move_item`) of a request that the caller created, while the request is in the entry column. That message says that the item is a request, that the team of the board moves it, that the caller can edit, link and archive it, and which capability the move needs. A `create_item` that sends `work_class: planned` to a board that the caller does not manage is also `FORBIDDEN`. |
 | `CONFLICT` | An optimistic-concurrency version mismatch. The refusal carries the current version and content. From `add_repository`: the directory has the slug already, or it has the repository already. |
 | `INVALID_TRANSITION` | The target column is not reachable from the item's current column in the board's transition graph. The refusal enumerates the allowed target columns. |
 | `ITEM_NOT_ON_BOARD` | The item has no board placement, so it cannot be transitioned or moved. |
@@ -88,7 +89,9 @@ Identity, organization role, teams, those teams' repositories, the boards where
 the caller holds write capabilities, and the capabilities every member holds
 implicitly. Each board of a team of the caller shows the capabilities that the
 team gives with no grant (`(team <slug>, no grant)`). On the ADR board of the
-team, these include `manage_adrs`.
+team, these include `manage_adrs`. The section `Structure (manage_structure)`
+gives the grants of [`manage_structure`](capabilities.md#manage_structure) of
+the caller: on the organization, or on one board.
 
 No arguments.
 
@@ -126,6 +129,13 @@ repository does not choose the board of a task.
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `team` | string | no | all teams | Narrow to one team's repositories. Slug or UUID. |
+| `limit` | integer | no | `50` | The number of repositories in the result. The maximum is 200. |
+| `offset` | integer | no | `0` | The number of repositories to skip. |
+
+A result can be a part of the directory. Then its first line gives the count
+of the repositories and the `offset` of the next part:
+`Repositories in the directory: 120. Shown: 50 (limit 50, offset 0). Call
+again with offset 50 for the next part.`
 
 Refuses: `VALIDATION` for an unknown `team` — it is a filter value, not a
 path.
@@ -142,6 +152,11 @@ One repository in full. The output has these parts:
 - `read token`: `not set`, or who set the read token of the builder of the
   code index, when, and the result of the last check. No tool gives or sets
   the token.
+- `write-back`: `off (no write token)`, or `on` with who set the write token,
+  when, and the result of the last write. With the token, Kairos writes a
+  comment and the commit status `kairos` on each GitHub pull request that
+  links to an item. No tool gives or sets the token. See
+  [Turn on GitHub write-back](../how-to/turn-on-github-write-back.md).
 - the team's description of how to work in the repository
 - the documents and the ADRs that impact the repository
 - the in-flight branches and pull requests, each with its work item
@@ -314,6 +329,7 @@ The items on a board, grouped by column: short code, type and title.
 | `offset` | integer | no | `0` | The number of items to skip. |
 | `team` | string | no | all | Narrow the strategies and the initiatives to those of this team, from tasks or set by hand. Slug or UUID. Tasks and ADRs do not change. Do not send with `no_team`. |
 | `no_team` | boolean | no | `false` | Narrow the strategies and the initiatives to those with no team. Do not send with `team`. |
+| `details` | boolean | no | `false` | Add to each card the date of its last change and its metadata values. See below. |
 
 The result has 200 items at most by default. The filters (`column`,
 `repository`, `team`, `no_team`, `include_deleted`) apply before `limit` and
@@ -341,6 +357,24 @@ A task with a claim carries `[claimed by Alice]`, or `[claimed by Alice
 
 A [cancelled](glossary.md#cancel) task carries `[cancelled]`.
 
+A column with a WIP limit shows its live count against the limit after its
+name: `## Active (2) [WIP 2/3]`. A column with more live items than its limit
+shows `[WIP 4/3, over the limit]`. The count is of the whole column, not of the
+result. Kairos does not refuse a move into a column over its limit. The answer
+of `transition_item` or `move_item` ends with a warning line, for example
+`Warning: the column Active has 4 items, over its WIP limit of 3. Your move of
+ACME-T-0012 is recorded.`
+
+With `details: true`, each card ends with the date (UTC) of its last change
+and its metadata values, in slug order:
+
+```text
+- ACME-T-0012 [bug] Refunds lose the currency [claimed by Alice] {updated 2026-10-08; priority: high}
+```
+
+Use it to pick or triage work without a `get_item` for each card. Without
+`details`, the list stays compact.
+
 A card with dependencies that count carries `[blocked by N]`, `[blocks N]`, or
 both. A `blocks` edge does not count when the item at either end is in a done
 column. It does not count when the item at the other end has the `[archived]`
@@ -350,6 +384,44 @@ Refuses: `NOT_FOUND` for an unknown or archived board; `VALIDATION` for a
 `column` that is not on that board, and the refusal lists the board's columns,
 for an unknown `repository`, for an unknown `team`, and for `team` with
 `no_team`.
+
+### `board_flow`
+
+The flow metrics of a board for a range of days (UTC).
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `board` | string | yes | — | Slug or UUID. |
+| `from` | string | no | 89 days before `to` | The first day of the range, `YYYY-MM-DD`. |
+| `to` | string | no | today | The last day of the range, `YYYY-MM-DD`. |
+
+The result has 4 parts:
+
+- **Cycle time**: the days from the start to the done time of each done item
+  of the range. The count, the mean, the median and the 85th percentile, then
+  each item.
+- **Throughput per week**: the done items and the cancelled tasks of each week.
+  Weeks start on Monday.
+- **Work in progress**: each item that is not done and has a start, with its
+  age in days, oldest first.
+- **Cumulative flow**: the live items of each column at the end of each of the
+  last 14 days. `GET /api/boards/{id}/flow` gives each day of the range.
+
+The definitions:
+
+- The start of an item is its first entry into a start column. A start column
+  has the flag `claims` (the Active column of a delivery board). When the board
+  has no such column, the column with the name Active is the start column.
+- An item is done when it is in a done column now. Its done time is its last
+  entry into a done column.
+- A cancelled task counts apart. It is not in the done count, and it has no
+  cycle time.
+- Only the live items of the board count. The history names the columns by
+  their name at the time of the move. A column with a new name shows its old
+  name in the cumulative flow.
+
+Refuses: `NOT_FOUND` for an unknown board; `VALIDATION` for a date that is not
+`YYYY-MM-DD`, a `from` after `to`, or a range of more than 366 days.
 
 ### `get_item`
 
@@ -446,6 +518,40 @@ The list of an item that a move renamed has the section **Renames**. Each
 line has the old code, the new code, the time and who did the move:
 
 ```text
+### `list_metadata_definitions`
+
+The metadata definitions of the organization, by slug. For each one: the
+name, the type, the values of an enum in their order (the scale, for example
+the priorities from the first to the last), and the entity types that it
+applies to.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `entity_type` | string | no | all | Only the definitions that apply to this type: `strategy`, `initiative`, `task`, `document`, `adr`. |
+
+```text
+- `priority` Priority (enum) — values, in order: low, medium, high, critical — applies to: all types
+```
+
+Use the slugs in `set_metadata`, and in `search` (`filter.metadata`,
+`filter.metadata_missing`). REST: `GET /api/metadata-definitions`.
+
+Refuses: `VALIDATION` for an unknown `entity_type`.
+
+### `list_templates`
+
+The templates of the organization, by slug. For each one: the name, and the
+metadata that it puts on an item, with the default value and the required
+flag.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `slug` | string | no | all | Show this one template, with its full content. |
+
+REST: `GET /api/templates` and `GET /api/templates/{id}`.
+
+Refuses: `NOT_FOUND` for a `slug` that names no template.
+
 ## Renames
 - COLLIERY-T-0100 -> SKADI-T-0001 — 2026-10-03T18:20:00Z by Dylan
 ```
@@ -475,9 +581,11 @@ are compact and grouped by type.
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `entity_type` | array of string | no | all | `strategy`, `initiative`, `task`, `document`, `adr`. Must not be an empty array. |
-| `board_id` | UUID string | no | — | Items on this board. A document is not a card, so this filter gives no document. |
+| `board_id` | UUID string | no | — | Items on this board. A document is not a card, so this filter gives no document. Do not send with `board`. |
+| `board` | string | no | — | Items on this board, by slug or UUID. Do not send with `board_id`. |
 | `column_id` | UUID string | no | — | Items in this column. |
-| `team_id` | UUID string | no | — | Tasks of this team. |
+| `team_id` | UUID string | no | — | Tasks of this team. Do not send with `team`. |
+| `team` | string | no | — | Tasks of this team, by slug or UUID. Do not send with `team_id`. |
 | `repository` | string | no | — | The items of this repository: see below. Slug or UUID of a live repository. |
 | `task_type` | array of string | no | all | `task`, `bug`, `tech_debt`, `support`. Must not be an empty array. |
 | `work_class` | array of string | no | all | `planned`, `support`. Must not be an empty array. |
@@ -485,6 +593,9 @@ are compact and grouped by type.
 | `metadata` | object of string to string | no | — | Conditions keyed by metadata-definition slug. Values allow a trailing `*` glob. Keys must not be blank. |
 | `created_after` | RFC 3339 string | no | — | Items created strictly after. |
 | `created_before` | RFC 3339 string | no | — | Items created strictly before. Must be later than `created_after`. |
+| `updated_after` | RFC 3339 string | no | — | Items with a last change strictly after. |
+| `updated_before` | RFC 3339 string | no | — | Items with a last change strictly before. Must be later than `updated_after`. For the items with no change in 90 days, send the time 90 days ago. |
+| `metadata_missing` | array of string | no | — | Items with no value for each of these metadata-definition slugs. Must not be empty, and each slug must name a definition. |
 | `include_deleted` | boolean | no | `false` | Include archived items, marked `[archived]`. Composes with everything, `q` and `traverse` included, and counts on its own as a constraining filter. |
 
 `filter.repository` gives three types of item:
@@ -496,6 +607,14 @@ are compact and grouped by type.
 The filter gives no strategy and no initiative. With `team_id`, `task_type` or
 `work_class`, only tasks match. `entity_type` makes the result smaller, as for
 each filter.
+
+A triage pass reads the bugs with no priority and no change in 90 days with
+one call:
+
+```json
+{"filter": {"entity_type": ["task"], "task_type": ["bug"], "board": "platform-delivery",
+            "metadata_missing": ["priority"], "updated_before": "2026-07-13T00:00:00Z"}}
+```
 
 `traverse`:
 
@@ -518,16 +637,19 @@ repository, so `impacts` is not a value of `relationships`. Use
 | `order` | string | yes | `asc`, `desc`. |
 
 Refuses: `VALIDATION` for a blank `q`, an empty enum array, a blank metadata
-key, an inverted date range, a
+key, an inverted date range, an empty `metadata_missing` or a slug in it that
+names no definition, `board` with `board_id`, `team` with `team_id`, an
+unknown `board` or `team`, a
 missing `traverse.depth`, a `depth` of 0 or above 10, an empty
 `relationships`, a request with no query, no constraining filter and no
 traversal, or an unknown `filter.repository`. `NOT_FOUND` for a `traverse.from`
 that does not resolve — the one reference on this surface that answers
 `NOT_FOUND` rather than `VALIDATION`.
 
-Every request except one carrying `filter.repository` is validated before a
-database connection is taken; that one filter needs a connection to resolve the
-slug, so it is validated afterwards.
+Every request except one carrying `filter.repository`, `filter.board` or
+`filter.team` is validated before a database connection is taken. These
+filters need a connection to resolve the slug, so the server validates the
+request after it resolves them.
 
 ## Writing content
 
@@ -677,6 +799,41 @@ Refuses: `VALIDATION` for an empty `search`, for a `search` not found in the
 current content, and for a `search` matching more than once while
 `replace_all` is false — the refusal states the occurrence count. Otherwise as
 `update_item`, and the same edit rule applies.
+
+### `append_note`
+
+Appends a note at the end of the item's content, in one call. Send no
+version and no anchor text.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `short_code` | string | yes | — | The item's short code. |
+| `text` | string | yes | — | The markdown text of the note. Must not be empty. |
+
+The note gets a heading with the date (UTC) and the display name of the
+caller:
+
+```text
+## Note (2026-10-11, Robin)
+
+The text of the note.
+```
+
+The server locks the item, adds the note to the current content, and writes
+one new version. Two notes at the same time both stay: the server adds the
+second one after the first one. The result is one line:
+
+```text
+Appended a note to ACME-T-0012 (version 4).
+```
+
+The edit rule applies, as for `update_item`. REST: `POST
+/api/{entity_type}/{short_code}/notes`. CLI: `kairos <noun> note <SHORT_CODE>
+--text <TEXT>`.
+
+Refuses: `VALIDATION` for an empty `text`. `NOT_FOUND` for an unknown short
+code or an archived item. `FORBIDDEN` when the
+[edit rule](capabilities.md#the-edit-rule) refuses the caller.
 
 ### `set_metadata`
 
@@ -1278,6 +1435,282 @@ admins only. The creator of the task gets no right here.
 Refuses: `VALIDATION` when `confirm` is `false`; `NOT_FOUND` for an unknown
 short code; `FORBIDDEN` without `manage_tasks`.
 
+## The structure of the organization
+
+These four tools change the teams, the boards and the grants of the
+organization. An organization admin can use each tool. A principal with the
+capability [`manage_structure`](capabilities.md#manage_structure) can use them
+too, at the scope of the grant:
+
+| Grant of `manage_structure` | What the tools can do |
+|---|---|
+| On the organization | Each tool, on each team and each board. |
+| On one board | `grant_capability` on that board only. |
+| None | Nothing. Each tool refuses with `FORBIDDEN`. |
+
+Only an organization admin grants `manage_structure`. A holder of it cannot
+grant it. See [Run an admin agent](../how-to/run-an-admin-agent.md).
+
+Each tool calls the function of its REST route. The rule, the refusals and
+the activity rows are those of the route. The activity log names the
+principal of the call.
+
+### `create_team`
+
+Creates a team, its delivery board and its ADR board, in one transaction.
+The team and the delivery board are those of `POST /api/teams`. The ADR board
+is that of `POST /api/boards` with `board_level` `adr` and the team.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `name` | string | yes | — | The name of the team. |
+| `slug` | string | yes | — | The slug of the team. It must match `^[a-z][a-z0-9_-]{1,62}$`. The delivery board gets the slug `{slug}-delivery`. The ADR board gets `{slug}-adrs`. |
+| `code_prefix` | string | yes | — | The short-code prefix of the two boards, for example `OPS`. It must match `^[A-Z][A-Z0-9]{1,9}$`. It does not change later. |
+| `team_type` | string | no | `stream_aligned` | `stream_aligned`, `platform`, `enabling` or `complicated_subsystem`. |
+| `adr_board` | boolean | no | `true` | `false` makes no ADR board. |
+
+The new boards have no members. Use `add_team_member` and `grant_capability`.
+
+The result is two lines:
+
+```text
+Created team home-ops (Home operations, stream_aligned). Delivery board: home-ops-delivery (prefix OPS). ADR board: home-ops-adrs.
+The boards have no members. Use add_team_member and grant_capability.
+```
+
+Requires the organization admin role or `manage_structure` on the
+organization.
+
+Refuses: `VALIDATION` for a slug or a prefix that does not have the form, and
+for an unknown `team_type`. `CONFLICT` when a live team has the slug. `CONFLICT`
+when a live board has a slug of the new boards. `CONFLICT` when a live delivery
+board has the prefix. `FORBIDDEN` without the capability:
+
+```text
+FORBIDDEN: This action requires the capability "manage_structure" on the organization, or the organization admin role. A grant of "manage_structure" on one board does not give it. Ask an organization admin to do this, or to grant you "manage_structure" on the organization.
+details: {"board_id":null,"required_capability":"manage_structure","scope":"organization"}
+```
+
+When Kairos refuses one of the boards, it writes nothing.
+
+### `create_board`
+
+Creates one board, as `POST /api/boards` does. The board gets the default
+columns and transitions of its level.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `name` | string | yes | — | The name of the board. |
+| `slug` | string | yes | — | The slug of the board. It must match `^[a-z][a-z0-9_-]{1,62}$`. |
+| `board_level` | string | yes | — | `strategy`, `initiative`, `delivery` or `adr`. |
+| `code_prefix` | string | yes | — | The short-code prefix of the board. It must match `^[A-Z][A-Z0-9]{1,9}$`. The ADR board of a team takes the prefix of the team. |
+| `team` | string | no | none | The owner team. Slug or UUID. A delivery board must have a team, and the team must have no delivery board. A strategy or an initiative board must not have a team. An ADR board with a team is the ADR board of that team. |
+
+Requires the organization admin role or `manage_structure` on the
+organization. A grant on one board does not create a board.
+
+Refuses: the refusals of `POST /api/boards` (`VALIDATION`, `CONFLICT`,
+`TEAM_HAS_DELIVERY_BOARD`, `TEAM_HAS_ADR_BOARD`), and `FORBIDDEN` as for
+`create_team`.
+
+### `add_team_member`
+
+Adds a member of the organization to a team, as
+`POST /api/teams/{id}/members` does. A team member gets `manage_tasks`,
+`manage_documents` and `transition_items` on the boards of the team with no
+grant. On the ADR board of the team, the member also gets `manage_adrs`.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `team` | string | yes | — | The team. Slug or UUID. |
+| `user` | string | yes | — | A user id, an email, a user name, or the name of a service account. |
+
+Requires the organization admin role or `manage_structure` on the
+organization.
+
+Refuses: `VALIDATION` for an unknown team, and for a `user` that is not a
+member of the organization. `CONFLICT` when the user is a member of the team
+already. `FORBIDDEN` as for `create_team`.
+
+### `grant_capability`
+
+Grants one capability to a member of the organization.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `user` | string | yes | — | A user id, an email, a user name, or the name of a service account. |
+| `capability` | string | yes | — | A board capability or a glob of [the vocabulary](capabilities.md#the-grantable-vocabulary), or `manage_structure`. |
+| `board` | string | no | none | The board. Slug or UUID. A board capability needs it. For `manage_structure`, no `board` is a grant on the organization. |
+
+A board capability is a grant of `POST /api/boards/{id}/members`. It requires
+`administer_members` on the board, or `manage_structure` on the board or on
+the organization.
+
+`manage_structure` is a grant of `POST /api/structure-grants`. Only an
+organization admin can grant it.
+
+Refuses: `VALIDATION` for a capability outside the vocabulary, and for a board
+capability with no `board`. `VALIDATION` for a `user` that is not a member of
+the organization. `NOT_FOUND` for an unknown board. `CONFLICT` when the member has
+the grant already. `FORBIDDEN` without the capability on the board:
+
+```text
+FORBIDDEN: This action requires the capability "administer_members" on the board 0193a1c2-0000-7000-8000-000000000003, or the capability "manage_structure" on that board or on the organization. Ask an organization admin for one of them.
+details: {"board_id":"0193a1c2-0000-7000-8000-000000000003","or_capability":"manage_structure","required_capability":"administer_members"}
+```
+
+`FORBIDDEN` for `manage_structure` from a principal that is not an
+organization admin.
+
+## Your notifications
+
+A notification tells a person about an event of their work (KAIROS-T-0381):
+
+| Kind | You get it when |
+|---|---|
+| `hand_off` | A person or a service account gives you the claim of a task. |
+| `blocker_cleared` | An item that blocks a task that you have the claim on goes into a done column, or is archived. |
+| `cancelled` | A person cancels a task that you created. The text has the reason. |
+| `mention` | A person writes `@your_user_name` in a note or in the content of an item. A mention in code does not count. An update tells only the new mentions. |
+| `p0_bug` | A bug with the priority `critical` (or `p0`) lands on the board of your team: its priority changes to P0, or it moves to the board. |
+| `delivery_failing` | Kairos turns off a webhook target that you made, or a target of a board that you manage, after failed deliveries. See [Webhook deliveries](webhooks.md). |
+| `agent_key_revoked` | An organization admin revokes an agent key of yours. The text names the key and its prefix. |
+
+You get no notification for a change that you made. You can turn a kind off
+with `PUT /api/me/notification-settings` or on the Notifications page of the
+GUI.
+
+The block at the end of an answer:
+
+```text
+## Your notifications (7 unread)
+- 6f1a1f9e-... · 2026-10-12 09:15Z · hand_off · ACME-T-0012: Robin gave you the claim on ACME-T-0012: Fix the login
+- ...
+2 more: call get_events
+Mark them read with mark_events_read when you have acted on them.
+```
+
+### `get_events`
+
+Gives your notifications: each unread one first (newest first, 100 at most),
+then the 20 newest read ones. Each line has the id, the time, the kind, the
+item and the text. No arguments.
+
+REST: `GET /api/me/notifications`.
+
+### `mark_events_read`
+
+Marks your notifications read. Send `ids` or `all`, not both.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `ids` | array of strings | no | — | The ids of your notifications, as `get_events` gives them. |
+| `all` | boolean | no | — | `true`: each of your unread notifications. |
+
+The result is one line: `Marked 2 notification(s) read. You have 5 unread.`
+
+Refuses: `VALIDATION` when the call has neither `ids` nor `all: true`, or has
+both. `NOT_FOUND` when an id is not one of your notifications; the message
+names the id, and nothing changes. An id that is read already does not change.
+
+REST: `POST /api/me/notifications/read`.
+
+## Agent dispatch
+
+A board manager sets rules that send a task to an agent runner
+(KAIROS-T-0385). A task can enter the column of a rule and match its filter.
+Then Kairos sends one signed delivery to a webhook target. Kairos does not
+start a session itself: the runner does. See
+[Webhook deliveries](webhooks.md) for the request, the signature and the
+tries.
+
+The event is `task.entered_column`. Its `data` has these fields:
+
+| Field | Description |
+|---|---|
+| `code`, `title`, `task_type` | The task. |
+| `link` | The URL of the task in the GUI. |
+| `board` | `id`, `slug` and `name` of the board. |
+| `column` | `id` and `name` of the column. |
+| `repository` | `slug`, `full_name`, `forge` and `url` of the repository of the task, or `null`. |
+| `actor` | `id` and `name` of the person who moved the task. |
+| `rule_id` | The rule. |
+
+A task enters a column in 3 ways:
+
+- a transition;
+- a move to the board, into its entry column;
+- a cancel, into the done column.
+
+### `list_dispatch_rules`
+
+Gives the rules of a board, the webhook targets of the board, and the 20
+newest deliveries of the log. A person who belongs to the board can read
+them:
+
+- an organization admin;
+- a person with a grant on the board;
+- a member of the team of the board.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `board` | string | yes | — | Slug or UUID. |
+
+A person who cannot configure the board gets the URL of a target with no
+query.
+
+Refuses: `NOT_FOUND` for an unknown board; `FORBIDDEN` for a person who does
+not belong to the board.
+
+REST: `GET /api/boards/{id}/dispatch-rules`, `GET /api/boards/{id}/webhook-targets`
+and `GET /api/boards/{id}/webhook-deliveries`.
+
+### `create_dispatch_rule`
+
+Makes a rule. Send `target_id` or `url`, not both. With `url`, Kairos makes a
+new target, and the result has its secret. Kairos shows the secret this one
+time. Requires `configure_boards` on the board.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `board` | string | yes | — | Slug or UUID. |
+| `column` | string | yes | — | The name or the UUID of a column of the board. |
+| `target_id` | string | no | — | A webhook target of the board. |
+| `url` | string | no | — | The URL of a new target (`http` or `https`). |
+| `target_name` | string | no | `Agent runner` | The name of the new target. |
+| `task_type` | string | no | — | Only tasks of this type: `task`, `bug`, `tech_debt` or `support`. |
+| `metadata_slug` | string | no | — | Only tasks with this metadata. Send it with `metadata_value`. |
+| `metadata_value` | string | no | — | The value that matches. Case is not significant. |
+| `repository` | string | no | — | Only tasks of this repository: its slug or UUID. |
+
+Each part of the filter that you set must match.
+
+Refuses:
+
+- `FORBIDDEN` without `configure_boards`;
+- `NOT_FOUND` for an unknown board, target or repository;
+- `VALIDATION` for an unknown column, task type or metadata definition;
+- `VALIDATION` for a URL that is not `http` or `https`, or a private address;
+- `SECRETS_NOT_CONFIGURED` for a new target with no `KAIROS_SECRETS_KEY`.
+
+REST: `POST /api/boards/{id}/webhook-targets` and
+`POST /api/boards/{id}/dispatch-rules`.
+
+### `delete_dispatch_rule`
+
+Removes a rule. Its deliveries stay in the log, and its target stays.
+Requires `configure_boards` on the board.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `board` | string | yes | — | Slug or UUID. |
+| `rule_id` | string | yes | — | The id of the rule, from `list_dispatch_rules`. |
+
+Refuses: `FORBIDDEN` without `configure_boards`; `NOT_FOUND` for an unknown
+board or rule.
+
+REST: `DELETE /api/boards/{id}/dispatch-rules/{rule_id}`.
+
 ## Related reading
 
 - [Archiving](../explanation/archiving.md) — why archiving is not a permission
@@ -1293,4 +1726,5 @@ short code; `FORBIDDEN` without `manage_tasks`.
 
 - [Connect over MCP](../how-to/connect-over-mcp.md)
 - [Give an agent machine access](../how-to/give-an-agent-machine-access.md)
+- [Run an admin agent](../how-to/run-an-admin-agent.md)
 - [Find archived work](../how-to/find-archived-work.md)

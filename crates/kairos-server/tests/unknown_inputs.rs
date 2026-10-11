@@ -510,7 +510,8 @@ async fn a_known_input_passes_and_a_refusal_writes_nothing_against_live_stack() 
             "limit",
             "offset",
             "team",
-            "no_team"
+            "no_team",
+            "with_metadata"
         ]
     );
     stack
@@ -623,16 +624,21 @@ async fn a_known_input_passes_and_a_refusal_writes_nothing_against_live_stack() 
             .ok(Method::GET, &format!("{list}?limit=200&offset=0"), None)
             .await;
     }
+    // KAIROS-T-0268: the list of the repositories has pages too.
     let allowed = stack
         .parameter_refused(
             Method::GET,
-            "/api/repositories?team=platform&limit=5",
-            "limit",
+            "/api/repositories?team=platform&page=5",
+            "page",
         )
         .await;
-    assert_eq!(allowed, ["team", "forge", "name"]);
+    assert_eq!(allowed, ["team", "forge", "name", "limit", "offset"]);
     stack
-        .ok(Method::GET, "/api/repositories?team=platform", None)
+        .ok(
+            Method::GET,
+            "/api/repositories?team=platform&limit=5&offset=0",
+            None,
+        )
         .await;
     // No parameters: the lists of the keys and of the tokens.
     stack

@@ -227,6 +227,15 @@ pub(crate) async fn receive(
                 if advanced {
                     written += 1;
                     touched.push((item_id, code.clone(), item_type));
+                    // KAIROS-T-0386: a linked pull request gets the comment
+                    // and the status (when the repository has a write
+                    // token).
+                    if kind == LinkKind::PullRequest
+                        && let Ok(number) = event.external_id.parse::<i64>()
+                    {
+                        kairos_db::writeback::queue_pr(conn, connection.repository_id, number)
+                            .map_err(crate::error::ApiError::internal)?;
+                    }
                 }
             }
 

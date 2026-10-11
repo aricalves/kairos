@@ -100,6 +100,7 @@ fn seed_demo_fixture_lifecycle() {
     assert_eq!(report.slug, DEMO_SLUG);
     assert_eq!(report.schema, "org_demo");
     assert!(!report.recreated);
+    assert_eq!(report.dropped, None);
     assert!(demo_tenant_exists(&mut conn).expect("existence probe"));
 
     // Users carry the REAL Dex subs (so first login upserts, not duplicates).
@@ -373,8 +374,35 @@ fn seed_demo_fixture_lifecycle() {
     );
 
     // --- force: drop + reseed ---------------------------------------------------
+    // KAIROS-T-0346: a board that is not in the seed is dropped too, and
+    // the report counts it.
+    sql_query(
+        "INSERT INTO org_demo.boards (name, slug, board_level, code_prefix) \
+         VALUES ('Extra', 'extra', 'initiative', 'EXTRA')",
+    )
+    .execute(&mut conn)
+    .expect("an extra board");
+    let seeded_items =
+        (report.strategies + report.initiatives + report.tasks + report.documents + report.adrs)
+            as i64;
+    let seeded_boards = report.boards as i64;
     let report = seed_demo(&mut conn, true).expect("forced reseed succeeds");
     assert!(report.recreated);
+    assert_eq!(
+        report.dropped,
+        Some(kairos_db::DroppedDemo {
+            teams: 2,
+            boards: seeded_boards + 1,
+            items: seeded_items,
+        })
+    );
+    assert_eq!(
+        count(
+            &mut conn,
+            "SELECT COUNT(*) AS count FROM org_demo.boards WHERE slug = 'extra'"
+        ),
+        0
+    );
     // Fresh schema: short-code sequences restarted at 0001. Each delivery
     // board has its own prefix (COLLIERY-T-3099).
     assert!(

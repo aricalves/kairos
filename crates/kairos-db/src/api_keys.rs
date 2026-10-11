@@ -19,12 +19,13 @@ use crate::schema::api_keys;
 
 /// An API key row (`api_keys`, tenant schema). The row never carries the raw
 /// secret — only its hash and a display `prefix`.
-#[derive(Debug, Clone, PartialEq, Eq, Queryable, Selectable, Identifiable)]
+#[derive(Debug, Clone, PartialEq, Eq, Queryable, QueryableByName, Selectable, Identifiable)]
 #[diesel(table_name = api_keys)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct ApiKey {
     pub id: Uuid,
-    /// The service-account principal (`public.users.id`, kind='service_account').
+    /// The principal (`public.users.id`): a service account, or a person
+    /// for an agent key (KAIROS-T-0359).
     pub user_id: Uuid,
     /// Operator label ("ci-deploy", ...).
     pub name: String,
@@ -41,6 +42,8 @@ pub struct ApiKey {
     pub last_used_at: Option<DateTime<Utc>>,
     /// Set on revocation; the row is retained for audit.
     pub revoked_at: Option<DateTime<Utc>>,
+    /// The key that a rotation made in place of this key (KAIROS-T-0370).
+    pub replaced_by: Option<Uuid>,
 }
 
 impl ApiKey {
@@ -116,4 +119,118 @@ pub fn touch_last_used(conn: &mut PgConnection, id: Uuid) -> QueryResult<usize> 
     diesel::update(api_keys::table.filter(api_keys::id.eq(id)))
         .set(api_keys::last_used_at.eq(diesel::dsl::now))
         .execute(conn)
+}
+
+/// Rotate a key (KAIROS-T-0370): insert `new`, and end the old key at
+/// `old_ends_at` (or at its own expiry when that is sooner), with a link to
+/// the new key. One transaction; the old row is locked, so two rotations
+/// of one key do not both succeed. `Ok(None)` when the old key was revoked
+/// or rotated already, or when it does not exist.
+pub fn rotate_key(
+    conn: &mut PgConnection,
+    old_id: Uuid,
+    new: NewApiKey,
+    old_ends_at: DateTime<Utc>,
+) -> QueryResult<Option<(ApiKey, ApiKey)>> {
+    conn.transaction(|conn| {
+        let Some(old) = api_keys::table
+            .filter(api_keys::id.eq(old_id))
+            .select(ApiKey::as_select())
+            .for_update()
+            .first(conn)
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        if old.revoked_at.is_some() || old.replaced_by.is_some() {
+            return Ok(None);
+        }
+        let created = create_key(conn, new)?;
+        let ends = old.expires_at.map_or(old_ends_at, |e| e.min(old_ends_at));
+        let old = diesel::update(api_keys::table.filter(api_keys::id.eq(old_id)))
+            .set((
+                api_keys::expires_at.eq(Some(ends)),
+                api_keys::replaced_by.eq(Some(created.id)),
+            ))
+            .returning(ApiKey::as_returning())
+            .get_result(conn)?;
+        Ok(Some((created, old)))
+    })
+}
+
+/// An agent key with its owner (KAIROS-T-0388): a key whose principal is a
+/// person (`users.kind = 'human'`), not a service account.
+#[derive(Debug, Clone, PartialEq, Eq, QueryableByName)]
+pub struct PersonKey {
+    #[diesel(embed)]
+    pub key: ApiKey,
+    /// The email of the owner.
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub owner_email: String,
+    /// The display name of the owner.
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub owner_name: String,
+}
+
+/// The select of [`PersonKey`]: the keys of persons only.
+const SELECT_PERSON_KEY: &str = "SELECT k.*, u.email AS owner_email, u.display_name AS owner_name \
+     FROM api_keys k JOIN public.users u ON u.id = k.user_id WHERE u.kind = 'human'";
+
+#[derive(QueryableByName)]
+struct Count {
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    count: i64,
+}
+
+/// One page of the agent keys of the persons of the tenant, newest first
+/// (KAIROS-T-0388), and the count of all of them. `owner`: the keys of
+/// one person only. Revoked keys are in the list.
+pub fn list_person_keys(
+    conn: &mut PgConnection,
+    owner: Option<Uuid>,
+    limit: i64,
+    offset: i64,
+) -> QueryResult<(i64, Vec<PersonKey>)> {
+    use diesel::sql_types::{BigInt, Nullable, Uuid as SqlUuid};
+    let filter = " AND ($1::uuid IS NULL OR k.user_id = $1)";
+    let total = diesel::sql_query(format!(
+        "SELECT count(*) AS count FROM api_keys k JOIN public.users u ON u.id = k.user_id \
+         WHERE u.kind = 'human'{filter}"
+    ))
+    .bind::<Nullable<SqlUuid>, _>(owner)
+    .get_result::<Count>(conn)?
+    .count;
+    let rows = diesel::sql_query(format!(
+        "{SELECT_PERSON_KEY}{filter} ORDER BY k.created_at DESC, k.id LIMIT $2 OFFSET $3"
+    ))
+    .bind::<Nullable<SqlUuid>, _>(owner)
+    .bind::<BigInt, _>(limit)
+    .bind::<BigInt, _>(offset)
+    .load(conn)?;
+    Ok((total, rows))
+}
+
+/// The agent key with this id, with its owner. `None` when no key has
+/// the id, or when the key is the key of a service account.
+pub fn find_person_key(conn: &mut PgConnection, id: Uuid) -> QueryResult<Option<PersonKey>> {
+    diesel::sql_query(format!("{SELECT_PERSON_KEY} AND k.id = $1"))
+        .bind::<diesel::sql_types::Uuid, _>(id)
+        .get_result(conn)
+        .optional()
+}
+
+/// Revoke each key of the person `user_id` that is not revoked
+/// (KAIROS-T-0388: the person leaves the organization). Nothing for a
+/// service account. Returns the keys revoked now, oldest first.
+pub fn revoke_person_keys(conn: &mut PgConnection, user_id: Uuid) -> QueryResult<Vec<ApiKey>> {
+    let mut rows: Vec<ApiKey> = diesel::sql_query(
+        "UPDATE api_keys SET revoked_at = now() \
+          WHERE user_id = $1 AND revoked_at IS NULL \
+            AND EXISTS (SELECT 1 FROM public.users u WHERE u.id = $1 AND u.kind = 'human') \
+         RETURNING *",
+    )
+    .bind::<diesel::sql_types::Uuid, _>(user_id)
+    .load(conn)?;
+    rows.sort_by_key(|k| (k.created_at, k.id));
+    Ok(rows)
 }

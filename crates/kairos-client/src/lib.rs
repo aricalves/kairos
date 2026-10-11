@@ -13,6 +13,7 @@ pub mod error;
 pub mod types;
 pub mod types_auth;
 pub mod types_code_index;
+pub mod types_dispatch;
 pub mod types_forge;
 pub mod types_graph;
 pub mod types_org;
@@ -23,6 +24,8 @@ pub mod types_team_pages;
 pub mod ws;
 
 pub mod types_meta;
+
+pub mod types_notifications;
 
 pub mod types_events;
 

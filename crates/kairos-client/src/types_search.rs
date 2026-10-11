@@ -63,9 +63,13 @@ pub struct SearchFilter {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entity_type: Option<Vec<String>>,
     /// Restrict to items on this board (UUID; excludes documents, which do
-    /// not live on boards).
+    /// not live on boards). Not with `board`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub board_id: Option<String>,
+    /// Restrict to items on this board, by slug or UUID (KAIROS-T-0368).
+    /// Not with `board_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub board: Option<String>,
     /// Restrict to items in this board column (UUID; excludes documents).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub column_id: Option<String>,
@@ -73,6 +77,10 @@ pub struct SearchFilter {
     /// other entity types are excluded).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub team_id: Option<String>,
+    /// Restrict to tasks of this team, by slug or UUID (KAIROS-T-0368).
+    /// Not with `team_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<String>,
     /// Restrict to the items of this repository (slug or UUID of a live
     /// repository — KAIROS-T-0115 made every repository reference on the
     /// wire the same shape; the old name `repository_id` is refused,
@@ -106,6 +114,20 @@ pub struct SearchFilter {
     /// Only items created strictly before this instant (RFC 3339).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_before: Option<String>,
+    /// Only items last changed strictly after this instant (RFC 3339,
+    /// `updated_at`; KAIROS-T-0368).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_after: Option<String>,
+    /// Only items last changed strictly before this instant (RFC 3339,
+    /// `updated_at`; KAIROS-T-0368). "Untouched for 90 days" is now minus
+    /// 90 days.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_before: Option<String>,
+    /// Only items with NO value for each of these metadata definitions, by
+    /// slug (KAIROS-T-0368): "bugs without a priority" is
+    /// `["priority"]`. An unknown slug is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_missing: Option<Vec<String>>,
     /// Include archived (soft-deleted) items (default false). Composes with
     /// every other capability — `q` and `traverse` included since
     /// KAIROS-T-0157 — and is a complete request on its own. Archived hits

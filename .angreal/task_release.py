@@ -136,24 +136,33 @@ VERSION_SITES = [
         rf"in one place\. Kairos {SEMVER}\.",
         "the configuration reference's stated version",
     ),
-    # Retention is still unimplemented — nothing calls the sweeper — so these
-    # sentences stay true and only their version needs to move. Verified before
-    # restating rather than assumed: the only caller of RetentionConfig in the
-    # server is KAIROS-T-0177's own drift test.
+    # The pages of 0.11.0 that state the version they describe (KAIROS-T-0381..0387).
+    # The three sentences that said retention is inert went with KAIROS-T-0366:
+    # the server runs the retention pass now.
     (
-        "docs/src/how-to/back-up-and-restore.md",
-        rf"\*\*Nothing prunes anything in {SEMVER}\.\*\*",
-        "the backup how-to's note that retention is inert",
+        "docs/src/how-to/read-your-notifications.md",
+        rf"This page describes Kairos {SEMVER}\.",
+        "the notifications how-to's stated version",
     ),
     (
-        "docs/src/reference/configuration.md",
-        rf"\*\*In {SEMVER} the server reads none of the five variables below",
-        "the configuration reference's retention warning",
+        "docs/src/how-to/read-notifications-as-an-agent.md",
+        rf"This page describes Kairos {SEMVER}\.",
+        "the agent notifications how-to's stated version",
     ),
     (
-        "docs/src/reference/configuration.md",
-        rf"moot in {SEMVER} because the server reads none of them\.",
-        "the same warning's restatement under the chart values",
+        "docs/src/how-to/dispatch-tasks-to-an-agent.md",
+        rf"This page describes Kairos {SEMVER}\.",
+        "the dispatch how-to's stated version",
+    ),
+    (
+        "docs/src/how-to/turn-on-github-write-back.md",
+        rf"This page describes Kairos {SEMVER}\.",
+        "the GitHub write-back how-to's stated version",
+    ),
+    (
+        "docs/src/reference/webhooks.md",
+        rf"This page describes Kairos {SEMVER}\.",
+        "the webhooks reference's stated version",
     ),
     # Illustrative image tags. Not wrong when stale, but a reader can copy them,
     # and an example pointing two releases back makes the docs look abandoned.

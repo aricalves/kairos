@@ -3,7 +3,8 @@
 //! (KAIROS-I-0012), `restore_item` (KAIROS-A-0020), `related_work`
 //! (KAIROS-T-0191), `propose_edge` (KAIROS-T-0192), `set_repository`
 //! (COLLIERY-T-0220), and `add_repository` and `update_repository`
-//! (COLLIERY-T-0266) — each a
+//! (COLLIERY-T-0266); later tasks added more (41 in all since KAIROS-T-0382
+//! added `get_events` and `mark_events_read`) — each a
 //! thin wrapper over the same `kairos-core`/`kairos-db` services the REST
 //! handlers call — through [`crate::blocking::BlockingTenantPool`], never
 //! HTTP (A-0011). Contracts:
@@ -102,6 +103,11 @@ pub struct WhoamiParams {}
 pub struct ListRepositoriesParams {
     /// Only this team's repositories (slug or UUID).
     pub team: Option<String>,
+    /// The number of repositories in the result (default 50, maximum 200).
+    pub limit: Option<i64>,
+    /// The number of repositories to skip (default 0). The result says
+    /// which offset gives the next part of the directory.
+    pub offset: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -121,6 +127,67 @@ pub struct GetRepositoryParams {
 pub struct MyBoardsParams {
     /// Restrict to one board level: strategy | initiative | delivery | adr.
     pub level: Option<String>,
+}
+
+/// `board_flow` (KAIROS-T-0372).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct BoardFlowParams {
+    /// The board, by slug (e.g. "platform-delivery") or UUID.
+    pub board: String,
+    /// The first day of the range, YYYY-MM-DD. Default: 89 days before
+    /// `to`.
+    pub from: Option<String>,
+    /// The last day of the range, YYYY-MM-DD. Default: today (UTC).
+    pub to: Option<String>,
+}
+
+/// `list_dispatch_rules` (KAIROS-T-0385).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct ListDispatchRulesParams {
+    /// The board, by slug (e.g. "platform-delivery") or UUID.
+    pub board: String,
+}
+
+/// `create_dispatch_rule` (KAIROS-T-0385).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct CreateDispatchRuleParams {
+    /// The board, by slug (e.g. "platform-delivery") or UUID.
+    pub board: String,
+    /// The column, by name (e.g. "Todo") or UUID.
+    pub column: String,
+    /// The id of a webhook target of the board. Send it, or send `url`
+    /// (and `target_name`) to make a new target.
+    pub target_id: Option<String>,
+    /// The URL of a new webhook target (http or https).
+    pub url: Option<String>,
+    /// The name of the new target. Default: "Agent runner".
+    pub target_name: Option<String>,
+    /// Only tasks of this type: task | bug | tech_debt | support.
+    pub task_type: Option<String>,
+    /// Only tasks with this metadata: the slug of a definition. Send it with
+    /// `metadata_value`.
+    pub metadata_slug: Option<String>,
+    /// The value of `metadata_slug` that matches (no case).
+    pub metadata_value: Option<String>,
+    /// Only tasks of this repository: its slug or UUID.
+    pub repository: Option<String>,
+}
+
+/// `delete_dispatch_rule` (KAIROS-T-0385).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct DeleteDispatchRuleParams {
+    /// The board, by slug (e.g. "platform-delivery") or UUID.
+    pub board: String,
+    /// The id of the rule (from `list_dispatch_rules`).
+    pub rule_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -150,6 +217,29 @@ pub struct BoardItemsParams {
     /// Restrict the STRATEGIES and the INITIATIVES to those with no team.
     /// Not with `team`.
     pub no_team: Option<bool>,
+    /// Show more on each card (default false: the compact list): the date
+    /// of the last change and each metadata value of the card, e.g.
+    /// `{updated 2026-10-08; priority: high}`.
+    pub details: Option<bool>,
+}
+
+/// Parameters for `list_metadata_definitions` (KAIROS-T-0368).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct ListMetadataDefinitionsParams {
+    /// Only the definitions that apply to this entity type: strategy |
+    /// initiative | task | document | adr.
+    pub entity_type: Option<String>,
+}
+
+/// Parameters for `list_templates` (KAIROS-T-0368).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct ListTemplatesParams {
+    /// Show this one template (by slug) with its full content.
+    pub slug: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -226,12 +316,16 @@ pub struct SearchParams {
 pub struct SearchFilterParams {
     /// Restrict to entity types: strategy | initiative | task | document | adr.
     pub entity_type: Option<Vec<String>>,
-    /// Restrict to items on this board (UUID).
+    /// Restrict to items on this board (UUID). Not with `board`.
     pub board_id: Option<String>,
+    /// Restrict to items on this board, by slug or UUID. Not with `board_id`.
+    pub board: Option<String>,
     /// Restrict to items in this column (UUID).
     pub column_id: Option<String>,
-    /// Restrict to tasks of this team (UUID).
+    /// Restrict to tasks of this team (UUID). Not with `team`.
     pub team_id: Option<String>,
+    /// Restrict to tasks of this team, by slug or UUID. Not with `team_id`.
+    pub team: Option<String>,
     /// Restrict to the items of this repository (slug or UUID): the tasks
     /// that link to it, and the documents and the ADRs that impact it.
     pub repository: Option<String>,
@@ -248,6 +342,15 @@ pub struct SearchFilterParams {
     pub created_after: Option<String>,
     /// Only items created strictly before this RFC 3339 instant.
     pub created_before: Option<String>,
+    /// Only items last changed (updated_at) strictly after this RFC 3339
+    /// instant.
+    pub updated_after: Option<String>,
+    /// Only items last changed (updated_at) strictly before this RFC 3339
+    /// instant. "Untouched for 90 days": now minus 90 days.
+    pub updated_before: Option<String>,
+    /// Only items with NO value for each of these metadata definitions
+    /// (slugs), e.g. ["priority"]. An unknown slug is refused.
+    pub metadata_missing: Option<Vec<String>>,
     /// Include archived (soft-deleted) items (default false). Composes with
     /// everything, `q` and `traverse` included; archived hits come back
     /// marked `[archived]`.
@@ -365,6 +468,33 @@ pub struct EditItemParams {
     /// be unique, otherwise the edit is rejected as ambiguous).
     #[serde(default)]
     pub replace_all: bool,
+}
+
+/// `get_events` has no arguments (KAIROS-T-0382).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct GetEventsParams {}
+
+/// Parameters for `mark_events_read` (KAIROS-T-0382): `ids`, or `all: true`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct MarkEventsReadParams {
+    /// The ids of your notifications, as `get_events` gives them.
+    pub ids: Option<Vec<String>>,
+    /// `true`: each of your unread notifications.
+    pub all: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct AppendNoteParams {
+    /// The item's short code.
+    pub short_code: String,
+    /// The markdown text of the note.
+    pub text: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -593,8 +723,83 @@ pub struct ArchiveCompletedParams {
     pub confirm: bool,
 }
 
+/// Parameters for `create_team` (KAIROS-T-0337). The names are those of the
+/// body of `POST /api/teams`, and `adr_board`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct CreateTeamParams {
+    /// The name of the team (e.g. "Home operations").
+    pub name: String,
+    /// The slug of the team (e.g. "home-ops"): it must match
+    /// ^[a-z][a-z0-9_-]{1,62}$. The delivery board gets the slug
+    /// "{slug}-delivery", and the ADR board "{slug}-adrs".
+    pub slug: String,
+    /// The short-code prefix of the boards of the team (e.g. "OPS"): a
+    /// capital letter, then 1 to 9 capital letters or digits. It does not
+    /// change later. Tasks get OPS-T-0001, ADRs OPS-A-0001.
+    pub code_prefix: String,
+    /// stream_aligned | platform | enabling | complicated_subsystem. The
+    /// default is stream_aligned.
+    pub team_type: Option<String>,
+    /// Also make the ADR board of the team. The default is true.
+    pub adr_board: Option<bool>,
+}
+
+/// Parameters for `create_board` (KAIROS-T-0337). The names are those of
+/// the body of `POST /api/boards`, with `team` for `team_id`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct CreateBoardParams {
+    /// The name of the board.
+    pub name: String,
+    /// The slug of the board: it must match ^[a-z][a-z0-9_-]{1,62}$.
+    pub slug: String,
+    /// strategy | initiative | delivery | adr.
+    pub board_level: String,
+    /// The owner team (slug or UUID). A delivery board must have one; a
+    /// strategy or an initiative board must not. An ADR board with a team
+    /// is the ADR board of that team.
+    pub team: Option<String>,
+    /// The short-code prefix of the board: a capital letter, then 1 to 9
+    /// capital letters or digits. The ADR board of a team takes the prefix
+    /// of the team.
+    pub code_prefix: String,
+}
+
+/// Parameters for `add_team_member` (KAIROS-T-0337).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct AddTeamMemberParams {
+    /// The team, by slug or UUID.
+    pub team: String,
+    /// The member of the organization: a user id, an email, a user name, or
+    /// the name of a service account.
+    pub user: String,
+}
+
+/// Parameters for `grant_capability` (KAIROS-T-0337).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct GrantCapabilityParams {
+    /// The member of the organization: a user id, an email, a user name, or
+    /// the name of a service account.
+    pub user: String,
+    /// A board capability (manage_tasks, manage_documents, manage_adrs,
+    /// manage_initiatives, manage_strategies, transition_items,
+    /// configure_boards, administer_members, or a glob: *, manage_*,
+    /// configure_*, transition_*), or manage_structure.
+    pub capability: String,
+    /// The board, by slug or UUID. A board capability needs it. For
+    /// manage_structure, omit it for a grant at the organization.
+    pub board: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
-// The tools (31; the list is asserted in tests/mcp.rs)
+// The tools (41; the list is asserted in tests/mcp.rs)
 // ---------------------------------------------------------------------------
 
 #[tool_router(vis = "pub(super)")]
@@ -714,13 +919,46 @@ impl KairosMcp {
                  task in the entry column of its delivery board, in the support lane.\n",
                 kairos_core::abac::COMPUTED_CAPABILITIES.join(", ")
             ));
+            // KAIROS-T-0337: the grants of `manage_structure`.
+            let structure: Vec<(Option<Uuid>, Option<String>)> = {
+                use kairos_db::schema::structure_grants as sg;
+                sg::table
+                    .left_join(boards::table)
+                    .filter(sg::user_id.eq(user_id))
+                    .filter(sg::board_id.is_null().or(boards::deleted_at.is_null()))
+                    .order(boards::slug.asc().nulls_first())
+                    .select((sg::board_id, boards::slug.nullable()))
+                    .load(conn)
+                    .map_err(ApiError::internal)?
+            };
+            out.push_str("\n## Structure (manage_structure)\n");
+            if is_admin {
+                out.push_str("- organization admin: you can change each team, board and grant.\n");
+            }
+            if structure.is_empty() && !is_admin {
+                out.push_str("(none. An organization admin grants it.)\n");
+            }
+            for (board_id, board_slug) in structure {
+                match (board_id, board_slug) {
+                    (None, _) => out.push_str(
+                        "- on the organization: teams, team members, boards, the columns, \
+                         transitions, members and grants of each board, repositories\n",
+                    ),
+                    (Some(_), Some(board)) => out.push_str(&format!(
+                        "- on the board {board}: its columns, transitions, members and grants\n"
+                    )),
+                    (Some(board_id), None) => out.push_str(&format!(
+                        "- on the board {board_id}: its columns, transitions, members and grants\n"
+                    )),
+                }
+            }
             Ok(out)
         })
         .await
     }
 
     #[tool(
-        description = "Directory of repositories in this organization (KAIROS-A-0019): for each, its slug, forge and full name, the ONE owning team, the delivery board of that team, the open task count, and whether webhooks are connected. The open task count includes linked tasks on all boards. The owner does not choose the board of a task. Call to find a repository to link a task to, or to find who owns a repo. Optional `team` (slug or UUID) narrows to one team's repositories."
+        description = "Directory of repositories in this organization (KAIROS-A-0019): for each, its slug, forge and full name, the ONE owning team, the delivery board of that team, the open task count, and whether webhooks are connected. The open task count includes linked tasks on all boards. The owner does not choose the board of a task. Call to find a repository to link a task to, or to find who owns a repo. Optional `team` (slug or UUID) narrows to one team's repositories. The result has 50 repositories at most by default: optional `limit` (maximum 200) and `offset` give a different part of the directory. When the result is not the full directory, its first line says so and gives the `offset` of the next part."
     )]
     pub async fn list_repositories(
         &self,
@@ -736,9 +974,30 @@ impl KairosMcp {
                 .transpose()?;
             let rows = repositories::list(conn, team_id)
                 .map_err(crate::api::org::repositories::map_error)?;
-            let rendered = crate::api::org::repositories::render(conn, rows)?;
+            // KAIROS-T-0268: the same page as `GET /api/repositories`.
+            let (limit, offset) = crate::api::clamp_pagination(&kairos_client::types::Pagination {
+                limit: params.limit,
+                offset: params.offset,
+            });
+            let page = crate::api::org::repositories::render_page(conn, rows, limit, offset)?;
+            let rendered = page.items;
             let mut out = String::from("# Repositories\n");
-            if rendered.is_empty() {
+            let shown = rendered.len() as i64;
+            if offset > 0 || offset + shown < page.total {
+                out.push_str(&format!(
+                    "Repositories in the directory: {}. Shown: {shown} (limit {limit}, offset \
+                     {offset}).",
+                    page.total
+                ));
+                if offset + shown < page.total {
+                    out.push_str(&format!(
+                        " Call again with offset {} for the next part.",
+                        offset + shown
+                    ));
+                }
+                out.push('\n');
+            }
+            if page.total == 0 {
                 out.push_str(
                     "(none. An organization admin or a member of the owner team adds a \
                      repository with add_repository.)\n",
@@ -768,7 +1027,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "One repository in full: owner team, the delivery board of that team, the open task count on all boards, default branch, the team's `description` of how to work in it (READ THIS before working in or filing against an unfamiliar repo), the documents and the ADRs that impact the repository (its vision, its architecture, the decisions about it: read them with `get_item` before you plan work in the repository), and its in-flight branches and pull requests with the work items they belong to. The line `read token` says whether the builder of the code index has a token for the repository, who set it and the last check; no tool gives or sets the token. `repository` is a slug or UUID. `include_deleted: true` adds the archived documents and ADRs, each marked [archived]."
+        description = "One repository in full: owner team, the delivery board of that team, the open task count on all boards, default branch, the team's `description` of how to work in it (READ THIS before working in or filing against an unfamiliar repo), the documents and the ADRs that impact the repository (its vision, its architecture, the decisions about it: read them with `get_item` before you plan work in the repository), and its in-flight branches and pull requests with the work items they belong to. The line `read token` says whether the builder of the code index has a token for the repository, who set it and the last check; no tool gives or sets the token. The line `write-back` says whether Kairos writes a comment and the commit status `kairos` on the GitHub pull requests that link to an item (on with a write token, else off), and the last write. `repository` is a slug or UUID. `include_deleted: true` adds the archived documents and ADRs, each marked [archived]."
     )]
     pub async fn get_repository(
         &self,
@@ -802,7 +1061,7 @@ impl KairosMcp {
                 graph::repository_link_rollup(conn, repo_id, &["open", "draft"], 50)
                     .map_err(ApiError::internal)?;
             let mut out = format!(
-                "# Repository {} — {} {}\n- url: {}\n- default branch: {}\n- owner team: {} ({})\n- owner's delivery board: {}\n- open tasks (all boards): {}\n- webhooks: {}\n- read token: {}\n- code index summaries: {}\n",
+                "# Repository {} — {} {}\n- url: {}\n- default branch: {}\n- owner team: {} ({})\n- owner's delivery board: {}\n- open tasks (all boards): {}\n- webhooks: {}\n- read token: {}\n- write-back: {}\n- code index summaries: {}\n",
                 rendered.slug,
                 rendered.forge,
                 rendered.repo_full_name,
@@ -816,6 +1075,9 @@ impl KairosMcp {
                 // COLLIERY-T-3105: the status only. No tool sets or gives
                 // the token.
                 rendered.credential.summary(),
+                // KAIROS-T-0386: the GitHub write-back, on or off. No tool
+                // sets or gives the write token.
+                rendered.write_back.summary(),
                 // KAIROS-T-0340: where the summaries of the checkout come
                 // from. On `hosted`, the CLI makes none (KAIROS-T-0343).
                 // KAIROS-T-0358: `organization` shows what it resolves to.
@@ -1014,7 +1276,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "List the items on a board grouped by column: short code, type, and title. `board` is a slug or UUID; optional `column` (name or UUID) restricts to one column; optional `repository` (slug or UUID) narrows the tasks to one repository — pass the repository you are checked out in to see your queue. Live cards only unless `include_deleted` is true, which adds the archived ones back in the column they were put away in, each marked [archived]. A card with open dependencies is tagged [blocked by N] and [blocks N]. A task with a claim is tagged [claimed by NAME]: the person who works on it, and \"(agent)\" when the agent of the person made the claim. A strategy or an initiative with teams is tagged [teams: a, b]: the teams of the boards of its tasks (two levels down for a strategy), plus the teams set on it by hand (`set_team`). Optional `team` (slug or UUID) restricts the strategies and the initiatives to those of one team, and `no_team: true` to those with no team. Only open `blocks` edges are counted: an edge with either end in a done column, or with an archived item at the other end, is not. The result has 200 items at most by default: optional `limit` (maximum 1000) and `offset` give a different part of the board. When the result is not the full board, its first lines say so and give the `offset` of the next part. Call the tool again with that `offset` until you have each part."
+        description = "List the items on a board grouped by column: short code, type, and title. `board` is a slug or UUID; optional `column` (name or UUID) restricts to one column; optional `repository` (slug or UUID) narrows the tasks to one repository — pass the repository you are checked out in to see your queue. Live cards only unless `include_deleted` is true, which adds the archived ones back in the column they were put away in, each marked [archived]. A card with open dependencies is tagged [blocked by N] and [blocks N]. A task with a claim is tagged [claimed by NAME]: the person who works on it, and \"(agent)\" when the agent of the person made the claim. A strategy or an initiative with teams is tagged [teams: a, b]: the teams of the boards of its tasks (two levels down for a strategy), plus the teams set on it by hand (`set_team`). Optional `team` (slug or UUID) restricts the strategies and the initiatives to those of one team, and `no_team: true` to those with no team. Only open `blocks` edges are counted: an edge with either end in a done column, or with an archived item at the other end, is not. The result has 200 items at most by default: optional `limit` (maximum 1000) and `offset` give a different part of the board. When the result is not the full board, its first lines say so and give the `offset` of the next part. Call the tool again with that `offset` until you have each part. Optional `details: true` adds to each card the date of its last change and its metadata values (for example the priority): `{updated 2026-10-08; priority: high}`. Use it to pick or triage work without `get_item` for each card. A column with a WIP limit shows the live count against the limit, [WIP 2/3], and [WIP 4/3, over the limit] when it holds more. A move into a column over its limit is allowed: the answer of the move has a warning line."
     )]
     pub async fn board_items(
         &self,
@@ -1121,6 +1383,24 @@ impl KairosMcp {
             // KAIROS-T-0362: the cancelled tasks, one query.
             let cancelled = kairos_db::task_cancellations::marks_of(conn, &item_ids)
                 .map_err(ApiError::internal)?;
+            // KAIROS-T-0368: with `details`, the metadata of the cards, one
+            // query.
+            let details = params.details.unwrap_or(false);
+            let metadata = if details {
+                kairos_db::board_items::metadata_of_items(conn, &item_ids)
+                    .map_err(ApiError::internal)?
+            } else {
+                HashMap::new()
+            };
+
+            // KAIROS-T-0371: the live count of each column, for the WIP
+            // limit. 1 query.
+            let live_counts: HashMap<Uuid, i64> =
+                kairos_db::board_items::live_column_counts(conn, &[board.id])
+                    .map_err(ApiError::internal)?
+                    .into_iter()
+                    .map(|c| (c.column_id, c.count))
+                    .collect();
 
             let mut out = format!(
                 "# Board {} — {} ({})\n",
@@ -1136,20 +1416,24 @@ impl KairosMcp {
                     items.iter().filter(|i| i.column_id == column.id).collect();
                 // The number is that of the column only when the result
                 // is the full board.
+                let wip = wip_marker(
+                    live_counts.get(&column.id).copied().unwrap_or(0),
+                    column.wip_limit,
+                );
                 out.push_str(&match incomplete {
                     Some(_) => format!(
-                        "\n## {} ({} in this result)\n",
+                        "\n## {} ({} in this result){wip}\n",
                         column.name,
                         in_column.len()
                     ),
-                    None => format!("\n## {} ({})\n", column.name, in_column.len()),
+                    None => format!("\n## {} ({}){wip}\n", column.name, in_column.len()),
                 });
                 for item in in_column {
                     // The marker is not decoration: an agent that cannot
                     // tell put-away work from live work will pick one up
                     // and start on it (KAIROS-A-0020 rule 2).
                     out.push_str(&format!(
-                        "- {} [{}] {}{}{}{}{}{}{}\n",
+                        "- {} [{}] {}{}{}{}{}{}{}{}\n",
                         item.short_code,
                         item.kind,
                         item.title,
@@ -1181,8 +1465,293 @@ impl KairosMcp {
                             .get(&item.id)
                             .map(|counts| blocks_marker(*counts))
                             .unwrap_or_default(),
-                        if item.archived { " [archived]" } else { "" }
+                        if item.archived { " [archived]" } else { "" },
+                        if details {
+                            card_details(item.updated_at, metadata.get(&item.id))
+                        } else {
+                            String::new()
+                        }
                     ));
+                }
+            }
+            Ok(out)
+        })
+        .await
+    }
+
+    // KAIROS-T-0372: the flow metrics of a board.
+    #[tool(
+        description = "The flow metrics of a board for a range of days (UTC): cycle time (from the first entry into a start column to the last entry into a done column, in days: count, mean, median, 85th percentile, and each item), throughput per week (done items, and cancelled tasks apart), the age of each item in progress (not done, with a start), and the cumulative flow (the live items of each column at the end of each day). A start column is a column with claims (Active), or the column named Active when the board has none. `board` is a slug or UUID. Optional `from` and `to` are dates YYYY-MM-DD: the default is the 90 days to today; a range has 366 days at most. The cumulative flow shows the last 14 days; the REST route GET /api/boards/{id}/flow gives each day."
+    )]
+    pub async fn board_flow(
+        &self,
+        Parameters(params): Parameters<BoardFlowParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (_, tenant) = Self::caller(&context)?;
+        self.run_tool(&tenant, move |conn| {
+            let flow = crate::api::org::flow::board_flow_of(
+                conn,
+                &params.board,
+                params.from.as_deref(),
+                params.to.as_deref(),
+            )?;
+            Ok(flow_text(&flow))
+        })
+        .await
+    }
+
+    // KAIROS-T-0385: the agent dispatch rules of a board.
+    #[tool(
+        description = "The agent dispatch rules of a board: for each rule, the column, the filter (task type, metadata value, repository) and the webhook target; then the webhook targets (on or off, with the failed tries in a row); then the 20 newest deliveries of the log (status, tries, response code, error). When a task enters the column of a rule and matches its filter, Kairos sends one signed delivery to the target. A person who belongs to the board reads them. `board` is a slug or UUID."
+    )]
+    pub async fn list_dispatch_rules(
+        &self,
+        Parameters(params): Parameters<ListDispatchRulesParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let (user, slug) = (auth.user_id, tenant.slug.clone());
+        self.run_tool(&tenant, move |conn| {
+            use crate::api::org::dispatch as d;
+            let rules = d::list_rules_as(conn, &slug, user, &params.board)?;
+            let targets = d::list_targets_as(conn, &slug, user, &params.board)?;
+            let log = d::list_deliveries_as(
+                conn,
+                &slug,
+                user,
+                &params.board,
+                &kairos_client::types_dispatch::WebhookDeliveriesQuery {
+                    limit: Some(20),
+                    ..Default::default()
+                },
+            )?;
+            Ok(dispatch_text(&params.board, &rules, &targets, &log))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Make an agent dispatch rule on a board: when a task enters `column` and matches the filter, Kairos sends one signed delivery (event task.entered_column: code, title, task type, link, board, column, repository, actor) to a webhook target. Send `target_id` (a target of the board), or `url` (and optional `target_name`) to make a new target: then the answer has its secret, shown this one time; keep it in the receiver to check X-Kairos-Signature. Optional filter: `task_type` (task | bug | tech_debt | support), `metadata_slug` with `metadata_value`, `repository` (slug or UUID); each part that is set must match. Requires configure_boards on the board."
+    )]
+    pub async fn create_dispatch_rule(
+        &self,
+        Parameters(params): Parameters<CreateDispatchRuleParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let (user, slug) = (auth.user_id, tenant.slug.clone());
+        let key = self.state.config.secrets_key.clone();
+        let allow_private = self.state.config.webhooks.allow_private;
+        self.run_tool(&tenant, move |conn| {
+            use crate::api::org::dispatch as d;
+            use kairos_client::types_dispatch as dto;
+            crate::api::org::run_in_transaction(conn, |conn| {
+                let (target_id, created) = match (params.target_id.as_deref(), params.url.as_deref()) {
+                    (Some(id), None) => (id.to_string(), None),
+                    (None, Some(url)) => {
+                        let created = d::create_target_as(
+                            conn,
+                            &slug,
+                            user,
+                            &params.board,
+                            &dto::CreateWebhookTargetRequest {
+                                name: params
+                                    .target_name
+                                    .clone()
+                                    .unwrap_or_else(|| "Agent runner".to_string()),
+                                url: url.to_string(),
+                            },
+                            key.as_ref(),
+                            allow_private,
+                        )?;
+                        (created.target.id.clone(), Some(created))
+                    }
+                    _ => {
+                        return Err(ApiError::validation(
+                            "Send target_id (a webhook target of the board) or url (a new                              target), and not both.",
+                        )
+                        .with_details(serde_json::json!({ "argument": "target_id" })));
+                    }
+                };
+                let rule = d::create_rule_as(
+                    conn,
+                    &slug,
+                    user,
+                    &params.board,
+                    &dto::CreateDispatchRuleRequest {
+                        column: params.column.clone(),
+                        target_id,
+                        task_type: params.task_type.clone(),
+                        metadata_slug: params.metadata_slug.clone(),
+                        metadata_value: params.metadata_value.clone(),
+                        repository: params.repository.clone(),
+                    },
+                )?;
+                let mut out = format!(
+                    "Made the dispatch rule {}: a task that enters {} {}goes to the target {} \
+                     ({}).",
+                    rule.id,
+                    rule.column,
+                    rule_filter_text(&rule),
+                    rule.target,
+                    rule.target_id
+                );
+                if let Some(created) = created {
+                    out.push_str(&format!(
+                        "\nMade the webhook target {} ({}) for {}.\nsecret: {}\nKairos shows the \
+                         secret this one time. Keep it in the receiver: X-Kairos-Signature is \
+                         sha256=<hex HMAC-SHA256 of the body with this secret>.",
+                        created.target.name, created.target.id, created.target.url, created.secret
+                    ));
+                }
+                Ok(out)
+            })
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Remove an agent dispatch rule of a board. Its deliveries stay in the log, and its webhook target stays. `board` is a slug or UUID; `rule_id` comes from list_dispatch_rules. Requires configure_boards on the board."
+    )]
+    pub async fn delete_dispatch_rule(
+        &self,
+        Parameters(params): Parameters<DeleteDispatchRuleParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let (user, slug) = (auth.user_id, tenant.slug.clone());
+        self.run_tool(&tenant, move |conn| {
+            let rule = crate::api::org::dispatch::delete_rule_as(
+                conn,
+                &slug,
+                user,
+                &params.board,
+                &params.rule_id,
+            )?;
+            Ok(format!(
+                "Removed the dispatch rule {} (column {}, target {}).",
+                rule.id, rule.column, rule.target
+            ))
+        })
+        .await
+    }
+
+    // KAIROS-T-0368: the metadata definitions and the templates, so that an
+    // agent knows the scales (the values of `priority`, in order) and the
+    // slugs that `set_metadata` and `search` take.
+    #[tool(
+        description = "List the metadata definitions of the organization: slug, name, type, the values of an enum in their order (the scale, for example the priorities from the first to the last), and the entity types that each definition applies to (all types when none is named). Optional `entity_type` gives only the definitions of that type. Use the slugs in `set_metadata`, and in `search` (`filter.metadata`, `filter.metadata_missing`)."
+    )]
+    pub async fn list_metadata_definitions(
+        &self,
+        Parameters(params): Parameters<ListMetadataDefinitionsParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (_, tenant) = Self::caller(&context)?;
+        self.run_tool(&tenant, move |conn| {
+            use crate::api::meta::definitions::ENTITY_TYPES;
+            use kairos_db::models::templates::MetadataDefinition;
+            use kairos_db::schema::metadata_definitions as definitions;
+            if let Some(entity_type) = params.entity_type.as_deref()
+                && !ENTITY_TYPES.contains(&entity_type)
+            {
+                return Err(ApiError::validation(format!(
+                    "The value {entity_type:?} of entity_type is not an entity type. The entity \
+                     types are: {}.",
+                    ENTITY_TYPES.join(", ")
+                )));
+            }
+            let rows: Vec<MetadataDefinition> = definitions::table
+                .order(definitions::slug.asc())
+                .select(MetadataDefinition::as_select())
+                .load(conn)
+                .map_err(ApiError::internal)?;
+            let mut out = String::from("# Metadata definitions\n\n");
+            let mut shown = 0;
+            for row in rows {
+                let definition = crate::api::meta::definitions::hydrate(conn, row)?;
+                if let Some(entity_type) = params.entity_type.as_deref()
+                    && !definition.entity_types.is_empty()
+                    && !definition.entity_types.iter().any(|t| t == entity_type)
+                {
+                    continue;
+                }
+                shown += 1;
+                out.push_str(&format!(
+                    "- `{}` {} ({})",
+                    definition.slug, definition.name, definition.field_type
+                ));
+                if !definition.enum_options.is_empty() {
+                    out.push_str(&format!(
+                        " — values, in order: {}",
+                        definition.enum_options.join(", ")
+                    ));
+                }
+                out.push_str(&if definition.entity_types.is_empty() {
+                    " — applies to: all types".to_string()
+                } else {
+                    format!(" — applies to: {}", definition.entity_types.join(", "))
+                });
+                out.push('\n');
+            }
+            if shown == 0 {
+                out.push_str("The organization has no metadata definition for this.\n");
+            }
+            Ok(out)
+        })
+        .await
+    }
+
+    #[tool(
+        description = "List the templates of the organization: slug, name, and the metadata that each template stamps on an item (the default value, and whether the field is required). With `slug`, show that one template with its full content."
+    )]
+    pub async fn list_templates(
+        &self,
+        Parameters(params): Parameters<ListTemplatesParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (_, tenant) = Self::caller(&context)?;
+        self.run_tool(&tenant, move |conn| {
+            use kairos_db::models::templates::Template;
+            use kairos_db::schema::templates;
+            let mut query = templates::table
+                .order(templates::slug.asc())
+                .select(Template::as_select())
+                .into_boxed();
+            if let Some(slug) = params.slug.as_deref() {
+                query = query.filter(templates::slug.eq(slug));
+            }
+            let rows: Vec<Template> = query.load(conn).map_err(ApiError::internal)?;
+            if rows.is_empty()
+                && let Some(slug) = params.slug.as_deref()
+            {
+                return Err(ApiError::not_found(format!(
+                    "The organization has no template with the slug {slug:?}."
+                )));
+            }
+            let mut out = String::from("# Templates\n");
+            for row in rows {
+                let template = crate::api::meta::templates::detail(conn, row)?;
+                out.push_str(&format!("\n## `{}` {}\n", template.slug, template.name));
+                if template.metadata.is_empty() {
+                    out.push_str("- metadata: none\n");
+                }
+                for field in &template.metadata {
+                    out.push_str(&format!(
+                        "- `{}` ({}){}{}\n",
+                        field.slug,
+                        field.field_type,
+                        field
+                            .default_value
+                            .as_deref()
+                            .map(|v| format!(" default: {v}"))
+                            .unwrap_or_default(),
+                        if field.required { " required" } else { "" }
+                    ));
+                }
+                if params.slug.is_some() {
+                    out.push_str(&format!("\n{}\n", template.content));
                 }
             }
             Ok(out)
@@ -1511,7 +2080,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Unified search: full-text `q`, structured `filter` (types, board, column, team, repository, task_type, metadata, dates), and graph `traverse` compose freely (at least one required). `filter.repository` gives the items of a repository: the tasks that link to it, and the documents and the ADRs that impact it. `traverse` follows the edges between items, so `impacts` is not a relationship of `traverse`. Compact results grouped by type; use get_item for full content."
+        description = "Unified search: full-text `q`, structured `filter` (types, board, column, team, repository, task_type, metadata, dates), and graph `traverse` compose freely (at least one required). `filter.board` and `filter.team` take a slug or a UUID. `filter.updated_before` and `filter.updated_after` compare the time of the last change: \"untouched for 90 days\" is `updated_before` = now minus 90 days. `filter.metadata_missing` gives the items with no value for each named definition: \"bugs without a priority\" is `{entity_type: [task], task_type: [bug], metadata_missing: [priority]}`. `filter.repository` gives the items of a repository: the tasks that link to it, and the documents and the ADRs that impact it. `traverse` follows the edges between items, so `impacts` is not a relationship of `traverse`. Compact results grouped by type; use get_item for full content."
     )]
     pub async fn search(
         &self,
@@ -1523,23 +2092,29 @@ impl KairosMcp {
             Ok(request) => request,
             Err(e) => return Ok(tool_error(e)),
         };
-        let repository = params.filter.as_ref().and_then(|f| f.repository.clone());
-        if repository.is_none()
+        let refs = match params.filter.as_ref().map(|f| {
+            crate::api::search::FilterRefs::new(
+                f.repository.clone(),
+                (f.board.clone(), f.board_id.is_some()),
+                (f.team.clone(), f.team_id.is_some()),
+            )
+        }) {
+            None => crate::api::search::FilterRefs::default(),
+            Some(Ok(refs)) => refs,
+            Some(Err(e)) => return Ok(tool_error(e)),
+        };
+        if refs.is_empty()
             && let Err(e) = core_search::validate(&request)
         {
             // Invalid requests never cost a connection checkout.
             return Ok(tool_error(ApiError::validation(e.to_string())));
         }
         self.run_tool(&tenant, move |conn| {
-            // KAIROS-T-0107: the slug-or-UUID repository filter needs a conn
-            // to resolve, so it joins the core filter here — then validate.
-            if let Some(reference) = repository.as_deref() {
-                let repo = repositories::resolve(conn, reference)
-                    .map_err(crate::api::tasks::map_repository_error)?;
-                request
-                    .filter
-                    .get_or_insert_with(Default::default)
-                    .repository_id = Some(repo.id);
+            // KAIROS-T-0107, KAIROS-T-0368: the slug-or-UUID repository,
+            // board and team need a conn to resolve, so they join the core
+            // filter here — then validate.
+            if !refs.is_empty() {
+                refs.resolve_into(conn, &mut request)?;
                 core_search::validate(&request).map_err(|e| ApiError::validation(e.to_string()))?;
             }
             let results = search::execute_search(conn, &request).map_err(map_search_error)?;
@@ -1683,6 +2258,92 @@ impl KairosMcp {
         .await
     }
 
+    // KAIROS-T-0367: a note in one call, with no version and no anchor.
+    #[tool(
+        description = "Append a note at the end of an item's content. The note gets a heading with the date and your name: `## Note (2026-10-11, Robin)`. Send no version and no anchor text: the server locks the item, adds the note to the current content, and writes one new version. Two notes at the same time both stay. Use it to record work, a finding or a decision on an item. You can append to an item that you created, or with `manage_<type>` on its board."
+    )]
+    pub async fn append_note(
+        &self,
+        Parameters(params): Parameters<AppendNoteParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
+            require_item_edit(conn, &slug, user, item.id, item.item_type)?;
+            let version = items::append_note(
+                conn,
+                item.item_type,
+                item.id,
+                &params.text,
+                user,
+                chrono::Utc::now().date_naive(),
+            )
+            .map_err(crate::api::map_note_error)?;
+            Ok(format!(
+                "Appended a note to {} (version {version}).",
+                item.short_code
+            ))
+        })
+        .await
+    }
+
+    // KAIROS-T-0382: the notifications of the person of the key.
+    #[tool(
+        description = "Your notifications (the events of a person): a claim handed off to you, a blocker of your claimed task that is done or archived, a task that you created that someone cancelled, a mention of your user name (`@name`), and a P0 bug on the board of your team. Gives each unread notification first (newest first, 100 at most), then the 20 newest read ones, each with its id. While you have unread notifications, each answer of the other tools ends with the 5 newest. Mark them read with `mark_events_read` when you have acted on them. A service account has no notifications."
+    )]
+    pub async fn get_events(
+        &self,
+        Parameters(GetEventsParams {}): Parameters<GetEventsParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        self.run_tool(&tenant, move |conn| {
+            let (items, unread) = crate::api::notifications::list_for(conn, user)?;
+            if items.is_empty() {
+                return Ok("# Your notifications\n(none)\n".to_string());
+            }
+            let mut out = format!("# Your notifications ({unread} unread)\n");
+            let mut read_heading = false;
+            for n in &items {
+                if n.read_at.is_some() && !read_heading {
+                    out.push_str("\n## Read\n");
+                    read_heading = true;
+                }
+                out.push_str(&notification_line(n));
+            }
+            if unread > 0 {
+                out.push_str("\nMark them read with mark_events_read (`ids`, or `all: true`).\n");
+            }
+            Ok(out)
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Mark your notifications read: `ids` (the ids that `get_events` gives) or `all: true`, not both. A read notification no longer comes at the end of each answer. An id that is not one of your notifications is refused and named, and nothing changes."
+    )]
+    pub async fn mark_events_read(
+        &self,
+        Parameters(params): Parameters<MarkEventsReadParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        self.run_tool(&tenant, move |conn| {
+            let (changed, unread) =
+                crate::api::notifications::mark_for(conn, user, params.ids, params.all)?;
+            Ok(format!(
+                "Marked {} notification(s) read. You have {unread} unread.",
+                changed.len()
+            ))
+        })
+        .await
+    }
+
     // COLLIERY-T-0269: the change of the owner board of a document is in
     // this tool, and not in `update_item`. `update_item` replaces content
     // under a version check, and the edit rule is its gate. The change of
@@ -1760,6 +2421,12 @@ impl KairosMcp {
             let from_board = board_by_ref(conn, &from_board_id.to_string())?;
             let moved = boards::move_task_with(conn, item.id, target.id, user, params.rename)
                 .map_err(map_board_error)?;
+            // KAIROS-T-0371: the entry column of the target over its limit.
+            let moved_code = moved
+                .rename
+                .as_ref()
+                .map_or(item.short_code.clone(), |rename| rename.new_code.clone());
+            crate::claims::note_wip(conn, moved.column_id, &moved_code)?;
             let column = board_columns(conn, target.id)?
                 .into_iter()
                 .find(|c| c.id == moved.column_id)
@@ -2028,20 +2695,20 @@ impl KairosMcp {
         let user = auth.user_id;
         let slug = tenant.slug.clone();
         let reference = params.repository;
+        let instance = service.instance();
+        let max_tries = self.state.config.jobs.max_tries;
         let requested = self
             .state
             .blocking
             .run(&tenant.slug, move |conn| {
-                crate::api::org::code_indexes::request_rebuild(conn, &slug, user, &reference)
+                crate::api::org::code_indexes::request_rebuild(
+                    conn, &slug, user, &reference, instance, max_tries,
+                )
             })
             .await;
         match requested {
             Ok((repo, run)) => {
-                service.request_rebuild(crate::code_index::RebuildRequest {
-                    tenant: tenant.slug.clone(),
-                    repository_id: repo.id,
-                    run: run.id,
-                });
+                self.state.jobs.wake();
                 Ok(tool_text(format!(
                     "Kairos builds the code index of the repository {} again: run {}, started {}. \
                      Read the runs with GET /api/repositories/{}/code-indexes/builds or \
@@ -2111,6 +2778,8 @@ impl KairosMcp {
                 ItemType::Document => unreachable!("documents have no board placement"),
             }
             .map_err(map_board_error)?;
+            // KAIROS-T-0371: a move into a column over its WIP limit.
+            crate::claims::note_wip(conn, to_column_id, &item.short_code)?;
 
             let name_of = |id: Uuid| {
                 columns
@@ -2318,6 +2987,9 @@ impl KairosMcp {
             // had drifted, missing the KAIROS-T-0078 entity-type scoping guard,
             // so MCP would stamp a documents-only definition onto a task.
             let ops = validated_metadata_ops(conn, item.item_type, &params.values)?;
+            // KAIROS-T-0381: a bug that becomes P0 tells its team.
+            let was_p0 =
+                kairos_db::notifications::is_p0_bug(conn, item.id).map_err(ApiError::internal)?;
 
             // Phase 2 — apply atomically (same shape as the API handler).
             conn.transaction::<_, diesel::result::Error, _>(|conn| {
@@ -2349,6 +3021,9 @@ impl KairosMcp {
                             .execute(conn)?;
                         }
                     }
+                }
+                if !was_p0 {
+                    kairos_db::notifications::on_p0_bug(conn, item.id, user)?;
                 }
                 Ok(())
             })
@@ -2574,6 +3249,199 @@ impl KairosMcp {
                     response.short_codes.join(", ")
                 )
             })
+        })
+        .await
+    }
+
+    // KAIROS-T-0337: the structure tools. Each calls the function of its
+    // REST route, so the gate and the refusals are those of REST: an
+    // organization admin, or a grant of `manage_structure` at the scope.
+    #[tool(
+        description = "Create a team with its delivery board (slug {slug}-delivery) and its ADR board (slug {slug}-adrs), as POST /api/teams does, in one transaction. `code_prefix` is the short-code prefix of the two boards (e.g. OPS gives OPS-T-0001 and OPS-A-0001): a capital letter, then 1 to 9 capital letters or digits; it does not change later. Optional: `team_type` (stream_aligned, platform, enabling, complicated_subsystem; the default is stream_aligned), `adr_board` (false makes no ADR board). The new boards have no members: use `add_team_member` (a team member can work the boards of the team) and `grant_capability`. Requires the organization admin role or `manage_structure` on the organization. A grant of manage_structure on one board does not create a team."
+    )]
+    pub async fn create_team(
+        &self,
+        Parameters(params): Parameters<CreateTeamParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            atomically(conn, |conn| {
+                let team = crate::api::org::teams::create(
+                    conn,
+                    &slug,
+                    user,
+                    kairos_client::types_org::CreateTeamRequest {
+                        name: params.name.clone(),
+                        slug: params.slug.clone(),
+                        team_type: params.team_type.clone(),
+                        code_prefix: params.code_prefix.clone(),
+                    },
+                )?;
+                let mut out = format!(
+                    "Created team {} ({}, {}). Delivery board: {}-delivery (prefix {}).",
+                    team.slug, team.name, team.team_type, team.slug, params.code_prefix
+                );
+                if params.adr_board.unwrap_or(true) {
+                    let adr = crate::api::org::boards::create(
+                        conn,
+                        &slug,
+                        user,
+                        kairos_client::types_org::CreateBoardRequest {
+                            name: format!("{} ADRs", params.name),
+                            slug: format!("{}-adrs", params.slug),
+                            board_level: BoardLevel::Adr.to_string(),
+                            team_id: Some(team.id.clone()),
+                            code_prefix: params.code_prefix.clone(),
+                        },
+                    )?;
+                    out.push_str(&format!(" ADR board: {}.", adr.board.slug));
+                }
+                out.push_str(
+                    "\nThe boards have no members. Use add_team_member and grant_capability.",
+                );
+                Ok(out)
+            })
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Create one board, as POST /api/boards does: an ADR board (board_level adr; with `team`, the ADR board of that team, which takes the prefix of the team), a strategy or an initiative board (no team), or a delivery board (a team with no delivery board). `slug` must match ^[a-z][a-z0-9_-]{1,62}$. `code_prefix` is the short-code prefix: a capital letter, then 1 to 9 capital letters or digits; it does not change later. The board gets the default columns and transitions of its level. Requires the organization admin role or `manage_structure` on the organization. A grant of manage_structure on one board does not create a board."
+    )]
+    pub async fn create_board(
+        &self,
+        Parameters(params): Parameters<CreateBoardParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            let team = params
+                .team
+                .as_deref()
+                .map(|team| team_by_ref(conn, team))
+                .transpose()?;
+            let detail = crate::api::org::boards::create(
+                conn,
+                &slug,
+                user,
+                kairos_client::types_org::CreateBoardRequest {
+                    name: params.name,
+                    slug: params.slug,
+                    board_level: params.board_level,
+                    team_id: team.as_ref().map(|team| team.id.to_string()),
+                    code_prefix: params.code_prefix,
+                },
+            )?;
+            let columns: Vec<&str> = detail.columns.iter().map(|c| c.name.as_str()).collect();
+            Ok(format!(
+                "Created board {} ({}, {}, prefix {}{}). Columns: {}.",
+                detail.board.slug,
+                detail.board.name,
+                detail.board.board_level,
+                detail.board.code_prefix,
+                team.map(|team| format!(", team {}", team.slug))
+                    .unwrap_or_default(),
+                columns.join(", ")
+            ))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Add a member of the organization to a team, as POST /api/teams/{id}/members does. A team member gets manage_tasks, manage_documents and transition_items on the boards of the team with no grant, and manage_adrs on the ADR board of the team. `team` is a slug or UUID. `user` is a user id, an email, a user name, or the name of a service account. Requires the organization admin role or `manage_structure` on the organization."
+    )]
+    pub async fn add_team_member(
+        &self,
+        Parameters(params): Parameters<AddTeamMemberParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            let team = team_by_ref(conn, &params.team)?;
+            let target = crate::api::org::structure_grants::resolve_member(
+                conn,
+                &slug,
+                &params.user,
+                "user",
+            )?;
+            let member =
+                crate::api::org::teams::add_member_as(conn, &slug, user, team.id, target.id)?;
+            Ok(format!(
+                "Added {} <{}> to the team {}.",
+                member.display_name, member.email, team.slug
+            ))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Grant a capability to a member of the organization. A board capability (manage_tasks, manage_documents, manage_adrs, manage_initiatives, manage_strategies, transition_items, configure_boards, administer_members, or a glob: *, manage_*, configure_*, transition_*) needs `board` (slug or UUID), and requires `administer_members` on that board, or `manage_structure` on that board or on the organization. The capability manage_structure is the structure of the organization: with no `board`, at the organization (teams, team members, boards, the configuration, members and grants of each board, repositories); with `board`, that board only (its columns, transitions, members and grants). Only an organization admin grants manage_structure. `user` is a user id, an email, a user name, or the name of a service account."
+    )]
+    pub async fn grant_capability(
+        &self,
+        Parameters(params): Parameters<GrantCapabilityParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            if params.capability == kairos_core::abac::MANAGE_STRUCTURE {
+                let grant = crate::api::org::structure_grants::grant(
+                    conn,
+                    &slug,
+                    user,
+                    &params.user,
+                    params.board.as_deref(),
+                )?;
+                let scope = match &grant.board_slug {
+                    Some(board) => format!("on the board {board}"),
+                    None => "on the organization".to_string(),
+                };
+                return Ok(format!(
+                    "Granted manage_structure {scope} to {} <{}> (grant {}).",
+                    grant.display_name, grant.email, grant.id
+                ));
+            }
+            let Some(board) = params.board.as_deref() else {
+                return Err(ApiError::validation(format!(
+                    "The capability {:?} is a board capability. Send `board`, the slug or the \
+                     UUID of the board.",
+                    params.capability
+                ))
+                .with_details(json!({ "argument": "board" })));
+            };
+            let board = board_by_ref(conn, board)?;
+            let target = crate::api::org::structure_grants::resolve_member(
+                conn,
+                &slug,
+                &params.user,
+                "user",
+            )?;
+            let member = crate::api::org::boards::grant_as(
+                conn,
+                &slug,
+                user,
+                board.id,
+                target.id,
+                std::slice::from_ref(&params.capability),
+            )?;
+            Ok(format!(
+                "Granted {} on the board {} to {} <{}>. The capabilities of the member on the \
+                 board: {}.",
+                params.capability,
+                board.slug,
+                member.display_name,
+                member.email,
+                member.capabilities.join(", ")
+            ))
         })
         .await
     }
@@ -3060,6 +3928,8 @@ struct BoardItemRow {
     /// Put away (KAIROS-A-0020). Only ever true when the caller asked for
     /// archived rows, and the renderer MUST mark it.
     archived: bool,
+    /// The last change (KAIROS-T-0368: `board_items` with `details`).
+    updated_at: DateTime<Utc>,
 }
 
 /// What each family's board listing selects. The trailing
@@ -3067,8 +3937,23 @@ struct BoardItemRow {
 /// than only the widened one: the live mode must still be able to prove
 /// it served nothing archived, and a marker that is only fetched when it
 /// might be set is a marker nobody checks (KAIROS-T-0159).
-type BoardStrategySelect = (Uuid, Uuid, String, String, Option<DateTime<Utc>>);
-type BoardInitiativeSelect = (Uuid, Uuid, String, String, bool, Option<DateTime<Utc>>);
+type BoardStrategySelect = (
+    Uuid,
+    Uuid,
+    String,
+    String,
+    Option<DateTime<Utc>>,
+    DateTime<Utc>,
+);
+type BoardInitiativeSelect = (
+    Uuid,
+    Uuid,
+    String,
+    String,
+    bool,
+    Option<DateTime<Utc>>,
+    DateTime<Utc>,
+);
 type BoardTaskSelect = (
     Uuid,
     Uuid,
@@ -3078,8 +3963,16 @@ type BoardTaskSelect = (
     WorkClass,
     Option<Uuid>,
     Option<DateTime<Utc>>,
+    DateTime<Utc>,
 );
-type BoardAdrSelect = (Uuid, Option<Uuid>, String, String, Option<DateTime<Utc>>);
+type BoardAdrSelect = (
+    Uuid,
+    Option<Uuid>,
+    String,
+    String,
+    Option<DateTime<Utc>>,
+    DateTime<Utc>,
+);
 
 /// Every item placed on a board (strategies, initiatives, tasks, and
 /// on-board ADRs — documents have no placement), unified for listing.
@@ -3121,22 +4014,22 @@ fn board_item_rows(
             strategies::short_code,
             strategies::title,
             strategies::deleted_at,
+            strategies::updated_at,
         ))
         .load(conn)
         .map_err(ApiError::internal)?;
-    rows.extend(
-        strategies.into_iter().map(
-            |(id, column_id, short_code, title, deleted_at)| BoardItemRow {
-                id,
-                column_id,
-                short_code,
-                title,
-                repository_id: None,
-                kind: "strategy".to_string(),
-                archived: deleted_at.is_some(),
-            },
-        ),
-    );
+    rows.extend(strategies.into_iter().map(
+        |(id, column_id, short_code, title, deleted_at, updated_at)| BoardItemRow {
+            id,
+            column_id,
+            short_code,
+            title,
+            repository_id: None,
+            kind: "strategy".to_string(),
+            archived: deleted_at.is_some(),
+            updated_at,
+        },
+    ));
 
     let mut initiative_query = initiatives::table
         .filter(initiatives::board_id.eq(board_id))
@@ -3156,11 +4049,12 @@ fn board_item_rows(
             initiatives::title,
             initiatives::is_bucket,
             initiatives::deleted_at,
+            initiatives::updated_at,
         ))
         .load(conn)
         .map_err(ApiError::internal)?;
     rows.extend(initiatives.into_iter().map(
-        |(id, column_id, short_code, title, is_bucket, deleted_at)| BoardItemRow {
+        |(id, column_id, short_code, title, is_bucket, deleted_at, updated_at)| BoardItemRow {
             id,
             column_id,
             short_code,
@@ -3168,6 +4062,7 @@ fn board_item_rows(
             repository_id: None,
             kind: if is_bucket { "bucket" } else { "initiative" }.to_string(),
             archived: deleted_at.is_some(),
+            updated_at,
         },
     ));
 
@@ -3194,11 +4089,22 @@ fn board_item_rows(
             tasks::work_class,
             tasks::repository_id,
             tasks::deleted_at,
+            tasks::updated_at,
         ))
         .load(conn)
         .map_err(ApiError::internal)?;
     rows.extend(tasks.into_iter().map(
-        |(id, column_id, short_code, title, task_type, work_class, repository_id, deleted_at)| {
+        |(
+            id,
+            column_id,
+            short_code,
+            title,
+            task_type,
+            work_class,
+            repository_id,
+            deleted_at,
+            updated_at,
+        )| {
             BoardItemRow {
                 id,
                 column_id,
@@ -3212,6 +4118,7 @@ fn board_item_rows(
                     WorkClass::Planned => task_type.to_string(),
                 },
                 archived: deleted_at.is_some(),
+                updated_at,
             }
         },
     ));
@@ -3231,25 +4138,210 @@ fn board_item_rows(
             adrs::short_code,
             adrs::title,
             adrs::deleted_at,
+            adrs::updated_at,
         ))
         .load(conn)
         .map_err(ApiError::internal)?;
-    rows.extend(
-        adrs.into_iter()
-            .filter_map(|(id, column_id, short_code, title, deleted_at)| {
-                column_id.map(|column_id| BoardItemRow {
-                    id,
-                    column_id,
-                    short_code,
-                    title,
-                    repository_id: None,
-                    kind: "adr".to_string(),
-                    archived: deleted_at.is_some(),
-                })
-            }),
-    );
+    rows.extend(adrs.into_iter().filter_map(
+        |(id, column_id, short_code, title, deleted_at, updated_at)| {
+            column_id.map(|column_id| BoardItemRow {
+                id,
+                column_id,
+                short_code,
+                title,
+                repository_id: None,
+                kind: "adr".to_string(),
+                archived: deleted_at.is_some(),
+                updated_at,
+            })
+        },
+    ));
 
     Ok(rows)
+}
+
+/// The details of one `board_items` line (KAIROS-T-0368):
+/// ` {updated 2026-10-08; priority: high; size: m}`.
+fn card_details(updated_at: DateTime<Utc>, metadata: Option<&Vec<(String, String)>>) -> String {
+    let mut parts = vec![format!("updated {}", updated_at.format("%Y-%m-%d"))];
+    for (slug, value) in metadata.into_iter().flatten() {
+        parts.push(format!("{slug}: {value}"));
+    }
+    format!(" {{{}}}", parts.join("; "))
+}
+
+/// The filter of a rule, for a sentence: `"and is a bug "`, or empty. Pure.
+fn rule_filter_text(rule: &kairos_client::types_dispatch::DispatchRule) -> String {
+    let mut parts = Vec::new();
+    if let Some(t) = &rule.task_type {
+        parts.push(format!("has the type {t}"));
+    }
+    if let (Some(slug), Some(value)) = (&rule.metadata_slug, &rule.metadata_value) {
+        parts.push(format!("has {slug}={value}"));
+    }
+    if let Some(repo) = &rule.repository {
+        parts.push(format!("has the repository {repo}"));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("and {} ", parts.join(" and "))
+    }
+}
+
+/// The text of `list_dispatch_rules` (KAIROS-T-0385). Pure.
+fn dispatch_text(
+    board: &str,
+    rules: &[kairos_client::types_dispatch::DispatchRule],
+    targets: &[kairos_client::types_dispatch::WebhookTarget],
+    log: &[kairos_client::types_dispatch::WebhookDelivery],
+) -> String {
+    let mut out = format!("Dispatch rules of {board} ({}):\n", rules.len());
+    if rules.is_empty() {
+        out.push_str("  (none)\n");
+    }
+    for rule in rules {
+        out.push_str(&format!(
+            "- {}: a task that enters {} {}-> {} ({})\n",
+            rule.id,
+            rule.column,
+            rule_filter_text(rule),
+            rule.target,
+            rule.target_id
+        ));
+    }
+    out.push_str(&format!("Webhook targets ({}):\n", targets.len()));
+    if targets.is_empty() {
+        out.push_str("  (none)\n");
+    }
+    for target in targets {
+        let state = if target.enabled {
+            format!("on, {} failed tries in a row", target.consecutive_failures)
+        } else {
+            format!(
+                "OFF: {}",
+                target.disabled_reason.as_deref().unwrap_or("turned off")
+            )
+        };
+        out.push_str(&format!(
+            "- {} {} <{}>: {state}\n",
+            target.id, target.name, target.url
+        ));
+    }
+    out.push_str(&format!("Newest deliveries ({}):\n", log.len()));
+    if log.is_empty() {
+        out.push_str("  (none)\n");
+    }
+    for d in log {
+        out.push_str(&format!(
+            "- {} {} {} {}: {}, {} {}{}{}\n",
+            d.created_at,
+            d.id,
+            d.event,
+            d.short_code.as_deref().unwrap_or("-"),
+            d.status,
+            d.tries,
+            if d.tries == 1 { "try" } else { "tries" },
+            d.response_code
+                .map(|c| format!(", code {c}"))
+                .unwrap_or_default(),
+            d.last_error
+                .as_deref()
+                .map(|e| format!(", {e}"))
+                .unwrap_or_default()
+        ));
+    }
+    out
+}
+
+/// The text of `board_flow` (KAIROS-T-0372). Pure.
+fn flow_text(flow: &kairos_client::types_org::BoardFlow) -> String {
+    let days = |value: Option<f64>| value.map_or_else(|| "-".to_string(), |v| format!("{v}"));
+    let mut out = format!(
+        "# Flow of {} ({} to {})\n\nStart columns: {}. Done columns: {}.\nDone: {}. Cancelled: \
+         {} (counted apart). Done with no start: {}.\n",
+        flow.board_slug,
+        flow.from,
+        flow.to,
+        if flow.start_columns.is_empty() {
+            "none (no cycle time)".to_string()
+        } else {
+            flow.start_columns.join(", ")
+        },
+        if flow.done_columns.is_empty() {
+            "none".to_string()
+        } else {
+            flow.done_columns.join(", ")
+        },
+        flow.done_count,
+        flow.cancelled_count,
+        flow.done_without_start,
+    );
+    let cycle = &flow.cycle_time;
+    out.push_str(&format!(
+        "\n## Cycle time (days)\ncount {}, mean {}, median {}, 85th percentile {}\n",
+        cycle.count,
+        days(cycle.mean_days),
+        days(cycle.median_days),
+        days(cycle.p85_days)
+    ));
+    for item in &cycle.items {
+        out.push_str(&format!(
+            "- {} {} ({} days, done {})\n",
+            item.short_code,
+            item.title,
+            item.days,
+            item.done_at.get(..10).unwrap_or(&item.done_at)
+        ));
+    }
+    out.push_str("\n## Throughput per week\n");
+    for week in &flow.throughput {
+        out.push_str(&format!(
+            "- week of {}: done {}, cancelled {}\n",
+            week.week_start, week.done, week.cancelled
+        ));
+    }
+    out.push_str("\n## Work in progress (oldest first)\n");
+    if flow.ageing.is_empty() {
+        out.push_str("No item is in progress.\n");
+    }
+    for item in &flow.ageing {
+        out.push_str(&format!(
+            "- {} {} [{}] {} days\n",
+            item.short_code, item.title, item.column, item.age_days
+        ));
+    }
+    let cfd = &flow.cumulative_flow;
+    out.push_str(&format!(
+        "\n## Cumulative flow (last 14 days)\ndate | {}\n",
+        cfd.columns.join(" | ")
+    ));
+    let skip = cfd.days.len().saturating_sub(14);
+    for day in cfd.days.iter().skip(skip) {
+        out.push_str(&format!(
+            "{} | {}\n",
+            day.date,
+            day.counts
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ));
+    }
+    out
+}
+
+/// The WIP limit of a column in the text of `board_items` (KAIROS-T-0371):
+/// ` [WIP 2/3]`, ` [WIP 4/3, over the limit]`, or nothing for a column with
+/// no limit. `count` is the live count of the column, on each page. Pure.
+fn wip_marker(count: i64, wip_limit: Option<i32>) -> String {
+    match wip_limit {
+        None => String::new(),
+        Some(limit) if kairos_db::board_items::over_wip_limit(count, Some(limit)) => {
+            format!(" [WIP {count}/{limit}, over the limit]")
+        }
+        Some(limit) => format!(" [WIP {count}/{limit}]"),
+    }
 }
 
 /// The open-dependency tags of one `board_items` line: `" [blocked by
@@ -4378,6 +5470,17 @@ fn search_to_core(params: &SearchParams) -> Result<core_search::SearchRequest, A
                     .as_deref()
                     .map(|v| timestamp_field(v, "filter.created_before"))
                     .transpose()?,
+                updated_after: filter
+                    .updated_after
+                    .as_deref()
+                    .map(|v| timestamp_field(v, "filter.updated_after"))
+                    .transpose()?,
+                updated_before: filter
+                    .updated_before
+                    .as_deref()
+                    .map(|v| timestamp_field(v, "filter.updated_before"))
+                    .transpose()?,
+                metadata_missing: filter.metadata_missing.clone(),
                 include_deleted: filter.include_deleted,
             })
         })
@@ -4445,6 +5548,7 @@ fn search_to_core(params: &SearchParams) -> Result<core_search::SearchRequest, A
 fn map_search_error(e: SearchError) -> ApiError {
     match e {
         SearchError::Invalid(e) => ApiError::validation(e.to_string()),
+        SearchError::UnknownMetadataDefinition(_) => ApiError::validation(e.to_string()),
         SearchError::TraverseRootNotFound { reference } => ApiError::not_found(format!(
             "The item {reference:?} of traverse.from does not exist."
         )),
@@ -4538,6 +5642,44 @@ fn render_search_results(results: &SearchResults, repo_slugs: &BTreeMap<Uuid, St
         }
     }
     out
+}
+
+/// One line of a notification (KAIROS-T-0382): the id, the time, the kind,
+/// the item and the text; `(read)` for a read one.
+pub(super) fn notification_line(n: &kairos_db::notifications::Notification) -> String {
+    format!(
+        "- {} · {} · {} · {}: {}{}\n",
+        n.id,
+        n.created_at.format("%Y-%m-%d %H:%MZ"),
+        n.kind,
+        n.short_code.as_deref().unwrap_or("(item gone)"),
+        n.text,
+        if n.read_at.is_some() { " (read)" } else { "" }
+    )
+}
+
+/// How many unread notifications come at the end of an answer.
+pub(super) const RIDE_ALONG: i64 = 5;
+
+/// The block at the end of an answer to a person with unread notifications
+/// (KAIROS-T-0382): the [`RIDE_ALONG`] newest, then "N more". `None` when
+/// the person has none (a service account never has one). One query.
+pub(super) fn ride_along(conn: &mut PgConnection, user: Uuid) -> Result<Option<String>, ApiError> {
+    let unread =
+        kairos_db::notifications::unread(conn, user, RIDE_ALONG).map_err(ApiError::internal)?;
+    if unread.total == 0 {
+        return Ok(None);
+    }
+    let mut out = format!("## Your notifications ({} unread)\n", unread.total);
+    for n in &unread.newest {
+        out.push_str(&notification_line(n));
+    }
+    let more = unread.total - unread.newest.len() as i64;
+    if more > 0 {
+        out.push_str(&format!("{more} more: call get_events\n"));
+    }
+    out.push_str("Mark them read with mark_events_read when you have acted on them.\n");
+    Ok(Some(out))
 }
 
 #[cfg(test)]

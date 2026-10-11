@@ -14,6 +14,8 @@ pub mod bedrock_http;
 pub mod chat_http;
 pub mod embed_http;
 pub mod git_http;
+pub mod github_http;
+pub mod hook_http;
 
 use axum::Router;
 use axum::body::Body;
@@ -211,6 +213,7 @@ pub fn base_config(scratch_url: &str) -> AppConfig {
         code_index_dir: None,
         code_index_poll_secs: 0,
         code_index_threads: 4,
+        code_index_min_rebuild_secs: 0,
         web_client_id: "kairos-web".to_string(),
         api_bearer: kairos_server::config::ApiBearer::AccessToken,
         web_client_secret: None,
@@ -231,6 +234,11 @@ pub fn base_config(scratch_url: &str) -> AppConfig {
         trusted_proxy: false,
         local_auth: false,
         session_ttl_secs: 14 * 24 * 60 * 60,
+        api_key_ttl_days: 90,
+        api_key_rotation_grace_secs: 24 * 60 * 60,
+        jobs: Default::default(),
+        webhooks: Default::default(),
+        writeback: Default::default(),
         bootstrap_admin: None,
         bootstrap_password: None,
         bootstrap_password_hash: None,

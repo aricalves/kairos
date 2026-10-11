@@ -11,6 +11,7 @@ pub mod embed_text;
 pub mod forge;
 pub mod graph;
 pub mod items;
+pub mod notifications;
 pub mod primary;
 pub mod repositories;
 pub mod retention;

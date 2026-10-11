@@ -403,7 +403,13 @@ def _prepare_gui_stack(env, phase):
     if code != 0:
         return _e2e_phase(f"{phase}: web build", code)
 
-    print(f"Reseeding the demo tenant for {phase}...", flush=True)
+    # KAIROS-T-0346: seed-demo --force drops the whole tenant schema, so the
+    # rows that an earlier leg or run made go too; it prints what it dropped.
+    print(
+        f"Resetting the demo tenant for {phase} (seed-demo --force drops the tenant "
+        "and seeds it again)...",
+        flush=True,
+    )
     code = subprocess.run(
         [str(SERVER_BIN), "seed-demo", "--force"],
         cwd=str(PROJECT_ROOT),
@@ -483,6 +489,11 @@ def _gui_server_env(env, extra=None):
         # each tick. 0 keeps the service (requests are taken and stay
         # `running`) and runs no builder.
         "KAIROS_CODE_INDEX_POLL_SECS": "0",
+        # KAIROS-T-0387: the dispatch spec sends a delivery to a receiver of
+        # the spec on 127.0.0.1, which the address guard refuses unless this
+        # is on. A short first wait, so a failed try comes back fast.
+        "KAIROS_WEBHOOK_ALLOW_PRIVATE": "true",
+        "KAIROS_WEBHOOK_RETRY_BASE_SECS": "1",
     })
     if extra:
         gui_env.update(extra)
@@ -658,7 +669,11 @@ def e2e():
         env = os.environ.copy()
         env.setdefault("DATABASE_URL", E2E_DATABASE_URL)
 
-        print("Seeding the demo tenant (kairos-server seed-demo --force)...", flush=True)
+        print(
+            "Resetting the demo tenant (kairos-server seed-demo --force drops the "
+            "tenant and seeds it again)...",
+            flush=True,
+        )
         exit_code = _e2e_phase(
             "seed-demo",
             subprocess.run(
@@ -679,6 +694,14 @@ def e2e():
             "KAIROS_BASE_DOMAIN": "kairos.test",
             # Both sign-in paths at once (KAIROS-T-0203, KAIROS-T-0205).
             "KAIROS_LOCAL_AUTH": "true",
+            # This server keeps running during the GUI leg, on the same
+            # database, so its job worker takes jobs of the GUI server too
+            # (COLLIERY-I-0613: one job queue for every server). Each server
+            # of one database needs the same job settings: without these,
+            # it refused the delivery of the dispatch spec to 127.0.0.1 and
+            # put it back for 30 s.
+            "KAIROS_WEBHOOK_ALLOW_PRIVATE": "true",
+            "KAIROS_WEBHOOK_RETRY_BASE_SECS": "1",
         })
         server = subprocess.Popen(
             [str(SERVER_BIN), "serve"],

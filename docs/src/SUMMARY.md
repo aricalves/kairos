@@ -28,9 +28,11 @@ checklist.
 - [Provision a tenant](how-to/provision-a-tenant.md)
 - [Connect a git forge](how-to/connect-a-git-forge.md)
 - [Read a private repository](how-to/read-a-private-repository.md)
+- [Turn on GitHub write-back](how-to/turn-on-github-write-back.md)
 - [Build the code index again](how-to/build-the-code-index-again.md)
 - [Use a hosted model for the code index summaries](how-to/use-a-hosted-model-for-the-code-index.md)
 - [Back up and restore](how-to/back-up-and-restore.md)
+- [Rotate keys](how-to/rotate-keys.md)
 - [Export traces to a collector](how-to/export-traces.md)
 - [Provision users with SCIM](how-to/provision-users-with-scim.md)
 
@@ -40,12 +42,16 @@ checklist.
 - [Move work between boards](how-to/move-work-between-boards.md)
 - [Wind down a team](how-to/wind-down-a-team.md)
 - [Find archived work](how-to/find-archived-work.md)
+- [Read your notifications](how-to/read-your-notifications.md)
 
 ## For agent authors
 
 - [Give an agent your key](how-to/give-an-agent-your-key.md)
 - [Give an agent machine access](how-to/give-an-agent-machine-access.md)
+- [Run an admin agent](how-to/run-an-admin-agent.md)
 - [Connect over MCP](how-to/connect-over-mcp.md)
+- [Read notifications as an agent](how-to/read-notifications-as-an-agent.md)
+- [Dispatch tasks to an agent runner](how-to/dispatch-tasks-to-an-agent.md)
 - [Configure semantic retrieval](how-to/configure-retrieval.md)
 
 # Reference
@@ -64,6 +70,7 @@ checklist.
   - [Signing in](reference/rest/signing-in.md)
   - [Schemas](reference/rest/schemas.md)
 - [Events](reference/events.md)
+- [Webhook deliveries](reference/webhooks.md)
 - [SCIM](reference/scim.md)
 - [Capabilities](reference/capabilities.md)
 - [Short codes](reference/short-codes.md)
@@ -79,3 +86,4 @@ checklist.
 - [Archiving](explanation/archiving.md)
 - [Repositories as execution scope](explanation/repositories-as-execution-scope.md)
 - [Finding related work](explanation/finding-related-work.md)
+- [The job queue](explanation/job-queue.md)

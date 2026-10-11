@@ -95,6 +95,14 @@ pub struct BoardColumn {
     #[serde(default)]
     #[schema(required = true)]
     pub removed_at: Option<String>,
+    /// The most live items that the column should hold (KAIROS-T-0371);
+    /// `null`: no limit. Kairos does not refuse a move into a column over its
+    /// limit, and the answer has the header `Kairos-Warning`. The server sends
+    /// it in each response; the default is for the client only (an older
+    /// server).
+    #[serde(default)]
+    #[schema(required = true)]
+    pub wip_limit: Option<i32>,
 }
 
 /// An allowed column-to-column transition edge.
@@ -210,6 +218,16 @@ where
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct BoardColumnItems {
     pub column: BoardColumn,
+    /// The live items in the column, on each page (KAIROS-T-0371): the
+    /// count that the WIP limit is for. Not changed by the filters or the
+    /// page. The default is for the client only (an older server).
+    #[serde(default)]
+    #[schema(required = true)]
+    pub item_count: i64,
+    /// `item_count` is above `column.wip_limit`.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub over_wip_limit: bool,
     pub strategies: Vec<Strategy>,
     pub initiatives: Vec<Initiative>,
     pub tasks: Vec<Task>,
@@ -254,6 +272,10 @@ pub struct BoardItemsQuery {
     /// (KAIROS-T-0321). Tasks and ADRs are unaffected. Not with `team`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_team: bool,
+    /// Add `item_metadata` to the response: the metadata values of each
+    /// item of the page (KAIROS-T-0368). Default false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub with_metadata: bool,
 }
 
 /// One team of an initiative or a strategy (KAIROS-T-0321). The item gets
@@ -358,6 +380,13 @@ pub struct BoardItemsResponse {
     #[serde(default)]
     #[schema(required = true)]
     pub item_teams: std::collections::BTreeMap<String, Vec<ItemTeam>>,
+    /// With `with_metadata=true` only (KAIROS-T-0368): the metadata values
+    /// of each item of the page, keyed by short code and then by the slug
+    /// of the definition. An item with no value has no entry. Absent when
+    /// the query did not ask for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_metadata:
+        Option<std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>>,
 }
 
 impl BoardItemsResponse {
@@ -502,6 +531,15 @@ pub struct UpdateColumnRequest {
     /// tasks in the column end.
     #[serde(default)]
     pub claims: Option<bool>,
+    /// The WIP limit of the column (KAIROS-T-0371): a number above 0, or
+    /// `null` to remove the limit. Leave it out to keep the limit.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    #[schema(value_type = Option<i32>)]
+    pub wip_limit: Option<Option<i32>>,
 }
 
 /// Body of `POST /api/boards/{id}/transitions`.
@@ -643,6 +681,50 @@ pub struct AddTeamMemberRequest {
 }
 
 // ---------------------------------------------------------------------------
+// The structure capability (KAIROS-T-0337)
+// ---------------------------------------------------------------------------
+
+/// One grant of `manage_structure` (`GET /api/structure-grants` element).
+/// `scope` is `organization` or `board`. A grant on the organization covers
+/// teams, team members, boards and repositories. A grant on a board covers
+/// the configuration, the members and the grants of that board only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct StructureGrant {
+    /// The id of the grant (UUID). `DELETE /api/structure-grants/{id}`
+    /// revokes it.
+    pub id: String,
+    /// `public.users.id` of the principal (UUID).
+    pub user_id: String,
+    pub email: String,
+    pub display_name: String,
+    /// `human` | `service_account`.
+    pub kind: String,
+    /// `organization` | `board`.
+    pub scope: String,
+    /// The board of a board grant (UUID), or null.
+    pub board_id: Option<String>,
+    /// The slug of the board of a board grant, or null.
+    pub board_slug: Option<String>,
+    /// `public.users.id` of the organization admin who granted it.
+    pub granted_by: String,
+    /// RFC 3339.
+    pub granted_at: String,
+}
+
+/// Body of `POST /api/structure-grants`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateStructureGrantRequest {
+    /// The principal: a user id (UUID), an email, or a user name of a member
+    /// of the organization. A service account is given by its id.
+    pub user: String,
+    /// The board (slug or UUID) of a board grant. Omit it for a grant at the
+    /// organization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub board: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Delivery streams
 // ---------------------------------------------------------------------------
 
@@ -767,6 +849,21 @@ pub struct WhoamiResponse {
     /// Repositories owned by the caller's teams (KAIROS-T-0107, A-0019).
     #[serde(default)]
     pub repositories: Vec<WhoamiRepository>,
+    /// The caller's grants of `manage_structure` (KAIROS-T-0337): at the
+    /// organization, or on one board. Empty when the caller has none.
+    #[serde(default)]
+    pub structure: Vec<WhoamiStructureGrant>,
+}
+
+/// One grant of [`WhoamiResponse::structure`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct WhoamiStructureGrant {
+    /// `organization` | `board`.
+    pub scope: String,
+    /// The board of a board grant (UUID), or null.
+    pub board_id: Option<String>,
+    /// The slug of the board of a board grant, or null.
+    pub board_slug: Option<String>,
 }
 
 /// One repository of [`WhoamiResponse::repositories`].
@@ -892,6 +989,133 @@ pub struct TenantDeletedResponse {
     pub dropped: bool,
 }
 
+// ---------------------------------------------------------------------------
+// Flow metrics (KAIROS-T-0372)
+// ---------------------------------------------------------------------------
+
+/// Query of `GET /api/boards/{id}/flow` (KAIROS-T-0372). Dates are
+/// `YYYY-MM-DD` (UTC), and the range has the two days. The defaults: `to`
+/// is today, `from` is 89 days before `to` (90 days). A range has 366 days
+/// at most.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+#[serde(deny_unknown_fields)]
+pub struct BoardFlowQuery {
+    /// The first day of the range, `YYYY-MM-DD`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// The last day of the range, `YYYY-MM-DD`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+}
+
+/// The flow metrics of a board for a range (KAIROS-T-0372), from the
+/// history of the moves (`activity_log`). Only the live items of the board
+/// count; a cancelled task counts apart from the done items.
+///
+/// The start of an item is its first entry into a start column. A start
+/// column has `claims` (Active). With no such column, the column named
+/// Active is the start. An item is done in an `is_done` column; its done
+/// time is its last entry into one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct BoardFlow {
+    /// The board (UUID).
+    pub board_id: String,
+    pub board_slug: String,
+    /// The first day of the range, `YYYY-MM-DD`.
+    pub from: String,
+    /// The last day of the range, `YYYY-MM-DD`.
+    pub to: String,
+    /// The start columns, by name. Empty: the board has no start, and no
+    /// cycle time.
+    pub start_columns: Vec<String>,
+    /// The done columns, by name.
+    pub done_columns: Vec<String>,
+    /// The done items of the range (not cancelled).
+    pub done_count: i64,
+    /// The cancelled tasks of the range, by the time of the cancel.
+    pub cancelled_count: i64,
+    pub cycle_time: FlowCycleTime,
+    /// The done items of the range that never entered a start column (no
+    /// cycle time).
+    pub done_without_start: i64,
+    /// One row for each week of the range (weeks start on Monday, UTC).
+    pub throughput: Vec<FlowWeek>,
+    /// The work in progress: each item that is not done and has a start,
+    /// oldest first.
+    pub ageing: Vec<FlowAgeingItem>,
+    pub cumulative_flow: CumulativeFlow,
+}
+
+/// The cycle time of the done items of the range (KAIROS-T-0372): from the
+/// start to the done time, in days.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct FlowCycleTime {
+    /// The number of items with a cycle time.
+    pub count: i64,
+    pub mean_days: Option<f64>,
+    pub median_days: Option<f64>,
+    /// The 85th percentile (nearest rank).
+    pub p85_days: Option<f64>,
+    /// Each item, in the order of its done time.
+    pub items: Vec<FlowCycleTimeItem>,
+}
+
+/// One done item and its cycle time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct FlowCycleTimeItem {
+    pub short_code: String,
+    pub title: String,
+    /// RFC 3339.
+    pub started_at: String,
+    /// RFC 3339.
+    pub done_at: String,
+    pub days: f64,
+}
+
+/// The throughput of one week.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct FlowWeek {
+    /// The Monday of the week, `YYYY-MM-DD`.
+    pub week_start: String,
+    /// The items that went to a done column in the week (not cancelled).
+    pub done: i64,
+    /// The tasks cancelled in the week.
+    pub cancelled: i64,
+}
+
+/// One item in progress, and its age.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct FlowAgeingItem {
+    pub short_code: String,
+    pub title: String,
+    /// The column of the item now.
+    pub column: String,
+    /// The start of the item (RFC 3339).
+    pub started_at: String,
+    /// The time from the start to now, in days.
+    pub age_days: f64,
+}
+
+/// The number of live items in each column at the end of each day of the
+/// range (UTC).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CumulativeFlow {
+    /// The columns: those of the board in position order, then an old name
+    /// of a column that the history has (a column that has a new name now).
+    pub columns: Vec<String>,
+    /// One row for each day; `counts` has the order of `columns`.
+    pub days: Vec<CumulativeFlowDay>,
+}
+
+/// One day of the cumulative flow.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CumulativeFlowDay {
+    /// `YYYY-MM-DD`.
+    pub date: String,
+    pub counts: Vec<i64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -947,6 +1171,7 @@ mod tests {
             is_done: false,
             claims: false,
             removed_at: None,
+            wip_limit: None,
         };
         let sent = serde_json::to_value(&column).expect("serializes");
         assert!(

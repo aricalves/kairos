@@ -386,7 +386,8 @@ pub(crate) async fn update_member(
 }
 
 /// Remove a member. Removing the LAST admin is rejected (422 `LAST_ADMIN`).
-/// Org-admin-only.
+/// Kairos revokes the agent keys of the member in the same transaction
+/// (KAIROS-T-0388). Org-admin-only.
 #[utoipa::path(
     delete,
     path = "/api/members/{user_id}",
@@ -414,27 +415,44 @@ pub(crate) async fn remove_member(
         .run(&tenant.slug, move |conn| {
             use kairos_db::schema::organization_members::dsl;
             require_capability(conn, &slug, None, user, MANAGE)?;
-            let membership = load_membership(conn, org_id, target)?;
-            if membership.role == OrgRole::Admin && admin_count(conn, org_id)? <= 1 {
-                return Err(last_admin_error());
-            }
-            diesel::delete(
-                dsl::organization_members
-                    .filter(dsl::organization_id.eq(org_id))
-                    .filter(dsl::user_id.eq(target)),
-            )
-            .execute(conn)
-            .map_err(ApiError::internal)?;
-            log_membership_activity(
-                conn,
-                user,
-                ActivityAction::Delete,
-                target,
-                format!("member_remove:{target}"),
-            )?;
-            Ok(dto::RemoveOrgMemberResponse {
-                user_id: target.to_string(),
-                removed: true,
+            super::run_in_transaction(conn, |conn| {
+                let membership = load_membership(conn, org_id, target)?;
+                if membership.role == OrgRole::Admin && admin_count(conn, org_id)? <= 1 {
+                    return Err(last_admin_error());
+                }
+                diesel::delete(
+                    dsl::organization_members
+                        .filter(dsl::organization_id.eq(org_id))
+                        .filter(dsl::user_id.eq(target)),
+                )
+                .execute(conn)
+                .map_err(ApiError::internal)?;
+                log_membership_activity(
+                    conn,
+                    user,
+                    ActivityAction::Delete,
+                    target,
+                    format!("member_remove:{target}"),
+                )?;
+                // KAIROS-T-0388: a person who leaves keeps no working agent key.
+                for key in kairos_db::api_keys::revoke_person_keys(conn, target)
+                    .map_err(ApiError::internal)?
+                {
+                    diesel::insert_into(kairos_db::schema::activity_log::table)
+                        .values(NewActivityLogEntry {
+                            actor_id: user,
+                            action: ActivityAction::Delete,
+                            entity_id: Some(key.id),
+                            entity_type: Some("api_key".to_string()),
+                            details: format!("agent_key_revoke_on_remove:{}", key.name),
+                        })
+                        .execute(conn)
+                        .map_err(ApiError::internal)?;
+                }
+                Ok(dto::RemoveOrgMemberResponse {
+                    user_id: target.to_string(),
+                    removed: true,
+                })
             })
         })
         .await?;

@@ -116,6 +116,26 @@ There is nothing to configure for the Planned and Support lanes: work class is
 a property of the task, not of the board
 ([`work_class` in the CLI](../reference/cli.md#kairos-search)).
 
+## Set a WIP limit on a column
+
+A WIP limit is the most live items that a column should hold. For example, set 1
+item in Active for each member of the team. Kairos does not refuse a move over
+the limit. It warns, and the board marks the column.
+
+- On the board settings page (**Admin → Boards**, then the board), type the
+  limit in the **WIP limit** field of the column, and click **Set limit**. To
+  remove the limit, clear the field and click **Set limit**.
+- Or the CLI: `kairos boards wip-limit <board> Active --limit 3`, and
+  `--none` to remove it.
+- Or the API: `PATCH /api/boards/{id}/columns/{col_id}` with
+  `{"wip_limit": 3}`, and `{"wip_limit": null}` to remove it.
+
+The column head on the board shows the live count against the limit, for
+example **WIP 2/3**. When the column has more items than the limit, the chip
+says **over** and the head has a red line. `board_items` (REST and MCP) gives
+the same count. A move into a column over its limit succeeds. The answer has a
+warning: the header `Kairos-Warning` on REST, a line on MCP.
+
 ## Removing a column
 
 ```sh

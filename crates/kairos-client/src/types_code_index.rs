@@ -103,6 +103,11 @@ pub struct CodeIndexBuild {
     /// The summaries that the run made with the model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summaries_made: Option<i32>,
+    /// The summaries that the run reused with no model call
+    /// (KAIROS-T-0335): from the pool of the repository, or from the work
+    /// file of a run that did not end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summaries_reused: Option<i32>,
     /// The user who asked for the run or sent the upload. None for the
     /// builder.
     #[serde(default, skip_serializing_if = "Option::is_none")]

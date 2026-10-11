@@ -35,7 +35,7 @@ pub enum RepositoryError {
     SlugNotFound(String),
     /// The slug fails [`kairos_core::repositories::is_valid_slug`].
     #[error(
-        "The repository slug {0:?} is not correct. A repository slug must match ^[a-z0-9][a-z0-9-]{{1,62}}$."
+        "The repository slug {0:?} is not correct. A repository slug must match ^[a-z0-9][a-z0-9-]{{1,62}}$. Use 2 to 63 characters: lowercase letters, digits and hyphens. The first character is a letter or a digit. An example is acme-payments-api."
     )]
     InvalidSlug(String),
     /// The full name, the URL or the default branch does not have the form

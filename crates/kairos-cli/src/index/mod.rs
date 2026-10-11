@@ -10,7 +10,10 @@
 //!   the summaries of the pool and makes no new ones (COLLIERY-T-2529, the
 //!   background update of the plugin). It starts from the nearest base index in
 //!   Kairos when the checkout has no index, or when the base is nearer to
-//!   the tree than the local index ([`base`], COLLIERY-T-1854). If more
+//!   the tree than the local index ([`base`], COLLIERY-T-1854). When the
+//!   local index is as near, it keeps its structure; if the base has more
+//!   summaries than the local index links, the CLI takes the pool of the
+//!   base first (KAIROS-T-0355, [`take_base_summaries`]). If more
 //!   files than the limit changed since the base, it builds nothing and
 //!   tells the developer to rebase, or to run `kairos index --full`.
 //! - `kairos index --full` builds the index again with no base: the same as
@@ -391,6 +394,9 @@ async fn update(
                 b.short(),
                 b.changed
             );
+            if let Some(line) = take_base_summaries(&db, &b).await {
+                println!("{line}");
+            }
         }
         (base::Found::Base(b), _) => {
             if b.changed > max_changed {
@@ -442,6 +448,60 @@ async fn update(
     };
     print_summaries(summaries::run(root, &db, no_model)?);
     Ok(())
+}
+
+/// Take the summaries of the base index `b` into the local index at `db`,
+/// when the base has more summaries than the local index links
+/// (KAIROS-T-0355). The local index is nearer to the tree, so it keeps its
+/// structure: the CLI downloads the base, copies its pool into the local
+/// index, and the link step that follows links the new summaries. The
+/// local index records the commit and the count of the pool that it took,
+/// so the next update does not download the same pool again.
+///
+/// The line to show: what the CLI took, or why it took nothing after a
+/// try. `None` when the local index has the summaries already.
+pub(super) async fn take_base_summaries(db: &Path, b: &base::Base) -> Option<String> {
+    let linked = kairos_index::store::keys_of(db).ok()?.len();
+    let taken = format!("{}:{}", b.commit, b.summaries);
+    if b.summaries <= linked
+        || kairos_index::store::taken_base_pool(db).ok().flatten() == Some(taken.clone())
+    {
+        return None;
+    }
+    let bytes = match b.download().await {
+        Ok(bytes) => bytes,
+        Err(why) => {
+            return Some(format!(
+                "Kairos: the summaries of the index of {} are not taken: the download failed \
+                 ({why}).",
+                b.short()
+            ));
+        }
+    };
+    let db = db.to_path_buf();
+    let short = b.short().to_string();
+    let summaries = b.summaries;
+    let copied = tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let download = db.with_extension("db.base");
+        std::fs::write(&download, &bytes).map_err(|e| e.to_string())?;
+        let copied = Index::open(&download)
+            .map_err(|e| e.to_string())
+            .and_then(|_| kairos_index::store::copy_pool(&download, &db).map_err(|e| e.to_string()))
+            .and_then(|()| {
+                kairos_index::store::set_taken_base_pool(&db, &taken).map_err(|e| e.to_string())
+            });
+        let _ = std::fs::remove_file(&download);
+        copied
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()));
+    Some(match copied {
+        Ok(()) => format!(
+            "Kairos: the index of {short} has {summaries} summaries, and the local index links \
+             {linked}. The update took the summaries from Kairos and keeps the local structure."
+        ),
+        Err(why) => format!("Kairos: the summaries of the index of {short} are not taken: {why}"),
+    })
 }
 
 /// Why the CLI got no base index from Kairos, as a part of a sentence.

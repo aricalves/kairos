@@ -58,6 +58,10 @@ pub struct AppState {
     /// The tenants whose schema did not migrate at startup (KAIROS-T-0330):
     /// their requests are refused until the schema is current.
     pub tenant_readiness: Arc<crate::tenant_readiness::TenantReadiness>,
+    /// The worker of the job queue of this server (KAIROS-T-0373). Its id
+    /// is the id of the start of this server (KAIROS-T-0354): the code-index
+    /// runs record the same id.
+    pub jobs: Arc<crate::jobs::Worker>,
 }
 
 /// Why [`build_state`] failed (startup-time, fail-fast).
@@ -95,8 +99,32 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
             Authenticator::disabled()
         }
     };
-    let code_index = code_index_service(&config);
-    let throttle = crate::rate_limit::from_config(&config).map(Arc::new);
+    // KAIROS-T-0354, KAIROS-T-0373: one random id for this start of the
+    // server, for the leases of the jobs and the code-index runs.
+    let instance = uuid::Uuid::new_v4();
+    let code_index = code_index_service(&config, instance);
+    let throttle = crate::rate_limit::from_config(&config, &blocking).map(Arc::new);
+    let jobs = Arc::new(crate::jobs::Worker::new(
+        blocking.clone(),
+        instance,
+        config.jobs.clone(),
+    ));
+    // KAIROS-T-0384: the signed webhook deliveries are jobs of the queue.
+    crate::webhooks::WebhookService::new(
+        blocking.clone(),
+        config.secrets_key.clone(),
+        config.webhooks.clone(),
+    )
+    .with_public_url(config.public_url.clone())
+    .register(&jobs);
+    // KAIROS-T-0386: the GitHub write-back is a job of the queue too.
+    crate::forge::writeback::WriteBackService::new(
+        blocking.clone(),
+        config.secrets_key.clone(),
+        config.writeback.clone(),
+        config.public_url.clone(),
+    )
+    .register(&jobs);
     Ok(AppState {
         config: Arc::new(config),
         pool,
@@ -107,16 +135,22 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
         throttle,
         code_index,
         tenant_readiness: Arc::new(crate::tenant_readiness::TenantReadiness::default()),
+        jobs,
     })
 }
 
 /// The clones of the base code index (COLLIERY-T-1853), or `None` when
 /// `KAIROS_CODE_INDEX_DIR` is not set.
-fn code_index_service(config: &AppConfig) -> Option<Arc<crate::code_index::CodeIndexService>> {
+fn code_index_service(
+    config: &AppConfig,
+    instance: uuid::Uuid,
+) -> Option<Arc<crate::code_index::CodeIndexService>> {
     let dir = config.code_index_dir.clone()?;
     Some(Arc::new(
         crate::code_index::CodeIndexService::from_repo_url(dir)
-            .with_secrets_key(config.secrets_key.clone()),
+            .with_instance(instance)
+            .with_secrets_key(config.secrets_key.clone())
+            .with_min_rebuild_secs(config.code_index_min_rebuild_secs),
     ))
 }
 
@@ -157,6 +191,7 @@ fn start_code_index_builder(state: &AppState) {
     // (COLLIERY-T-2525), off the start of the server: a download of about
     // 2.7 GB must not keep the server from serving.
     let blocking = state.blocking.clone();
+    let worker = Arc::clone(&state.jobs);
     let threads = state.config.code_index_threads;
     tokio::spawn(async move {
         let dir = service.dir().to_path_buf();
@@ -185,6 +220,7 @@ fn start_code_index_builder(state: &AppState) {
             }
         };
         crate::code_index::run_builder(
+            worker,
             blocking,
             service,
             summarizers,
@@ -239,7 +275,28 @@ pub fn state_with(config: AppConfig, pool: TenantPool, auth: Arc<Authenticator>)
     // KAIROS-T-0202: built from the passed config like everything else here, so a
     // test that wants a throttle sets the variables and a test that does not set
     // `KAIROS_AUTH_MAX_FAILURES` to 0.
-    let throttle = crate::rate_limit::from_config(&config).map(Arc::new);
+    let throttle = crate::rate_limit::from_config(&config, &blocking).map(Arc::new);
+    // The worker of a test state runs no job until a test starts it.
+    let jobs = Arc::new(crate::jobs::Worker::new(
+        blocking.clone(),
+        uuid::Uuid::new_v4(),
+        config.jobs.clone(),
+    ));
+    // KAIROS-T-0384: a test that drains the worker sends the deliveries.
+    crate::webhooks::WebhookService::new(
+        blocking.clone(),
+        config.secrets_key.clone(),
+        config.webhooks.clone(),
+    )
+    .with_public_url(config.public_url.clone())
+    .register(&jobs);
+    crate::forge::writeback::WriteBackService::new(
+        blocking.clone(),
+        config.secrets_key.clone(),
+        config.writeback.clone(),
+        config.public_url.clone(),
+    )
+    .register(&jobs);
     AppState {
         config: Arc::new(config),
         pool,
@@ -252,6 +309,7 @@ pub fn state_with(config: AppConfig, pool: TenantPool, auth: Arc<Authenticator>)
         throttle,
         code_index: None,
         tenant_readiness: Arc::new(crate::tenant_readiness::TenantReadiness::default()),
+        jobs,
     }
 }
 
@@ -436,6 +494,12 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             crate::metrics::track_metrics,
         ))
+        // KAIROS-T-0370: the security headers on each response, the SPA,
+        // the API and each refusal (outermost).
+        .layer(axum_middleware::from_fn_with_state(
+            state.clone(),
+            crate::security_headers::security_headers,
+        ))
         .with_state(state)
 }
 
@@ -490,6 +554,20 @@ pub struct WhoamiResponse {
     pub implicit: Vec<&'static str>,
     /// Repositories owned by the caller's teams (KAIROS-T-0107, A-0019).
     pub repositories: Vec<WhoamiRepository>,
+    /// The caller's grants of `manage_structure` (KAIROS-T-0337): the grant
+    /// at the organization first, then the grants on boards.
+    pub structure: Vec<WhoamiStructureGrant>,
+}
+
+/// One grant of [`WhoamiResponse::structure`].
+#[derive(Debug, serde::Serialize)]
+pub struct WhoamiStructureGrant {
+    /// `organization` | `board`.
+    pub scope: &'static str,
+    /// The board of a board grant, or null.
+    pub board_id: Option<Uuid>,
+    /// The slug of the board of a board grant, or null.
+    pub board_slug: Option<String>,
 }
 
 /// One repository of [`WhoamiResponse::repositories`].
@@ -597,7 +675,39 @@ async fn whoami(
         }
     }
 
+    // KAIROS-T-0337: the grants of `manage_structure`, at the organization
+    // and on live boards.
+    let structure_rows: Vec<(Option<Uuid>, Option<String>)> = schema::structure_grants::table
+        .left_join(schema::boards::table)
+        .filter(schema::structure_grants::user_id.eq(auth.user_id))
+        .filter(
+            schema::structure_grants::board_id
+                .is_null()
+                .or(schema::boards::deleted_at.is_null()),
+        )
+        .order(schema::boards::slug.asc().nulls_first())
+        .select((
+            schema::structure_grants::board_id,
+            schema::boards::slug.nullable(),
+        ))
+        .load(&mut *conn)
+        .await
+        .map_err(ApiError::internal)?;
+    let structure = structure_rows
+        .into_iter()
+        .map(|(board_id, board_slug)| WhoamiStructureGrant {
+            scope: if board_id.is_some() {
+                "board"
+            } else {
+                "organization"
+            },
+            board_id,
+            board_slug,
+        })
+        .collect();
+
     Ok(Json(WhoamiResponse {
+        structure,
         user: WhoamiUser {
             id: auth.user_id,
             external_id: auth.external_id,
@@ -631,7 +741,7 @@ async fn whoami(
 }
 
 /// Run the server: build state, bind `KAIROS_BIND_ADDR`, serve with
-/// graceful shutdown on ctrl-c. Public migrations already ran (main.rs
+/// graceful shutdown on ctrl-c or SIGTERM. Public migrations already ran (main.rs
 /// applies them before any subcommand, KAIROS-T-0007).
 pub async fn serve(
     config: AppConfig,
@@ -639,6 +749,10 @@ pub async fn serve(
 ) -> Result<(), String> {
     let bind_addr = config.bind_addr;
     let refresh_secs = config.embed_refresh_secs;
+    // KAIROS-T-0366: a bad retention value stops the start, like any other
+    // bad setting.
+    let retention = kairos_core::retention::RetentionConfig::from_env()
+        .map_err(|e| format!("retention configuration: {e}"))?;
     let mut state = build_state(config).await.map_err(|e| e.to_string())?;
     // KAIROS-T-0330: the tenants that did not migrate at startup.
     state.tenant_readiness = Arc::new(readiness);
@@ -653,11 +767,14 @@ pub async fn serve(
     bootstrap_first_admin(&state).await?;
 
     // The background refresher (KAIROS-T-0190): embedding happens off the write
-    // path, so a create never waits on a model. Detached deliberately — it is
-    // not part of graceful shutdown, because there is nothing to drain: a sweep
-    // interrupted mid-page simply re-derives what is stale on the next pass.
+    // path, so a create never waits on a model. Its pages are jobs of the queue
+    // (KAIROS-T-0375), so 2 servers do not embed one page twice. Detached
+    // deliberately — it is not part of graceful shutdown, because there is
+    // nothing to drain: a batch interrupted mid-page keeps its lease until it
+    // runs out, and a server takes it again.
     if let (Some(service), true) = (state.embedding.clone(), refresh_secs > 0) {
         tokio::spawn(crate::embedding::run_refresher(
+            Arc::clone(&state.jobs),
             state.blocking.clone(),
             service,
             std::time::Duration::from_secs(refresh_secs),
@@ -666,6 +783,28 @@ pub async fn serve(
     }
 
     start_code_index_builder(&state);
+    // KAIROS-T-0373: the worker of the job queue. Detached like the
+    // refresher: a job that a stop cuts short keeps its lease until it runs
+    // out, and then a server takes it again.
+    tokio::spawn(Arc::clone(&state.jobs).run());
+    // KAIROS-T-0366, KAIROS-T-0376: retention is a periodic job. The queue
+    // gives each run to one server, and each run adds the next.
+    tracing::info!(
+        mode = %retention.mode,
+        interval_secs = crate::periodic::RETENTION_INTERVAL.as_secs(),
+        "retention: the pass is a periodic job"
+    );
+    if let Err(e) = state
+        .jobs
+        .add_periodic(
+            crate::periodic::RETENTION,
+            crate::periodic::RETENTION_INTERVAL,
+            crate::periodic::retention_pass(state.config.database_url.clone(), retention),
+        )
+        .await
+    {
+        tracing::error!(error = ?e, "retention: the first run of the pass was not added");
+    }
 
     let app = router(state);
 
@@ -684,7 +823,11 @@ pub async fn serve(
     )
     .with_graceful_shutdown(shutdown_signal())
     .await
-    .map_err(|e| format!("server error: {e}"))
+    .map_err(|e| format!("server error: {e}"))?;
+    // KAIROS-T-0336: the last line of a clean stop, so an operator (and the
+    // image smoke check) can tell it from a kill.
+    tracing::info!("shutdown complete");
+    Ok(())
 }
 
 /// Create the first-boot admin if `KAIROS_BOOTSTRAP_ADMIN` is set and the
@@ -771,11 +914,38 @@ async fn bootstrap_first_admin(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
-/// Resolves when ctrl-c (SIGINT) arrives.
+/// Resolves when ctrl-c (SIGINT) or SIGTERM arrives.
+///
+/// KAIROS-T-0336: `docker stop` and Kubernetes send SIGTERM. Before, the
+/// server listened for SIGINT only: as PID 1 the kernel dropped SIGTERM and
+/// the runtime killed the server at the end of the stop timeout; behind the
+/// init of the image SIGTERM ended it with no drain.
 async fn shutdown_signal() {
-    if let Err(e) = tokio::signal::ctrl_c().await {
-        tracing::error!(error = %e, "failed to listen for ctrl-c; running until killed");
-        std::future::pending::<()>().await;
-    }
-    tracing::info!("shutdown signal received; draining");
+    let interrupt = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            tracing::error!(error = %e, "failed to listen for ctrl-c");
+            std::future::pending::<()>().await;
+        }
+        "SIGINT"
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to listen for SIGTERM");
+                std::future::pending::<()>().await;
+            }
+        }
+        "SIGTERM"
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<&str>();
+    let signal = tokio::select! {
+        name = interrupt => name,
+        name = terminate => name,
+    };
+    tracing::info!(signal, "shutdown signal received; draining");
 }

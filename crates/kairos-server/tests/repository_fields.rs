@@ -562,7 +562,7 @@ async fn repository_fields_against_live_stack() {
         .await
         .expect("list");
     assert_eq!(status, 200, "{list}");
-    let listed = list
+    let listed = list["items"]
         .as_array()
         .expect("a list")
         .iter()
@@ -644,7 +644,9 @@ async fn repository_fields_against_live_stack() {
             response["error"]["message"],
             format!(
                 "The repository slug {slug:?} is not correct. A repository slug must match \
-                 ^[a-z0-9][a-z0-9-]{{1,62}}$."
+                 ^[a-z0-9][a-z0-9-]{{1,62}}$. Use 2 to 63 characters: lowercase letters, digits \
+                 and hyphens. The first character is a letter or a digit. An example is \
+                 acme-payments-api."
             ),
         );
         let (status, response) = patch(&bob, "old-one", &json!({"slug": slug})).await;

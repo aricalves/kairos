@@ -103,7 +103,7 @@ Run `git remote get-url origin`. Normalize the remote to `(forge, full_name)`:
 | `https://gitlab.example.com/acme/web.git` | `gitlab` (any host containing `gitlab`) | `acme/web` |
 | anything else | `other` | path after the host, `.git` stripped |
 
-Strip a trailing `.git` and any leading `/`. Then match on `forge` + `full_name` against `list_repositories` (the MCP directory carries both fields; `whoami`'s repository list does not show the forge), or over HTTP with `GET /api/repositories?forge=<forge>&name=<full_name>` (one row or empty).
+Strip a trailing `.git` and any leading `/`. Then match on `forge` + `full_name` against `list_repositories` (the MCP directory carries both fields; `whoami`'s repository list does not show the forge), or over HTTP with `GET /api/repositories?forge=<forge>&name=<full_name>` (`items` has one row or none).
 
 - **Found** → its `slug` is the repository. The repository is a link: it does not choose the team board. Confirm with the user only if the remote matched more than one entry (it cannot: the pair is unique).
 - **Found, with no description** → `get_repository` prints `(no description yet)`. Offer to write one: draft it as in step 3 of "Add this repository", show it to the user, and on a yes call `update_repository` (`repository`, `description`).

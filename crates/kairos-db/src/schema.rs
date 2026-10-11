@@ -59,6 +59,7 @@ diesel::table! {
         expires_at -> Nullable<Timestamptz>,
         last_used_at -> Nullable<Timestamptz>,
         revoked_at -> Nullable<Timestamptz>,
+        replaced_by -> Nullable<Uuid>,
     }
 }
 
@@ -73,6 +74,7 @@ diesel::table! {
         is_done -> Bool,
         deleted_at -> Nullable<Timestamptz>,
         claims -> Bool,
+        wip_limit -> Nullable<Int4>,
     }
 }
 
@@ -126,6 +128,8 @@ diesel::table! {
         started_at -> Timestamptz,
         finished_at -> Nullable<Timestamptz>,
         model -> Nullable<Text>,
+        server_instance -> Nullable<Uuid>,
+        summaries_reused -> Nullable<Int4>,
     }
 }
 
@@ -165,6 +169,7 @@ diesel::table! {
         vector -> Nullable<Bytea>,
         created_at -> Timestamptz,
         model -> Text,
+        last_used_at -> Nullable<Timestamptz>,
     }
 }
 
@@ -393,6 +398,27 @@ diesel::table! {
 }
 
 diesel::table! {
+    notification_settings (user_id, kind) {
+        user_id -> Uuid,
+        kind -> Text,
+        enabled -> Bool,
+    }
+}
+
+diesel::table! {
+    notifications (id) {
+        id -> Uuid,
+        user_id -> Uuid,
+        kind -> Text,
+        item_id -> Nullable<Uuid>,
+        text -> Text,
+        actor_id -> Nullable<Uuid>,
+        created_at -> Timestamptz,
+        read_at -> Nullable<Timestamptz>,
+    }
+}
+
+diesel::table! {
     repositories (id) {
         id -> Uuid,
         slug -> Text,
@@ -469,6 +495,16 @@ diesel::table! {
         deleted_at -> Nullable<Timestamptz>,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
+    structure_grants (id) {
+        id -> Uuid,
+        user_id -> Uuid,
+        board_id -> Nullable<Uuid>,
+        granted_by -> Uuid,
+        granted_at -> Timestamptz,
     }
 }
 
@@ -623,6 +659,7 @@ diesel::joinable!(repositories -> teams (team_id));
 diesel::joinable!(repository_credentials -> repositories (repository_id));
 diesel::joinable!(strategies -> board_columns (column_id));
 diesel::joinable!(strategies -> boards (board_id));
+diesel::joinable!(structure_grants -> boards (board_id));
 diesel::joinable!(task_cancellations -> tasks (task_id));
 diesel::joinable!(task_claims -> tasks (task_id));
 diesel::joinable!(tasks -> board_columns (column_id));
@@ -665,12 +702,15 @@ diesel::allow_tables_to_appear_in_same_query!(
     metadata_definition_scopes,
     metadata_definitions,
     metadata_enum_options,
+    notification_settings,
+    notifications,
     repositories,
     repository_credentials,
     retired_codes,
     scim_tokens,
     short_code_sequences,
     strategies,
+    structure_grants,
     task_cancellations,
     task_claims,
     tasks,

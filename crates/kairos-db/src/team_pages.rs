@@ -340,6 +340,10 @@ pub fn create_page(
 /// guards on the expected version; zero rows means conflict and the
 /// current row rides in the error for the merge UI. Every save writes a
 /// history row. One transaction.
+///
+/// KAIROS-T-0268: a save whose title and content are equal to the stored
+/// values writes nothing (no new version, no history row) and gives the
+/// stored page back.
 pub fn update_page_content(
     conn: &mut PgConnection,
     team_id: Uuid,
@@ -354,6 +358,9 @@ pub fn update_page_content(
         check_size(new_content)?;
         let current = load_page(conn, team_id, page_id)?;
         let title = new_title.unwrap_or(&current.title).to_string();
+        if title == current.title && new_content == current.content {
+            return Ok(current);
+        }
         let updated: Option<TeamPage> = diesel::update(
             dsl::team_pages
                 .filter(dsl::id.eq(page_id))
@@ -393,6 +400,10 @@ pub fn update_page_content(
 
 /// Rename and/or move a page (slug, parent, position). Refused for
 /// protected pages; not version-checked (structure, not content).
+///
+/// KAIROS-T-0268: only a value that is different from the stored value
+/// goes to the write. When no value is different, the function writes
+/// nothing and gives the stored page back.
 pub fn rename_move_page(
     conn: &mut PgConnection,
     team_id: Uuid,
@@ -407,6 +418,12 @@ pub fn rename_move_page(
         let current = load_page(conn, team_id, page_id)?;
         if current.is_protected {
             return Err(TeamPageError::ProtectedPage(page_id));
+        }
+        let new_slug = new_slug.filter(|slug| *slug != current.slug);
+        let new_parent = new_parent.filter(|parent| *parent != current.parent_id);
+        let new_position = new_position.filter(|position| *position != current.position);
+        if new_slug.is_none() && new_parent.is_none() && new_position.is_none() {
+            return Ok(current);
         }
         if let Some(Some(parent)) = new_parent {
             check_parent(conn, team_id, parent)?;

@@ -34,6 +34,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
+use kairos_client::types::{ListEnvelope, Pagination};
 use kairos_client::types_forge::TeamLink;
 use kairos_client::types_repositories as dto;
 use kairos_db::models::enums::{BoardLevel, Forge};
@@ -43,7 +44,7 @@ use kairos_db::repositories::{self, RepositoryError};
 use serde_json::json;
 use uuid::Uuid;
 
-use super::super::{parse_enum, require_capability};
+use super::super::{clamp_pagination, parse_enum, require_capability, require_structure};
 use crate::app::AppState;
 use crate::body::ApiJson;
 use crate::error::ApiError;
@@ -79,12 +80,11 @@ pub(crate) fn map_error(e: RepositoryError) -> ApiError {
             ApiError::not_found(format!("No live repository has the slug {slug:?}."))
         }
         // COLLIERY-T-0265: the refusal names the field, so that a form
-        // shows it below the field `Slug`.
-        RepositoryError::InvalidSlug(slug) => ApiError::validation(format!(
-            "The repository slug {slug:?} is not correct. A repository slug must match \
-             ^[a-z0-9][a-z0-9-]{{1,62}}$."
-        ))
-        .with_details(json!({ "field": "slug" })),
+        // shows it below the field `Slug`. KAIROS-T-0268: the text (of
+        // `RepositoryError`) says what to do.
+        e @ RepositoryError::InvalidSlug(_) => {
+            ApiError::validation(e.to_string()).with_details(json!({ "field": "slug" }))
+        }
         // COLLIERY-T-0267: the text and the name of the field come from
         // the function that has the rule of the field.
         RepositoryError::InvalidField(fault) => {
@@ -155,7 +155,9 @@ fn delivery_board_of(conn: &mut PgConnection, team_id: Uuid) -> Result<Option<Uu
 }
 
 /// Org admin, or `manage_tasks` on the team's delivery board (team
-/// membership implies it). A team with no delivery board is admin-only.
+/// membership implies it), or `manage_structure` at the organization
+/// (KAIROS-T-0337). A team with no delivery board is admin-only, or for a
+/// holder of `manage_structure` at the organization.
 ///
 /// COLLIERY-T-0266: the refusal names the team, and it says who can do the
 /// action. Until then it was the refusal of [`require_capability`], which
@@ -174,6 +176,12 @@ fn require_manage_for_team(
     };
     if refusal.code != "FORBIDDEN" {
         return Err(refusal);
+    }
+    // KAIROS-T-0337: the repositories are part of the structure of the
+    // organization. A grant of `manage_structure` at the organization
+    // covers them (a grant on one board does not).
+    if kairos_db::abac::holds_structure(conn, user, None).map_err(crate::api::map_abac_error)? {
+        return Ok(());
     }
     let team: String = {
         use kairos_db::schema::teams::dsl;
@@ -411,6 +419,9 @@ pub(crate) fn render(
     // COLLIERY-T-3105: the status of the read token, never the token.
     let credentials =
         kairos_db::repository_credentials::statuses(conn, &ids).map_err(ApiError::internal)?;
+    // KAIROS-T-0386: the write-back, never the write token.
+    let write_tokens =
+        kairos_db::writeback::token_statuses(conn, &ids).map_err(ApiError::internal)?;
     // KAIROS-T-0358: where the summaries of each repository are made now.
     let code_index_settings =
         kairos_db::code_index_settings::load_or_default(conn).map_err(ApiError::internal)?;
@@ -439,6 +450,7 @@ pub(crate) fn render(
                 open_tasks,
                 has_webhook,
                 credential: crate::credentials::status_dto(credentials.get(&repo.id)),
+                write_back: crate::credentials::write_back_dto(write_tokens.get(&repo.id)),
                 code_index_build: dto::CodeIndexBuild::parse(&repo.code_index_build)
                     .unwrap_or_default(),
                 code_index_summaries: dto::CodeIndexSummaries::parse(&repo.code_index_summaries)
@@ -473,17 +485,25 @@ pub(crate) struct ListRepositoriesQuery {
     pub forge: Option<String>,
     /// `owner/repo`, paired with `forge`.
     pub name: Option<String>,
+    /// Page size (default 50, max 200).
+    pub limit: Option<i64>,
+    /// Rows to skip (default 0).
+    pub offset: Option<i64>,
 }
 
 /// The repository directory (open tenant-wide), by slug. `?team=` narrows
 /// to one owning team.
+///
+/// The response is a page, `{items, total, limit, offset}`, as for each
+/// other list (KAIROS-T-0268). Until 0.11 it was an array of each
+/// repository.
 #[utoipa::path(
     get,
     path = "/api/repositories",
     tag = "repositories",
     params(ListRepositoriesQuery),
     responses(
-        (status = 200, description = "Repositories, by slug", body = Vec<dto::Repository>),
+        (status = 200, description = "Page of repositories, by slug", body = ListEnvelope<dto::Repository>),
         (status = 422, description = "Unknown team", body = kairos_client::types::ErrorEnvelope),
     ),
 )]
@@ -491,15 +511,19 @@ pub(crate) async fn list_repositories(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     ApiQuery(query): ApiQuery<ListRepositoriesQuery>,
-) -> Result<Json<Vec<dto::Repository>>, ApiError> {
-    let rows = state
+) -> Result<Json<ListEnvelope<dto::Repository>>, ApiError> {
+    let (limit, offset) = clamp_pagination(&Pagination {
+        limit: query.limit,
+        offset: query.offset,
+    });
+    let page = state
         .blocking
         .run(&tenant.slug, move |conn| {
             if let (Some(forge), Some(name)) = (query.forge.as_deref(), query.name.as_deref()) {
                 let forge: Forge = parse_enum(forge, "forge", Forge::ALL)?;
                 let found =
                     repositories::find_by_forge_name(conn, forge, name).map_err(map_error)?;
-                return render(conn, found.into_iter().collect());
+                return render_page(conn, found.into_iter().collect(), limit, offset);
             }
             if query.forge.is_some() != query.name.is_some() {
                 return Err(ApiError::validation(
@@ -513,10 +537,33 @@ pub(crate) async fn list_repositories(
                 .map(|reference| resolve_team(conn, reference).map(|t| t.id))
                 .transpose()?;
             let rows = repositories::list(conn, team_id).map_err(map_error)?;
-            render(conn, rows)
+            render_page(conn, rows, limit, offset)
         })
         .await?;
-    Ok(Json(rows))
+    Ok(Json(page))
+}
+
+/// One page of the directory: the rows from `offset`, `limit` at most, and
+/// the count of each row. The directory of a tenant is small, so the page
+/// is cut after the read.
+pub(crate) fn render_page(
+    conn: &mut PgConnection,
+    rows: Vec<Repository>,
+    limit: i64,
+    offset: i64,
+) -> Result<ListEnvelope<dto::Repository>, ApiError> {
+    let total = rows.len() as i64;
+    let rows: Vec<Repository> = rows
+        .into_iter()
+        .skip(offset as usize)
+        .take(limit as usize)
+        .collect();
+    Ok(ListEnvelope {
+        items: render(conn, rows)?,
+        total,
+        limit,
+        offset,
+    })
 }
 
 /// The documents and the ADRs that impact a repository, as the wire type
@@ -678,7 +725,8 @@ pub(crate) async fn update_repository(
     Ok(Json(updated.repository))
 }
 
-/// Remove a repository (org admin). Refused with 409 while live tasks or a
+/// Remove a repository (org admin, or `manage_structure` at the
+/// organization, KAIROS-T-0337). Refused with 409 while live tasks or a
 /// live webhook connection still reference it.
 #[utoipa::path(
     delete,
@@ -704,7 +752,7 @@ pub(crate) async fn delete_repository(
         .blocking
         .run(&tenant.slug, move |conn| {
             let current = repositories::resolve(conn, &slug).map_err(map_error)?;
-            require_capability(conn, &tenant_slug, None, user, MANAGE)?;
+            require_structure(conn, &tenant_slug, user)?;
             repositories::soft_delete(conn, current.id, user).map_err(map_error)?;
             Ok(current.id.to_string())
         })

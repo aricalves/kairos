@@ -1012,6 +1012,18 @@ macro_rules! transition_item_fn {
                     $entity_type,
                     format!("column:{from_name}->{to_name}"),
                 )?;
+                // KAIROS-T-0381: an item that goes into a done column no
+                // longer blocks.
+                if !crate::notifications::column_is_done(conn, from_column_id)?
+                    && crate::notifications::column_is_done(conn, to_column_id)?
+                {
+                    crate::notifications::on_blockers_cleared(
+                        conn,
+                        &[item_id],
+                        crate::notifications::Cleared::Done,
+                        actor_id,
+                    )?;
+                }
                 // KAIROS-T-0359: a task in a claims column has a claim.
                 if $entity_type == "task" {
                     crate::task_claims::after_column_change(
@@ -1028,7 +1040,16 @@ macro_rules! transition_item_fn {
                         item_id,
                         to_column_id,
                     )?;
+                    // KAIROS-T-0385: the dispatch rules of the column.
+                    crate::dispatch::on_task_entered_column(
+                        conn,
+                        item_id,
+                        to_column_id,
+                        actor_id,
+                    )?;
                 }
+                // KAIROS-T-0386: the GitHub write-back of its pull requests.
+                crate::writeback::on_item_changed(conn, item_id)?;
                 // KAIROS-T-0022: thin event (new column), delivered on
                 // commit.
                 crate::events::emit_item_event_by_id(
@@ -1186,6 +1207,11 @@ pub fn move_task_with(
         } else {
             None
         };
+        // KAIROS-T-0385: the dispatch rules of the entry column, after the
+        // rename, so the delivery has the new code.
+        crate::dispatch::on_task_entered_column(conn, task_id, to_column_id, actor_id)?;
+        // KAIROS-T-0386: the GitHub write-back of its pull requests.
+        crate::writeback::on_item_changed(conn, task_id)?;
         // The board it LEFT gets the event with the source board so its
         // subscribers refetch; the board it joined gets the placement.
         let short_code: String = dsl::tasks
@@ -1210,6 +1236,8 @@ pub fn move_task_with(
             task_id,
             actor_id,
         )?;
+        // KAIROS-T-0381: a P0 bug that lands on the board of a team.
+        crate::notifications::on_p0_bug(conn, task_id, actor_id)?;
         Ok(TaskMove {
             from_board_id,
             board_id: to_board_id,
@@ -1270,6 +1298,20 @@ pub fn transition_adr(
             "adr",
             format!("column:{from_name}->{to_name}"),
         )?;
+        // KAIROS-T-0381: an ADR that goes into a done column no longer
+        // blocks.
+        if !crate::notifications::column_is_done(conn, from_column_id)?
+            && crate::notifications::column_is_done(conn, to_column_id)?
+        {
+            crate::notifications::on_blockers_cleared(
+                conn,
+                &[item_id],
+                crate::notifications::Cleared::Done,
+                actor_id,
+            )?;
+        }
+        // KAIROS-T-0386: the GitHub write-back of its pull requests.
+        crate::writeback::on_item_changed(conn, item_id)?;
         // KAIROS-T-0022: thin event (new column), delivered on commit.
         crate::events::emit_item_event_by_id(
             conn,
@@ -1401,6 +1443,46 @@ pub fn set_column_claims(
             Some(board_id),
             "board",
             format!("column_claims:{name}={claims}"),
+        )?;
+        Ok(updated)
+    })
+}
+
+/// Set or clear the WIP limit of a column (KAIROS-T-0371). `Some(n)` needs
+/// `n > 0` (the caller checks it; the database has the same check). A
+/// limit below the count of the column is allowed: the board marks the
+/// column.
+pub fn set_column_wip_limit(
+    conn: &mut PgConnection,
+    column_id: Uuid,
+    wip_limit: Option<i32>,
+    actor_id: Uuid,
+) -> Result<BoardColumn, BoardError> {
+    conn.transaction::<_, BoardError, _>(|conn| {
+        use crate::schema::board_columns;
+
+        let board_id = column_board_id(conn, column_id)?;
+        let (columns, _) = load_board_rules(conn, board_id)?;
+        let name = column_name(&columns, column_id)?;
+
+        let updated: BoardColumn =
+            diesel::update(board_columns::table.filter(board_columns::id.eq(column_id)))
+                .set((
+                    board_columns::wip_limit.eq(wip_limit),
+                    board_columns::updated_at.eq(diesel::dsl::now),
+                ))
+                .returning(BoardColumn::as_returning())
+                .get_result(conn)?;
+        log_activity(
+            conn,
+            actor_id,
+            ActivityAction::BoardConfig,
+            Some(board_id),
+            "board",
+            format!(
+                "column_wip_limit:{name}={}",
+                wip_limit.map_or_else(|| "none".to_string(), |n| n.to_string())
+            ),
         )?;
         Ok(updated)
     })

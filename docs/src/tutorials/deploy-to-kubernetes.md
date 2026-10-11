@@ -155,14 +155,14 @@ values, which is deliberate — a deployment that cannot say who its users are i
 not a deployment.
 
 ```sh
-helm install kairos oci://ghcr.io/colliery-io/charts/kairos --version 0.10.0 \
+helm install kairos oci://ghcr.io/colliery-io/charts/kairos --version 0.11.0 \
   -n kairos -f values.yaml --wait --timeout 6m
 ```
 
 Helm pulls the chart from the registry, then the cluster pulls the image:
 
 ```
-Pulled: ghcr.io/colliery-io/charts/kairos:0.10.0
+Pulled: ghcr.io/colliery-io/charts/kairos:0.11.0
 NAME: kairos
 STATUS: deployed
 ```
@@ -176,7 +176,9 @@ separate migrate step.
 kubectl -n kairos get pods
 ```
 
-Both Kairos replicas should be `1/1 Running`, alongside Postgres and Dex:
+The 2 Kairos pods should be `1/1 Running`, alongside Postgres and Dex. The
+chart runs 2 replicas by default. They share the background work through the
+job queue in the database:
 
 ```
 NAME                        READY   STATUS    RESTARTS   AGE

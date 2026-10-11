@@ -21,6 +21,10 @@
 //!   was missed while disconnected;
 //! - on unmount (the returned guard drops): close the socket, cancel the
 //!   backoff timer chain, and break the closure ↔ state `Rc` cycle.
+//!
+//! The events of a person (`entity_type` `notification`, KAIROS-T-0381) go
+//! only to [`subscribe_person_events`] (the bell of the shell). The views
+//! of the items do not get them: they change no item.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -53,6 +57,9 @@ struct Live {
     /// whole tenant stream (`{"subscribe": {}}` clears the server filter —
     /// the graph view's mode, KAIROS-T-0090).
     board_id: Option<String>,
+    /// `true`: only the events of the person (the notifications);
+    /// `false`: only the events of the items.
+    person: bool,
     /// Runs on every event and every reconnect. The argument is the
     /// event's `short_code` when one arrived (reconnect reconciles pass
     /// `None`) — consumers that only care THAT something changed ignore it.
@@ -116,14 +123,42 @@ pub fn subscribe_all_events(
     subscribe(auth, None, on_event)
 }
 
+/// Subscribe to the events of the signed-in person (KAIROS-T-0383):
+/// `notification_created` and `notifications_read`. The server sends them
+/// to the sockets of that person only. `on_event` runs on each one and on
+/// each reconnect.
+pub fn subscribe_person_events(auth: Auth, on_event: impl Fn() + 'static) -> LiveBoardGuard {
+    start(auth, None, true, move |_| on_event())
+}
+
 fn subscribe(
     auth: Auth,
     board_id: Option<String>,
     refetch: impl Fn(Option<&str>) + 'static,
 ) -> LiveBoardGuard {
+    start(auth, board_id, false, refetch)
+}
+
+/// Whether a frame is an event of a person (a notification). Pure,
+/// host-tested.
+pub(crate) fn is_person_event(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .is_some_and(|value| {
+            value.get("entity_type").and_then(|t| t.as_str()) == Some("notification")
+        })
+}
+
+fn start(
+    auth: Auth,
+    board_id: Option<String>,
+    person: bool,
+    refetch: impl Fn(Option<&str>) + 'static,
+) -> LiveBoardGuard {
     let state = Rc::new(Live {
         auth,
         board_id,
+        person,
         refetch: Box::new(refetch),
         closed: Cell::new(false),
         attempts: Cell::new(0),
@@ -204,6 +239,9 @@ fn connect(state: Rc<Live>) {
             };
             // Thin event → re-fetch through REST (events carry routing
             // fields only; the payload is always refetched).
+            if is_person_event(&text) != state.person {
+                return;
+            }
             if serde_json::from_str::<ThinEvent>(&text).is_ok() {
                 let short_code = serde_json::from_str::<serde_json::Value>(&text)
                     .ok()
@@ -252,6 +290,19 @@ fn schedule_reconnect(state: Rc<Live>) {
 
 #[cfg(test)]
 mod tests {
+    /// KAIROS-T-0383: the bell gets the events of the person, and the views
+    /// of the items do not.
+    #[test]
+    fn a_notification_event_is_an_event_of_the_person() {
+        assert!(super::is_person_event(
+            r#"{"event":"notification_created","entity_type":"notification","short_code":"A-T-1"}"#
+        ));
+        assert!(!super::is_person_event(
+            r#"{"event":"item_updated","entity_type":"task","short_code":"A-T-1"}"#
+        ));
+        assert!(!super::is_person_event("not json"));
+    }
+
     /// Backoff doubles from 1s and caps at 15s (host-testable math for
     /// the wasm-only module).
     #[test]

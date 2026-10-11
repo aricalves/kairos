@@ -292,6 +292,11 @@ pub use activity::{ActivityPage, ItemHistoryPage};
 mod agent_keys;
 pub use agent_keys::AgentKeysPage;
 
+// The notifications of the signed-in person (KAIROS-T-0383): the bell of
+// the shell, and the page with the list and the settings.
+mod notifications;
+pub use notifications::{NotificationBell, NotificationsPage};
+
 /// Router fallback.
 #[component]
 pub fn NotFoundPage() -> impl IntoView {

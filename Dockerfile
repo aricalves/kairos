@@ -147,6 +147,7 @@ FROM debian:trixie-slim AS runtime
 # The builder of the base code index (COLLIERY-T-1853):
 #   - libgomp1: llama.cpp runs its CPU threads with OpenMP;
 #   - git: the bare clone of each indexed repository.
+# tini (KAIROS-T-0336): the init that is PID 1, see ENTRYPOINT below.
 # /var/lib/kairos/code-index is the usual KAIROS_CODE_INDEX_DIR (a volume),
 # owned by the runtime user: the clones and the downloaded tools go there.
 # hadolint ignore=DL3008  # base image tag is pinned; see builder-stage note.
@@ -157,6 +158,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git \
         ca-certificates \
         curl \
+        tini \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --create-home --shell /usr/sbin/nologin kairos \
     && install -d -o 10001 -g 10001 /var/lib/kairos/code-index
@@ -204,5 +206,14 @@ EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=5 \
     CMD curl -fsS http://localhost:8080/healthz || exit 1
 
-ENTRYPOINT ["/usr/local/bin/kairos-server"]
+# KAIROS-T-0336: tini is PID 1, in front of kairos-server, for each
+# runtime (compose, `docker run`, Kubernetes, which gives no init). An
+# orphaned child (a curl of the HEALTHCHECK that its shell left at the
+# timeout, a child of git in the builder of the code index) goes to PID 1.
+# kairos-server does not reap a process that it did not start, so as PID 1
+# it collected zombies: 12 after 6 hours on 0.6.2. tini reaps each one, and
+# it sends SIGTERM on to kairos-server, which drains and logs "shutdown
+# complete". `-s` makes tini a subreaper when it is not PID 1 (`docker run
+# --init`, compose `init: true`), so the reaping works there too.
+ENTRYPOINT ["/usr/bin/tini", "-s", "--", "/usr/local/bin/kairos-server"]
 CMD ["serve"]

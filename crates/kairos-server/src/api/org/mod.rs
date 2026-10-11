@@ -11,9 +11,13 @@
 //! - board config writes (PATCH board, columns, transitions):
 //!   `configure_boards` on that board (A-0006);
 //! - board member/capability writes: `administer_members` on that board;
-//! - board create/delete, teams, streams, org membership: tenant-wide
-//!   config → org-admin-only (the A-0006 fallback; the 403 names the
-//!   pseudo-capability with `board_id: null`);
+//! - board create, teams, team members, repository delete: the structure
+//!   of the organization → org admin, or `manage_structure` at the
+//!   organization (KAIROS-T-0337, [`super::require_structure`]);
+//! - grants of `manage_structure` ([`structure_grants`]): org admin only;
+//! - streams, org membership: tenant-wide config → org-admin-only (the
+//!   A-0006 fallback; the 403 names the pseudo-capability with
+//!   `board_id: null`);
 //! - reads stay open tenant-wide;
 //! - `/api/admin/tenants` ([`admin`]) is cross-tenant: registered OUTSIDE
 //!   the tenant middleware, gated by `KAIROS_DEPLOYMENT_ADMINS`.
@@ -23,11 +27,15 @@ pub mod boards;
 pub mod code_index_query;
 pub mod code_index_settings;
 pub mod code_indexes;
+pub mod dispatch;
+pub mod flow;
 pub mod forge;
 pub mod members;
 pub mod repositories;
 pub mod repository_credentials;
+pub mod repository_write_tokens;
 pub mod streams;
+pub mod structure_grants;
 pub mod team_pages;
 pub mod teams;
 
@@ -48,15 +56,19 @@ use crate::error::ApiError;
 pub fn router() -> Router<AppState> {
     Router::new()
         .merge(boards::router())
+        .merge(flow::router())
+        .merge(dispatch::router())
         .merge(forge::router())
         .merge(repositories::router())
         .merge(code_indexes::router())
         .merge(code_index_settings::router())
         .merge(code_index_query::router())
         .merge(repository_credentials::router())
+        .merge(repository_write_tokens::router())
         .merge(teams::router())
         .merge(team_pages::router())
         .merge(streams::router())
+        .merge(structure_grants::router())
         .merge(members::router())
 }
 
@@ -85,6 +97,15 @@ pub fn validate_capabilities(capabilities: &[String]) -> Result<(), ApiError> {
         ));
     }
     for capability in capabilities {
+        // KAIROS-T-0337: `manage_structure` is not a board capability. Its
+        // grants have their own route, and the refusal says where.
+        if capability == kairos_core::abac::MANAGE_STRUCTURE {
+            return Err(ApiError::validation(format!(
+                "{capability:?} is not a board capability. An organization admin grants it \
+                 with POST /api/structure-grants (on the organization or on one board), with \
+                 `kairos grants add`, or with the MCP tool grant_capability."
+            )));
+        }
         if !capability_vocabulary().any(|known| known == capability.as_str()) {
             return Err(ApiError::validation(format!(
                 "{capability:?} is not a capability. The capabilities are: {}.",
@@ -491,6 +512,8 @@ pub fn map_grant_error(e: AbacError) -> ApiError {
         AbacError::EmptyCapability => {
             ApiError::validation("The capability is empty. Send the name of a capability.")
         }
+        e @ AbacError::StructureAlreadyGranted { .. } => ApiError::conflict(e.to_string()),
+        e @ AbacError::StructureGrantNotFound(_) => ApiError::not_found(e.to_string()),
         AbacError::Database(e) => ApiError::internal(e),
     }
 }

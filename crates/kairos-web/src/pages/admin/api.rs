@@ -47,6 +47,9 @@ pub struct BoardColumn {
     /// (KAIROS-T-0080).
     #[serde(default)]
     pub is_done: bool,
+    /// The WIP limit of the column (KAIROS-T-0371); `None`: no limit.
+    #[serde(default)]
+    pub wip_limit: Option<i32>,
 }
 
 /// mirror of: `kairos_client::types_org::BoardTransition` (partial).
@@ -140,6 +143,22 @@ pub async fn update_column(
         auth,
         &format!("/api/boards/{board_id}/columns/{column_id}"),
         &json!({ "name": name, "position": position, "is_done": is_done }),
+    )
+    .await
+}
+
+/// `PATCH /api/boards/{id}/columns/{col_id}` with `wip_limit` only
+/// (KAIROS-T-0371): a number above 0, or `None` to remove the limit.
+pub async fn set_column_wip_limit(
+    auth: Auth,
+    board_id: &str,
+    column_id: &str,
+    wip_limit: Option<i32>,
+) -> Result<Value, ApiError> {
+    patch_json(
+        auth,
+        &format!("/api/boards/{board_id}/columns/{column_id}"),
+        &json!({ "wip_limit": wip_limit }),
     )
     .await
 }
@@ -823,6 +842,26 @@ pub async fn remove_repository_credential(
     reference: &str,
 ) -> Result<RepositoryCredential, ApiError> {
     delete_json(auth, &format!("/api/repositories/{reference}/credential")).await
+}
+
+/// `PUT /api/repositories/{slug}/write-token` — set or replace the write
+/// token of the GitHub write-back (KAIROS-T-0386). A 422 names the field.
+pub async fn set_repository_write_token(
+    auth: Auth,
+    reference: &str,
+    token: &str,
+) -> Result<Value, Refusal> {
+    put_json_refusal(
+        auth,
+        &format!("/api/repositories/{reference}/write-token"),
+        &json!({ "token": token }),
+    )
+    .await
+}
+
+/// `DELETE /api/repositories/{slug}/write-token` — the write-back is off.
+pub async fn remove_repository_write_token(auth: Auth, reference: &str) -> Result<Value, ApiError> {
+    delete_json(auth, &format!("/api/repositories/{reference}/write-token")).await
 }
 
 /// `POST /api/repositories/{slug}/credential/check` — test the read token

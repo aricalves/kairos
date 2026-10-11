@@ -65,7 +65,7 @@ From the published chart (each release is pushed to GHCR as an OCI artifact;
 
 ```sh
 helm install kairos oci://ghcr.io/colliery-io/charts/kairos \
-  --version 0.10.0 -f my-values.yaml
+  --version 0.11.0 -f my-values.yaml
 ```
 
 Or from a checkout, which is what you want when changing the chart itself:
@@ -145,7 +145,7 @@ did the wildcard routing; on Kubernetes the Ingress replaces Caddy.
 | `image.variant` | `""` | `"hosted"` runs the image with no embedded summary model (`<version>-hosted`), for a deployment whose organizations use a hosted provider (KAIROS-T-0344). |
 | `image.pullPolicy` | `IfNotPresent` | |
 | `imagePullSecrets` | `[]` | Private-registry pull secrets. |
-| `replicaCount` | `2` | Stateless server; ignored when autoscaling on. |
+| `replicaCount` | `2` | The pods share the background work through the job queue in Postgres (COLLIERY-I-0613): each build, embedding batch, periodic pass, webhook delivery and GitHub write-back runs on one pod, and the login throttle counts in Postgres. The `KAIROS_JOB_LIMIT_*` limits are for each pod. Ignored when autoscaling is on. |
 | `resources` | 100m/128Mi … 1/512Mi | Requests/limits. |
 | `nodeSelector` / `tolerations` / `affinity` / `topologySpreadConstraints` | `{}` / `[]` | Scheduling. |
 | `podSecurityContext` / `containerSecurityContext` | non-root, read-only rootfs, drop ALL caps | Hardened defaults. |
@@ -162,7 +162,7 @@ did the wildcard routing; on Kubernetes the Ingress replaces Caddy.
 | `ingress.host` | `kairos.example.com` | Host for `single` mode. |
 | `ingress.annotations` | `{}` | e.g. cert-manager issuer. |
 | `ingress.tls.enabled` / `ingress.tls.secretName` | `false` / `""` | TLS block. |
-| `autoscaling.enabled` | `false` | HPA (min/max/target CPU/memory). |
+| `autoscaling.enabled` | `false` | HPA (min/max/target CPU/memory). The pods share the background work through the job queue, so the HPA can add and remove pods; a removed pod's jobs go to another pod when their leases run out. |
 | `metrics.serviceMonitor.enabled` | `false` | Prometheus Operator ServiceMonitor scraping `/metrics`. |
 
 ### Application config (env surface, KAIROS-A-0013)
@@ -203,6 +203,8 @@ Secret loaded via `valueFrom`.
 | `config.retention.historyHotDays` | `KAIROS_HISTORY_HOT_DAYS` | server `90` | Emitted only when set. |
 | `config.retention.historyKeepLatest` | `KAIROS_HISTORY_KEEP_LATEST` | server `5` | Emitted only when set. |
 | `config.retention.activityRetentionDays` | `KAIROS_ACTIVITY_RETENTION_DAYS` | server `365` | Emitted only when set. |
+| `config.retention.notificationsReadDays` | `KAIROS_NOTIFICATIONS_READ_DAYS` | server `30` | Emitted only when not null; `0` keeps read notifications. |
+| `config.retention.codeIndexPoolDays` | `KAIROS_CODE_INDEX_POOL_DAYS` | server `30` | Emitted only when not null; `0` keeps the summaries that no index uses. |
 | `config.retention.archiveTarget` | `KAIROS_ARCHIVE_TARGET` | `""` | Path or `s3://…`. |
 | `config.retention.mode` | `KAIROS_RETENTION_MODE` | server `archive` | `archive` \| `discard` \| `off`. |
 | `config.devUi` | `KAIROS_DEV_UI` | `false` | Swagger UI; keep off in prod. |

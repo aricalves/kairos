@@ -17,6 +17,14 @@
 //      cards, and it does not show the note of the cap
 //   4. archive the tasks and delete the team (also when a step before this
 //      one fails)
+//
+// KAIROS-T-0346: the clean-up is an afterEach hook, not a `finally`. When
+// the test times out, Playwright does not wait for the body of the test,
+// so a `finally` did not run, and the board of the team stayed for the
+// specs after this one (smoke and team-lens then counted 6 boards). The
+// hook runs after a time-out also, reads the cards of the board from the
+// server (the body can stop before it records each task), and stops the
+// loop that creates the tasks.
 
 import { test, expect } from '@playwright/test';
 import { mintToken } from '../helpers/auth';
@@ -31,6 +39,42 @@ const CARDS = Number(process.env.E2E_BOARD_CARDS ?? 1005);
 const BATCH = 8;
 
 test.setTimeout(90_000 + CARDS * 300);
+
+/** What the clean-up needs. The test sets it; the hook clears it. */
+let made: { token: string; teamId?: string; boardId?: string; stopped: boolean } | undefined;
+
+test.afterEach(async () => {
+  const run = made;
+  made = undefined;
+  if (!run) return;
+  run.stopped = true;
+  // The hook has time of its own for the archive of each card.
+  test.setTimeout(60_000 + CARDS * 200);
+  if (run.boardId) {
+    // A create request can be in flight when the hook starts, so read the
+    // board again until it has no card.
+    for (let round = 0; round < 5; round += 1) {
+      const codes: string[] = [];
+      for (let offset = 0; ; offset += 1000) {
+        const part = await call(
+          run.token,
+          'GET',
+          `/api/boards/${run.boardId}/items?limit=1000&offset=${offset}`,
+        );
+        codes.push(...codesOf(part));
+        if (offset + 1000 >= part.total) break;
+      }
+      if (codes.length === 0) break;
+      for (let first = 0; first < codes.length; first += BATCH) {
+        const statuses = await Promise.all(
+          codes.slice(first, first + BATCH).map((code) => tryArchiveTask(GUI, run.token, code)),
+        );
+        for (const status of statuses) expect([200, 204, 404]).toContain(status);
+      }
+    }
+  }
+  if (run.teamId) await call(run.token, 'DELETE', `/api/teams/${run.teamId}`);
+});
 
 async function call(token: string, method: string, path: string, body?: unknown): Promise<any> {
   const res = await fetch(GUI + path, {
@@ -54,89 +98,80 @@ test('board pages: a board with more than 1000 cards shows each card', async ({ 
   // client (see repositories.spec.ts).
   const alice = await mintToken({ server: GUI, email: 'alice@kairos.test' });
   const created: string[] = [];
-  let teamId: string | undefined;
+  const run: NonNullable<typeof made> = { token: alice, stopped: false };
+  made = run;
 
-  try {
-    let boardId = '';
-    await test.step(`create the team and ${CARDS} tasks`, async () => {
-      const team = await call(alice, 'POST', '/api/teams', {
-        name: `Pages ${RUN}`,
-        slug: TEAM,
-        // COLLIERY-T-3099: the short-code prefix of the delivery board.
-        code_prefix: `PG${RUN.toUpperCase()}`.slice(0, 10),
-      });
-      teamId = team.id;
-      boardId = team.delivery_board_id;
-      for (let first = 0; first < CARDS; first += BATCH) {
-        const numbers = Array.from(
-          { length: Math.min(BATCH, CARDS - first) },
-          (_, index) => first + index + 1,
-        );
-        const tasks = await Promise.all(
-          numbers.map((n) =>
-            createTask(GUI, alice, {
-              title: `page card ${RUN} ${String(n).padStart(4, '0')}`,
-              boardId,
-            }),
-          ),
-        );
-        created.push(...tasks.map((task) => task.short_code));
-      }
-      expect(created.length).toBe(CARDS);
+  let boardId = '';
+  await test.step(`create the team and ${CARDS} tasks`, async () => {
+    const team = await call(alice, 'POST', '/api/teams', {
+      name: `Pages ${RUN}`,
+      slug: TEAM,
+      // COLLIERY-T-3099: the short-code prefix of the delivery board.
+      code_prefix: `PG${RUN.toUpperCase()}`.slice(0, 10),
     });
-
-    await test.step('the API gives pages, and the pages have no item in common', async () => {
-      const first = await call(alice, 'GET', `/api/boards/${boardId}/items`);
-      expect(first.total).toBe(CARDS);
-      expect(first.limit).toBe(200);
-      expect(codesOf(first).length).toBe(Math.min(200, CARDS));
-      const read: string[] = [];
-      for (let offset = 0; offset < CARDS; offset += 100) {
-        const part = await call(
-          alice,
-          'GET',
-          `/api/boards/${boardId}/items?limit=100&offset=${offset}`,
-        );
-        expect(part.total).toBe(CARDS);
-        read.push(...codesOf(part));
-      }
-      expect(read.length).toBe(CARDS);
-      expect(new Set(read).size).toBe(CARDS);
-      expect([...read].sort()).toEqual([...created].sort());
-    });
-
-    await test.step('login via Dex as alice, open the board: each card is there', async () => {
-      await page.goto('/');
-      await page.waitForSelector('#login', { timeout: 30_000 });
-      await page.fill('#login', 'alice@kairos.test');
-      await page.fill('#password', 'alice-password');
-      await page.click('#submit-login');
-      await page.waitForURL((url) => url.pathname.startsWith('/boards'), {
-        timeout: 30_000,
-      });
-      await page.goto(`/boards/${BOARD}`);
-      await expect(
-        page.locator('article.kairos-card', { hasText: `page card ${RUN}` }),
-      ).toHaveCount(CARDS, { timeout: 30_000 + CARDS * 20 });
-      // The first card and the last card of the board.
-      for (const n of [1, CARDS]) {
-        await expect(
-          page.locator('article.kairos-card', {
-            hasText: `page card ${RUN} ${String(n).padStart(4, '0')}`,
-          }),
-        ).toHaveCount(1);
-      }
-      // The board has each card, so it does not show the note of the cap.
-      await expect(page.getByTestId('board-cap')).toHaveCount(0);
-    });
-  } finally {
-    // Clean-up is not a step of the journey: it runs after a failure also.
-    for (let first = 0; first < created.length; first += BATCH) {
-      const statuses = await Promise.all(
-        created.slice(first, first + BATCH).map((code) => tryArchiveTask(GUI, alice, code)),
+    run.teamId = team.id;
+    boardId = team.delivery_board_id;
+    run.boardId = boardId;
+    for (let first = 0; first < CARDS && !run.stopped; first += BATCH) {
+      const numbers = Array.from(
+        { length: Math.min(BATCH, CARDS - first) },
+        (_, index) => first + index + 1,
       );
-      for (const status of statuses) expect([200, 204]).toContain(status);
+      const tasks = await Promise.all(
+        numbers.map((n) =>
+          createTask(GUI, alice, {
+            title: `page card ${RUN} ${String(n).padStart(4, '0')}`,
+            boardId,
+          }),
+        ),
+      );
+      created.push(...tasks.map((task) => task.short_code));
     }
-    if (teamId) await call(alice, 'DELETE', `/api/teams/${teamId}`);
-  }
+    expect(created.length).toBe(CARDS);
+  });
+
+  await test.step('the API gives pages, and the pages have no item in common', async () => {
+    const first = await call(alice, 'GET', `/api/boards/${boardId}/items`);
+    expect(first.total).toBe(CARDS);
+    expect(first.limit).toBe(200);
+    expect(codesOf(first).length).toBe(Math.min(200, CARDS));
+    const read: string[] = [];
+    for (let offset = 0; offset < CARDS; offset += 100) {
+      const part = await call(
+        alice,
+        'GET',
+        `/api/boards/${boardId}/items?limit=100&offset=${offset}`,
+      );
+      expect(part.total).toBe(CARDS);
+      read.push(...codesOf(part));
+    }
+    expect(read.length).toBe(CARDS);
+    expect(new Set(read).size).toBe(CARDS);
+    expect([...read].sort()).toEqual([...created].sort());
+  });
+
+  await test.step('login via Dex as alice, open the board: each card is there', async () => {
+    await page.goto('/');
+    await page.waitForSelector('#login', { timeout: 30_000 });
+    await page.fill('#login', 'alice@kairos.test');
+    await page.fill('#password', 'alice-password');
+    await page.click('#submit-login');
+    await page.waitForURL((url) => url.pathname.startsWith('/boards'), {
+      timeout: 30_000,
+    });
+    await page.goto(`/boards/${BOARD}`);
+    await expect(
+      page.locator('article.kairos-card', { hasText: `page card ${RUN}` }),
+    ).toHaveCount(CARDS, { timeout: 30_000 + CARDS * 20 });
+    // The first card and the last card of the board.
+    for (const n of [1, CARDS]) {
+      await expect(
+        page.locator('article.kairos-card', {
+          hasText: `page card ${RUN} ${String(n).padStart(4, '0')}`,
+        }),
+      ).toHaveCount(1);
+    }
+    // The board has each card, so it does not show the note of the cap.
+    await expect(page.getByTestId('board-cap')).toHaveCount(0);
+  });
 });

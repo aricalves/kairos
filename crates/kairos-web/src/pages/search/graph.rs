@@ -243,6 +243,11 @@ pub fn GraphView(#[prop(into)] short_code: String) -> impl IntoView {
     let auth = use_auth();
     let code = StoredValue::new(short_code);
     let reload = RwSignal::new(0u32);
+    // KAIROS-T-0309: the result of the last link or unlink. It lives here
+    // and not in the manage panel: a change to the graph builds the panel
+    // again, and a signal of the panel would go with it, so "Unlinked ..."
+    // showed for a few milliseconds only.
+    let link_feedback = RwSignal::new(None::<Result<String, ApiError>>);
 
     // Base subgraph (depth 2) + in-place expansions, merged reactively —
     // expanding never remounts and never loses prior expansions.
@@ -517,6 +522,7 @@ pub fn GraphView(#[prop(into)] short_code: String) -> impl IntoView {
                         {move || is_admin().then(|| view! {
                             <ManagePanel
                                 short_code=code.get_value()
+                                feedback=link_feedback
                                 on_changed=Callback::new(move |_| {
                                     expansions.set(Vec::new());
                                     reload.update(|n| *n += 1);
@@ -534,11 +540,16 @@ pub fn GraphView(#[prop(into)] short_code: String) -> impl IntoView {
 /// direct edges with unlink buttons, plus the create-link form. The
 /// server enforces the A-0001 rule matrix; typed 422s surface here.
 #[component]
-fn ManagePanel(#[prop(into)] short_code: String, on_changed: Callback<()>) -> impl IntoView {
+fn ManagePanel(
+    #[prop(into)] short_code: String,
+    /// The result of the last link or unlink. The owner keeps it, so it
+    /// stays when the panel is built again (KAIROS-T-0309).
+    feedback: RwSignal<Option<Result<String, ApiError>>>,
+    on_changed: Callback<()>,
+) -> impl IntoView {
     let auth = use_auth();
     let code = StoredValue::new(short_code);
     let reload = RwSignal::new(0u32);
-    let feedback = RwSignal::new(None::<Result<String, ApiError>>);
 
     let rels = LocalResource::new(move || {
         let _ = auth.token();

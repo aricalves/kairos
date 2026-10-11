@@ -494,6 +494,11 @@ fn finish_create(
     content: &str,
 ) -> Result<(), DieselError> {
     insert_history(conn, item_id, 1, title, content, actor)?;
+    // KAIROS-T-0381: each mention in the content of a new item.
+    let names: Vec<String> = kairos_core::notifications::mentions(content)
+        .into_keys()
+        .collect();
+    crate::notifications::on_mentions(conn, item_id, &names, actor)?;
     log_activity(
         conn,
         actor,
@@ -1444,9 +1449,20 @@ pub fn update_item_content(
     actor: Uuid,
 ) -> Result<i32, ItemError> {
     conn.transaction::<_, ItemError, _>(|conn| {
+        // KAIROS-T-0381: the content before the update, to find the new
+        // mentions. Read only when the new content has a mention.
+        let before = if kairos_core::notifications::mentions(update.new_content).is_empty() {
+            None
+        } else {
+            load_live_content(conn, item_type, item_id)?.map(|(_, _, content, _)| content)
+        };
         match apply_content_update(conn, item_type, item_id, &update, actor)? {
             Some((new_version, title, content)) => {
                 insert_history(conn, item_id, new_version, &title, &content, actor)?;
+                if let Some(before) = before {
+                    let names = kairos_core::notifications::new_mentions(&before, &content);
+                    crate::notifications::on_mentions(conn, item_id, &names, actor)?;
+                }
                 // KAIROS-T-0022: thin event, delivered on commit.
                 events::emit_item_event_by_id(
                     conn,
@@ -1482,6 +1498,95 @@ pub fn update_item_content(
                 })
             }
         }
+    })
+}
+
+/// Why [`append_note`] wrote nothing (KAIROS-T-0367).
+#[derive(Debug, thiserror::Error)]
+pub enum NoteError {
+    /// The text is empty or only white space.
+    #[error("The text of the note is empty. Send the text to append.")]
+    EmptyText,
+    /// The item is not there, or the database failed.
+    #[error(transparent)]
+    Item(#[from] ItemError),
+}
+
+impl From<DieselError> for NoteError {
+    fn from(e: DieselError) -> Self {
+        NoteError::Item(ItemError::Database(e))
+    }
+}
+
+/// Append a note at the end of an item's content (KAIROS-T-0367): a heading
+/// with the UTC date of `today` and the display name of `actor`
+/// ([`kairos_core::items::note_heading`]), then the text. One new version,
+/// one history row, one `item.updated` event.
+///
+/// No version and no anchor: the transaction locks the item row
+/// (`SELECT … FOR UPDATE`) before it reads the content, so two notes at the
+/// same time are written one after the other, and the second one reads the
+/// content that the first one wrote. No note is lost. Returns the new
+/// version.
+pub fn append_note(
+    conn: &mut PgConnection,
+    item_type: ItemType,
+    item_id: Uuid,
+    text: &str,
+    actor: Uuid,
+    today: chrono::NaiveDate,
+) -> Result<i32, NoteError> {
+    if text.trim().is_empty() {
+        return Err(NoteError::EmptyText);
+    }
+    conn.transaction::<_, NoteError, _>(|conn| {
+        macro_rules! lock_row {
+            ($table:ident) => {{
+                use crate::schema::$table::dsl;
+                dsl::$table
+                    .filter(dsl::id.eq(item_id))
+                    .filter(dsl::deleted_at.is_null())
+                    .select((dsl::version, dsl::content))
+                    .for_update()
+                    .first::<(i32, String)>(conn)
+                    .optional()
+            }};
+        }
+        let locked = match item_type {
+            ItemType::Strategy => lock_row!(strategies),
+            ItemType::Initiative => lock_row!(initiatives),
+            ItemType::Task => lock_row!(tasks),
+            ItemType::Document => lock_row!(documents),
+            ItemType::Adr => lock_row!(adrs),
+        }
+        .map_err(ItemError::from)?;
+        let (version, content) = locked.ok_or(ItemError::ItemNotFound {
+            entity_type: item_type.entity_type(),
+            id: item_id,
+        })?;
+        let author: Option<String> = crate::schema::users::table
+            .filter(crate::schema::users::id.eq(actor))
+            .select(crate::schema::users::display_name)
+            .first(conn)
+            .optional()
+            .map_err(ItemError::from)?;
+        let author = author
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| actor.to_string());
+        let heading = kairos_core::items::note_heading(today, &author);
+        let new_content = kairos_core::items::content_with_note(&content, &heading, text)
+            .ok_or(NoteError::EmptyText)?;
+        Ok(update_item_content(
+            conn,
+            item_type,
+            item_id,
+            ContentUpdate {
+                new_title: None,
+                new_content: &new_content,
+                expected_version: version,
+            },
+            actor,
+        )?)
     })
 }
 
@@ -1885,6 +1990,13 @@ fn soft_delete_planned(
         }
         // KAIROS-T-0359: an archived task has no claim.
         crate::task_claims::drop_claims(conn, &ids, actor, "archive")?;
+        // KAIROS-T-0381: an archived item no longer blocks.
+        crate::notifications::on_blockers_cleared(
+            conn,
+            &ids,
+            crate::notifications::Cleared::Archived,
+            actor,
+        )?;
 
         let mut cascaded_short_codes: Vec<String> = deleted
             .into_iter()

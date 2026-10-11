@@ -179,25 +179,21 @@ pub(crate) async fn search(
     let request: dto_search::SearchRequest = serde_json::from_value(body)
         .map_err(|e| crate::body::shape_error(StatusCode::BAD_REQUEST, &e.to_string()))?;
     let mut core = to_core(&request)?;
-    let repository = request.filter.as_ref().and_then(|f| f.repository.clone());
+    let refs = FilterRefs::of(request.filter.as_ref())?;
     // Validate before dispatching to the blocking pool: an invalid request
     // never costs a connection checkout. A filter carrying only
     // `repository` becomes constraining once resolved, so that case is
     // validated after resolution instead. `execute_search` re-validates
     // (cheaply) as part of its own contract.
-    if repository.is_none() {
+    if refs.is_empty() {
         core_search::validate(&core).map_err(map_validation_error)?;
     }
 
     let response = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            if let Some(reference) = repository.as_deref() {
-                let repo = kairos_db::repositories::resolve(conn, reference)
-                    .map_err(crate::api::tasks::map_repository_error)?;
-                core.filter
-                    .get_or_insert_with(Default::default)
-                    .repository_id = Some(repo.id);
+            if !refs.is_empty() {
+                refs.resolve_into(conn, &mut core)?;
                 core_search::validate(&core).map_err(map_validation_error)?;
             }
             let mut response = execute_search(conn, &core)
@@ -214,6 +210,133 @@ pub(crate) async fn search(
         })
         .await?;
     Ok(Json(response))
+}
+
+// ---------------------------------------------------------------------------
+// Filter references that need a connection (slug or UUID)
+// ---------------------------------------------------------------------------
+
+/// The references of a search filter that resolve with a connection: the
+/// repository (KAIROS-T-0115), and the board and the team by slug or UUID
+/// (KAIROS-T-0368). The REST route and the MCP tool share them.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FilterRefs {
+    pub repository: Option<String>,
+    pub board: Option<String>,
+    pub team: Option<String>,
+}
+
+impl FilterRefs {
+    /// The references of a wire filter. `board` with `board_id`, or `team`
+    /// with `team_id`, is refused.
+    pub(crate) fn of(filter: Option<&dto_search::SearchFilter>) -> Result<Self, ApiError> {
+        let Some(filter) = filter else {
+            return Ok(Self::default());
+        };
+        Self::new(
+            filter.repository.clone(),
+            (filter.board.clone(), filter.board_id.is_some()),
+            (filter.team.clone(), filter.team_id.is_some()),
+        )
+    }
+
+    /// From the values; each pair is the slug-or-UUID reference and
+    /// whether the UUID field (`board_id`, `team_id`) is set too.
+    pub(crate) fn new(
+        repository: Option<String>,
+        board: (Option<String>, bool),
+        team: (Option<String>, bool),
+    ) -> Result<Self, ApiError> {
+        if board.0.is_some() && board.1 {
+            return Err(field_invalid(
+                "filter.board",
+                "The filter has board and board_id. Send only one of them.",
+            ));
+        }
+        if team.0.is_some() && team.1 {
+            return Err(field_invalid(
+                "filter.team",
+                "The filter has team and team_id. Send only one of them.",
+            ));
+        }
+        Ok(FilterRefs {
+            repository,
+            board: board.0,
+            team: team.0,
+        })
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.repository.is_none() && self.board.is_none() && self.team.is_none()
+    }
+
+    /// Resolve each reference and put its id in the core filter. A board
+    /// or a team that does not resolve is a `VALIDATION` refusal that
+    /// names the field.
+    pub(crate) fn resolve_into(
+        &self,
+        conn: &mut diesel::pg::PgConnection,
+        core: &mut core_search::SearchRequest,
+    ) -> Result<(), ApiError> {
+        use diesel::prelude::*;
+        let filter = core.filter.get_or_insert_with(Default::default);
+        if let Some(reference) = self.repository.as_deref() {
+            let repo = kairos_db::repositories::resolve(conn, reference)
+                .map_err(crate::api::tasks::map_repository_error)?;
+            filter.repository_id = Some(repo.id);
+        }
+        if let Some(reference) = self.board.as_deref() {
+            use kairos_db::schema::boards;
+            let mut query = boards::table
+                .filter(boards::deleted_at.is_null())
+                .select(boards::id)
+                .into_boxed();
+            query = match Uuid::parse_str(reference) {
+                Ok(id) => query.filter(boards::id.eq(id)),
+                Err(_) => query.filter(boards::slug.eq(reference)),
+            };
+            let id: Uuid = query
+                .first(conn)
+                .optional()
+                .map_err(ApiError::internal)?
+                .ok_or_else(|| {
+                    field_invalid(
+                        "filter.board",
+                        format!(
+                            "No live board has the slug or the id {reference:?}. Send the \
+                             slug or the id of a board of the organization."
+                        ),
+                    )
+                })?;
+            filter.board_id = Some(id);
+        }
+        if let Some(reference) = self.team.as_deref() {
+            use kairos_db::schema::teams;
+            let mut query = teams::table
+                .filter(teams::deleted_at.is_null())
+                .select(teams::id)
+                .into_boxed();
+            query = match Uuid::parse_str(reference) {
+                Ok(id) => query.filter(teams::id.eq(id)),
+                Err(_) => query.filter(teams::slug.eq(reference)),
+            };
+            let id: Uuid = query
+                .first(conn)
+                .optional()
+                .map_err(ApiError::internal)?
+                .ok_or_else(|| {
+                    field_invalid(
+                        "filter.team",
+                        format!(
+                            "No live team has the slug or the id {reference:?}. Send the \
+                             slug or the id of a team of the organization."
+                        ),
+                    )
+                })?;
+            filter.team_id = Some(id);
+        }
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -357,6 +480,17 @@ fn filter_to_core(
             .as_deref()
             .map(|v| timestamp_field(v, "filter.created_before"))
             .transpose()?,
+        updated_after: filter
+            .updated_after
+            .as_deref()
+            .map(|v| timestamp_field(v, "filter.updated_after"))
+            .transpose()?,
+        updated_before: filter
+            .updated_before
+            .as_deref()
+            .map(|v| timestamp_field(v, "filter.updated_before"))
+            .transpose()?,
+        metadata_missing: filter.metadata_missing.clone(),
         include_deleted: filter.include_deleted,
     })
 }
@@ -426,6 +560,12 @@ fn map_validation_error(e: SearchValidationError) -> ApiError {
             "created_after": after.to_rfc3339(),
             "created_before": before.to_rfc3339(),
         }),
+        SearchValidationError::InvertedUpdateRange { after, before } => json!({
+            "field": "filter.updated_after",
+            "updated_after": after.to_rfc3339(),
+            "updated_before": before.to_rfc3339(),
+        }),
+        SearchValidationError::BlankMetadataMissing => json!({"field": "filter.metadata_missing"}),
         SearchValidationError::TraverseFromMissing
         | SearchValidationError::TraverseFromAmbiguous => json!({"field": "traverse.from"}),
         SearchValidationError::NoRelationships => json!({"field": "traverse.relationships"}),
@@ -447,6 +587,10 @@ fn map_search_error(e: SearchError) -> ApiError {
         SearchError::TraverseRootNotFound { reference } => ApiError::not_found(format!(
             "The item {reference:?} of traverse.from does not exist."
         )),
+        SearchError::UnknownMetadataDefinition(ref slug) => {
+            field_invalid("filter.metadata_missing", e.to_string())
+                .with_details(json!({"field": "filter.metadata_missing", "slug": slug}))
+        }
         SearchError::Database(e) => ApiError::internal(e),
     }
 }

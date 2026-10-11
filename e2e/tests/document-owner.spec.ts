@@ -331,9 +331,11 @@ test('each document has an owner board, and the last supports edge can go', asyn
     await page.goto(`/items/${owned.short_code}?view=graph`);
     await expect(manage()).toContainText(`supports ← ${task.short_code}`);
     await edge(task.short_code).getByRole('button', { name: 'Unlink' }).click();
-    // The text "Unlinked ..." goes when the list reads the edges again
-    // (COLLIERY-T-3106), so the check is on the list and the server.
+    // KAIROS-T-0309: the text "Unlinked ..." stays when the graph and the
+    // list read the edges again. Before, the page built the panel again
+    // and the text went before the test could read it.
     await expect(manage()).toContainText('No edges on this item yet.');
+    await expect(manage()).toContainText(`Unlinked supports ← ${task.short_code}.`);
     const relationships = await api(
       token,
       'GET',

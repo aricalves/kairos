@@ -170,6 +170,20 @@ pub struct SearchFilter {
     /// Only items created strictly before this instant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_before: Option<DateTime<Utc>>,
+    /// Only items last changed strictly after this instant (`updated_at`,
+    /// KAIROS-T-0368).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_after: Option<DateTime<Utc>>,
+    /// Only items last changed strictly before this instant (`updated_at`,
+    /// KAIROS-T-0368): "untouched for 90 days" is `updated_before` = now
+    /// minus 90 days.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_before: Option<DateTime<Utc>>,
+    /// Only items that have NO value for each of these metadata definitions
+    /// (slugs, KAIROS-T-0368): "bugs without a priority" is
+    /// `metadata_missing: ["priority"]`. An unknown slug is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_missing: Option<Vec<String>>,
     /// Include soft-deleted items (default false — soft-deleted are
     /// excluded everywhere by default).
     #[serde(default)]
@@ -199,6 +213,9 @@ impl SearchFilter {
             || self.metadata.as_ref().is_some_and(|m| !m.is_empty())
             || self.created_after.is_some()
             || self.created_before.is_some()
+            || self.updated_after.is_some()
+            || self.updated_before.is_some()
+            || self.metadata_missing.is_some()
     }
 }
 
@@ -439,6 +456,23 @@ pub enum SearchValidationError {
         /// The submitted `created_before`.
         before: DateTime<Utc>,
     },
+    /// `updated_after`/`updated_before` do not form a sane range
+    /// (KAIROS-T-0368).
+    #[error(
+        "The value {after} of updated_after is not before the value {before} of updated_before. Send an earlier updated_after."
+    )]
+    InvertedUpdateRange {
+        /// The submitted `updated_after`.
+        after: DateTime<Utc>,
+        /// The submitted `updated_before`.
+        before: DateTime<Utc>,
+    },
+    /// `filter.metadata_missing` is empty, or has a blank slug
+    /// (KAIROS-T-0368).
+    #[error(
+        "The list filter.metadata_missing is empty or has an empty slug. Send the slug of one metadata definition or more."
+    )]
+    BlankMetadataMissing,
     /// `traverse.from` names neither `short_code` nor `id`.
     #[error("The object traverse.from has no short_code and no id. Send one of them.")]
     TraverseFromMissing,
@@ -509,6 +543,16 @@ pub fn validate(request: &SearchRequest) -> Result<(), SearchValidationError> {
             && after >= before
         {
             return Err(SearchValidationError::InvertedDateRange { after, before });
+        }
+        if let (Some(after), Some(before)) = (filter.updated_after, filter.updated_before)
+            && after >= before
+        {
+            return Err(SearchValidationError::InvertedUpdateRange { after, before });
+        }
+        if let Some(slugs) = &filter.metadata_missing
+            && (slugs.is_empty() || slugs.iter().any(|s| s.trim().is_empty()))
+        {
+            return Err(SearchValidationError::BlankMetadataMissing);
         }
     }
 
@@ -732,6 +776,48 @@ mod tests {
             validate(&request),
             Err(SearchValidationError::BlankMetadataKey)
         );
+    }
+
+    #[test]
+    fn update_filters_and_missing_metadata_constrain_and_are_checked() {
+        let after: DateTime<Utc> = "2026-03-01T00:00:00Z".parse().unwrap();
+        let before: DateTime<Utc> = "2026-01-01T00:00:00Z".parse().unwrap();
+        let only = |filter: SearchFilter| SearchRequest {
+            filter: Some(filter),
+            ..Default::default()
+        };
+        // Each one alone is a complete request.
+        assert_eq!(
+            validate(&only(SearchFilter {
+                updated_before: Some(before),
+                ..Default::default()
+            })),
+            Ok(())
+        );
+        assert_eq!(
+            validate(&only(SearchFilter {
+                metadata_missing: Some(vec!["priority".into()]),
+                ..Default::default()
+            })),
+            Ok(())
+        );
+        assert_eq!(
+            validate(&only(SearchFilter {
+                updated_after: Some(after),
+                updated_before: Some(before),
+                ..Default::default()
+            })),
+            Err(SearchValidationError::InvertedUpdateRange { after, before })
+        );
+        for slugs in [vec![], vec![" ".to_string()]] {
+            assert_eq!(
+                validate(&only(SearchFilter {
+                    metadata_missing: Some(slugs),
+                    ..Default::default()
+                })),
+                Err(SearchValidationError::BlankMetadataMissing)
+            );
+        }
     }
 
     #[test]

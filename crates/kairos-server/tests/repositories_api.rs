@@ -27,7 +27,7 @@ use common::{
     with_database,
 };
 use kairos_client::Error;
-use kairos_client::types::CreateTaskRequest;
+use kairos_client::types::{CreateTaskRequest, Pagination};
 use kairos_client::types_forge::CreateForgeConnectionRequest;
 use kairos_client::types_org::{AddTeamMemberRequest, CreateTeamRequest};
 use kairos_client::types_repositories::{CreateRepositoryRequest, UpdateRepositoryRequest};
@@ -203,7 +203,9 @@ async fn repository_api_against_live_stack() {
         .await
         .expect("lookup");
     assert_eq!(status, 200);
-    assert_eq!(body[0]["slug"], "payments-api", "{body}");
+    // KAIROS-T-0268: the list has the shape of each other list.
+    assert_eq!(body["items"][0]["slug"], "payments-api", "{body}");
+    assert_eq!(body["total"], 1, "{body}");
     let (status, body) = alice
         .raw_request(
             reqwest::Method::GET,
@@ -213,7 +215,8 @@ async fn repository_api_against_live_stack() {
         .await
         .expect("lookup miss");
     assert_eq!(status, 200);
-    assert_eq!(body.as_array().map(Vec::len), Some(0), "{body}");
+    assert_eq!(body["items"].as_array().map(Vec::len), Some(0), "{body}");
+    assert_eq!(body["total"], 0, "{body}");
     let (status, _) = alice
         .raw_request(reqwest::Method::GET, "/api/repositories?forge=github", None)
         .await
@@ -283,6 +286,26 @@ async fn repository_api_against_live_stack() {
         all.iter().map(|r| r.slug.as_str()).collect::<Vec<_>>(),
         ["acme-platform-infra", "payments-api", "portal-web"],
         "by slug"
+    );
+    // KAIROS-T-0268: the list gives pages, as each other list. The client
+    // reads each page.
+    let page = alice
+        .list_repositories_page(
+            None,
+            Pagination {
+                limit: Some(1),
+                offset: Some(1),
+            },
+        )
+        .await
+        .expect("one page");
+    assert_eq!((page.total, page.limit, page.offset), (3, 1, 1));
+    assert_eq!(
+        page.items
+            .iter()
+            .map(|r| r.slug.as_str())
+            .collect::<Vec<_>>(),
+        ["payments-api"]
     );
     let platform_only = alice
         .list_repositories(Some("platform"))

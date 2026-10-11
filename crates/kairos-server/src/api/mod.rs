@@ -36,6 +36,7 @@ pub mod documents;
 pub mod initiatives;
 pub mod local_accounts;
 pub mod meta;
+pub mod notifications;
 pub mod org;
 pub mod proposals;
 pub mod search;
@@ -72,6 +73,8 @@ pub fn router() -> Router<AppState> {
         .merge(adrs::router())
         // KAIROS-T-0051: GET /api/{entity_type}/{short_code}/cascade-preview.
         .merge(cascade::router())
+        // KAIROS-T-0381: the notification settings of a person.
+        .merge(notifications::router())
 }
 
 // ---------------------------------------------------------------------------
@@ -255,6 +258,36 @@ pub fn require_capability(
         Ok(())
     } else {
         Err(ApiError::capability_required(capability, board_id))
+    }
+}
+
+/// THE STRUCTURE GATE (KAIROS-T-0337): may this principal change the
+/// structure of the organization? An organization admin may, and a
+/// principal with a grant of `manage_structure` at the organization may. A
+/// grant on one board does not count here. The refusal is
+/// [`ApiError::structure_required`].
+///
+/// The routes that ask it: create, change and delete a team; add and remove
+/// a team member; create a board; reset a code sequence; delete a
+/// repository. Each other change to a board (its settings, columns,
+/// transitions, members and grants) asks [`require_capability`] for
+/// `configure_boards` or `administer_members` on the board, and
+/// [`abac::authorize`] accepts a grant of `manage_structure` on that board
+/// or at the organization for those two.
+///
+/// The account, key, SCIM and tenant routes do not ask it. They stay with
+/// the organization admin ([`require_capability`] with no board).
+pub fn require_structure(
+    conn: &mut PgConnection,
+    slug: &str,
+    user_id: Uuid,
+) -> Result<(), ApiError> {
+    let allowed = abac::is_org_admin(conn, slug, user_id).map_err(map_abac_error)?
+        || abac::holds_structure(conn, user_id, None).map_err(map_abac_error)?;
+    if allowed {
+        Ok(())
+    } else {
+        Err(ApiError::structure_required())
     }
 }
 
@@ -769,6 +802,14 @@ pub fn map_abac_error(e: AbacError) -> ApiError {
 /// handlers catch it themselves to attach the full current entity as
 /// `details.current`; this fallback still returns a correct 409 from the
 /// typed fields should another path surface one.
+/// [`kairos_db::items::NoteError`] → API error (KAIROS-T-0367).
+pub fn map_note_error(e: kairos_db::items::NoteError) -> ApiError {
+    match e {
+        kairos_db::items::NoteError::EmptyText => ApiError::validation(e.to_string()),
+        kairos_db::items::NoteError::Item(inner) => map_item_error(inner),
+    }
+}
+
 pub fn map_item_error(e: ItemError) -> ApiError {
     match e {
         ItemError::ItemNotFound { entity_type, id } => {

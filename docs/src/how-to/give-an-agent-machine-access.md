@@ -37,13 +37,15 @@ kairos teams members add <team-id> --user a1b2c3…
 Then grant it the narrowest capability that does its job. For example, something
 that only moves cards gets `transition_items` on one delivery board, never a
 `manage_*`.
-Grants are per board, through
+Grants are per board. Use `kairos grants add --user <id> --capability
+transition_items --board <board>`,
 [`POST /api/boards/{id}/members`](../reference/rest/boards-and-teams.md) or the
-GUI's board members panel; **the CLI does not grant capabilities.** The
-vocabulary is in [Capabilities](../reference/capabilities.md).
+board members panel of the GUI. The vocabulary is in
+[Capabilities](../reference/capabilities.md).
 
-A service account **can never be an organization admin or a deployment admin.** There is
-no escalation path here, which is also why you cannot shortcut the grants.
+A service account **can never be an organization admin or a deployment admin.**
+It can hold `manage_structure`: the work on teams and boards of an organization
+admin, and no more. See [Run an admin agent](run-an-admin-agent.md).
 
 ## 3. Mint a key
 

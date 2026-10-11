@@ -288,6 +288,33 @@ async fn the_provider_settings_of_a_tenant() {
         "another key opens nothing"
     );
 
+    // KAIROS-T-0370: rotate-secrets seals the secret again with the new key
+    // [10]; the old key [9] is in the ring and opens it.
+    let ring = SecretsKey::from_bytes([10u8; 32]).with_old_bytes([9u8; 32]);
+    let report = kairos_server::secrets_rotation::rotate_tenant(&mut conn, "acme", &ring)
+        .expect("rotate-secrets");
+    assert_eq!(report.resealed, 1, "{report:?}");
+    assert!(report.failed.is_empty(), "{report:?}");
+    let row = kairos_db::code_index_settings::load(&mut conn)
+        .expect("read")
+        .expect("a row");
+    let resealed = row.summary_secret().expect("a sealed secret");
+    assert_eq!(resealed.key_id, other_key.id());
+    let opened = other_key
+        .open(
+            &aad,
+            &resealed.key_id,
+            &resealed.nonce,
+            &resealed.ciphertext,
+        )
+        .expect("the new key alone opens it");
+    assert_eq!(opened, KEY.as_bytes());
+    // Back to the key of the servers of this test.
+    let back = SecretsKey::from_bytes([9u8; 32]).with_old_bytes([10u8; 32]);
+    let report = kairos_server::secrets_rotation::rotate_tenant(&mut conn, "acme", &back)
+        .expect("rotate-secrets back");
+    assert_eq!(report.resealed, 1, "{report:?}");
+
     // 5. No KAIROS_SECRETS_KEY: a secret is refused with the setting named;
     //    a write with no secret still goes.
     let svc_unkeyed = unkeyed.client(&svc_token, "acme");

@@ -34,6 +34,9 @@
 //! - `hash-password [--password <pw>]` — print a PHC hash and nothing else, so
 //!   `KAIROS_BOOTSTRAP_PASSWORD_HASH` can be set without the plaintext ever
 //!   entering a manifest
+//! - `rotate-secrets [--tenant <slug>]` — encrypt each sealed row of each
+//!   tenant again with `KAIROS_SECRETS_KEY`; the old keys in
+//!   `KAIROS_SECRETS_KEY_OLD` decrypt (KAIROS-T-0370)
 //! - `seed-demo [--force]` — seed the `demo` tenant fixture (KAIROS-T-0035,
 //!   A-0012): fixture users/teams/boards/items; existing demo tenant is a
 //!   polite no-op without `--force`
@@ -460,8 +463,15 @@ fn seed_demo(conn: &mut PgConnection, args: &[String]) -> Result<(), String> {
         }
         Err(e) => Err(format!("seed-demo: {e}")),
         Ok(report) => {
-            if report.recreated {
-                println!("dropped existing tenant 'demo' (--force) before reseeding");
+            match report.dropped {
+                // KAIROS-T-0346: say what the reset removed, so a test run
+                // shows that it starts from the seed only.
+                Some(dropped) => println!(
+                    "dropped the tenant 'demo' (--force) before the seed: {} teams, {} boards, \
+                     {} items",
+                    dropped.teams, dropped.boards, dropped.items
+                ),
+                None => println!("there was no tenant 'demo' to drop"),
             }
             println!(
                 "seeded tenant '{}' (schema {}): {} users (alice=org admin, bob, carol), \
@@ -712,6 +722,65 @@ fn embed_index(conn: &mut PgConnection, args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// `rotate-secrets [--tenant <slug>]` (KAIROS-T-0370): encrypt each sealed
+/// row again with the key of `KAIROS_SECRETS_KEY`. The keys of
+/// `KAIROS_SECRETS_KEY_OLD` open the rows that they sealed. A row that no key
+/// opens is named, and the command fails after it has done the other rows.
+fn rotate_secrets(conn: &mut PgConnection, args: &[String]) -> Result<(), String> {
+    use kairos_server::secrets::{SECRETS_KEY_OLD_VAR, SECRETS_KEY_VAR, SecretsKey};
+    let only = flag_value(args, "--tenant")?;
+    let raw = std::env::var(SECRETS_KEY_VAR).map_err(|_| {
+        format!(
+            "rotate-secrets: {SECRETS_KEY_VAR} is not set. Set the new key in \
+             {SECRETS_KEY_VAR} and the old keys in {SECRETS_KEY_OLD_VAR}."
+        )
+    })?;
+    let mut key = SecretsKey::from_base64(&raw)
+        .map_err(|e| format!("rotate-secrets: {SECRETS_KEY_VAR}: {e}"))?;
+    if let Ok(old) = std::env::var(SECRETS_KEY_OLD_VAR) {
+        key = key
+            .with_old_base64(&old)
+            .map_err(|e| format!("rotate-secrets: {SECRETS_KEY_OLD_VAR}: {e}"))?;
+    }
+    println!(
+        "new key {}; old keys: {}",
+        key.id(),
+        if key.old_ids().is_empty() {
+            "none".to_string()
+        } else {
+            key.old_ids().join(", ")
+        }
+    );
+    let tenants = kairos_db::list_tenants(conn).map_err(|e| format!("rotate-secrets: {e}"))?;
+    let mut failed = 0usize;
+    for tenant in tenants
+        .iter()
+        .filter(|t| t.schema_exists)
+        .filter(|t| only.as_deref().is_none_or(|slug| slug == t.slug))
+    {
+        let report = kairos_server::secrets_rotation::rotate_tenant(conn, &tenant.slug, &key)
+            .map_err(|e| format!("rotate-secrets: {}: {e}", tenant.slug))?;
+        println!(
+            "{}: {} encrypted again, {} with the new key already, {} not opened",
+            tenant.slug,
+            report.resealed,
+            report.current,
+            report.failed.len()
+        );
+        for row in &report.failed {
+            println!("  {row}");
+        }
+        failed += report.failed.len();
+    }
+    if failed > 0 {
+        return Err(format!(
+            "rotate-secrets: no key opens {failed} row(s). Add the key that sealed them to \
+             {SECRETS_KEY_OLD_VAR}, or set those secrets again."
+        ));
+    }
+    Ok(())
+}
+
 fn run() -> Result<bool, String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let subcommand = args.first().map(String::as_str);
@@ -755,10 +824,12 @@ fn run() -> Result<bool, String> {
         Some("seed-demo") => seed_demo(&mut conn, &args[1..]).map(|_| true),
         Some("embed-backfill") => embed_backfill(&mut conn, &args[1..]).map(|_| true),
         Some("embed-index") => embed_index(&mut conn, &args[1..]).map(|_| true),
+        Some("rotate-secrets") => rotate_secrets(&mut conn, &args[1..]).map(|_| true),
         Some(other) => Err(format!(
             "unknown subcommand {other:?}; expected one of: serve, migrate, create-tenant, \
              drop-tenant, migrate-tenants, list-tenants, check-delivery-boards, \
-             set-password, hash-password, seed-demo, embed-backfill, embed-index"
+             set-password, hash-password, seed-demo, embed-backfill, embed-index, \
+             rotate-secrets"
         )),
     }
 }

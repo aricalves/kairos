@@ -1,12 +1,16 @@
 //! `kairos admin tenants` — deployment-admin tenant provisioning (S-0005
 //! `/api/admin/tenants`; the caller's OIDC `sub` must be listed in the
 //! server's `KAIROS_DEPLOYMENT_ADMINS`, otherwise 403 with that guidance).
+//!
+//! `kairos admin agent-keys` (KAIROS-T-0388): an organization admin lists
+//! the agent keys of each person and revokes any one.
 
 use kairos_client::types_auth::Secret;
 use kairos_client::types_code_index::{
     CodeIndexSettings, PutCodeIndexSettings, PutSummaryProvider, PutVectorProvider,
 };
 use kairos_client::types_org::CreateTenantRequest;
+use kairos_client::types_service_accounts::OrgAgentKeysQuery;
 
 use crate::commands::entities::{ListArgs, require_confirm};
 use crate::context::{Common, client, print_json};
@@ -23,6 +27,106 @@ pub enum AdminCommand {
     /// organization (an organization admin sets them)
     #[command(subcommand, name = "code-index-settings")]
     CodeIndexSettings(CodeIndexSettingsCommand),
+    /// The agent keys of each person of the organization (an organization
+    /// admin lists and revokes them)
+    #[command(subcommand, name = "agent-keys")]
+    AgentKeys(AgentKeysCommand),
+}
+
+/// List and revoke the agent keys of the persons of the organization.
+#[derive(clap::Subcommand, Debug)]
+pub enum AgentKeysCommand {
+    /// List the agent keys of each person, newest first (prefixes only;
+    /// never the secret). A revoked key stays in the list
+    List {
+        /// Only the keys of this person: a user id (UUID) or an email
+        #[arg(long)]
+        user: Option<String>,
+        #[command(flatten)]
+        list: ListArgs,
+    },
+    /// Revoke the agent key of a person (requires --confirm). Kairos tells
+    /// the owner
+    Revoke {
+        /// Key id (UUID; see `kairos admin agent-keys list`)
+        key_id: String,
+        /// Actually revoke it
+        #[arg(long)]
+        confirm: bool,
+        #[command(flatten)]
+        common: Common,
+    },
+}
+
+impl AgentKeysCommand {
+    pub async fn run(self) -> Result<(), CliError> {
+        match self {
+            Self::List { user, list } => {
+                let client = client(&list.common)?;
+                let page = list.page();
+                let envelope = client
+                    .list_org_agent_keys(&OrgAgentKeysQuery {
+                        user,
+                        limit: page.limit,
+                        offset: page.offset,
+                    })
+                    .await?;
+                if list.common.json {
+                    return print_json(&envelope);
+                }
+                if envelope.items.is_empty() {
+                    println!("(none)");
+                } else {
+                    let mut table = Table::new(&[
+                        "ID",
+                        "OWNER",
+                        "NAME",
+                        "PREFIX",
+                        "CREATED",
+                        "EXPIRES",
+                        "LAST_USED",
+                        "REVOKED",
+                    ]);
+                    let or_dash = |v: &Option<String>| v.clone().unwrap_or_else(|| "-".into());
+                    for key in &envelope.items {
+                        table.row(vec![
+                            key.id.clone(),
+                            key.owner_email.clone(),
+                            key.name.clone(),
+                            key.prefix.clone(),
+                            key.created_at.clone(),
+                            key.expires_at.clone().unwrap_or_else(|| "never".into()),
+                            or_dash(&key.last_used_at),
+                            or_dash(&key.revoked_at),
+                        ]);
+                    }
+                    print!("{}", table.render());
+                }
+                println!(
+                    "total: {} (limit {}, offset {})",
+                    envelope.total, envelope.limit, envelope.offset
+                );
+                Ok(())
+            }
+            Self::Revoke {
+                key_id,
+                confirm,
+                common,
+            } => {
+                require_confirm(confirm, &format!("the agent key {key_id}"))?;
+                let client = client(&common)?;
+                let deleted = client.revoke_org_agent_key(&key_id).await?;
+                if common.json {
+                    return print_json(&deleted);
+                }
+                println!(
+                    "Kairos revoked the agent key {}. Kairos told the owner.",
+                    deleted.id
+                );
+                Ok(())
+            }
+        }
+    }
 }
 
 /// Show or set where the code index summaries and vectors of the
@@ -279,6 +383,7 @@ impl AdminCommand {
         match self {
             Self::Tenants(command) => command.run().await,
             Self::CodeIndexSettings(command) => command.run().await,
+            Self::AgentKeys(command) => command.run().await,
         }
     }
 }

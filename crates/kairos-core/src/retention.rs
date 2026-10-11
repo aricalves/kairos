@@ -46,6 +46,12 @@ pub const ENV_ARCHIVE_TARGET: &str = "KAIROS_ARCHIVE_TARGET";
 /// Env var: retention mode, one of `archive|discard|off` (default
 /// `archive` — the safe default: without a target nothing is destroyed).
 pub const ENV_RETENTION_MODE: &str = "KAIROS_RETENTION_MODE";
+/// Env var: the days a read notification stays (default 30, KAIROS-T-0381);
+/// 0 keeps read notifications.
+pub const ENV_NOTIFICATIONS_READ_DAYS: &str = "KAIROS_NOTIFICATIONS_READ_DAYS";
+/// Env var: the days that a summary of the code-index pool that no stored
+/// index has used stays (default 30, KAIROS-T-0378); 0 keeps them.
+pub const ENV_CODE_INDEX_POOL_DAYS: &str = "KAIROS_CODE_INDEX_POOL_DAYS";
 
 /// Errors from parsing the retention environment configuration.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -159,6 +165,15 @@ pub struct RetentionConfig {
     pub archive_target: Option<ArchiveTarget>,
     /// What to do with prune candidates.
     pub mode: RetentionMode,
+    /// A read notification is deleted this many days after it was read
+    /// (KAIROS-T-0381). 0 keeps read notifications. Not archived, in each
+    /// mode: a read notification is a copy of a fact that the item keeps.
+    pub notifications_read_days: u32,
+    /// A summary of the code-index pool of a repository that no stored
+    /// index has used is deleted this many days after a build made it
+    /// (KAIROS-T-0378). 0 keeps them. In each mode: such a summary is a
+    /// cache that a build can make again.
+    pub code_index_pool_days: u32,
 }
 
 impl Default for RetentionConfig {
@@ -169,6 +184,8 @@ impl Default for RetentionConfig {
             activity_retention_days: 365,
             archive_target: None,
             mode: RetentionMode::Archive,
+            notifications_read_days: 30,
+            code_index_pool_days: 30,
         }
     }
 }
@@ -207,6 +224,12 @@ impl RetentionConfig {
         }
         if let Some(value) = lookup(ENV_RETENTION_MODE) {
             config.mode = value.parse()?;
+        }
+        if let Some(value) = lookup(ENV_NOTIFICATIONS_READ_DAYS) {
+            config.notifications_read_days = parse_u32(ENV_NOTIFICATIONS_READ_DAYS, &value)?;
+        }
+        if let Some(value) = lookup(ENV_CODE_INDEX_POOL_DAYS) {
+            config.code_index_pool_days = parse_u32(ENV_CODE_INDEX_POOL_DAYS, &value)?;
         }
         Ok(config)
     }
@@ -355,6 +378,8 @@ mod tests {
                 activity_retention_days: 365,
                 archive_target: None,
                 mode: RetentionMode::Archive,
+                notifications_read_days: 30,
+                code_index_pool_days: 30,
             }
         );
     }
@@ -367,6 +392,8 @@ mod tests {
             (ENV_ACTIVITY_RETENTION_DAYS, "180"),
             (ENV_ARCHIVE_TARGET, "/var/lib/kairos/archive"),
             (ENV_RETENTION_MODE, "discard"),
+            (ENV_NOTIFICATIONS_READ_DAYS, "0"),
+            (ENV_CODE_INDEX_POOL_DAYS, "7"),
         ]);
         let config =
             RetentionConfig::from_lookup(|name| vars.get(name).map(ToString::to_string)).unwrap();
@@ -380,6 +407,8 @@ mod tests {
             )))
         );
         assert_eq!(config.mode, RetentionMode::Discard);
+        assert_eq!(config.notifications_read_days, 0);
+        assert_eq!(config.code_index_pool_days, 7);
     }
 
     #[test]

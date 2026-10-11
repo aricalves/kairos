@@ -34,6 +34,10 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
+        # No `command` and no `args` (KAIROS-T-0336): the ENTRYPOINT of the
+        # image runs tini as PID 1 in front of `kairos-server serve`.
+        # Kubernetes gives no init, and tini reaps the orphaned children of
+        # the code index builder and sends SIGTERM on to the server.
         - name: kairos
           image: {{ include "kairos.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}

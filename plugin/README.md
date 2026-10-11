@@ -92,8 +92,8 @@ Ralph loop of the session: the iteration and the tasks left.
   discards its `systemMessage`. `SessionStart` fires again after each compaction, and its
   `additionalContext` is a system reminder on the next request.
 - The hook does not read Kairos and holds no credentials. `hooks/active_work.py record` is a
-  `PostToolUse` hook on the kairos `get_item`, `transition_item`, `edit_item` and
-  `update_item` tools. It keeps a local record for each session in
+  `PostToolUse` hook on the kairos `get_item`, `transition_item`, `edit_item`,
+  `update_item` and `append_note` tools. It keeps a local record for each session in
   `~/.claude/kairos-work/<session_id>.json` (`KAIROS_WORK_STATE_DIR` overrides the folder).
   The record has the title, repository, column and parent from the `get_item` result. It has
   the column from `transition_item`, and the next step from the text that the agent writes. The next step is

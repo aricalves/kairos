@@ -111,6 +111,21 @@ An Architecture Decision Record, as returned by `/api/adrs`. Board placement is 
 | `items` | array of [`ApiKeyView`](schemas.md#apikeyview) | yes |  |
 | `total` | `integer` | yes |  |
 
+## ApiKeyRotatedResponse
+
+The response of a rotation (KAIROS-T-0370). It has the new key and its secret, and the end of the old secret. Kairos shows the secret once.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `created_at` | `string` | yes |  |
+| `expires_at` | `string`, nullable | no |  |
+| `id` | `string` | yes | The id of the new key. |
+| `key` | `string` | yes | The new secret. Shown once; store it now. |
+| `name` | `string` | yes |  |
+| `prefix` | `string` | yes |  |
+| `replaced_key_expires_at` | `string` | yes | The old secret works until this time (RFC 3339): the end of the grace time (`KAIROS_API_KEY_ROTATION_GRACE_SECS`). |
+| `replaced_key_id` | `string` | yes | The id of the old key. |
+
 ## ApiKeyView
 
 One row of `GET /api/service-accounts/{id}/keys` — never a secret or hash.
@@ -123,7 +138,27 @@ One row of `GET /api/service-accounts/{id}/keys` — never a secret or hash.
 | `last_used_at` | `string`, nullable | no |  |
 | `name` | `string` | yes |  |
 | `prefix` | `string` | yes |  |
+| `replaced_by` | `string`, nullable | no | The key that a rotation made in place of this key (KAIROS-T-0370). The old secret works until `expires_at`, the end of the grace time. |
 | `revoked_at` | `string`, nullable | no |  |
+
+## AppendNoteRequest
+
+Body of `POST /api/{entity_type}/{short_code}/notes` (KAIROS-T-0367): the text of a note to append at the end of the item's content.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `text` | `string` | yes | The markdown text of the note. It must not be empty. |
+
+The server refuses a body with a field that is not in this table ([Errors](../errors.md#a-field-of-the-body)).
+
+## AppendNoteResponse
+
+Response of `POST /api/{entity_type}/{short_code}/notes` (KAIROS-T-0367): the version that the note made.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `short_code` | `string` | yes | The item's short code. |
+| `version` | `integer` | yes | The new version of the item. |
 
 ## ArchiveCompletedResponse
 
@@ -174,6 +209,7 @@ A board column.
 | `position` | `integer` | yes | Display ordering, 0-indexed. |
 | `removed_at` | `string`, nullable | yes | When this column was REMOVED from its board (RFC 3339), `null` while it is part of the board (KAIROS-T-0161, KAIROS-T-0164). `GET /api/boards/{id}` omits removed columns entirely unless it is asked for them (`?include_removed_columns=true`), so this is `null` on every default read. It is a timestamp only for a caller that wants the column an ARCHIVED card was put away in — the audit fact the soft delete exists to preserve. Named `removed_at`, not `archived_at`: the entity DTOs' `archived_at` is the KAIROS-A-0020 work-item state, and a column is not work. The server sends it in each response, `null` for a live column, so the schema shows it as required and nullable (COLLIERY-T-0256, the pattern of COLLIERY-T-0254). The default is for the client only: a response of an older server has no `removed_at`, and it reads as `None`. |
 | `updated_at` | `string` | yes | RFC 3339. |
+| `wip_limit` | `integer`, nullable | yes | The most live items that the column should hold (KAIROS-T-0371); `null`: no limit. Kairos does not refuse a move into a column over its limit, and the answer has the header `Kairos-Warning`. The server sends it in each response; the default is for the client only (an older server). |
 
 ## BoardColumnItems
 
@@ -184,12 +220,34 @@ One column's items in the `GET /api/boards/{id}/items` view: every live workflow
 | `adrs` | array of [`Adr`](schemas.md#adr) | yes |  |
 | `column` | [`BoardColumn`](schemas.md#boardcolumn) | yes |  |
 | `initiatives` | array of [`Initiative`](schemas.md#initiative) | yes |  |
+| `item_count` | `integer` | yes | The live items in the column, on each page (KAIROS-T-0371): the count that the WIP limit is for. Not changed by the filters or the page. The default is for the client only (an older server). |
+| `over_wip_limit` | `boolean` | yes | `item_count` is above `column.wip_limit`. |
 | `strategies` | array of [`Strategy`](schemas.md#strategy) | yes |  |
 | `tasks` | array of [`Task`](schemas.md#task) | yes |  |
 
 ## BoardDetail
 
 Board detail: the board plus its full configuration (`GET /api/boards/{id}`).
+
+## BoardFlow
+
+The flow metrics of a board for a range (KAIROS-T-0372), from the history of the moves (`activity_log`). Only the live items of the board count; a cancelled task counts apart from the done items. The start of an item is its first entry into a start column. A start column has `claims` (Active). With no such column, the column named Active is the start. An item is done in an `is_done` column; its done time is its last entry into one.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ageing` | array of [`FlowAgeingItem`](schemas.md#flowageingitem) | yes | The work in progress: each item that is not done and has a start, oldest first. |
+| `board_id` | `string` | yes | The board (UUID). |
+| `board_slug` | `string` | yes |  |
+| `cancelled_count` | `integer` | yes | The cancelled tasks of the range, by the time of the cancel. |
+| `cumulative_flow` | [`CumulativeFlow`](schemas.md#cumulativeflow) | yes |  |
+| `cycle_time` | [`FlowCycleTime`](schemas.md#flowcycletime) | yes |  |
+| `done_columns` | array of `string` | yes | The done columns, by name. |
+| `done_count` | `integer` | yes | The done items of the range (not cancelled). |
+| `done_without_start` | `integer` | yes | The done items of the range that never entered a start column (no cycle time). |
+| `from` | `string` | yes | The first day of the range, `YYYY-MM-DD`. |
+| `start_columns` | array of `string` | yes | The start columns, by name. Empty: the board has no start, and no cycle time. |
+| `throughput` | array of [`FlowWeek`](schemas.md#flowweek) | yes | One row for each week of the range (weeks start on Monday, UTC). |
+| `to` | `string` | yes | The last day of the range, `YYYY-MM-DD`. |
 
 ## BoardItemsResponse
 
@@ -201,6 +259,7 @@ Response of `GET /api/boards/{id}/items`: one page of the items on the board, gr
 | `board` | [`Board`](schemas.md#board) | yes |  |
 | `children_progress` | `object` | yes | `(done, total)` direct-children counts keyed by the PARENT item's short code, for every item on this board that has children (KAIROS-T-0080) — computed in one grouped query, never per item. The server sends it in each response, so the schema shows it as required (COLLIERY-T-0254). It is an empty map when no item has children. The default is for the client only. |
 | `columns` | array of [`BoardColumnItems`](schemas.md#boardcolumnitems) | yes |  |
+| `item_metadata` | `object`, nullable | no | With `with_metadata=true` only (KAIROS-T-0368): the metadata values of each item of the page, keyed by short code and then by the slug of the definition. An item with no value has no entry. Absent when the query did not ask for it. |
 | `item_teams` | `object` | yes | The teams of each strategy and initiative of the page, keyed by short code (KAIROS-T-0321), by slug — one query for the board. An item with no team has no entry. The server sends it in each response, so the schema shows it as required. It is an empty map when no item has a team. The default is for the client only. |
 | `limit` | `integer` | yes | The `limit` that the server applied. |
 | `offset` | `integer` | yes | The `offset` that the server applied. |
@@ -315,6 +374,7 @@ One run of the code index builder (KAIROS-T-0331). The trigger says what started
 | `requested_by` | `string`, nullable | no | The user who asked for the run or sent the upload. None for the builder. |
 | `started_at` | `string` | yes | When the run started, RFC 3339. |
 | `summaries_made` | `integer`, nullable | no | The summaries that the run made with the model. |
+| `summaries_reused` | `integer`, nullable | no | The summaries that the run reused with no model call (KAIROS-T-0335): from the pool of the repository, or from the work file of a run that did not end. |
 | `symbols` | `integer`, nullable | no |  |
 | `trigger` | `string` | yes | `push`, `first`, `request` or `upload`. |
 
@@ -379,8 +439,9 @@ The server refuses a body with a field that is not in this table ([Errors](../er
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `expires_at` | `string`, nullable | no | Optional RFC 3339 expiry; omitted = never expires. |
+| `expires_at` | `string`, nullable | no | Optional RFC 3339 expiry. Omitted: the key expires after the default life of the deployment (`KAIROS_API_KEY_TTL_DAYS`, 90 days by default), or never when that setting is 0. |
 | `name` | `string` | yes | Operator label for the key ("gha-main", ...). |
+| `no_expiry` | `boolean` | no | `true`: the key never expires (KAIROS-T-0370). Do not send it with `expires_at`. |
 
 The server refuses a body with a field that is not in this table ([Errors](../errors.md#a-field-of-the-body)).
 
@@ -406,6 +467,21 @@ Body of `POST /api/boards/{id}/columns`.
 |---|---|---|---|
 | `name` | `string` | yes |  |
 | `position` | `integer` | yes | 0-indexed position; must not collide with an existing column (422 `DUPLICATE_COLUMN_POSITION`). |
+
+The server refuses a body with a field that is not in this table ([Errors](../errors.md#a-field-of-the-body)).
+
+## CreateDispatchRuleRequest
+
+`POST /api/boards/{id}/dispatch-rules` body.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `column` | `string` | yes | The name or the id of a column of the board. |
+| `metadata_slug` | `string`, nullable | no | Only tasks with this metadata: the slug of a definition. Send it with `metadata_value`. |
+| `metadata_value` | `string`, nullable | no | The value of `metadata_slug` that matches. |
+| `repository` | `string`, nullable | no | Only tasks of this repository: its slug or its id. |
+| `target_id` | `string` | yes | The id of a webhook target of the board. |
+| `task_type` | `string`, nullable | no | Only tasks of this type: `task|bug|tech_debt|support`. |
 
 The server refuses a body with a field that is not in this table ([Errors](../errors.md#a-field-of-the-body)).
 
@@ -559,6 +635,17 @@ Body of `POST /api/delivery-streams`.
 
 The server refuses a body with a field that is not in this table ([Errors](../errors.md#a-field-of-the-body)).
 
+## CreateStructureGrantRequest
+
+Body of `POST /api/structure-grants`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `board` | `string`, nullable | no | The board (slug or UUID) of a board grant. Omit it for a grant at the organization. |
+| `user` | `string` | yes | The principal: a user id (UUID), an email, or a user name of a member of the organization. A service account is given by its id. |
+
+The server refuses a body with a field that is not in this table ([Errors](../errors.md#a-field-of-the-body)).
+
 ## CreateTaskRequest
 
 Body of `POST /api/tasks`.
@@ -651,9 +738,47 @@ Body of `POST /api/boards/{id}/transitions`.
 
 The server refuses a body with a field that is not in this table ([Errors](../errors.md#a-field-of-the-body)).
 
+## CreateWebhookTargetRequest
+
+`POST /api/boards/{id}/webhook-targets` body.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | `string` | yes | A name for people, for example `Agent runner`. |
+| `url` | `string` | yes | An `http://` or `https://` URL. A loopback, private, link-local or shared address is refused unless the deployment sets `KAIROS_WEBHOOK_ALLOW_PRIVATE`. |
+
+The server refuses a body with a field that is not in this table ([Errors](../errors.md#a-field-of-the-body)).
+
 ## CreatedForgeConnection
 
 Response of connection creation and rotation: the connection plus the delivery URL and secret to paste into the forge. **The secret is shown here and nowhere else** — it is derived, never stored, so it cannot be re-read later (rotate to get a new one).
+
+## CreatedWebhookTarget
+
+`POST /api/boards/{id}/webhook-targets` response: the target, and its secret. Kairos shows the secret this one time.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `secret` | `string` | yes | The key of the HMAC-SHA256 of `X-Kairos-Signature`. Keep it in the receiver. Kairos does not show it again. |
+| `target` | [`WebhookTarget`](schemas.md#webhooktarget) | yes |  |
+
+## CumulativeFlow
+
+The number of live items in each column at the end of each day of the range (UTC).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `columns` | array of `string` | yes | The columns: those of the board in position order, then an old name of a column that the history has (a column that has a new name now). |
+| `days` | array of [`CumulativeFlowDay`](schemas.md#cumulativeflowday) | yes | One row for each day; `counts` has the order of `columns`. |
+
+## CumulativeFlowDay
+
+One day of the cumulative flow.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `counts` | array of `integer` | yes |  |
+| `date` | `string` | yes | `YYYY-MM-DD`. |
 
 ## DeleteResponse
 
@@ -696,6 +821,25 @@ A delivery stream (`/api/delivery-streams`).
 | `name` | `string` | yes |  |
 | `slug` | `string` | yes |  |
 | `updated_at` | `string` | yes | RFC 3339. |
+
+## DispatchRule
+
+A dispatch rule of a board. A task can enter `column` and match the filter. Then Kairos sends one signed delivery to the target.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `board_id` | `string` | yes |  |
+| `column` | `string` | yes | The name of the column. |
+| `column_id` | `string` | yes |  |
+| `created_at` | `string` | yes |  |
+| `created_by` | `string` | yes |  |
+| `id` | `string` | yes |  |
+| `metadata_slug` | `string`, nullable | no | The slug of a metadata definition; `null`: no metadata filter. |
+| `metadata_value` | `string`, nullable | no | The value of the metadata that matches (no case, no space at the ends). |
+| `repository` | `string`, nullable | no | The slug of the repository; `null`: each repository, and none. |
+| `target` | `string` | yes | The name of the target. |
+| `target_id` | `string` | yes |  |
+| `task_type` | `string`, nullable | no | `task|bug|tech_debt|support`; `null`: each type. |
 
 ## Document
 
@@ -750,6 +894,52 @@ The S-0005 error envelope: `{"error": {"code", "message", "details"}}`.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `error` | [`ErrorBody`](schemas.md#errorbody) | yes |  |
+
+## FlowAgeingItem
+
+One item in progress, and its age.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `age_days` | `number` | yes | The time from the start to now, in days. |
+| `column` | `string` | yes | The column of the item now. |
+| `short_code` | `string` | yes |  |
+| `started_at` | `string` | yes | The start of the item (RFC 3339). |
+| `title` | `string` | yes |  |
+
+## FlowCycleTime
+
+The cycle time of the done items of the range (KAIROS-T-0372): from the start to the done time, in days.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `count` | `integer` | yes | The number of items with a cycle time. |
+| `items` | array of [`FlowCycleTimeItem`](schemas.md#flowcycletimeitem) | yes | Each item, in the order of its done time. |
+| `mean_days` | `number`, nullable | no |  |
+| `median_days` | `number`, nullable | no |  |
+| `p85_days` | `number`, nullable | no | The 85th percentile (nearest rank). |
+
+## FlowCycleTimeItem
+
+One done item and its cycle time.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `days` | `number` | yes |  |
+| `done_at` | `string` | yes | RFC 3339. |
+| `short_code` | `string` | yes |  |
+| `started_at` | `string` | yes | RFC 3339. |
+| `title` | `string` | yes |  |
+
+## FlowWeek
+
+The throughput of one week.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `cancelled` | `integer` | yes | The tasks cancelled in the week. |
+| `done` | `integer` | yes | The items that went to a done column in the week (not cancelled). |
+| `week_start` | `string` | yes | The Monday of the week, `YYYY-MM-DD`. |
 
 ## ForgeConnection
 
@@ -1038,7 +1228,29 @@ The S-0005 list envelope: `{items, total, limit, offset}`.
 | `offset` | `integer` | yes | The applied offset. |
 | `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). |
 
+## ListEnvelope_OrgAgentKey
+
+The S-0005 list envelope: `{items, total, limit, offset}`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `items` | array of `object` | yes |  |
+| `limit` | `integer` | yes | The applied limit. |
+| `offset` | `integer` | yes | The applied offset. |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). |
+
 ## ListEnvelope_OrgMember
+
+The S-0005 list envelope: `{items, total, limit, offset}`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `items` | array of `object` | yes |  |
+| `limit` | `integer` | yes | The applied limit. |
+| `offset` | `integer` | yes | The applied offset. |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). |
+
+## ListEnvelope_Repository
 
 The S-0005 list envelope: `{items, total, limit, offset}`.
 
@@ -1147,6 +1359,26 @@ The `user` object of [`LoginResponse`].
 | `email` | `string` | yes |  |
 | `id` | `string` | yes |  |
 
+## MarkNotificationsReadRequest
+
+`POST /api/me/notifications/read` body: `ids`, or `all: true`. Not both.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `all` | `boolean`, nullable | no | `true`: each unread notification of the caller. |
+| `ids` | `array`, nullable | no | The ids of notifications of the caller. |
+
+The server refuses a body with a field that is not in this table ([Errors](../errors.md#a-field-of-the-body)).
+
+## MarkNotificationsReadResponse
+
+`POST /api/me/notifications/read` response.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `marked` | array of `string` | yes | The ids that changed from unread to read. |
+| `unread` | `integer` | yes | The count of the unread notifications after the change. |
+
 ## MetadataDefinition
 
 A metadata field definition, as returned by `/api/metadata-definitions`.
@@ -1206,6 +1438,63 @@ One live descendant that an archive does not reach (COLLIERY-T-0234). The archiv
 | `board_id` | `string`, nullable | no | The authorization board of the descendant (UUID). |
 | `required_capability` | `string`, nullable | no | The `manage_<type>` capability that the caller does not hold. |
 | `short_code` | `string` | yes | The short code of the descendant. |
+
+## Notification
+
+One notification of the caller (KAIROS-T-0382).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `actor_id` | `string`, nullable | no | The person or the service account that made the change (UUID). |
+| `created_at` | `string` | yes | When Kairos made the notification (RFC 3339). |
+| `entity_type` | `string`, nullable | no | `strategy|initiative|task|document|adr`; `null` when the item is gone. |
+| `id` | `string` | yes | The id (UUID). `POST /api/me/notifications/read` takes it. |
+| `kind` | `string` | yes | `hand_off|blocker_cleared|cancelled|mention|p0_bug|delivery_failing|agent_key_revoked`. |
+| `read_at` | `string`, nullable | no | When the person read it (RFC 3339); `null` while unread. |
+| `short_code` | `string`, nullable | no | The code of the item now; `null` when the item is gone. |
+| `text` | `string` | yes | What happened, in one sentence or two. |
+| `title` | `string`, nullable | no | The title of the item now; `null` when the item is gone. |
+
+## NotificationList
+
+`GET /api/me/notifications` response: each unread notification (newest first, 100 at most), then the 20 newest read ones.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `items` | array of [`Notification`](schemas.md#notification) | yes |  |
+| `unread` | `integer` | yes | The count of all the unread notifications of the caller. |
+
+## NotificationSettings
+
+`GET` and `PUT /api/me/notification-settings` response: each kind, and whether it is on. A kind that is off makes no notification for the person.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `agent_key_revoked` | `boolean` | yes | An organization admin revoked an agent key of yours (KAIROS-T-0388). |
+| `blocker_cleared` | `boolean` | yes | A blocker of a task that you have the claim on is done or archived. |
+| `cancelled` | `boolean` | yes | A person cancelled a task that you created. |
+| `delivery_failing` | `boolean` | yes | A webhook target that you own was turned off after failed deliveries (KAIROS-T-0384). |
+| `hand_off` | `boolean` | yes | A person handed off the claim of a task to you. |
+| `mention` | `boolean` | yes | A person wrote `@your_user_name` in a note or in the content of an item. |
+| `p0_bug` | `boolean` | yes | A bug with the priority P0 (critical) is on the board of your team. |
+
+## OrgAgentKey
+
+One agent key of a person, as an organization admin reads it (KAIROS-T-0388). Never the secret.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `created_at` | `string` | yes |  |
+| `expires_at` | `string`, nullable | no | `null`: the key never expires. |
+| `id` | `string` | yes | The key id (UUID). `DELETE /api/org/agent-keys/{key_id}` takes it. |
+| `last_used_at` | `string`, nullable | no |  |
+| `name` | `string` | yes |  |
+| `owner_email` | `string` | yes | The email of the owner. |
+| `owner_id` | `string` | yes | The user id (UUID) of the person who owns the key. |
+| `owner_name` | `string` | yes | The display name of the owner. |
+| `prefix` | `string` | yes | The start of the key (never the secret). |
+| `replaced_by` | `string`, nullable | no | The key that a rotation made in place of this key (KAIROS-T-0370). |
+| `revoked_at` | `string`, nullable | no | `null` while the key is not revoked. |
 
 ## OrgDeleteResponse
 
@@ -1419,6 +1708,7 @@ One repository, as returned by `/api/repositories` (KAIROS-T-0106).
 | `slug` | `string` | yes | Tenant-unique slug (`^[a-z0-9][a-z0-9-]{1,62}$`). |
 | `team` | [`RepositoryTeam`](schemas.md#repositoryteam) | yes | The one owning team. |
 | `updated_at` | `string` | yes | RFC 3339. |
+| `write_back` | [`RepositoryWriteBack`](schemas.md#repositorywriteback) | no | The GitHub write-back of the repository (KAIROS-T-0386): on when the repository has a write token. It never has the token. |
 
 ## RepositoryCredential
 
@@ -1459,6 +1749,20 @@ The owning team, embedded on [`Repository`].
 | `id` | `string` | yes | Team id (UUID). |
 | `name` | `string` | yes |  |
 | `slug` | `string` | yes |  |
+
+## RepositoryWriteBack
+
+The GitHub write-back of a repository (KAIROS-T-0386), as [`Repository`] carries it. With a write token, Kairos writes a comment and the status `kairos` on each linked pull request. Kairos keeps the token encrypted, and no read gives it back.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `enabled` | `boolean` | yes | True: the repository has a write token, and Kairos writes to GitHub. |
+| `last_write_at` | `string`, nullable | no | When the last write ran, RFC 3339. |
+| `last_write_error` | `string`, nullable | no | The error of the last write, with no token in it. |
+| `last_write_ok` | `boolean`, nullable | no | Whether the last write worked. |
+| `set_at` | `string`, nullable | no | When the token was set, RFC 3339. |
+| `set_by` | `string`, nullable | no | The user who set the token (UUID). |
+| `set_by_name` | `string`, nullable | no | The name of that user, else the email. |
 
 ## RestoreResponse
 
@@ -1517,7 +1821,8 @@ The `filter` capability. Fields are AND with each other; array values are OR wit
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `board_id` | `string`, nullable | no | Restrict to items on this board (UUID; excludes documents, which do not live on boards). |
+| `board` | `string`, nullable | no | Restrict to items on this board, by slug or UUID (KAIROS-T-0368). Not with `board_id`. |
+| `board_id` | `string`, nullable | no | Restrict to items on this board (UUID; excludes documents, which do not live on boards). Not with `board`. |
 | `column_id` | `string`, nullable | no | Restrict to items in this board column (UUID; excludes documents). |
 | `created_after` | `string`, nullable | no | Only items created strictly after this instant (RFC 3339). |
 | `created_before` | `string`, nullable | no | Only items created strictly before this instant (RFC 3339). |
@@ -1525,9 +1830,13 @@ The `filter` capability. Fields are AND with each other; array values are OR wit
 | `include_deleted` | `boolean` | no | Include archived (soft-deleted) items (default false). Composes with every other capability — `q` and `traverse` included since KAIROS-T-0157 — and is a complete request on its own. Archived hits are served with `archived_at` set (KAIROS-A-0020). |
 | `is_bucket` | `boolean`, nullable | no | Restrict to (non-)bucket initiatives (initiative-level attribute; other entity types are excluded). |
 | `metadata` | `object`, nullable | no | Metadata conditions keyed by definition slug; string values support trailing-`*` globs (e.g. `"component": "auth*"`). All entries must match (AND). |
+| `metadata_missing` | `array`, nullable | no | Only items with NO value for each of these metadata definitions, by slug (KAIROS-T-0368): "bugs without a priority" is `["priority"]`. An unknown slug is refused. |
 | `repository` | `string`, nullable | no | Restrict to the items of this repository (slug or UUID of a live repository — KAIROS-T-0115 made every repository reference on the wire the same shape; the old name `repository_id` is refused, COLLIERY-T-0259). The items of a repository are the tasks that link to it, and the documents and the ADRs that impact it (COLLIERY-T-0269). Strategies and initiatives are excluded. With `team_id`, `task_type` or `work_class`, only tasks match. |
 | `task_type` | `array`, nullable | no | Restrict to tasks of these types (`task|bug|tech_debt|support`; excludes non-task entities). |
+| `team` | `string`, nullable | no | Restrict to tasks of this team, by slug or UUID (KAIROS-T-0368). Not with `team_id`. |
 | `team_id` | `string`, nullable | no | Restrict to tasks assigned to this team (UUID; task-level attribute, other entity types are excluded). |
+| `updated_after` | `string`, nullable | no | Only items last changed strictly after this instant (RFC 3339, `updated_at`; KAIROS-T-0368). |
+| `updated_before` | `string`, nullable | no | Only items last changed strictly before this instant (RFC 3339, `updated_at`; KAIROS-T-0368). "Untouched for 90 days" is now minus 90 days. |
 | `work_class` | `array`, nullable | no | Restrict to tasks in these Planned/Support lanes (`planned|support`, KAIROS-T-0077; task-level attribute, other entity types are excluded). |
 
 The server refuses a body with a field that is not in this table ([Errors](../errors.md#a-field-of-the-body)).
@@ -1756,6 +2065,23 @@ A strategy (Flight Level 3), as returned by `/api/strategies`.
 | `updated_at` | `string` | yes | RFC 3339. |
 | `updated_by` | `string` | yes | Last editor user id (UUID). |
 | `version` | `integer` | yes | Optimistic-concurrency version (KAIROS-A-0004); submit it back on PATCH. |
+
+## StructureGrant
+
+One grant of `manage_structure` (`GET /api/structure-grants` element). `scope` is `organization` or `board`. A grant on the organization covers teams, team members, boards and repositories. A grant on a board covers the configuration, the members and the grants of that board only.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `board_id` | `string`, nullable | no | The board of a board grant (UUID), or null. |
+| `board_slug` | `string`, nullable | no | The slug of the board of a board grant, or null. |
+| `display_name` | `string` | yes |  |
+| `email` | `string` | yes |  |
+| `granted_at` | `string` | yes | RFC 3339. |
+| `granted_by` | `string` | yes | `public.users.id` of the organization admin who granted it. |
+| `id` | `string` | yes | The id of the grant (UUID). `DELETE /api/structure-grants/{id}` revokes it. |
+| `kind` | `string` | yes | `human` | `service_account`. |
+| `scope` | `string` | yes | `organization` | `board`. |
+| `user_id` | `string` | yes | `public.users.id` of the principal (UUID). |
 
 ## SummaryProviderSettings
 
@@ -2036,6 +2362,7 @@ Body of `PATCH /api/boards/{id}/columns/{col_id}` — rename, move, and/or set t
 | `is_done` | `boolean`, nullable | no | Mark occupants as completed for children-progress rollups (KAIROS-T-0080). An explicit admin choice — the dead-end heuristic only ever suggests. |
 | `name` | `string`, nullable | no |  |
 | `position` | `integer`, nullable | no | New 0-indexed position; the other columns shift around it. |
+| `wip_limit` | `integer`, nullable | no | The WIP limit of the column (KAIROS-T-0371): a number above 0, or `null` to remove the limit. Leave it out to keep the limit. |
 
 The server refuses a body with a field that is not in this table ([Errors](../errors.md#a-field-of-the-body)).
 
@@ -2071,6 +2398,22 @@ Body of `PATCH /api/{entity_type}/{short_code}/metadata`: definition slug → va
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `values` | `object` | yes | Definition slug → new value (`null` removes the value). |
+
+The server refuses a body with a field that is not in this table ([Errors](../errors.md#a-field-of-the-body)).
+
+## UpdateNotificationSettingsRequest
+
+`PUT /api/me/notification-settings` body: the kinds to turn on (`true`) or off (`false`). A kind that is not in the body does not change.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `agent_key_revoked` | `boolean`, nullable | no |  |
+| `blocker_cleared` | `boolean`, nullable | no |  |
+| `cancelled` | `boolean`, nullable | no |  |
+| `delivery_failing` | `boolean`, nullable | no |  |
+| `hand_off` | `boolean`, nullable | no |  |
+| `mention` | `boolean`, nullable | no |  |
+| `p0_bug` | `boolean`, nullable | no |  |
 
 The server refuses a body with a field that is not in this table ([Errors](../errors.md#a-field-of-the-body)).
 
@@ -2173,4 +2516,54 @@ Where the vectors of the code index summaries are made.
 | `model` | `string`, nullable | no |  |
 | `provider` | `string` | yes | `embedded` (the model in the server) or `remote` (an OpenAI-compatible embeddings endpoint). |
 | `secret` | [`SecretStatus`](schemas.md#secretstatus) | yes | The API key of the endpoint. A local Ollama needs none. |
+
+## WebhookDelivery
+
+One delivery of the log, with its tries.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `created_at` | `string` | yes |  |
+| `event` | `string` | yes | `task.entered_column` or `ping`. |
+| `finished_at` | `string`, nullable | no |  |
+| `id` | `string` | yes | The id; the value of `X-Kairos-Delivery`. |
+| `last_error` | `string`, nullable | no |  |
+| `log` | array of [`WebhookDeliveryTry`](schemas.md#webhookdeliverytry) | yes | Each try, oldest first. |
+| `next_try_at` | `string`, nullable | no |  |
+| `response_code` | `integer`, nullable | no |  |
+| `rule_id` | `string`, nullable | no | The rule that sent it; `null` for a test delivery. |
+| `short_code` | `string`, nullable | no | The code of the task now; `null` when there is no task. |
+| `status` | `string` | yes | `pending|delivered|failed|skipped`. |
+| `target_id` | `string` | yes |  |
+| `tries` | `integer` | yes |  |
+
+## WebhookDeliveryTry
+
+One try of a delivery.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `at` | `string` | yes |  |
+| `duration_ms` | `integer` | yes |  |
+| `error` | `string`, nullable | no |  |
+| `ok` | `boolean` | yes | True: the target answered with a 2xx code. |
+| `response_code` | `integer`, nullable | no |  |
+| `try_number` | `integer` | yes | 1 for the first try. |
+
+## WebhookTarget
+
+A webhook target of a board: a URL. Kairos sends signed deliveries to it. The secret is never in this type: Kairos shows it one time, in [`CreatedWebhookTarget`].
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `board_id` | `string` | yes |  |
+| `consecutive_failures` | `integer` | yes | The failed tries in a row. |
+| `created_at` | `string` | yes |  |
+| `created_by` | `string` | yes |  |
+| `disabled_at` | `string`, nullable | no |  |
+| `disabled_reason` | `string`, nullable | no |  |
+| `enabled` | `boolean` | yes | False: Kairos turned the target off after failed tries, and sends nothing to it until a board manager turns it on again. |
+| `id` | `string` | yes |  |
+| `name` | `string` | yes |  |
+| `url` | `string` | yes | The URL. A person who cannot configure the board gets it with no query and no fragment. |
 

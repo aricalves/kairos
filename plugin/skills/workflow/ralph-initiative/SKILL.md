@@ -51,7 +51,7 @@ Do the tasks in that sequence. Each task goes through each step of `/kairos:impl
 - the completion gate, with evidence for each acceptance criterion;
 - the review, the commit, then Completed.
 
-Follow the commit rules of the repository and of the user. Every few tasks, write a short progress note on the initiative.
+Follow the commit rules of the repository and of the user. Every few tasks, write a short progress note on the initiative with `append_note`.
 
 The loop ends in one of three ways:
 

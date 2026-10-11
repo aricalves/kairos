@@ -74,6 +74,10 @@ Update a definition (org admin only): rename, re-slug, and/or replace
 the enum option list. The field type is immutable — existing
 `item_metadata` values were validated against it (A-0003).
 
+A body with no field is a 422 `VALIDATION`. A body whose values are
+equal to the stored values writes nothing and makes no activity entry.
+A real change makes an activity entry (KAIROS-T-0268).
+
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
 | `id` | path | yes | `string` | Definition id (UUID) |
@@ -85,7 +89,7 @@ Request body (required): `application/json`, [`UpdateMetadataDefinitionRequest`]
 | `200` | [`MetadataDefinition`](schemas.md#metadatadefinition) | Updated |
 | `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Caller is not an org admin |
 | `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown id |
-| `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Option rules or duplicate slug |
+| `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | No field to change, option rules, or duplicate slug |
 
 ## templates
 
@@ -152,6 +156,10 @@ Update a template (org admin only): omitted fields are unchanged;
 `metadata` replaces the full association list. Existing documents are
 unaffected (A-0003: no ongoing relationship after stamping).
 
+A body with no field is a 422 `VALIDATION`. A body whose values are
+equal to the stored values writes nothing and makes no activity entry.
+A real change makes an activity entry (KAIROS-T-0268).
+
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
 | `id` | path | yes | `string` | Template id (UUID) |
@@ -163,7 +171,7 @@ Request body (required): `application/json`, [`UpdateTemplateRequest`](schemas.m
 | `200` | [`TemplateDetail`](schemas.md#templatedetail) | Updated |
 | `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Caller is not an org admin |
 | `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown id |
-| `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown definition slug, invalid default, or duplicate slug |
+| `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | No field to change, unknown definition slug, invalid default, or duplicate slug |
 
 ## organization
 

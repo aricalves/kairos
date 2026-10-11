@@ -273,17 +273,25 @@ pub(crate) async fn update_stream(
             {
                 check_slug_form("delivery stream", new_slug)?;
             }
+            // KAIROS-T-0268: only a value that is different from the value
+            // of the row goes to the write. When no value is different, the
+            // route writes nothing and makes no activity entry.
+            let changes = DeliveryStreamChangeset {
+                name: body.name.clone().filter(|name| *name != stream.name),
+                slug: body.slug.clone().filter(|new| *new != stream.slug),
+                description: body
+                    .description
+                    .clone()
+                    .filter(|text| stream.description.as_deref() != Some(text.as_str()))
+                    .map(Some),
+                ..Default::default()
+            };
+            if changes.name.is_none() && changes.slug.is_none() && changes.description.is_none() {
+                return Ok(stream.into_dto());
+            }
             let updated: DeliveryStream =
                 diesel::update(dsl::delivery_streams.filter(dsl::id.eq(stream_id)))
-                    .set((
-                        DeliveryStreamChangeset {
-                            name: body.name.clone(),
-                            slug: body.slug.clone(),
-                            description: body.description.clone().map(Some),
-                            ..Default::default()
-                        },
-                        dsl::updated_at.eq(diesel::dsl::now),
-                    ))
+                    .set((changes, dsl::updated_at.eq(diesel::dsl::now)))
                     .returning(DeliveryStream::as_returning())
                     .get_result(conn)
                     .map_err(|e| {

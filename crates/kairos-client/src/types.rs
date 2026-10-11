@@ -732,6 +732,25 @@ pub struct NotReached {
     pub below: Option<String>,
 }
 
+/// Body of `POST /api/{entity_type}/{short_code}/notes` (KAIROS-T-0367):
+/// the text of a note to append at the end of the item's content.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AppendNoteRequest {
+    /// The markdown text of the note. It must not be empty.
+    pub text: String,
+}
+
+/// Response of `POST /api/{entity_type}/{short_code}/notes`
+/// (KAIROS-T-0367): the version that the note made.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AppendNoteResponse {
+    /// The item's short code.
+    pub short_code: String,
+    /// The new version of the item.
+    pub version: i32,
+}
+
 /// Response of `POST /api/{entity_type}/{short_code}/restore`
 /// (KAIROS-T-0160, KAIROS-A-0020): the archived item is live again.
 ///

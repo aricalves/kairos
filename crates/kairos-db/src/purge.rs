@@ -18,7 +18,8 @@
 //!   proposal to or from it (`edge_proposals`);
 //! - its forge links (`item_links`), its `impacts` rows (`item_impacts`),
 //!   its embeddings (`item_embeddings`, `item_chunks`) and its retired
-//!   codes (`retired_codes`).
+//!   codes (`retired_codes`);
+//! - the notifications about it (`notifications`, KAIROS-T-0381).
 //!
 //! # What a purge keeps
 //!
@@ -103,6 +104,7 @@ pub fn purge_task(
         .execute(conn)?;
         diesel::delete(item_metadata::table.filter(item_metadata::item_id.eq(task_id)))
             .execute(conn)?;
+        crate::notifications::delete_for_item(conn, task_id)?;
         diesel::delete(item_links::table.filter(item_links::item_id.eq(task_id))).execute(conn)?;
         diesel::delete(item_impacts::table.filter(item_impacts::item_id.eq(task_id)))
             .execute(conn)?;

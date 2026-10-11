@@ -3,6 +3,10 @@
 //! admin (422 `LAST_ADMIN`) and unknown emails (users are JIT-provisioned
 //! at first login, so adding one that never logged in is a 404 with that
 //! guidance) — both render through [`super::MutationNotice`].
+//!
+//! KAIROS-T-0388: the section of the agent keys of each person
+//! ([`super::agent_keys::OrgAgentKeysPanel`]). A removal revokes the keys
+//! of the person.
 
 use aurora_dark::components::{
     Button, Divider, Empty, ErrorState, Group, Loading, PageHeader, Panel, Pill, Select, Stack,
@@ -86,7 +90,10 @@ pub fn AdminMembersPage() -> impl IntoView {
                             let removed_email = removed_email.clone();
                             run_mutation(
                                 busy, outcome, reload,
-                                format!("Kairos removed {removed_email} from the organization."),
+                                format!(
+                                    "Kairos removed {removed_email} from the organization, \
+                                     and revoked each agent key of {removed_email}."
+                                ),
                                 async move {
                                     api::remove_org_member(auth, &user_id).await.map(|_| ())
                                 },
@@ -130,6 +137,7 @@ pub fn AdminMembersPage() -> impl IntoView {
                     <Button on_click=Callback::new(on_add)>"Add member"</Button>
                 </Group>
             </Panel>
+            <super::agent_keys::OrgAgentKeysPanel reload/>
         </Stack>
     }
 }

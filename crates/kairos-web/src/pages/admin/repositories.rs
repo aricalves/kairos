@@ -95,6 +95,12 @@ const FORM_FIELDS: [&str; 4] = ["repo_full_name", "repo_url", "default_branch", 
 /// The field of the read token form (COLLIERY-T-3105).
 const TOKEN_FIELDS: [&str; 1] = ["token"];
 
+/// What the write token is (KAIROS-T-0386).
+const WRITE_TOKEN_HINT: &str = "With a write token, Kairos writes one comment and the commit \
+                                status kairos on each pull request that links to an item. Use a \
+                                fine-grained token with Pull requests: write and Commit \
+                                statuses: write on this repository only.";
+
 /// The rule of the read token (COLLIERY-T-3105).
 const TOKEN_HINT: &str = "Read token: the builder of the code index gives it to git to fetch a \
                           private repository. Use a GitHub fine-grained token with only \
@@ -358,6 +364,12 @@ fn RepositoryRow(
     let has_token = repo.credential.set;
     let token_input = RwSignal::new(String::new());
     let token_refused: RwSignal<Option<api::Refusal>> = RwSignal::new(None);
+    // KAIROS-T-0386: the GitHub write-back, never the write token.
+    let write_back_summary = repo.write_back.summary();
+    let has_write_token = repo.write_back.enabled;
+    let is_github = repo.forge == "github";
+    let write_token_input = RwSignal::new(String::new());
+    let write_token_refused: RwSignal<Option<api::Refusal>> = RwSignal::new(None);
 
     let on_save = move |_| {
         let reference = slug.get_value();
@@ -440,6 +452,38 @@ fn RepositoryRow(
             format!("Kairos keeps the read token of \"{reference}\"."),
             async move {
                 api::set_repository_credential(auth, &reference, &token)
+                    .await
+                    .map(|_| ())
+            },
+        );
+    };
+    let on_set_write_token = move |_| {
+        let reference = slug.get_value();
+        let token = write_token_input.get_untracked();
+        write_token_input.set(String::new());
+        run_form_mutation(
+            busy,
+            outcome,
+            reload,
+            write_token_refused,
+            &TOKEN_FIELDS,
+            format!("Kairos keeps the write token of \"{reference}\". The write-back is on."),
+            async move {
+                api::set_repository_write_token(auth, &reference, &token)
+                    .await
+                    .map(|_| ())
+            },
+        );
+    };
+    let on_remove_write_token = move |_| {
+        let reference = slug.get_value();
+        run_mutation(
+            busy,
+            outcome,
+            reload,
+            format!("Kairos removed the write token of \"{reference}\". The write-back is off."),
+            async move {
+                api::remove_repository_write_token(auth, &reference)
                     .await
                     .map(|_| ())
             },
@@ -542,6 +586,11 @@ fn RepositoryRow(
             <Text dimmed=true size="xs" attr:data-testid="credential-status">
                 {credential_summary}
             </Text>
+            {is_github.then(|| view! {
+                <Text dimmed=true size="xs" attr:data-testid="write-back-status">
+                    {write_back_summary}
+                </Text>
+            })}
             <Text dimmed=true size="xs" attr:data-testid="code-index-build-status">
                 {code_index_build_summary}
             </Text>
@@ -602,6 +651,28 @@ fn RepositoryRow(
                         })}
                     </Group>
                     <Text dimmed=true size="xs">{TOKEN_HINT}</Text>
+                    {is_github.then(|| view! {
+                        <Group align="end" gap="sm" wrap=true attr:data-testid="write-token-form">
+                            <TextInput
+                                    label=if has_write_token { "Replace the write token" } else { "Write token" }
+                                    value=write_token_input
+                                    input_type="password"
+                                    autocomplete="new-password"
+                                    spellcheck=false
+                                    name="write-token"
+                                    error=refusal_for(write_token_refused, "token")/>
+                            <Button size="xs" on_click=Callback::new(on_set_write_token)>
+                                {if has_write_token { "Replace write token" } else { "Set write token" }}
+                            </Button>
+                            {has_write_token.then(|| view! {
+                                <Button variant="default" size="xs" bad=true
+                                    on_click=Callback::new(on_remove_write_token)>
+                                    "Remove write token"
+                                </Button>
+                            })}
+                        </Group>
+                        <Text dimmed=true size="xs">{WRITE_TOKEN_HINT}</Text>
+                    })}
                 </Stack>
             </Show>
             <Divider/>

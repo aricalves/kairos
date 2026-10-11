@@ -26,11 +26,11 @@ use serde_json::Value;
 
 use crate::error::Error;
 use crate::types::{
-    Adr, CascadePreviewResponse, CreateAdrRequest, CreateDocumentRequest, CreateInitiativeRequest,
-    CreateStrategyRequest, CreateTaskRequest, DeleteResponse, Document, ErrorEnvelope,
-    ImpactListQuery, Initiative, ListEnvelope, ListQuery, Pagination, RestoreResponse,
-    SetDocumentBoardRequest, SetLifecycleRequest, SetWorkClassRequest, Strategy, Task,
-    TransitionRequest, UpdateContentRequest,
+    Adr, AppendNoteRequest, AppendNoteResponse, CascadePreviewResponse, CreateAdrRequest,
+    CreateDocumentRequest, CreateInitiativeRequest, CreateStrategyRequest, CreateTaskRequest,
+    DeleteResponse, Document, ErrorEnvelope, ImpactListQuery, Initiative, ListEnvelope, ListQuery,
+    Pagination, RestoreResponse, SetDocumentBoardRequest, SetLifecycleRequest, SetWorkClassRequest,
+    Strategy, Task, TransitionRequest, UpdateContentRequest,
 };
 use crate::types_auth::{DeploymentConfig, LoginRequest, LoginResponse};
 use crate::types_meta::{
@@ -44,11 +44,12 @@ use crate::types_org::{
     AddBoardMemberRequest, AddOrgMemberRequest, AddStreamTeamRequest, AddTeamMemberRequest,
     BOARD_ITEMS_MAX_LIMIT, Board, BoardColumn, BoardDetail, BoardItemsQuery, BoardItemsResponse,
     BoardMember, BoardTransition, CreateBoardRequest, CreateColumnRequest, CreateStreamRequest,
-    CreateTeamRequest, CreateTenantRequest, CreateTransitionRequest, DeliveryStream,
-    OrgDeleteResponse, OrgMember, RemoveBoardMemberResponse, RemoveOrgMemberResponse,
-    ReplaceCapabilitiesRequest, Team, TeamMember, TenantCreatedResponse, TenantDeletedResponse,
-    TenantSummary, UpdateBoardRequest, UpdateColumnRequest, UpdateOrgMemberRequest,
-    UpdateStreamRequest, UpdateTeamRequest, WhoamiResponse,
+    CreateStructureGrantRequest, CreateTeamRequest, CreateTenantRequest, CreateTransitionRequest,
+    DeliveryStream, OrgDeleteResponse, OrgMember, RemoveBoardMemberResponse,
+    RemoveOrgMemberResponse, ReplaceCapabilitiesRequest, StructureGrant, Team, TeamMember,
+    TenantCreatedResponse, TenantDeletedResponse, TenantSummary, UpdateBoardRequest,
+    UpdateColumnRequest, UpdateOrgMemberRequest, UpdateStreamRequest, UpdateTeamRequest,
+    WhoamiResponse,
 };
 use crate::types_search::{SearchRequest, SearchResponse};
 use crate::types_team_pages::{
@@ -317,6 +318,12 @@ impl KairosClient {
     /// `{}` and `null` are bodies.
     async fn post_empty<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
         self.execute(format!("POST {path}"), 200, self.http.post(self.url(path)))
+            .await
+    }
+
+    /// A `POST` with no body that answers 201.
+    async fn post_empty_created<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
+        self.execute(format!("POST {path}"), 201, self.http.post(self.url(path)))
             .await
     }
 
@@ -739,6 +746,111 @@ impl KairosClient {
             .await
     }
 
+    /// `GET /api/boards/{id}/flow` — the flow metrics of a board for a
+    /// range of days (KAIROS-T-0372). `board` is a slug or a UUID.
+    pub async fn board_flow(
+        &self,
+        board: &str,
+        query: &crate::types_org::BoardFlowQuery,
+    ) -> Result<crate::types_org::BoardFlow, Error> {
+        self.get_query(&format!("/api/boards/{board}/flow"), query)
+            .await
+    }
+
+    /// `GET /api/boards/{id}/webhook-targets` (KAIROS-T-0384).
+    pub async fn list_webhook_targets(
+        &self,
+        board: &str,
+    ) -> Result<Vec<crate::types_dispatch::WebhookTarget>, Error> {
+        self.get(&format!("/api/boards/{board}/webhook-targets"))
+            .await
+    }
+
+    /// `POST /api/boards/{id}/webhook-targets`: the target and its secret,
+    /// shown this one time.
+    pub async fn create_webhook_target(
+        &self,
+        board: &str,
+        request: &crate::types_dispatch::CreateWebhookTargetRequest,
+    ) -> Result<crate::types_dispatch::CreatedWebhookTarget, Error> {
+        self.post_created(&format!("/api/boards/{board}/webhook-targets"), request)
+            .await
+    }
+
+    /// `DELETE /api/boards/{id}/webhook-targets/{target_id}`.
+    pub async fn delete_webhook_target(
+        &self,
+        board: &str,
+        target_id: &str,
+    ) -> Result<crate::types_dispatch::WebhookTarget, Error> {
+        self.delete(&format!("/api/boards/{board}/webhook-targets/{target_id}"))
+            .await
+    }
+
+    /// `POST /api/boards/{id}/webhook-targets/{target_id}/enable`.
+    pub async fn enable_webhook_target(
+        &self,
+        board: &str,
+        target_id: &str,
+    ) -> Result<crate::types_dispatch::WebhookTarget, Error> {
+        self.post_empty(&format!(
+            "/api/boards/{board}/webhook-targets/{target_id}/enable"
+        ))
+        .await
+    }
+
+    /// `POST /api/boards/{id}/webhook-targets/{target_id}/test`: a `ping`
+    /// delivery.
+    pub async fn test_webhook_target(
+        &self,
+        board: &str,
+        target_id: &str,
+    ) -> Result<crate::types_dispatch::WebhookDelivery, Error> {
+        self.post_empty_created(&format!(
+            "/api/boards/{board}/webhook-targets/{target_id}/test"
+        ))
+        .await
+    }
+
+    /// `GET /api/boards/{id}/dispatch-rules` (KAIROS-T-0385).
+    pub async fn list_dispatch_rules(
+        &self,
+        board: &str,
+    ) -> Result<Vec<crate::types_dispatch::DispatchRule>, Error> {
+        self.get(&format!("/api/boards/{board}/dispatch-rules"))
+            .await
+    }
+
+    /// `POST /api/boards/{id}/dispatch-rules`.
+    pub async fn create_dispatch_rule(
+        &self,
+        board: &str,
+        request: &crate::types_dispatch::CreateDispatchRuleRequest,
+    ) -> Result<crate::types_dispatch::DispatchRule, Error> {
+        self.post_created(&format!("/api/boards/{board}/dispatch-rules"), request)
+            .await
+    }
+
+    /// `DELETE /api/boards/{id}/dispatch-rules/{rule_id}`.
+    pub async fn delete_dispatch_rule(
+        &self,
+        board: &str,
+        rule_id: &str,
+    ) -> Result<crate::types_dispatch::DispatchRule, Error> {
+        self.delete(&format!("/api/boards/{board}/dispatch-rules/{rule_id}"))
+            .await
+    }
+
+    /// `GET /api/boards/{id}/webhook-deliveries`: the delivery log.
+    pub async fn list_webhook_deliveries(
+        &self,
+        board: &str,
+        query: &crate::types_dispatch::WebhookDeliveriesQuery,
+    ) -> Result<Vec<crate::types_dispatch::WebhookDelivery>, Error> {
+        self.get_query(&format!("/api/boards/{board}/webhook-deliveries"), query)
+            .await
+    }
+
     /// Each item of a board: `GET /api/boards/{id}/items`, page after
     /// page, as one response (COLLIERY-T-0261). `limit` and `offset` of
     /// `query` have no effect: the pages have the maximum size, and the
@@ -900,6 +1012,29 @@ impl KairosClient {
         user_id: &str,
     ) -> Result<RemoveBoardMemberResponse, Error> {
         self.delete(&format!("/api/boards/{board_id}/members/{user_id}"))
+            .await
+    }
+
+    // -- the structure capability (KAIROS-T-0337) -----------------------------
+
+    /// `GET /api/structure-grants` — each grant of `manage_structure`.
+    pub async fn list_structure_grants(&self) -> Result<Vec<StructureGrant>, Error> {
+        self.get("/api/structure-grants").await
+    }
+
+    /// `POST /api/structure-grants` — grant `manage_structure` at the
+    /// organization (no `board`) or on one board. Org admin only.
+    pub async fn create_structure_grant(
+        &self,
+        request: &CreateStructureGrantRequest,
+    ) -> Result<StructureGrant, Error> {
+        self.post_created("/api/structure-grants", request).await
+    }
+
+    /// `DELETE /api/structure-grants/{id}` — revoke one grant. Org admin
+    /// only.
+    pub async fn delete_structure_grant(&self, grant_id: &str) -> Result<StructureGrant, Error> {
+        self.delete(&format!("/api/structure-grants/{grant_id}"))
             .await
     }
 
@@ -1087,6 +1222,26 @@ impl KairosClient {
         .await
     }
 
+    // -- agent keys of each person (/api/org/agent-keys, KAIROS-T-0388) -------
+
+    /// `GET /api/org/agent-keys` — a page of the agent keys of the persons
+    /// of the organization (never a secret). Org-admin.
+    pub async fn list_org_agent_keys(
+        &self,
+        query: &crate::types_service_accounts::OrgAgentKeysQuery,
+    ) -> Result<crate::types::ListEnvelope<crate::types_service_accounts::OrgAgentKey>, Error> {
+        self.get_query("/api/org/agent-keys", query).await
+    }
+
+    /// `DELETE /api/org/agent-keys/{key_id}` — revoke the agent key of any
+    /// person. Org-admin.
+    pub async fn revoke_org_agent_key(
+        &self,
+        key_id: &str,
+    ) -> Result<crate::types_service_accounts::Deleted, Error> {
+        self.delete(&format!("/api/org/agent-keys/{key_id}")).await
+    }
+
     // -- agent keys of the caller (/api/me/agent-keys, KAIROS-T-0359) ----------
 
     /// `POST /api/me/agent-keys` — make an agent key that acts as the caller.
@@ -1105,12 +1260,69 @@ impl KairosClient {
         self.get("/api/me/agent-keys").await
     }
 
+    /// `GET /api/me/notification-settings` (KAIROS-T-0381): each kind of
+    /// notification, and whether it is on for the caller.
+    pub async fn notification_settings(
+        &self,
+    ) -> Result<crate::types_notifications::NotificationSettings, Error> {
+        self.get("/api/me/notification-settings").await
+    }
+
+    /// `PUT /api/me/notification-settings` (KAIROS-T-0381): turn kinds on
+    /// or off for the caller.
+    pub async fn update_notification_settings(
+        &self,
+        request: &crate::types_notifications::UpdateNotificationSettingsRequest,
+    ) -> Result<crate::types_notifications::NotificationSettings, Error> {
+        self.put_ok("/api/me/notification-settings", request).await
+    }
+
+    /// `GET /api/me/notifications` (KAIROS-T-0382): the unread
+    /// notifications of the caller, then the newest read ones.
+    pub async fn notifications(
+        &self,
+    ) -> Result<crate::types_notifications::NotificationList, Error> {
+        self.get("/api/me/notifications").await
+    }
+
+    /// `POST /api/me/notifications/read` (KAIROS-T-0382): mark notifications
+    /// of the caller read.
+    pub async fn mark_notifications_read(
+        &self,
+        request: &crate::types_notifications::MarkNotificationsReadRequest,
+    ) -> Result<crate::types_notifications::MarkNotificationsReadResponse, Error> {
+        self.post_ok("/api/me/notifications/read", request).await
+    }
+
     /// `DELETE /api/me/agent-keys/{key_id}` — revoke one of the caller's keys.
     pub async fn revoke_agent_key(
         &self,
         key_id: &str,
     ) -> Result<crate::types_service_accounts::Deleted, Error> {
         self.delete(&format!("/api/me/agent-keys/{key_id}")).await
+    }
+
+    /// `POST /api/me/agent-keys/{key_id}/rotate` (KAIROS-T-0370): a new
+    /// secret for the key; the old one ends after the grace time.
+    pub async fn rotate_agent_key(
+        &self,
+        key_id: &str,
+    ) -> Result<crate::types_service_accounts::ApiKeyRotated, Error> {
+        self.post_empty_created(&format!("/api/me/agent-keys/{key_id}/rotate"))
+            .await
+    }
+
+    /// `POST /api/service-accounts/{id}/keys/{key_id}/rotate`
+    /// (KAIROS-T-0370), org-admin.
+    pub async fn rotate_api_key(
+        &self,
+        service_account: &str,
+        key_id: &str,
+    ) -> Result<crate::types_service_accounts::ApiKeyRotated, Error> {
+        self.post_empty_created(&format!(
+            "/api/service-accounts/{service_account}/keys/{key_id}/rotate"
+        ))
+        .await
     }
 
     // -- organization membership (/api/members) --------------------------------
@@ -1385,15 +1597,57 @@ impl KairosClient {
 
     // -- repositories (KAIROS-T-0106, A-0019) ----------------------------
 
-    /// `GET /api/repositories[?team=]` — the repository directory (open
-    /// tenant-wide), optionally one team's (UUID or slug).
+    /// `GET /api/repositories[?team=&limit=&offset=]` — one page of the
+    /// repository directory (open tenant-wide), optionally one team's
+    /// (UUID or slug). The page has the shape of each other list
+    /// (KAIROS-T-0268).
+    pub async fn list_repositories_page(
+        &self,
+        team: Option<&str>,
+        page: Pagination,
+    ) -> Result<ListEnvelope<crate::types_repositories::Repository>, Error> {
+        #[derive(Serialize)]
+        struct Query<'a> {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            team: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            limit: Option<i64>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            offset: Option<i64>,
+        }
+        self.get_query(
+            "/api/repositories",
+            &Query {
+                team,
+                limit: page.limit,
+                offset: page.offset,
+            },
+        )
+        .await
+    }
+
+    /// The full repository directory, optionally one team's: each page of
+    /// [`Self::list_repositories_page`].
     pub async fn list_repositories(
         &self,
         team: Option<&str>,
     ) -> Result<Vec<crate::types_repositories::Repository>, Error> {
-        match team {
-            Some(team) => self.get(&format!("/api/repositories?team={team}")).await,
-            None => self.get("/api/repositories").await,
+        let mut all = Vec::new();
+        loop {
+            let page = self
+                .list_repositories_page(
+                    team,
+                    Pagination {
+                        limit: Some(200),
+                        offset: Some(all.len() as i64),
+                    },
+                )
+                .await?;
+            let got = page.items.len();
+            all.extend(page.items);
+            if got == 0 || all.len() as i64 >= page.total {
+                return Ok(all);
+            }
         }
     }
 
@@ -1446,6 +1700,42 @@ impl KairosClient {
     /// `DELETE /api/repositories/{slug}` (org admin; 409 while referenced).
     pub async fn delete_repository(&self, reference: &str) -> Result<OrgDeleteResponse, Error> {
         self.delete(&format!("/api/repositories/{reference}")).await
+    }
+
+    /// `GET /api/repositories/{slug}/write-token` — the status of the
+    /// GitHub write-back (KAIROS-T-0386). It never has the token.
+    pub async fn get_repository_write_back(
+        &self,
+        reference: &str,
+    ) -> Result<crate::types_repositories::RepositoryWriteBack, Error> {
+        self.get(&format!("/api/repositories/{reference}/write-token"))
+            .await
+    }
+
+    /// `PUT /api/repositories/{slug}/write-token` — set or replace the
+    /// write token of the GitHub write-back.
+    pub async fn set_repository_write_token(
+        &self,
+        reference: &str,
+        token: &crate::types_auth::Secret,
+    ) -> Result<crate::types_repositories::RepositoryWriteBack, Error> {
+        self.put_ok(
+            &format!("/api/repositories/{reference}/write-token"),
+            &crate::types_repositories::SetRepositoryCredentialRequest {
+                token: token.clone(),
+            },
+        )
+        .await
+    }
+
+    /// `DELETE /api/repositories/{slug}/write-token` — remove the write
+    /// token: Kairos writes nothing more to GitHub.
+    pub async fn remove_repository_write_token(
+        &self,
+        reference: &str,
+    ) -> Result<crate::types_repositories::RepositoryWriteBack, Error> {
+        self.delete(&format!("/api/repositories/{reference}/write-token"))
+            .await
     }
 
     /// `GET /api/repositories/{slug}/credential` — the status of the read
@@ -1952,6 +2242,25 @@ impl KairosClient {
                 version: Some(version),
                 limit: None,
                 offset: None,
+            },
+        )
+        .await
+    }
+
+    // -- notes (KAIROS-T-0367) ---------------------------------------------------------------
+
+    /// `POST /api/{family}/{short_code}/notes` — append a note at the end
+    /// of the item's content (no version, no anchor).
+    pub async fn append_note(
+        &self,
+        kind: EntityKind,
+        short_code: &str,
+        text: &str,
+    ) -> Result<AppendNoteResponse, Error> {
+        self.post_ok(
+            &format!("/api/{kind}/{short_code}/notes"),
+            &AppendNoteRequest {
+                text: text.to_string(),
             },
         )
         .await

@@ -371,6 +371,9 @@ pub fn AdminBoardPage() -> impl IntoView {
             Some(Ok(detail)) => {
                 let id = detail.board.id.clone();
                 let level = detail.board.board_level.clone();
+                let column_names: Vec<String> =
+                    detail.columns.iter().map(|c| c.name.clone()).collect();
+                let dispatch_board = id.clone();
                 view! {
                     <PageHeader title=detail.board.name.clone() sub="board configuration"/>
                     <Stack gap="md">
@@ -391,6 +394,9 @@ pub fn AdminBoardPage() -> impl IntoView {
                             from_name to_name/>
                         <MembersPanel board_id=id board_level=level
                             busy outcome reload/>
+                        // KAIROS-T-0385: the agent dispatch of the board.
+                        <super::dispatch::DispatchPanel board_id=dispatch_board column_names
+                            busy outcome/>
                     </Stack>
                 }.into_any()
             }
@@ -438,8 +444,12 @@ fn ColumnsPanel(
         .into_iter()
         .map(|column| {
             let rename = RwSignal::new(column.name.clone());
+            let row_name = column.name.clone();
             let position = column.position;
             let is_done = column.is_done;
+            // KAIROS-T-0371: the WIP limit, as text; empty is no limit.
+            let wip_limit = column.wip_limit;
+            let wip_text = RwSignal::new(wip_limit.map(|n| n.to_string()).unwrap_or_default());
             // The heuristic suggestion (KAIROS-T-0080): a column with no
             // outbound transitions is either terminal or misconfigured —
             // surface it, never act on it.
@@ -497,6 +507,31 @@ fn ColumnsPanel(
                     },
                 );
             };
+            let on_wip_limit = move |_| {
+                let limit = match parse_wip_limit(&wip_text.get_untracked()) {
+                    Ok(limit) => limit,
+                    Err(message) => {
+                        outcome.set(Some(Err(aurora_dark::tokens::ApiError::Unknown(message))));
+                        return;
+                    }
+                };
+                let board_id = board.get_value();
+                let column_id = column_id.get_value();
+                run_mutation(
+                    busy,
+                    outcome,
+                    reload,
+                    match limit {
+                        Some(n) => format!("Kairos set the WIP limit of the column to {n}."),
+                        None => "Kairos removed the WIP limit of the column.".to_string(),
+                    },
+                    async move {
+                        api::set_column_wip_limit(auth, &board_id, &column_id, limit)
+                            .await
+                            .map(|_| ())
+                    },
+                );
+            };
             let on_remove = move |_| {
                 let board_id = board.get_value();
                 let column_id = column_id.get_value();
@@ -513,6 +548,7 @@ fn ColumnsPanel(
                 );
             };
             view! {
+                <div data-testid="column-row" data-column=row_name>
                 <Group justify="between" wrap=true>
                     <Group align="end" gap="sm">
                         <Pill color=token::ICE>{position}</Pill>
@@ -525,6 +561,16 @@ fn ColumnsPanel(
                         {(is_dead_end && !is_done).then(|| view! {
                             <Pill color=token::GOLD>"dead end"</Pill>
                         })}
+                        {wip_limit.map(|n| view! {
+                            <Pill color=token::VIOLET>{format!("WIP {n}")}</Pill>
+                        })}
+                    </Group>
+                    <Group align="end" gap="xs">
+                        <span data-testid="wip-limit">
+                            <TextInput label="WIP limit" value=wip_text placeholder="none"/>
+                        </span>
+                        <Button variant="default" size="xs"
+                            on_click=Callback::new(on_wip_limit)>"Set limit"</Button>
                     </Group>
                     <Group gap="xs">
                         <Button variant="default" size="xs"
@@ -545,6 +591,7 @@ fn ColumnsPanel(
                         </Button>
                     </Group>
                 </Group>
+                </div>
             }
         })
         .collect_view();
@@ -561,6 +608,22 @@ fn ColumnsPanel(
                 </Group>
             </Stack>
         </Panel>
+    }
+}
+
+/// The WIP limit that a person typed (KAIROS-T-0371): empty removes the
+/// limit; else a whole number above 0. Pure, host-tested.
+pub(crate) fn parse_wip_limit(text: &str) -> Result<Option<i32>, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    match text.parse::<i32>() {
+        Ok(limit) if limit > 0 => Ok(Some(limit)),
+        _ => Err(format!(
+            "The WIP limit {text:?} is not correct. Type a whole number above 0, or clear the \
+             field to remove the limit."
+        )),
     }
 }
 
@@ -901,6 +964,16 @@ fn MembersPanel(
 
 #[cfg(test)]
 mod tests {
+
+    /// KAIROS-T-0371.
+    #[test]
+    fn a_wip_limit_is_empty_or_above_0() {
+        assert_eq!(super::parse_wip_limit(""), Ok(None));
+        assert_eq!(super::parse_wip_limit(" 3 "), Ok(Some(3)));
+        assert!(super::parse_wip_limit("0").is_err());
+        assert!(super::parse_wip_limit("-2").is_err());
+        assert!(super::parse_wip_limit("three").is_err());
+    }
     use super::*;
 
     /// COLLIERY-T-0230: the form does not send a delivery board with no

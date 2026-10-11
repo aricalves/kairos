@@ -52,6 +52,7 @@ use commands::boards::BoardsCommand;
 use commands::entities::{
     AdrsCommand, DocumentsCommand, InitiativesCommand, StrategiesCommand, TasksCommand,
 };
+use commands::grants::GrantsCommand;
 use commands::keys::KeysCommand;
 use commands::members::MembersCommand;
 use commands::orgs::OrgsCommand;
@@ -182,6 +183,10 @@ enum Command {
     /// Your agent keys, or the API keys of a service account
     #[command(subcommand)]
     Keys(KeysCommand),
+    /// Capability grants: manage_structure (on the organization or on one
+    /// board), and the board capabilities
+    #[command(subcommand)]
+    Grants(GrantsCommand),
     /// Deployment administration (tenant provisioning)
     #[command(subcommand)]
     Admin(AdminCommand),
@@ -228,6 +233,7 @@ async fn run(command: Command) -> Result<(), CliError> {
         Command::Adrs(command) => command.run().await,
         Command::Search(args) => (*args).run().await,
         Command::Teams(command) => command.run().await,
+        Command::Grants(command) => command.run().await,
         Command::Repos(command) => command.run().await,
         Command::Streams(command) => command.run().await,
         Command::Members(command) => command.run().await,
@@ -597,6 +603,18 @@ fn print_identity(identity: &WhoamiResponse) {
         let teams: Vec<&str> = identity.teams.iter().map(|t| t.name.as_str()).collect();
         println!("teams:  {}", teams.join(", "));
     }
+    // KAIROS-T-0337: the grants of manage_structure.
+    if !identity.structure.is_empty() {
+        let scopes: Vec<String> = identity
+            .structure
+            .iter()
+            .map(|grant| match &grant.board_slug {
+                Some(board) => format!("board {board}"),
+                None => "organization".to_string(),
+            })
+            .collect();
+        println!("manage_structure: {}", scopes.join(", "));
+    }
 }
 
 #[cfg(test)]
@@ -606,6 +624,137 @@ mod tests {
     #[test]
     fn smoke() {
         assert_eq!(env!("CARGO_PKG_NAME"), "kairos-cli");
+    }
+
+    /// KAIROS-T-0337: `grants add` grants manage_structure by default, on
+    /// the organization; `--board` narrows it to one board. `boards create`
+    /// takes the level, the prefix and an optional team.
+    #[test]
+    fn grants_and_boards_create_parse() {
+        let cli = Cli::try_parse_from(["kairos", "grants", "add", "--user", "admin-agent"])
+            .expect("grants add parses");
+        match cli.command {
+            Command::Grants(GrantsCommand::Add {
+                user,
+                capability,
+                board,
+                ..
+            }) => {
+                assert_eq!(user, "admin-agent");
+                assert_eq!(capability, "manage_structure");
+                assert_eq!(board, None);
+            }
+            _ => panic!("expected grants add"),
+        }
+        let cli = Cli::try_parse_from([
+            "kairos",
+            "grants",
+            "add",
+            "--user",
+            "admin-agent",
+            "--board",
+            "ops-delivery",
+        ])
+        .expect("grants add --board parses");
+        assert!(matches!(
+            cli.command,
+            Command::Grants(GrantsCommand::Add { board: Some(_), .. })
+        ));
+        assert!(
+            Cli::try_parse_from(["kairos", "grants", "remove", "g1"]).is_ok(),
+            "remove parses; --confirm is checked at run time"
+        );
+        let cli = Cli::try_parse_from([
+            "kairos",
+            "boards",
+            "create",
+            "--name",
+            "Ops ADRs",
+            "--slug",
+            "ops-adrs",
+            "--level",
+            "adr",
+            "--team",
+            "ops",
+            "--code-prefix",
+            "OPS",
+        ])
+        .expect("boards create parses");
+        assert!(matches!(cli.command, Command::Boards(_)));
+        assert!(
+            Cli::try_parse_from(["kairos", "boards", "create", "--name", "x"]).is_err(),
+            "slug, level and prefix are required"
+        );
+    }
+
+    /// KAIROS-T-0386: `repos write-token` parses its subcommands, and takes
+    /// no token as an argument.
+    #[test]
+    fn repos_write_token_parses() {
+        for verb in ["set", "remove", "status"] {
+            let cli = Cli::try_parse_from(["kairos", "repos", "write-token", verb, "site"])
+                .unwrap_or_else(|e| panic!("{verb}: {e}"));
+            assert!(matches!(cli.command, Command::Repos(_)));
+        }
+        assert!(
+            Cli::try_parse_from([
+                "kairos",
+                "repos",
+                "write-token",
+                "set",
+                "site",
+                "--token",
+                "x"
+            ])
+            .is_err(),
+            "the token is never an argument"
+        );
+    }
+
+    /// KAIROS-T-0385: `boards dispatch` parses its subcommands.
+    #[test]
+    fn boards_dispatch_parses() {
+        for args in [
+            &["kairos", "boards", "dispatch", "list", "web"][..],
+            &[
+                "kairos",
+                "boards",
+                "dispatch",
+                "add-target",
+                "web",
+                "--name",
+                "Runner",
+                "--hook-url",
+                "https://hooks.example.com/k",
+            ][..],
+            &[
+                "kairos",
+                "boards",
+                "dispatch",
+                "add-rule",
+                "web",
+                "--column",
+                "Todo",
+                "--target",
+                "t1",
+                "--task-type",
+                "bug",
+                "--metadata",
+                "priority=high",
+            ][..],
+            &["kairos", "boards", "dispatch", "remove-rule", "web", "r1"][..],
+            &["kairos", "boards", "dispatch", "remove-target", "web", "t1"][..],
+            &["kairos", "boards", "dispatch", "enable-target", "web", "t1"][..],
+            &["kairos", "boards", "dispatch", "test-target", "web", "t1"][..],
+            &["kairos", "boards", "dispatch", "log", "web", "--limit", "5"][..],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
+            assert!(matches!(cli.command, Command::Boards(_)));
+        }
+        assert!(
+            Cli::try_parse_from(["kairos", "boards", "dispatch", "add-rule", "web"]).is_err(),
+            "--column and --target are required"
+        );
     }
 
     /// KAIROS-T-0318: `repos update --code-index-build` takes on and off
@@ -1113,5 +1262,51 @@ mod tests {
             _ => panic!("expected keys revoke"),
         }
         assert!(Cli::try_parse_from(["kairos", "keys", "create"]).is_err());
+    }
+
+    /// KAIROS-T-0388: `admin agent-keys list` takes a user filter and a
+    /// page; `revoke` takes the key id and --confirm.
+    #[test]
+    fn admin_agent_keys_parse() {
+        use commands::admin::AgentKeysCommand;
+        let cli = Cli::try_parse_from([
+            "kairos",
+            "admin",
+            "agent-keys",
+            "list",
+            "--user",
+            "robin@example.com",
+            "--limit",
+            "10",
+        ])
+        .expect("admin agent-keys list parses");
+        match cli.command {
+            Command::Admin(AdminCommand::AgentKeys(AgentKeysCommand::List { user, list })) => {
+                assert_eq!(user.as_deref(), Some("robin@example.com"));
+                assert_eq!(list.limit, Some(10));
+            }
+            _ => panic!("expected admin agent-keys list"),
+        }
+        let cli = Cli::try_parse_from([
+            "kairos",
+            "admin",
+            "agent-keys",
+            "revoke",
+            "k-1",
+            "--confirm",
+        ])
+        .expect("admin agent-keys revoke parses");
+        match cli.command {
+            Command::Admin(AdminCommand::AgentKeys(AgentKeysCommand::Revoke {
+                key_id,
+                confirm,
+                ..
+            })) => {
+                assert_eq!(key_id, "k-1");
+                assert!(confirm);
+            }
+            _ => panic!("expected admin agent-keys revoke"),
+        }
+        assert!(Cli::try_parse_from(["kairos", "admin", "agent-keys", "revoke"]).is_err());
     }
 }

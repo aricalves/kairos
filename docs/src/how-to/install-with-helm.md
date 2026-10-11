@@ -1,6 +1,6 @@
 # Install Kairos on Kubernetes with Helm
 
-Get a Kairos 0.10.0 deployment serving on a cluster you already run.
+Get a Kairos 0.11.0 deployment serving on a cluster you already run.
 
 **Before you start**, have all four:
 
@@ -104,6 +104,11 @@ Then apply whichever of these describe your deployment:
 - **You want `KAIROS_PUBLIC_URL` or `KAIROS_WEBHOOK_SIGNING_KEY`** (needed for
   [Connect a git forge](connect-a-git-forge.md)): neither has a dedicated chart
   value. Set them through `extraEnv`.
+- **You want a different number of replicas:** set `replicaCount` (default
+  2). The pods share the background work through the job queue in the
+  database, and each job runs on one pod. The `KAIROS_JOB_LIMIT_*` limits are
+  for each pod. To let the cluster set the number of pods, set
+  `autoscaling.enabled: true`. See [The job queue](../explanation/job-queue.md).
 - **You scrape with the Prometheus Operator:** set
   `metrics.serviceMonitor.enabled: true`, which scrapes `/metrics`. Liveness
   probes go at `/healthz`, readiness at `/readyz`; the chart wires both already.
@@ -116,7 +121,7 @@ mounts the Swagger UI at `/api/docs`.
 
 ```sh
 helm install kairos oci://ghcr.io/colliery-io/charts/kairos \
-  --version 0.10.0 -f my-values.yaml
+  --version 0.11.0 -f my-values.yaml
 ```
 
 `--version` is not optional in practice: the chart publishes no floating tag.

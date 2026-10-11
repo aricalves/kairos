@@ -206,6 +206,31 @@ pub fn children_progress_counts(by_column: &[(bool, i64)]) -> (i64, i64) {
     (done, total)
 }
 
+/// The heading of a note that `append_note` adds (KAIROS-T-0367):
+/// `## Note (2026-10-11, Robin)`, with the UTC date and the display name
+/// of the author.
+pub fn note_heading(date: chrono::NaiveDate, author: &str) -> String {
+    format!("## Note ({}, {})", date.format("%Y-%m-%d"), author.trim())
+}
+
+/// The content after a note is appended (KAIROS-T-0367): the old content
+/// with no trailing blank lines, an empty line, the heading, an empty line,
+/// and the text with no leading or trailing blank lines. An empty content
+/// gets only the note. `None` when the text is empty.
+pub fn content_with_note(content: &str, heading: &str, text: &str) -> Option<String> {
+    let text = text.trim_end().trim_start_matches(['\n', '\r']);
+    if text.trim().is_empty() {
+        return None;
+    }
+    let base = content.trim_end();
+    let note = format!("{heading}\n\n{text}");
+    Some(if base.is_empty() {
+        note
+    } else {
+        format!("{base}\n\n{note}")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,5 +468,21 @@ mod tests {
         ];
         // Terminates, and the root never appears in its own cascade set.
         assert_eq!(cascade_descendants(a, &edges), vec![b]);
+    }
+
+    #[test]
+    fn a_note_goes_at_the_end_under_a_dated_heading() {
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 10, 11).unwrap();
+        let heading = note_heading(date, " Robin ");
+        assert_eq!(heading, "## Note (2026-10-11, Robin)");
+        assert_eq!(
+            content_with_note("# T\n\nBody\n\n\n", &heading, "\n\nDone.\n").as_deref(),
+            Some("# T\n\nBody\n\n## Note (2026-10-11, Robin)\n\nDone.")
+        );
+        assert_eq!(
+            content_with_note("", &heading, "Done.").as_deref(),
+            Some("## Note (2026-10-11, Robin)\n\nDone.")
+        );
+        assert_eq!(content_with_note("Body", &heading, " \n\t\n"), None);
     }
 }

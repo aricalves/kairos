@@ -25,7 +25,13 @@ const SCRATCH_DB: &str = "kairos_public_migrations_test";
 
 /// The public-schema tables: the 8 defined by KAIROS-S-0004 plus the
 /// KAIROS-T-0078 system metadata scopes.
-const EXPECTED_TABLES: [&str; 10] = [
+const EXPECTED_TABLES: [&str; 12] = [
+    // KAIROS-T-0377: the counts of the login throttle, public because the
+    // throttle runs before the organization is known.
+    "auth_failures",
+    // KAIROS-T-0373: the job queue, public so that one query of a worker
+    // serves every organization.
+    "jobs",
     // KAIROS-T-0203: public, not tenant-scoped, so that revoking every session a
     // person holds is one statement rather than a sweep across org_* schemas.
     "local_sessions",

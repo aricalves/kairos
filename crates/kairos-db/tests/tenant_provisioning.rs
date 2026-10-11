@@ -41,7 +41,7 @@ const SCRATCH_DB: &str = "kairos_tenant_provisioning_test";
 /// The tenant tables (sorted): the 21 from the KAIROS-S-0004 DDL plus
 /// `scim_tokens` (KAIROS-T-0025 / A-0016) and `api_keys` (KAIROS-T-0057 /
 /// A-0017 service-account API keys).
-const EXPECTED_TABLES: [&str; 43] = [
+const EXPECTED_TABLES: [&str; 53] = [
     "activity_log",
     "adrs",
     "api_keys",
@@ -58,10 +58,15 @@ const EXPECTED_TABLES: [&str; 43] = [
     "code_index_summaries",
     "code_indexes",
     "delivery_streams",
+    // KAIROS-T-0385: the agent dispatch rules of a board.
+    "dispatch_rules",
     "documents",
     // KAIROS-T-0192 (A-0021 rule 6): edges an agent proposed, awaiting a human.
     "edge_proposals",
     "forge_connections",
+    // KAIROS-T-0386: the GitHub write-back of a pull request.
+    "github_pr_comments",
+    "github_pr_writebacks",
     "initiatives",
     // KAIROS-T-0187: the two embedding tables (A-0021 rule 2).
     "item_chunks",
@@ -76,15 +81,22 @@ const EXPECTED_TABLES: [&str; 43] = [
     "metadata_definition_scopes",
     "metadata_definitions",
     "metadata_enum_options",
+    // KAIROS-T-0381: the notifications of a person, and their settings.
+    "notification_settings",
+    "notifications",
     "repositories",
     // COLLIERY-T-3105: the encrypted read token of a repository.
     "repository_credentials",
+    // KAIROS-T-0386: the write token of a repository.
+    "repository_write_tokens",
     // COLLIERY-T-3100: the retired short codes.
     "retired_codes",
     "scim_tokens",
     // COLLIERY-T-3099: the sequence of each (prefix, type).
     "short_code_sequences",
     "strategies",
+    // KAIROS-T-0337: the grants of `manage_structure`.
+    "structure_grants",
     // KAIROS-T-0362: the mark of a cancelled task.
     "task_cancellations",
     // KAIROS-T-0359: the claim of a task in Active.
@@ -98,6 +110,10 @@ const EXPECTED_TABLES: [&str; 43] = [
     "teams",
     "template_metadata",
     "templates",
+    // KAIROS-T-0384: the webhook targets, the deliveries and their tries.
+    "webhook_deliveries",
+    "webhook_delivery_tries",
+    "webhook_targets",
 ];
 
 const EXPECTED_VIEWS: [&str; 2] = ["entity_directory", "searchable_items"];

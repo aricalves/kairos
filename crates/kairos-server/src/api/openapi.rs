@@ -141,6 +141,7 @@ use crate::app::AppState;
         crate::api::meta::templates::delete_template,
         crate::api::meta::history::get_history,
         crate::api::meta::restore::restore_item,
+        crate::api::meta::notes::append_note,
         crate::api::meta::activity::get_activity,
         // Organizational families (KAIROS-T-0019).
         crate::api::org::boards::list_boards,
@@ -149,6 +150,18 @@ use crate::app::AppState;
         crate::api::org::boards::update_board,
         crate::api::org::boards::delete_board,
         crate::api::org::boards::board_items,
+        crate::api::org::flow::board_flow,
+        // The webhook targets, the dispatch rules and the delivery log of a
+        // board (KAIROS-T-0384, KAIROS-T-0385).
+        crate::api::org::dispatch::list_webhook_targets,
+        crate::api::org::dispatch::create_webhook_target,
+        crate::api::org::dispatch::delete_webhook_target,
+        crate::api::org::dispatch::enable_webhook_target,
+        crate::api::org::dispatch::test_webhook_target,
+        crate::api::org::dispatch::list_dispatch_rules,
+        crate::api::org::dispatch::create_dispatch_rule,
+        crate::api::org::dispatch::delete_dispatch_rule,
+        crate::api::org::dispatch::list_webhook_deliveries,
         crate::api::org::boards::archive_completed,
         crate::api::org::boards::set_code_sequence,
         crate::api::org::boards::list_columns,
@@ -185,6 +198,10 @@ use crate::app::AppState;
         crate::api::org::code_index_query::query_vector,
         // The read token of a repository (COLLIERY-T-3105).
         crate::api::org::repository_credentials::get_credential,
+        // The GitHub write-back of a repository (KAIROS-T-0386).
+        crate::api::org::repository_write_tokens::get_write_back,
+        crate::api::org::repository_write_tokens::set_write_token,
+        crate::api::org::repository_write_tokens::remove_write_token,
         crate::api::org::repository_credentials::set_credential,
         crate::api::org::repository_credentials::remove_credential,
         crate::api::org::repository_credentials::check_credential,
@@ -219,6 +236,10 @@ use crate::app::AppState;
         crate::api::org::members::add_member,
         crate::api::org::members::update_member,
         crate::api::org::members::remove_member,
+        // The grants of `manage_structure` (KAIROS-T-0337).
+        crate::api::org::structure_grants::list_structure_grants,
+        crate::api::org::structure_grants::create_structure_grant,
+        crate::api::org::structure_grants::delete_structure_grant,
         // Cross-tenant deployment admin (KAIROS-T-0019).
         crate::api::org::admin::list_tenants,
         crate::api::org::admin::create_tenant,
@@ -234,10 +255,20 @@ use crate::app::AppState;
         crate::service_accounts::routes::create_key,
         crate::service_accounts::routes::list_keys,
         crate::service_accounts::routes::revoke_key,
+        crate::service_accounts::routes::rotate_key,
         // The agent keys of a person (KAIROS-T-0359, KAIROS-A-0024).
         crate::service_accounts::agent_keys::create_agent_key,
         crate::service_accounts::agent_keys::list_agent_keys,
         crate::service_accounts::agent_keys::revoke_agent_key,
+        crate::service_accounts::agent_keys::rotate_agent_key,
+        // The agent keys of each person, for an org admin (KAIROS-T-0388).
+        crate::service_accounts::org_agent_keys::list_org_agent_keys,
+        crate::service_accounts::org_agent_keys::revoke_org_agent_key,
+        // The notifications of a person (KAIROS-T-0381).
+        crate::api::notifications::get_notification_settings,
+        crate::api::notifications::update_notification_settings,
+        crate::api::notifications::list_notifications,
+        crate::api::notifications::mark_notifications_read,
         // Local password login (KAIROS-T-0203). Documented unconditionally even
         // though the routes are mounted only when KAIROS_LOCAL_AUTH is on: the spec
         // is the API contract, and an operator reading it needs to know the
@@ -324,7 +355,10 @@ pub(crate) async fn openapi_json() -> impl IntoResponse {
                 (`crate::app::WhoamiResponse`: `{user: {id, external_id, \
                 email, display_name}, organization: {id, slug, role}, \
                 teams: [{id, slug, name}], capabilities: [{board_id, \
-                board_slug, grants: [..]}]}`)",
+                board_slug, grants: [..]}], structure: [{scope, board_id, \
+                board_slug}]}`). `structure` lists the grants of \
+                manage_structure (KAIROS-T-0337): scope organization or \
+                board.",
         ),
         (status = 401, description = "Missing/invalid token", body = kairos_client::types::ErrorEnvelope),
         (status = 403, description = "Not a member of the organization", body = kairos_client::types::ErrorEnvelope),

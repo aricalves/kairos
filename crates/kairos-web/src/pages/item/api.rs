@@ -182,6 +182,24 @@ pub struct ItemDetail {
     /// is not cancelled, for the other families, and from an older server.
     #[serde(default)]
     pub cancellation: Option<Cancellation>,
+    /// The claim of a task (KAIROS-T-0359): the person who has it in
+    /// Active. `None` for a task with no claim, for the other families,
+    /// and from an older server.
+    #[serde(default)]
+    pub claim: Option<Claim>,
+}
+
+/// mirror of: `kairos_client::types::TaskClaim`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct Claim {
+    pub user_id: String,
+    pub display_name: String,
+    /// True when the agent of the person made the claim.
+    #[serde(default)]
+    pub agent: bool,
+    /// RFC 3339.
+    #[serde(default)]
+    pub claimed_at: String,
 }
 
 /// mirror of: `kairos_client::types::TaskCancellation` (partial).
@@ -237,6 +255,10 @@ pub struct BoardColumnInfo {
     /// cannot be cancelled (KAIROS-T-0362).
     #[serde(default)]
     pub is_done: bool,
+    /// A person who moves a task into this column gets the claim
+    /// (KAIROS-T-0359): the Active column of a delivery board.
+    #[serde(default)]
+    pub claims: bool,
     /// Set when the column has been REMOVED from the board
     /// (KAIROS-T-0161) — only ever present because [`fetch_board`] asks
     /// for removed columns; see its docs.
@@ -1034,6 +1056,31 @@ pub async fn cancel_task(auth: Auth, code: &str, reason: &str) -> Result<ItemDet
         &CancelTaskBody { reason },
     )
     .await
+}
+
+/// mirror of: `kairos_client::types::HandOffRequest`.
+#[derive(Serialize)]
+struct HandOffBody<'a> {
+    to: &'a str,
+}
+
+/// `POST /api/tasks/{short_code}/hand-off` — give the claim of a task in
+/// Active to a person (KAIROS-T-0359). `to` is a user id. The holder, or a
+/// person with `transition_items` on the board, may do it.
+pub async fn hand_off_task(auth: Auth, code: &str, to: &str) -> Result<ItemDetail, ApiError> {
+    crate::api::post_json(
+        auth,
+        &format!("/api/tasks/{code}/hand-off"),
+        &HandOffBody { to },
+    )
+    .await
+}
+
+/// `POST /api/tasks/{short_code}/release` — end the claim of a task in
+/// Active (KAIROS-T-0359). The task stays in Active with no claim.
+pub async fn release_task(auth: Auth, code: &str) -> Result<ItemDetail, ApiError> {
+    let path = format!("/api/tasks/{code}/release");
+    send_json(auth, Verb::Post, &path, None::<&()>).await
 }
 
 /// mirror of: `kairos_client::types::PurgeTaskResponse`.

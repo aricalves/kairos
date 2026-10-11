@@ -356,6 +356,7 @@ pub(crate) async fn transition_adr(
             // because a team controls its own plan (COLLIERY-T-0218).
             require_capability(conn, &slug, adr.board_id, user, "transition_items")?;
             boards::transition_adr(conn, adr.id, to_column_id, user).map_err(map_board_error)?;
+            crate::claims::note_wip(conn, to_column_id, &short_code)?;
             let moved = load(conn, &short_code, Liveness::LiveOnly)?;
             render(conn, moved)
         })

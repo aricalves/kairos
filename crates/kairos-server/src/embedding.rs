@@ -56,6 +56,9 @@ pub enum RefreshError {
     /// A stored row names an entity type this build does not know.
     #[error("unknown entity type {0:?}")]
     UnknownEntityType(String),
+    /// The job of the batch was stopped (KAIROS-T-0375).
+    #[error("the batch was stopped")]
+    Stopped,
 }
 
 /// What a refresh actually did.
@@ -285,6 +288,20 @@ impl EmbeddingService {
         limit: i64,
         offset: i64,
     ) -> Result<BatchOutcome, RefreshError> {
+        self.refresh_page_with(conn, limit, offset, &mut || true)
+    }
+
+    /// [`Self::refresh_page`], with a call of `progress` before each item. A
+    /// batch job (KAIROS-T-0375) reports its progress there; when `progress`
+    /// returns false (the job was stopped), the page stops with
+    /// [`RefreshError::Stopped`].
+    pub fn refresh_page_with(
+        &self,
+        conn: &mut diesel::pg::PgConnection,
+        limit: i64,
+        offset: i64,
+        progress: &mut dyn FnMut() -> bool,
+    ) -> Result<BatchOutcome, RefreshError> {
         let items = pending_primary(conn, &self.model, limit, offset)?;
         let ids: Vec<uuid::Uuid> = items.iter().map(|i| i.id).collect();
 
@@ -299,6 +316,9 @@ impl EmbeddingService {
             ..Default::default()
         };
         for item in &items {
+            if !progress() {
+                return Err(RefreshError::Stopped);
+            }
             let metadata = by_item.get(&item.id).cloned().unwrap_or_default();
             let one = self.refresh_item(conn, item, &metadata)?;
             if one.did_work() {
@@ -306,26 +326,233 @@ impl EmbeddingService {
                 outcome.texts_embedded += one.embedded();
             }
         }
+        progress();
         Ok(outcome)
     }
 }
 
-/// Run a refresh sweep across every tenant, for ever.
+/// The dedupe key of the embedding batches of `tenant` (KAIROS-T-0375): one
+/// open batch for each organization.
+pub fn batch_key(tenant: &str) -> String {
+    format!("embedding-batch:{tenant}")
+}
+
+/// The payload of an embedding batch job: where its page starts, and, when
+/// it ended well, where the next page starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BatchPayload {
+    pub offset: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<i64>,
+}
+
+/// Add the next embedding batch of `tenant`, on a connection of the public
+/// schema (KAIROS-T-0375). Its page starts where the last batch that ended
+/// well stopped, so a failed batch leaves its items for the next one. It
+/// runs `interval` after that batch ended, on whichever server: a
+/// deployment with 2 servers runs one batch of an organization for each
+/// interval, not 2. The older ended batches of the organization are
+/// removed: one row of each organization keeps the cursor. `None`: a batch
+/// of the organization is open, and nothing was added.
+pub fn enqueue_batch(
+    conn: &mut diesel::pg::PgConnection,
+    tenant: &str,
+    interval: std::time::Duration,
+    max_tries: i32,
+) -> diesel::QueryResult<Option<kairos_db::jobs::Job>> {
+    use diesel::Connection;
+    use kairos_db::jobs as queue;
+    let key = batch_key(tenant);
+    conn.transaction(|conn| {
+        let last = queue::last_done(conn, &key)?;
+        let offset = last
+            .as_ref()
+            .and_then(|job| serde_json::from_str::<BatchPayload>(&job.payload).ok())
+            .and_then(|payload| payload.next)
+            .unwrap_or(0);
+        let run_after = last.as_ref().and_then(|job| job.finished_at).map(|at| {
+            at + chrono::Duration::from_std(interval).unwrap_or(chrono::Duration::zero())
+        });
+        let added = queue::enqueue(
+            conn,
+            &queue::NewJob {
+                kind: crate::jobs::kinds::EMBEDDING_BATCH.to_string(),
+                tenant: Some(tenant.to_string()),
+                payload: serde_json::json!(BatchPayload { offset, next: None }),
+                priority: crate::jobs::priority::EMBEDDING_BATCH,
+                dedupe_key: Some(key.clone()),
+                run_after,
+                max_tries,
+            },
+        )?;
+        if let (Some(_), Some(last)) = (&added, &last) {
+            queue::remove_done_except(conn, &key, last.id)?;
+        }
+        Ok(added)
+    })
+}
+
+/// Add the next embedding batch of each organization
+/// ([`enqueue_batch`]), and wake the worker. The number added.
+pub async fn enqueue_batches(
+    blocking: &crate::blocking::BlockingTenantPool,
+    worker: &crate::jobs::Worker,
+    interval: std::time::Duration,
+) -> usize {
+    use crate::error::ApiError;
+    let tenants = match blocking
+        .run_public(|conn| kairos_db::list_tenants(conn).map_err(ApiError::internal))
+        .await
+    {
+        Ok(tenants) => tenants,
+        Err(e) => {
+            tracing::warn!(error = ?e, "embedding refresher could not list tenants");
+            return 0;
+        }
+    };
+    let max_tries = worker.settings().max_tries;
+    let mut added = 0;
+    for tenant in tenants.into_iter().filter(|t| t.schema_exists) {
+        let slug = tenant.slug.clone();
+        match blocking
+            .run_public(move |conn| {
+                enqueue_batch(conn, &slug, interval, max_tries).map_err(ApiError::internal)
+            })
+            .await
+        {
+            Ok(Some(_)) => added += 1,
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(tenant = %tenant.slug, error = ?e, "embedding batch not added")
+            }
+        }
+    }
+    if added > 0 {
+        worker.wake();
+    }
+    added
+}
+
+/// The handler of the embedding batch jobs (KAIROS-T-0375): one page of
+/// [`EmbeddingService::refresh_page_with`] in the organization of the job.
+#[derive(Clone)]
+pub struct BatchHandler {
+    blocking: crate::blocking::BlockingTenantPool,
+    service: Arc<EmbeddingService>,
+    batch: i64,
+}
+
+impl BatchHandler {
+    /// A handler of pages of `batch` items.
+    pub fn new(
+        blocking: crate::blocking::BlockingTenantPool,
+        service: Arc<EmbeddingService>,
+        batch: i64,
+    ) -> Self {
+        BatchHandler {
+            blocking,
+            service,
+            batch,
+        }
+    }
+
+    /// Run the embedding batches on `worker`.
+    pub fn register(self, worker: &crate::jobs::Worker) {
+        worker.register(crate::jobs::kinds::EMBEDDING_BATCH, Arc::new(self));
+    }
+
+    async fn refresh(self, handle: crate::jobs::JobHandle) -> Result<(), crate::jobs::JobError> {
+        use crate::error::ApiError;
+        use crate::jobs::JobError;
+        let job = handle.job().clone();
+        let tenant = job
+            .tenant
+            .clone()
+            .ok_or_else(|| JobError::fail("The embedding batch has no tenant."))?;
+        let payload: BatchPayload = serde_json::from_str(&job.payload).map_err(|e| {
+            JobError::fail(format!("The payload of the embedding batch is wrong: {e}"))
+        })?;
+        let (service, batch, offset) = (Arc::clone(&self.service), self.batch, payload.offset);
+        let progress = handle.clone();
+        let result = self
+            .blocking
+            .run(&tenant, move |conn| {
+                let total = kairos_db::embeddings::item_count(conn).map_err(ApiError::internal)?;
+                // The reason stays a text: the job keeps it in `last_error`.
+                Ok(service
+                    .refresh_page_with(conn, batch, offset, &mut || progress.progress())
+                    .map(|outcome| {
+                        // Wrap at the end, so the sweep keeps cycling: an edit
+                        // to an item anywhere in the organization is seen on
+                        // the next time round.
+                        let next = offset + batch;
+                        (outcome, if next >= total { 0 } else { next })
+                    })
+                    .map_err(|e| e.to_string()))
+            })
+            .await;
+        let (outcome, next) = match result {
+            Ok(Ok(done)) => done,
+            Ok(Err(reason)) => {
+                tracing::warn!(tenant = %tenant, job = %job.id, %reason, "embedding batch failed");
+                return Err(JobError::retry(format!(
+                    "The embedding batch at item {offset} failed: {reason}"
+                )));
+            }
+            Err(e) => {
+                return Err(JobError::retry(format!(
+                    "The embedding batch at item {offset} could not reach the database: {}",
+                    e.message
+                )));
+            }
+        };
+        if outcome.items_changed > 0 {
+            tracing::info!(
+                tenant = %tenant,
+                items = outcome.items_changed,
+                texts = outcome.texts_embedded,
+                "embedded"
+            );
+        }
+        // The cursor of the next batch.
+        let (id, instance) = (job.id, job.leased_by.unwrap_or_default());
+        let patch = serde_json::json!({ "next": next });
+        self.blocking
+            .run_public(move |conn| {
+                kairos_db::jobs::merge_payload(conn, id, instance, &patch)
+                    .map_err(ApiError::internal)
+            })
+            .await
+            .map_err(|e| JobError::retry(format!("The cursor was not written: {}", e.message)))?;
+        Ok(())
+    }
+}
+
+impl crate::jobs::JobHandler for BatchHandler {
+    fn run(&self, handle: crate::jobs::JobHandle) -> crate::jobs::JobFuture {
+        Box::pin(self.clone().refresh(handle))
+    }
+}
+
+/// Keep the vectors of every organization current, for ever (KAIROS-T-0190,
+/// KAIROS-T-0375): run the embedding batches on `worker`, and at each
+/// `interval` add the next batch of each organization ([`enqueue_batches`]).
+/// The worker of a server takes the batches of all servers, so 2 servers do
+/// not embed one item twice.
 ///
-/// # Why a sweep and not a queue
+/// # A cursor in a job, not a queue of items
 ///
-/// [[KAIROS-A-0021]] rule 7 requires embedding to happen **off** the write path:
-/// `create_item` must not wait on a model, and a failed embedding must leave the
-/// item created and retrievable lexically. The obvious implementation is a work
-/// queue, and this is not one.
+/// [[KAIROS-A-0021]] rule 7 requires embedding to happen **off** the write
+/// path: `create_item` must not wait on a model, and a failed embedding must
+/// leave the item created and retrievable lexically.
 ///
 /// Staleness here is **derived**, not recorded: an item needs work exactly when
 /// its stored content hash no longer matches the text it would compose now. A
-/// queue would be a second statement of the same fact, and second statements
-/// drift — a row enqueued and lost, an item edited twice while one entry sits
-/// waiting, a retry counter that outlives the reason for it. A sweep asks the
-/// only source of truth there is and is therefore self-healing: whatever went
-/// wrong last time, the next pass sees the world as it actually is.
+/// queue of items would be a second statement of the same fact, and second
+/// statements drift. So a job is a page of the sweep, not a list of items: it
+/// names where its page starts, and it asks the only source of truth there
+/// is. A batch that fails leaves its items stale, and the next batch starts
+/// at the same place.
 ///
 /// The cost is latency rather than correctness. An item is embedded within one
 /// interval rather than immediately, and that is an acceptable trade for a
@@ -337,6 +564,7 @@ impl EmbeddingService {
 /// gone away is a reason for retrieval to degrade to lexical, which is what rule
 /// 7 promises; it is not a reason to stop serving boards.
 pub async fn run_refresher(
+    worker: Arc<crate::jobs::Worker>,
     blocking: crate::blocking::BlockingTenantPool,
     service: Arc<EmbeddingService>,
     interval: std::time::Duration,
@@ -348,63 +576,13 @@ pub async fn run_refresher(
         model = %service.model_display(),
         "embedding refresher started"
     );
-    // Where the next page starts, per tenant. Held here rather than in the
-    // database: it is a fairness hint, not state — losing it on restart costs
-    // one extra pass over an already-current page.
-    let mut cursors: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    BatchHandler::new(blocking.clone(), Arc::clone(&service), batch).register(&worker);
     let mut ticker = tokio::time::interval(interval);
-    // A slow sweep must not cause a burst of catch-up ticks afterwards.
+    // A slow pass must not cause a burst of catch-up ticks afterwards.
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
     loop {
         ticker.tick().await;
-
-        let tenants = match blocking
-            .run_public(|conn| {
-                kairos_db::list_tenants(conn).map_err(crate::error::ApiError::internal)
-            })
-            .await
-        {
-            Ok(tenants) => tenants,
-            Err(e) => {
-                tracing::warn!(error = ?e, "embedding refresher could not list tenants");
-                continue;
-            }
-        };
-
-        for tenant in tenants.into_iter().filter(|t| t.schema_exists) {
-            let service = Arc::clone(&service);
-            let slug = tenant.slug.clone();
-            let offset = *cursors.get(&slug).unwrap_or(&0);
-            let outcome = blocking
-                .run(&tenant.slug, move |conn| {
-                    let total = kairos_db::embeddings::item_count(conn)
-                        .map_err(crate::error::ApiError::internal)?;
-                    let outcome = service
-                        .refresh_page(conn, batch, offset)
-                        .map_err(crate::error::ApiError::internal)?;
-                    // Advance, and wrap at the end so the sweep keeps cycling —
-                    // an edit to an item anywhere in the tenant is picked up on
-                    // the next time round rather than never.
-                    let next = offset + batch;
-                    Ok((outcome, if next >= total { 0 } else { next }))
-                })
-                .await;
-            match outcome {
-                Ok((o, next)) => {
-                    cursors.insert(slug.clone(), next);
-                    if o.items_changed > 0 {
-                        tracing::info!(
-                            tenant = %slug,
-                            items = o.items_changed,
-                            texts = o.texts_embedded,
-                            "embedded"
-                        );
-                    }
-                }
-                Err(e) => tracing::warn!(tenant = %slug, error = ?e, "embedding refresh failed"),
-            }
-        }
+        enqueue_batches(&blocking, &worker, interval).await;
     }
 }
 

@@ -13,12 +13,17 @@
 //!   mint/list/revoke keys), KAIROS-T-0059.
 //! - [`agent_keys`] — `/api/me/agent-keys`: each person makes, lists and
 //!   revokes their own agent keys (KAIROS-T-0359, KAIROS-A-0024).
+//! - [`org_agent_keys`] — `/api/org/agent-keys`: an organization admin lists
+//!   and revokes the agent key of any person (KAIROS-T-0388).
 
 pub mod agent_keys;
 pub mod auth;
+pub mod org_agent_keys;
 pub mod routes;
 
 /// The service-account routes and the agent-key routes (one auth → tenant stack).
 pub(crate) fn router() -> axum::Router<crate::app::AppState> {
-    routes::router().merge(agent_keys::router())
+    routes::router()
+        .merge(agent_keys::router())
+        .merge(org_agent_keys::router())
 }

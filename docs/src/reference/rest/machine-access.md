@@ -29,7 +29,7 @@ Request body (required): `application/json`, [`CreateApiKeyRequest`](schemas.md#
 |---|---|---|
 | `201` | [`ApiKeyCreatedResponse`](schemas.md#apikeycreatedresponse) | Key made; the secret is shown once |
 | `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The caller is a service account, or the request uses an agent key |
-| `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Empty name or bad expiry |
+| `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Empty name, bad expiry, or expires_at with no_expiry |
 
 ### `DELETE /api/me/agent-keys/{key_id}`
 
@@ -47,7 +47,105 @@ another person, or an unknown id → 404; already revoked → 409.
 | `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The caller has no key with this id |
 | `409` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Already revoked |
 
+### `POST /api/me/agent-keys/{key_id}/rotate`
+
+Rotate one of the caller's agent keys (KAIROS-T-0370). A new key with a
+new secret takes the place of the key. Kairos shows the secret once. The
+old secret works for the grace time (`KAIROS_API_KEY_ROTATION_GRACE_SECS`,
+1 day by default), then it ends. A request made with an agent key cannot rotate a
+key. No body.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `key_id` | path | yes | `string` | Agent key id (UUID) |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `201` | [`ApiKeyRotatedResponse`](schemas.md#apikeyrotatedresponse) | The new key; the secret is shown once |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The caller is a service account, or the request uses an agent key |
+| `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The caller has no key with this id |
+| `409` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The key is revoked, expired, or rotated already |
+
+### `GET /api/me/notification-settings`
+
+The caller's notification settings: each kind, and whether it is on.
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`NotificationSettings`](schemas.md#notificationsettings) | Each kind, and whether it is on |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The caller is a service account |
+
+### `PUT /api/me/notification-settings`
+
+Turn kinds of notification on or off for the caller. A kind that is not
+in the body does not change. Kairos refuses a body with no kind.
+
+Request body (required): `application/json`, [`UpdateNotificationSettingsRequest`](schemas.md#updatenotificationsettingsrequest)
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`NotificationSettings`](schemas.md#notificationsettings) | The settings after the change |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The caller is a service account |
+| `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The body names no kind |
+
+### `GET /api/me/notifications`
+
+The caller's notifications: each unread one (newest first, 100 at most),
+then the 20 newest read ones. A service account has none.
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`NotificationList`](schemas.md#notificationlist) | The unread notifications, then the newest read ones |
+
+### `POST /api/me/notifications/read`
+
+Mark notifications of the caller read: `ids`, or `all: true`. An id that
+is not a notification of the caller is a 404 that names it, and nothing
+changes. An id that is read already does not change.
+
+Request body (required): `application/json`, [`MarkNotificationsReadRequest`](schemas.md#marknotificationsreadrequest)
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`MarkNotificationsReadResponse`](schemas.md#marknotificationsreadresponse) | The ids that changed, and the unread count after |
+| `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | An id is not a notification of the caller |
+| `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Neither ids nor all, or both |
+
 ## service-accounts
+
+### `GET /api/org/agent-keys`
+
+The agent keys of the persons of the organization, newest first (never
+a secret). Org-admin-only.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `user` | query | no | `string` | Only the keys of this person: a user id (UUID) or an email. |
+| `limit` | query | no | `integer` | Page size (default 50, max 200). |
+| `offset` | query | no | `integer` | Rows to skip (default 0). |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`ListEnvelope_OrgAgentKey`](schemas.md#listenvelope_orgagentkey) | A page of the agent keys, with the owner of each |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The organization admin role is required |
+| `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The user filter names no person |
+
+### `DELETE /api/org/agent-keys/{key_id}`
+
+Revoke the agent key of any person (soft: `revoked_at` set). Writes an
+activity row and tells the owner. Org-admin-only. An unknown id, or the
+id of a service-account key → 404; already revoked → 409.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `key_id` | path | yes | `string` | Agent key id (UUID) |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`DeletedResponse`](schemas.md#deletedresponse) | Key revoked |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The organization admin role is required |
+| `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | No agent key has this id |
+| `409` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Already revoked |
 
 ### `GET /api/service-accounts`
 
@@ -115,7 +213,7 @@ Request body (required): `application/json`, [`CreateApiKeyRequest`](schemas.md#
 | `201` | [`ApiKeyCreatedResponse`](schemas.md#apikeycreatedresponse) | Key minted; secret shown once |
 | `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Org admin required |
 | `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown service account |
-| `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Empty name or bad expiry |
+| `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Empty name, bad expiry, or expires_at with no_expiry |
 
 ### `DELETE /api/service-accounts/{id}/keys/{key_id}`
 
@@ -133,6 +231,25 @@ already revoked → 409.
 | `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Org admin required |
 | `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown service account or key |
 | `409` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Already revoked |
+
+### `POST /api/service-accounts/{id}/keys/{key_id}/rotate`
+
+Rotate a key of a service account (KAIROS-T-0370). A new key with a new
+secret takes the place of the key. Kairos shows the secret once. The old
+secret works for the grace time (`KAIROS_API_KEY_ROTATION_GRACE_SECS`, 1
+day by default), then it ends. Org-admin-only. No body.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `id` | path | yes | `string` | Service account id (UUID) |
+| `key_id` | path | yes | `string` | API key id (UUID) |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `201` | [`ApiKeyRotatedResponse`](schemas.md#apikeyrotatedresponse) | The new key; the secret is shown once |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Org admin required |
+| `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Unknown service account or key |
+| `409` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The key is revoked, expired, or rotated already |
 
 ## scim-tokens
 

@@ -39,6 +39,18 @@
 //! other kinds cannot change a count, and a `relationship_changed` is
 //! emitted for each end of the edge with its own board.
 //!
+//! # The events of a person (KAIROS-T-0381)
+//!
+//! A notification is for ONE person. [`emit_notification_event`] sends
+//! `notification_created` (a new notification) or `notifications_read`
+//! (the person read some) with the routing field `recipient`: the server
+//! delivers the event only to a socket of that person, and strips the field
+//! as it strips `tenant`. The event has the S-0005 shape: `entity_type` is
+//! `notification`, `short_code` is the code of the item of the notification
+//! (empty for `notifications_read`), and `board_id` is `null`, so a socket
+//! filtered to a board does not get it. The text of a notification is not
+//! in the event: the client reads it through the REST API.
+//!
 //! # Post-commit semantics (A-0005 §5)
 //!
 //! [`emit_event`] runs INSIDE the service transaction, and that is the
@@ -248,6 +260,47 @@ pub fn emit_event(conn: &mut PgConnection, event: &ThinEvent) -> Result<(), Dies
     sql_query("SELECT pg_notify($1, $2)")
         .bind::<Text, _>(EVENT_CHANNEL)
         .bind::<Text, _>(Value::Object(payload).to_string())
+        .execute(conn)?;
+    Ok(())
+}
+
+/// The wire name of the event of a new notification (KAIROS-T-0381).
+pub const NOTIFICATION_CREATED: &str = "notification_created";
+/// The wire name of the event of notifications that the person read.
+pub const NOTIFICATIONS_READ: &str = "notifications_read";
+
+/// Emit an event for ONE person (module docs, "The events of a person"):
+/// `event` is [`NOTIFICATION_CREATED`] or [`NOTIFICATIONS_READ`]. Call it in
+/// the transaction of the write, as [`emit_event`].
+pub fn emit_notification_event(
+    conn: &mut PgConnection,
+    event: &str,
+    recipient: Uuid,
+    short_code: &str,
+    actor: Uuid,
+) -> Result<(), DieselError> {
+    let schema: SchemaName = sql_query(
+        "SELECT COALESCE(current_schema()::text, 'public') AS name, \
+         NULLIF(current_setting('kairos.agent_key', true), '')::uuid AS agent_key",
+    )
+    .get_result(conn)?;
+    let tenant = schema
+        .name
+        .strip_prefix("org_")
+        .unwrap_or(schema.name.as_str());
+    let payload = json!({
+        "tenant": tenant,
+        "recipient": recipient,
+        "event": event,
+        "entity_type": "notification",
+        "short_code": short_code,
+        "board_id": Value::Null,
+        "actor": actor,
+        "occurred_at": Utc::now(),
+    });
+    sql_query("SELECT pg_notify($1, $2)")
+        .bind::<Text, _>(EVENT_CHANNEL)
+        .bind::<Text, _>(payload.to_string())
         .execute(conn)?;
     Ok(())
 }

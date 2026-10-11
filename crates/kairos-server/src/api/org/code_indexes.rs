@@ -43,7 +43,7 @@ use uuid::Uuid;
 
 use super::repositories::{changeable, map_error};
 use crate::app::AppState;
-use crate::code_index::{MAX_DISTANCE, RebuildRequest, used_rows};
+use crate::code_index::{MAX_DISTANCE, used_rows};
 use crate::error::ApiError;
 use crate::input::ApiQuery;
 use crate::middleware::auth::AuthContext;
@@ -145,6 +145,7 @@ pub(crate) fn build_dto_of(run: Build) -> dto::CodeIndexBuild {
         symbols: run.symbols,
         edges: run.edges,
         summaries_made: run.summaries_made,
+        summaries_reused: run.summaries_reused,
         requested_by: run.requested_by.map(|u| u.to_string()),
         started_at: run.started_at.to_rfc3339(),
         finished_at: run.finished_at.map(|t| t.to_rfc3339()),
@@ -196,14 +197,21 @@ pub(crate) async fn list_code_index_builds(
 
 /// The ONE check and write of a rebuild request (KAIROS-T-0332), for REST
 /// and for the MCP tool `rebuild_code_index`: the gate of a change of the
-/// repository, the builder setting of the repository, no active run, then
-/// the `running` row with `trigger = request`. The caller queues the
-/// request with the service after the write.
+/// repository, the builder setting of the repository, no active run and no
+/// build job that runs, then the `running` row with `trigger = request` of
+/// the server `server_instance` (KAIROS-T-0354) and its build job
+/// (KAIROS-T-0374). A build job of the repository that waits (an update or
+/// a first build) becomes the requested build: it gets the priority of a
+/// request and names the run. The check and the writes are one
+/// transaction, with the row of the repository locked. The caller wakes
+/// the job worker after the write.
 pub(crate) fn request_rebuild(
     conn: &mut PgConnection,
     tenant_slug: &str,
     user: Uuid,
     reference: &str,
+    server_instance: Uuid,
+    max_tries: i32,
 ) -> Result<(Repository, Build), ApiError> {
     let repo = changeable(conn, tenant_slug, user, reference)?;
     if !repo.code_index_build_on() {
@@ -217,8 +225,12 @@ pub(crate) fn request_rebuild(
             ),
         ));
     }
-    if let Some(active) = code_index_builds::running(conn, repo.id).map_err(ApiError::internal)? {
-        return Err(ApiError::new(
+    super::run_in_transaction(conn, |conn| {
+        code_index_builds::lock_repository(conn, repo.id).map_err(ApiError::internal)?;
+        if let Some(active) =
+            code_index_builds::running(conn, repo.id).map_err(ApiError::internal)?
+        {
+            return Err(ApiError::new(
             StatusCode::CONFLICT,
             "CODE_INDEX_BUILD_RUNNING",
             format!(
@@ -231,20 +243,73 @@ pub(crate) fn request_rebuild(
             ),
         )
         .with_details(json!({ "run": active.id })));
-    }
-    let run = super::run_in_transaction(conn, |conn| {
+        }
+        let key = crate::code_index::job_key(tenant_slug, repo.id);
+        let open = kairos_db::jobs::open_by_key(conn, &key).map_err(ApiError::internal)?;
+        if let Some(job) = &open
+            && job.state != "queued"
+        {
+            return Err(job_runs(&repo, job));
+        }
         let run = code_index_builds::start(
             conn,
             repo.id,
             "request",
             Some(&repo.default_branch),
             Some(user),
+            Some(server_instance),
         )
         .map_err(ApiError::internal)?;
+        match open {
+            Some(job) => {
+                let patch = json!({ "trigger": crate::code_index::jobs::REQUEST, "run": run.id });
+                if kairos_db::jobs::raise(
+                    conn,
+                    job.id,
+                    crate::jobs::priority::REQUESTED_BUILD,
+                    &patch,
+                )
+                .map_err(ApiError::internal)?
+                .is_none()
+                {
+                    return Err(job_runs(&repo, &job));
+                }
+            }
+            None => {
+                if let Err(job) = crate::code_index::jobs::enqueue_build(
+                    conn,
+                    tenant_slug,
+                    &repo,
+                    crate::code_index::jobs::REQUEST,
+                    Some(run.id),
+                    None,
+                    max_tries,
+                )? {
+                    return Err(job_runs(&repo, &job));
+                }
+            }
+        }
         crate::code_index::notify_run(conn, &repo.slug, Some(user))?;
-        Ok(run)
-    })?;
-    Ok((repo, run))
+        Ok((repo, run))
+    })
+}
+
+/// The refusal of a request while a build job of the repository runs
+/// (KAIROS-T-0374): its run row comes when the build starts.
+fn job_runs(repo: &Repository, job: &kairos_db::jobs::Job) -> ApiError {
+    ApiError::new(
+        StatusCode::CONFLICT,
+        "CODE_INDEX_BUILD_RUNNING",
+        format!(
+            "A build of the code index of the repository {:?} runs now (job {}, since {}). \
+             Wait for its end: GET /api/repositories/{}/code-indexes/builds.",
+            repo.slug,
+            job.id,
+            job.created_at.to_rfc3339(),
+            repo.slug
+        ),
+    )
+    .with_details(json!({ "job": job.id }))
 }
 
 /// The refusal when the deployment has no code index builder.
@@ -288,17 +353,15 @@ pub(crate) async fn rebuild_code_index(
     let service = state.code_index.clone().ok_or_else(no_builder)?;
     let user = auth.user_id;
     let tenant_slug = tenant.slug.clone();
-    let (repo, run) = state
+    let instance = service.instance();
+    let max_tries = state.config.jobs.max_tries;
+    let (_repo, run) = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            request_rebuild(conn, &tenant_slug, user, &slug)
+            request_rebuild(conn, &tenant_slug, user, &slug, instance, max_tries)
         })
         .await?;
-    service.request_rebuild(RebuildRequest {
-        tenant: tenant.slug.clone(),
-        repository_id: repo.id,
-        run: run.id,
-    });
+    state.jobs.wake();
     Ok((StatusCode::ACCEPTED, Json(build_dto_of(run))).into_response())
 }
 
@@ -410,6 +473,7 @@ pub(crate) async fn upload_code_index(
                 )));
             }
             let pool = used_rows(split.pool, &split.keys);
+            let keys = split.keys;
             let outcome = code_indexes::put(
                 conn,
                 &NewCodeIndex {
@@ -419,11 +483,12 @@ pub(crate) async fn upload_code_index(
                     source: "upload",
                     structure: split.structure_gz,
                     structure_bytes: split.structure_bytes as i64,
-                    summary_keys: split.keys.len() as i32,
+                    summary_keys: keys.len() as i32,
                     vector_model: split.vector_model,
                     created_by: Some(user),
                 },
                 &pool,
+                &keys,
             )
             .map_err(ApiError::internal)?;
             let info = code_indexes::info(conn, repo.id, &commit)

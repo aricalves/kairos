@@ -34,6 +34,16 @@
 //! write path that applies the edit rule gets the warning with no new
 //! code.
 //!
+//! # The warning of a WIP limit (KAIROS-T-0371)
+//!
+//! A move of an item into a column that is then over its WIP limit is
+//! allowed, and the answer has a warning in the same places ([`note_wip`]):
+//!
+//! - REST: `Kairos-Warning: KAIROS-T-0001 moved into Active, over its WIP
+//!   limit (4 of 3)`.
+//! - MCP: `Warning: the column Active has 4 items, over its WIP limit of 3.
+//!   Your move of KAIROS-T-0001 is recorded.`
+//!
 //! [`note`] puts the warning in a SINK of the request: a tokio task-local
 //! ([`collect`]) that the tenant middleware and the MCP tool call open.
 //! `BlockingTenantPool::run` reads the sink in the task of the request and
@@ -101,6 +111,59 @@ impl ClaimWarning {
     }
 }
 
+/// A move into a column that is over its WIP limit (KAIROS-T-0371).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WipWarning {
+    pub short_code: String,
+    pub column: String,
+    pub count: i64,
+    pub limit: i32,
+}
+
+impl WipWarning {
+    /// The value of the header [`WARNING_HEADER`].
+    pub fn header_text(&self) -> String {
+        format!(
+            "{} moved into {}, over its WIP limit ({} of {})",
+            self.short_code, self.column, self.count, self.limit
+        )
+    }
+
+    /// The line at the end of the text of an MCP tool.
+    pub fn mcp_text(&self) -> String {
+        format!(
+            "Warning: the column {} has {} items, over its WIP limit of {}. Your move of {} is \
+             recorded.",
+            self.column, self.count, self.limit, self.short_code
+        )
+    }
+}
+
+/// One warning of a request: a claim, or a WIP limit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Warning {
+    Claim(ClaimWarning),
+    Wip(WipWarning),
+}
+
+impl Warning {
+    /// The value of the header [`WARNING_HEADER`].
+    pub fn header_text(&self) -> String {
+        match self {
+            Self::Claim(w) => w.header_text(),
+            Self::Wip(w) => w.header_text(),
+        }
+    }
+
+    /// The line at the end of the text of an MCP tool.
+    pub fn mcp_text(&self) -> String {
+        match self {
+            Self::Claim(w) => w.mcp_text(),
+            Self::Wip(w) => w.mcp_text(),
+        }
+    }
+}
+
 /// "Alice (agent)" when the agent of the person made the claim, else
 /// "Alice".
 fn holder_text(name: &str, agent: bool) -> String {
@@ -111,7 +174,7 @@ fn holder_text(name: &str, agent: bool) -> String {
     }
 }
 
-type Sink = Arc<Mutex<Vec<ClaimWarning>>>;
+type Sink = Arc<Mutex<Vec<Warning>>>;
 
 tokio::task_local! {
     /// The warnings of the request in scope (module docs).
@@ -125,7 +188,7 @@ thread_local! {
 
 /// Run `future` with a new sink, and return its output and the warnings
 /// that the writes in it noted.
-pub async fn collect<F: std::future::Future>(future: F) -> (F::Output, Vec<ClaimWarning>) {
+pub async fn collect<F: std::future::Future>(future: F) -> (F::Output, Vec<Warning>) {
     let sink: Sink = Arc::default();
     let output = SINK.scope(sink.clone(), future).await;
     let warnings = std::mem::take(&mut *sink.lock().unwrap_or_else(|e| e.into_inner()));
@@ -179,16 +242,50 @@ pub fn note(conn: &mut PgConnection, task_id: Uuid, actor: Uuid) -> Result<(), A
         claimed_at: claim.claimed_at,
     };
     let mut warnings = sink.lock().unwrap_or_else(|e| e.into_inner());
-    if !warnings.iter().any(|w| w.short_code == warning.short_code) {
-        warnings.push(warning);
+    if !warnings
+        .iter()
+        .any(|w| matches!(w, Warning::Claim(c) if c.short_code == warning.short_code))
+    {
+        warnings.push(Warning::Claim(warning));
     }
+    Ok(())
+}
+
+/// Note a move of the item `short_code` into the column `column_id`
+/// (KAIROS-T-0371): when the column has a WIP limit and holds more live
+/// items than the limit after the move, the response gets a warning
+/// (module docs). Nothing outside of a request.
+pub fn note_wip(
+    conn: &mut PgConnection,
+    column_id: Uuid,
+    short_code: &str,
+) -> Result<(), ApiError> {
+    let Some(sink) = BLOCKING_SINK.with(|cell| cell.borrow().clone()) else {
+        return Ok(());
+    };
+    let Some(load) =
+        kairos_db::board_items::column_load(conn, column_id).map_err(ApiError::internal)?
+    else {
+        return Ok(());
+    };
+    let (Some(limit), true) = (load.wip_limit, load.over_limit()) else {
+        return Ok(());
+    };
+    sink.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(Warning::Wip(WipWarning {
+            short_code: short_code.to_string(),
+            column: load.name,
+            count: load.count,
+            limit,
+        }));
     Ok(())
 }
 
 /// Add the header [`WARNING_HEADER`] to a response, one value for each
 /// warning. A name that is not a correct header value gets its non-ASCII
 /// characters escaped.
-pub fn add_header(headers: &mut axum::http::HeaderMap, warnings: &[ClaimWarning]) {
+pub fn add_header(headers: &mut axum::http::HeaderMap, warnings: &[Warning]) {
     let name = HeaderName::from_static(WARNING_HEADER);
     for warning in warnings {
         let text = warning.header_text();
@@ -428,7 +525,30 @@ mod tests {
         let mut headers = axum::http::HeaderMap::new();
         let mut w = warning(false);
         w.holder = "Zoë".to_string();
-        add_header(&mut headers, &[w]);
+        add_header(&mut headers, &[Warning::Claim(w)]);
         assert_eq!(headers.get_all(WARNING_HEADER).iter().count(), 1);
+    }
+
+    /// KAIROS-T-0371: the warning of a WIP limit.
+    #[test]
+    fn the_wip_warning_names_the_column_the_count_and_the_limit() {
+        let w = Warning::Wip(WipWarning {
+            short_code: "ACME-T-0002".to_string(),
+            column: "Active".to_string(),
+            count: 4,
+            limit: 3,
+        });
+        assert_eq!(
+            w.header_text(),
+            "ACME-T-0002 moved into Active, over its WIP limit (4 of 3)"
+        );
+        assert_eq!(
+            w.mcp_text(),
+            "Warning: the column Active has 4 items, over its WIP limit of 3. Your move of \
+             ACME-T-0002 is recorded."
+        );
+        let mut headers = axum::http::HeaderMap::new();
+        add_header(&mut headers, &[w, Warning::Claim(warning(true))]);
+        assert_eq!(headers.get_all(WARNING_HEADER).iter().count(), 2);
     }
 }

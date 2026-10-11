@@ -243,7 +243,43 @@ impl CodeTools {
         let had_index = db.is_file();
         let mut lines = Vec::new();
         let mut hosted = false;
+        // The count of the files of the tree that differ from the local
+        // index, when the CLI can read it.
+        let local_changed = if had_index {
+            let (root, db) = (root.clone(), db.clone());
+            tokio::task::spawn_blocking(move || {
+                kairos_index::changed_files(&root, &db)
+                    .ok()
+                    .map(|c| c.len())
+            })
+            .await
+            .ok()
+            .flatten()
+        } else {
+            None
+        };
         match found {
+            // The local index is nearer to the tree than the base: it keeps
+            // its structure, and takes the summaries of the base when the
+            // base has more (KAIROS-T-0355), as `kairos index update` does.
+            super::base::Found::Base(b) if local_changed.is_some_and(|n| n <= b.changed) => {
+                let n = local_changed.unwrap_or_default();
+                if n > super::DEFAULT_MAX_CHANGED {
+                    return Err(super::too_far(&root, &b, super::DEFAULT_MAX_CHANGED).into());
+                }
+                lines.push(format!(
+                    "Repository {}: the local index is nearer to the tree than the index of \
+                     commit {} from Kairos ({} changed, against {}). The local index is used.",
+                    b.repository,
+                    b.short(),
+                    plural(n, "file", "files"),
+                    b.changed
+                ));
+                if let Some(line) = super::take_base_summaries(&db, &b).await {
+                    lines.push(line);
+                }
+                hosted = b.hosted;
+            }
             super::base::Found::Base(b) => {
                 if b.changed > super::DEFAULT_MAX_CHANGED {
                     return Err(super::too_far(&root, &b, super::DEFAULT_MAX_CHANGED).into());

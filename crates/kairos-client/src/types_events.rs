@@ -18,7 +18,9 @@ use utoipa::ToSchema;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ThinEvent {
     /// `item_created|item_updated|item_transitioned|item_moved|item_deleted|`
-    /// `item_restored|relationship_changed|metadata_changed|item_links_changed|code_index_build_changed`.
+    /// `item_restored|relationship_changed|metadata_changed|item_links_changed|code_index_build_changed`,
+    /// and for the person of the connection only (KAIROS-T-0381)
+    /// `notification_created|notifications_read`.
     ///
     /// The authoritative list is `kairos_db::events::EventKind::as_str`; this
     /// comment is what an SDK consumer reads, so it had drifted two values
@@ -26,7 +28,8 @@ pub struct ThinEvent {
     /// deliberately distinct from `item_created`: treating it as a create
     /// renders a new card carrying an old version number.
     pub event: String,
-    /// `strategy|initiative|task|document|adr`.
+    /// `strategy|initiative|task|document|adr|repository`, or
+    /// `notification` for the events of a person.
     pub entity_type: String,
     /// The affected item's short code — re-fetch it via the REST API.
     pub short_code: String,

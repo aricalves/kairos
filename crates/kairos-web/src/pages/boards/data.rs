@@ -34,6 +34,9 @@ pub struct BoardColumn {
     /// tasks (KAIROS-T-0363).
     #[serde(default)]
     pub is_done: bool,
+    /// The WIP limit of the column (KAIROS-T-0371); `None`: no limit.
+    #[serde(default)]
+    pub wip_limit: Option<i32>,
 }
 
 /// mirror of: `kairos_client::types_org::BoardTransition` (partial).
@@ -130,6 +133,13 @@ pub struct Adr {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct BoardColumnItems {
     pub column: BoardColumn,
+    /// The live items of the column, on each page (KAIROS-T-0371): the
+    /// count that the WIP limit is for.
+    #[serde(default)]
+    pub item_count: i64,
+    /// `item_count` is above the WIP limit.
+    #[serde(default)]
+    pub over_wip_limit: bool,
     pub strategies: Vec<Strategy>,
     pub initiatives: Vec<Initiative>,
     pub tasks: Vec<Task>,
@@ -412,6 +422,12 @@ pub async fn archive_completed(
     board_id: &str,
 ) -> Result<ArchiveCompletedOutcome, ApiError> {
     crate::api::post_empty(auth, &format!("{}/archive-completed", board_path(board_id))).await
+}
+
+/// The WIP chip of a column head (KAIROS-T-0371): `WIP 2/3`, or `None`
+/// for a column with no limit. Pure, host-tested.
+pub fn wip_label(item_count: i64, wip_limit: Option<i32>) -> Option<String> {
+    wip_limit.map(|limit| format!("WIP {item_count}/{limit}"))
 }
 
 /// The number of live tasks in the done columns of the view (the tasks
@@ -1105,6 +1121,13 @@ mod tests {
     }
 
     /// KAIROS-T-0359: a card task decodes its claim, and a task of an
+    /// KAIROS-T-0371: the WIP chip.
+    #[test]
+    fn the_wip_label_names_the_count_and_the_limit() {
+        assert_eq!(wip_label(2, None), None);
+        assert_eq!(wip_label(4, Some(3)).as_deref(), Some("WIP 4/3"));
+    }
+
     /// older server (no `claim`) decodes with none.
     #[test]
     fn task_mirror_decodes_the_claim() {

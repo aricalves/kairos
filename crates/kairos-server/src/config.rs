@@ -136,9 +136,10 @@ pub struct AppConfig {
     /// `0` disables it, which is what tests and any deployment that prefers to
     /// drive `embed-backfill` itself should use.
     ///
-    /// There is no queue behind this on purpose. Staleness is *derived* — a
-    /// content hash that no longer matches — so a sweep is self-healing, where a
-    /// queue would be a second source of truth able to drift from the first.
+    /// There is no queue of items behind this on purpose. Staleness is
+    /// *derived* — a content hash that no longer matches — so a sweep is
+    /// self-healing. Each page of the sweep is a job of the job queue
+    /// (KAIROS-T-0375), so 2 servers do not embed one page twice.
     pub embed_refresh_secs: u64,
     /// `KAIROS_CODE_INDEX_DIR` — the folder of the base code indexes
     /// (COLLIERY-T-1853): a bare clone of each indexed repository, and the
@@ -154,6 +155,11 @@ pub struct AppConfig {
     /// the builder (COLLIERY-T-2529). Default 4, at least 1. The builder
     /// shares the host with the live services.
     pub code_index_threads: u32,
+    /// `KAIROS_CODE_INDEX_MIN_REBUILD_SECS` — the least time between 2
+    /// updates of one repository by the update lane (KAIROS-T-0334). Default
+    /// 0: off. On a slow host, a repository that gets many pushes then waits
+    /// while the other repositories are stale.
+    pub code_index_min_rebuild_secs: u64,
     /// `KAIROS_WEB_CLIENT_ID` — the public OAuth client id the SPA uses
     /// for its PKCE flow (KAIROS-T-0039, A-0010). Default `kairos-web`,
     /// matching the dev Dex fixture (`.angreal/dex/config.yaml`).
@@ -259,6 +265,28 @@ pub struct AppConfig {
     /// tab open, and short enough that a token copied off a laptop stops working
     /// without anyone noticing it needed to.
     pub session_ttl_secs: u64,
+    /// `KAIROS_API_KEY_TTL_DAYS` (KAIROS-T-0370): the default life of a new
+    /// API key or agent key, in days, default **90**. A request that names
+    /// `expires_at` sets its own expiry; a request with `no_expiry: true`
+    /// makes a key with no expiry. `0` turns the default off: a new key has
+    /// no expiry unless the request names one.
+    pub api_key_ttl_days: u32,
+    /// `KAIROS_API_KEY_ROTATION_GRACE_SECS` (KAIROS-T-0370): after a
+    /// rotation, the old secret of a key stays valid for this time, default
+    /// **86400** (1 day), so that the agents can change to the new secret.
+    /// `0` ends the old secret at the rotation.
+    pub api_key_rotation_grace_secs: u64,
+    /// `KAIROS_JOB_*` (KAIROS-T-0373): the heartbeat, the lease, the tries
+    /// and the limits per kind of the job queue ([`crate::jobs`]).
+    pub jobs: crate::jobs::JobSettings,
+    /// `KAIROS_WEBHOOK_*` (KAIROS-T-0384): the tries, the waits, the time
+    /// out, the failures in a row that turn a target off, and the guard of
+    /// the addresses of the signed webhook deliveries
+    /// ([`crate::webhooks`]).
+    pub webhooks: crate::webhooks::WebhookSettings,
+    /// `KAIROS_GITHUB_API_URL` (KAIROS-T-0386): the REST API of GitHub for
+    /// the write-back ([`crate::forge::writeback`]).
+    pub writeback: crate::forge::writeback::WriteBackSettings,
     /// `KAIROS_BOOTSTRAP_ADMIN` (KAIROS-T-0204): the email of a first-boot admin,
     /// created **only when the deployment has no users at all**.
     ///
@@ -541,6 +569,27 @@ impl AppConfig {
                 })
             })
             .transpose()?;
+        // KAIROS-T-0370: the old keys decrypt during a rotation.
+        let secrets_key = match (secrets_key, get(crate::secrets::SECRETS_KEY_OLD_VAR)) {
+            (key, None) => key,
+            (Some(key), Some(raw)) => {
+                Some(
+                    key.with_old_base64(&raw)
+                        .map_err(|message| ConfigError::Invalid {
+                            var: crate::secrets::SECRETS_KEY_OLD_VAR,
+                            message,
+                        })?,
+                )
+            }
+            (None, Some(_)) => {
+                return Err(ConfigError::Invalid {
+                    var: crate::secrets::SECRETS_KEY_OLD_VAR,
+                    message: "is set, and KAIROS_SECRETS_KEY is not. Set the new key in \
+                              KAIROS_SECRETS_KEY and the old keys in KAIROS_SECRETS_KEY_OLD"
+                        .into(),
+                });
+            }
+        };
 
         Ok(Self {
             database_url,
@@ -562,6 +611,7 @@ impl AppConfig {
             code_index_dir: get("KAIROS_CODE_INDEX_DIR").map(std::path::PathBuf::from),
             code_index_poll_secs: parse_num(&get, "KAIROS_CODE_INDEX_POLL_SECS", 300)?,
             code_index_threads,
+            code_index_min_rebuild_secs: parse_num(&get, "KAIROS_CODE_INDEX_MIN_REBUILD_SECS", 0)?,
             web_client_id: get("KAIROS_WEB_CLIENT_ID").unwrap_or_else(|| "kairos-web".to_string()),
             api_bearer,
             web_client_secret: get("KAIROS_WEB_CLIENT_SECRET"),
@@ -576,11 +626,134 @@ impl AppConfig {
             trusted_proxy,
             local_auth,
             session_ttl_secs,
+            api_key_ttl_days: parse_num(&get, "KAIROS_API_KEY_TTL_DAYS", 90)?,
+            api_key_rotation_grace_secs: parse_num(
+                &get,
+                "KAIROS_API_KEY_ROTATION_GRACE_SECS",
+                24 * 60 * 60,
+            )?,
+            jobs: parse_jobs(&get)?,
+            webhooks: parse_webhooks(&get)?,
+            writeback: crate::forge::writeback::WriteBackSettings {
+                api_url: get("KAIROS_GITHUB_API_URL")
+                    .map(|url| url.trim().trim_end_matches('/').to_string())
+                    .unwrap_or_else(|| {
+                        crate::forge::writeback::WriteBackSettings::default().api_url
+                    }),
+                ..Default::default()
+            },
             bootstrap_admin,
             bootstrap_password,
             bootstrap_password_hash,
         })
     }
+}
+
+/// The settings of the job queue (KAIROS-T-0373): `KAIROS_JOB_HEARTBEAT_SECS`
+/// (30), `KAIROS_JOB_LEASE_SECS` (300), `KAIROS_JOB_MAX_TRIES` (3) and a
+/// `KAIROS_JOB_LIMIT_<KIND>` for each kind. The heartbeat must be at least 1
+/// second, and the lease at least 2 heartbeats, so that a job that makes
+/// progress keeps its lease.
+fn parse_jobs(
+    get: &impl Fn(&str) -> Option<String>,
+) -> Result<crate::jobs::JobSettings, ConfigError> {
+    use crate::jobs::kinds;
+    let mut settings = crate::jobs::JobSettings::default();
+    let heartbeat: u64 = parse_num(get, "KAIROS_JOB_HEARTBEAT_SECS", 30)?;
+    let lease: u64 = parse_num(get, "KAIROS_JOB_LEASE_SECS", 300)?;
+    let max_tries: i32 = parse_num(get, "KAIROS_JOB_MAX_TRIES", 3)?;
+    if heartbeat == 0 {
+        return Err(ConfigError::Invalid {
+            var: "KAIROS_JOB_HEARTBEAT_SECS",
+            message: "must be 1 or more".into(),
+        });
+    }
+    if lease < 2 * heartbeat {
+        return Err(ConfigError::Invalid {
+            var: "KAIROS_JOB_LEASE_SECS",
+            message: format!(
+                "{lease} is less than 2 heartbeats ({} s): a job that makes progress would \
+                 lose its lease",
+                2 * heartbeat
+            ),
+        });
+    }
+    if max_tries < 1 {
+        return Err(ConfigError::Invalid {
+            var: "KAIROS_JOB_MAX_TRIES",
+            message: "must be 1 or more".into(),
+        });
+    }
+    settings.heartbeat = std::time::Duration::from_secs(heartbeat);
+    settings.lease = std::time::Duration::from_secs(lease);
+    settings.max_tries = max_tries;
+    for (var, kind) in [
+        ("KAIROS_JOB_LIMIT_EMBEDDED_BUILD", kinds::EMBEDDED_BUILD),
+        ("KAIROS_JOB_LIMIT_HOSTED_BUILD", kinds::HOSTED_BUILD),
+        ("KAIROS_JOB_LIMIT_EMBEDDING_BATCH", kinds::EMBEDDING_BATCH),
+        ("KAIROS_JOB_LIMIT_PERIODIC", kinds::PERIODIC),
+        ("KAIROS_JOB_LIMIT_WEBHOOK_DELIVERY", kinds::WEBHOOK_DELIVERY),
+        ("KAIROS_JOB_LIMIT_GITHUB_WRITEBACK", kinds::GITHUB_WRITEBACK),
+    ] {
+        let default = settings.limit(kind);
+        let limit: usize = parse_num(get, var, default)?;
+        settings.limits.insert(kind.to_string(), limit);
+    }
+    Ok(settings)
+}
+
+/// The settings of the webhook deliveries (KAIROS-T-0384):
+/// `KAIROS_WEBHOOK_MAX_TRIES` (12), `KAIROS_WEBHOOK_RETRY_BASE_SECS` (30),
+/// `KAIROS_WEBHOOK_TIMEOUT_SECS` (10), `KAIROS_WEBHOOK_DISABLE_AFTER` (24)
+/// and `KAIROS_WEBHOOK_ALLOW_PRIVATE` (false).
+fn parse_webhooks(
+    get: &impl Fn(&str) -> Option<String>,
+) -> Result<crate::webhooks::WebhookSettings, ConfigError> {
+    let defaults = crate::webhooks::WebhookSettings::default();
+    let max_tries: i32 = parse_num(get, "KAIROS_WEBHOOK_MAX_TRIES", defaults.max_tries)?;
+    if max_tries < 1 {
+        return Err(ConfigError::Invalid {
+            var: "KAIROS_WEBHOOK_MAX_TRIES",
+            message: "must be 1 or more".into(),
+        });
+    }
+    let timeout: u64 = parse_num(
+        get,
+        "KAIROS_WEBHOOK_TIMEOUT_SECS",
+        defaults.timeout.as_secs(),
+    )?;
+    if timeout == 0 {
+        return Err(ConfigError::Invalid {
+            var: "KAIROS_WEBHOOK_TIMEOUT_SECS",
+            message: "must be 1 or more".into(),
+        });
+    }
+    let allow_private = match get("KAIROS_WEBHOOK_ALLOW_PRIVATE")
+        .as_deref()
+        .map(str::trim)
+    {
+        None => defaults.allow_private,
+        Some("true" | "1") => true,
+        Some("false" | "0") => false,
+        Some(other) => {
+            return Err(ConfigError::Invalid {
+                var: "KAIROS_WEBHOOK_ALLOW_PRIVATE",
+                message: format!("{other:?} is not true or false"),
+            });
+        }
+    };
+    Ok(crate::webhooks::WebhookSettings {
+        max_tries,
+        retry_base: std::time::Duration::from_secs(parse_num(
+            get,
+            "KAIROS_WEBHOOK_RETRY_BASE_SECS",
+            defaults.retry_base.as_secs(),
+        )?),
+        timeout: std::time::Duration::from_secs(timeout),
+        disable_after: parse_num(get, "KAIROS_WEBHOOK_DISABLE_AFTER", defaults.disable_after)?,
+        allow_private,
+        ..defaults
+    })
 }
 
 /// `KAIROS_AUTO_JOIN_DOMAINS`: comma-separated, trimmed, lowercased, a
@@ -670,6 +843,46 @@ mod tests {
         // Local auth is off unless asked for (KAIROS-T-0203).
         assert!(!config.local_auth);
         assert_eq!(config.session_ttl_secs, 14 * 24 * 60 * 60);
+        // KAIROS-T-0370: a new key expires after 90 days; a rotation keeps
+        // the old secret for 1 day.
+        assert_eq!(config.api_key_ttl_days, 90);
+        assert_eq!(config.api_key_rotation_grace_secs, 24 * 60 * 60);
+    }
+
+    #[test]
+    fn the_key_settings_and_the_old_secrets_keys() {
+        let mut vars = MINIMAL.to_vec();
+        vars.push(("KAIROS_API_KEY_TTL_DAYS", "0"));
+        vars.push(("KAIROS_API_KEY_ROTATION_GRACE_SECS", "600"));
+        vars.push((
+            "KAIROS_SECRETS_KEY",
+            "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+        ));
+        vars.push((
+            "KAIROS_SECRETS_KEY_OLD",
+            "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+        ));
+        let config = AppConfig::from_lookup(lookup(&vars)).expect("valid config");
+        assert_eq!(config.api_key_ttl_days, 0);
+        assert_eq!(config.api_key_rotation_grace_secs, 600);
+        let key = config.secrets_key.expect("a key");
+        assert_eq!(
+            key.old_ids(),
+            vec![crate::secrets::SecretsKey::from_bytes([2u8; 32]).id()]
+        );
+
+        // Old keys with no new key: refused.
+        let mut vars = MINIMAL.to_vec();
+        vars.push((
+            "KAIROS_SECRETS_KEY_OLD",
+            "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+        ));
+        let err = AppConfig::from_lookup(lookup(&vars)).unwrap_err();
+        assert!(err.to_string().contains("KAIROS_SECRETS_KEY_OLD"), "{err}");
+
+        let mut vars = MINIMAL.to_vec();
+        vars.push(("KAIROS_API_KEY_TTL_DAYS", "ninety"));
+        assert!(AppConfig::from_lookup(lookup(&vars)).is_err());
     }
 
     // ---------------------------------------------------------------------
@@ -727,6 +940,120 @@ mod tests {
                 err.to_string().contains("KAIROS_CODE_INDEX_THREADS"),
                 "{value}: {err}"
             );
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // KAIROS-T-0334: the least time between 2 updates of one repository.
+
+    #[test]
+    fn the_min_rebuild_time_is_off_by_default_and_refuses_text() {
+        let config = AppConfig::from_lookup(lookup(MINIMAL)).expect("valid config");
+        assert_eq!(config.code_index_min_rebuild_secs, 0);
+        let mut vars = MINIMAL.to_vec();
+        vars.push(("KAIROS_CODE_INDEX_MIN_REBUILD_SECS", "3600"));
+        let config = AppConfig::from_lookup(lookup(&vars)).expect("valid config");
+        assert_eq!(config.code_index_min_rebuild_secs, 3600);
+        for value in ["an hour", "-1"] {
+            let mut vars = MINIMAL.to_vec();
+            vars.push(("KAIROS_CODE_INDEX_MIN_REBUILD_SECS", value));
+            let err = AppConfig::from_lookup(lookup(&vars)).expect_err(value);
+            assert!(
+                err.to_string()
+                    .contains("KAIROS_CODE_INDEX_MIN_REBUILD_SECS"),
+                "{value}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_job_settings_have_defaults_and_refuse_a_bad_value() {
+        let config = AppConfig::from_lookup(lookup(MINIMAL)).expect("valid config");
+        assert_eq!(config.jobs.heartbeat, std::time::Duration::from_secs(30));
+        assert_eq!(config.jobs.lease, std::time::Duration::from_secs(300));
+        assert_eq!(config.jobs.max_tries, 3);
+        assert_eq!(config.jobs.limit("embedded_build"), 1);
+        assert_eq!(config.jobs.limit("hosted_build"), 4);
+        assert_eq!(config.jobs.limit("embedding_batch"), 2);
+        assert_eq!(config.jobs.limit("periodic"), 1);
+
+        let mut vars = MINIMAL.to_vec();
+        vars.extend([
+            ("KAIROS_JOB_HEARTBEAT_SECS", "10"),
+            ("KAIROS_JOB_LEASE_SECS", "60"),
+            ("KAIROS_JOB_MAX_TRIES", "5"),
+            ("KAIROS_JOB_LIMIT_HOSTED_BUILD", "8"),
+            ("KAIROS_JOB_LIMIT_EMBEDDED_BUILD", "0"),
+        ]);
+        let config = AppConfig::from_lookup(lookup(&vars)).expect("valid config");
+        assert_eq!(config.jobs.heartbeat, std::time::Duration::from_secs(10));
+        assert_eq!(config.jobs.lease, std::time::Duration::from_secs(60));
+        assert_eq!(config.jobs.max_tries, 5);
+        assert_eq!(config.jobs.limit("hosted_build"), 8);
+        assert_eq!(config.jobs.limit("embedded_build"), 0);
+
+        for (var, value) in [
+            ("KAIROS_JOB_HEARTBEAT_SECS", "0"),
+            ("KAIROS_JOB_LEASE_SECS", "45"),
+            ("KAIROS_JOB_MAX_TRIES", "0"),
+            ("KAIROS_JOB_LIMIT_PERIODIC", "one"),
+        ] {
+            let mut vars = MINIMAL.to_vec();
+            vars.push((var, value));
+            let err = AppConfig::from_lookup(lookup(&vars)).expect_err(var);
+            assert!(err.to_string().contains(var), "{var}={value}: {err}");
+        }
+    }
+
+    /// KAIROS-T-0384: the settings of the webhook deliveries.
+    #[test]
+    fn the_webhook_settings_have_defaults_and_refuse_a_bad_value() {
+        let config = AppConfig::from_lookup(lookup(MINIMAL)).expect("valid config");
+        assert_eq!(config.webhooks, crate::webhooks::WebhookSettings::default());
+        assert_eq!(config.webhooks.max_tries, 12);
+        assert!(!config.webhooks.allow_private);
+        assert_eq!(config.jobs.limit("webhook_delivery"), 4);
+        assert_eq!(config.jobs.limit("github_writeback"), 2);
+        assert_eq!(config.writeback.api_url, "https://api.github.com");
+
+        let mut vars = MINIMAL.to_vec();
+        vars.extend([
+            ("KAIROS_WEBHOOK_MAX_TRIES", "5"),
+            ("KAIROS_WEBHOOK_RETRY_BASE_SECS", "2"),
+            ("KAIROS_WEBHOOK_TIMEOUT_SECS", "3"),
+            ("KAIROS_WEBHOOK_DISABLE_AFTER", "7"),
+            ("KAIROS_WEBHOOK_ALLOW_PRIVATE", "true"),
+            ("KAIROS_JOB_LIMIT_WEBHOOK_DELIVERY", "9"),
+            (
+                "KAIROS_GITHUB_API_URL",
+                "https://github.example.com/api/v3/",
+            ),
+        ]);
+        let config = AppConfig::from_lookup(lookup(&vars)).expect("valid config");
+        assert_eq!(config.webhooks.max_tries, 5);
+        assert_eq!(
+            config.webhooks.retry_base,
+            std::time::Duration::from_secs(2)
+        );
+        assert_eq!(config.webhooks.timeout, std::time::Duration::from_secs(3));
+        assert_eq!(config.webhooks.disable_after, 7);
+        assert!(config.webhooks.allow_private);
+        assert_eq!(config.jobs.limit("webhook_delivery"), 9);
+        assert_eq!(
+            config.writeback.api_url,
+            "https://github.example.com/api/v3"
+        );
+
+        for (var, value) in [
+            ("KAIROS_WEBHOOK_MAX_TRIES", "0"),
+            ("KAIROS_WEBHOOK_TIMEOUT_SECS", "0"),
+            ("KAIROS_WEBHOOK_ALLOW_PRIVATE", "yes"),
+            ("KAIROS_WEBHOOK_DISABLE_AFTER", "many"),
+        ] {
+            let mut vars = MINIMAL.to_vec();
+            vars.push((var, value));
+            let err = AppConfig::from_lookup(lookup(&vars)).expect_err(var);
+            assert!(err.to_string().contains(var), "{var}={value}: {err}");
         }
     }
 

@@ -23,9 +23,26 @@ pub enum KeysCommand {
         /// Label for the key (e.g. "laptop-claude-code" or "gha-main")
         #[arg(long)]
         name: String,
-        /// Optional RFC 3339 expiry (e.g. 2027-01-01T00:00:00Z)
-        #[arg(long = "expires-at")]
+        /// Optional RFC 3339 expiry (e.g. 2027-01-01T00:00:00Z). Omitted: the
+        /// default life of the deployment (90 days unless the operator
+        /// changed it)
+        #[arg(long = "expires-at", conflicts_with = "no_expiry")]
         expires_at: Option<String>,
+        /// The key never expires
+        #[arg(long = "no-expiry")]
+        no_expiry: bool,
+        #[command(flatten)]
+        common: Common,
+    },
+    /// Rotate a key: a new secret (shown ONCE) with the same name; the old
+    /// secret works until the end of the grace time (1 day unless the
+    /// operator changed it)
+    Rotate {
+        /// Key id (UUID; see `kairos keys list`)
+        key_id: String,
+        /// The service account of the key. Omit it to rotate your own agent key.
+        #[arg(long = "service-account")]
+        service_account: Option<String>,
         #[command(flatten)]
         common: Common,
     },
@@ -54,7 +71,15 @@ pub enum KeysCommand {
 }
 
 fn key_table(keys: &[ApiKey]) -> Table {
-    let mut table = Table::new(&["ID", "NAME", "PREFIX", "EXPIRES", "LAST_USED", "REVOKED"]);
+    let mut table = Table::new(&[
+        "ID",
+        "NAME",
+        "PREFIX",
+        "EXPIRES",
+        "LAST_USED",
+        "REVOKED",
+        "REPLACED_BY",
+    ]);
     for k in keys {
         table.row(vec![
             k.id.clone(),
@@ -63,6 +88,7 @@ fn key_table(keys: &[ApiKey]) -> Table {
             k.expires_at.clone().unwrap_or_else(|| "-".to_string()),
             k.last_used_at.clone().unwrap_or_else(|| "-".to_string()),
             k.revoked_at.clone().unwrap_or_else(|| "-".to_string()),
+            k.replaced_by.clone().unwrap_or_else(|| "-".to_string()),
         ]);
     }
     table
@@ -75,10 +101,15 @@ impl KeysCommand {
                 service_account,
                 name,
                 expires_at,
+                no_expiry,
                 common,
             } => {
                 let client = client(&common)?;
-                let request = CreateApiKeyRequest { name, expires_at };
+                let request = CreateApiKeyRequest {
+                    name,
+                    expires_at,
+                    no_expiry,
+                };
                 let created = match &service_account {
                     Some(sa) => client.create_api_key(sa, &request).await?,
                     None => client.create_agent_key(&request).await?,
@@ -101,6 +132,34 @@ impl KeysCommand {
                          environment variable KAIROS_MCP_KEY. Do not put the key in a repository."
                     );
                 }
+                Ok(())
+            }
+            Self::Rotate {
+                key_id,
+                service_account,
+                common,
+            } => {
+                let client = client(&common)?;
+                let rotated = match &service_account {
+                    Some(sa) => client.rotate_api_key(sa, &key_id).await?,
+                    None => client.rotate_agent_key(&key_id).await?,
+                };
+                if common.json {
+                    return print_json(&rotated);
+                }
+                println!(
+                    "Kairos rotated the key {}. The new key is {}.",
+                    rotated.replaced_key_id, rotated.id
+                );
+                println!();
+                println!("    {}", rotated.key);
+                println!();
+                println!("Keep the key in a safe place now. Kairos does NOT show it again.");
+                println!(
+                    "The old key works until {}. Put the new key in the settings of the agent \
+                     before that time.",
+                    rotated.replaced_key_expires_at
+                );
                 Ok(())
             }
             Self::List {

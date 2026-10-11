@@ -1,6 +1,6 @@
 # `GET /ws/events` — the WebSocket event channel
 
-This page describes Kairos 0.10.0.
+This page describes Kairos 0.11.0.
 
 This is the deployment's only push channel. OpenAPI
 (`GET /api/openapi.json`) specifies the rest of the HTTP surface. OpenAPI does
@@ -57,8 +57,8 @@ One JSON object per WebSocket text message
 
 | Field | Meaning |
 |---|---|
-| `event` | One of the ten values in the table below |
-| `entity_type` | `strategy` \| `initiative` \| `task` \| `document` \| `adr` \| `repository` |
+| `event` | One of the values in the tables below |
+| `entity_type` | `strategy` \| `initiative` \| `task` \| `document` \| `adr` \| `repository` \| `notification` |
 | `short_code` | The affected item — re-fetch it via the REST API. For `repository`, the slug of the repository |
 | `board_id` | The item's board (UUID); `null` for off-board items (documents, unplaced ADRs) |
 | `column_id` | The item's (new) column (UUID); omitted when not applicable |
@@ -68,8 +68,10 @@ One JSON object per WebSocket text message
 
 ### The `event` vocabulary
 
-Nine values. A client that does not recognise one should re-fetch the item and
-otherwise ignore it.
+Ten values are for the items and the repositories. Two values are for the
+notifications of a person (see [The events of a person](#the-events-of-a-person)).
+A client that does not recognise a value should re-fetch the item and otherwise
+ignore it.
 
 | `event` | Emitted when |
 |---|---|
@@ -86,6 +88,22 @@ otherwise ignore it.
 
 Events carry **no payloads**: fetch the new state through the REST
 endpoints in the OpenAPI spec.
+
+### The events of a person
+
+A notification is for one person (KAIROS-T-0381). Its 2 events go only to the
+connections of that person, in the tenant of the notification. A connection of
+a different person never gets them.
+
+| `event` | Emitted when |
+|---|---|
+| `notification_created` | Kairos made a notification for you. `short_code` is the code of the item of the notification |
+| `notifications_read` | You marked one or more of your notifications as read. `short_code` is empty |
+
+For the two events, `entity_type` is `notification` and `board_id` is `null`.
+Thus a connection with a board filter does not get them. The text of the
+notification is not in the event: read your notifications through the REST
+API.
 
 ## Client → server: board filter
 
@@ -114,7 +132,8 @@ is not the board of the filter. A client fetches its board again, as for each
 other event.
 
 The filter is not an authorization. A connection with no filter gets each
-event of the tenant, and each member can read each item. Thus the filter
+event of the tenant, and each member can read each item. The one rule that is
+an authorization is the rule of [the events of a person](#the-events-of-a-person). Thus the filter
 shows no event that the member cannot get without it.
 
 ## Delivery semantics (best-effort, A-0005 §5)

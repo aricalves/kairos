@@ -9,22 +9,27 @@
 pub mod abac;
 pub mod agent_mark;
 pub mod api_keys;
+pub mod auth_failures;
 pub mod board_items;
 pub mod boards;
 pub mod code_index_builds;
 pub mod code_index_settings;
 pub mod code_indexes;
 pub mod code_rename;
+pub mod dispatch;
 pub mod embeddings;
 pub mod events;
+pub mod flow;
 pub mod forge;
 pub mod graph;
 pub mod impacts;
 pub mod item_teams;
 pub mod items;
+pub mod jobs;
 pub mod local_auth;
 pub mod migrations;
 pub mod models;
+pub mod notifications;
 pub mod pool;
 pub mod proposals;
 pub mod purge;
@@ -42,10 +47,12 @@ pub mod task_claims;
 pub mod team_pages;
 pub mod tenant;
 pub mod tls;
+pub mod webhooks;
+pub mod writeback;
 
 pub use abac::{
-    AbacError, authorize, check_capability, grant_capability, is_org_admin,
-    resolve_authorization_board, revoke_capability,
+    AbacError, StructureGrant, authorize, check_capability, grant_capability, holds_structure,
+    is_org_admin, resolve_authorization_board, revoke_capability,
 };
 pub use boards::{
     BoardError, CodePrefix, SeveralDeliveryBoards, add_column, add_transition,
@@ -69,7 +76,7 @@ pub use migrations::{
     run_public_migrations,
 };
 pub use pool::{PgPool, PoolError, TenantConnection, TenantPool};
-pub use seed::{SeedDemoReport, SeedError, seed_demo};
+pub use seed::{DroppedDemo, SeedDemoReport, SeedError, seed_demo};
 pub use tenant::{
     MIGRATION_LOCK_KEY, TenantError, TenantInfo, TenantMigrationOutcome, TenantMigrationReport,
     TenantProvisionReport, drop_tenant, list_tenants, migrate_all_tenants, migrate_each_tenant,

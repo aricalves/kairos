@@ -1,6 +1,6 @@
 # Configuration
 
-Every value that changes how Kairos behaves, in one place. Kairos 0.10.0.
+Every value that changes how Kairos behaves, in one place. Kairos 0.11.0.
 
 Configuration has four surfaces, and they are layered rather than alternative:
 the server reads **environment variables** only; the **Helm chart** and the
@@ -16,8 +16,8 @@ startup with a message naming the variable — invalid values are never silently
 replaced by defaults — and an empty or whitespace-only value is treated as
 unset.
 
-The five retention variables are not among them. Nothing in the server reads
-them; their own parsing rules differ, and are stated in that section.
+The five retention variables are not among them. The server reads them at
+startup too, but their parsing rules are different. That section gives them.
 
 ### Required
 
@@ -168,7 +168,7 @@ by definition.
 | `KAIROS_AUTH_MAX_FAILURES` | integer | `5` | Failures inside the window before a lockout. **`0` turns throttling off** — the escape hatch for a throttle that is misfiring, so that the fix does not need a new build. |
 | `KAIROS_AUTH_FAILURE_WINDOW_SECS` | integer | `300` | How long failures accumulate. A failure older than this is forgotten, so someone who mistypes once a week never accumulates a lockout. |
 | `KAIROS_AUTH_LOCKOUT_SECS` | integer | `60` | How long a lockout lasts. Short on purpose — see below. |
-| `KAIROS_TRUSTED_PROXY` | bool | `false` | Whether `X-Forwarded-For` is trusted for the client address. See below. |
+| `KAIROS_TRUSTED_PROXY` | bool | `false` | Whether `X-Forwarded-For` is trusted for the client address. See below. It also lets the server read `X-Forwarded-Proto` for HSTS (see "Security headers"). |
 
 Two things are counted separately: the **identity** being attempted, and the
 **source** it came from. Neither alone is enough. Counting only identities lets an
@@ -198,18 +198,45 @@ When the header is trusted, the **last** value in the list is used, not the firs
 A proxy appends, so the list reads `<whatever the client sent>, <what the proxy
 saw>`; the first element is the one under the caller's control.
 
+### API keys and agent keys
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `KAIROS_API_KEY_TTL_DAYS` | integer | `90` | The default life of a new API key or agent key, in days. A request that names `expires_at` sets its own expiry. A request with `no_expiry: true` (the CLI flag `--no-expiry`, the switch "No expiry" of the Agent keys page) makes a key with no expiry. `0` turns the default off: a new key has no expiry unless the request names one. A key with no expiry works until a person revokes it: the person of the key, or an organization admin (`kairos admin agent-keys revoke`). When a person leaves the organization, Kairos revokes each agent key of the person. |
+| `KAIROS_API_KEY_ROTATION_GRACE_SECS` | integer | `86400` (1 day) | After a rotation of a key, the old secret works for this time. `0` ends the old secret at the rotation. |
+
+The keys that exist keep their expiry: the setting applies to new keys. See
+[Rotate keys](../how-to/rotate-keys.md).
+
+### Security headers
+
+The server sends these headers on each response:
+
+| Header | Value |
+|---|---|
+| `X-Content-Type-Options` | `nosniff` |
+| `X-Frame-Options` | `DENY` |
+| `Referrer-Policy` | `same-origin` |
+| `Content-Security-Policy` | On the page of the GUI: `default-src 'self'`, scripts from the server with the hash of each inline script of the page and `'wasm-unsafe-eval'`, inline styles, images from the server, `data:`, `blob:` and HTTPS sites, fonts from the server and `fonts.gstatic.com`, `object-src 'none'`, `frame-ancestors 'none'`. On each other response: `frame-ancestors 'none'`. |
+| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains`, only when `KAIROS_TRUSTED_PROXY` is on and the proxy sends `X-Forwarded-Proto: https`. |
+
+The server speaks HTTP; a proxy in front of it ends TLS. So the server sends HSTS
+only when a trusted proxy says that the request came over HTTPS. The reference
+compose stack (Caddy) does. No setting turns the headers off.
+
 #### Where the state lives
 
-In process, in memory. The consequences are worth knowing:
+In the database, in the table `public.auth_failures` (KAIROS-T-0377). All
+replicas share the counts. Thus a lockout holds on each replica, and a
+restart keeps it.
 
-- Lockouts are **per replica**. A Deployment scaled to three pods, or behind the
-  chart's HPA, allows roughly three times the configured failures overall.
-- A restart forgets every lockout.
-
-This is the right trade for the single-binary deployments Kairos targets
-(KAIROS-A-0013): the alternative puts a database write on the failure path of an
-endpoint that is under attack, which is the moment you least want extra writes.
-If you run many replicas and need a shared limit, rate-limit at the ingress.
+- Each attempt reads the counts of its subjects one time, before the server
+  checks the credential.
+- A failure adds one write. A success adds one write only when the subject
+  has a count.
+- A row keeps a hash of the email or the address, not the value.
+- The retention pass removes the rows whose window and lockout ended.
+- If the server cannot read the table, the attempt continues.
 
 A lockout increments `kairos_auth_lockouts_total{subject="identity"|"source"}` on
 `/metrics` and logs at WARN. The subject *kind* is recorded; the email address or
@@ -284,8 +311,9 @@ the index after each push to the default branch.
 | Variable | Type | Default | Description |
 |---|---|---|---|
 | `KAIROS_CODE_INDEX_DIR` | directory path | unset | The folder for a bare clone of each repository, the tools of the builder and the work folders of the builder. Put it on a volume. When it is not set, the server cannot find the nearest indexed commit, does not build and downloads nothing. Uploads and downloads of indexes still work. |
-| `KAIROS_CODE_INDEX_POLL_SECS` | whole number | `300` | How often the builder fetches each indexed repository. `0` turns the builder off. |
+| `KAIROS_CODE_INDEX_POLL_SECS` | whole number | `300` | How often the sweep fetches each indexed repository and adds the build jobs. The sweep is a periodic job: one server runs it at each interval. `0` turns the builder off on that server. |
 | `KAIROS_CODE_INDEX_THREADS` | whole number, 1 or more | `4` | The number of CPU threads that the summary model of the builder uses. More threads make the summaries faster, but they take CPU from the other services on the host. `0` or a value that is not a number stops the start of the server. |
+| `KAIROS_CODE_INDEX_MIN_REBUILD_SECS` | whole number | `0` | The least time in seconds between 2 updates of one repository. `0` turns the limit off. On a slow host, a repository with many pushes then waits, and the other stale repositories get their updates. A value that is not a number stops the start of the server. |
 
 #### The providers of the summaries and the vectors
 
@@ -361,45 +389,90 @@ token, the clone has no credential, and a fetch that needs one fails at once.
 
 #### The work of the builder
 
-The builder has 2 lanes:
+Each build is a job of the [job queue](#job-queue). Thus 2 or more servers
+share the builds, and each build runs one time. There are 3 types of build:
 
-- **The update lane.** At each interval of `KAIROS_CODE_INDEX_POLL_SECS`, it
-  fetches each repository that has an index. If the head of the default
-  branch has no index, the lane updates the nearest index to that head. Then
-  it starts the first-build lane.
-- **The first-build lane.** It finds each repository that has no index. For
-  each one, it makes a full index of the head of the default branch. The
-  index has the structure, the SCIP edges and the summaries. The lane builds
-  one repository at a time. A first build of a large repository can take some hours on a CPU.
+- **A requested build.** A person asks for it (`kairos repos reindex`, or
+  the button "Build again" of the panel of the repository). It is a full index of the head
+  of the default branch.
+- **An update.** At each interval of `KAIROS_CODE_INDEX_POLL_SECS`, the
+  sweep fetches each repository that has an index. If the head of the
+  default branch has no index, the sweep adds an update job. The update
+  changes the nearest index to that head. The sweep is a periodic job (see
+  [Job queue](#job-queue)): at each interval, one server runs it.
+- **A first build.** At the same interval, the sweep adds a job for each
+  repository that has no index. The job makes a full index of the head of
+  the default branch. The index has the structure, the SCIP edges and the
+  summaries.
+  A first build of a large repository can take some hours on a CPU.
 
-The update lane does not wait for the first-build lane. Thus, during a long
-first build, the updates of the other repositories continue at each
-interval.
+A repository has one build job at a time. A server does not add a second
+job for a repository that has a job. The note of the pass names that job.
 
-The 2 lanes do not run the summary model at the same time. An update goes
-first: a first build stops between 2 summaries while an update runs. Thus
-the builder uses the `KAIROS_CODE_INDEX_THREADS` threads one time, not 2
-times. When the 2 lanes need the model at the same time, they use one copy
-of it in memory.
+The jobs run in this order: a requested build, then an update, then a first
+build. Inside one type, the repository that has been stale longest goes
+first. The order of the list and the time of the pushes do not change it. A
+repository that got an update goes to the end of the next pass. A repository
+with many pushes does not get 2 updates in a row while another repository is
+stale.
 
-A first build keeps its work in `KAIROS_CODE_INDEX_DIR/first-builds/`. Each
-summary goes into that file when the model writes it. If the server stops
-during a first build, the next first build of the repository uses those
-summaries again. After the builder stores the index, it removes the file.
+With `KAIROS_CODE_INDEX_MIN_REBUILD_SECS`, a repository whose newest index
+is younger than that time gets no update job in the pass. A later pass adds
+the job.
 
-If a first build of a commit fails, the builder does not try that commit
+A build with the embedded model is a job of the type `embedded_build`. One
+server runs one of them at a time (`KAIROS_JOB_LIMIT_EMBEDDED_BUILD`). Thus
+the builds use the `KAIROS_CODE_INDEX_THREADS` threads one time, not 2
+times. A build with a hosted provider is a job of the type `hosted_build`.
+One server runs 4 of them at a time (`KAIROS_JOB_LIMIT_HOSTED_BUILD`).
+
+A first build gives its place to an update or a requested build of the same
+type. The first build stops after its next summary, and goes back to the
+queue. It keeps its summaries and its run. Thus, during a long first build,
+the updates continue.
+
+A build tells the job queue about its progress at each summary and at each
+batch of vectors. When a build makes no progress for the lease time, its
+server stops it. Then a server starts it again. When a server stops during a
+build, another server takes the job when the lease runs out.
+
+Each summary goes into the summary pool of the repository in the database
+when the model writes it. The next build of the repository, on each server,
+uses the summaries of the pool first. Thus a stop or a restart during a
+build of some hours does not lose the work of the model.
+
+The servers do not have to share `KAIROS_CODE_INDEX_DIR`. For example, on
+Kubernetes each pod has its own disk. A build that another server takes
+makes the structure again (some minutes). Then it makes only the summaries
+that are not in the pool.
+
+A first build also keeps its work in `KAIROS_CODE_INDEX_DIR/first-builds/`,
+and an update in `KAIROS_CODE_INDEX_DIR/updates/`. These files are a local
+cache. After the builder stores the index, it removes the file.
+
+An index keeps only the summaries that its code needs. A summary that no
+index uses stays in the pool for `KAIROS_CODE_INDEX_POOL_DAYS` (see
+[Retention](#retention)). The run shows the number of summaries that it made
+and the number that it reused.
+
+If a first build of a commit fails, the server does not try that commit
 again. It tries again when the head moves or when the server starts again.
 
-The log has these lines for each first build:
+Each run records the server that runs it. When a server takes the job of a
+run again, the run continues on that server. When a server starts, its
+builder ends each run that no open job names. Such a run gets the text "The
+server stopped during the run". When a job fails after its last try, its run
+fails with the reason.
 
-- `code index first build started`, with the repository and the commit.
-- `code index first build ended`, with the time in seconds and the number
-  of summaries.
-- `code index first build failed`, with the error.
-- `code index first build not started`, with the reason. For example, the
-  repository has no default branch, the fetch failed, or the repository
-  has `code_index_build` off. The builder logs a reason one time, and again
-  only when the reason changes.
+The log has these lines for each build:
+
+- `code index full build started`, with the repository, the commit and the
+  type.
+- `code index built`, with the time in seconds and the number of summaries.
+- `code index not built`, with the error.
+- `code index build not done`, with the reason. For example, the head has an
+  index, or the repository has `code_index_build` off. The builder logs a
+  reason one time, and again only when the reason changes.
 
 You can also make the first index on a computer and upload it
 (`kairos index build`, then the upload). Then the builder does not make a
@@ -424,9 +497,15 @@ value. To change the setting, use one of these:
 |---|---|---|---|
 | `KAIROS_SECRETS_KEY` | 32 bytes in base64 | unset | The key that encrypts the read token of each repository (AES-256-GCM). Make it with `openssl rand -base64 32`. When it is not set, the server refuses a token with 501 `SECRETS_NOT_CONFIGURED`, and the builder reads public repositories only. A value that is not 32 bytes of base64 stops the start of the server. Keep the key outside the database, with the database password. |
 
-When you change `KAIROS_SECRETS_KEY`, the stored tokens do not decrypt. Each
-fetch of such a repository then fails with the error "Set the token again".
-After a change of the key, set each token again.
+| `KAIROS_SECRETS_KEY_OLD` | base64 keys, separated by commas | unset | The old keys, during a rotation of `KAIROS_SECRETS_KEY`. They decrypt the rows that they encrypted; they never encrypt. Set it only with `KAIROS_SECRETS_KEY`. |
+
+To change `KAIROS_SECRETS_KEY`, put the new key in `KAIROS_SECRETS_KEY` and the
+old key in `KAIROS_SECRETS_KEY_OLD`, then run `kairos-server rotate-secrets`. It
+encrypts each stored secret again with the new key: the read token of each
+repository, and the secrets of the hosted models of the code index. See
+[Rotate keys](../how-to/rotate-keys.md). A stored secret that no key of the two
+settings decrypts fails with the error "Set the token again". Set that secret
+again.
 
 #### The tools of the builder
 
@@ -481,19 +560,38 @@ the folder. Then the server downloads nothing.
 | `KAIROS_DEV_UI` | `true` \| `1` \| `false` \| `0` | `false` | Mounts the Swagger UI at `/api/docs`. At the default the route does not exist. Any other value fails startup. |
 | `KAIROS_WEB_DIST` | directory path | unset | Serve the GUI from this directory instead of the assets embedded in the binary. When both are present, the directory wins. |
 
-### Retention — recognised but inert
+### Retention
 
-**In 0.10.0 the server reads none of the five variables below, and they have no
-effect.** The retention sweeper's scheduler, `spawn_retention_loop`, is not
-called anywhere in the server binary, and its own documentation records that
-wiring as a later milestone. Nothing is compacted, offloaded or pruned
-regardless of these values. The Helm chart surfaces them, so they are listed
-here; the types and defaults below are the ones the parser implements and the
-ones that will take effect once the loop is wired in.
+The retention pass runs each 24 hours. The interval is fixed. The pass is a
+periodic job (see [Job queue](#job-queue)): one server runs each pass. The
+first start of a deployment runs the pass at once. One pass:
+
+- In each tenant, removes the `item_history` rows and the `activity_log` rows
+  that the five variables below make prune candidates. The mode sets what
+  happens to them first.
+- Deletes the password sessions (`local_sessions`) that expired before the
+  pass. This occurs in each mode, also `off`, because an expired session
+  cannot log in.
+- In each tenant, deletes the read notifications that were read more than
+  `KAIROS_NOTIFICATIONS_READ_DAYS` days before the pass. This occurs in each
+  mode, also `off`, and the pass does not archive them.
+- In each tenant, deletes the summaries of the code-index pools that no
+  stored index uses, when a build made them more than
+  `KAIROS_CODE_INDEX_POOL_DAYS` days before the pass. Such a summary comes
+  from a build that did not end, or from code that changed before the build
+  ended. This occurs in each mode, also `off`. A build can make the summary
+  again.
+- Writes one `retention_sweep` row to the `activity_log` of each tenant that
+  it sweeps, with the counts of the rows it archived and removed.
+- Logs the counts for each tenant and the number of deleted sessions.
+
+When there are 2 or more replicas, only one replica runs a pass. A failed
+pass is logged and tried again. The next pass runs on time. A value that the
+server cannot parse stops the start.
 
 Their parsing differs from the sixteen variables above: empty is not treated as
 unset. An empty `KAIROS_HISTORY_HOT_DAYS`, `KAIROS_HISTORY_KEEP_LATEST`,
-`KAIROS_ACTIVITY_RETENTION_DAYS` or `KAIROS_RETENTION_MODE` is a parse error
+`KAIROS_ACTIVITY_RETENTION_DAYS`, `KAIROS_NOTIFICATIONS_READ_DAYS`, `KAIROS_CODE_INDEX_POOL_DAYS` or `KAIROS_RETENTION_MODE` is a parse error
 rather than a fallback to the default. `KAIROS_ARCHIVE_TARGET` is the one
 exception: empty means no target.
 
@@ -503,11 +601,107 @@ exception: empty means no target.
 | `KAIROS_HISTORY_KEEP_LATEST` | unsigned integer | `5` | Latest-N guard. The newest N versions of an item are never prune candidates regardless of age. |
 | `KAIROS_ACTIVITY_RETENTION_DAYS` | unsigned integer (days) | `365` | `activity_log` window. Rows older than this are archive-then-delete candidates, with no compaction tiers. |
 | `KAIROS_ARCHIVE_TARGET` | filesystem path or `s3://…` URL | unset | Where prune candidates are offloaded as NDJSON. A `file://` prefix is stripped. An `s3://` value parses to a distinct S3 target that the shipped code rejects with a typed not-implemented error, rather than being misread as a directory name. Empty means no target. |
+| `KAIROS_NOTIFICATIONS_READ_DAYS` | unsigned integer (days) | `30` | The days that a read notification stays. `0` keeps read notifications. An unread notification stays until the person reads it. |
+| `KAIROS_CODE_INDEX_POOL_DAYS` | unsigned integer (days) | `30` | The days that a summary of a code-index pool stays when no stored index uses it. `0` keeps such summaries. A summary that an index uses stays. |
 | `KAIROS_RETENTION_MODE` | `archive` \| `discard` \| `off` | `archive` | `archive` offloads before pruning and, with no target configured, prunes nothing and logs a warning instead. `discard` prunes without archiving. `off` disables the sweeper entirely. Case-insensitive; any other value fails to parse. |
 
 Past the hot window, compaction keeps the first and last snapshot per item per
 UTC calendar month and treats the intermediate versions as prune candidates.
 See [Archiving](../explanation/archiving.md).
+
+### Job queue
+
+Each server runs a worker for the job queue (KAIROS-T-0373). The jobs are in
+the table `public.jobs`. All replicas share the table. A worker takes the next
+job with the highest priority. In one priority, the oldest job goes first. Two
+workers never take the same job.
+
+A job has a lease. The job tells the worker when it makes progress. At each
+heartbeat, the worker writes the progress and extends the lease. When a job
+makes no progress for the lease time, its worker stops it. Then the job goes
+back to the queue.
+
+When a server stops, the lease of its jobs runs out. Then another worker takes
+those jobs. After the last try, the job fails, and the
+row keeps the reason.
+
+The embedding refresh uses the queue too. At each `KAIROS_EMBED_REFRESH_SECS`,
+each server adds the next embedding batch of each organization. An
+organization has one open batch at a time, and the next batch starts one
+interval after the last batch ended. Thus 2 servers do not embed an item two
+times. When a batch fails after its tries, its items stay stale, and the next
+batch starts at the same item.
+
+A periodic pass (retention, and the sweep of the code index) is a job that
+adds its next run when it ends. A pass has one open run at a time. The next
+run is due one interval after the last run was due. When a server starts, it
+adds a run of each pass that has no open run. When a server stops during a
+pass, another server runs the pass again after the lease. A server that
+cannot run a pass (for example, its code-index tools are not ready) gives
+the pass back to the queue, and no try is counted.
+
+A worker removes a job 7 days after it ends. A value that is not a number, or
+that is out of range, stops the start of the server. For the table, the order,
+the limits and what to watch, see [The job queue](../explanation/job-queue.md).
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `KAIROS_JOB_HEARTBEAT_SECS` | whole number, 1 or more | `30` | How often the worker writes the progress of a job. |
+| `KAIROS_JOB_LEASE_SECS` | whole number, 2 heartbeats or more | `300` | The time that a job can run with no progress. The worker stops the job one heartbeat before this time. |
+| `KAIROS_JOB_MAX_TRIES` | whole number, 1 or more | `3` | The number of tries of a job. After the last try, the job fails. |
+| `KAIROS_JOB_LIMIT_EMBEDDED_BUILD` | whole number | `1` | The code-index builds with the embedded model that one server runs at the same time. `0`: the server does not run them. |
+| `KAIROS_JOB_LIMIT_HOSTED_BUILD` | whole number | `4` | The code-index builds with a hosted provider that one server runs at the same time. |
+| `KAIROS_JOB_LIMIT_EMBEDDING_BATCH` | whole number | `2` | The embedding batches that one server runs at the same time. |
+| `KAIROS_JOB_LIMIT_PERIODIC` | whole number | `1` | The periodic passes that one server runs at the same time. |
+| `KAIROS_JOB_LIMIT_WEBHOOK_DELIVERY` | whole number | `4` | The webhook deliveries that one server sends at the same time. |
+| `KAIROS_JOB_LIMIT_GITHUB_WRITEBACK` | whole number | `2` | The GitHub write-backs that one server runs at the same time. |
+
+### Webhook deliveries
+
+Kairos sends signed webhook deliveries to the targets of a board
+(KAIROS-T-0384). Each delivery is a job of the job queue, with a priority
+between the embedding batches and the periodic passes. Thus 2 servers send a
+delivery one time. For the request and its signature, see
+[Webhook deliveries](webhooks.md).
+
+A failed try is tried again. The first wait is `KAIROS_WEBHOOK_RETRY_BASE_SECS`.
+Each wait is 2 times the wait before it, to a maximum of 12 hours. With the
+defaults, the 12 tries of a delivery last about 17 hours.
+
+Each failed try adds one to the failures in a row of the target. A good try
+sets the count to 0. At `KAIROS_WEBHOOK_DISABLE_AFTER`, Kairos turns off the
+target. Then the owners of the target get a notification of the kind
+`delivery_failing`.
+
+Before each try, Kairos resolves the host of the URL. It refuses a loopback,
+private, link-local, shared (`100.64.0.0/10`), multicast or unspecified
+address. The request goes to the address that Kairos checked.
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `KAIROS_WEBHOOK_MAX_TRIES` | whole number, 1 or more | `12` | The number of tries of a delivery. After the last try, the delivery is `failed`. |
+| `KAIROS_WEBHOOK_RETRY_BASE_SECS` | whole number | `30` | The wait after the first failed try. |
+| `KAIROS_WEBHOOK_TIMEOUT_SECS` | whole number, 1 or more | `10` | The time that Kairos waits for the answer of a target. |
+| `KAIROS_WEBHOOK_DISABLE_AFTER` | whole number | `24` | The failed tries in a row that turn off a target. `0`: Kairos does not turn off a target. |
+| `KAIROS_WEBHOOK_ALLOW_PRIVATE` | `true` or `false` | `false` | Send deliveries to loopback, private, link-local and shared addresses too. Use it only for a receiver on your own network. |
+
+The secret of each target is sealed with `KAIROS_SECRETS_KEY`. Without that
+key, a board manager cannot make a target. `kairos-server rotate-secrets`
+seals the secrets of the targets again.
+
+### GitHub write-back
+
+A GitHub repository can have a write token (KAIROS-T-0386). Then Kairos writes
+a comment and the status `kairos` on each linked pull request. Each write is a job of the job queue. A failed write is
+tried again. See [Turn on GitHub write-back](../how-to/turn-on-github-write-back.md).
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `KAIROS_GITHUB_API_URL` | URL | `https://api.github.com` | The REST API of GitHub. For GitHub Enterprise Server, use `https://<host>/api/v3`. |
+
+Kairos seals the write token with `KAIROS_SECRETS_KEY`, as it seals the read
+token.
+`kairos-server rotate-secrets` seals the write tokens again.
 
 ## Default board configurations
 
@@ -611,6 +805,11 @@ It downloads that index if the checkout has no index. It also downloads it if
 the base is nearer to the tree than the local index. Then it indexes the
 changed files.
 
+When the local index is as near to the tree as the base, the CLI keeps the
+local index. The base can have more summaries than the local index links.
+Then the CLI downloads the base and takes its summaries into the local
+index. The output says so. The tool `fetch_index` of the code tools does the same.
+
 | Setting | Description |
 |---|---|
 | `--url`, then `KAIROS_URL`, then `deployment_url` in `.claude/kairos.local.md` | The Kairos deployment. With none of them, the CLI uses the deployment of `kairos login`. |
@@ -679,9 +878,9 @@ the image sets it to `/var/lib/kairos/models`) and `KAIROS_EMBED_REFRESH_SECS`
 
 | Value | Type | Default | Description |
 |---|---|---|---|
-| `replicaCount` | integer | `2` | Server replicas. Ignored when `autoscaling.enabled` is true. |
+| `replicaCount` | integer | `2` | Server replicas. Ignored when `autoscaling.enabled` is true. The replicas share the background work through the [job queue](#job-queue), and the login throttle counts in the database. The `KAIROS_JOB_LIMIT_*` limits are for each replica. |
 | `image.repository` | string | `ghcr.io/colliery-io/kairos` | Image repository. |
-| `image.tag` | string | `""` | Empty tracks the chart's `appVersion`. An explicit value pins a published release, e.g. `"0.10.0"`. The chart never pins `latest`. |
+| `image.tag` | string | `""` | Empty tracks the chart's `appVersion`. An explicit value pins a published release, e.g. `"0.11.0"`. The chart never pins `latest`. |
 | `image.pullPolicy` | string | `IfNotPresent` | Image pull policy. |
 | `imagePullSecrets` | list | `[]` | Pull secrets, e.g. `[{name: ghcr-creds}]`. |
 | `nameOverride` | string | `""` | Overrides the chart name used in resource names. |
@@ -746,7 +945,7 @@ The read-only root filesystem is compatible with a filesystem
 
 | Value | Type | Default | Description |
 |---|---|---|---|
-| `autoscaling.enabled` | bool | `false` | When true, `replicaCount` is ignored. |
+| `autoscaling.enabled` | bool | `false` | When true, `replicaCount` is ignored. The HPA can add and remove pods. When it removes a pod during a job, another pod takes the job after its lease. |
 | `autoscaling.minReplicas` | integer | `2` | HorizontalPodAutoscaler floor. |
 | `autoscaling.maxReplicas` | integer | `6` | HorizontalPodAutoscaler ceiling. |
 | `autoscaling.targetCPUUtilizationPercentage` | integer | `70` | Percentage of the CPU request. |
@@ -799,6 +998,8 @@ The read-only root filesystem is compatible with a filesystem
 | `config.retention.historyHotDays` | integer or null | `null` | Sets `KAIROS_HISTORY_HOT_DAYS`. Emitted only when non-empty. |
 | `config.retention.historyKeepLatest` | integer or null | `null` | Sets `KAIROS_HISTORY_KEEP_LATEST`. Emitted only when non-empty. |
 | `config.retention.activityRetentionDays` | integer or null | `null` | Sets `KAIROS_ACTIVITY_RETENTION_DAYS`. Emitted only when non-empty. |
+| `config.retention.notificationsReadDays` | integer or null | `null` | Sets `KAIROS_NOTIFICATIONS_READ_DAYS`. Emitted only when not null, so `0` is emitted. |
+| `config.retention.codeIndexPoolDays` | integer or null | `null` | Sets `KAIROS_CODE_INDEX_POOL_DAYS`. Emitted only when not null, so `0` is emitted. |
 | `config.retention.archiveTarget` | string | `""` | Sets `KAIROS_ARCHIVE_TARGET`. Emitted only when non-empty. |
 | `config.retention.mode` | string | `""` | Sets `KAIROS_RETENTION_MODE`. Emitted only when non-empty. |
 | `database.url` | string | `""` | Sets `DATABASE_URL` through a chart-rendered Secret. |
@@ -814,8 +1015,8 @@ The chart's two rendering guards:
   Rendering fails only when neither is set; with both set,
   `database.existingSecret` is used and no Secret is rendered.
 
-Retention values left `null` or `""` are absent from the ConfigMap, which is
-moot in 0.10.0 because the server reads none of them.
+Retention values left `null` or `""` are absent from the ConfigMap. Then the
+server uses its defaults.
 
 ## Reference Compose deployment
 
@@ -827,7 +1028,7 @@ stock `postgres:16` does not carry it. There is no bundled identity provider.
 
 | `.env` variable | Default in the example | Consumed by |
 |---|---|---|
-| `KAIROS_VERSION` | `0.10.0` | The Kairos image tag. Required — Compose fails if it is unset. |
+| `KAIROS_VERSION` | `0.11.0` | The Kairos image tag. Required — Compose fails if it is unset. |
 | `KAIROS_SITE_ADDRESS` | `kairos.example.com` | Caddy's site address. A hostname enables automatic HTTPS; `:80` is a local no-TLS trial. Required. |
 | `POSTGRES_PASSWORD` | `change-me` | The Postgres password, and the password inside the `DATABASE_URL` the Compose file composes. Required. |
 | `OIDC_ISSUER_URL` | `https://idp.example.com/` | The server, verbatim. Required. |

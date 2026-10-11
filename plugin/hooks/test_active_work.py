@@ -175,6 +175,21 @@ class AnActiveTaskIsNamed(ActiveWorkCase):
         self.assertIn("run the gates", context)
         self.assertIn("ACME-I-0007", context)
 
+    def test_an_append_note_takes_the_next_step(self):
+        """KAIROS-T-0367."""
+        self.tool_use("get_item", {"short_code": "ACME-T-0042"}, get_item_text())
+        self.tool_use(
+            "append_note",
+            {
+                "short_code": "ACME-T-0042",
+                "text": "The parser is done.\n\nNext step: wire the route.",
+            },
+            "Appended a note to ACME-T-0042 (version 6).",
+        )
+        _, context = self.compact()
+        self.assertIn("wire the route", context)
+        self.assertIn("`append_note`", context)
+
     def test_a_completed_task_is_not_active_work(self):
         self.tool_use("get_item", {"short_code": "ACME-T-0042"}, get_item_text())
         self.tool_use(

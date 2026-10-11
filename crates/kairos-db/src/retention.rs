@@ -43,13 +43,13 @@
 //! The same counts are exposed on [`SweepReport`]; the server's `/metrics`
 //! endpoint (KAIROS-A-0013) will export them as Prometheus counters
 //! (`rows_archived`/`rows_pruned`/`warnings` per table, labelled by tenant)
-//! when M2 wires [`spawn_retention_loop`] at startup — no metrics crate is
-//! taken here on purpose.
+//! when it is wired — no metrics crate is taken here on purpose. The
+//! server runs [`run_retention_pass`] as a periodic job
+//! (KAIROS-T-0366, KAIROS-T-0376).
 
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::Write as _;
-use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Duration, Utc};
@@ -499,33 +499,122 @@ pub fn sweep_all_tenants(
     Ok(reports)
 }
 
-/// Spawn the in-process retention scheduler (KAIROS-A-0004: "in-process
-/// scheduled task in the server binary"): a tokio task that invokes `tick`
-/// immediately and then every `interval` until `tick` returns
-/// [`ControlFlow::Break`].
-///
-/// The tick body is injected so the loop stays unit-testable without a
-/// database (and sweeps stay testable without the loop — call
-/// [`sweep_all_tenants`] directly with an injected clock). The server
-/// wires this at startup with a closure that checks out a connection,
-/// reads [`RetentionConfig`] from the environment, and calls
-/// [`sweep_all_tenants`] with `Utc::now()` — that wiring is an M2 task
-/// (KAIROS-A-0013 also hangs the Prometheus export off that seam).
-pub fn spawn_retention_loop<F>(
-    interval: std::time::Duration,
-    mut tick: F,
-) -> tokio::task::JoinHandle<()>
-where
-    F: FnMut() -> ControlFlow<()> + Send + 'static,
-{
-    tokio::spawn(async move {
-        let mut timer = tokio::time::interval(interval);
-        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            timer.tick().await;
-            if tick().is_break() {
-                break;
-            }
+/// Delete, in each tenant, the notifications that were read more than
+/// `notifications_read_days` days before `now` (KAIROS-T-0381). In each
+/// mode, also `off`: a read notification is not archived. 0 days deletes
+/// nothing. Returns the count.
+pub fn delete_read_notifications(
+    conn: &mut PgConnection,
+    config: &RetentionConfig,
+    now: DateTime<Utc>,
+) -> Result<u64, RetentionError> {
+    if config.notifications_read_days == 0 {
+        return Ok(0);
+    }
+    let cutoff = now - Duration::days(i64::from(config.notifications_read_days));
+    let mut deleted = 0u64;
+    for tenant_info in tenant::list_tenants(conn)? {
+        if !tenant_info.schema_exists {
+            continue;
         }
+        let schema = tenant::tenant_schema_name(&tenant_info.slug);
+        sql_query(format!("SET search_path TO \"{schema}\"")).execute(conn)?;
+        let result = crate::notifications::delete_read_before(conn, cutoff);
+        let reset = sql_query("SET search_path TO DEFAULT").execute(conn);
+        deleted += result? as u64;
+        reset?;
+    }
+    Ok(deleted)
+}
+
+/// Delete, in each tenant, the summaries of the code-index pools that no
+/// stored index has used and that a build made more than
+/// `code_index_pool_days` days before `now` (KAIROS-T-0378). In each mode,
+/// also `off`: such a summary is a cache that a build can make again. 0
+/// days deletes nothing. Returns the count.
+pub fn delete_unused_summaries(
+    conn: &mut PgConnection,
+    config: &RetentionConfig,
+    now: DateTime<Utc>,
+) -> Result<u64, RetentionError> {
+    if config.code_index_pool_days == 0 {
+        return Ok(0);
+    }
+    let cutoff = now - Duration::days(i64::from(config.code_index_pool_days));
+    let mut deleted = 0u64;
+    for tenant_info in tenant::list_tenants(conn)? {
+        if !tenant_info.schema_exists {
+            continue;
+        }
+        let schema = tenant::tenant_schema_name(&tenant_info.slug);
+        sql_query(format!("SET search_path TO \"{schema}\"")).execute(conn)?;
+        let result = crate::code_indexes::delete_unused(conn, cutoff);
+        let reset = sql_query("SET search_path TO DEFAULT").execute(conn);
+        deleted += result? as u64;
+        reset?;
+    }
+    Ok(deleted)
+}
+
+/// What one [`run_retention_pass`] did (KAIROS-T-0366).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetentionPass {
+    /// One report per tenant (empty when the mode is `off`).
+    pub tenants: Vec<SweepReport>,
+    /// The expired password sessions (`public.local_sessions`) the pass
+    /// deleted.
+    pub expired_sessions_deleted: u64,
+    /// The rows of the login throttle (`public.auth_failures`) that can
+    /// change no decision, which the pass deleted (KAIROS-T-0377).
+    pub expired_auth_failures_deleted: u64,
+    /// The read notifications that the pass deleted in all the tenants
+    /// (KAIROS-T-0381).
+    pub read_notifications_deleted: u64,
+    /// The summaries of the code-index pools that no stored index used,
+    /// which the pass deleted in all the tenants (KAIROS-T-0378).
+    pub unused_summaries_deleted: u64,
+}
+
+/// One retention pass of the server (KAIROS-T-0366): sweep each tenant (as
+/// [`sweep_all_tenants`], which obeys the mode) and delete the password
+/// sessions that expired before `now`. The session delete runs in every
+/// mode, also `off`: an expired session cannot authenticate, so the row has
+/// no use. So does the delete of the rows of the login throttle whose
+/// window and lockout ended (KAIROS-T-0377), of the read notifications
+/// (KAIROS-T-0381) and of the unused summaries of the code-index pools
+/// (KAIROS-T-0378). `progress` is called before each tenant and after
+/// each delete.
+///
+/// The pass is a periodic job of the job queue of the server
+/// (KAIROS-T-0376): the queue gives each run to one server, so the pass
+/// takes no lock of its own.
+pub fn run_retention_pass(
+    conn: &mut PgConnection,
+    config: &RetentionConfig,
+    now: DateTime<Utc>,
+    progress: &mut dyn FnMut(),
+) -> Result<RetentionPass, RetentionError> {
+    let mut tenants = Vec::new();
+    if config.mode != RetentionMode::Off {
+        for tenant_info in tenant::list_tenants(conn)? {
+            progress();
+            if !tenant_info.schema_exists {
+                return Err(RetentionError::TenantNotFound(tenant_info.slug));
+            }
+            tenants.push(sweep_tenant(conn, &tenant_info.slug, config, now)?);
+        }
+    }
+    let expired = crate::local_auth::delete_expired_sessions(conn, now)?;
+    let throttle = crate::auth_failures::delete_expired(conn, now)?;
+    let notifications = delete_read_notifications(conn, config, now)?;
+    progress();
+    let summaries = delete_unused_summaries(conn, config, now)?;
+    progress();
+    Ok(RetentionPass {
+        tenants,
+        expired_sessions_deleted: expired as u64,
+        expired_auth_failures_deleted: throttle as u64,
+        read_notifications_deleted: notifications,
+        unused_summaries_deleted: summaries,
     })
 }
