@@ -3,6 +3,7 @@
 //! in `kairos-server::service_accounts::routes`.
 
 use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
 
 /// `POST /api/service-accounts` body.
 #[derive(Debug, Clone, Serialize)]
@@ -91,4 +92,46 @@ pub struct ApiKeyList {
 pub struct Deleted {
     pub id: String,
     pub deleted: bool,
+}
+
+/// `GET /api/org/agent-keys` query (KAIROS-T-0388): the page, and an
+/// optional owner.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+#[serde(deny_unknown_fields)]
+pub struct OrgAgentKeysQuery {
+    /// Only the keys of this person: a user id (UUID) or an email.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// Page size (default 50, max 200).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<i64>,
+    /// Rows to skip (default 0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<i64>,
+}
+
+/// One agent key of a person, as an organization admin reads it
+/// (KAIROS-T-0388). Never the secret.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct OrgAgentKey {
+    /// The key id (UUID). `DELETE /api/org/agent-keys/{key_id}` takes it.
+    pub id: String,
+    pub name: String,
+    /// The start of the key (never the secret).
+    pub prefix: String,
+    /// The user id (UUID) of the person who owns the key.
+    pub owner_id: String,
+    /// The email of the owner.
+    pub owner_email: String,
+    /// The display name of the owner.
+    pub owner_name: String,
+    pub created_at: String,
+    /// `null`: the key never expires.
+    pub expires_at: Option<String>,
+    pub last_used_at: Option<String>,
+    /// `null` while the key is not revoked.
+    pub revoked_at: Option<String>,
+    /// The key that a rotation made in place of this key (KAIROS-T-0370).
+    pub replaced_by: Option<String>,
 }

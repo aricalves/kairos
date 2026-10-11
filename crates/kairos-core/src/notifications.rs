@@ -21,17 +21,20 @@ pub enum NotificationKind {
     /// A webhook target that you own was turned off after failed deliveries
     /// (KAIROS-T-0384).
     DeliveryFailing,
+    /// An organization admin revoked an agent key of yours (KAIROS-T-0388).
+    AgentKeyRevoked,
 }
 
 impl NotificationKind {
     /// Each kind, in the order of the settings.
-    pub const ALL: [NotificationKind; 6] = [
+    pub const ALL: [NotificationKind; 7] = [
         NotificationKind::HandOff,
         NotificationKind::BlockerCleared,
         NotificationKind::Cancelled,
         NotificationKind::Mention,
         NotificationKind::P0Bug,
         NotificationKind::DeliveryFailing,
+        NotificationKind::AgentKeyRevoked,
     ];
 
     /// The wire name (`kind` column and API field).
@@ -43,6 +46,7 @@ impl NotificationKind {
             NotificationKind::Mention => "mention",
             NotificationKind::P0Bug => "p0_bug",
             NotificationKind::DeliveryFailing => "delivery_failing",
+            NotificationKind::AgentKeyRevoked => "agent_key_revoked",
         }
     }
 

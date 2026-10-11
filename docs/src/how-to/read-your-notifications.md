@@ -15,6 +15,7 @@ You get a notification when one of these events occurs:
   for example `@robin`.
 - A bug with the priority P0 lands on the board of your team.
 - Kairos turns off a webhook target that you own, after failed deliveries.
+- An organization admin revokes an agent key of yours. The text names the key.
 
 You get no notification for a change that you made.
 

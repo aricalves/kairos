@@ -35,6 +35,20 @@ id of the new key.
 
 To stop a key now, revoke it. You cannot rotate a revoked key.
 
+### Who can revoke a key
+
+A key with no expiry works until a person revokes it.
+
+| Key | Who can revoke it |
+|---|---|
+| An agent key | The person of the key (`kairos keys revoke`, the Agent keys page). An organization admin (`kairos admin agent-keys revoke`, the section **Agent keys of the people** of **Admin > Members**). |
+| An API key of a service account | An organization admin (`kairos keys revoke --service-account`). |
+
+An organization admin can revoke the agent key of a person. Then Kairos writes
+an activity row. The person gets a notification that names the key. When a
+person leaves the organization, Kairos revokes each agent key of the person.
+This occurs when an admin removes the person, and on a SCIM deprovision.
+
 ### The expiry of a new key
 
 A new key expires after 90 days (the setting `KAIROS_API_KEY_TTL_DAYS`). To set

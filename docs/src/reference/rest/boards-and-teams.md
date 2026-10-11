@@ -1212,7 +1212,8 @@ Request body (required): `application/json`, [`AddOrgMemberRequest`](schemas.md#
 ### `DELETE /api/members/{user_id}`
 
 Remove a member. Removing the LAST admin is rejected (422 `LAST_ADMIN`).
-Org-admin-only.
+Kairos revokes the agent keys of the member in the same transaction
+(KAIROS-T-0388). Org-admin-only.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|

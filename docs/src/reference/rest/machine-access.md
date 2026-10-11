@@ -113,6 +113,40 @@ Request body (required): `application/json`, [`MarkNotificationsReadRequest`](sc
 
 ## service-accounts
 
+### `GET /api/org/agent-keys`
+
+The agent keys of the persons of the organization, newest first (never
+a secret). Org-admin-only.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `user` | query | no | `string` | Only the keys of this person: a user id (UUID) or an email. |
+| `limit` | query | no | `integer` | Page size (default 50, max 200). |
+| `offset` | query | no | `integer` | Rows to skip (default 0). |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`ListEnvelope_OrgAgentKey`](schemas.md#listenvelope_orgagentkey) | A page of the agent keys, with the owner of each |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The organization admin role is required |
+| `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The user filter names no person |
+
+### `DELETE /api/org/agent-keys/{key_id}`
+
+Revoke the agent key of any person (soft: `revoked_at` set). Writes an
+activity row and tells the owner. Org-admin-only. An unknown id, or the
+id of a service-account key → 404; already revoked → 409.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `key_id` | path | yes | `string` | Agent key id (UUID) |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`DeletedResponse`](schemas.md#deletedresponse) | Key revoked |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The organization admin role is required |
+| `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | No agent key has this id |
+| `409` | [`ErrorEnvelope`](schemas.md#errorenvelope) | Already revoked |
+
 ### `GET /api/service-accounts`
 
 List the org's service accounts. Org-admin-only.

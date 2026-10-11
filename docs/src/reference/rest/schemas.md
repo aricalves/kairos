@@ -1228,6 +1228,17 @@ The S-0005 list envelope: `{items, total, limit, offset}`.
 | `offset` | `integer` | yes | The applied offset. |
 | `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). |
 
+## ListEnvelope_OrgAgentKey
+
+The S-0005 list envelope: `{items, total, limit, offset}`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `items` | array of `object` | yes |  |
+| `limit` | `integer` | yes | The applied limit. |
+| `offset` | `integer` | yes | The applied offset. |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). |
+
 ## ListEnvelope_OrgMember
 
 The S-0005 list envelope: `{items, total, limit, offset}`.
@@ -1438,7 +1449,7 @@ One notification of the caller (KAIROS-T-0382).
 | `created_at` | `string` | yes | When Kairos made the notification (RFC 3339). |
 | `entity_type` | `string`, nullable | no | `strategy|initiative|task|document|adr`; `null` when the item is gone. |
 | `id` | `string` | yes | The id (UUID). `POST /api/me/notifications/read` takes it. |
-| `kind` | `string` | yes | `hand_off|blocker_cleared|cancelled|mention|p0_bug|delivery_failing`. |
+| `kind` | `string` | yes | `hand_off|blocker_cleared|cancelled|mention|p0_bug|delivery_failing|agent_key_revoked`. |
 | `read_at` | `string`, nullable | no | When the person read it (RFC 3339); `null` while unread. |
 | `short_code` | `string`, nullable | no | The code of the item now; `null` when the item is gone. |
 | `text` | `string` | yes | What happened, in one sentence or two. |
@@ -1459,12 +1470,31 @@ One notification of the caller (KAIROS-T-0382).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `agent_key_revoked` | `boolean` | yes | An organization admin revoked an agent key of yours (KAIROS-T-0388). |
 | `blocker_cleared` | `boolean` | yes | A blocker of a task that you have the claim on is done or archived. |
 | `cancelled` | `boolean` | yes | A person cancelled a task that you created. |
 | `delivery_failing` | `boolean` | yes | A webhook target that you own was turned off after failed deliveries (KAIROS-T-0384). |
 | `hand_off` | `boolean` | yes | A person handed off the claim of a task to you. |
 | `mention` | `boolean` | yes | A person wrote `@your_user_name` in a note or in the content of an item. |
 | `p0_bug` | `boolean` | yes | A bug with the priority P0 (critical) is on the board of your team. |
+
+## OrgAgentKey
+
+One agent key of a person, as an organization admin reads it (KAIROS-T-0388). Never the secret.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `created_at` | `string` | yes |  |
+| `expires_at` | `string`, nullable | no | `null`: the key never expires. |
+| `id` | `string` | yes | The key id (UUID). `DELETE /api/org/agent-keys/{key_id}` takes it. |
+| `last_used_at` | `string`, nullable | no |  |
+| `name` | `string` | yes |  |
+| `owner_email` | `string` | yes | The email of the owner. |
+| `owner_id` | `string` | yes | The user id (UUID) of the person who owns the key. |
+| `owner_name` | `string` | yes | The display name of the owner. |
+| `prefix` | `string` | yes | The start of the key (never the secret). |
+| `replaced_by` | `string`, nullable | no | The key that a rotation made in place of this key (KAIROS-T-0370). |
+| `revoked_at` | `string`, nullable | no | `null` while the key is not revoked. |
 
 ## OrgDeleteResponse
 
@@ -2377,6 +2407,7 @@ The server refuses a body with a field that is not in this table ([Errors](../er
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `agent_key_revoked` | `boolean`, nullable | no |  |
 | `blocker_cleared` | `boolean`, nullable | no |  |
 | `cancelled` | `boolean`, nullable | no |  |
 | `delivery_failing` | `boolean`, nullable | no |  |

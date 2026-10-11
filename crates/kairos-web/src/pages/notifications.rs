@@ -52,6 +52,7 @@ struct NotificationSettings {
     mention: bool,
     p0_bug: bool,
     delivery_failing: bool,
+    agent_key_revoked: bool,
 }
 
 /// mirror of: `kairos_client::types_notifications::MarkNotificationsReadResponse`
@@ -90,6 +91,7 @@ fn kind_label(kind: &str) -> &'static str {
         "mention" => "Mention",
         "p0_bug" => "P0 bug",
         "delivery_failing" => "Delivery failing",
+        "agent_key_revoked" => "Agent key revoked",
         _ => "Notification",
     }
 }
@@ -314,6 +316,7 @@ pub fn NotificationsPage() -> impl IntoView {
     let mention = RwSignal::new(true);
     let p0_bug = RwSignal::new(true);
     let delivery_failing = RwSignal::new(true);
+    let agent_key_revoked = RwSignal::new(true);
     let settings_reload = RwSignal::new(0u32);
     let settings = LocalResource::new(move || {
         let _ = auth.token();
@@ -328,6 +331,7 @@ pub fn NotificationsPage() -> impl IntoView {
             mention.set(s.mention);
             p0_bug.set(s.p0_bug);
             delivery_failing.set(s.delivery_failing);
+            agent_key_revoked.set(s.agent_key_revoked);
         }
     });
     let on_save = move |_| {
@@ -338,6 +342,7 @@ pub fn NotificationsPage() -> impl IntoView {
             "mention": mention.get_untracked(),
             "p0_bug": p0_bug.get_untracked(),
             "delivery_failing": delivery_failing.get_untracked(),
+            "agent_key_revoked": agent_key_revoked.get_untracked(),
         });
         run_mutation(
             busy,
@@ -412,6 +417,8 @@ pub fn NotificationsPage() -> impl IntoView {
                                 <Switch checked=p0_bug label="A P0 bug lands on the board of your team"/>
                                 <Switch checked=delivery_failing
                                     label="Kairos turns off a webhook target that you own after failed deliveries"/>
+                                <Switch checked=agent_key_revoked
+                                    label="An organization admin revokes an agent key of yours"/>
                                 <Group justify="end">
                                     <Button on_click=Callback::new(on_save)>"Save"</Button>
                                 </Group>
@@ -443,6 +450,7 @@ mod tests {
             "mention",
             "p0_bug",
             "delivery_failing",
+            "agent_key_revoked",
         ] {
             assert_ne!(kind_label(kind), "Notification", "{kind}");
         }

@@ -261,6 +261,9 @@ use crate::app::AppState;
         crate::service_accounts::agent_keys::list_agent_keys,
         crate::service_accounts::agent_keys::revoke_agent_key,
         crate::service_accounts::agent_keys::rotate_agent_key,
+        // The agent keys of each person, for an org admin (KAIROS-T-0388).
+        crate::service_accounts::org_agent_keys::list_org_agent_keys,
+        crate::service_accounts::org_agent_keys::revoke_org_agent_key,
         // The notifications of a person (KAIROS-T-0381).
         crate::api::notifications::get_notification_settings,
         crate::api::notifications::update_notification_settings,

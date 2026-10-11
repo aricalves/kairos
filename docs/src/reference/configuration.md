@@ -202,7 +202,7 @@ saw>`; the first element is the one under the caller's control.
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
-| `KAIROS_API_KEY_TTL_DAYS` | integer | `90` | The default life of a new API key or agent key, in days. A request that names `expires_at` sets its own expiry. A request with `no_expiry: true` (the CLI flag `--no-expiry`, the switch "No expiry" of the Agent keys page) makes a key with no expiry. `0` turns the default off: a new key has no expiry unless the request names one. |
+| `KAIROS_API_KEY_TTL_DAYS` | integer | `90` | The default life of a new API key or agent key, in days. A request that names `expires_at` sets its own expiry. A request with `no_expiry: true` (the CLI flag `--no-expiry`, the switch "No expiry" of the Agent keys page) makes a key with no expiry. `0` turns the default off: a new key has no expiry unless the request names one. A key with no expiry works until a person revokes it: the person of the key, or an organization admin (`kairos admin agent-keys revoke`). When a person leaves the organization, Kairos revokes each agent key of the person. |
 | `KAIROS_API_KEY_ROTATION_GRACE_SECS` | integer | `86400` (1 day) | After a rotation of a key, the old secret works for this time. `0` ends the old secret at the rotation. |
 
 The keys that exist keep their expiry: the setting applies to new keys. See

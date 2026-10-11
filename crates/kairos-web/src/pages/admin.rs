@@ -42,6 +42,7 @@ use crate::auth::use_auth;
 
 pub(crate) mod gating;
 
+mod agent_keys;
 mod api;
 mod boards;
 mod capabilities;
@@ -237,7 +238,8 @@ pub fn AdminHomePage() -> impl IntoView {
                         "Where the summaries and the vectors of the code index are made: \
                          the embedded model, Ollama Cloud or Bedrock.")}
                     {card("/admin/members", "Organization members",
-                        "The members of this organization, and its admins.")}
+                        "The members of this organization, its admins, and the agent keys of \
+                         each person.")}
                     {card("/admin/templates", "Templates",
                         "The document templates, and the metadata fields that they give.")}
                     {card("/admin/metadata", "Metadata definitions",

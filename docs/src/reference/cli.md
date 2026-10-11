@@ -1411,6 +1411,43 @@ kairos keys revoke <KEY_ID> [--service-account <SERVICE_ACCOUNT>] --confirm [OPT
 | `--service-account <SERVICE_ACCOUNT>` | UUID | none | The service account of the key. Without it, the command revokes your agent key. |
 | `--confirm` | flag | off | Required for the revocation to happen. |
 
+## Agent keys of each person
+
+An organization admin lists the agent keys of each person of the organization,
+and revokes any one. Another person gets `403`.
+
+### `kairos admin agent-keys list`
+
+```
+kairos admin agent-keys list [--user <USER>] [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--user <USER>` | UUID or email | none | Only the keys of this person. A value that names no person gets `422`. |
+| `--limit <LIMIT>` | integer | server default 50, maximum 200 | Page size. |
+| `--offset <OFFSET>` | integer | 0 | Rows to skip. |
+
+The newest key is first. Each row shows the id, the owner, the name and the
+prefix. It also shows the dates of creation, expiry, last use and revocation.
+The list never shows a secret. A revoked key stays in the list. The keys of a service account are not
+in the list: see `kairos keys list --service-account`.
+
+### `kairos admin agent-keys revoke`
+
+```
+kairos admin agent-keys revoke <KEY_ID> --confirm [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<KEY_ID>` | UUID | required | Key id, from `kairos admin agent-keys list`. |
+| `--confirm` | flag | off | Required for the revocation to happen. |
+
+The key then gets `401`. Kairos writes an activity row and gives the owner a
+notification of the kind `agent_key_revoked` that names the key. An unknown id
+gets `404`. A revoked key gets `409`.
+
 ## Deployment administration
 
 `admin tenants` is cross-tenant tenant provisioning, restricted to deployment

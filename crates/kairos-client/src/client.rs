@@ -1222,6 +1222,26 @@ impl KairosClient {
         .await
     }
 
+    // -- agent keys of each person (/api/org/agent-keys, KAIROS-T-0388) -------
+
+    /// `GET /api/org/agent-keys` — a page of the agent keys of the persons
+    /// of the organization (never a secret). Org-admin.
+    pub async fn list_org_agent_keys(
+        &self,
+        query: &crate::types_service_accounts::OrgAgentKeysQuery,
+    ) -> Result<crate::types::ListEnvelope<crate::types_service_accounts::OrgAgentKey>, Error> {
+        self.get_query("/api/org/agent-keys", query).await
+    }
+
+    /// `DELETE /api/org/agent-keys/{key_id}` — revoke the agent key of any
+    /// person. Org-admin.
+    pub async fn revoke_org_agent_key(
+        &self,
+        key_id: &str,
+    ) -> Result<crate::types_service_accounts::Deleted, Error> {
+        self.delete(&format!("/api/org/agent-keys/{key_id}")).await
+    }
+
     // -- agent keys of the caller (/api/me/agent-keys, KAIROS-T-0359) ----------
 
     /// `POST /api/me/agent-keys` — make an agent key that acts as the caller.

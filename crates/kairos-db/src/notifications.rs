@@ -1,6 +1,6 @@
 //! The notifications of a person (KAIROS-T-0381, COLLIERY-I-0614).
 //!
-//! # The 5 events
+//! # The events
 //!
 //! Each producer runs in the transaction of the change that it is about, so
 //! a rolled back change makes no notification:
@@ -23,6 +23,9 @@
 //! - `p0_bug`: a bug with the priority P0 ([`kairos_core::notifications::is_p0_priority`])
 //!   lands on a board with a team: its priority changes to P0, or it moves
 //!   to the board. Each member of the team is told.
+//! - `agent_key_revoked`: an organization admin revokes the agent key of a
+//!   person ([`on_agent_key_revoked`]). The person is told the name and the
+//!   prefix of the key.
 //!
 //! # Who gets a notification
 //!
@@ -176,6 +179,31 @@ fn task_head(
         .select((tasks::short_code, tasks::title, tasks::created_by))
         .first(conn)
         .optional()
+}
+
+/// `agent_key_revoked` (KAIROS-T-0388): the organization admin `actor`
+/// revoked the agent key `name` (`prefix`) of `owner`.
+pub fn on_agent_key_revoked(
+    conn: &mut PgConnection,
+    owner: Uuid,
+    name: &str,
+    prefix: &str,
+    actor: Uuid,
+) -> Result<(), DieselError> {
+    let text = format!(
+        "{} revoked your agent key {name} ({prefix}). The key does not work now. \
+         Make a new key on the Agent keys page.",
+        name_of(conn, actor)?
+    );
+    notify(
+        conn,
+        &[owner],
+        NotificationKind::AgentKeyRevoked,
+        None,
+        &text,
+        actor,
+    )?;
+    Ok(())
 }
 
 /// `hand_off`: `to_user` got the claim of the task from `actor`.

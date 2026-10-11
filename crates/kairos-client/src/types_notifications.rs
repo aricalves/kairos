@@ -24,6 +24,9 @@ pub struct NotificationSettings {
     /// A webhook target that you own was turned off after failed
     /// deliveries (KAIROS-T-0384).
     pub delivery_failing: bool,
+    /// An organization admin revoked an agent key of yours
+    /// (KAIROS-T-0388).
+    pub agent_key_revoked: bool,
 }
 
 /// `PUT /api/me/notification-settings` body: the kinds to turn on (`true`)
@@ -43,6 +46,8 @@ pub struct UpdateNotificationSettingsRequest {
     pub p0_bug: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_failing: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_key_revoked: Option<bool>,
 }
 
 /// One notification of the caller (KAIROS-T-0382).
@@ -50,7 +55,7 @@ pub struct UpdateNotificationSettingsRequest {
 pub struct Notification {
     /// The id (UUID). `POST /api/me/notifications/read` takes it.
     pub id: String,
-    /// `hand_off|blocker_cleared|cancelled|mention|p0_bug|delivery_failing`.
+    /// `hand_off|blocker_cleared|cancelled|mention|p0_bug|delivery_failing|agent_key_revoked`.
     pub kind: String,
     /// The code of the item now; `null` when the item is gone.
     pub short_code: Option<String>,

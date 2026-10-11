@@ -1263,4 +1263,50 @@ mod tests {
         }
         assert!(Cli::try_parse_from(["kairos", "keys", "create"]).is_err());
     }
+
+    /// KAIROS-T-0388: `admin agent-keys list` takes a user filter and a
+    /// page; `revoke` takes the key id and --confirm.
+    #[test]
+    fn admin_agent_keys_parse() {
+        use commands::admin::AgentKeysCommand;
+        let cli = Cli::try_parse_from([
+            "kairos",
+            "admin",
+            "agent-keys",
+            "list",
+            "--user",
+            "robin@example.com",
+            "--limit",
+            "10",
+        ])
+        .expect("admin agent-keys list parses");
+        match cli.command {
+            Command::Admin(AdminCommand::AgentKeys(AgentKeysCommand::List { user, list })) => {
+                assert_eq!(user.as_deref(), Some("robin@example.com"));
+                assert_eq!(list.limit, Some(10));
+            }
+            _ => panic!("expected admin agent-keys list"),
+        }
+        let cli = Cli::try_parse_from([
+            "kairos",
+            "admin",
+            "agent-keys",
+            "revoke",
+            "k-1",
+            "--confirm",
+        ])
+        .expect("admin agent-keys revoke parses");
+        match cli.command {
+            Command::Admin(AdminCommand::AgentKeys(AgentKeysCommand::Revoke {
+                key_id,
+                confirm,
+                ..
+            })) => {
+                assert_eq!(key_id, "k-1");
+                assert!(confirm);
+            }
+            _ => panic!("expected admin agent-keys revoke"),
+        }
+        assert!(Cli::try_parse_from(["kairos", "admin", "agent-keys", "revoke"]).is_err());
+    }
 }
