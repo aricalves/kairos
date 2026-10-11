@@ -494,6 +494,11 @@ fn finish_create(
     content: &str,
 ) -> Result<(), DieselError> {
     insert_history(conn, item_id, 1, title, content, actor)?;
+    // KAIROS-T-0381: each mention in the content of a new item.
+    let names: Vec<String> = kairos_core::notifications::mentions(content)
+        .into_keys()
+        .collect();
+    crate::notifications::on_mentions(conn, item_id, &names, actor)?;
     log_activity(
         conn,
         actor,
@@ -1444,9 +1449,20 @@ pub fn update_item_content(
     actor: Uuid,
 ) -> Result<i32, ItemError> {
     conn.transaction::<_, ItemError, _>(|conn| {
+        // KAIROS-T-0381: the content before the update, to find the new
+        // mentions. Read only when the new content has a mention.
+        let before = if kairos_core::notifications::mentions(update.new_content).is_empty() {
+            None
+        } else {
+            load_live_content(conn, item_type, item_id)?.map(|(_, _, content, _)| content)
+        };
         match apply_content_update(conn, item_type, item_id, &update, actor)? {
             Some((new_version, title, content)) => {
                 insert_history(conn, item_id, new_version, &title, &content, actor)?;
+                if let Some(before) = before {
+                    let names = kairos_core::notifications::new_mentions(&before, &content);
+                    crate::notifications::on_mentions(conn, item_id, &names, actor)?;
+                }
                 // KAIROS-T-0022: thin event, delivered on commit.
                 events::emit_item_event_by_id(
                     conn,
@@ -1974,6 +1990,13 @@ fn soft_delete_planned(
         }
         // KAIROS-T-0359: an archived task has no claim.
         crate::task_claims::drop_claims(conn, &ids, actor, "archive")?;
+        // KAIROS-T-0381: an archived item no longer blocks.
+        crate::notifications::on_blockers_cleared(
+            conn,
+            &ids,
+            crate::notifications::Cleared::Archived,
+            actor,
+        )?;
 
         let mut cascaded_short_codes: Vec<String> = deleted
             .into_iter()

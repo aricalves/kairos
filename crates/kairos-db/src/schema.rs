@@ -397,6 +397,27 @@ diesel::table! {
 }
 
 diesel::table! {
+    notification_settings (user_id, kind) {
+        user_id -> Uuid,
+        kind -> Text,
+        enabled -> Bool,
+    }
+}
+
+diesel::table! {
+    notifications (id) {
+        id -> Uuid,
+        user_id -> Uuid,
+        kind -> Text,
+        item_id -> Nullable<Uuid>,
+        text -> Text,
+        actor_id -> Nullable<Uuid>,
+        created_at -> Timestamptz,
+        read_at -> Nullable<Timestamptz>,
+    }
+}
+
+diesel::table! {
     repositories (id) {
         id -> Uuid,
         slug -> Text,
@@ -680,6 +701,8 @@ diesel::allow_tables_to_appear_in_same_query!(
     metadata_definition_scopes,
     metadata_definitions,
     metadata_enum_options,
+    notification_settings,
+    notifications,
     repositories,
     repository_credentials,
     retired_codes,

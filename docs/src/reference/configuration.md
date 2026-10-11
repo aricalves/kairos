@@ -565,6 +565,9 @@ first start of a deployment runs the pass at once. One pass:
 - Deletes the password sessions (`local_sessions`) that expired before the
   pass. This occurs in each mode, also `off`, because an expired session
   cannot log in.
+- In each tenant, deletes the read notifications that were read more than
+  `KAIROS_NOTIFICATIONS_READ_DAYS` days before the pass. This occurs in each
+  mode, also `off`, and the pass does not archive them.
 - Writes one `retention_sweep` row to the `activity_log` of each tenant that
   it sweeps, with the counts of the rows it archived and removed.
 - Logs the counts for each tenant and the number of deleted sessions.
@@ -575,7 +578,7 @@ server cannot parse stops the start.
 
 Their parsing differs from the sixteen variables above: empty is not treated as
 unset. An empty `KAIROS_HISTORY_HOT_DAYS`, `KAIROS_HISTORY_KEEP_LATEST`,
-`KAIROS_ACTIVITY_RETENTION_DAYS` or `KAIROS_RETENTION_MODE` is a parse error
+`KAIROS_ACTIVITY_RETENTION_DAYS`, `KAIROS_NOTIFICATIONS_READ_DAYS` or `KAIROS_RETENTION_MODE` is a parse error
 rather than a fallback to the default. `KAIROS_ARCHIVE_TARGET` is the one
 exception: empty means no target.
 
@@ -585,6 +588,7 @@ exception: empty means no target.
 | `KAIROS_HISTORY_KEEP_LATEST` | unsigned integer | `5` | Latest-N guard. The newest N versions of an item are never prune candidates regardless of age. |
 | `KAIROS_ACTIVITY_RETENTION_DAYS` | unsigned integer (days) | `365` | `activity_log` window. Rows older than this are archive-then-delete candidates, with no compaction tiers. |
 | `KAIROS_ARCHIVE_TARGET` | filesystem path or `s3://…` URL | unset | Where prune candidates are offloaded as NDJSON. A `file://` prefix is stripped. An `s3://` value parses to a distinct S3 target that the shipped code rejects with a typed not-implemented error, rather than being misread as a directory name. Empty means no target. |
+| `KAIROS_NOTIFICATIONS_READ_DAYS` | unsigned integer (days) | `30` | The days that a read notification stays. `0` keeps read notifications. An unread notification stays until the person reads it. |
 | `KAIROS_RETENTION_MODE` | `archive` \| `discard` \| `off` | `archive` | `archive` offloads before pruning and, with no target configured, prunes nothing and logs a warning instead. `discard` prunes without archiving. `off` disables the sweeper entirely. Case-insensitive; any other value fails to parse. |
 
 Past the hot window, compaction keeps the first and last snapshot per item per
@@ -930,6 +934,7 @@ The read-only root filesystem is compatible with a filesystem
 | `config.retention.historyHotDays` | integer or null | `null` | Sets `KAIROS_HISTORY_HOT_DAYS`. Emitted only when non-empty. |
 | `config.retention.historyKeepLatest` | integer or null | `null` | Sets `KAIROS_HISTORY_KEEP_LATEST`. Emitted only when non-empty. |
 | `config.retention.activityRetentionDays` | integer or null | `null` | Sets `KAIROS_ACTIVITY_RETENTION_DAYS`. Emitted only when non-empty. |
+| `config.retention.notificationsReadDays` | integer or null | `null` | Sets `KAIROS_NOTIFICATIONS_READ_DAYS`. Emitted only when not null, so `0` is emitted. |
 | `config.retention.archiveTarget` | string | `""` | Sets `KAIROS_ARCHIVE_TARGET`. Emitted only when non-empty. |
 | `config.retention.mode` | string | `""` | Sets `KAIROS_RETENTION_MODE`. Emitted only when non-empty. |
 | `database.url` | string | `""` | Sets `DATABASE_URL` through a chart-rendered Secret. |

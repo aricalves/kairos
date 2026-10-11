@@ -109,6 +109,9 @@ pub(crate) async fn update_metadata(
             // entry rejects the whole PATCH. Shared with MCP `set_metadata`
             // (KAIROS-T-0096), which is where the T-0078 guard used to be absent.
             let ops = validated_metadata_ops(conn, item_type, &body.values)?;
+            // KAIROS-T-0381: a bug that becomes P0 tells its team.
+            let was_p0 =
+                kairos_db::notifications::is_p0_bug(conn, item_id).map_err(ApiError::internal)?;
 
             // Phase 2 — apply all upserts/deletes in one transaction.
             use kairos_db::schema::item_metadata;
@@ -141,6 +144,9 @@ pub(crate) async fn update_metadata(
                             .execute(conn)?;
                         }
                     }
+                }
+                if !was_p0 {
+                    kairos_db::notifications::on_p0_bug(conn, item_id, user)?;
                 }
                 Ok(())
             })

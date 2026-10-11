@@ -2731,6 +2731,9 @@ impl KairosMcp {
             // had drifted, missing the KAIROS-T-0078 entity-type scoping guard,
             // so MCP would stamp a documents-only definition onto a task.
             let ops = validated_metadata_ops(conn, item.item_type, &params.values)?;
+            // KAIROS-T-0381: a bug that becomes P0 tells its team.
+            let was_p0 =
+                kairos_db::notifications::is_p0_bug(conn, item.id).map_err(ApiError::internal)?;
 
             // Phase 2 — apply atomically (same shape as the API handler).
             conn.transaction::<_, diesel::result::Error, _>(|conn| {
@@ -2762,6 +2765,9 @@ impl KairosMcp {
                             .execute(conn)?;
                         }
                     }
+                }
+                if !was_p0 {
+                    kairos_db::notifications::on_p0_bug(conn, item.id, user)?;
                 }
                 Ok(())
             })

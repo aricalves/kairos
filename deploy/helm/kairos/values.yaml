@@ -246,6 +246,9 @@ config:
     historyKeepLatest: null
     # -- KAIROS_ACTIVITY_RETENTION_DAYS — activity_log window (default 365).
     activityRetentionDays: null
+    # -- KAIROS_NOTIFICATIONS_READ_DAYS — days a read notification stays
+    # (server default 30; 0 keeps them). Emitted when not null, also for 0.
+    notificationsReadDays: null
     # -- KAIROS_ARCHIVE_TARGET — NDJSON offload target: a filesystem path or an
     # s3://… URL. Empty means no target (archive mode then prunes nothing).
     archiveTarget: ""

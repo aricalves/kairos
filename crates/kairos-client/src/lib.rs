@@ -24,6 +24,8 @@ pub mod ws;
 
 pub mod types_meta;
 
+pub mod types_notifications;
+
 pub mod types_events;
 
 pub use client::{EntityKind, KairosClient, StaticToken, TokenProvider};

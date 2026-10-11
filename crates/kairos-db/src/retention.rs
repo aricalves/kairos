@@ -499,6 +499,34 @@ pub fn sweep_all_tenants(
     Ok(reports)
 }
 
+/// Delete, in each tenant, the notifications that were read more than
+/// `notifications_read_days` days before `now` (KAIROS-T-0381). In each
+/// mode, also `off`: a read notification is not archived. 0 days deletes
+/// nothing. Returns the count.
+pub fn delete_read_notifications(
+    conn: &mut PgConnection,
+    config: &RetentionConfig,
+    now: DateTime<Utc>,
+) -> Result<u64, RetentionError> {
+    if config.notifications_read_days == 0 {
+        return Ok(0);
+    }
+    let cutoff = now - Duration::days(i64::from(config.notifications_read_days));
+    let mut deleted = 0u64;
+    for tenant_info in tenant::list_tenants(conn)? {
+        if !tenant_info.schema_exists {
+            continue;
+        }
+        let schema = tenant::tenant_schema_name(&tenant_info.slug);
+        sql_query(format!("SET search_path TO \"{schema}\"")).execute(conn)?;
+        let result = crate::notifications::delete_read_before(conn, cutoff);
+        let reset = sql_query("SET search_path TO DEFAULT").execute(conn);
+        deleted += result? as u64;
+        reset?;
+    }
+    Ok(deleted)
+}
+
 /// What one [`run_retention_pass`] did (KAIROS-T-0366).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetentionPass {
@@ -510,6 +538,9 @@ pub struct RetentionPass {
     /// The rows of the login throttle (`public.auth_failures`) that can
     /// change no decision, which the pass deleted (KAIROS-T-0377).
     pub expired_auth_failures_deleted: u64,
+    /// The read notifications that the pass deleted in all the tenants
+    /// (KAIROS-T-0381).
+    pub read_notifications_deleted: u64,
 }
 
 /// One retention pass of the server (KAIROS-T-0366): sweep each tenant (as
@@ -541,10 +572,12 @@ pub fn run_retention_pass(
     }
     let expired = crate::local_auth::delete_expired_sessions(conn, now)?;
     let throttle = crate::auth_failures::delete_expired(conn, now)?;
+    let notifications = delete_read_notifications(conn, config, now)?;
     progress();
     Ok(RetentionPass {
         tenants,
         expired_sessions_deleted: expired as u64,
         expired_auth_failures_deleted: throttle as u64,
+        read_notifications_deleted: notifications,
     })
 }

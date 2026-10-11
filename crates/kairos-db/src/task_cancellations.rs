@@ -189,6 +189,15 @@ pub fn cancel_task(
             .execute(conn)?;
         // The done column holds no claims: the claim ends.
         crate::task_claims::after_column_change(conn, task_id, to_column_id, actor_id, "cancel")?;
+        // KAIROS-T-0381: the person who created the task is told, and the
+        // task no longer blocks.
+        crate::notifications::on_cancel(conn, task_id, reason, actor_id)?;
+        crate::notifications::on_blockers_cleared(
+            conn,
+            &[task_id],
+            crate::notifications::Cleared::Done,
+            actor_id,
+        )?;
         events::emit_item_event_by_id(
             conn,
             EventKind::ItemTransitioned,

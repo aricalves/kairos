@@ -318,6 +318,8 @@ pub fn hand_off(
             task_id,
             format!("hand_off:{from}->{to_user}"),
         )?;
+        // KAIROS-T-0381: the person who gets the claim is told.
+        crate::notifications::on_hand_off(conn, task_id, to_user, actor_id)?;
         events::emit_item_event_by_id(conn, EventKind::ItemUpdated, "task", task_id, actor_id)?;
         Ok(claim)
     })

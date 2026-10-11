@@ -246,6 +246,9 @@ use crate::app::AppState;
         crate::service_accounts::agent_keys::list_agent_keys,
         crate::service_accounts::agent_keys::revoke_agent_key,
         crate::service_accounts::agent_keys::rotate_agent_key,
+        // The notifications of a person (KAIROS-T-0381).
+        crate::api::notifications::get_notification_settings,
+        crate::api::notifications::update_notification_settings,
         // Local password login (KAIROS-T-0203). Documented unconditionally even
         // though the routes are mounted only when KAIROS_LOCAL_AUTH is on: the spec
         // is the API contract, and an operator reading it needs to know the

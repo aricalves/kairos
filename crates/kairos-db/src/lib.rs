@@ -28,6 +28,7 @@ pub mod jobs;
 pub mod local_auth;
 pub mod migrations;
 pub mod models;
+pub mod notifications;
 pub mod pool;
 pub mod proposals;
 pub mod purge;

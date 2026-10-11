@@ -1012,6 +1012,18 @@ macro_rules! transition_item_fn {
                     $entity_type,
                     format!("column:{from_name}->{to_name}"),
                 )?;
+                // KAIROS-T-0381: an item that goes into a done column no
+                // longer blocks.
+                if !crate::notifications::column_is_done(conn, from_column_id)?
+                    && crate::notifications::column_is_done(conn, to_column_id)?
+                {
+                    crate::notifications::on_blockers_cleared(
+                        conn,
+                        &[item_id],
+                        crate::notifications::Cleared::Done,
+                        actor_id,
+                    )?;
+                }
                 // KAIROS-T-0359: a task in a claims column has a claim.
                 if $entity_type == "task" {
                     crate::task_claims::after_column_change(
@@ -1210,6 +1222,8 @@ pub fn move_task_with(
             task_id,
             actor_id,
         )?;
+        // KAIROS-T-0381: a P0 bug that lands on the board of a team.
+        crate::notifications::on_p0_bug(conn, task_id, actor_id)?;
         Ok(TaskMove {
             from_board_id,
             board_id: to_board_id,
@@ -1270,6 +1284,18 @@ pub fn transition_adr(
             "adr",
             format!("column:{from_name}->{to_name}"),
         )?;
+        // KAIROS-T-0381: an ADR that goes into a done column no longer
+        // blocks.
+        if !crate::notifications::column_is_done(conn, from_column_id)?
+            && crate::notifications::column_is_done(conn, to_column_id)?
+        {
+            crate::notifications::on_blockers_cleared(
+                conn,
+                &[item_id],
+                crate::notifications::Cleared::Done,
+                actor_id,
+            )?;
+        }
         // KAIROS-T-0022: thin event (new column), delivered on commit.
         crate::events::emit_item_event_by_id(
             conn,

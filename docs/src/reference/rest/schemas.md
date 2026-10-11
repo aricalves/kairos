@@ -1354,6 +1354,18 @@ One live descendant that an archive does not reach (COLLIERY-T-0234). The archiv
 | `required_capability` | `string`, nullable | no | The `manage_<type>` capability that the caller does not hold. |
 | `short_code` | `string` | yes | The short code of the descendant. |
 
+## NotificationSettings
+
+`GET` and `PUT /api/me/notification-settings` response: each kind, and whether it is on. A kind that is off makes no notification for the person.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `blocker_cleared` | `boolean` | yes | A blocker of a task that you have the claim on is done or archived. |
+| `cancelled` | `boolean` | yes | A person cancelled a task that you created. |
+| `hand_off` | `boolean` | yes | A person handed off the claim of a task to you. |
+| `mention` | `boolean` | yes | A person wrote `@your_user_name` in a note or in the content of an item. |
+| `p0_bug` | `boolean` | yes | A bug with the priority P0 (critical) is on the board of your team. |
+
 ## OrgDeleteResponse
 
 Generic delete acknowledgement for organizational resources (boards, columns, transitions, teams, streams, membership rows).
@@ -2241,6 +2253,20 @@ Body of `PATCH /api/{entity_type}/{short_code}/metadata`: definition slug → va
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `values` | `object` | yes | Definition slug → new value (`null` removes the value). |
+
+The server refuses a body with a field that is not in this table ([Errors](../errors.md#a-field-of-the-body)).
+
+## UpdateNotificationSettingsRequest
+
+`PUT /api/me/notification-settings` body: the kinds to turn on (`true`) or off (`false`). A kind that is not in the body does not change.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `blocker_cleared` | `boolean`, nullable | no |  |
+| `cancelled` | `boolean`, nullable | no |  |
+| `hand_off` | `boolean`, nullable | no |  |
+| `mention` | `boolean`, nullable | no |  |
+| `p0_bug` | `boolean`, nullable | no |  |
 
 The server refuses a body with a field that is not in this table ([Errors](../errors.md#a-field-of-the-body)).
 

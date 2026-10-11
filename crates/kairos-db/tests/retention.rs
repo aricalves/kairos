@@ -333,6 +333,7 @@ fn retention_sweeper_lifecycle() {
     // ---- archive mode with NO target: prune NOTHING, warn ------------------
     let no_target = RetentionConfig {
         mode: RetentionMode::Archive,
+        notifications_read_days: 30,
         archive_target: None,
         ..RetentionConfig::default()
     };
@@ -356,6 +357,7 @@ fn retention_sweeper_lifecycle() {
     // ---- S3 target: recognized, typed NOT IMPLEMENTED ----------------------
     let s3 = RetentionConfig {
         mode: RetentionMode::Archive,
+        notifications_read_days: 30,
         archive_target: Some(ArchiveTarget::S3("s3://kairos-archive/acme".into())),
         ..RetentionConfig::default()
     };
@@ -379,6 +381,7 @@ fn retention_sweeper_lifecycle() {
     }
     let fs_config = RetentionConfig {
         mode: RetentionMode::Archive,
+        notifications_read_days: 30,
         archive_target: Some(ArchiveTarget::Filesystem(archive_base.clone())),
         ..RetentionConfig::default()
     };
@@ -479,6 +482,7 @@ fn retention_sweeper_lifecycle() {
     // ---- off: full no-op ----------------------------------------------------
     let off = RetentionConfig {
         mode: RetentionMode::Off,
+        notifications_read_days: 30,
         archive_target: Some(ArchiveTarget::Filesystem(archive_base.clone())),
         history_hot_days: 0, // even a maximally aggressive policy is inert
         activity_retention_days: 0,
@@ -530,6 +534,7 @@ fn retention_sweeper_lifecycle() {
 
     let discard = RetentionConfig {
         mode: RetentionMode::Discard,
+        notifications_read_days: 30,
         archive_target: None,
         ..RetentionConfig::default()
     };
@@ -604,6 +609,7 @@ fn retention_pass_removes_old_rows_and_expired_sessions() {
     let config = RetentionConfig {
         activity_retention_days: 30,
         mode: RetentionMode::Discard,
+        notifications_read_days: 30,
         ..RetentionConfig::default()
     };
 
@@ -706,6 +712,7 @@ fn retention_pass_removes_old_rows_and_expired_sessions() {
     .expect("inserting session");
     let off = RetentionConfig {
         mode: RetentionMode::Off,
+        notifications_read_days: 30,
         ..RetentionConfig::default()
     };
     let pass = run_retention_pass(&mut conn, &off, now, &mut || {}).expect("pass");

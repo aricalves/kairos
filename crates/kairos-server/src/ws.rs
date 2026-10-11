@@ -17,6 +17,15 @@
 //! board when that item has a `blocks` edge to or from a live item on the
 //! subscribed board (COLLIERY-T-0233): the event changes the counts on
 //! that board's cards. [`BroadcastEvent::concerns_board`] is the rule.
+//!
+//! An event of a person (`notification_created`, `notifications_read`,
+//! KAIROS-T-0381) carries the routing field `recipient`: a socket gets it
+//! only when the person of the socket (the authenticated user of the
+//! upgrade request) is the recipient. [`BroadcastEvent::visible_to`] is the
+//! rule, and it comes after the tenant check. The field is stripped, as
+//! `tenant` is. The event has no board, so a socket with a board filter
+//! does not get it.
+//!
 //! If the LISTEN connection drops it is re-established with exponential
 //! backoff (logged, with a reconnect counter on the [`EventHub`]).
 //!
@@ -58,6 +67,7 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::app::AppState;
+use crate::middleware::auth::AuthContext;
 use crate::middleware::tenant::TenantContext;
 use crate::middleware::{auth, tenant};
 
@@ -85,6 +95,9 @@ struct BroadcastEvent {
     /// `kairos_db::events` module docs). Fan-out routing, like `tenant`:
     /// never sent to clients.
     blocks_boards: Vec<Uuid>,
+    /// The one person who may get the event (KAIROS-T-0381), or `None`
+    /// for an event of the tenant. Fan-out routing: never sent to clients.
+    recipient: Option<Uuid>,
     /// The serialized S-0005 thin event forwarded to matching sockets.
     message: String,
 }
@@ -102,6 +115,13 @@ impl BroadcastEvent {
     /// The tenant check comes first and does not change.
     fn concerns_board(&self, board: Uuid) -> bool {
         self.board_id == Some(board) || self.blocks_boards.contains(&board)
+    }
+
+    /// Whether the socket of `user` may get this event: each event of the
+    /// tenant, and an event of a person only for that person
+    /// (KAIROS-T-0381). This IS an authorization: a notification is private.
+    fn visible_to(&self, user: Uuid) -> bool {
+        self.recipient.is_none_or(|recipient| recipient == user)
     }
 }
 
@@ -206,10 +226,11 @@ struct SubscribeFilter {
 async fn ws_events(
     ws: WebSocketUpgrade,
     Extension(tenant): Extension<TenantContext>,
+    Extension(auth): Extension<AuthContext>,
     Extension(hub): Extension<EventHub>,
 ) -> Response {
     let rx = hub.tx.subscribe();
-    ws.on_upgrade(move |socket| handle_socket(socket, tenant.slug, rx))
+    ws.on_upgrade(move |socket| handle_socket(socket, tenant.slug, auth.user_id, rx))
 }
 
 /// Forward this tenant's events to one socket until it closes. The task
@@ -218,6 +239,7 @@ async fn ws_events(
 async fn handle_socket(
     mut socket: WebSocket,
     tenant: String,
+    user: Uuid,
     mut rx: broadcast::Receiver<Arc<BroadcastEvent>>,
 ) {
     let mut board_filter: Option<Uuid> = None;
@@ -225,7 +247,7 @@ async fn handle_socket(
         tokio::select! {
             event = rx.recv() => match event {
                 Ok(event) => {
-                    if event.tenant != tenant {
+                    if event.tenant != tenant || !event.visible_to(user) {
                         continue;
                     }
                     if let Some(board) = board_filter
@@ -279,6 +301,13 @@ fn parse_payload(payload: &str) -> Option<BroadcastEvent> {
         Some(serde_json::Value::String(tenant)) => tenant,
         _ => return None,
     };
+    // KAIROS-T-0381: an event of a person. A `recipient` that is not a
+    // UUID drops the event: it must not go to each socket of the tenant.
+    let recipient = match object.remove("recipient") {
+        None => None,
+        Some(serde_json::Value::String(s)) => Some(Uuid::parse_str(&s).ok()?),
+        Some(_) => return None,
+    };
     let board_id = object
         .get("board_id")
         .and_then(|v| v.as_str())
@@ -297,6 +326,7 @@ fn parse_payload(payload: &str) -> Option<BroadcastEvent> {
         tenant,
         board_id,
         blocks_boards,
+        recipient,
         message: value.to_string(),
     })
 }
@@ -443,6 +473,55 @@ mod tests {
         assert!(
             parse_payload(r#"{"event":"item_created"}"#).is_none(),
             "no tenant tag"
+        );
+    }
+
+    /// KAIROS-T-0381: an event of a person goes only to the socket of
+    /// that person, and the routing field never reaches a client.
+    #[test]
+    fn an_event_of_a_person_is_for_that_person_only() {
+        let (alice, bob) = (Uuid::new_v4(), Uuid::new_v4());
+        let event = parse_payload(&format!(
+            r#"{{"tenant":"acme","recipient":"{alice}","event":"notification_created",
+                "entity_type":"notification","short_code":"ACME-T-0001","board_id":null,
+                "actor":"{bob}","occurred_at":"2026-07-10T12:00:00Z"}}"#
+        ))
+        .expect("payload parses");
+        assert_eq!(event.recipient, Some(alice));
+        assert!(event.visible_to(alice));
+        assert!(!event.visible_to(bob), "never to a different person");
+        assert!(
+            !event.concerns_board(Uuid::new_v4()),
+            "no board filter gets it"
+        );
+        let forwarded: serde_json::Value =
+            serde_json::from_str(&event.message).expect("forwarded message is JSON");
+        assert!(
+            forwarded.get("recipient").is_none(),
+            "recipient is stripped"
+        );
+        assert_eq!(forwarded["event"], "notification_created");
+
+        // A tenant event is for each socket of the tenant.
+        let tenant_event = parse_payload(
+            r#"{"tenant":"acme","event":"item_updated","entity_type":"task",
+                "short_code":"ACME-T-0001","board_id":null,
+                "actor":"7f9c24e5-2b12-4d6a-8f4e-0e1d2c3b4a59",
+                "occurred_at":"2026-07-10T12:00:00Z"}"#,
+        )
+        .expect("payload parses");
+        assert!(tenant_event.visible_to(bob));
+
+        // A recipient that is not a UUID drops the event.
+        assert!(
+            parse_payload(
+                r#"{"tenant":"acme","recipient":"nobody","event":"notification_created"}"#
+            )
+            .is_none()
+        );
+        assert!(
+            parse_payload(r#"{"tenant":"acme","recipient":7,"event":"notification_created"}"#)
+                .is_none()
         );
     }
 

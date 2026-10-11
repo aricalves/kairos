@@ -248,6 +248,7 @@ fn retention_run(
         tenants = pass.tenants.len(),
         expired_sessions_deleted = pass.expired_sessions_deleted,
         expired_auth_failures_deleted = pass.expired_auth_failures_deleted,
+        read_notifications_deleted = pass.read_notifications_deleted,
         "retention: pass done"
     );
     Ok(())

@@ -1146,6 +1146,23 @@ impl KairosClient {
         self.get("/api/me/agent-keys").await
     }
 
+    /// `GET /api/me/notification-settings` (KAIROS-T-0381): each kind of
+    /// notification, and whether it is on for the caller.
+    pub async fn notification_settings(
+        &self,
+    ) -> Result<crate::types_notifications::NotificationSettings, Error> {
+        self.get("/api/me/notification-settings").await
+    }
+
+    /// `PUT /api/me/notification-settings` (KAIROS-T-0381): turn kinds on
+    /// or off for the caller.
+    pub async fn update_notification_settings(
+        &self,
+        request: &crate::types_notifications::UpdateNotificationSettingsRequest,
+    ) -> Result<crate::types_notifications::NotificationSettings, Error> {
+        self.put_ok("/api/me/notification-settings", request).await
+    }
+
     /// `DELETE /api/me/agent-keys/{key_id}` — revoke one of the caller's keys.
     pub async fn revoke_agent_key(
         &self,

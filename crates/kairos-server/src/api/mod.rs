@@ -36,6 +36,7 @@ pub mod documents;
 pub mod initiatives;
 pub mod local_accounts;
 pub mod meta;
+pub mod notifications;
 pub mod org;
 pub mod proposals;
 pub mod search;
@@ -72,6 +73,8 @@ pub fn router() -> Router<AppState> {
         .merge(adrs::router())
         // KAIROS-T-0051: GET /api/{entity_type}/{short_code}/cascade-preview.
         .merge(cascade::router())
+        // KAIROS-T-0381: the notification settings of a person.
+        .merge(notifications::router())
 }
 
 // ---------------------------------------------------------------------------

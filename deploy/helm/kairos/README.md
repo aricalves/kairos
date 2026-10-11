@@ -203,6 +203,7 @@ Secret loaded via `valueFrom`.
 | `config.retention.historyHotDays` | `KAIROS_HISTORY_HOT_DAYS` | server `90` | Emitted only when set. |
 | `config.retention.historyKeepLatest` | `KAIROS_HISTORY_KEEP_LATEST` | server `5` | Emitted only when set. |
 | `config.retention.activityRetentionDays` | `KAIROS_ACTIVITY_RETENTION_DAYS` | server `365` | Emitted only when set. |
+| `config.retention.notificationsReadDays` | `KAIROS_NOTIFICATIONS_READ_DAYS` | server `30` | Emitted only when not null; `0` keeps read notifications. |
 | `config.retention.archiveTarget` | `KAIROS_ARCHIVE_TARGET` | `""` | Path or `s3://…`. |
 | `config.retention.mode` | `KAIROS_RETENTION_MODE` | server `archive` | `archive` \| `discard` \| `off`. |
 | `config.devUi` | `KAIROS_DEV_UI` | `false` | Swagger UI; keep off in prod. |

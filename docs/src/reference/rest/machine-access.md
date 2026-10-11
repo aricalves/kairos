@@ -66,6 +66,28 @@ key. No body.
 | `404` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The caller has no key with this id |
 | `409` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The key is revoked, expired, or rotated already |
 
+### `GET /api/me/notification-settings`
+
+The caller's notification settings: each kind, and whether it is on.
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`NotificationSettings`](schemas.md#notificationsettings) | Each kind, and whether it is on |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The caller is a service account |
+
+### `PUT /api/me/notification-settings`
+
+Turn kinds of notification on or off for the caller. A kind that is not
+in the body does not change. Kairos refuses a body with no kind.
+
+Request body (required): `application/json`, [`UpdateNotificationSettingsRequest`](schemas.md#updatenotificationsettingsrequest)
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`NotificationSettings`](schemas.md#notificationsettings) | The settings after the change |
+| `403` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The caller is a service account |
+| `422` | [`ErrorEnvelope`](schemas.md#errorenvelope) | The body names no kind |
+
 ## service-accounts
 
 ### `GET /api/service-accounts`

@@ -110,6 +110,9 @@ data:
   {{- with .Values.config.retention.activityRetentionDays }}
   KAIROS_ACTIVITY_RETENTION_DAYS: {{ . | quote }}
   {{- end }}
+  {{- if not (kindIs "invalid" .Values.config.retention.notificationsReadDays) }}
+  KAIROS_NOTIFICATIONS_READ_DAYS: {{ .Values.config.retention.notificationsReadDays | quote }}
+  {{- end }}
   {{- with .Values.config.retention.archiveTarget }}
   KAIROS_ARCHIVE_TARGET: {{ . | quote }}
   {{- end }}
