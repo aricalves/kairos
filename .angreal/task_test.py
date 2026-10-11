@@ -489,6 +489,11 @@ def _gui_server_env(env, extra=None):
         # each tick. 0 keeps the service (requests are taken and stay
         # `running`) and runs no builder.
         "KAIROS_CODE_INDEX_POLL_SECS": "0",
+        # KAIROS-T-0387: the dispatch spec sends a delivery to a receiver of
+        # the spec on 127.0.0.1, which the address guard refuses unless this
+        # is on. A short first wait, so a failed try comes back fast.
+        "KAIROS_WEBHOOK_ALLOW_PRIVATE": "true",
+        "KAIROS_WEBHOOK_RETRY_BASE_SECS": "1",
     })
     if extra:
         gui_env.update(extra)

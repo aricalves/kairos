@@ -396,7 +396,7 @@ pub fn AdminBoardPage() -> impl IntoView {
                             busy outcome reload/>
                         // KAIROS-T-0385: the agent dispatch of the board.
                         <super::dispatch::DispatchPanel board_id=dispatch_board column_names
-                            busy outcome reload/>
+                            busy outcome/>
                     </Stack>
                 }.into_any()
             }

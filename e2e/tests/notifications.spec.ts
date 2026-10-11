@@ -5,7 +5,8 @@
 //   2. the drawer lists the notification, with a link to the task;
 //   3. Mark read clears it: the count goes down, and the server has it
 //      read (so it is read for her agent too);
-//   4. the Notifications page has the settings of the kinds.
+//   4. the Notifications page has the settings of the kinds;
+//   5. Mark all read on the page clears the bell (KAIROS-T-0387).
 //
 // The task is new for each run (a timestamped title), so a retry starts
 // clean.
@@ -120,5 +121,20 @@ test('a hand-off to alice shows in her bell, and Mark read clears it', async ({ 
     const settings = page.locator('[data-testid="notification-settings"]');
     await expect(settings).toBeVisible();
     await expect(settings).toContainText('A person hands off a task to you');
+  });
+
+  await test.step('Mark all read on the page clears the bell', async () => {
+    // alice has the claim again: she gives it to bob, and he gives it back,
+    // so that she has an unread notification.
+    await post(alice, `/api/tasks/${code}/hand-off`, { to: 'bob@kairos.test' });
+    await post(bob, `/api/tasks/${code}/hand-off`, { to: 'alice@kairos.test' });
+    await expect(count).toHaveCount(1, { timeout: 15_000 });
+    await page
+      .locator('.cl-panel', { hasText: 'Your notifications' })
+      .getByRole('button', { name: 'Mark all read', exact: true })
+      .click();
+    await expect(page.getByText('Kairos marked each notification read.')).toBeVisible();
+    await expect(count).toHaveCount(0);
+    expect((await notifications(alice)).unread).toBe(0);
   });
 });

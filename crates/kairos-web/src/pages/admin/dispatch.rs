@@ -172,15 +172,19 @@ async fn load(auth: Auth, board: String) -> Result<Data, ApiError> {
 }
 
 /// The agent dispatch section of a board.
+///
+/// Its changes reload only this section, with a reload signal of its own
+/// (KAIROS-T-0387). A reload of the page makes a new section, and the
+/// secret of a new target, which shows one time, went with the old one.
 #[component]
 pub fn DispatchPanel(
     board_id: String,
     column_names: Vec<String>,
     busy: RwSignal<bool>,
     outcome: RwSignal<MutationOutcome>,
-    reload: RwSignal<u32>,
 ) -> impl IntoView {
     let auth = use_auth();
+    let reload = RwSignal::new(0u32);
     let board = StoredValue::new(board_id);
     let data = LocalResource::new(move || {
         let _ = auth.token();
