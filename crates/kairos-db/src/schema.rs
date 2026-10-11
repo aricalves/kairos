@@ -169,6 +169,7 @@ diesel::table! {
         vector -> Nullable<Bytea>,
         created_at -> Timestamptz,
         model -> Text,
+        last_used_at -> Nullable<Timestamptz>,
     }
 }
 

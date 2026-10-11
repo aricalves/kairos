@@ -113,6 +113,9 @@ data:
   {{- if not (kindIs "invalid" .Values.config.retention.notificationsReadDays) }}
   KAIROS_NOTIFICATIONS_READ_DAYS: {{ .Values.config.retention.notificationsReadDays | quote }}
   {{- end }}
+  {{- if not (kindIs "invalid" .Values.config.retention.codeIndexPoolDays) }}
+  KAIROS_CODE_INDEX_POOL_DAYS: {{ .Values.config.retention.codeIndexPoolDays | quote }}
+  {{- end }}
   {{- with .Values.config.retention.archiveTarget }}
   KAIROS_ARCHIVE_TARGET: {{ . | quote }}
   {{- end }}

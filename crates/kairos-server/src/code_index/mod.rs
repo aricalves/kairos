@@ -68,20 +68,30 @@
 //! job again. A server that stops loses its leases, and another server
 //! takes those jobs when the leases run out.
 //!
-//! Each build keeps its summaries across a stop (KAIROS-T-0335). The
-//! work database of a first build is in `first-builds/` of
-//! `KAIROS_CODE_INDEX_DIR`, and the work database of an update is in
-//! `updates/`. Each summary is written to it when it is made. The next
-//! build of the repository uses those summaries again: a first build
-//! continues in its work database, and an update copies the summaries of
-//! the old work database into the new one before it starts. The keys of a
-//! summary name its input, so a summary of a build that did not end is
-//! right for each later build that needs its key. An index stores only the
-//! summaries that its structure uses, so a summary that no later index
-//! needs never reaches the pool of the repository. The run row counts the
-//! summaries that a run reused. The builder removes a work database after
-//! it stores the index. A repository with `code_index_build = off` gets no
-//! build.
+//! Each build keeps its summaries across a stop, also on another server
+//! (KAIROS-T-0335, KAIROS-T-0378). Each summary is written to the pool of
+//! the repository in Postgres when the model makes it ([`PoolSink`]), with
+//! no vector and no index that uses it yet. The next build of the
+//! repository, on any server, links the summaries of the pool first: an
+//! update assembles its work database from the base structure and the
+//! whole pool, and a full build adds the pool to its work database before
+//! it summarizes. So a build that stops on one server and goes on on
+//! another server, with an empty `KAIROS_CODE_INDEX_DIR`, makes only the
+//! summaries that were not made. The structure is not stored: the next
+//! build makes it again (minutes).
+//!
+//! The work databases in `first-builds/` and `updates/` of
+//! `KAIROS_CODE_INDEX_DIR` are a local cache: they hold the summaries too,
+//! and an update copies the summaries of the old work database into the
+//! new one. The keys of a summary name its input, so a summary of a build
+//! that did not end is right for each later build that needs its key. An
+//! index uses only the summaries that its structure uses: a download never
+//! has a summary that its structure does not use. A stored index marks
+//! the rows that it uses (`last_used_at`); the retention pass deletes the
+//! rows that no index used, `KAIROS_CODE_INDEX_POOL_DAYS` (30) after a
+//! build made them. The run row counts the summaries that a run reused.
+//! The builder removes a work database after it stores the index. A
+//! repository with `code_index_build = off` gets no build.
 //!
 //! # The runs
 //!
@@ -443,13 +453,79 @@ pub const YIELDED: &str = "the build gave its slot to a build of a higher priori
 /// the watchdog kills the build one lease later.
 pub const STRUCTURE_STEP_LIMIT: Duration = Duration::from_secs(2 * 60 * 60);
 
+/// Writes each summary that a build makes to the pool of its repository in
+/// Postgres when the model makes it (KAIROS-T-0378). So a build that stops
+/// keeps its summaries also when the next lease of its job runs on another
+/// server, with another `KAIROS_CODE_INDEX_DIR`. A write that fails is
+/// logged: the summary stays in the work database of this server.
+#[derive(Clone)]
+pub(crate) struct PoolSink {
+    blocking: BlockingTenantPool,
+    tenant: String,
+    repository: uuid::Uuid,
+    runtime: tokio::runtime::Handle,
+}
+
+impl PoolSink {
+    /// The sink of the builds of `repository`, on the runtime of the
+    /// caller. Call it on a thread of the runtime; [`Self::write`] runs on
+    /// a blocking thread.
+    pub(crate) fn new(blocking: &BlockingTenantPool, tenant: &str, repository: uuid::Uuid) -> Self {
+        PoolSink {
+            blocking: blocking.clone(),
+            tenant: tenant.to_string(),
+            repository,
+            runtime: tokio::runtime::Handle::current(),
+        }
+    }
+
+    /// Add the summaries of `requests` that came back in `results` to the
+    /// pool. A summary that is empty or an error is not written, as the
+    /// work database does not take it.
+    fn write(&self, model: &str, requests: &[SummaryRequest], results: &[Result<String, String>]) {
+        let made: Vec<kairos_db::code_indexes::MadeSummary> = requests
+            .iter()
+            .zip(results)
+            .filter_map(|(request, result)| {
+                let text = result.as_ref().ok()?.trim();
+                (!text.is_empty()).then(|| kairos_db::code_indexes::MadeSummary {
+                    key: request.key.clone(),
+                    level: request.level.as_str().to_string(),
+                    summary: text.to_string(),
+                    model: model.to_string(),
+                })
+            })
+            .collect();
+        if made.is_empty() {
+            return;
+        }
+        let repository = self.repository;
+        let written = self
+            .runtime
+            .block_on(self.blocking.run(&self.tenant, move |conn| {
+                kairos_db::code_indexes::add_made(conn, repository, &made)
+                    .map_err(ApiError::internal)
+            }));
+        if let Err(e) = written {
+            tracing::warn!(
+                tenant = %self.tenant,
+                repository = %self.repository,
+                error = ?e,
+                "code index summaries not written to the pool; the work database keeps them"
+            );
+        }
+    }
+}
+
 /// A summarizer that reports the progress of its build for each call
-/// (KAIROS-T-0374). A call of a build that was killed, or that must give
-/// its slot, fails with [`STOPPED`] or [`YIELDED`]: the summaries made
-/// before stay in the work database.
+/// (KAIROS-T-0374), and writes each summary to the pool of the repository
+/// ([`PoolSink`], KAIROS-T-0378). A call of a build that was killed, or
+/// that must give its slot, fails with [`STOPPED`] or [`YIELDED`]: the
+/// summaries made before stay in the pool and in the work database.
 struct ProgressSummarizer<'a> {
     inner: &'a mut dyn Summarizer,
     handle: &'a JobHandle,
+    pool: &'a PoolSink,
 }
 
 impl ProgressSummarizer<'_> {
@@ -473,6 +549,11 @@ impl Summarizer for ProgressSummarizer<'_> {
         self.check()?;
         let summary = self.inner.summarize(request);
         self.handle.progress();
+        self.pool.write(
+            &self.inner.model(),
+            std::slice::from_ref(request),
+            std::slice::from_ref(&summary),
+        );
         summary
     }
 
@@ -486,6 +567,7 @@ impl Summarizer for ProgressSummarizer<'_> {
         }
         let summaries = self.inner.summarize_many(requests);
         self.handle.progress();
+        self.pool.write(&self.inner.model(), requests, &summaries);
         summaries
     }
 }
@@ -676,6 +758,10 @@ pub struct BuildOutcome {
     pub note: Option<String>,
     pub elapsed: Duration,
 }
+
+/// The note of a first-build job of a repository that has an index
+/// (KAIROS-T-0378).
+pub const HAS_INDEX: &str = "the repository has an index";
 
 /// The note of a repository with `code_index_build = off`.
 pub const OPTED_OUT: &str = "the repository has code_index_build off";
@@ -1272,9 +1358,10 @@ async fn store_built(
         created_by: None,
     };
     let pool = used_rows(split.pool, &split.keys);
+    let keys = split.keys;
     blocking
         .run(tenant, move |conn| {
-            kairos_db::code_indexes::put(conn, &index, &pool).map_err(ApiError::internal)
+            kairos_db::code_indexes::put(conn, &index, &pool, &keys).map_err(ApiError::internal)
         })
         .await
         .map(|_| ())
@@ -1469,6 +1556,7 @@ pub(crate) async fn build_repository(
         let tenant = tenant.to_string();
         let slug = repo.slug.clone();
         let handle = ctx.handle.clone();
+        let sink = PoolSink::new(blocking, &tenant, repo.id);
         tokio::task::spawn_blocking(move || -> Result<_, String> {
             let work = tempfile::Builder::new()
                 .prefix("kairos-code-index-")
@@ -1497,6 +1585,7 @@ pub(crate) async fn build_repository(
                     let mut summarizer = ProgressSummarizer {
                         inner: summarizer,
                         handle: &handle,
+                        pool: &sink,
                     };
                     let embedder = ProgressEmbedder {
                         inner: embedder.as_ref(),
@@ -1632,6 +1721,23 @@ pub(crate) async fn full_build_repository(
         record_end(blocking, tenant, ctx.run, Err(OPTED_OUT)).await;
         return done(outcome, OPTED_OUT.into());
     }
+    // A first-build job that a sweep added from a list it read before the
+    // first build of the repository ended (KAIROS-T-0378): the repository
+    // has an index now, and the updates follow it.
+    if trigger == jobs::FIRST {
+        let repo_id = repo.id;
+        let indexed = blocking
+            .run(tenant, move |conn| {
+                kairos_db::code_indexes::list(conn, repo_id).map_err(ApiError::internal)
+            })
+            .await
+            .map(|listed| !listed.is_empty())
+            .unwrap_or(false);
+        if indexed {
+            record_end(blocking, tenant, ctx.run, Err(HAS_INDEX)).await;
+            return done(outcome, HAS_INDEX.into());
+        }
+    }
 
     let Fetched { clone, head, .. } = match fetch_head(blocking, service, tenant, &repo, false)
         .await
@@ -1675,6 +1781,19 @@ pub(crate) async fn full_build_repository(
     };
     let model_name = models.summarizers.model_name();
 
+    // The pool of the repository in Postgres (KAIROS-T-0378): the summaries
+    // that an earlier lease of this job made, on any server, and those of
+    // the indexes of the repository. The build links them first, so it
+    // makes only the rest. A vector of another model than the one of this
+    // build is left out: the build embeds that summary again.
+    let pool = match linkable_pool(blocking, tenant, repo.id, models.embedder.as_ref()).await {
+        Ok(pool) => pool,
+        Err(note) => {
+            record_end(blocking, tenant, run, Err(&note)).await;
+            return done(outcome, note);
+        }
+    };
+
     // The build, off the async threads: it runs for hours on a large
     // repository. It reports progress for each summary and each embedding
     // batch, and stops at the next one when it must give its slot.
@@ -1684,6 +1803,8 @@ pub(crate) async fn full_build_repository(
         let service = Arc::clone(service);
         let db = db.clone();
         let handle = ctx.handle.clone();
+        let sink = PoolSink::new(blocking, tenant, repo.id);
+        let (tenant, slug) = (tenant.to_string(), repo.slug.clone());
         tokio::task::spawn_blocking(move || -> Result<_, String> {
             if let Some(parent) = db.parent() {
                 std::fs::create_dir_all(parent)
@@ -1713,6 +1834,16 @@ pub(crate) async fn full_build_repository(
                     }
                 }
             })?;
+            match kairos_index::store::add_pool(&db, pool) {
+                Ok(0) => {}
+                Ok(added) => tracing::info!(
+                    tenant,
+                    repository = slug,
+                    added,
+                    "code index full build links the summaries of the pool"
+                ),
+                Err(e) => return Err(format!("the pool of the repository: {e}")),
+            }
             let Models {
                 summarizers,
                 embedder,
@@ -1722,6 +1853,7 @@ pub(crate) async fn full_build_repository(
                     let mut summarizer = ProgressSummarizer {
                         inner: summarizer,
                         handle: &handle,
+                        pool: &sink,
                     };
                     let embedder = ProgressEmbedder {
                         inner: embedder.as_ref(),
@@ -1776,6 +1908,40 @@ pub(crate) async fn full_build_repository(
     outcome.report = Some(report);
     outcome.elapsed = started.elapsed();
     outcome
+}
+
+/// The rows of the pool of `repository` in Postgres for a build whose
+/// vectors come from `embedder` (KAIROS-T-0378): each row, with its vector
+/// when the vectors of the pool are of the model of `embedder`. The error
+/// is the note of a failed run.
+async fn linkable_pool(
+    blocking: &BlockingTenantPool,
+    tenant: &str,
+    repository: uuid::Uuid,
+    embedder: &dyn kairos_embed::EmbeddingProvider,
+) -> Result<Vec<kairos_index::store::PoolRow>, String> {
+    let model = kairos_index::vector_model_name(embedder);
+    let (rows, pool_model) = blocking
+        .run(tenant, move |conn| {
+            let rows = kairos_db::code_indexes::whole_pool(conn, repository)
+                .map_err(ApiError::internal)?;
+            let model = kairos_db::code_indexes::vector_model(conn, repository)
+                .map_err(ApiError::internal)?;
+            Ok((rows, model))
+        })
+        .await
+        .map_err(|e| format!("failed: the pool of the repository is not readable: {e:?}"))?;
+    let keep_vectors = pool_model.is_none_or(|pool| pool == model);
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let mut row = pool_row_of(row);
+            if !keep_vectors {
+                row.vector = None;
+            }
+            row
+        })
+        .collect())
 }
 
 /// Remove the SQLite database at `path` and its journal files. A file that

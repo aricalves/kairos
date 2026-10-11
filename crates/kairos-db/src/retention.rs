@@ -527,6 +527,35 @@ pub fn delete_read_notifications(
     Ok(deleted)
 }
 
+/// Delete, in each tenant, the summaries of the code-index pools that no
+/// stored index has used and that a build made more than
+/// `code_index_pool_days` days before `now` (KAIROS-T-0378). In each mode,
+/// also `off`: such a summary is a cache that a build can make again. 0
+/// days deletes nothing. Returns the count.
+pub fn delete_unused_summaries(
+    conn: &mut PgConnection,
+    config: &RetentionConfig,
+    now: DateTime<Utc>,
+) -> Result<u64, RetentionError> {
+    if config.code_index_pool_days == 0 {
+        return Ok(0);
+    }
+    let cutoff = now - Duration::days(i64::from(config.code_index_pool_days));
+    let mut deleted = 0u64;
+    for tenant_info in tenant::list_tenants(conn)? {
+        if !tenant_info.schema_exists {
+            continue;
+        }
+        let schema = tenant::tenant_schema_name(&tenant_info.slug);
+        sql_query(format!("SET search_path TO \"{schema}\"")).execute(conn)?;
+        let result = crate::code_indexes::delete_unused(conn, cutoff);
+        let reset = sql_query("SET search_path TO DEFAULT").execute(conn);
+        deleted += result? as u64;
+        reset?;
+    }
+    Ok(deleted)
+}
+
 /// What one [`run_retention_pass`] did (KAIROS-T-0366).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetentionPass {
@@ -541,6 +570,9 @@ pub struct RetentionPass {
     /// The read notifications that the pass deleted in all the tenants
     /// (KAIROS-T-0381).
     pub read_notifications_deleted: u64,
+    /// The summaries of the code-index pools that no stored index used,
+    /// which the pass deleted in all the tenants (KAIROS-T-0378).
+    pub unused_summaries_deleted: u64,
 }
 
 /// One retention pass of the server (KAIROS-T-0366): sweep each tenant (as
@@ -548,8 +580,10 @@ pub struct RetentionPass {
 /// sessions that expired before `now`. The session delete runs in every
 /// mode, also `off`: an expired session cannot authenticate, so the row has
 /// no use. So does the delete of the rows of the login throttle whose
-/// window and lockout ended (KAIROS-T-0377). `progress` is called before
-/// each tenant and at the end.
+/// window and lockout ended (KAIROS-T-0377), of the read notifications
+/// (KAIROS-T-0381) and of the unused summaries of the code-index pools
+/// (KAIROS-T-0378). `progress` is called before each tenant and after
+/// each delete.
 ///
 /// The pass is a periodic job of the job queue of the server
 /// (KAIROS-T-0376): the queue gives each run to one server, so the pass
@@ -574,10 +608,13 @@ pub fn run_retention_pass(
     let throttle = crate::auth_failures::delete_expired(conn, now)?;
     let notifications = delete_read_notifications(conn, config, now)?;
     progress();
+    let summaries = delete_unused_summaries(conn, config, now)?;
+    progress();
     Ok(RetentionPass {
         tenants,
         expired_sessions_deleted: expired as u64,
         expired_auth_failures_deleted: throttle as u64,
         read_notifications_deleted: notifications,
+        unused_summaries_deleted: summaries,
     })
 }

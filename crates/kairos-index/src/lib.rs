@@ -72,7 +72,7 @@ pub use schema::SCHEMA_VERSION;
 pub use summary::{
     FakeSummarizer, Level, LevelCount, MODEL_FILE_NAME, SUMMARIZED_KINDS, SYSTEM_PROMPT,
     SummarizeOptions, Summarizer, SummaryCall, SummaryReport, SummaryRequest, link, model_path,
-    summarize,
+    summarize, vector_model_name,
 };
 
 /// The index of a checkout, from its root (COLLIERY-T-1852). A build does not

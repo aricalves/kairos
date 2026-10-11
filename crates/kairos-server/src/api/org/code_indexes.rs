@@ -473,6 +473,7 @@ pub(crate) async fn upload_code_index(
                 )));
             }
             let pool = used_rows(split.pool, &split.keys);
+            let keys = split.keys;
             let outcome = code_indexes::put(
                 conn,
                 &NewCodeIndex {
@@ -482,11 +483,12 @@ pub(crate) async fn upload_code_index(
                     source: "upload",
                     structure: split.structure_gz,
                     structure_bytes: split.structure_bytes as i64,
-                    summary_keys: split.keys.len() as i32,
+                    summary_keys: keys.len() as i32,
                     vector_model: split.vector_model,
                     created_by: Some(user),
                 },
                 &pool,
+                &keys,
             )
             .map_err(ApiError::internal)?;
             let info = code_indexes::info(conn, repo.id, &commit)

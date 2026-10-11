@@ -563,6 +563,7 @@ async fn the_five_events_reach_the_right_person() {
     .expect("one read yesterday");
     let keep = RetentionConfig {
         notifications_read_days: 0,
+        code_index_pool_days: 30,
         ..RetentionConfig::default()
     };
     assert_eq!(

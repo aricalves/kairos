@@ -249,6 +249,10 @@ config:
     # -- KAIROS_NOTIFICATIONS_READ_DAYS — days a read notification stays
     # (server default 30; 0 keeps them). Emitted when not null, also for 0.
     notificationsReadDays: null
+    # -- KAIROS_CODE_INDEX_POOL_DAYS — days a code-index summary that no
+    # stored index uses stays in the pool (server default 30; 0 keeps them).
+    # Emitted when not null, also for 0.
+    codeIndexPoolDays: null
     # -- KAIROS_ARCHIVE_TARGET — NDJSON offload target: a filesystem path or an
     # s3://… URL. Empty means no target (archive mode then prunes nothing).
     archiveTarget: ""

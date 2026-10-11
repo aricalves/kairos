@@ -513,3 +513,45 @@ async fn a_job_that_ran_out_of_tries_fails_with_the_reason() {
         "the failed hook ran"
     );
 }
+
+// ===========================================================================
+// 9. A drain does not stop while a ready job waits for the slot of a job
+//    that ends during the pass (KAIROS-T-0378)
+// ===========================================================================
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_drain_runs_the_job_that_waits_for_a_slot_that_frees_during_a_pass() {
+    // Given a kind with a limit of 1, and a second kind with no job: a pass
+    // that finds the first kind full asks the database for a job of the
+    // second kind, and the running job can end during that read
+    let url = scratch("kairos_jobs_t0378_drain");
+    let record = Arc::new(Record::default());
+    let other = Arc::new(Record::default());
+    let mut total = 0;
+    for round in 0..60u64 {
+        let w = worker(&url, settings(1));
+        // A first job of a length that moves across the time of one pass.
+        register(
+            &w,
+            KIND,
+            &record,
+            Behaviour::Sleep(Duration::from_micros(500 * (round % 30))),
+        );
+        register(&w, OTHER, &other, Behaviour::Sleep(Duration::ZERO));
+        for n in 0..2 {
+            w.enqueue(job(KIND, (round * 2 + n) as i64)).await.unwrap();
+        }
+        total += 2;
+
+        // When the drain runs
+        w.drain().await;
+
+        // Then both jobs ran: the drain did not stop with the second one
+        // queued
+        let queued: Vec<_> = jobs_of(&url, KIND)
+            .into_iter()
+            .filter(|j| j.state == "queued")
+            .collect();
+        assert!(queued.is_empty(), "round {round}: left queued: {queued:?}");
+        assert_eq!(record.runs.lock().unwrap().len(), total, "round {round}");
+    }
+}

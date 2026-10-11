@@ -879,6 +879,12 @@ pub(crate) fn summary_model_of(conn: &Connection) -> Result<Option<String>, Inde
 
 /// The model of the vectors, as `pool_meta` keeps it.
 pub(crate) fn model_name(embedder: &dyn EmbeddingProvider) -> String {
+    vector_model_name(embedder)
+}
+
+/// The model of the vectors of `embedder`, as an index records it
+/// (`provider/model/dimension`): the `vector_model` of a stored index.
+pub fn vector_model_name(embedder: &dyn EmbeddingProvider) -> String {
     let id = embedder.model_id();
     format!("{}/{}/{}", id.provider, id.model, id.dimension)
 }

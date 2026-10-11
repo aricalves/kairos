@@ -540,10 +540,17 @@ impl Worker {
 
     /// Run passes until no job is queued for this worker and none runs
     /// here. For tests and for a one-shot command.
+    ///
+    /// The drain stops only after a pass that began with no job running
+    /// and started none (KAIROS-T-0378). A pass that began while a job ran
+    /// did not ask for the kind of that job, and the job can end during the
+    /// pass: a job of that kind that waits for the slot is then not taken,
+    /// and the drain must look again.
     pub async fn drain(self: &Arc<Self>) {
         loop {
+            let busy = self.running();
             let started = self.pass().await;
-            if started == 0 && self.running() == 0 {
+            if busy == 0 && started == 0 && self.running() == 0 {
                 return;
             }
             let _ = tokio::time::timeout(Duration::from_millis(50), self.wake.notified()).await;

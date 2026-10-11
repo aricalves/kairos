@@ -672,6 +672,7 @@ fn cross_read_visibility_sweep() {
         archive_target: None,
         mode: RetentionMode::Discard,
         notifications_read_days: 30,
+        code_index_pool_days: 30,
     };
     let now = Utc.with_ymd_and_hms(2020, 2, 1, 0, 0, 0).single().unwrap();
     let report = sweep_tenant(&mut acme, "acme", &config, now).expect("sweeping acme");

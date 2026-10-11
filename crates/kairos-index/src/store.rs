@@ -129,6 +129,41 @@ pub fn assemble(
     Ok(())
 }
 
+/// Add the pool rows `pool` to the index file `db` (KAIROS-T-0378): a
+/// build links the summaries that the pool of its repository has, so it
+/// does not make them again. A key that `db` has keeps its summary; it gets
+/// the vector of the row when it has none. The caller gives vectors only
+/// of the model of the build. Returns the rows added.
+pub fn add_pool(db: &Path, pool: impl IntoIterator<Item = PoolRow>) -> Result<usize, IndexError> {
+    let mut conn = Connection::open(db)?;
+    conn.busy_timeout(crate::BUSY_TIMEOUT)?;
+    check_version(&conn)?;
+    let tx = conn.transaction()?;
+    let mut added = 0;
+    {
+        let mut insert = tx.prepare(
+            "INSERT INTO summaries (key, level, summary, vector, model) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (key) DO UPDATE SET vector = excluded.vector
+             WHERE summaries.vector IS NULL AND excluded.vector IS NOT NULL",
+        )?;
+        let mut exists = tx.prepare("SELECT 1 FROM summaries WHERE key = ?1")?;
+        for row in pool {
+            if !exists.exists([&row.key])? {
+                added += 1;
+            }
+            insert.execute(params![
+                row.key,
+                row.level,
+                row.summary,
+                row.vector,
+                row.model
+            ])?;
+        }
+    }
+    tx.commit()?;
+    Ok(added)
+}
+
 /// The bytes of a structure that [`structure_version`] reads: the gzip
 /// of the header of the SQLite file is well inside them.
 pub const VERSION_PREFIX_BYTES: usize = 4096;
@@ -310,6 +345,45 @@ mod tests {
              INSERT INTO pool_meta (name, value) VALUES ('vector_model', 'det/m/1');",
         )
         .unwrap();
+    }
+
+    #[test]
+    fn added_pool_rows_keep_the_summaries_that_the_index_has() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("in.db");
+        index_with_pool(&db);
+        let row = |key: &str, summary: &str, vector: Option<Vec<u8>>| PoolRow {
+            key: key.into(),
+            level: "symbol".into(),
+            summary: summary.into(),
+            vector,
+            model: "fake/fixed".into(),
+        };
+        let added = add_pool(
+            &db,
+            [
+                // A key that the index has: its summary stays, and it gets
+                // the vector it does not have.
+                row("file-key", "Another text.", Some(vec![0, 0, 0, 64])),
+                // A key that the index has with a vector: no change.
+                row("sym-key", "Another text.", Some(vec![0, 0, 64, 64])),
+                // A new key.
+                row("new-key", "N.", None),
+            ],
+        )
+        .unwrap();
+        assert_eq!(added, 1);
+        let rows: std::collections::HashMap<String, PoolRow> = split(&db)
+            .unwrap()
+            .pool
+            .into_iter()
+            .map(|r| (r.key.clone(), r))
+            .collect();
+        assert_eq!(rows["file-key"].summary, "F.");
+        assert_eq!(rows["file-key"].vector, Some(vec![0, 0, 0, 64]));
+        assert_eq!(rows["sym-key"].vector, Some(vec![0, 0, 128, 63]));
+        assert_eq!(rows["new-key"].summary, "N.");
+        assert_eq!(rows.len(), 5);
     }
 
     #[test]

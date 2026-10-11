@@ -436,17 +436,24 @@ batch of vectors. When a build makes no progress for the lease time, its
 server stops it. Then a server starts it again. When a server stops during a
 build, another server takes the job when the lease runs out.
 
-A first build keeps its work in `KAIROS_CODE_INDEX_DIR/first-builds/`. An
-update keeps its work in `KAIROS_CODE_INDEX_DIR/updates/`. Each summary goes
-into that file when the model writes it. The next build of the repository
-uses those summaries again. Thus a restart during a build of some hours does
-not lose the work of the model. When the servers do not share
-`KAIROS_CODE_INDEX_DIR`, a build that another server takes starts its
-summaries again.
+Each summary goes into the summary pool of the repository in the database
+when the model writes it. The next build of the repository, on each server,
+uses the summaries of the pool first. Thus a stop or a restart during a
+build of some hours does not lose the work of the model.
 
-After the builder stores the index, it removes the file. An index keeps only the
-summaries that its code needs. The run shows the number of summaries that it
-made and the number that it reused.
+The servers do not have to share `KAIROS_CODE_INDEX_DIR`. For example, on
+Kubernetes each pod has its own disk. A build that another server takes
+makes the structure again (some minutes). Then it makes only the summaries
+that are not in the pool.
+
+A first build also keeps its work in `KAIROS_CODE_INDEX_DIR/first-builds/`,
+and an update in `KAIROS_CODE_INDEX_DIR/updates/`. These files are a local
+cache. After the builder stores the index, it removes the file.
+
+An index keeps only the summaries that its code needs. A summary that no
+index uses stays in the pool for `KAIROS_CODE_INDEX_POOL_DAYS` (see
+[Retention](#retention)). The run shows the number of summaries that it made
+and the number that it reused.
 
 If a first build of a commit fails, the server does not try that commit
 again. It tries again when the head moves or when the server starts again.
@@ -568,6 +575,12 @@ first start of a deployment runs the pass at once. One pass:
 - In each tenant, deletes the read notifications that were read more than
   `KAIROS_NOTIFICATIONS_READ_DAYS` days before the pass. This occurs in each
   mode, also `off`, and the pass does not archive them.
+- In each tenant, deletes the summaries of the code-index pools that no
+  stored index uses, when a build made them more than
+  `KAIROS_CODE_INDEX_POOL_DAYS` days before the pass. Such a summary comes
+  from a build that did not end, or from code that changed before the build
+  ended. This occurs in each mode, also `off`. A build can make the summary
+  again.
 - Writes one `retention_sweep` row to the `activity_log` of each tenant that
   it sweeps, with the counts of the rows it archived and removed.
 - Logs the counts for each tenant and the number of deleted sessions.
@@ -578,7 +591,7 @@ server cannot parse stops the start.
 
 Their parsing differs from the sixteen variables above: empty is not treated as
 unset. An empty `KAIROS_HISTORY_HOT_DAYS`, `KAIROS_HISTORY_KEEP_LATEST`,
-`KAIROS_ACTIVITY_RETENTION_DAYS`, `KAIROS_NOTIFICATIONS_READ_DAYS` or `KAIROS_RETENTION_MODE` is a parse error
+`KAIROS_ACTIVITY_RETENTION_DAYS`, `KAIROS_NOTIFICATIONS_READ_DAYS`, `KAIROS_CODE_INDEX_POOL_DAYS` or `KAIROS_RETENTION_MODE` is a parse error
 rather than a fallback to the default. `KAIROS_ARCHIVE_TARGET` is the one
 exception: empty means no target.
 
@@ -589,6 +602,7 @@ exception: empty means no target.
 | `KAIROS_ACTIVITY_RETENTION_DAYS` | unsigned integer (days) | `365` | `activity_log` window. Rows older than this are archive-then-delete candidates, with no compaction tiers. |
 | `KAIROS_ARCHIVE_TARGET` | filesystem path or `s3://…` URL | unset | Where prune candidates are offloaded as NDJSON. A `file://` prefix is stripped. An `s3://` value parses to a distinct S3 target that the shipped code rejects with a typed not-implemented error, rather than being misread as a directory name. Empty means no target. |
 | `KAIROS_NOTIFICATIONS_READ_DAYS` | unsigned integer (days) | `30` | The days that a read notification stays. `0` keeps read notifications. An unread notification stays until the person reads it. |
+| `KAIROS_CODE_INDEX_POOL_DAYS` | unsigned integer (days) | `30` | The days that a summary of a code-index pool stays when no stored index uses it. `0` keeps such summaries. A summary that an index uses stays. |
 | `KAIROS_RETENTION_MODE` | `archive` \| `discard` \| `off` | `archive` | `archive` offloads before pruning and, with no target configured, prunes nothing and logs a warning instead. `discard` prunes without archiving. `off` disables the sweeper entirely. Case-insensitive; any other value fails to parse. |
 
 Past the hot window, compaction keeps the first and last snapshot per item per
@@ -984,6 +998,7 @@ The read-only root filesystem is compatible with a filesystem
 | `config.retention.historyKeepLatest` | integer or null | `null` | Sets `KAIROS_HISTORY_KEEP_LATEST`. Emitted only when non-empty. |
 | `config.retention.activityRetentionDays` | integer or null | `null` | Sets `KAIROS_ACTIVITY_RETENTION_DAYS`. Emitted only when non-empty. |
 | `config.retention.notificationsReadDays` | integer or null | `null` | Sets `KAIROS_NOTIFICATIONS_READ_DAYS`. Emitted only when not null, so `0` is emitted. |
+| `config.retention.codeIndexPoolDays` | integer or null | `null` | Sets `KAIROS_CODE_INDEX_POOL_DAYS`. Emitted only when not null, so `0` is emitted. |
 | `config.retention.archiveTarget` | string | `""` | Sets `KAIROS_ARCHIVE_TARGET`. Emitted only when non-empty. |
 | `config.retention.mode` | string | `""` | Sets `KAIROS_RETENTION_MODE`. Emitted only when non-empty. |
 | `database.url` | string | `""` | Sets `DATABASE_URL` through a chart-rendered Secret. |

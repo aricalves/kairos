@@ -249,6 +249,7 @@ fn retention_run(
         expired_sessions_deleted = pass.expired_sessions_deleted,
         expired_auth_failures_deleted = pass.expired_auth_failures_deleted,
         read_notifications_deleted = pass.read_notifications_deleted,
+        unused_summaries_deleted = pass.unused_summaries_deleted,
         "retention: pass done"
     );
     Ok(())

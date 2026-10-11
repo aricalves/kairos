@@ -334,6 +334,7 @@ fn retention_sweeper_lifecycle() {
     let no_target = RetentionConfig {
         mode: RetentionMode::Archive,
         notifications_read_days: 30,
+        code_index_pool_days: 30,
         archive_target: None,
         ..RetentionConfig::default()
     };
@@ -358,6 +359,7 @@ fn retention_sweeper_lifecycle() {
     let s3 = RetentionConfig {
         mode: RetentionMode::Archive,
         notifications_read_days: 30,
+        code_index_pool_days: 30,
         archive_target: Some(ArchiveTarget::S3("s3://kairos-archive/acme".into())),
         ..RetentionConfig::default()
     };
@@ -382,6 +384,7 @@ fn retention_sweeper_lifecycle() {
     let fs_config = RetentionConfig {
         mode: RetentionMode::Archive,
         notifications_read_days: 30,
+        code_index_pool_days: 30,
         archive_target: Some(ArchiveTarget::Filesystem(archive_base.clone())),
         ..RetentionConfig::default()
     };
@@ -483,6 +486,7 @@ fn retention_sweeper_lifecycle() {
     let off = RetentionConfig {
         mode: RetentionMode::Off,
         notifications_read_days: 30,
+        code_index_pool_days: 30,
         archive_target: Some(ArchiveTarget::Filesystem(archive_base.clone())),
         history_hot_days: 0, // even a maximally aggressive policy is inert
         activity_retention_days: 0,
@@ -535,6 +539,7 @@ fn retention_sweeper_lifecycle() {
     let discard = RetentionConfig {
         mode: RetentionMode::Discard,
         notifications_read_days: 30,
+        code_index_pool_days: 30,
         archive_target: None,
         ..RetentionConfig::default()
     };
@@ -610,6 +615,7 @@ fn retention_pass_removes_old_rows_and_expired_sessions() {
         activity_retention_days: 30,
         mode: RetentionMode::Discard,
         notifications_read_days: 30,
+        code_index_pool_days: 30,
         ..RetentionConfig::default()
     };
 
@@ -685,8 +691,12 @@ fn retention_pass_removes_old_rows_and_expired_sessions() {
 
     let mut steps = 0;
     let pass = run_retention_pass(&mut conn, &config, now, &mut || steps += 1).expect("pass");
-    assert_eq!(steps, 2, "one tenant and the end");
+    assert_eq!(
+        steps, 3,
+        "one tenant, after the notifications, and after the pool summaries"
+    );
     assert_eq!(pass.expired_sessions_deleted, 1);
+    assert_eq!(pass.unused_summaries_deleted, 0);
     assert_eq!(pass.expired_auth_failures_deleted, 1);
     assert_eq!(pass.tenants.len(), 1);
     assert_eq!(pass.tenants[0].activity_log.rows_pruned, 1);
@@ -713,6 +723,7 @@ fn retention_pass_removes_old_rows_and_expired_sessions() {
     let off = RetentionConfig {
         mode: RetentionMode::Off,
         notifications_read_days: 30,
+        code_index_pool_days: 30,
         ..RetentionConfig::default()
     };
     let pass = run_retention_pass(&mut conn, &off, now, &mut || {}).expect("pass");
