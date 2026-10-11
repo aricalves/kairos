@@ -31,7 +31,7 @@ export default defineConfig({
 				'Kairos: Flight Levels work management. One stateless binary serving the GUI, REST API, MCP and SCIM, against a Postgres and an OIDC issuer you bring.',
 			social: [{ icon: 'github', label: 'GitHub', href: REPO }],
 			editLink: { baseUrl: `${REPO}/edit/main/docs/` },
-			plugins: [starlightAurora()],
+			plugins: [starlightAurora({ hyper: true })],
 			sidebar: [
 				{ label: 'Introduction', link: '/' },
 				{
