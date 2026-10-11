@@ -23,6 +23,7 @@ pub mod graph;
 pub mod impacts;
 pub mod item_teams;
 pub mod items;
+pub mod jobs;
 pub mod local_auth;
 pub mod migrations;
 pub mod models;

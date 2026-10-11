@@ -26,6 +26,7 @@ pub mod embedding;
 pub mod error;
 pub mod forge;
 pub mod input;
+pub mod jobs;
 pub mod local_auth;
 pub mod login;
 pub mod metrics;

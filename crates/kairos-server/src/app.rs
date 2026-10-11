@@ -58,6 +58,10 @@ pub struct AppState {
     /// The tenants whose schema did not migrate at startup (KAIROS-T-0330):
     /// their requests are refused until the schema is current.
     pub tenant_readiness: Arc<crate::tenant_readiness::TenantReadiness>,
+    /// The worker of the job queue of this server (KAIROS-T-0373). Its id
+    /// is the id of the start of this server (KAIROS-T-0354): the code-index
+    /// runs record the same id.
+    pub jobs: Arc<crate::jobs::Worker>,
 }
 
 /// Why [`build_state`] failed (startup-time, fail-fast).
@@ -95,8 +99,16 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
             Authenticator::disabled()
         }
     };
-    let code_index = code_index_service(&config);
+    // KAIROS-T-0354, KAIROS-T-0373: one random id for this start of the
+    // server, for the leases of the jobs and the code-index runs.
+    let instance = uuid::Uuid::new_v4();
+    let code_index = code_index_service(&config, instance);
     let throttle = crate::rate_limit::from_config(&config).map(Arc::new);
+    let jobs = Arc::new(crate::jobs::Worker::new(
+        blocking.clone(),
+        instance,
+        config.jobs.clone(),
+    ));
     Ok(AppState {
         config: Arc::new(config),
         pool,
@@ -107,15 +119,20 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
         throttle,
         code_index,
         tenant_readiness: Arc::new(crate::tenant_readiness::TenantReadiness::default()),
+        jobs,
     })
 }
 
 /// The clones of the base code index (COLLIERY-T-1853), or `None` when
 /// `KAIROS_CODE_INDEX_DIR` is not set.
-fn code_index_service(config: &AppConfig) -> Option<Arc<crate::code_index::CodeIndexService>> {
+fn code_index_service(
+    config: &AppConfig,
+    instance: uuid::Uuid,
+) -> Option<Arc<crate::code_index::CodeIndexService>> {
     let dir = config.code_index_dir.clone()?;
     Some(Arc::new(
         crate::code_index::CodeIndexService::from_repo_url(dir)
+            .with_instance(instance)
             .with_secrets_key(config.secrets_key.clone())
             .with_min_rebuild_secs(config.code_index_min_rebuild_secs),
     ))
@@ -241,6 +258,12 @@ pub fn state_with(config: AppConfig, pool: TenantPool, auth: Arc<Authenticator>)
     // test that wants a throttle sets the variables and a test that does not set
     // `KAIROS_AUTH_MAX_FAILURES` to 0.
     let throttle = crate::rate_limit::from_config(&config).map(Arc::new);
+    // The worker of a test state runs no job until a test starts it.
+    let jobs = Arc::new(crate::jobs::Worker::new(
+        blocking.clone(),
+        uuid::Uuid::new_v4(),
+        config.jobs.clone(),
+    ));
     AppState {
         config: Arc::new(config),
         pool,
@@ -253,6 +276,7 @@ pub fn state_with(config: AppConfig, pool: TenantPool, auth: Arc<Authenticator>)
         throttle,
         code_index: None,
         tenant_readiness: Arc::new(crate::tenant_readiness::TenantReadiness::default()),
+        jobs,
     }
 }
 
@@ -723,6 +747,10 @@ pub async fn serve(
     }
 
     start_code_index_builder(&state);
+    // KAIROS-T-0373: the worker of the job queue. Detached like the
+    // refresher: a job that a stop cuts short keeps its lease until it runs
+    // out, and then a server takes it again.
+    tokio::spawn(Arc::clone(&state.jobs).run());
     start_retention_loop(state.config.database_url.clone(), retention);
 
     let app = router(state);

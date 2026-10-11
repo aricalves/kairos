@@ -395,6 +395,7 @@ fn config(scratch_url: &str) -> AppConfig {
         session_ttl_secs: 14 * 24 * 60 * 60,
         api_key_ttl_days: 90,
         api_key_rotation_grace_secs: 24 * 60 * 60,
+        jobs: Default::default(),
         bootstrap_admin: None,
         bootstrap_password: None,
         bootstrap_password_hash: None,

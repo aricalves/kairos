@@ -579,6 +579,35 @@ Past the hot window, compaction keeps the first and last snapshot per item per
 UTC calendar month and treats the intermediate versions as prune candidates.
 See [Archiving](../explanation/archiving.md).
 
+### Job queue
+
+Each server runs a worker for the job queue (KAIROS-T-0373). The jobs are in
+the table `public.jobs`. All replicas share the table. A worker takes the next
+job with the highest priority. In one priority, the oldest job goes first. Two
+workers never take the same job.
+
+A job has a lease. The job tells the worker when it makes progress. At each
+heartbeat, the worker writes the progress and extends the lease. When a job
+makes no progress for the lease time, its worker stops it. Then the job goes
+back to the queue.
+
+When a server stops, the lease of its jobs runs out. Then another worker takes
+those jobs. After the last try, the job fails, and the
+row keeps the reason.
+
+A worker removes a job 7 days after it ends. A value that is not a number, or
+that is out of range, stops the start of the server.
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `KAIROS_JOB_HEARTBEAT_SECS` | whole number, 1 or more | `30` | How often the worker writes the progress of a job. |
+| `KAIROS_JOB_LEASE_SECS` | whole number, 2 heartbeats or more | `300` | The time that a job can run with no progress. The worker stops the job one heartbeat before this time. |
+| `KAIROS_JOB_MAX_TRIES` | whole number, 1 or more | `3` | The number of tries of a job. After the last try, the job fails. |
+| `KAIROS_JOB_LIMIT_EMBEDDED_BUILD` | whole number | `1` | The code-index builds with the embedded model that one server runs at the same time. `0`: the server does not run them. |
+| `KAIROS_JOB_LIMIT_HOSTED_BUILD` | whole number | `4` | The code-index builds with a hosted provider that one server runs at the same time. |
+| `KAIROS_JOB_LIMIT_EMBEDDING_BATCH` | whole number | `2` | The embedding batches that one server runs at the same time. |
+| `KAIROS_JOB_LIMIT_PERIODIC` | whole number | `1` | The periodic passes that one server runs at the same time. |
+
 ## Default board configurations
 
 Provisioning a tenant seeds one configuration per flight level, and creating a

@@ -221,6 +221,13 @@ impl CodeIndexService {
         }
     }
 
+    /// Record `instance` as the start of this server on each run, in place
+    /// of a random id (KAIROS-T-0373: the id of the job worker).
+    pub fn with_instance(mut self, instance: uuid::Uuid) -> Self {
+        self.instance = instance;
+        self
+    }
+
     /// The start of this server, as the runs record it (KAIROS-T-0354).
     pub fn instance(&self) -> uuid::Uuid {
         self.instance

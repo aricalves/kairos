@@ -275,6 +275,9 @@ pub struct AppConfig {
     /// **86400** (1 day), so that the agents can change to the new secret.
     /// `0` ends the old secret at the rotation.
     pub api_key_rotation_grace_secs: u64,
+    /// `KAIROS_JOB_*` (KAIROS-T-0373): the heartbeat, the lease, the tries
+    /// and the limits per kind of the job queue ([`crate::jobs`]).
+    pub jobs: crate::jobs::JobSettings,
     /// `KAIROS_BOOTSTRAP_ADMIN` (KAIROS-T-0204): the email of a first-boot admin,
     /// created **only when the deployment has no users at all**.
     ///
@@ -620,11 +623,63 @@ impl AppConfig {
                 "KAIROS_API_KEY_ROTATION_GRACE_SECS",
                 24 * 60 * 60,
             )?,
+            jobs: parse_jobs(&get)?,
             bootstrap_admin,
             bootstrap_password,
             bootstrap_password_hash,
         })
     }
+}
+
+/// The settings of the job queue (KAIROS-T-0373): `KAIROS_JOB_HEARTBEAT_SECS`
+/// (30), `KAIROS_JOB_LEASE_SECS` (300), `KAIROS_JOB_MAX_TRIES` (3) and a
+/// `KAIROS_JOB_LIMIT_<KIND>` for each kind. The heartbeat must be at least 1
+/// second, and the lease at least 2 heartbeats, so that a job that makes
+/// progress keeps its lease.
+fn parse_jobs(
+    get: &impl Fn(&str) -> Option<String>,
+) -> Result<crate::jobs::JobSettings, ConfigError> {
+    use crate::jobs::kinds;
+    let mut settings = crate::jobs::JobSettings::default();
+    let heartbeat: u64 = parse_num(get, "KAIROS_JOB_HEARTBEAT_SECS", 30)?;
+    let lease: u64 = parse_num(get, "KAIROS_JOB_LEASE_SECS", 300)?;
+    let max_tries: i32 = parse_num(get, "KAIROS_JOB_MAX_TRIES", 3)?;
+    if heartbeat == 0 {
+        return Err(ConfigError::Invalid {
+            var: "KAIROS_JOB_HEARTBEAT_SECS",
+            message: "must be 1 or more".into(),
+        });
+    }
+    if lease < 2 * heartbeat {
+        return Err(ConfigError::Invalid {
+            var: "KAIROS_JOB_LEASE_SECS",
+            message: format!(
+                "{lease} is less than 2 heartbeats ({} s): a job that makes progress would \
+                 lose its lease",
+                2 * heartbeat
+            ),
+        });
+    }
+    if max_tries < 1 {
+        return Err(ConfigError::Invalid {
+            var: "KAIROS_JOB_MAX_TRIES",
+            message: "must be 1 or more".into(),
+        });
+    }
+    settings.heartbeat = std::time::Duration::from_secs(heartbeat);
+    settings.lease = std::time::Duration::from_secs(lease);
+    settings.max_tries = max_tries;
+    for (var, kind) in [
+        ("KAIROS_JOB_LIMIT_EMBEDDED_BUILD", kinds::EMBEDDED_BUILD),
+        ("KAIROS_JOB_LIMIT_HOSTED_BUILD", kinds::HOSTED_BUILD),
+        ("KAIROS_JOB_LIMIT_EMBEDDING_BATCH", kinds::EMBEDDING_BATCH),
+        ("KAIROS_JOB_LIMIT_PERIODIC", kinds::PERIODIC),
+    ] {
+        let default = settings.limit(kind);
+        let limit: usize = parse_num(get, var, default)?;
+        settings.limits.insert(kind.to_string(), limit);
+    }
+    Ok(settings)
 }
 
 /// `KAIROS_AUTO_JOIN_DOMAINS`: comma-separated, trimmed, lowercased, a
@@ -834,6 +889,45 @@ mod tests {
                     .contains("KAIROS_CODE_INDEX_MIN_REBUILD_SECS"),
                 "{value}: {err}"
             );
+        }
+    }
+
+    #[test]
+    fn the_job_settings_have_defaults_and_refuse_a_bad_value() {
+        let config = AppConfig::from_lookup(lookup(MINIMAL)).expect("valid config");
+        assert_eq!(config.jobs.heartbeat, std::time::Duration::from_secs(30));
+        assert_eq!(config.jobs.lease, std::time::Duration::from_secs(300));
+        assert_eq!(config.jobs.max_tries, 3);
+        assert_eq!(config.jobs.limit("embedded_build"), 1);
+        assert_eq!(config.jobs.limit("hosted_build"), 4);
+        assert_eq!(config.jobs.limit("embedding_batch"), 2);
+        assert_eq!(config.jobs.limit("periodic"), 1);
+
+        let mut vars = MINIMAL.to_vec();
+        vars.extend([
+            ("KAIROS_JOB_HEARTBEAT_SECS", "10"),
+            ("KAIROS_JOB_LEASE_SECS", "60"),
+            ("KAIROS_JOB_MAX_TRIES", "5"),
+            ("KAIROS_JOB_LIMIT_HOSTED_BUILD", "8"),
+            ("KAIROS_JOB_LIMIT_EMBEDDED_BUILD", "0"),
+        ]);
+        let config = AppConfig::from_lookup(lookup(&vars)).expect("valid config");
+        assert_eq!(config.jobs.heartbeat, std::time::Duration::from_secs(10));
+        assert_eq!(config.jobs.lease, std::time::Duration::from_secs(60));
+        assert_eq!(config.jobs.max_tries, 5);
+        assert_eq!(config.jobs.limit("hosted_build"), 8);
+        assert_eq!(config.jobs.limit("embedded_build"), 0);
+
+        for (var, value) in [
+            ("KAIROS_JOB_HEARTBEAT_SECS", "0"),
+            ("KAIROS_JOB_LEASE_SECS", "45"),
+            ("KAIROS_JOB_MAX_TRIES", "0"),
+            ("KAIROS_JOB_LIMIT_PERIODIC", "one"),
+        ] {
+            let mut vars = MINIMAL.to_vec();
+            vars.push((var, value));
+            let err = AppConfig::from_lookup(lookup(&vars)).expect_err(var);
+            assert!(err.to_string().contains(var), "{var}={value}: {err}");
         }
     }
 
