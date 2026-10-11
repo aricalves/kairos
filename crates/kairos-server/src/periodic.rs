@@ -247,6 +247,7 @@ fn retention_run(
     tracing::info!(
         tenants = pass.tenants.len(),
         expired_sessions_deleted = pass.expired_sessions_deleted,
+        expired_auth_failures_deleted = pass.expired_auth_failures_deleted,
         "retention: pass done"
     );
     Ok(())

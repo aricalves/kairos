@@ -665,10 +665,23 @@ fn retention_pass_removes_old_rows_and_expired_sessions() {
         actions
     };
 
+    // KAIROS-T-0377: one row of the login throttle that can change no
+    // decision, and one that can.
+    sql_query(
+        "INSERT INTO public.auth_failures \
+             (kind, subject, failures, window_started, expires_at) \
+         VALUES ('source', 'old', 1, $1, $1), ('source', 'new', 1, $2, $2)",
+    )
+    .bind::<diesel::sql_types::Timestamptz, _>(now - Duration::hours(1))
+    .bind::<diesel::sql_types::Timestamptz, _>(now + Duration::hours(1))
+    .execute(&mut conn)
+    .expect("inserting throttle rows");
+
     let mut steps = 0;
     let pass = run_retention_pass(&mut conn, &config, now, &mut || steps += 1).expect("pass");
     assert_eq!(steps, 2, "one tenant and the end");
     assert_eq!(pass.expired_sessions_deleted, 1);
+    assert_eq!(pass.expired_auth_failures_deleted, 1);
     assert_eq!(pass.tenants.len(), 1);
     assert_eq!(pass.tenants[0].activity_log.rows_pruned, 1);
     assert_eq!(session_hashes(&mut conn), vec!["live"]);

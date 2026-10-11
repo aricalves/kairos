@@ -226,16 +226,17 @@ compose stack (Caddy) does. No setting turns the headers off.
 
 #### Where the state lives
 
-In process, in memory. The consequences are worth knowing:
+In the database, in the table `public.auth_failures` (KAIROS-T-0377). All
+replicas share the counts. Thus a lockout holds on each replica, and a
+restart keeps it.
 
-- Lockouts are **per replica**. A Deployment scaled to three pods, or behind the
-  chart's HPA, allows roughly three times the configured failures overall.
-- A restart forgets every lockout.
-
-This is the right trade for the single-binary deployments Kairos targets
-(KAIROS-A-0013): the alternative puts a database write on the failure path of an
-endpoint that is under attack, which is the moment you least want extra writes.
-If you run many replicas and need a shared limit, rate-limit at the ingress.
+- Each attempt reads the counts of its subjects one time, before the server
+  checks the credential.
+- A failure adds one write. A success adds one write only when the subject
+  has a count.
+- A row keeps a hash of the email or the address, not the value.
+- The retention pass removes the rows whose window and lockout ended.
+- If the server cannot read the table, the attempt continues.
 
 A lockout increments `kairos_auth_lockouts_total{subject="identity"|"source"}` on
 `/metrics` and logs at WARN. The subject *kind* is recorded; the email address or

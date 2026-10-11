@@ -103,7 +103,7 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
     // server, for the leases of the jobs and the code-index runs.
     let instance = uuid::Uuid::new_v4();
     let code_index = code_index_service(&config, instance);
-    let throttle = crate::rate_limit::from_config(&config).map(Arc::new);
+    let throttle = crate::rate_limit::from_config(&config, &blocking).map(Arc::new);
     let jobs = Arc::new(crate::jobs::Worker::new(
         blocking.clone(),
         instance,
@@ -259,7 +259,7 @@ pub fn state_with(config: AppConfig, pool: TenantPool, auth: Arc<Authenticator>)
     // KAIROS-T-0202: built from the passed config like everything else here, so a
     // test that wants a throttle sets the variables and a test that does not set
     // `KAIROS_AUTH_MAX_FAILURES` to 0.
-    let throttle = crate::rate_limit::from_config(&config).map(Arc::new);
+    let throttle = crate::rate_limit::from_config(&config, &blocking).map(Arc::new);
     // The worker of a test state runs no job until a test starts it.
     let jobs = Arc::new(crate::jobs::Worker::new(
         blocking.clone(),

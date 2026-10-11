@@ -507,13 +507,18 @@ pub struct RetentionPass {
     /// The expired password sessions (`public.local_sessions`) the pass
     /// deleted.
     pub expired_sessions_deleted: u64,
+    /// The rows of the login throttle (`public.auth_failures`) that can
+    /// change no decision, which the pass deleted (KAIROS-T-0377).
+    pub expired_auth_failures_deleted: u64,
 }
 
 /// One retention pass of the server (KAIROS-T-0366): sweep each tenant (as
 /// [`sweep_all_tenants`], which obeys the mode) and delete the password
 /// sessions that expired before `now`. The session delete runs in every
 /// mode, also `off`: an expired session cannot authenticate, so the row has
-/// no use. `progress` is called before each tenant and at the end.
+/// no use. So does the delete of the rows of the login throttle whose
+/// window and lockout ended (KAIROS-T-0377). `progress` is called before
+/// each tenant and at the end.
 ///
 /// The pass is a periodic job of the job queue of the server
 /// (KAIROS-T-0376): the queue gives each run to one server, so the pass
@@ -535,9 +540,11 @@ pub fn run_retention_pass(
         }
     }
     let expired = crate::local_auth::delete_expired_sessions(conn, now)?;
+    let throttle = crate::auth_failures::delete_expired(conn, now)?;
     progress();
     Ok(RetentionPass {
         tenants,
         expired_sessions_deleted: expired as u64,
+        expired_auth_failures_deleted: throttle as u64,
     })
 }

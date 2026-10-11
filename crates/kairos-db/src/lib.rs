@@ -9,6 +9,7 @@
 pub mod abac;
 pub mod agent_mark;
 pub mod api_keys;
+pub mod auth_failures;
 pub mod board_items;
 pub mod boards;
 pub mod code_index_builds;
