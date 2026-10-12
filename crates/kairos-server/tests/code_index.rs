@@ -1689,6 +1689,176 @@ async fn a_requested_build_that_fails_ends_its_run_as_failed() {
 }
 
 // ===========================================================================
+// KAIROS-T-0398: the code index builds of a repository can be stopped
+// ===========================================================================
+
+/// Set `code_index_build` of `payments-api` with the REST call
+/// `PATCH /api/repositories/{slug}`, as bob.
+async fn set_build(w: &World, value: CodeIndexBuild) {
+    let repo = w
+        .bob
+        .update_repository(
+            "payments-api",
+            &UpdateRepositoryRequest {
+                code_index_build: Some(value),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("bob sets code_index_build");
+    assert_eq!(repo.code_index_build, value);
+}
+
+/// The build kinds, for a lease by hand.
+fn build_kinds() -> Vec<String> {
+    vec![
+        kairos_server::jobs::kinds::EMBEDDED_BUILD.to_string(),
+        kairos_server::jobs::kinds::HOSTED_BUILD.to_string(),
+    ]
+}
+
+// Scenario: off cancels the build jobs that wait, and the sweep adds none
+#[tokio::test]
+async fn turning_the_builder_off_cancels_the_waiting_builds() {
+    // Given a requested build that waits for a server
+    let mut w = World::new("kairos_code_index_t0398_cancel").await;
+    let key = job_key("acme", w.repo_id);
+    let run = w
+        .bob
+        .rebuild_code_index("payments-api")
+        .await
+        .expect("202 with the run");
+    let job = kairos_db::jobs::open_by_key(&mut w.conn, &key)
+        .unwrap()
+        .expect("the request is a job");
+    assert_eq!(job.state, "queued");
+
+    // When bob sets code_index_build to off with the REST call
+    set_build(&w, CodeIndexBuild::Off).await;
+
+    // Then the job is cancelled, with no more tries
+    let cancelled = kairos_db::jobs::get(&mut w.conn, job.id).unwrap().unwrap();
+    assert_eq!(cancelled.state, "failed");
+    assert_eq!(
+        cancelled.last_error.as_deref(),
+        Some(kairos_server::code_index::TURNED_OFF)
+    );
+    assert!(
+        kairos_db::jobs::open_by_key(&mut w.conn, &key)
+            .unwrap()
+            .is_none()
+    );
+    // And its run ends as failed, with the reason
+    let runs = runs_of(&w).await;
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    assert_eq!(runs[0].id, run.id);
+    assert_eq!(runs[0].outcome, "failed");
+    assert_eq!(
+        runs[0].error.as_deref(),
+        Some(kairos_server::code_index::TURNED_OFF)
+    );
+    // And no server runs it
+    assert!(w.requested_builds().await.is_empty());
+
+    // And the sweep adds no first build and no update
+    let outcomes = w.first_builds().await;
+    assert_eq!(outcomes.len(), 1, "{outcomes:?}");
+    assert_eq!(outcomes[0].note.as_deref(), Some(OPTED_OUT));
+    assert!(
+        kairos_db::jobs::open_by_key(&mut w.conn, &key)
+            .unwrap()
+            .is_none()
+    );
+    let outcomes = w.sweep().await;
+    assert!(
+        outcomes
+            .iter()
+            .all(|o| o.report.is_none() && o.note.as_deref() == Some(OPTED_OUT)),
+        "{outcomes:?}"
+    );
+    assert!(
+        kairos_db::jobs::open_by_key(&mut w.conn, &key)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(runs_of(&w).await.len(), 1, "no new run");
+
+    // When the builder is on again, a job whose server stopped (its lease
+    // ran out) waits to be taken again: off cancels it too
+    set_build(&w, CodeIndexBuild::On).await;
+    w.bob
+        .rebuild_code_index("payments-api")
+        .await
+        .expect("a new request");
+    let leased = kairos_db::jobs::take(&mut w.conn, Uuid::new_v4(), &build_kinds(), -1.0)
+        .unwrap()
+        .expect("a lease that ran out");
+    set_build(&w, CodeIndexBuild::Off).await;
+    let cancelled = kairos_db::jobs::get(&mut w.conn, leased.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cancelled.state, "failed");
+    assert_eq!(runs_of(&w).await[0].outcome, "failed");
+}
+
+// Scenario: off does not kill a build that runs, but no further try starts
+#[tokio::test]
+async fn turning_the_builder_off_lets_a_running_build_go_on_with_no_new_try() {
+    // Given a requested build that a server runs now
+    let mut w = World::new("kairos_code_index_t0398_running").await;
+    let key = job_key("acme", w.repo_id);
+    let run = w
+        .bob
+        .rebuild_code_index("payments-api")
+        .await
+        .expect("202 with the run");
+    let server = Uuid::new_v4();
+    let leased = kairos_db::jobs::take(&mut w.conn, server, &build_kinds(), 600.0)
+        .unwrap()
+        .expect("the server leases the job");
+
+    // When bob sets code_index_build to off
+    set_build(&w, CodeIndexBuild::Off).await;
+
+    // Then the build goes on: its job and its run are not changed
+    let job = kairos_db::jobs::get(&mut w.conn, leased.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(job.state, "leased");
+    assert_eq!(job.leased_by, Some(server));
+    assert_eq!(runs_of(&w).await[0].outcome, "running");
+
+    // When the try fails, and the job is queued for a further try
+    let released = kairos_db::jobs::release(&mut w.conn, leased.id, server, "the try failed", 0.0)
+        .unwrap()
+        .expect("the server held the lease");
+    assert_eq!(released.state, "queued");
+
+    // Then the further try builds nothing, and ends the run
+    let outcomes = w.requested_builds().await;
+    assert_eq!(outcomes.len(), 1, "{outcomes:?}");
+    assert!(outcomes[0].report.is_none(), "{outcomes:?}");
+    assert_eq!(outcomes[0].note.as_deref(), Some(OPTED_OUT));
+    let runs = runs_of(&w).await;
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    assert_eq!(runs[0].id, run.id);
+    assert_eq!(runs[0].outcome, "failed");
+    assert_eq!(runs[0].error.as_deref(), Some(OPTED_OUT));
+    assert!(
+        w.alice
+            .list_code_indexes("payments-api")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        kairos_db::jobs::open_by_key(&mut w.conn, &key)
+            .unwrap()
+            .is_none()
+    );
+}
+
+// ===========================================================================
 // KAIROS-T-0341: the builder chooses the summarizer of each build, and a
 // hosted summarizer sends N requests at a time with retries
 // ===========================================================================

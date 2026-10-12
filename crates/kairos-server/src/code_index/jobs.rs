@@ -128,6 +128,37 @@ pub(crate) fn enqueue_build(
     ))
 }
 
+/// Cancel the build jobs of `repo` that wait for a server, on a connection
+/// of the tenant `tenant` (KAIROS-T-0398): `code_index_build` was set to
+/// off. A job that a server runs now goes on; its next try, if any, stops
+/// at the switch ([`super::OPTED_OUT`]). The run of each cancelled job ends
+/// as failed. The number of cancelled jobs.
+pub(crate) fn cancel_builds(
+    conn: &mut PgConnection,
+    tenant: &str,
+    repo: &Repository,
+) -> Result<usize, ApiError> {
+    let cancelled = queue::cancel_waiting(conn, &job_key(tenant, repo.id), super::TURNED_OFF)
+        .map_err(ApiError::internal)?;
+    for job in &cancelled {
+        let Some(run) = serde_json::from_str::<BuildPayload>(&job.payload)
+            .ok()
+            .and_then(|p| p.run)
+        else {
+            continue;
+        };
+        if runs::get(conn, run)
+            .map_err(ApiError::internal)?
+            .is_some_and(|found| found.outcome == "running")
+        {
+            let ended =
+                runs::end_failed(conn, run, super::TURNED_OFF).map_err(ApiError::internal)?;
+            notify_run(conn, &repo.slug, ended.requested_by)?;
+        }
+    }
+    Ok(cancelled.len())
+}
+
 /// The note of a repository whose build job `job` is open.
 fn open_note(job: &Job) -> String {
     let payload: Option<BuildPayload> = serde_json::from_str(&job.payload).ok();

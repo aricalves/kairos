@@ -159,6 +159,9 @@ One repository in full. The output has these parts:
   comment and the commit status `kairos` on each GitHub pull request that
   links to an item. No tool gives or sets the token. See
   [Turn on GitHub write-back](../../how-to/turn-on-github-write-back/).
+- `code index build`: `on` or `off`. When it is `off`, the builder of the
+  server does not build the code index of the repository.
+  `update_repository` sets it.
 - the team's description of how to work in the repository
 - the documents and the ADRs that impact the repository
 - the in-flight branches and pull requests, each with its work item
@@ -250,8 +253,9 @@ details: {"field":"repo_full_name"}
 
 ### `update_repository`
 
-Changes the description, the default branch and the URL of a repository. The
-rule is that of `PATCH /api/repositories/{slug}`, for the current owner team.
+Changes the description, the default branch, the URL and the code index
+builder of a repository. The rule is that of `PATCH /api/repositories/{slug}`,
+for the current owner team.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
@@ -259,9 +263,10 @@ rule is that of `PATCH /api/repositories/{slug}`, for the current owner team.
 | `description` | string | no | no change | The new text on how to work in the repository. It replaces the full text. An empty string removes the text. |
 | `default_branch` | string | no | no change | The new default branch: a branch name that git accepts. |
 | `repo_url` | string | no | no change | The new URL for a browser: `http` or `https`, with no user name and no password. |
+| `code_index_build` | string | no | no change | `on` or `off`: the builder of the code index of the server, for this repository. |
 
-The call must have one or more of `description`, `default_branch` and
-`repo_url`. The tool has no `slug` argument and no `team` argument. Each
+The call must have one or more of `description`, `default_branch`, `repo_url`
+and `code_index_build`. The tool has no `slug` argument and no `team` argument. Each
 checkout keeps the slug in `.claude/kairos.local.md`, and a new slug breaks
 that reference.
 
@@ -272,6 +277,17 @@ The result names the arguments that changed the repository:
 ```text
 Updated repository fidius: description, default_branch.
 ```
+
+`code_index_build: "off"` stops the builds of the repository. Kairos cancels
+the build jobs of the repository that wait for a server, and their runs end as
+failed. The builder adds no new job. Kairos does not stop a build that runs
+now, but the build gets no further try. The result gives the number of cancelled jobs:
+
+```text
+Updated repository fidius: code_index_build. The code index builder is off: 1 waiting build job(s) cancelled.
+```
+
+`code_index_build: "on"` starts the builds again.
 
 The tool writes only when a value is different. A call can have only the
 values that the repository has. That call is a success and it writes nothing.
@@ -285,7 +301,9 @@ Refuses: `VALIDATION` with `details.field` for a new value that does not have
 [the form of its field](../glossary/#the-form-of-the-fields-of-a-repository).
 Its result is `No change to repository fidius: it has these values already.`
 
-Refuses: `VALIDATION` when the call has none of the three arguments.
+Refuses: `VALIDATION` when the call has none of the four arguments.
+`VALIDATION` with `details.argument` for a `code_index_build` that is not `on`
+or `off`.
 `NOT_FOUND` for an unknown repository. `FORBIDDEN` when the caller is not a
 member of the owner team and is not an organization admin.
 

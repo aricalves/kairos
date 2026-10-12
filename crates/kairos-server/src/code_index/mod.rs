@@ -766,6 +766,10 @@ pub const HAS_INDEX: &str = "the repository has an index";
 /// The note of a repository with `code_index_build = off`.
 pub const OPTED_OUT: &str = "the repository has code_index_build off";
 
+/// The error of a build job, and of its run, that waited for a server when
+/// `code_index_build` was set to off (KAIROS-T-0398).
+pub const TURNED_OFF: &str = "cancelled: code_index_build was set to off";
+
 /// The note of an `embedded` repository on a server with no embedded model
 /// (KAIROS-T-0341, KAIROS-T-0344).
 pub const NO_EMBEDDED_MODEL: &str = "failed: This image has no embedded model. Set a hosted \

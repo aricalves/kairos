@@ -604,6 +604,10 @@ pub struct UpdateRepositoryParams {
     /// The new URL of the repository for a browser: an absolute http or
     /// https URL, with no user name and no password.
     pub repo_url: Option<String>,
+    /// The code index builder of the server for the repository: "on" or
+    /// "off" (KAIROS-T-0398). "off" cancels the build jobs that wait, and
+    /// the builder adds no new job. A build that runs now goes on.
+    pub code_index_build: Option<String>,
 }
 
 /// Parameters for `rebuild_code_index` (KAIROS-T-0332).
@@ -1027,7 +1031,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "One repository in full: owner team, the delivery board of that team, the open task count on all boards, default branch, the team's `description` of how to work in it (READ THIS before working in or filing against an unfamiliar repo), the documents and the ADRs that impact the repository (its vision, its architecture, the decisions about it: read them with `get_item` before you plan work in the repository), and its in-flight branches and pull requests with the work items they belong to. The line `read token` says whether the builder of the code index has a token for the repository, who set it and the last check; no tool gives or sets the token. The line `write-back` says whether Kairos writes a comment and the commit status `kairos` on the GitHub pull requests that link to an item (on with a write token, else off), and the last write. `repository` is a slug or UUID. `include_deleted: true` adds the archived documents and ADRs, each marked [archived]."
+        description = "One repository in full: owner team, the delivery board of that team, the open task count on all boards, default branch, the team's `description` of how to work in it (READ THIS before working in or filing against an unfamiliar repo), the documents and the ADRs that impact the repository (its vision, its architecture, the decisions about it: read them with `get_item` before you plan work in the repository), and its in-flight branches and pull requests with the work items they belong to. The line `read token` says whether the builder of the code index has a token for the repository, who set it and the last check; no tool gives or sets the token. The line `write-back` says whether Kairos writes a comment and the commit status `kairos` on the GitHub pull requests that link to an item (on with a write token, else off), and the last write. The line `code index build` says whether the code index builder of the server works on the repository (on or off; `update_repository` sets it). `repository` is a slug or UUID. `include_deleted: true` adds the archived documents and ADRs, each marked [archived]."
     )]
     pub async fn get_repository(
         &self,
@@ -1061,7 +1065,7 @@ impl KairosMcp {
                 graph::repository_link_rollup(conn, repo_id, &["open", "draft"], 50)
                     .map_err(ApiError::internal)?;
             let mut out = format!(
-                "# Repository {} — {} {}\n- url: {}\n- default branch: {}\n- owner team: {} ({})\n- owner's delivery board: {}\n- open tasks (all boards): {}\n- webhooks: {}\n- read token: {}\n- write-back: {}\n- code index summaries: {}\n",
+                "# Repository {} — {} {}\n- url: {}\n- default branch: {}\n- owner team: {} ({})\n- owner's delivery board: {}\n- open tasks (all boards): {}\n- webhooks: {}\n- read token: {}\n- write-back: {}\n- code index build: {}\n- code index summaries: {}\n",
                 rendered.slug,
                 rendered.forge,
                 rendered.repo_full_name,
@@ -1078,6 +1082,8 @@ impl KairosMcp {
                 // KAIROS-T-0386: the GitHub write-back, on or off. No tool
                 // sets or gives the write token.
                 rendered.write_back.summary(),
+                // KAIROS-T-0398: on or off; `update_repository` sets it.
+                rendered.code_index_build.as_str(),
                 // KAIROS-T-0340: where the summaries of the checkout come
                 // from. On `hosted`, the CLI makes none (KAIROS-T-0343).
                 // KAIROS-T-0358: `organization` shows what it resolves to.
@@ -2623,7 +2629,7 @@ impl KairosMcp {
     // COLLIERY-T-0267 the tool made the comparison, and the REST route
     // always wrote.
     #[tool(
-        description = "Change a repository of the directory: its `description` (how to work in the repository), its `default_branch` and its `repo_url`. Send one or more of them. `default_branch` is a branch name that git accepts. `repo_url` is an absolute http or https URL, with no user name and no password in it. The two cannot be empty or have a space. A value that the repository has already changes nothing. `repository` is a slug or UUID. `description` replaces the full text, so read the text with `get_repository` first. This tool does not link a task to a repository: `set_repository` does that. You must be a member of the owner team, or an organization admin. This tool does not change the slug: each checkout keeps the slug in `.claude/kairos.local.md`, and a new slug breaks that reference. This tool does not change the owner team, and no tool deletes a repository. A person does these on the GUI page Admin, Repositories, with the CLI (`kairos repos update`, `kairos repos delete`) or with the REST API (PATCH or DELETE /api/repositories/{slug})."
+        description = "Change a repository of the directory: its `description` (how to work in the repository), its `default_branch`, its `repo_url` and its `code_index_build`. Send one or more of them. `default_branch` is a branch name that git accepts. `repo_url` is an absolute http or https URL, with no user name and no password in it. The two cannot be empty or have a space. `code_index_build` is `on` or `off`: the code index builder of the server for the repository. Set it to `off` to stop the builds of the repository: Kairos cancels the build jobs that wait, and the builder adds no new job. Kairos does not stop a build that runs now, but the build gets no further try. `get_repository` shows the value, and the REST API sets it too (PATCH /api/repositories/{slug} with `code_index_build`). A value that the repository has already changes nothing. `repository` is a slug or UUID. `description` replaces the full text, so read the text with `get_repository` first. This tool does not link a task to a repository: `set_repository` does that. You must be a member of the owner team, or an organization admin. This tool does not change the slug: each checkout keeps the slug in `.claude/kairos.local.md`, and a new slug breaks that reference. This tool does not change the owner team, and no tool deletes a repository. A person does these on the GUI page Admin, Repositories, with the CLI (`kairos repos update`, `kairos repos delete`) or with the REST API (PATCH or DELETE /api/repositories/{slug})."
     )]
     pub async fn update_repository(
         &self,
@@ -2639,12 +2645,29 @@ impl KairosMcp {
             if params.description.is_none()
                 && params.default_branch.is_none()
                 && params.repo_url.is_none()
+                && params.code_index_build.is_none()
             {
                 return Err(ApiError::validation(
                     "The call has nothing to change. Send one or more of these arguments: \
-                     description, default_branch, repo_url.",
+                     description, default_branch, repo_url, code_index_build.",
                 ));
             }
+            // KAIROS-T-0398: refuse an unknown value, and name it.
+            let code_index_build = params
+                .code_index_build
+                .as_deref()
+                .map(|value| {
+                    kairos_client::types_repositories::CodeIndexBuild::parse(value).ok_or_else(
+                        || {
+                            ApiError::validation(format!(
+                                "The argument code_index_build has the value {value:?}. \
+                                 Send \"on\" or \"off\"."
+                            ))
+                            .with_details(json!({ "argument": "code_index_build" }))
+                        },
+                    )
+                })
+                .transpose()?;
             // COLLIERY-T-0267: the comparison with the values of the row is
             // in `change`, so REST and this tool do the same.
             let change = crate::api::org::repositories::change(
@@ -2656,6 +2679,7 @@ impl KairosMcp {
                     description: params.description,
                     default_branch: params.default_branch,
                     repo_url: params.repo_url,
+                    code_index_build,
                     ..Default::default()
                 },
             )?;
@@ -2667,15 +2691,31 @@ impl KairosMcp {
             }
             // The sequence of the names is that of the result text of
             // COLLIERY-T-0266.
-            let changed: Vec<&str> = ["description", "default_branch", "repo_url"]
-                .into_iter()
-                .filter(|name| change.changed.contains(name))
-                .collect();
-            Ok(format!(
+            let changed: Vec<&str> = [
+                "description",
+                "default_branch",
+                "repo_url",
+                "code_index_build",
+            ]
+            .into_iter()
+            .filter(|name| change.changed.contains(name))
+            .collect();
+            let mut text = format!(
                 "Updated repository {}: {}.",
                 change.repository.slug,
                 changed.join(", ")
-            ))
+            );
+            // KAIROS-T-0398: say what the switch did to the queue.
+            if change.repository.code_index_build
+                == kairos_client::types_repositories::CodeIndexBuild::Off
+                && change.changed.contains(&"code_index_build")
+            {
+                text.push_str(&format!(
+                    " The code index builder is off: {} waiting build job(s) cancelled.",
+                    change.cancelled_builds
+                ));
+            }
+            Ok(text)
         })
         .await
     }

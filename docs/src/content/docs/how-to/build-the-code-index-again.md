@@ -66,6 +66,41 @@ tool `rebuild_code_index`. The REST route is
 | `CODE_INDEX_BUILDER_OFF` | The deployment has no builder. | An operator sets `KAIROS_CODE_INDEX_DIR`. See [Configuration](../../reference/configuration/). |
 | `FORBIDDEN` | You cannot change the repository. | Ask an organization admin, or a member of the owner team. |
 
+## Stop the builds of a repository
+
+A build can use much memory and processor time. To stop the builds of one
+repository, set its code index builder to off. You need the right to change
+the repository.
+
+```bash
+kairos repos update <slug> --code-index-build off
+```
+
+An agent uses the MCP tool `update_repository` with
+`"code_index_build": "off"`. The REST call is:
+
+```http
+PATCH /api/repositories/{slug}
+Content-Type: application/json
+
+{"code_index_build": "off"}
+```
+
+When the builder is off:
+
+- Kairos cancels the build jobs of the repository that wait. Their runs
+  end as failed, with the text "cancelled: code_index_build was set to off".
+- The builder adds no new job for the repository: no update after a push,
+  and no first build.
+- Kairos refuses a request for a new index (`CODE_INDEX_BUILD_OFF`).
+- Kairos does not stop a build that runs now. When the build fails, it
+  gets no further try.
+- An upload of an index from a checkout still works.
+
+`kairos repos show <slug>`, the MCP tool `get_repository` and
+`GET /api/repositories/{slug}` show the value. To start the builds again,
+set it to `on`.
+
 ## Related
 
 - [Read a private repository](../read-a-private-repository/): the read

@@ -272,7 +272,9 @@ pub struct UpdateRepositoryRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// `on` or `off` (KAIROS-T-0318). Another value is refused, and the
-    /// error names it.
+    /// error names it. `off` cancels the build jobs of the repository that
+    /// wait for a server; a build that runs now gets no further try
+    /// (KAIROS-T-0398).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_index_build: Option<CodeIndexBuild>,
     /// `embedded`, `hosted` (KAIROS-T-0340) or `organization`

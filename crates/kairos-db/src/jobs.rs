@@ -18,6 +18,8 @@
 //! - [`complete`], [`release`] and [`fail`] end a lease. [`release`] queues
 //!   the job again while it has tries, and fails it after `max_tries`.
 //! - [`fail_expired`] fails each job whose lease ran out on its last try.
+//! - [`cancel_waiting`] fails the jobs of a dedupe key that wait for a
+//!   server.
 //!
 //! Each write of a lease names the server (`leased_by`): a server that lost
 //! its lease to another server changes nothing.
@@ -309,6 +311,28 @@ pub fn open_by_key(conn: &mut PgConnection, dedupe_key: &str) -> QueryResult<Opt
     .bind::<Text, _>(dedupe_key)
     .get_result(conn)
     .optional()
+}
+
+/// Fail each job with `dedupe_key` that waits for a server, with `reason`
+/// in `last_error` and no more tries (KAIROS-T-0398): a `queued` job, and a
+/// `leased` job whose lease ran out (its server stopped, and a server takes
+/// it again). A `leased` job whose lease runs is not changed: its server
+/// runs it. The failed jobs.
+pub fn cancel_waiting(
+    conn: &mut PgConnection,
+    dedupe_key: &str,
+    reason: &str,
+) -> QueryResult<Vec<Job>> {
+    sql_query(format!(
+        "UPDATE public.jobs SET state = 'failed', finished_at = now(), lease_until = NULL, \
+             last_error = $2 \
+         WHERE dedupe_key = $1 \
+           AND (state = 'queued' OR (state = 'leased' AND lease_until < now())) \
+         RETURNING {COLUMNS}"
+    ))
+    .bind::<Text, _>(dedupe_key)
+    .bind::<Text, _>(reason)
+    .load(conn)
 }
 
 /// Put the job `id` of the server `instance` back in the queue with no

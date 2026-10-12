@@ -2720,7 +2720,13 @@ async fn repository_tools_against_live_stack() {
     // No `slug` and no `team`: the tool changes neither.
     assert_eq!(
         arguments_of("update_repository"),
-        ["default_branch", "description", "repo_url", "repository"]
+        [
+            "code_index_build",
+            "default_branch",
+            "description",
+            "repo_url",
+            "repository"
+        ]
     );
     for name in ["add_repository", "update_repository"] {
         let tool = tool(name);
@@ -3217,13 +3223,13 @@ async fn repository_tools_against_live_stack() {
     // Nothing to change: no argument, and null for each.
     for arguments in [
         json!({"repository": "acme-fidius"}),
-        json!({"repository": "acme-fidius", "description": null, "default_branch": null, "repo_url": null}),
+        json!({"repository": "acme-fidius", "description": null, "default_branch": null, "repo_url": null, "code_index_build": null}),
     ] {
         let text = alice_session.call_err("update_repository", arguments).await;
         assert_eq!(
             text,
             "VALIDATION: The call has nothing to change. Send one or more of these \
-             arguments: description, default_branch, repo_url."
+             arguments: description, default_branch, repo_url, code_index_build."
         );
     }
     // The values that the repository has: a success that writes nothing.
@@ -3254,7 +3260,7 @@ async fn repository_tools_against_live_stack() {
             text.starts_with(&format!(
                 "VALIDATION: The call has the argument {argument:?}. This tool does not \
                  accept that argument. The arguments of this tool are: repository, \
-                 description, default_branch, repo_url."
+                 description, default_branch, repo_url, code_index_build."
             )),
             "{text}"
         );
@@ -3283,6 +3289,121 @@ async fn repository_tools_against_live_stack() {
         repository_row(&mut conn, "acme-fidius").unwrap().team,
         platform.id
     );
+
+    // --- KAIROS-T-0398: update_repository turns the code index builder off --
+    let text = alice_session
+        .call_ok("get_repository", json!({"repository": "acme-fidius"}))
+        .await;
+    assert!(text.contains("\n- code index build: on\n"), "{text}");
+    // A build job that waits, with its run (a requested build).
+    let fidius = kairos_db::repositories::load_by_slug(&mut conn, "acme-fidius").expect("row");
+    let key = kairos_server::code_index::job_key(TENANT, fidius.id);
+    let run =
+        kairos_db::code_index_builds::start(&mut conn, fidius.id, "request", None, None, None)
+            .expect("a run");
+    let waiting = kairos_db::jobs::enqueue(
+        &mut conn,
+        &kairos_db::jobs::NewJob {
+            tenant: Some(TENANT.into()),
+            payload: json!({"repository_id": fidius.id, "trigger": "request", "run": run.id}),
+            dedupe_key: Some(key.clone()),
+            ..kairos_db::jobs::NewJob::new("embedded_build")
+        },
+    )
+    .expect("enqueue")
+    .expect("a job");
+    // An unknown value is refused and named, and changes nothing.
+    let text = alice_session
+        .call_err(
+            "update_repository",
+            json!({"repository": "acme-fidius", "code_index_build": "paused"}),
+        )
+        .await;
+    assert!(
+        text.starts_with(
+            "VALIDATION: The argument code_index_build has the value \"paused\". Send \"on\" \
+             or \"off\".\ndetails: "
+        ),
+        "{text}"
+    );
+    assert!(text.contains("\"argument\":\"code_index_build\""), "{text}");
+    assert_eq!(
+        kairos_db::jobs::get(&mut conn, waiting.id)
+            .unwrap()
+            .unwrap()
+            .state,
+        "queued"
+    );
+    // Off: the job that waits is cancelled, and its run ends as failed.
+    let text = alice_session
+        .call_ok(
+            "update_repository",
+            json!({"repository": "acme-fidius", "code_index_build": "off"}),
+        )
+        .await;
+    assert_eq!(
+        text,
+        "Updated repository acme-fidius: code_index_build. The code index builder is off: \
+         1 waiting build job(s) cancelled."
+    );
+    let cancelled = kairos_db::jobs::get(&mut conn, waiting.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cancelled.state, "failed");
+    assert_eq!(
+        cancelled.last_error.as_deref(),
+        Some(kairos_server::code_index::TURNED_OFF)
+    );
+    assert!(
+        kairos_db::jobs::open_by_key(&mut conn, &key)
+            .unwrap()
+            .is_none()
+    );
+    let ended = kairos_db::code_index_builds::get(&mut conn, run.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(ended.outcome, "failed");
+    assert_eq!(
+        ended.error.as_deref(),
+        Some(kairos_server::code_index::TURNED_OFF)
+    );
+    let text = alice_session
+        .call_ok("get_repository", json!({"repository": "acme-fidius"}))
+        .await;
+    assert!(text.contains("\n- code index build: off\n"), "{text}");
+    // Off again changes nothing.
+    let text = alice_session
+        .call_ok(
+            "update_repository",
+            json!({"repository": "acme-fidius", "code_index_build": "off"}),
+        )
+        .await;
+    assert_eq!(
+        text,
+        "No change to repository acme-fidius: it has these values already."
+    );
+    // On clears it, and cancels nothing.
+    let text = alice_session
+        .call_ok(
+            "update_repository",
+            json!({"repository": "acme-fidius", "code_index_build": "on"}),
+        )
+        .await;
+    assert_eq!(text, "Updated repository acme-fidius: code_index_build.");
+    let text = alice_session
+        .call_ok("get_repository", json!({"repository": "acme-fidius"}))
+        .await;
+    assert!(text.contains("\n- code index build: on\n"), "{text}");
+    // bob is not in the owner team: refused, as for the other arguments.
+    let text = bob_session
+        .call_err(
+            "update_repository",
+            json!({"repository": "acme-fidius", "code_index_build": "off"}),
+        )
+        .await;
+    assert!(text.starts_with("FORBIDDEN: "), "{text}");
+    // The row after the switch, for the checks below.
+    let before = repository_row(&mut conn, "acme-fidius").expect("the row");
 
     // --- COLLIERY-T-0267: the form of the fields -----------------------------
     // Until COLLIERY-T-0267 the two tools accepted an empty value and a blank
