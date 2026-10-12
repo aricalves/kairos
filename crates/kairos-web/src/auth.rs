@@ -622,6 +622,34 @@ pub fn stash_return_to(path: &str) {
     }
 }
 
+/// The `next` of the login page (KAIROS-T-0403): the docs sites send a reader
+/// with no session to `/login?next=<path>`. Only a path of the docs sites is
+/// taken, so the login page cannot be an open redirect: it starts with
+/// `/pages/`, and it has no `//`, no backslash and no control character.
+pub fn pages_next(raw: &str) -> Option<String> {
+    let ok = raw.starts_with("/pages/")
+        && !raw.contains("//")
+        && !raw.contains('\\')
+        && !raw.chars().any(char::is_control);
+    ok.then(|| raw.to_string())
+}
+
+/// Is `path` a page of the docs sites? The server renders those, so the app
+/// leaves for them with a full page load, never a route of the app.
+pub fn is_pages_path(path: &str) -> bool {
+    path == "/pages" || path.starts_with("/pages/")
+}
+
+/// Go to `path` after a sign-in: a full page load for a docs site page,
+/// otherwise a route of the app.
+pub fn go_to(path: &str, navigate: impl Fn(&str, leptos_router::NavigateOptions)) {
+    if is_pages_path(path) {
+        let _ = window().location().assign(path);
+    } else {
+        navigate(path, Default::default());
+    }
+}
+
 /// `POST /api/login` — a local password login (KAIROS-T-0205, KAIROS-T-0203).
 ///
 /// The session bearer lands in the SAME place the OIDC access token does: the
@@ -822,7 +850,34 @@ fn form_component(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ApiBearer, AuthConfig, TokenResponse, base64url, form_component, form_encode};
+    use super::{
+        ApiBearer, AuthConfig, TokenResponse, base64url, form_component, form_encode,
+        is_pages_path, pages_next,
+    };
+
+    /// KAIROS-T-0403: the login page takes only a path of the docs sites.
+    #[test]
+    fn pages_next_takes_only_a_docs_site_path() {
+        for good in ["/pages/acme/", "/pages/acme/kairos/docs/KAIROS-D-0012/"] {
+            assert_eq!(pages_next(good).as_deref(), Some(good), "{good}");
+        }
+        for bad in [
+            "/boards",
+            "https://evil.example/pages/",
+            "//evil.example/pages/",
+            "/pages//evil.example",
+            "/pages/\\evil",
+            "/pages/a\nb",
+            "/pages",
+            "pages/acme/",
+            "",
+        ] {
+            assert_eq!(pages_next(bad), None, "{bad:?}");
+        }
+        assert!(is_pages_path("/pages/acme/"));
+        assert!(!is_pages_path("/pagesx"));
+        assert!(!is_pages_path("/boards"));
+    }
 
     fn tokens(access: &str, id: Option<&str>) -> TokenResponse {
         TokenResponse {

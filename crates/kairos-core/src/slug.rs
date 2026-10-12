@@ -32,9 +32,31 @@ pub fn is_valid_slug(slug: &str) -> bool {
         && !crate::repositories::looks_like_uuid(slug)
 }
 
+/// The names that the docs sites use as path segments (KAIROS-D-0013):
+/// `/pages/<tenant>/docs/...`, `/pages/<tenant>/adrs/...` and
+/// `/pages/<tenant>/<team>/repos/...`. A team cannot have one as its slug,
+/// and a team page or folder at the top of the tree cannot either.
+pub const SITE_RESERVED_SLUGS: &[&str] = &["docs", "adrs", "repos"];
+
+/// Whether `slug` is one of [`SITE_RESERVED_SLUGS`].
+pub fn is_site_reserved(slug: &str) -> bool {
+    SITE_RESERVED_SLUGS.contains(&slug)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// KAIROS-T-0403: the three names of the docs sites.
+    #[test]
+    fn site_reserved_slugs() {
+        for slug in ["docs", "adrs", "repos"] {
+            assert!(is_site_reserved(slug), "{slug:?} is reserved");
+        }
+        for slug in ["doc", "docs-team", "runbooks", "Docs"] {
+            assert!(!is_site_reserved(slug), "{slug:?} is not reserved");
+        }
+    }
 
     /// COLLIERY-T-0258, COLLIERY-T-0260: the form of a slug.
     #[test]
