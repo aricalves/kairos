@@ -2621,6 +2621,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kairos-markdown"
+version = "0.11.2"
+dependencies = [
+ "pulldown-cmark",
+]
+
+[[package]]
 name = "kairos-narsil"
 version = "1.7.0"
 dependencies = [
@@ -2708,9 +2715,9 @@ dependencies = [
  "futures-util",
  "gloo-net",
  "js-sys",
+ "kairos-markdown",
  "leptos",
  "leptos_router",
- "pulldown-cmark",
  "serde",
  "serde_json",
  "similar",

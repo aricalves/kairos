@@ -28,7 +28,7 @@ mod create_doc;
 mod delete;
 mod editor;
 mod end;
-pub(crate) mod markdown;
+pub(crate) use kairos_markdown as markdown;
 mod metadata;
 mod owner;
 mod teams;
