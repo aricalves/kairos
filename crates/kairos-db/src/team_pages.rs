@@ -197,7 +197,7 @@ pub enum TeamPageError {
     /// A page or folder at the top of the tree cannot have a slug that the
     /// docs sites use as a path segment (KAIROS-T-0403).
     #[error(
-        "A page or folder at the top of the tree cannot have the slug {0:?}: the docs sites use docs, adrs and repos in their paths. Use a different slug, or put the page in a folder."
+        "A page or folder at the top of the tree cannot have the slug {0:?}. The docs sites use docs, adrs and repos in their paths. Use a different slug, or put the page in a folder."
     )]
     ReservedSlug(String),
     /// The referenced parent is missing, deleted, on another team, or not

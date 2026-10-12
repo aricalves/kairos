@@ -144,7 +144,7 @@ pub fn check_team_slug(slug: &str) -> Result<(), ApiError> {
     check_slug_form("team", slug)?;
     if kairos_core::slug::is_site_reserved(slug) {
         return Err(ApiError::validation(format!(
-            "The team slug {slug:?} is reserved: the docs sites use {} in their paths. \
+            "You cannot use the team slug {slug:?}: the docs sites use {} in their paths. \
              Send a different slug.",
             kairos_core::slug::SITE_RESERVED_SLUGS.join(", ")
         ))
