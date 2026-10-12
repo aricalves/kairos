@@ -262,7 +262,7 @@ fn NewDocumentForm(#[prop(into)] slug: String) -> impl IntoView {
                 Some(Ok(list)) => view! {
                     <Select
                         label="Template"
-                        option_pairs=list.into_iter().map(|item| (item.id, item.name)).collect()
+                        option_pairs={list.into_iter().map(|item| (item.id, item.name)).collect::<Vec<_>>()}
                         value=template
                         attr:data-testid="repository-document-template"
                     />
