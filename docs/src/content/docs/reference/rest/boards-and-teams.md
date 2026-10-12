@@ -906,10 +906,10 @@ Remove a member from a team. An organization admin, or
 
 ### `GET /api/teams/{id}/work-documents`
 
-The documents attached to the team's WORK (KAIROS-T-0084): live
-documents whose supports-parent is a task of the team or an item on
-the team's delivery board. Open tenant-wide. Docs under org-level
-items deliberately absent — team attribution follows the parent item.
+The documents of the team (KAIROS-T-0084, KAIROS-T-0393): live
+documents that a board of the team owns, or whose supports-parent is a
+task of the team or an item on the team's delivery board. Each row
+says why it is listed. Open tenant-wide.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
@@ -917,7 +917,7 @@ items deliberately absent — team attribution follows the parent item.
 
 | Response | Body | Meaning |
 |---|---|---|
-| `200` | array of [`TeamWorkDocument`](../schemas/#teamworkdocument) | Derived work documents, by short code |
+| `200` | array of [`TeamWorkDocument`](../schemas/#teamworkdocument) | The documents of the team, by short code |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown team |
 
 ## team-pages

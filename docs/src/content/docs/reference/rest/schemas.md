@@ -2222,14 +2222,15 @@ One node of a team's page tree, as returned by `GET /api/teams/{id}/pages` (a FL
 
 ## TeamWorkDocument
 
-One row of `GET /api/teams/{id}/work-documents` (KAIROS-T-0084): a live document attached to the team's WORK — its `supports` parent is a task of the team or an item on the team's delivery board. Documents under org-level items deliberately do not appear.
+One row of `GET /api/teams/{id}/work-documents` (KAIROS-T-0084, KAIROS-T-0393): a live document of the team. It is listed when a board of the team owns it (`owned`), or when its `supports` parent is a task of the team or an item on the team's delivery board (`parent_*`). A row has at least one of the two reasons.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `lifecycle` | `string` | yes | `draft|published|adopted|superseded` (KAIROS-T-0080). |
-| `parent_short_code` | `string` | yes | The supports-parent item, for attribution. |
-| `parent_title` | `string` | yes |  |
-| `parent_type` | `string` | yes | `strategy|initiative|task`. |
+| `owned` | `boolean` | yes | A board of the team is the owner board of the document. |
+| `parent_short_code` | `string`, nullable | no | The supports-parent item of the team's work, for attribution; `null` when it supports no item of the team's work. |
+| `parent_title` | `string`, nullable | no |  |
+| `parent_type` | `string`, nullable | no | `strategy|initiative|task`. |
 | `short_code` | `string` | yes | Document short code (links to `/items/{code}`). |
 | `title` | `string` | yes |  |
 

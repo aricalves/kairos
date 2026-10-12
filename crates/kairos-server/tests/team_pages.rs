@@ -533,7 +533,8 @@ async fn team_pages_endpoints_against_live_stack() {
 
     // =======================================================================
     // Derived work-documents (KAIROS-T-0084): supports-parent is a team
-    // task (team_id) OR an item on the team's delivery board
+    // task (team_id) OR an item on the team's delivery board; and
+    // (KAIROS-T-0393) a document that a board of the team owns
     // =======================================================================
     let web_team = svc
         .create_team(&CreateTeamRequest {
@@ -647,6 +648,46 @@ async fn team_pages_endpoints_against_live_stack() {
         .set(kairos_db::schema::documents::deleted_at.eq(diesel::dsl::now))
         .execute(&mut conn)
         .expect("soft-deleting doc F");
+    // KAIROS-T-0393: the owner board of the document also lists it. Most
+    // documents support an initiative on the shared board, or nothing.
+    let mk_owned = |conn: &mut PgConnection, title: &str| {
+        items::create_document(
+            conn,
+            items::CreateDocument {
+                board_id: platform_board,
+                title,
+                content: Some(""),
+                template_id: None,
+            },
+            alice_id,
+        )
+        .expect("fixture owned document")
+    };
+    let doc_h = mk_owned(&mut conn, "Doc H (owned, supports an org initiative)");
+    kairos_db::graph::link_items(
+        &mut conn,
+        org_initiative.id,
+        doc_h.id,
+        RelationshipType::Supports,
+        alice_id,
+    )
+    .expect("supports edge to the org initiative");
+    let doc_i = mk_owned(&mut conn, "Doc I (owned, supports nothing)");
+    // Owned AND supports a team task: one row, with both reasons.
+    let doc_j = mk_owned(&mut conn, "Doc J (owned, supports a team task)");
+    kairos_db::graph::link_items(
+        &mut conn,
+        t2.id,
+        doc_j.id,
+        RelationshipType::Supports,
+        alice_id,
+    )
+    .expect("supports edge to T2");
+    let doc_k = mk_owned(&mut conn, "Doc K (owned, deleted)");
+    diesel::update(kairos_db::schema::documents::table.find(doc_k.id))
+        .set(kairos_db::schema::documents::deleted_at.eq(diesel::dsl::now))
+        .execute(&mut conn)
+        .expect("soft-deleting doc K");
     let t4 = mk_task(&mut conn, platform_board, "T4 doomed");
     let _doc_g = mk_doc(&mut conn, "Doc G (deleted parent)", t4.id);
     diesel::update(kairos_db::schema::tasks::table.find(t4.id))
@@ -661,15 +702,18 @@ async fn team_pages_endpoints_against_live_stack() {
         .await
         .expect("open tenant-wide read");
     let mut expected = vec![
-        (doc_a.short_code.clone(), t1.short_code.clone()),
-        (doc_b.short_code.clone(), t2.short_code.clone()),
-        (doc_e.short_code.clone(), t1.short_code.clone()),
+        (doc_a.short_code.clone(), false, Some(t1.short_code.clone())),
+        (doc_b.short_code.clone(), false, Some(t2.short_code.clone())),
+        (doc_e.short_code.clone(), false, Some(t1.short_code.clone())),
+        (doc_h.short_code.clone(), true, None),
+        (doc_i.short_code.clone(), true, None),
+        (doc_j.short_code.clone(), true, Some(t2.short_code.clone())),
     ];
     expected.sort();
     assert_eq!(
         work_docs
             .iter()
-            .map(|d| (d.short_code.clone(), d.parent_short_code.clone()))
+            .map(|d| (d.short_code.clone(), d.owned, d.parent_short_code.clone()))
             .collect::<Vec<_>>(),
         expected,
         "derived set: {work_docs:?}"
@@ -679,8 +723,20 @@ async fn team_pages_endpoints_against_live_stack() {
         .find(|d| d.short_code == doc_a.short_code)
         .unwrap();
     assert_eq!(a_row.lifecycle, "draft");
-    assert_eq!(a_row.parent_title, "T1 on the team's board");
-    assert_eq!(a_row.parent_type, "task");
+    assert_eq!(
+        a_row.parent_title.as_deref(),
+        Some("T1 on the team's board")
+    );
+    assert_eq!(a_row.parent_type.as_deref(), Some("task"));
+    let i_row = work_docs
+        .iter()
+        .find(|d| d.short_code == doc_i.short_code)
+        .unwrap();
+    assert_eq!(
+        (i_row.parent_title.as_deref(), i_row.parent_type.as_deref()),
+        (None, None),
+        "an owned document that supports nothing has no parent"
+    );
     // Web's panel sees only the doc whose parent sits on ITS board.
     let web_docs = bob
         .list_team_work_documents(&web_team.id)

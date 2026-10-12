@@ -415,19 +415,23 @@ fn TeamBody(view_model: TeamView, on_changed: Callback<()>) -> impl IntoView {
                     })
                 }
             }
-            <Panel title="Work documents" caption="documents attached to this team's work items">
+            <Panel title="Work documents" caption="documents that a board of this team owns, and documents that support this team's work items">
                 {if work_documents.is_empty() {
                     view! {
-                        <Empty message="No documents attached to this team's work items yet — documents under org-level items live with their parent."/>
+                        <Empty message="This team has no documents. A board of this team owns no document, and no document supports a work item of this team."/>
                     }.into_any()
                 } else {
                     view! {
                         <Stack gap="sm">
                             {work_documents.into_iter().map(|doc| {
                                 let api::WorkDocument {
-                                    short_code, title, lifecycle,
+                                    short_code, title, lifecycle, owned,
                                     parent_short_code, parent_title, ..
                                 } = doc;
+                                // Why the row is listed (KAIROS-T-0393):
+                                // a board of the team owns it, it supports
+                                // a work item of the team, or both.
+                                let parent = parent_short_code.zip(parent_title);
                                 view! {
                                     <Stack gap="xs">
                                         <Group justify="between">
@@ -437,12 +441,19 @@ fn TeamBody(view_model: TeamView, on_changed: Callback<()>) -> impl IntoView {
                                             <Pill color=lifecycle_color(&lifecycle)>{lifecycle.clone()}</Pill>
                                         </Group>
                                         <Group gap="xs">
-                                            <Text dimmed=true size="xs">"supports"</Text>
-                                            <Anchor href=format!("/items/{parent_short_code}")>
+                                            {owned.then(|| view! {
+                                                <Text dimmed=true size="xs">"owned by a board of this team"</Text>
+                                            })}
+                                            {parent.map(|(parent_short_code, parent_title)| view! {
                                                 <Text dimmed=true size="xs">
-                                                    {format!("{parent_short_code} — {parent_title}")}
+                                                    {if owned { "· supports" } else { "supports" }}
                                                 </Text>
-                                            </Anchor>
+                                                <Anchor href=format!("/items/{parent_short_code}")>
+                                                    <Text dimmed=true size="xs">
+                                                        {format!("{parent_short_code} — {parent_title}")}
+                                                    </Text>
+                                                </Anchor>
+                                            })}
                                         </Group>
                                     </Stack>
                                 }
