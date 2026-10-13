@@ -3769,6 +3769,78 @@ fn a_test_function_is_found(world: &mut IndexWorld, name: String) {
     );
 }
 
+/// A fake summarizer that gives some symbols a fixed summary, by name
+/// (KAIROS-T-0423).
+struct NamedSummaries {
+    texts: std::collections::HashMap<String, String>,
+    fake: FakeSummarizer,
+}
+
+impl Summarizer for NamedSummaries {
+    fn model(&self) -> String {
+        self.fake.model()
+    }
+
+    fn summarize(&mut self, request: &SummaryRequest) -> Result<String, String> {
+        if request.level == Level::Symbol
+            && let Some(text) = self.texts.get(&request.name)
+        {
+            return Ok(text.clone());
+        }
+        self.fake.summarize(request)
+    }
+}
+
+#[given("a summarized index of the policy fixture, with these summaries:")]
+fn a_summarized_policy_index(world: &mut IndexWorld, step: &cucumber::gherkin::Step) {
+    let table = step.table.as_ref().expect("a table of summaries");
+    let texts = table
+        .rows
+        .iter()
+        .skip(1)
+        .map(|row| (row[0].clone(), row[1].clone()))
+        .collect();
+    world.root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/policy");
+    world.build();
+    let db = world.indexes.last().expect("no index was built").clone();
+    let mut summarizer = NamedSummaries {
+        texts,
+        fake: FakeSummarizer::default(),
+    };
+    summarize(
+        &world.root,
+        &db,
+        &mut summarizer,
+        &DeterministicProvider::default(),
+        &SummarizeOptions::default(),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    // The vectors of the deterministic provider are not about the meaning,
+    // so the search uses the text rank only (SummaryText mode).
+}
+
+#[then(expr = "{word} and {word} are in the first {int} results that are not test code")]
+fn two_are_in_the_first(world: &mut IndexWorld, a: String, b: String, n: usize) {
+    let found = world.search.as_ref().expect("no search ran");
+    let order: Vec<String> = found
+        .hits
+        .iter()
+        .map(|h| format!("{} test={}", h.symbol.qualified(), h.symbol.is_test))
+        .collect();
+    eprintln!("the search ({:?}): {order:#?}", found.mode);
+    let first: Vec<&str> = found
+        .hits
+        .iter()
+        .filter(|h| !h.symbol.is_test)
+        .take(n)
+        .map(|h| h.symbol.name.as_str())
+        .collect();
+    assert!(
+        first.contains(&a.as_str()) && first.contains(&b.as_str()),
+        "{a} and {b} are not in the first {n} results that are not test code: {order:#?}"
+    );
+}
+
 /// The step "Given the Qwen3-4B model file is on disk". It is added only
 /// when the model file is on disk and the test has the `llama` feature.
 /// Otherwise no step matches, and cucumber shows the scenario as skipped.

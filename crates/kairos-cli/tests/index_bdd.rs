@@ -430,6 +430,19 @@ fn an_index(world: &mut CliWorld) {
     world.build_index();
 }
 
+/// The deterministic vectors are a hash of the text: their rank is noise.
+/// A scenario that checks the text rank removes them (KAIROS-T-0423).
+#[given("an index of the polyglot fixture whose summaries have no vectors")]
+fn an_index_with_no_vectors(world: &mut CliWorld) {
+    an_index(world);
+    let conn = rusqlite::Connection::open(world.db()).expect("open the index");
+    conn.execute_batch(
+        "UPDATE summaries SET vector = NULL;
+         DELETE FROM pool_meta WHERE name = 'vector_model';",
+    )
+    .expect("remove the vectors");
+}
+
 #[given("the polyglot fixture, where main reaches target by 2 different routes")]
 fn an_index_with_two_routes(world: &mut CliWorld) {
     world.copy_fixture();

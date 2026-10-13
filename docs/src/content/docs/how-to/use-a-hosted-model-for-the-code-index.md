@@ -104,6 +104,13 @@ has:
 3. No vector. The search then uses the text of the summaries, and its first
    line tells why.
 
+The search also finds the words of the query in the names, the signatures
+and the summaries. It puts the two ranks together. A word of a name counts
+more than a word of a summary. The search cuts each identifier into its
+words: `parseDocument` and `parse_document` give "parse" and "document".
+It finds the stem of each word: "parsed" finds "parse". The index keeps
+these words in an SQLite FTS5 table with the Porter stemmer.
+
 So with `--vector-provider remote`, the search uses vectors when the CLI
 can connect to Kairos. A CLI with no local vector model (the release build
 for Intel macOS) uses Kairos too. The text of the query goes to Kairos,

@@ -28,7 +28,8 @@
 //!
 //! Version 7 (KAIROS-T-0419): `refs`, each use of a symbol that SCIP gives
 //! (a type, a field, an import, a call), and `refs_files`, the Rust files
-//! that have SCIP uses.
+//! that have SCIP uses. Also `symbol_text` (KAIROS-T-0423), the FTS5 table of
+//! the text rank of the search (see `text`).
 //!
 //! An index of an earlier version is refused.
 //!
@@ -186,12 +187,20 @@ pub fn prepare(conn: &Connection) -> Result<(), IndexError> {
             let tx = conn.unchecked_transaction()?;
             tx.execute_batch(SCHEMA)?;
             tx.execute_batch(crate::parse_cache::TABLE)?;
+            tx.execute_batch(crate::text::TABLE)?;
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
             Ok(())
         }
         SCHEMA_VERSION => {
             conn.execute_batch(crate::parse_cache::TABLE)?;
+            // An index of this version made before the text table
+            // (KAIROS-T-0423) gets it here.
+            if !crate::text::exists(conn)? {
+                let tx = conn.unchecked_transaction()?;
+                crate::text::refresh(&tx)?;
+                tx.commit()?;
+            }
             Ok(())
         }
         found => Err(IndexError::SchemaVersion { found }),

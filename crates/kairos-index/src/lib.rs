@@ -45,6 +45,7 @@ mod scip;
 mod sql;
 pub mod store;
 mod summary;
+mod text;
 mod tokens;
 pub mod tools;
 
@@ -731,6 +732,7 @@ fn build(
             ])?;
         }
     }
+    text::refresh(&tx)?;
     parse_cache::write(&tx, &used_keys, &fresh)?;
     tx.commit()?;
     Ok(report)
@@ -1234,6 +1236,43 @@ mod tests {
         std::fs::remove_file(repo.join("b.py")).unwrap();
         std::fs::write(repo.join("d.py"), "def d():\n    return 4\n").unwrap();
         assert_eq!(changed_files(&repo, &db).unwrap(), ["a.py", "b.py", "d.py"]);
+    }
+
+    /// KAIROS-T-0423: a build and a summary run keep the text table of the
+    /// search in step with the symbols and their summaries.
+    #[test]
+    fn an_update_keeps_the_text_of_the_search_in_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("a.py"), "def parse_policy():\n    return 1\n").unwrap();
+        let db = dir.path().join("index.sqlite");
+        let names = |query: &str| -> Vec<String> {
+            Index::open(&db)
+                .unwrap()
+                .search(query, None, 10)
+                .unwrap()
+                .hits
+                .into_iter()
+                .map(|h| h.symbol.name)
+                .collect()
+        };
+
+        build_structure(&repo, &db).unwrap();
+        assert_eq!(names("parsed policies"), ["parse_policy"]);
+        assert!(names("summary").is_empty());
+
+        // The fake summary is "A symbol summary, <digest>.".
+        let embedder = kairos_embed::DeterministicProvider::default();
+        let mut fake = FakeSummarizer::default();
+        update(&repo, &db, &mut fake, &embedder, &UpdateOptions::default()).unwrap();
+        assert_eq!(names("summary"), ["parse_policy"]);
+
+        // A changed tree: the old symbol goes, the new one is found.
+        std::fs::write(repo.join("a.py"), "def validate_policy():\n    return 1\n").unwrap();
+        update(&repo, &db, &mut fake, &embedder, &UpdateOptions::default()).unwrap();
+        assert!(names("parsed").is_empty());
+        assert_eq!(names("validated"), ["validate_policy"]);
     }
 
     /// COLLIERY-T-1854: with no model, each key that the pool has is linked,

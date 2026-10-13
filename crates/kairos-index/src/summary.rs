@@ -717,6 +717,9 @@ fn run(
             for (path, key) in &module_keys {
                 set_module.execute(params![path, key])?;
             }
+            // The summaries of the symbols are in the text rank now
+            // (KAIROS-T-0423).
+            crate::text::refresh(&tx)?;
         }
         tx.commit()?;
     }
@@ -999,6 +1002,8 @@ pub(crate) fn copy_pool(from: &Connection, to: &mut Connection) -> Result<(), In
                 row.get::<_, String>(4)?,
             ])?;
         }
+        // A symbol of `to` can be linked to a summary that it did not have.
+        crate::text::refresh(&tx)?;
     }
     tx.commit()?;
     Ok(())

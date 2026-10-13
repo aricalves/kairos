@@ -10,15 +10,18 @@ Feature: The CLI and the code tools
     Then the status shows the count of files, symbols, edges and summaries
     And the index is in .kairos/index.db and git ignores it
 
+  # The deterministic vectors of the tests come from a hash of the text, so
+  # their rank is noise. These 2 scenarios check the text rank
+  # (KAIROS-T-0423), so their index has no vectors.
   Scenario: An agent finds a symbol by what it does
-    Given an index of the polyglot fixture
+    Given an index of the polyglot fixture whose summaries have no vectors
     When an agent calls code_search with a description of a Rust function
     Then that function is in the first 3 results
 
   # KAIROS-T-0421: test code has a summary, so the search finds a test by
   # what it checks. The result marks it as test code.
   Scenario: An agent finds a test by what it checks
-    Given an index of the polyglot fixture
+    Given an index of the polyglot fixture whose summaries have no vectors
     When an agent calls code_search with what a test checks
     Then the first result is that test, marked as test code, with its summary
 

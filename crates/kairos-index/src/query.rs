@@ -4,9 +4,10 @@
 //! - [`Index::search`]: a search of the summaries. A text rank and a vector
 //!   rank are fused by reciprocal rank, as the search of the Kairos items
 //!   does (`kairos-core::retrieval`): a cosine and a text score have no common
-//!   scale, but 2 ranks do. With no summaries, the search reads the names,
-//!   the signatures and the paths. Test code ranks below the other
-//!   symbols (COLLIERY-T-1857).
+//!   scale, but 2 ranks do. The text rank is the FTS5 table of `text`, with
+//!   the Porter stemmer and BM25 (KAIROS-T-0423). With no summaries, the
+//!   search reads the names, the signatures and the paths. Test code ranks
+//!   below the other symbols (COLLIERY-T-1857).
 //! - [`Index::lookup`]: a symbol from the name that an agent gives.
 //! - [`Index::callers`] and [`Index::callees`]: `certain` edges, and the
 //!   `possible` ones on request.
@@ -30,19 +31,8 @@ use crate::{Index, IndexError, SUMMARIZED_KINDS};
 /// 60 is the value of the paper and of the Kairos item search.
 const RRF_K: f64 = 60.0;
 
-/// BM25 constants.
-const BM25_K1: f64 = 1.2;
-const BM25_B: f64 = 0.75;
-
 /// The most edges that a search for a path follows from one symbol.
 const MAX_PATH_DEPTH: usize = 16;
-
-/// Words that tell nothing about code.
-const STOP_WORDS: &[&str] = &[
-    "a", "an", "and", "are", "as", "at", "be", "by", "does", "for", "from", "how", "in", "is",
-    "it", "its", "of", "on", "or", "that", "the", "this", "to", "what", "when", "where", "which",
-    "who", "with",
-];
 
 /// One symbol, as the tools show it.
 #[derive(Debug, Clone, PartialEq)]
@@ -732,9 +722,11 @@ impl Index {
 
     /// Search the summaries for `query`, at most `limit` symbols.
     ///
-    /// The text rank is BM25 on the name, the container, the signature and
-    /// the summary. The vector rank is the cosine of the vector of the query
-    /// against each summary vector; it needs `embedder` to have the model of
+    /// The text rank is the BM25 of the FTS5 table `symbol_text` on the
+    /// name with its container, the signature and the summary, with the
+    /// Porter stemmer; a word of the name counts more (KAIROS-T-0423). The
+    /// vector rank is the cosine of the vector of the query against each
+    /// summary vector; it needs `embedder` to have the model of
     /// the pool. A symbol with no summary (code that waits for its summary)
     /// is ranked by its name, its signature and its path
     /// (KAIROS-T-0352); with no summary in the index, each symbol is.
@@ -759,23 +751,15 @@ impl Index {
         let summarized = rows.iter().any(|(s, _)| s.summary.is_some());
         let docs = rows;
 
-        let texts: Vec<Vec<String>> = docs
+        let at: HashMap<i64, usize> = docs
             .iter()
-            .map(|(s, _)| {
-                let mut text = format!(
-                    "{} {} {}",
-                    s.qualified(),
-                    s.signature.as_deref().unwrap_or(""),
-                    s.summary.as_deref().unwrap_or("")
-                );
-                if s.summary.is_none() {
-                    text.push(' ');
-                    text.push_str(&s.file);
-                }
-                words(&text)
-            })
+            .enumerate()
+            .map(|(i, (s, _))| (s.id, i))
             .collect();
-        let text_scores = bm25(&words(query), &texts);
+        let text_scores: Vec<(usize, f64)> = crate::text::rank(&self.conn, query)?
+            .into_iter()
+            .filter_map(|(id, score)| Some((*at.get(&id)?, score)))
+            .collect();
         let mut fused: HashMap<usize, f64> = HashMap::new();
         let text_ranks = ranked(&text_scores);
         for (rank, (doc, _)) in text_ranks.iter().enumerate() {
@@ -955,79 +939,6 @@ fn ranked(scores: &[(usize, f64)]) -> Vec<(usize, f64)> {
     out
 }
 
-/// BM25 of `query` against each document, as (document, score).
-fn bm25(query: &[String], docs: &[Vec<String>]) -> Vec<(usize, f64)> {
-    if docs.is_empty() {
-        return Vec::new();
-    }
-    let n = docs.len() as f64;
-    let average = docs.iter().map(Vec::len).sum::<usize>() as f64 / n;
-    let terms: HashSet<&String> = query.iter().collect();
-    let mut frequency: HashMap<&String, f64> = HashMap::new();
-    for doc in docs {
-        let present: HashSet<&String> = doc.iter().filter(|w| terms.contains(w)).collect();
-        for term in present {
-            *frequency.entry(term).or_default() += 1.0;
-        }
-    }
-    docs.iter()
-        .enumerate()
-        .map(|(i, doc)| {
-            let length = doc.len() as f64;
-            let score = terms
-                .iter()
-                .map(|term| {
-                    let tf = doc.iter().filter(|w| w == term).count() as f64;
-                    if tf == 0.0 {
-                        return 0.0;
-                    }
-                    let df = frequency.get(term).copied().unwrap_or(0.0);
-                    let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
-                    idf * tf * (BM25_K1 + 1.0)
-                        / (tf + BM25_K1 * (1.0 - BM25_B + BM25_B * length / average.max(1.0)))
-                })
-                .sum();
-            (i, score)
-        })
-        .collect()
-}
-
-/// The words of a text for the text rank: lower case, with each identifier
-/// also cut at `_`, `::` and at a change to a capital (`enqueue_all` gives
-/// `enqueue_all`, `enqueue` and `all`). Stop words and single letters go.
-fn words(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for token in text.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
-        if token.is_empty() {
-            continue;
-        }
-        let mut parts = Vec::new();
-        let mut current = String::new();
-        let mut previous_lower = false;
-        for c in token.chars() {
-            if c == '_' {
-                parts.push(std::mem::take(&mut current));
-                previous_lower = false;
-                continue;
-            }
-            if c.is_uppercase() && previous_lower {
-                parts.push(std::mem::take(&mut current));
-            }
-            previous_lower = c.is_lowercase() || c.is_ascii_digit();
-            current.extend(c.to_lowercase());
-        }
-        parts.push(current);
-        let parts: Vec<String> = parts.into_iter().filter(|p| !p.is_empty()).collect();
-        let whole = token.to_lowercase();
-        if parts.len() > 1 {
-            out.push(whole);
-        }
-        out.extend(parts);
-    }
-    out.retain(|w| w.chars().count() > 1 && !STOP_WORDS.contains(&w.as_str()));
-    out
-}
-
 /// `name (file:line)`, the text of a candidate of an ambiguity, as its
 /// parts. `None` for any other text.
 fn candidate_parts(text: &str) -> Option<(&str, &str, u32)> {
@@ -1183,23 +1094,6 @@ mod tests {
     }
 
     #[test]
-    fn words_cut_identifiers() {
-        assert_eq!(
-            words("enqueue_all(items) -> Queue: the HttpClient"),
-            [
-                "enqueue_all",
-                "enqueue",
-                "all",
-                "items",
-                "queue",
-                "httpclient",
-                "http",
-                "client"
-            ]
-        );
-    }
-
-    #[test]
     fn shortest_chains_are_distinct_and_shortest_first() {
         // 1 -> 2 -> 5, 1 -> 3 -> 4 -> 5, 1 -> 3 -> 5, and 2 -> 3.
         let mut next: HashMap<i64, Vec<(i64, u32, bool)>> = HashMap::new();
@@ -1210,18 +1104,6 @@ mod tests {
         assert_eq!(chains, [vec![1, 2, 5], vec![1, 3, 5], vec![1, 2, 3, 5]]);
         assert_eq!(shortest_chains(&next, 1, 5, 1), [vec![1, 2, 5]]);
         assert!(shortest_chains(&next, 5, 1, 3).is_empty());
-    }
-
-    #[test]
-    fn bm25_ranks_the_document_with_the_rare_word_first() {
-        let docs: Vec<Vec<String>> = ["adds a number to the stack", "removes the newest number"]
-            .iter()
-            .map(|d| words(d))
-            .collect();
-        let scores = bm25(&words("newest number"), &docs);
-        let order: Vec<usize> = ranked(&scores).into_iter().map(|(i, _)| i).collect();
-        assert_eq!(order, [1, 0]);
-        assert!(bm25(&words("queue"), &docs).iter().all(|(_, s)| *s == 0.0));
     }
 
     fn sym(id: i64, file: &str, kind: &str, lines: (u32, u32)) -> SymbolInfo {
