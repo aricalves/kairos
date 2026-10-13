@@ -1057,6 +1057,7 @@ mod tests {
             slug: name.to_lowercase(),
             team_type: "stream_aligned".to_string(),
             delivery_board_id: None,
+            site_enabled: true,
         }
     }
 

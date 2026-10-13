@@ -68,6 +68,35 @@ pub struct Repository {
     /// (KAIROS-T-0358).
     #[serde(default = "code_index_summaries_embedded")]
     pub code_index_summaries_resolved: String,
+    /// The published site of the repository (KAIROS-T-0408).
+    #[serde(default)]
+    pub site: RepositorySite,
+}
+
+/// mirror of: `kairos_client::types_sites::RepositorySite`.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+pub struct RepositorySite {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Where Kairos serves the site.
+    #[serde(default)]
+    pub base_path: String,
+    #[serde(default)]
+    pub published: Option<SitePublished>,
+    /// The live publish was built for another base path.
+    #[serde(default)]
+    pub needs_republish: bool,
+}
+
+/// mirror of: `kairos_client::types_sites::SitePublish` (the fields that the
+/// GUI shows).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct SitePublished {
+    /// RFC 3339.
+    pub published_at: String,
+    pub md5: String,
+    #[serde(default)]
+    pub principal_name: Option<String>,
 }
 
 /// The default of [`Repository::code_index_summaries`]: an older server
@@ -281,6 +310,39 @@ pub async fn set_repository(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// KAIROS-T-0408: the site of a repository decodes, and an older
+    /// server's answer with no site decodes as "off".
+    #[test]
+    fn repository_site_decodes() {
+        let base = serde_json::json!({
+            "id": "r-1", "slug": "payments", "forge": "other",
+            "repo_full_name": "payments", "repo_url": "https://example.com/p",
+            "default_branch": "main",
+            "team": {"id": "t-1", "slug": "platform", "name": "Platform"},
+        });
+        let old: Repository = serde_json::from_value(base.clone()).unwrap();
+        assert_eq!(old.site, RepositorySite::default());
+        let mut with_site = base;
+        with_site["site"] = serde_json::json!({
+            "enabled": true,
+            "base_path": "/pages/acme/platform/repos/payments/",
+            "needs_republish": true,
+            "published": {
+                "publish_id": "p-1", "repository_slug": "payments",
+                "base_path": "/pages/acme/web/repos/payments/",
+                "md5": "0123456789abcdef0123456789abcdef", "size": 10,
+                "unpacked_size": 20, "files": 2, "principal_id": "u-1",
+                "principal_name": "Robin", "agent_key_id": null,
+                "published_at": "2026-10-13T02:14:26+00:00", "state": "live"
+            }
+        });
+        let repo: Repository = serde_json::from_value(with_site).unwrap();
+        assert!(repo.site.enabled && repo.site.needs_republish);
+        let published = repo.site.published.unwrap();
+        assert_eq!(published.principal_name.as_deref(), Some("Robin"));
+        assert_eq!(published.published_at, "2026-10-13T02:14:26+00:00");
+    }
 
     /// The repository mirrors decode a realistic `GET /api/repositories`
     /// row (field-name lock against the S-0005 wire shape; optional

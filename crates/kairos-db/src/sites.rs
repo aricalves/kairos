@@ -275,6 +275,19 @@ pub fn file(
         .optional()
 }
 
+/// The display names of `user_ids` (KAIROS-T-0408).
+pub fn names(
+    conn: &mut PgConnection,
+    user_ids: &[Uuid],
+) -> Result<HashMap<Uuid, String>, DieselError> {
+    use crate::schema::users;
+    let rows: Vec<(Uuid, String)> = users::table
+        .filter(users::id.eq_any(user_ids))
+        .select((users::id, users::display_name))
+        .load(conn)?;
+    Ok(rows.into_iter().collect())
+}
+
 /// The tenant slug of the connection: its `search_path` is `org_{slug}`.
 pub fn tenant_slug(conn: &mut PgConnection) -> Result<String, DieselError> {
     #[derive(QueryableByName)]

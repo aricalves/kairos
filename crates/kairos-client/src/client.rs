@@ -1702,6 +1702,54 @@ impl KairosClient {
         self.delete(&format!("/api/repositories/{reference}")).await
     }
 
+    /// `PUT /api/repositories/{slug}/site` — publish the built site of a
+    /// repository: one `.tar.gz`, with its MD5 in base64 as `Content-MD5`
+    /// (KAIROS-T-0406). The answer is the new live publish.
+    pub async fn publish_site(
+        &self,
+        reference: &str,
+        archive: Vec<u8>,
+        content_md5: &str,
+    ) -> Result<crate::types_sites::SitePublish, Error> {
+        let path = format!("/api/repositories/{reference}/site");
+        let builder = self
+            .http
+            .put(self.url(&path))
+            .header(reqwest::header::CONTENT_TYPE, "application/gzip")
+            .header("content-md5", content_md5)
+            .body(archive);
+        let response = self.authorize(builder).await?.send().await?;
+        let status = response.status().as_u16();
+        let body = response.text().await?;
+        if status == 201 {
+            return serde_json::from_str(&body).map_err(|source| Error::Decode {
+                context: format!("PUT {path}"),
+                source,
+            });
+        }
+        match serde_json::from_str::<ErrorEnvelope>(&body) {
+            Ok(envelope) => Err(Error::from_envelope(status, envelope)),
+            Err(_) => Err(Error::UnexpectedResponse { status, body }),
+        }
+    }
+
+    /// `DELETE /api/repositories/{slug}/site` — unpublish the site of a
+    /// repository (KAIROS-T-0406).
+    pub async fn unpublish_site(&self, reference: &str) -> Result<(), Error> {
+        let path = format!("/api/repositories/{reference}/site");
+        let builder = self.http.delete(self.url(&path));
+        let response = self.authorize(builder).await?.send().await?;
+        let status = response.status().as_u16();
+        if status == 204 {
+            return Ok(());
+        }
+        let body = response.text().await?;
+        match serde_json::from_str::<ErrorEnvelope>(&body) {
+            Ok(envelope) => Err(Error::from_envelope(status, envelope)),
+            Err(_) => Err(Error::UnexpectedResponse { status, body }),
+        }
+    }
+
     /// `GET /api/repositories/{slug}/write-token` — the status of the
     /// GitHub write-back (KAIROS-T-0386). It never has the token.
     pub async fn get_repository_write_back(

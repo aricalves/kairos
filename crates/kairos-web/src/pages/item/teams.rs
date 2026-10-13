@@ -230,6 +230,7 @@ mod tests {
             slug: slug.into(),
             team_type: "stream_aligned".into(),
             delivery_board_id: None,
+            site_enabled: true,
         }
     }
 
