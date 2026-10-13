@@ -63,6 +63,22 @@ pub struct BoardDetail {
 pub struct Strategy {
     pub short_code: String,
     pub title: String,
+    /// The owner (KAIROS-T-0411); `None` for no owner, and from an older
+    /// server.
+    #[serde(default)]
+    pub owner: Option<ItemOwner>,
+}
+
+/// mirror of: `kairos_client::types::ItemOwner` (partial).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct ItemOwner {
+    pub display_name: String,
+}
+
+/// The pill of the owner of a strategy or an initiative on a card
+/// (KAIROS-T-0411). Pure, host-tested.
+pub(crate) fn owner_pill(owner: Option<&ItemOwner>) -> Option<String> {
+    owner.map(|owner| format!("owner: {}", owner.display_name))
 }
 
 /// mirror of: `kairos_client::types::Initiative` (partial — card fields).
@@ -76,6 +92,10 @@ pub struct Initiative {
     pub is_bucket: bool,
     #[serde(default)]
     pub bucket_type: Option<String>,
+    /// The owner (KAIROS-T-0411); `None` for no owner, and from an older
+    /// server.
+    #[serde(default)]
+    pub owner: Option<ItemOwner>,
 }
 
 /// mirror of: `kairos_client::types::Task` (partial — card fields).
@@ -1126,6 +1146,27 @@ mod tests {
     fn the_wip_label_names_the_count_and_the_limit() {
         assert_eq!(wip_label(2, None), None);
         assert_eq!(wip_label(4, Some(3)).as_deref(), Some("WIP 4/3"));
+    }
+
+    /// KAIROS-T-0411: a card initiative or strategy decodes its owner, and
+    /// the card shows it as a pill. A body with no owner has no pill.
+    #[test]
+    fn the_owner_decodes_and_makes_a_pill() {
+        let initiative: Initiative = serde_json::from_value(serde_json::json!({
+            "short_code": "DEMO-I-0001", "title": "I",
+            "owner": {"user_id": "u", "display_name": "Robin",
+                      "claimed_at": "2026-10-12T10:00:00Z"}
+        }))
+        .expect("mirror decodes");
+        assert_eq!(
+            owner_pill(initiative.owner.as_ref()).as_deref(),
+            Some("owner: Robin")
+        );
+        let strategy: Strategy = serde_json::from_value(serde_json::json!({
+            "short_code": "DEMO-S-0001", "title": "S"
+        }))
+        .expect("mirror decodes");
+        assert_eq!(owner_pill(strategy.owner.as_ref()), None);
     }
 
     /// older server (no `claim`) decodes with none.

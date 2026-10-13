@@ -72,7 +72,7 @@ pub(crate) async fn restore_item(
         .run(&tenant.slug, move |conn| {
             let (item_id, item_type) =
                 resolve_family_item(conn, &family, &short_code, Liveness::IncludeArchived)?;
-            crate::api::require_item_edit(conn, &slug, user, item_id, item_type)?;
+            crate::api::require_item_archive(conn, &slug, user, item_id, item_type)?;
 
             match items::restore_item(conn, item_type, item_id, user).map_err(map_item_error)? {
                 Ok(outcome) => Ok(dto::RestoreResponse {

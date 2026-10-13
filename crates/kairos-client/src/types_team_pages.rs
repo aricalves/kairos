@@ -106,10 +106,11 @@ pub struct TeamAnnouncement {
     pub created_at: String,
 }
 
-/// One row of `GET /api/teams/{id}/work-documents` (KAIROS-T-0084): a
-/// live document attached to the team's WORK — its `supports` parent is a
-/// task of the team or an item on the team's delivery board. Documents
-/// under org-level items deliberately do not appear.
+/// One row of `GET /api/teams/{id}/work-documents` (KAIROS-T-0084,
+/// KAIROS-T-0393): a live document of the team. A board of the team owns
+/// it (`owned`), or it supports a task of the team or an item on the
+/// delivery board of the team (`parent_*`). Each row has one reason or
+/// both.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct TeamWorkDocument {
     /// Document short code (links to `/items/{code}`).
@@ -117,11 +118,14 @@ pub struct TeamWorkDocument {
     pub title: String,
     /// `draft|published|adopted|superseded` (KAIROS-T-0080).
     pub lifecycle: String,
-    /// The supports-parent item, for attribution.
-    pub parent_short_code: String,
-    pub parent_title: String,
+    /// A board of the team is the owner board of the document.
+    pub owned: bool,
+    /// The supports-parent item of the team's work, for attribution;
+    /// `null` when it supports no item of the team's work.
+    pub parent_short_code: Option<String>,
+    pub parent_title: Option<String>,
     /// `strategy|initiative|task`.
-    pub parent_type: String,
+    pub parent_type: Option<String>,
 }
 
 /// Body of `POST /api/teams/{id}/announcements`.

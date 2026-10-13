@@ -56,6 +56,12 @@ pub struct Strategy {
     /// auditor never mistakes it for live work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<String>,
+    /// The owner of the item (KAIROS-T-0411): the person who answers for
+    /// it. Absent when the item has no owner. Present on the item
+    /// endpoints and the board items. The default is for the client only:
+    /// a response of an older server has no `owner`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<ItemOwner>,
 }
 
 /// An initiative (Flight Level 2), as returned by `/api/initiatives`.
@@ -94,6 +100,12 @@ pub struct Initiative {
     /// auditor never mistakes it for live work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<String>,
+    /// The owner of the item (KAIROS-T-0411): the person who answers for
+    /// it. Absent when the item has no owner. Present on the item
+    /// endpoints and the board items. The default is for the client only:
+    /// a response of an older server has no `owner`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<ItemOwner>,
 }
 
 /// A task/bug/tech-debt item (Flight Level 1), as returned by `/api/tasks`.
@@ -213,6 +225,32 @@ pub struct TaskClaim {
 #[serde(deny_unknown_fields)]
 pub struct HandOffRequest {
     pub to: String,
+}
+
+/// The owner of a strategy or an initiative (KAIROS-T-0411): the one
+/// person who answers for the item.
+///
+/// A member of the board claims an item with no owner. The owner hands it
+/// off. An organization admin sets or clears it. The owner gives no right.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ItemOwner {
+    /// The person (UUID).
+    pub user_id: String,
+    /// The display name of the person.
+    pub display_name: String,
+    /// When the person became the owner, RFC 3339.
+    pub claimed_at: String,
+}
+
+/// Response of `GET /api/{entity_type}/{short_code}/owner` and of the
+/// changes of the owner (KAIROS-T-0411).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ItemOwnerResponse {
+    /// The short code of the strategy or the initiative.
+    pub short_code: String,
+    /// The owner, or absent when the item has no owner.
+    #[serde(default)]
+    pub owner: Option<ItemOwner>,
 }
 
 /// A supporting document, as returned by `/api/documents`. Documents do not

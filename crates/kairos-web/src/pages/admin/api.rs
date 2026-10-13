@@ -406,6 +406,71 @@ pub async fn remove_stream_team(
 }
 
 // ---------------------------------------------------------------------------
+// The grants of one person on many boards (KAIROS-T-0413)
+// ---------------------------------------------------------------------------
+
+/// mirror of: `kairos_client::types_org::UserBoardGrants`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct UserBoardGrants {
+    pub board_id: String,
+    pub board_slug: String,
+    pub board_name: String,
+    pub board_level: String,
+    /// The capabilities that apply at the level of the board.
+    pub applicable: Vec<String>,
+    /// The stored grants of the person on the board (globs too).
+    pub capabilities: Vec<String>,
+}
+
+/// mirror of: `kairos_client::types_org::UserTeam`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct UserTeam {
+    pub team_id: String,
+    pub slug: String,
+    pub name: String,
+}
+
+/// mirror of: `kairos_client::types_org::UserGrants`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct UserGrants {
+    pub user_id: String,
+    pub email: String,
+    pub display_name: String,
+    pub boards: Vec<UserBoardGrants>,
+    /// `None` when the viewer cannot change team members.
+    pub teams: Option<Vec<UserTeam>>,
+}
+
+/// mirror of: `kairos_client::types_org::BoardGrantChange`.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct BoardGrantChange {
+    pub board_id: String,
+    pub grant: Vec<String>,
+    pub revoke: Vec<String>,
+}
+
+/// `GET /api/members/{user_id}/grants`: the grants of one person on each
+/// board that the viewer administers, and the teams of the person.
+pub async fn user_grants(auth: Auth, user_id: &str) -> Result<UserGrants, ApiError> {
+    get_json(auth, &format!("/api/members/{user_id}/grants")).await
+}
+
+/// `PATCH /api/members/{user_id}/grants`: the changed cells, in one
+/// transaction.
+pub async fn change_user_grants(
+    auth: Auth,
+    user_id: &str,
+    changes: &[BoardGrantChange],
+) -> Result<Value, ApiError> {
+    patch_json(
+        auth,
+        &format!("/api/members/{user_id}/grants"),
+        &json!({ "changes": changes }),
+    )
+    .await
+}
+
+// ---------------------------------------------------------------------------
 // Organization members
 // ---------------------------------------------------------------------------
 

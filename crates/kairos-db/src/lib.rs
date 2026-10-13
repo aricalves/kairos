@@ -12,6 +12,7 @@ pub mod api_keys;
 pub mod auth_failures;
 pub mod board_items;
 pub mod boards;
+pub mod code_index_breakers;
 pub mod code_index_builds;
 pub mod code_index_settings;
 pub mod code_indexes;
@@ -23,6 +24,7 @@ pub mod flow;
 pub mod forge;
 pub mod graph;
 pub mod impacts;
+pub mod item_owners;
 pub mod item_teams;
 pub mod items;
 pub mod jobs;
@@ -53,8 +55,9 @@ pub mod webhooks;
 pub mod writeback;
 
 pub use abac::{
-    AbacError, StructureGrant, authorize, check_capability, grant_capability, holds_structure,
-    is_org_admin, resolve_authorization_board, revoke_capability,
+    AbacError, StructureGrant, authorize, check_capability, check_granted_capability,
+    grant_capability, holds_structure, is_org_admin, resolve_authorization_board,
+    revoke_capability,
 };
 pub use boards::{
     BoardError, CodePrefix, SeveralDeliveryBoards, add_column, add_transition,

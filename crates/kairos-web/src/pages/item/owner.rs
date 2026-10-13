@@ -436,6 +436,7 @@ mod tests {
                 .map(|(board, grant)| WhoamiBoardCapabilities {
                     board_slug: board.to_string(),
                     grants: vec![grant.to_string()],
+                    implied: Vec::new(),
                 })
                 .collect(),
             implicit: Vec::new(),
@@ -522,6 +523,7 @@ mod tests {
             code_index_build: "on".to_string(),
             code_index_summaries: "embedded".to_string(),
             code_index_summaries_resolved: "embedded".to_string(),
+            code_index_breaker: Default::default(),
             site: Default::default(),
         }
     }

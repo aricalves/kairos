@@ -68,9 +68,40 @@ pub struct Repository {
     /// (KAIROS-T-0358).
     #[serde(default = "code_index_summaries_embedded")]
     pub code_index_summaries_resolved: String,
+    /// The breaker of the code index builder (KAIROS-T-0399).
+    #[serde(default)]
+    pub code_index_breaker: CodeIndexBreaker,
     /// The published site of the repository (KAIROS-T-0408).
     #[serde(default)]
     pub site: RepositorySite,
+}
+
+/// mirror of: `kairos_client::types_repositories::CodeIndexBreaker`: the
+/// breaker of the code index builder of a repository (KAIROS-T-0399). A
+/// build job that stopped its server or stalled trips it.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+pub struct CodeIndexBreaker {
+    #[serde(default)]
+    pub tripped: bool,
+    #[serde(default)]
+    pub tripped_at: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+impl CodeIndexBreaker {
+    /// The text of the breaker on the admin pages. Pure, host-tested.
+    pub fn summary(&self) -> String {
+        if !self.tripped {
+            return "Code index breaker: not tripped.".to_string();
+        }
+        format!(
+            "Code index breaker: tripped at {}. {}. Kairos starts no build of this repository \
+             until a person pushes \"Build again\" in the panel Code index.",
+            self.tripped_at.as_deref().unwrap_or("-"),
+            self.reason.as_deref().unwrap_or("-").trim_end_matches('.')
+        )
+    }
 }
 
 /// mirror of: `kairos_client::types_sites::RepositorySite`.

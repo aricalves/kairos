@@ -110,6 +110,13 @@ A body can have only the values that the repository has. That request
 gets 200 with the repository, and the server writes nothing
 (COLLIERY-T-0267).
 
+To stop the code index builds of the repository, send
+`{"code_index_build": "off"}` (KAIROS-T-0398). Kairos cancels the
+build jobs of the repository that wait for a server, and their runs end
+as failed. The builder adds no new job. Kairos does not stop a build
+that runs now, but the build gets no further try. Send `"on"` to start
+the builds again. The MCP tool `update_repository` does the same.
+
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
 | `slug` | path | yes | `string` | Repository slug (or UUID) |
@@ -176,6 +183,8 @@ commit.
 
 Ask the builder for a full build of the code index of a repository
 (KAIROS-T-0332). The body is empty. The answer is 202 with the run.
+The request resets the breaker of the code index builder of the
+repository (`code_index_breaker`, KAIROS-T-0399).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|

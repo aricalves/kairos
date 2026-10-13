@@ -3,8 +3,8 @@ title: "MCP tools"
 ---
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-forty-four tools. A drift gate in the test suite
-asserts that `tools/list` returns these forty-four and no others. The same
+forty-five tools. A drift gate in the test suite
+asserts that `tools/list` returns these forty-five and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -53,6 +53,8 @@ Codes an agent can receive, and what each means.
 | `RENAME_NOT_NEEDED` | A `move_item` with `rename` to a board whose prefix the code has already. |
 | `NOT_CLAIMABLE` | A `hand_off_item` or a `release_item` of a task that is not in Active (a column that holds claims). |
 | `NO_CLAIM` | A `release_item` of a task that has no claim. |
+| `NO_OWNER` | A `release_item` of a strategy or an initiative that has no owner. |
+| `NOT_BOARD_MEMBER` | A `hand_off_item` of a strategy or an initiative to a person who is not a member of the board of the item. |
 | `TASK_DONE` | A `cancel_item` of a task that is in a done column. |
 | `NO_DONE_COLUMN` | A `cancel_item` of a task whose board has no done column. |
 
@@ -159,6 +161,14 @@ One repository in full. The output has these parts:
   comment and the commit status `kairos` on each GitHub pull request that
   links to an item. No tool gives or sets the token. See
   [Turn on GitHub write-back](../../how-to/turn-on-github-write-back/).
+- `code index build`: `on` or `off`. When it is `off`, the builder of the
+  server does not build the code index of the repository.
+  `update_repository` sets it.
+- `code index breaker`: `not tripped`, or when the breaker tripped and why.
+  A build job that stops its server (for example, it runs out of memory) or
+  stalls trips the breaker. Then the builder starts no build of the
+  repository. `rebuild_code_index` resets it. See
+  [Build the code index again](../../how-to/build-the-code-index-again/#the-breaker-of-a-repository).
 - the team's description of how to work in the repository
 - the documents and the ADRs that impact the repository
 - the in-flight branches and pull requests, each with its work item
@@ -250,8 +260,9 @@ details: {"field":"repo_full_name"}
 
 ### `update_repository`
 
-Changes the description, the default branch and the URL of a repository. The
-rule is that of `PATCH /api/repositories/{slug}`, for the current owner team.
+Changes the description, the default branch, the URL and the code index
+builder of a repository. The rule is that of `PATCH /api/repositories/{slug}`,
+for the current owner team.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
@@ -259,9 +270,10 @@ rule is that of `PATCH /api/repositories/{slug}`, for the current owner team.
 | `description` | string | no | no change | The new text on how to work in the repository. It replaces the full text. An empty string removes the text. |
 | `default_branch` | string | no | no change | The new default branch: a branch name that git accepts. |
 | `repo_url` | string | no | no change | The new URL for a browser: `http` or `https`, with no user name and no password. |
+| `code_index_build` | string | no | no change | `on` or `off`: the builder of the code index of the server, for this repository. |
 
-The call must have one or more of `description`, `default_branch` and
-`repo_url`. The tool has no `slug` argument and no `team` argument. Each
+The call must have one or more of `description`, `default_branch`, `repo_url`
+and `code_index_build`. The tool has no `slug` argument and no `team` argument. Each
 checkout keeps the slug in `.claude/kairos.local.md`, and a new slug breaks
 that reference.
 
@@ -272,6 +284,17 @@ The result names the arguments that changed the repository:
 ```text
 Updated repository fidius: description, default_branch.
 ```
+
+`code_index_build: "off"` stops the builds of the repository. Kairos cancels
+the build jobs of the repository that wait for a server, and their runs end as
+failed. The builder adds no new job. Kairos does not stop a build that runs
+now, but the build gets no further try. The result gives the number of cancelled jobs:
+
+```text
+Updated repository fidius: code_index_build. The code index builder is off: 1 waiting build job(s) cancelled.
+```
+
+`code_index_build: "on"` starts the builds again.
 
 The tool writes only when a value is different. A call can have only the
 values that the repository has. That call is a success and it writes nothing.
@@ -285,7 +308,9 @@ Refuses: `VALIDATION` with `details.field` for a new value that does not have
 [the form of its field](../glossary/#the-form-of-the-fields-of-a-repository).
 Its result is `No change to repository fidius: it has these values already.`
 
-Refuses: `VALIDATION` when the call has none of the three arguments.
+Refuses: `VALIDATION` when the call has none of the four arguments.
+`VALIDATION` with `details.argument` for a `code_index_build` that is not `on`
+or `off`.
 `NOT_FOUND` for an unknown repository. `FORBIDDEN` when the caller is not a
 member of the owner team and is not an organization admin.
 
@@ -302,6 +327,9 @@ index replaces the index of that commit.
 The answer names the run. Read the runs of the repository on its page in
 the GUI, with `kairos repos builds <slug>`, or with
 `GET /api/repositories/{slug}/code-indexes/builds`.
+
+The request resets the breaker of the builder for the repository (the line
+`code index breaker` of `get_repository`).
 
 Refusals:
 
@@ -356,6 +384,9 @@ slugs of the teams. See [the teams of an item](#the-teams-of-an-initiative-or-a-
 
 A task with a claim carries `[claimed by Alice]`, or `[claimed by Alice
 (agent)]` when the agent of the person made the claim.
+
+A strategy or an initiative with an [owner](../glossary/#owner) carries
+`[owner: Alice]`.
 
 A [cancelled](../glossary/#cancel) task carries `[cancelled]`.
 
@@ -453,6 +484,14 @@ line too:
 ```text
 - claim: Alice (agent) since 2026-10-09T10:00:00Z
 - claim: none. The task is free: the next person who moves it to Active gets the claim.
+```
+
+A strategy and an initiative have the line `owner`, in each column and in the
+archive:
+
+```text
+- owner: Alice since 2026-10-12T10:00:00Z
+- owner: none. A member of the board can claim it (claim_item).
 ```
 
 A [cancelled](../glossary/#cancel) task has the line `cancelled`, with who
@@ -1054,50 +1093,93 @@ The tool refuses with these codes:
 | `SAME_BOARD`, `NOT_DELIVERY_BOARD`, `NO_ENTRY_COLUMN` | For a task only. |
 | `RENAME_NOT_NEEDED` | A rename to a board whose prefix the code has already, or a rename of a document whose owner board does not change. |
 
-### `hand_off_item`
+### `claim_item`
 
-Gives the [claim](../glossary/#claim) of a task in Active to a different person.
-The task stays in Active.
+Makes you the [owner](../glossary/#owner) of a strategy or an initiative that
+has no owner. The owner is the one person who answers for the item.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `short_code` | string | yes | — | The task's short code. The task must be in Active. |
-| `to` | string | yes | — | The person who gets the claim: a user id, an email or a user name of a person of the organization. |
+| `short_code` | string | yes | — | The short code of a strategy or an initiative with no owner. |
 
-The person who has the claim can hand it off. Any other principal needs
-`transition_items` on the board of the task. A service account cannot have a
-claim. A task in Active with no claim can get a claim by a hand-off. The answer
-has the line `claim` with the new claim.
+You must be a person and a member of the board of the item. A member has a
+grant on the board. An organization admin can also claim. The owner stays in each
+column, Completed too. The owner gets no right from the claim. The answer has
+the line `owner` with the new owner.
 
 Refuses:
 
-- `NOT_FOUND` for an unknown short code or an archived task.
-- `VALIDATION` for an item that is not a task.
+- `NOT_FOUND` for an unknown short code or an archived item.
+- `RELATIONSHIP_RULE` for an item that is not a strategy or an initiative.
+- `FORBIDDEN` for a service account, and for a person who is not a member of
+  the board and not an organization admin.
+- `CONFLICT` when the item has an owner. The text names the owner.
+
+### `hand_off_item`
+
+Changes the [claim](../glossary/#claim) of a task in Active, or the
+[owner](../glossary/#owner) of a strategy or an initiative.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `short_code` | string | yes | — | The short code of a task in Active, or of a strategy or an initiative. |
+| `to` | string | yes | — | The person who gets the claim or who becomes the owner: a user id, an email or a user name of a person of the organization. A new owner must be a member of the board of the item. |
+
+A task: the person who has the claim can hand it off. Any other principal needs
+`transition_items` on the board of the task. A task in Active with no claim can
+get a claim by a hand-off. The task stays in Active. The answer has the line
+`claim` with the new claim.
+
+A strategy or an initiative: the owner can hand it off. An organization admin
+can set the owner of each item, also of an item with no owner. Nobody else can.
+
+The new owner must be a member of the board of the item. A member has a grant
+on the board. The new owner gets a notification. The answer has the line `owner` with the
+new owner.
+
+A service account cannot have a claim or be an owner.
+
+Refuses:
+
+- `NOT_FOUND` for an unknown short code or an archived item.
+- `VALIDATION` for an item that is not a task, a strategy or an initiative.
 - `VALIDATION` for `to` that is not a person of the organization.
-- `FORBIDDEN` without the claim and without `transition_items`.
+- `FORBIDDEN` for a task, without the claim and without `transition_items`.
+- `FORBIDDEN` for a strategy or an initiative, for a principal that is not
+  the owner and not an organization admin.
+- `NOT_BOARD_MEMBER` for a strategy or an initiative, when `to` is not a
+  member of the board of the item.
 - `NOT_CLAIMABLE` for a task that is not in Active.
-- `CONFLICT` when the person has the claim already.
+- `CONFLICT` when the person has the claim or is the owner already.
 
 ### `release_item`
 
-Ends the [claim](../glossary/#claim) of a task in Active. The task stays in
-Active with no claim, free for anyone. The next person who moves the task to
-Active gets the claim.
+Ends the [claim](../glossary/#claim) of a task in Active, or removes the
+[owner](../glossary/#owner) of a strategy or an initiative.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `short_code` | string | yes | — | The task's short code. The task must be in Active. |
+| `short_code` | string | yes | — | The short code of a task in Active, or of a strategy or an initiative. |
 
-The person who has the claim can release it. Any other principal needs
-`transition_items` on the board of the task.
+A task: the task stays in Active with no claim, free for anyone. The next
+person who moves the task to Active gets the claim. The person who has the
+claim can release it. Any other principal needs `transition_items` on the
+board of the task.
+
+A strategy or an initiative: the owner can release it. An organization admin
+can remove each owner. Nobody else can. The item then has no owner, and a
+member of its board can claim it.
 
 Refuses:
 
-- `NOT_FOUND` for an unknown short code or an archived task.
-- `VALIDATION` for an item that is not a task.
-- `FORBIDDEN` without the claim and without `transition_items`.
+- `NOT_FOUND` for an unknown short code or an archived item.
+- `VALIDATION` for an item that is not a task, a strategy or an initiative.
+- `FORBIDDEN` for a task, without the claim and without `transition_items`.
+- `FORBIDDEN` for a strategy or an initiative, for a principal that is not
+  the owner and not an organization admin.
 - `NOT_CLAIMABLE` for a task that is not in Active.
 - `NO_CLAIM` for a task that has no claim.
+- `NO_OWNER` for a strategy or an initiative that has no owner.
 
 ### `cancel_item`
 

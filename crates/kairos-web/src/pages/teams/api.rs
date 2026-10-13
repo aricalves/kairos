@@ -327,13 +327,15 @@ pub struct WorkDocument {
     pub short_code: String,
     pub title: String,
     pub lifecycle: String,
-    pub parent_short_code: String,
-    pub parent_title: String,
-    pub parent_type: String,
+    pub owned: bool,
+    pub parent_short_code: Option<String>,
+    pub parent_title: Option<String>,
+    pub parent_type: Option<String>,
 }
 
-/// `GET /api/teams/{id}/work-documents` (KAIROS-T-0084) — live documents
-/// supporting the team's tasks or items on its delivery board.
+/// `GET /api/teams/{id}/work-documents` (KAIROS-T-0084, KAIROS-T-0393) —
+/// live documents that a board of the team owns, or that support the
+/// team's tasks or items on its delivery board.
 pub async fn team_work_documents(auth: Auth, team_id: &str) -> Result<Vec<WorkDocument>, ApiError> {
     get_json(auth, &format!("/api/teams/{team_id}/work-documents")).await
 }
@@ -462,12 +464,28 @@ mod tests {
             "short_code": "ACME-D-0002",
             "title": "Rollout runbook",
             "lifecycle": "published",
+            "owned": false,
             "parent_short_code": "ACME-T-0009",
             "parent_title": "Ship the rollout",
             "parent_type": "task"
         });
         let doc: WorkDocument = serde_json::from_value(body).expect("mirror decodes");
         assert_eq!(doc.lifecycle, "published");
-        assert_eq!(doc.parent_short_code, "ACME-T-0009");
+        assert!(!doc.owned);
+        assert_eq!(doc.parent_short_code.as_deref(), Some("ACME-T-0009"));
+        // A document that the team's board owns and that supports none of
+        // the team's work has no parent (KAIROS-T-0393).
+        let owned: WorkDocument = serde_json::from_value(serde_json::json!({
+            "short_code": "ACME-D-0003",
+            "title": "Team handbook",
+            "lifecycle": "draft",
+            "owned": true,
+            "parent_short_code": null,
+            "parent_title": null,
+            "parent_type": null
+        }))
+        .expect("mirror decodes an owned row");
+        assert!(owned.owned);
+        assert_eq!(owned.parent_short_code, None);
     }
 }

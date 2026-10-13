@@ -362,6 +362,28 @@ pub fn AdminBoardPage() -> impl IntoView {
         async move { api::board_detail(auth, &id).await }
     });
 
+    // KAIROS-T-0412: the board page links to the members panel with
+    // `#members`. The panel renders after the detail loads, so the browser
+    // cannot scroll to it by itself: scroll once, after the first load.
+    let scrolled = StoredValue::new(false);
+    Effect::new(move |_| {
+        if !matches!(detail.get(), Some(Ok(_))) || scrolled.get_value() {
+            return;
+        }
+        scrolled.set_value(true);
+        let wanted = window()
+            .location()
+            .hash()
+            .is_ok_and(|hash| hash.strip_prefix('#') == Some(super::MEMBERS_ANCHOR));
+        if wanted {
+            request_animation_frame(|| {
+                if let Some(panel) = document().get_element_by_id(super::MEMBERS_ANCHOR) {
+                    panel.scroll_into_view();
+                }
+            });
+        }
+    });
+
     view! {
         {move || match detail.get() {
             None => view! { <Loading label="Loading board…"/> }.into_any(),
@@ -392,8 +414,11 @@ pub fn AdminBoardPage() -> impl IntoView {
                         <TransitionsPanel board_id=id.clone() columns=detail.columns.clone()
                             transitions=detail.transitions.clone() busy outcome reload
                             from_name to_name/>
-                        <MembersPanel board_id=id board_level=level
-                            busy outcome reload/>
+                        // KAIROS-T-0412: the board page links here.
+                        <div id=super::MEMBERS_ANCHOR>
+                            <MembersPanel board_id=id board_level=level
+                                busy outcome reload/>
+                        </div>
                         // KAIROS-T-0385: the agent dispatch of the board.
                         <super::dispatch::DispatchPanel board_id=dispatch_board column_names
                             busy outcome/>

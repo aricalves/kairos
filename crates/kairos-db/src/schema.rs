@@ -112,6 +112,15 @@ diesel::table! {
 }
 
 diesel::table! {
+    code_index_breakers (repository_id) {
+        repository_id -> Uuid,
+        tripped_at -> Timestamptz,
+        reason -> Text,
+        job_id -> Nullable<Uuid>,
+    }
+}
+
+diesel::table! {
     code_index_builds (id) {
         id -> Uuid,
         repository_id -> Uuid,
@@ -357,6 +366,14 @@ diesel::table! {
         item_id -> Uuid,
         metadata_definition_id -> Uuid,
         value -> Text,
+    }
+}
+
+diesel::table! {
+    item_owners (item_id) {
+        item_id -> Uuid,
+        user_id -> Uuid,
+        claimed_at -> Timestamptz,
     }
 }
 
@@ -715,6 +732,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     board_member_capabilities,
     board_transitions,
     boards,
+    code_index_breakers,
     code_index_builds,
     code_index_settings,
     code_index_summaries,
@@ -730,6 +748,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     item_impacts,
     item_links,
     item_metadata,
+    item_owners,
     item_relationships,
     metadata_definition_scopes,
     metadata_definitions,

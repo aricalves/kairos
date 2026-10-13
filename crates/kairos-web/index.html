@@ -6,7 +6,8 @@
     <meta name="color-scheme" content="light dark" />
     <title>Kairos</title>
     <!--
-      Aurora THEME_INIT_SCRIPT (COLLIERY-T-1836), copied as it is. It sets
+      Aurora THEME_INIT_SCRIPT (COLLIERY-T-1836; the 0.6 script, which
+      accepts "hyper", KAIROS-T-0397), copied as it is. It sets
       data-theme on <html> from the stored choice before the first paint, so
       the page does not show the wrong theme while the WASM loads. It must
       stay before the stylesheet. A unit test (src/app.rs) compares it with
@@ -17,9 +18,12 @@
       KAIROS-T-0326: the Aurora stylesheet is a linked file, written by the
       pre_build hook of Trunk.toml (crates/kairos-web-css), so the page has
       it at the first paint. app.css carries the Kairos-only rules (tokens
-      only) and comes after it.
+      only) and comes after it. KAIROS-T-0397: the hook writes the opt-in
+      hyper theme of Aurora too (style/hyper.css); it comes after
+      aurora.css, as Aurora asks.
     -->
     <link data-trunk rel="css" href="style/aurora.css" />
+    <link data-trunk rel="css" href="style/hyper.css" />
     <link data-trunk rel="css" href="app.css" />
     <link data-trunk rel="rust" data-wasm-opt="z" />
     <!--
@@ -28,7 +32,8 @@
       script watches the page, loads the vendored Mermaid only when such a
       block appears (vendor/mermaid/README.md has its version and
       checksum), and draws each block with securityLevel "strict", in the
-      light or dark theme. A block that does not parse keeps its source and
+      light or dark theme (hyper has a dark base, so it takes the dark
+      theme of Mermaid). A block that does not parse keeps its source and
       shows the error.
     -->
     <link data-trunk rel="copy-file" href="vendor/mermaid/mermaid-12.1.0.min.js" />
@@ -52,7 +57,7 @@
         }
         function dark() {
           var t = document.documentElement.getAttribute("data-theme");
-          if (t === "dark" || t === "light") return t === "dark";
+          if (t === "dark" || t === "hyper" || t === "light") return t !== "light";
           return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
         }
         function fail(el, error) {

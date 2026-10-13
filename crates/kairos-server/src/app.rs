@@ -558,6 +558,12 @@ pub struct WhoamiBoardCapabilities {
     /// The capability strings granted to the caller on this board (may
     /// include globs like `*`, `manage_*`, `configure_*`), sorted.
     pub grants: Vec<String>,
+    /// The capabilities that membership of this board gives with no grant
+    /// (KAIROS-T-0410, KAIROS-A-0025): on a strategy board
+    /// `manage_strategies` and `transition_items`, on an initiative board
+    /// `manage_initiatives` and `transition_items`. Empty on other boards.
+    /// Not archive or restore: those need a grant.
+    pub implied: Vec<&'static str>,
 }
 
 /// `GET /api/whoami` — the S-0006 whoami precursor: proves the full
@@ -674,31 +680,34 @@ async fn whoami(
     // fold and both boards and grants come out sorted. Org admins get only
     // their explicit rows here (usually none — their real access is the
     // org-admin bypass, reported via `organization.role`).
-    let grant_rows: Vec<(Uuid, String, String)> = schema::board_member_capabilities::table
-        .inner_join(schema::boards::table)
-        .filter(schema::board_member_capabilities::user_id.eq(auth.user_id))
-        .filter(schema::boards::deleted_at.is_null())
-        .order((
-            schema::boards::slug.asc(),
-            schema::board_member_capabilities::capability.asc(),
-        ))
-        .select((
-            schema::boards::id,
-            schema::boards::slug,
-            schema::board_member_capabilities::capability,
-        ))
-        .load(&mut *conn)
-        .await
-        .map_err(ApiError::internal)?;
+    let grant_rows: Vec<(Uuid, String, kairos_db::models::enums::BoardLevel, String)> =
+        schema::board_member_capabilities::table
+            .inner_join(schema::boards::table)
+            .filter(schema::board_member_capabilities::user_id.eq(auth.user_id))
+            .filter(schema::boards::deleted_at.is_null())
+            .order((
+                schema::boards::slug.asc(),
+                schema::board_member_capabilities::capability.asc(),
+            ))
+            .select((
+                schema::boards::id,
+                schema::boards::slug,
+                schema::boards::board_level,
+                schema::board_member_capabilities::capability,
+            ))
+            .load(&mut *conn)
+            .await
+            .map_err(ApiError::internal)?;
 
     let mut capabilities: Vec<WhoamiBoardCapabilities> = Vec::new();
-    for (board_id, board_slug, capability) in grant_rows {
+    for (board_id, board_slug, level, capability) in grant_rows {
         match capabilities.last_mut() {
             Some(last) if last.board_id == board_id => last.grants.push(capability),
             _ => capabilities.push(WhoamiBoardCapabilities {
                 board_id,
                 board_slug,
                 grants: vec![capability],
+                implied: kairos_core::abac::board_member_capabilities(level.as_str()).to_vec(),
             }),
         }
     }

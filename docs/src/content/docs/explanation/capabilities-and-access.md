@@ -76,9 +76,9 @@ The practical payoff of having no roles is that "what can this person do?" is
 answered by listing their grants. There is no inheritance to trace, no global
 layer to check afterwards, and an audit is a query.
 
-## The three things that are implied rather than granted
+## The four things that are implied rather than granted
 
-A pure whitelist would be unusable, and three implications keep it honest. Each
+A pure whitelist would be unusable, and four implications keep it honest. Each
 is *computed* at check time rather than stored as rows, which is the shared
 design idea worth pulling out: nothing needs syncing, and nothing can drift.
 
@@ -113,6 +113,38 @@ came from membership and which were deliberate. Keeping the pure whitelist and
 seeding defaults leaves the onboarding chore in place. Computing the
 implication means leaving the team *is* the revocation, and explicit grants
 keep their own audit story untouched.
+
+**Membership of a strategy or initiative board implies the edit and the move
+of every item on it.** A person who holds any grant on such a board is a member
+of it — there is no read grant to count, because reading is open. A member
+holds `manage_strategies` (on a strategy board) or `manage_initiatives` (on an
+initiative board), and `transition_items`, with no further grant. So one grant
+per person, once, is enough for the person to work the shared initiative
+board: `configure_boards` alone would do.
+
+The reason is who works at these levels. A team may shape an initiative
+together, but people, not teams, answer for strategies and initiatives
+(KAIROS-A-0025), and the shared initiative board has no owning team for the
+team rule to use. Before
+this rule, the only fix for a person who could read an initiative but not
+correct it was a grant of two capabilities, per person, per board.
+
+The boundary is the same as for teams. Archiving and restoring, `configure_boards`
+and `administer_members` stay explicit grants: membership lets a person change
+what an item says and where it is, not remove it from view or change the board
+or its members. Delivery and ADR boards are not affected; there a grant gives
+exactly what it names. The implication is computed, like the team rule, so the
+revoke of the last grant on the board *is* the revocation.
+
+Membership also lets a person **claim** a strategy or an initiative that has no
+[owner](../../reference/glossary/#owner): the one person who answers for it.
+The owner is a label of responsibility, not a capability. It gives nothing
+beyond membership, so the owner who has no grant on the board cannot edit the
+item, and a member who is not the owner can still edit and move it. Only the
+owner (by a hand-off or a release) or an organisation admin changes the owner.
+A hand-off goes only to a member of the board, so the owner is a member when
+the item gets them; a later revoke of the grant does not end the ownership. A
+person who leaves the organisation stops being the owner of anything.
 
 **Every member may send a request to any team.** A member who does not manage
 a delivery board may still create a task on it, and that task is a request: it
@@ -149,7 +181,9 @@ both the smaller rule and the more predictable one.
 
 **What counts as an edit** is everything that changes what the item says or
 whether it is in view: title and content, metadata, the repository a task
-points at, a document's editorial lifecycle, archiving and restoring.
+points at, a document's editorial lifecycle, archiving and restoring. Board
+membership is the one source of `manage_<type>` that the archive and the
+restore do not accept: they need a grant, as above.
 [Capabilities](../../reference/capabilities/#the-edit-rule) has the list against
 the routes.
 
@@ -341,6 +375,9 @@ mean.
 - [Archiving is not a permission
   boundary](https://github.com/colliery-io/kairos/blob/main/.metis/adrs/KAIROS-A-0020.md)
   (KAIROS-A-0020).
+- People, not teams, work strategies and initiatives (KAIROS-A-0025,
+  KAIROS-T-0410): a grant on a strategy or initiative board makes a person a
+  member, and a member edits and moves every item on it.
 - The edit rule and the link rule (COLLIERY-T-0228): creation is the primary
   mechanism of ownership, a link follows the same rule as an edit, and movement
   stays with the team of the board.

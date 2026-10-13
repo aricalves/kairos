@@ -10,6 +10,9 @@
 //! 6. The lease of a dead worker runs out, and another worker takes the job.
 //! 7. A dedupe key keeps a second job out while the first is open.
 //! 8. A job of the last try whose lease ran out is failed by another worker.
+//! 10. A kind that is not run again after a stop (KAIROS-T-0399): a stalled
+//!     job and a job whose lease ran out fail on their first try, and the
+//!     stopped hook runs; a job of another kind is taken again.
 //!
 //! Runs against the compose Postgres (`angreal services up`). Owns the
 //! scratch databases `kairos_jobs_t0373_*`.
@@ -80,6 +83,8 @@ struct Record {
     running: AtomicUsize,
     most: AtomicUsize,
     failed: Mutex<Vec<Job>>,
+    /// The jobs of the stopped hook (KAIROS-T-0399).
+    stopped: Mutex<Vec<Job>>,
 }
 
 /// What a test handler does.
@@ -97,6 +102,8 @@ struct TestHandler {
     worker: Uuid,
     record: Arc<Record>,
     behaviour: Behaviour,
+    /// [`JobHandler::retry_stopped`] (KAIROS-T-0399).
+    retry_stopped: bool,
 }
 
 /// Counts down `running` when the job ends, also when it is aborted.
@@ -148,15 +155,35 @@ impl JobHandler for TestHandler {
         self.record.failed.lock().unwrap().push(job);
         Box::pin(async {})
     }
+
+    fn retry_stopped(&self) -> bool {
+        self.retry_stopped
+    }
+
+    fn stopped(&self, job: Job) -> UnitFuture {
+        self.record.stopped.lock().unwrap().push(job);
+        Box::pin(async {})
+    }
 }
 
 fn register(worker: &Arc<Worker>, kind: &str, record: &Arc<Record>, behaviour: Behaviour) {
+    register_with(worker, kind, record, behaviour, true);
+}
+
+fn register_with(
+    worker: &Arc<Worker>,
+    kind: &str,
+    record: &Arc<Record>,
+    behaviour: Behaviour,
+    retry_stopped: bool,
+) {
     worker.register(
         kind,
         Arc::new(TestHandler {
             worker: worker.instance(),
             record: Arc::clone(record),
             behaviour,
+            retry_stopped,
         }),
     );
 }
@@ -554,4 +581,93 @@ async fn a_drain_runs_the_job_that_waits_for_a_slot_that_frees_during_a_pass() {
         assert!(queued.is_empty(), "round {round}: left queued: {queued:?}");
         assert_eq!(record.runs.lock().unwrap().len(), total, "round {round}");
     }
+}
+
+// ===========================================================================
+// 10. A kind that is not run again after a stop (KAIROS-T-0399): a stalled
+//     job fails on its first try, and the stopped hook runs
+// ===========================================================================
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stalled_job_of_a_no_retry_kind_fails_on_its_first_try() {
+    let url = scratch("kairos_jobs_t0399_stall");
+    let record = Arc::new(Record::default());
+    let w = worker(&url, settings(1));
+    register_with(&w, KIND, &record, Behaviour::Stall, false);
+    let added = w.enqueue(job(KIND, 1)).await.unwrap().unwrap();
+
+    w.drain().await;
+
+    let row = db::get(&mut conn(&url), added.id).unwrap().unwrap();
+    assert_eq!(row.state, "failed", "{row:?}");
+    assert_eq!(row.tries, 1, "not re-leased");
+    let reason = row.last_error.clone().unwrap_or_default();
+    assert!(reason.contains("no progress"), "the reason: {reason}");
+    assert_eq!(record.runs.lock().unwrap().len(), 1, "killed once");
+    let stopped = record.stopped.lock().unwrap().clone();
+    assert_eq!(stopped.len(), 1, "the stopped hook ran once");
+    assert_eq!(stopped[0].last_error.as_deref(), Some(reason.as_str()));
+    assert_eq!(
+        record.failed.lock().unwrap().len(),
+        1,
+        "the failed hook ran"
+    );
+}
+
+// ===========================================================================
+// 11. A job of a no-retry kind whose lease ran out on its first try is
+//     failed by another worker; a job of another kind is taken again
+//     (KAIROS-T-0399)
+// ===========================================================================
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_no_retry_job_of_a_dead_worker_fails_and_other_kinds_run_again() {
+    let url = scratch("kairos_jobs_t0399_dead");
+    let record = Arc::new(Record::default());
+    let other = Arc::new(Record::default());
+    let build = db::enqueue(&mut conn(&url), &job(KIND, 1))
+        .unwrap()
+        .unwrap();
+    let plain = db::enqueue(&mut conn(&url), &job(OTHER, 2))
+        .unwrap()
+        .unwrap();
+    // A worker leases both jobs for 200 ms, and dies.
+    let dead = Uuid::new_v4();
+    for kind in [KIND, OTHER] {
+        db::take(&mut conn(&url), dead, &[kind.to_string()], 0.2)
+            .unwrap()
+            .expect("the dead worker leased the job");
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let w = worker(&url, settings(1));
+    register_with(&w, KIND, &record, Behaviour::Sleep(Duration::ZERO), false);
+    register(&w, OTHER, &other, Behaviour::Sleep(Duration::ZERO));
+    w.drain().await;
+
+    // The no-retry job failed on try 1 of 3, and was not run again
+    let row = db::get(&mut conn(&url), build.id).unwrap().unwrap();
+    assert_eq!(row.state, "failed", "{row:?}");
+    assert_eq!(row.tries, 1);
+    let reason = row.last_error.clone().unwrap_or_default();
+    assert!(
+        reason.contains("try 1 of 3") && reason.contains(&dead.to_string()),
+        "{reason}"
+    );
+    assert!(record.runs.lock().unwrap().is_empty(), "not run again");
+    assert_eq!(
+        record.stopped.lock().unwrap().len(),
+        1,
+        "the stopped hook ran"
+    );
+    assert_eq!(
+        record.failed.lock().unwrap().len(),
+        1,
+        "the failed hook ran"
+    );
+
+    // The job of the other kind was taken again, and ended well
+    let row = db::get(&mut conn(&url), plain.id).unwrap().unwrap();
+    assert_eq!(row.state, "done", "{row:?}");
+    assert_eq!(row.tries, 2);
+    assert_eq!(other.runs.lock().unwrap().len(), 1);
+    assert!(other.stopped.lock().unwrap().is_empty());
 }

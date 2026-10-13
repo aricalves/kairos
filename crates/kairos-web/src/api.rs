@@ -475,6 +475,11 @@ pub struct Whoami {
 pub struct WhoamiBoardCapabilities {
     pub board_slug: String,
     pub grants: Vec<String>,
+    /// What membership of the board gives with no grant (KAIROS-T-0410):
+    /// the edit and the move of each item on a strategy or initiative
+    /// board. Not archive or restore.
+    #[serde(default)]
+    pub implied: Vec<String>,
 }
 
 /// mirror of: `kairos_server::app::WhoamiUser` (partial). `id` drives

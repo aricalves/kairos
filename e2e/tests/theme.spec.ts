@@ -1,4 +1,5 @@
-// COLLIERY-T-1836 — the light and the dark theme (Aurora 0.4).
+// COLLIERY-T-1836 — the light and the dark theme (Aurora 0.4), and the
+// opt-in hyper theme (KAIROS-T-0397, Aurora 0.6).
 //
 // One serial flow as alice (org admin):
 //
@@ -11,6 +12,9 @@
 //      follows the choice
 //   4. the choice survives a reload: THEME_INIT_SCRIPT in index.html sets
 //      data-theme before the app loads
+//   4b. Hyper (KAIROS-T-0397): the toggle sets data-theme "hyper", the
+//      background is different from light and dark, and the choice
+//      survives a reload
 //   5. the main pages (boards, a board, an item, the graph, search,
 //      activity, admin) render in the two themes with no raw colour in an
 //      inline style or in an SVG fill/stroke attribute (the tokens only)
@@ -55,7 +59,7 @@ async function rawColours(page: Page): Promise<string[]> {
 
 const toggle = (page: Page) => page.locator('.cl-appshell__header .cl-theme-toggle');
 
-async function choose(page: Page, theme: 'Light' | 'Dark' | 'System') {
+async function choose(page: Page, theme: 'Light' | 'Dark' | 'Hyper' | 'System') {
   const button = toggle(page).getByRole('button', { name: theme, exact: true });
   await button.click();
   await expect(button).toHaveAttribute('aria-pressed', 'true');
@@ -190,6 +194,25 @@ test('theme: follows the OS, the toggle switches and persists, pages use tokens 
       'true',
     );
     expect(await bodyBackground(page)).toBe(darkBackground);
+  });
+
+  // 4b. Hyper applies and survives a reload (KAIROS-T-0397) -------------------
+  await test.step('Hyper applies and survives a reload', async () => {
+    await choose(page, 'Hyper');
+    expect(await themeAttr(page)).toBe('hyper');
+    const hyperBackground = await bodyBackground(page);
+    expect(hyperBackground).not.toBe(lightBackground);
+    expect(hyperBackground).not.toBe(darkBackground);
+    await page.reload();
+    // The init script runs before the WASM: the attribute is there at once.
+    expect(await themeAttr(page)).toBe('hyper');
+    expect(await bodyBackground(page)).toBe(hyperBackground);
+    await expect(toggle(page)).toBeVisible({ timeout: 20_000 });
+    await expect(toggle(page).getByRole('button', { name: 'Hyper', exact: true })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    await shoot(page, 'boards', 'hyper');
   });
 
   // 5. The main pages in the two themes ---------------------------------------

@@ -4,9 +4,12 @@ Run: python3 -m unittest discover -s scripts/metis_import -t scripts
 (`angreal test unit` runs them.)
 """
 
+import contextlib
+import io
 import os
 import sys
 import tempfile
+import types
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -14,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from metis_import import remap  # noqa: E402
 from metis_import.api import Api, Stop, is_local  # noqa: E402
 from metis_import.metis import inventory, parse  # noqa: E402
+from metis_import import run_remap  # noqa: E402
 from metis_import.run_remap import (  # noqa: E402
     create_body, load_also_map, mapping_signature, staged_texts,
 )
@@ -146,7 +150,7 @@ class TypesAndOrder(unittest.TestCase):
             doc("X-V-0001", "vision"), doc("X-S-0001", "specification"), doc("X-A-0003", "adr"),
             doc("X-I-0010", "initiative"), doc("X-I-0009", "initiative")]}
         self.assertEqual([d["short_code"] for d in remap.creation_order(docs)], [
-            "X-I-0009", "X-I-0010", "X-A-0003", "X-V-0001", "X-S-0001", "X-S-0002",
+            "X-I-0009", "X-I-0010", "X-A-0003", "X-S-0001", "X-V-0001", "X-S-0002",
             "X-T-0002", "X-T-0010"])
 
     def test_relations(self):
@@ -338,16 +342,16 @@ class KeepCodes(unittest.TestCase):
         wanted, displaced, order = remap.keep_codes(docs, remap.creation_order(docs), "SKADI", prefixes)
         self.assertEqual(wanted, {
             "SKADI-A-0001": "SKADI-A-0001",
-            "SKADI-V-0001": "SKADI-D-0001",
+            "SKADI-S-0001": "SKADI-D-0001",
             "SKADI-S-0003": "SKADI-D-0003",
             "SKADI-S-0004": "SKADI-D-0004",
             "SKADI-T-0005": "SKADI-T-0005",
             "SKADI-T-0009": "SKADI-T-0009",
         })
-        # The vision comes first, so the specification SKADI-S-0001 and the
-        # second file of SKADI-T-0005 get the next free number.
+        # The specification comes before the vision (KAIROS-T-0395), so the
+        # vision and the second file of SKADI-T-0005 get the next free number.
         self.assertEqual(displaced, {
-            "SKADI-S-0001": ("SKADI-D-0001", "SKADI-V-0001"),
+            "SKADI-V-0001": ("SKADI-D-0001", "SKADI-S-0001"),
             "SKADI-T-0005~2": ("SKADI-T-0005", "SKADI-T-0005"),
         })
         # The initiative (board prefix COLLIERY) gets a new code. The
@@ -357,7 +361,7 @@ class KeepCodes(unittest.TestCase):
         codes = [d["short_code"] for d in order]
         self.assertEqual(codes, [
             "SKADI-I-0002", "SKADI-A-0001",
-            "SKADI-V-0001", "SKADI-S-0003", "SKADI-S-0004", "SKADI-S-0001",
+            "SKADI-S-0001", "SKADI-S-0003", "SKADI-S-0004", "SKADI-V-0001",
             "SKADI-T-0005", "SKADI-T-0009", "SKADI-T-0005~2",
         ])
 
@@ -418,6 +422,139 @@ class KeepCodes(unittest.TestCase):
         self.assertEqual(prefix, "SKADI")
         self.assertTrue(remap.new_code_ok("SKADI-D-0040", prefix, "document"))
         self.assertFalse(remap.new_code_ok("COLLIERY-D-0040", prefix, "document"))
+
+
+def write_doc(root, rel, code, level, created=None):
+    path = os.path.join(root, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write('---\nshort_code: "%s"\nlevel: %s\ntitle: "%s"\n%stags:\n  - "#phase/%s"\n---\n\n# %s\n'
+                % (code, level, rel, ("created_at: %s\n" % created) if created else "",
+                   "todo" if level == "task" else "decided" if level == "adr" else "published", rel))
+
+
+class ContestedCodes(unittest.TestCase):
+    """KAIROS-T-0395: in keep mode the order of the files does not decide who
+    keeps a contested code. The order: number, the majority prefix, a
+    specification before the vision, the older created_at."""
+
+    PREFIXES = {"delivery": "TEAM", "adr": "TEAM", "initiative": "COLLIERY"}
+
+    def keep(self, docs):
+        return remap.keep_codes(docs, remap.creation_order(docs), "TEAM", self.PREFIXES)
+
+    def test_the_majority_prefix_keeps_the_number(self):
+        rows = [doc("OLD-A-0001", "adr"), doc("OLD-T-0002", "task"),
+                doc("MAIN-A-0001", "adr"), doc("MAIN-T-0001", "task"), doc("MAIN-T-0002", "task"),
+                doc("MAIN-T-0003", "task")]
+        for order in (rows, rows[::-1]):
+            docs = {d["short_code"]: dict(d) for d in order}
+            wanted, displaced, _ = self.keep(docs)
+            self.assertEqual(wanted["MAIN-A-0001"], "TEAM-A-0001")
+            self.assertEqual(wanted["MAIN-T-0002"], "TEAM-T-0002")
+            self.assertEqual(displaced, {"OLD-A-0001": ("TEAM-A-0001", "MAIN-A-0001"),
+                                         "OLD-T-0002": ("TEAM-T-0002", "MAIN-T-0002")})
+            self.assertEqual(remap.contests(docs, displaced)[0][3], "it has the majority prefix MAIN")
+
+    def test_the_specification_keeps_the_number_and_not_the_vision(self):
+        rows = [doc("X-V-0001", "vision"), doc("X-S-0001", "specification")]
+        for order in (rows, rows[::-1]):
+            docs = {d["short_code"]: dict(d) for d in order}
+            wanted, displaced, _ = self.keep(docs)
+            self.assertEqual(wanted, {"X-S-0001": "TEAM-D-0001"})
+            self.assertEqual(displaced, {"X-V-0001": ("TEAM-D-0001", "X-S-0001")})
+            self.assertEqual(remap.contests(docs, displaced), [
+                ("TEAM-D-0001", "X-S-0001", ["X-V-0001"], "a specification comes before the vision")])
+
+    def test_the_older_duplicate_keeps_the_bare_code(self):
+        # The newer file is first in the walk order (a/ before b/). The file
+        # with no date is last.
+        with tempfile.TemporaryDirectory() as tmp:
+            write_doc(tmp, "a/X-T-0005.md", "X-T-0005", "task", "2026-05-01T00:00:00+00:00")
+            write_doc(tmp, "b/X-T-0005.md", "X-T-0005", "task", "2026-02-01T00:00:00+00:00")
+            write_doc(tmp, "0/X-T-0005.md", "X-T-0005", "task")
+            docs, issues = inventory(tmp, strict=False)
+        self.assertEqual(issues["ambiguous"], ["X-T-0005"])
+        self.assertEqual({c: d["metis_path"] for c, d in docs.items()}, {
+            "X-T-0005": "b/X-T-0005.md", "X-T-0005~2": "a/X-T-0005.md", "X-T-0005~3": "0/X-T-0005.md"})
+        wanted, displaced, _ = self.keep(docs)
+        self.assertEqual(wanted, {"X-T-0005": "TEAM-T-0005"})
+        self.assertEqual(sorted(displaced), ["X-T-0005~2", "X-T-0005~3"])
+        self.assertEqual(remap.contests(docs, displaced), [
+            ("TEAM-T-0005", "X-T-0005", ["X-T-0005~2", "X-T-0005~3"], "it is older")])
+
+
+class FakeServer:
+    """GET of the boards, the pages of /api/repositories and whoami."""
+
+    def __init__(self, repositories):
+        self.repositories = repositories
+        self.paths = []
+
+    def json(self, method, path, body=None, admin=False, ok=(200, 201)):
+        self.paths.append(path)
+        if path.startswith("/api/boards/"):
+            slug = path.rsplit("/", 1)[1]
+            prefix = "COLLIERY" if slug == "initiatives" else "TEAM"
+            return {"id": slug + "-id", "slug": slug, "code_prefix": prefix, "columns": []}
+        if path.startswith("/api/repositories?"):
+            query = dict(kv.split("=") for kv in path.split("?", 1)[1].split("&"))
+            limit, offset = int(query["limit"]), int(query["offset"])
+            return {"items": self.repositories[offset:offset + limit],
+                    "total": len(self.repositories), "limit": limit, "offset": offset}
+        if path == "/api/whoami":
+            return {"organization": {"role": "admin"}, "capabilities": [], "teams": []}
+        raise AssertionError(path)
+
+
+class RepositoryPages(unittest.TestCase):
+    """KAIROS-T-0395: plan and apply read each page of GET /api/repositories."""
+
+    def server(self):
+        return FakeServer([{"id": "r%d" % i, "slug": "repo-%03d" % i} for i in range(450)])
+
+    def test_each_page_is_read(self):
+        server = self.server()
+        repos = run_remap.repositories(server)
+        self.assertEqual(len(repos), 450)
+        self.assertEqual([p for p in server.paths if "repositories" in p], [
+            "/api/repositories?limit=200&offset=0", "/api/repositories?limit=200&offset=200",
+            "/api/repositories?limit=200&offset=400"])
+
+    def args(self, metis, state):
+        return types.SimpleNamespace(
+            mode="plan", codes="keep", url="http://127.0.0.1:1", metis=metis, repository="repo-449",
+            prefix="TEAM", delivery_board="team", initiative_board="initiatives", adr_board="team-adrs",
+            limit=0, state=state, also_map=None, content_dir=None, wiki_links="plain", tenant=None)
+
+    def test_plan_finds_a_repository_on_the_last_page_and_lists_the_contests(self):
+        server = self.server()
+        with tempfile.TemporaryDirectory() as tmp:
+            metis = os.path.join(tmp, "metis")
+            write_doc(metis, "adrs/OLD-A-0001.md", "OLD-A-0001", "adr")
+            write_doc(metis, "adrs/MAIN-A-0001.md", "MAIN-A-0001", "adr")
+            write_doc(metis, "specs/MAIN-S-0001.md", "MAIN-S-0001", "specification")
+            write_doc(metis, "vision/MAIN-V-0001.md", "MAIN-V-0001", "vision")
+            out = io.StringIO()
+            real = run_remap.Api
+            run_remap.Api = lambda *a, **k: server
+            try:
+                with contextlib.redirect_stdout(out):
+                    run_remap.main(self.args(metis, os.path.join(tmp, "state.json")))
+            finally:
+                run_remap.Api = real
+        text = out.getvalue()
+        self.assertIn("/api/repositories?limit=200&offset=400", server.paths)
+        self.assertIn("  CONTESTED TEAM-A-0001: MAIN-A-0001 keeps it (it has the majority prefix MAIN). "
+                      "OLD-A-0001 gets the next free number.", text)
+        self.assertIn("  CONTESTED TEAM-D-0001: MAIN-S-0001 keeps it (a specification comes before "
+                      "the vision). MAIN-V-0001 gets the next free number.", text)
+
+    def test_a_repository_that_is_on_no_page_stops_the_run(self):
+        server = FakeServer([{"id": "r1", "slug": "other"}])
+        args = self.args(".metis", None)
+        with self.assertRaises(Stop):
+            run_remap.Context(server, args)
 
 
 class Client(unittest.TestCase):

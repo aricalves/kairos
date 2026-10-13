@@ -44,6 +44,7 @@ impl IntoDto<dto::Strategy> for Strategy {
             created_at: timestamp(self.created_at),
             updated_at: timestamp(self.updated_at),
             archived_at: self.deleted_at.map(timestamp),
+            owner: None,
         }
     }
 }
@@ -66,6 +67,7 @@ impl IntoDto<dto::Initiative> for Initiative {
             created_at: timestamp(self.created_at),
             updated_at: timestamp(self.updated_at),
             archived_at: self.deleted_at.map(timestamp),
+            owner: None,
         }
     }
 }

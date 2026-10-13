@@ -187,6 +187,29 @@ pub struct ItemDetail {
     /// and from an older server.
     #[serde(default)]
     pub claim: Option<Claim>,
+    /// The owner of a strategy or an initiative (KAIROS-T-0411). `None`
+    /// for an item with no owner, for the other families, and from an
+    /// older server.
+    #[serde(default)]
+    pub owner: Option<Owner>,
+}
+
+/// mirror of: `kairos_client::types::ItemOwner`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct Owner {
+    pub user_id: String,
+    pub display_name: String,
+    /// RFC 3339.
+    #[serde(default)]
+    pub claimed_at: String,
+}
+
+/// mirror of: `kairos_client::types::ItemOwnerResponse`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct OwnerResponse {
+    pub short_code: String,
+    #[serde(default)]
+    pub owner: Option<Owner>,
 }
 
 /// mirror of: `kairos_client::types::TaskClaim`.
@@ -1081,6 +1104,44 @@ pub async fn hand_off_task(auth: Auth, code: &str, to: &str) -> Result<ItemDetai
 pub async fn release_task(auth: Auth, code: &str) -> Result<ItemDetail, ApiError> {
     let path = format!("/api/tasks/{code}/release");
     send_json(auth, Verb::Post, &path, None::<&()>).await
+}
+
+/// `POST /api/{family}/{short_code}/owner/claim` — the signed-in person
+/// becomes the owner of a strategy or an initiative with no owner
+/// (KAIROS-T-0411). A member of the board, or an org admin.
+pub async fn claim_owner(
+    auth: Auth,
+    family: Family,
+    code: &str,
+) -> Result<OwnerResponse, ApiError> {
+    let path = format!("/api/{}/{code}/owner/claim", family.api_family());
+    send_json(auth, Verb::Post, &path, None::<&()>).await
+}
+
+/// `POST /api/{family}/{short_code}/owner/hand-off` — a person becomes the
+/// owner (KAIROS-T-0411). `to` is a user id. The owner, or an org admin.
+pub async fn hand_off_owner(
+    auth: Auth,
+    family: Family,
+    code: &str,
+    to: &str,
+) -> Result<OwnerResponse, ApiError> {
+    crate::api::post_json(
+        auth,
+        &format!("/api/{}/{code}/owner/hand-off", family.api_family()),
+        &HandOffBody { to },
+    )
+    .await
+}
+
+/// `DELETE /api/{family}/{short_code}/owner` — the item has no owner
+/// (KAIROS-T-0411, KAIROS-A-0025 amendment 3). The owner or an org admin.
+pub async fn release_owner(
+    auth: Auth,
+    family: Family,
+    code: &str,
+) -> Result<OwnerResponse, ApiError> {
+    crate::api::delete_json(auth, &format!("/api/{}/{code}/owner", family.api_family())).await
 }
 
 /// mirror of: `kairos_client::types::PurgeTaskResponse`.

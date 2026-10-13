@@ -251,6 +251,18 @@ The flow metrics of a board for a range (KAIROS-T-0372), from the history of the
 | `throughput` | array of [`FlowWeek`](#flowweek) | yes | One row for each week of the range (weeks start on Monday, UTC). |
 | `to` | `string` | yes | The last day of the range, `YYYY-MM-DD`. |
 
+## BoardGrantChange
+
+The changes on one board (an element of [`ChangeUserGrantsRequest::changes`]).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `board_id` | `string` | yes | The board (UUID). |
+| `grant` | array of `string` | no | The capabilities to grant. Each must apply at the level of the board, and the person must not have it. |
+| `revoke` | array of `string` | no | The stored grants to revoke (a glob too). The person must have each. |
+
+The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
+
 ## BoardItemsResponse
 
 Response of `GET /api/boards/{id}/items`: one page of the items on the board, grouped by column (columns in position order). The order of the items is: the position of the column, then the type, then the short code (COLLIERY-T-0261). The order of the types is: strategy, initiative, task, ADR. Each column is in each page, and a column can have no item on a page.
@@ -310,6 +322,16 @@ Response of `GET /api/{entity_type}/{short_code}/cascade-preview` (KAIROS-T-0051
 | `not_reached` | array of [`NotReached`](#notreached) | no | The live descendants that an archive BY THIS CALLER would not reach, sorted by short code (COLLIERY-T-0234). The preview answers for the caller who asks: a different caller can get a different answer. Absent when the archive would reach each descendant. |
 | `short_code` | `string` | yes | The item's short code (the cascade root). |
 
+## ChangeUserGrantsRequest
+
+Body of `PATCH /api/members/{user_id}/grants` (KAIROS-T-0413): the changes to the grants of one person on one or more boards. Kairos applies all of them in one transaction, or none.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `changes` | array of [`BoardGrantChange`](#boardgrantchange) | yes | One entry for each board (at least one; a board once only). |
+
+The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
+
 ## ChildColumnProgress
 
 One column bucket of a children-progress rollup (KAIROS-T-0080).
@@ -357,6 +379,16 @@ One indexed commit of a repository.
 | `summary_keys` | `integer` | yes | The summaries that the structure uses. |
 | `updated_at` | `string` | yes | When the index was last written, RFC 3339. |
 | `vector_model` | `string`, nullable | no | The model of the vectors, as `provider/model/dimension`. |
+
+## CodeIndexBreaker
+
+The breaker of the code index builder of a repository (KAIROS-T-0399), as [`Repository`] carries it. The lease of a build job can run out: its server stopped, ran out of memory, or stalled. That trips the breaker, and the build does not run again. Then the builder starts no build of the repository: no update, no first build. A build that a person asks for (`POST /api/repositories/{slug}/code-indexes/rebuild`) resets it.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `reason` | `string`, nullable | no | Why: the error of the build job that tripped it. |
+| `tripped` | `boolean` | yes | True: the breaker is tripped. |
+| `tripped_at` | `string`, nullable | no | When the breaker tripped, RFC 3339. |
 
 ## CodeIndexBuild
 
@@ -1073,6 +1105,7 @@ An initiative (Flight Level 2), as returned by `/api/initiatives`.
 | `created_by` | `string` | yes | Creator user id (UUID). |
 | `id` | `string` | yes | Entity id (UUID). |
 | `is_bucket` | `boolean` | yes | Whether this initiative is a bucket. |
+| `owner` | [`ItemOwner`](#itemowner), nullable | no |  |
 | `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-I-{NNNN}`). |
 | `title` | `string` | yes |  |
 | `updated_at` | `string` | yes | RFC 3339. |
@@ -1114,6 +1147,25 @@ Response of `GET/PATCH /api/{entity_type}/{short_code}/metadata`.
 |---|---|---|---|
 | `short_code` | `string` | yes | The item the values belong to. |
 | `values` | array of [`MetadataValue`](#metadatavalue) | yes | All metadata values on the item, ordered by definition slug. |
+
+## ItemOwner
+
+The owner of a strategy or an initiative (KAIROS-T-0411): the one person who answers for the item. A member of the board claims an item with no owner. The owner hands it off. An organization admin sets or clears it. The owner gives no right.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `claimed_at` | `string` | yes | When the person became the owner, RFC 3339. |
+| `display_name` | `string` | yes | The display name of the person. |
+| `user_id` | `string` | yes | The person (UUID). |
+
+## ItemOwnerResponse
+
+Response of `GET /api/{entity_type}/{short_code}/owner` and of the changes of the owner (KAIROS-T-0411).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `owner` | [`ItemOwner`](#itemowner), nullable | no |  |
+| `short_code` | `string` | yes | The short code of the strategy or the initiative. |
 
 ## ItemRelationshipsResponse
 
@@ -1708,6 +1760,7 @@ One repository, as returned by `/api/repositories` (KAIROS-T-0106).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `code_index_breaker` | [`CodeIndexBreaker`](#codeindexbreaker) | no | The breaker of the code index builder of the repository (KAIROS-T-0399). A build job that stopped its server or stalled trips it. Then the builder starts no build of the repository. A requested build resets it. |
 | `code_index_build` | [`CodeIndexBuild`](#codeindexbuild) | no | Whether the code index builder works on the repository (KAIROS-T-0318): `on` (the default) or `off`. |
 | `code_index_summaries` | [`CodeIndexSummaries`](#codeindexsummaries) | no | Where the summaries of the code index of the repository are made (KAIROS-T-0340): `embedded`, `hosted`, or `organization` (the default, KAIROS-T-0358): the default of the organization decides. |
 | `code_index_summaries_resolved` | [`CodeIndexSummaries`](#codeindexsummaries) | no | Where the summaries are made now: `embedded` or `hosted`. For `organization`, the default of the organization (KAIROS-T-0358). |
@@ -2113,6 +2166,7 @@ A strategy (Flight Level 3), as returned by `/api/strategies`.
 | `created_by` | `string` | yes | Creator user id (UUID). |
 | `hypothesis` | `string`, nullable | no |  |
 | `id` | `string` | yes | Entity id (UUID). |
+| `owner` | [`ItemOwner`](#itemowner), nullable | no |  |
 | `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-S-{NNNN}`). |
 | `title` | `string` | yes |  |
 | `updated_at` | `string` | yes | RFC 3339. |
@@ -2274,14 +2328,15 @@ One node of a team's page tree, as returned by `GET /api/teams/{id}/pages` (a FL
 
 ## TeamWorkDocument
 
-One row of `GET /api/teams/{id}/work-documents` (KAIROS-T-0084): a live document attached to the team's WORK — its `supports` parent is a task of the team or an item on the team's delivery board. Documents under org-level items deliberately do not appear.
+One row of `GET /api/teams/{id}/work-documents` (KAIROS-T-0084, KAIROS-T-0393): a live document of the team. A board of the team owns it (`owned`), or it supports a task of the team or an item on the delivery board of the team (`parent_*`). Each row has one reason or both.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `lifecycle` | `string` | yes | `draft|published|adopted|superseded` (KAIROS-T-0080). |
-| `parent_short_code` | `string` | yes | The supports-parent item, for attribution. |
-| `parent_title` | `string` | yes |  |
-| `parent_type` | `string` | yes | `strategy|initiative|task`. |
+| `owned` | `boolean` | yes | A board of the team is the owner board of the document. |
+| `parent_short_code` | `string`, nullable | no | The supports-parent item of the team's work, for attribution; `null` when it supports no item of the team's work. |
+| `parent_title` | `string`, nullable | no |  |
+| `parent_type` | `string`, nullable | no | `strategy|initiative|task`. |
 | `short_code` | `string` | yes | Document short code (links to `/items/{code}`). |
 | `title` | `string` | yes |  |
 
@@ -2561,6 +2616,41 @@ The answer to `PUT /api/repositories/{slug}/code-indexes/{commit}`.
 | `index` | [`CodeIndex`](#codeindex) | yes | The index as Kairos keeps it now. |
 | `new_summaries` | `integer` | yes | The summaries of the upload that the pool of the repository did not have. |
 | `pool_size` | `integer` | yes | The summaries in the pool of the repository after the upload. |
+
+## UserBoardGrants
+
+The grants of one person on one board (a row of [`UserGrants`]).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `applicable` | array of `string` | yes | The capabilities that apply at the level of the board. A change can grant only these on the board. |
+| `board_id` | `string` | yes | The board (UUID). |
+| `board_level` | `string` | yes | `strategy|initiative|delivery|adr`. |
+| `board_name` | `string` | yes |  |
+| `board_slug` | `string` | yes |  |
+| `capabilities` | array of `string` | yes | The stored grants of the person on the board (sorted). Globs too. |
+
+## UserGrants
+
+The grants of one person on the boards that the caller administers, and the teams of the person (KAIROS-T-0413). The answer of `GET` and `PATCH /api/members/{user_id}/grants`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `boards` | array of [`UserBoardGrants`](#userboardgrants) | yes | One row for each live board that the caller administers. The order is by level (strategy, initiative, delivery, ADR), then by name. |
+| `display_name` | `string` | yes |  |
+| `email` | `string` | yes |  |
+| `teams` | `array`, nullable | no | The teams of the person, by name. `null` when the caller cannot change team members. |
+| `user_id` | `string` | yes | `public.users.id` (UUID). |
+
+## UserTeam
+
+A team of a person (an element of [`UserGrants::teams`]).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | `string` | yes |  |
+| `slug` | `string` | yes |  |
+| `team_id` | `string` | yes | The team (UUID). |
 
 ## VectorProviderSettings
 

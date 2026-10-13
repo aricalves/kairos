@@ -74,6 +74,32 @@ pub(crate) fn has_board_config(me: &Whoami) -> bool {
         .any(|cap| holds_any(&me.capabilities, cap))
 }
 
+/// May the caller manage the members and grants of the board `board_slug`
+/// (KAIROS-T-0412)? Org admins always; other users iff they hold a
+/// board-config capability ([`BOARD_CONFIG_CAPS`]) on THAT board. The board
+/// page shows its link to the members panel from this.
+pub(crate) fn may_administer_board(me: &Whoami, board_slug: &str) -> bool {
+    is_org_admin(me)
+        || me
+            .capabilities
+            .iter()
+            .filter(|board| board.board_slug == board_slug)
+            .flat_map(|board| board.grants.iter())
+            .any(|grant| {
+                BOARD_CONFIG_CAPS
+                    .iter()
+                    .any(|cap| capability_matches(grant, cap))
+            })
+}
+
+/// May the caller open the members list and the grants page of a person
+/// (KAIROS-T-0413)? Org admins always; other users iff they hold
+/// `administer_members` on some board (globs included). The page shows
+/// them only the boards that they administer.
+pub(crate) fn may_assign_members(me: &Whoami) -> bool {
+    is_org_admin(me) || holds_any(&me.capabilities, "administer_members")
+}
+
 /// May the caller reach the `/admin` section at all? Org admins always;
 /// other users iff they hold a board-config capability on some board.
 pub(crate) fn can_access(me: &Whoami) -> bool {
@@ -102,6 +128,7 @@ mod tests {
                 .map(|(slug, gs)| WhoamiBoardCapabilities {
                     board_slug: (*slug).into(),
                     grants: gs.iter().map(|g| (*g).into()).collect(),
+                    implied: vec![],
                 })
                 .collect(),
             implicit: vec![],
@@ -157,5 +184,52 @@ mod tests {
             &[("initiatives", &["manage_tasks", "transition_items"])],
         );
         assert!(!can_access(&worker));
+    }
+
+    /// KAIROS-T-0412: the link from a board to its members panel. Org
+    /// admins see it on each board; other users only on a board where they
+    /// hold `administer_members` or `configure_boards`, globs included.
+    #[test]
+    fn the_members_link_needs_a_board_config_grant_on_that_board() {
+        let admin = me("admin", &[]);
+        assert!(may_administer_board(&admin, "initiatives"));
+
+        let members = me("member", &[("initiatives", &["administer_members"])]);
+        assert!(may_administer_board(&members, "initiatives"));
+        assert!(!may_administer_board(&members, "kairos"));
+
+        let configurer = me("member", &[("initiatives", &["configure_boards"])]);
+        assert!(may_administer_board(&configurer, "initiatives"));
+
+        let glob = me("member", &[("kairos", &["configure_*"])]);
+        assert!(may_administer_board(&glob, "kairos"));
+        let all = me("member", &[("kairos", &["*"])]);
+        assert!(may_administer_board(&all, "kairos"));
+
+        let worker = me("member", &[("kairos", &["manage_*", "transition_items"])]);
+        assert!(!may_administer_board(&worker, "kairos"));
+        assert!(!may_administer_board(&me("member", &[]), "kairos"));
+    }
+
+    /// KAIROS-T-0413: the members list and the grants page of a person.
+    /// Org admins; and a holder of `administer_members` on a board, globs
+    /// included. `configure_boards` alone is not sufficient.
+    #[test]
+    fn the_members_list_needs_administer_members_on_a_board() {
+        assert!(may_assign_members(&me("admin", &[])));
+        assert!(may_assign_members(&me(
+            "member",
+            &[("alpha-delivery", &["administer_members"])]
+        )));
+        assert!(may_assign_members(&me("member", &[("kairos", &["*"])])));
+        assert!(!may_assign_members(&me(
+            "member",
+            &[("kairos", &["configure_boards"])]
+        )));
+        assert!(!may_assign_members(&me(
+            "member",
+            &[("kairos", &["manage_*"])]
+        )));
+        assert!(!may_assign_members(&me("member", &[])));
     }
 }

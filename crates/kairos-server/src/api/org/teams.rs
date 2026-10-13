@@ -291,17 +291,17 @@ pub(crate) async fn list_team_links(
     Ok(Json(rows))
 }
 
-/// The documents attached to the team's WORK (KAIROS-T-0084): live
-/// documents whose supports-parent is a task of the team or an item on
-/// the team's delivery board. Open tenant-wide. Docs under org-level
-/// items deliberately absent — team attribution follows the parent item.
+/// The documents of the team (KAIROS-T-0084, KAIROS-T-0393). A board of
+/// the team owns each live document, or the document supports a task of
+/// the team or an item on its delivery board. Each row gives the reason.
+/// Open tenant-wide.
 #[utoipa::path(
     get,
     path = "/api/teams/{id}/work-documents",
     tag = "teams",
     params(("id" = String, Path, description = "Team id (UUID)")),
     responses(
-        (status = 200, description = "Derived work documents, by short code", body = Vec<kairos_client::types_team_pages::TeamWorkDocument>),
+        (status = 200, description = "The documents of the team, by short code", body = Vec<kairos_client::types_team_pages::TeamWorkDocument>),
         (status = 404, description = "Unknown team", body = kairos_client::types::ErrorEnvelope),
     ),
 )]
@@ -324,6 +324,7 @@ pub(crate) async fn list_work_documents(
                     short_code: row.short_code,
                     title: row.title,
                     lifecycle: row.lifecycle,
+                    owned: row.owned,
                     parent_short_code: row.parent_short_code,
                     parent_title: row.parent_title,
                     parent_type: row.parent_type,

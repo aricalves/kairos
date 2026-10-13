@@ -128,6 +128,19 @@ def unknown_references(docs, known):
 
 # --- server context -------------------------------------------------------
 
+def repositories(api, limit=200):
+    """Each repository of the tenant. GET /api/repositories gives a page,
+    {items, total, limit, offset} (KAIROS-T-0268, KAIROS-T-0395): read the
+    pages until `total`."""
+    repos, offset = [], 0
+    while True:
+        page = api.json("GET", "/api/repositories?limit=%d&offset=%d" % (limit, offset))
+        repos.extend(page["items"])
+        offset += len(page["items"])
+        if not page["items"] or offset >= page["total"]:
+            return repos
+
+
 class Context:
     """The boards, the repository and the rights of the principals."""
 
@@ -146,16 +159,7 @@ class Context:
             raise Stop("--prefix is %s, but the delivery board %s has the prefix %s. --prefix must "
                        "be the prefix of the delivery board."
                        % (args.prefix, delivery["slug"], delivery.get("code_prefix")))
-        # GET /api/repositories gives a page, {items, total, limit, offset}
-        # (KAIROS-T-0268). Read each page.
-        repos, offset = [], 0
-        while True:
-            page = api.json("GET", "/api/repositories?limit=200&offset=%d" % offset)
-            repos.extend(page["items"])
-            offset += len(page["items"])
-            if not page["items"] or offset >= page["total"]:
-                break
-        match = [r for r in repos if r["slug"] == args.repository]
+        match = [r for r in repositories(api) if r["slug"] == args.repository]
         if not match:
             raise Stop("the tenant has no repository %r" % args.repository)
         self.repository = match[0]
@@ -537,9 +541,10 @@ def plan_keep(docs, order, args, keep, ctx):
     for kind in remap.ORDER:
         if kept[kind]:
             print("  %-10s %4d  %s" % (kind, len(kept[kind]), compact(sorted(kept[kind]))))
-    for old, (code, holder) in sorted(displaced.items()):
-        print("  NEXT FREE %s: %s is the code of the item of %s. It gets the next free number."
-              % (old, code, holder))
+    # KAIROS-T-0395: each contested code, its winner and the reason.
+    for code, winner, losers, why in remap.contests(docs, displaced):
+        print("  CONTESTED %s: %s keeps it (%s). %s %s the next free number."
+              % (code, winner, why, " and ".join(losers), "gets" if len(losers) == 1 else "get"))
     others = collections.Counter(remap.kind_of(d) for d in order
                                  if d["short_code"] not in wanted and d["short_code"] not in displaced)
     if others:

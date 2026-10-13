@@ -18,6 +18,10 @@
 //! - [`complete`], [`release`] and [`fail`] end a lease. [`release`] queues
 //!   the job again while it has tries, and fails it after `max_tries`.
 //! - [`fail_expired`] fails each job whose lease ran out on its last try.
+//!   [`fail_expired_with`] also fails, on any try, a job of a kind that is
+//!   not taken again after its lease ran out ([`take_with`]).
+//! - [`cancel_waiting`] fails the jobs of a dedupe key that wait for a
+//!   server.
 //!
 //! Each write of a lease names the server (`leased_by`): a server that lost
 //! its lease to another server changes nothing.
@@ -150,6 +154,19 @@ pub fn take(
     kinds: &[String],
     lease_secs: f64,
 ) -> QueryResult<Option<Job>> {
+    take_with(conn, instance, kinds, &[], lease_secs)
+}
+
+/// [`take`], but a `leased` job of one of `no_retake` whose lease ran out
+/// is not taken again: [`fail_expired_with`] fails it (KAIROS-T-0399, a
+/// code index build that took its server down).
+pub fn take_with(
+    conn: &mut PgConnection,
+    instance: Uuid,
+    kinds: &[String],
+    no_retake: &[String],
+    lease_secs: f64,
+) -> QueryResult<Option<Job>> {
     if kinds.is_empty() {
         return Ok(None);
     }
@@ -166,7 +183,8 @@ pub fn take(
              SELECT id FROM public.jobs \
              WHERE kind = ANY($3) AND run_after <= now() \
                AND (state = 'queued' \
-                    OR (state = 'leased' AND lease_until < now() AND tries < max_tries)) \
+                    OR (state = 'leased' AND lease_until < now() AND tries < max_tries \
+                        AND NOT (kind = ANY($4)))) \
              ORDER BY priority DESC, run_after, created_at \
              LIMIT 1 \
              FOR UPDATE SKIP LOCKED) \
@@ -175,6 +193,7 @@ pub fn take(
     .bind::<SqlUuid, _>(instance)
     .bind::<Double, _>(lease_secs)
     .bind::<Array<Text>, _>(kinds)
+    .bind::<Array<Text>, _>(no_retake)
     .get_result(conn)
     .optional()
 }
@@ -260,18 +279,34 @@ pub fn fail(conn: &mut PgConnection, id: Uuid, instance: Uuid, error: &str) -> Q
 /// Fail each job of `kinds` whose lease ran out on its last try: no server
 /// will take it again. The failed jobs.
 pub fn fail_expired(conn: &mut PgConnection, kinds: &[String]) -> QueryResult<Vec<Job>> {
+    fail_expired_with(conn, kinds, &[])
+}
+
+/// [`fail_expired`], and also each job of `no_retake` whose lease ran out,
+/// on any try: [`take_with`] does not take it again (KAIROS-T-0399). The
+/// failed jobs.
+pub fn fail_expired_with(
+    conn: &mut PgConnection,
+    kinds: &[String],
+    no_retake: &[String],
+) -> QueryResult<Vec<Job>> {
     sql_query(format!(
         "UPDATE public.jobs SET state = 'failed', finished_at = now(), lease_until = NULL, \
-             last_error = 'The lease ran out on the last try (' || tries || ' of ' || \
-                 max_tries || '): the server ' || leased_by::text || ' stopped or stalled.' \
+             last_error = CASE WHEN tries >= max_tries \
+                 THEN 'The lease ran out on the last try (' || tries || ' of ' || \
+                     max_tries || '): the server ' || leased_by::text || ' stopped or stalled.' \
+                 ELSE 'The lease ran out on try ' || tries || ' of ' || max_tries || \
+                     ': the server ' || leased_by::text || ' stopped or stalled, and the job \
+                     is not run again.' END \
          WHERE id IN ( \
              SELECT id FROM public.jobs \
              WHERE kind = ANY($1) AND state = 'leased' AND lease_until < now() \
-               AND tries >= max_tries \
+               AND (tries >= max_tries OR kind = ANY($2)) \
              FOR UPDATE SKIP LOCKED) \
          RETURNING {COLUMNS}"
     ))
     .bind::<Array<Text>, _>(kinds)
+    .bind::<Array<Text>, _>(no_retake)
     .load(conn)
 }
 
@@ -309,6 +344,28 @@ pub fn open_by_key(conn: &mut PgConnection, dedupe_key: &str) -> QueryResult<Opt
     .bind::<Text, _>(dedupe_key)
     .get_result(conn)
     .optional()
+}
+
+/// Fail each job with `dedupe_key` that waits for a server, with `reason`
+/// in `last_error` and no more tries (KAIROS-T-0398): a `queued` job, and a
+/// `leased` job whose lease ran out (its server stopped, and a server takes
+/// it again). A `leased` job whose lease runs is not changed: its server
+/// runs it. The failed jobs.
+pub fn cancel_waiting(
+    conn: &mut PgConnection,
+    dedupe_key: &str,
+    reason: &str,
+) -> QueryResult<Vec<Job>> {
+    sql_query(format!(
+        "UPDATE public.jobs SET state = 'failed', finished_at = now(), lease_until = NULL, \
+             last_error = $2 \
+         WHERE dedupe_key = $1 \
+           AND (state = 'queued' OR (state = 'leased' AND lease_until < now())) \
+         RETURNING {COLUMNS}"
+    ))
+    .bind::<Text, _>(dedupe_key)
+    .bind::<Text, _>(reason)
+    .load(conn)
 }
 
 /// Put the job `id` of the server `instance` back in the queue with no

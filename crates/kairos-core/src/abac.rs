@@ -112,9 +112,13 @@ pub const GLOBS: &[&str] = &[GLOB_ALL, GLOB_MANAGE, GLOB_CONFIGURE, GLOB_TRANSIT
 /// The capabilities IMPLIED by membership of a board's owning team
 /// (KAIROS-T-0072 amendment to A-0006): day-to-day delivery work only.
 /// Deliberately narrow — no `configure_*`, no `administer_members`, and none of
-/// the strategy/initiative/ADR `manage_*` families: those remain explicit
-/// grants (or org-admin). The one widening is `manage_adrs` on the ADR board
-/// of the team ([`TEAM_ADR_BOARD_IMPLIED_CAPABILITIES`], COLLIERY-T-3108).
+/// the strategy/initiative/ADR `manage_*` families. The one widening is
+/// `manage_adrs` on the ADR board of the team
+/// ([`TEAM_ADR_BOARD_IMPLIED_CAPABILITIES`], COLLIERY-T-3108). On strategy
+/// and initiative boards, membership of the BOARD (any grant on it) gives
+/// the edit and the move of its items
+/// ([`STRATEGY_BOARD_MEMBER_CAPABILITIES`], KAIROS-T-0410); a team gives
+/// nothing there.
 pub const TEAM_IMPLIED_CAPABILITIES: &[&str] = &[MANAGE_TASKS, MANAGE_DOCUMENTS, TRANSITION_ITEMS];
 
 /// Does membership of the board's owning team satisfy `required` on its
@@ -142,6 +146,102 @@ pub const TEAM_ADR_BOARD_IMPLIED_CAPABILITIES: &[&str] = &[
 /// [`team_implies`].
 pub fn team_implies_on_adr_board(required: &str) -> bool {
     TEAM_ADR_BOARD_IMPLIED_CAPABILITIES.contains(&required)
+}
+
+/// The capabilities implied by MEMBERSHIP of a strategy board
+/// (KAIROS-T-0410, KAIROS-A-0025 decision 1): a principal who holds any
+/// grant on the board may edit and move every strategy on it. Computed at
+/// check time from the rows of `board_member_capabilities`, never stored, so
+/// the revoke of the last grant on the board is the revocation.
+///
+/// Archive and restore are NOT given by this set (decision 8). They are
+/// edits by the edit rule, and `manage_<type>` is the capability of both,
+/// so the rule reads the grants for them without this implication
+/// ([`EditUse::Archive`]). Nor `configure_boards` or `administer_members`.
+pub const STRATEGY_BOARD_MEMBER_CAPABILITIES: &[&str] = &[MANAGE_STRATEGIES, TRANSITION_ITEMS];
+
+/// The capabilities implied by membership of an initiative board
+/// (KAIROS-T-0410, KAIROS-A-0025 decision 1): as
+/// [`STRATEGY_BOARD_MEMBER_CAPABILITIES`], for initiatives.
+pub const INITIATIVE_BOARD_MEMBER_CAPABILITIES: &[&str] = &[MANAGE_INITIATIVES, TRANSITION_ITEMS];
+
+/// Does membership of a STRATEGY board (any grant on it) satisfy
+/// `required` on that board (KAIROS-T-0410)? Exact vocabulary membership,
+/// as for [`team_implies`].
+pub fn member_implies_on_strategy_board(required: &str) -> bool {
+    STRATEGY_BOARD_MEMBER_CAPABILITIES.contains(&required)
+}
+
+/// Does membership of an INITIATIVE board (any grant on it) satisfy
+/// `required` on that board (KAIROS-T-0410)? Exact vocabulary membership,
+/// as for [`team_implies`].
+pub fn member_implies_on_initiative_board(required: &str) -> bool {
+    INITIATIVE_BOARD_MEMBER_CAPABILITIES.contains(&required)
+}
+
+/// The capabilities that membership gives on a board of the level
+/// `board_level` (the text of `boards.board_level`): the strategy set, the
+/// initiative set, or none (delivery and ADR boards, KAIROS-T-0410).
+pub fn board_member_capabilities(board_level: &str) -> &'static [&'static str] {
+    match board_level {
+        "strategy" => STRATEGY_BOARD_MEMBER_CAPABILITIES,
+        "initiative" => INITIATIVE_BOARD_MEMBER_CAPABILITIES,
+        _ => &[],
+    }
+}
+
+/// The board levels (the text of `boards.board_level`), in the order that
+/// a page shows them: strategy, initiative, delivery, ADR (KAIROS-T-0413).
+pub const BOARD_LEVELS: &[&str] = &["strategy", "initiative", "delivery", "adr"];
+
+/// The grantable capabilities that APPLY on a board of the level
+/// `board_level` (KAIROS-T-0413): the capabilities that authorize a write
+/// that a board of that level can have. A board holds one item type and
+/// documents (`types_of_level` of the server), so each level has one
+/// `manage_<type>`, and `manage_documents`, `transition_items`,
+/// `configure_boards` and `administer_members`. An unknown level has none.
+///
+/// The ONE map of levels to capabilities: the server refuses a grant of a
+/// different capability in the change of the grants of one person over
+/// many boards, and sends this list to the GUI for each board, which
+/// enables only these cells of the grid.
+pub fn capabilities_of_level(board_level: &str) -> &'static [&'static str] {
+    const STRATEGY: &[&str] = &[
+        MANAGE_STRATEGIES,
+        MANAGE_DOCUMENTS,
+        TRANSITION_ITEMS,
+        CONFIGURE_BOARDS,
+        ADMINISTER_MEMBERS,
+    ];
+    const INITIATIVE: &[&str] = &[
+        MANAGE_INITIATIVES,
+        MANAGE_DOCUMENTS,
+        TRANSITION_ITEMS,
+        CONFIGURE_BOARDS,
+        ADMINISTER_MEMBERS,
+    ];
+    const DELIVERY: &[&str] = &[
+        MANAGE_TASKS,
+        MANAGE_DOCUMENTS,
+        TRANSITION_ITEMS,
+        CONFIGURE_BOARDS,
+        ADMINISTER_MEMBERS,
+        PAGES,
+    ];
+    const ADR: &[&str] = &[
+        MANAGE_ADRS,
+        MANAGE_DOCUMENTS,
+        TRANSITION_ITEMS,
+        CONFIGURE_BOARDS,
+        ADMINISTER_MEMBERS,
+    ];
+    match board_level {
+        "strategy" => STRATEGY,
+        "initiative" => INITIATIVE,
+        "delivery" => DELIVERY,
+        "adr" => ADR,
+        _ => &[],
+    }
 }
 
 /// A request to any team (KAIROS-T-0105, amended by COLLIERY-T-0218 for
@@ -212,6 +312,23 @@ pub struct EditFacts {
     pub holds_manage: bool,
     /// The principal is an admin of the organization.
     pub is_org_admin: bool,
+}
+
+/// What an edit is for, when the server loads [`EditFacts`]
+/// (KAIROS-T-0410, KAIROS-A-0025 decision 8). It decides whether
+/// membership of a strategy or initiative board
+/// ([`member_implies_on_strategy_board`],
+/// [`member_implies_on_initiative_board`]) counts toward `holds_manage`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditUse {
+    /// The title, the content, the metadata, the links, the team: each
+    /// edit that is not an archive. Membership of the board counts.
+    Edit,
+    /// An archive (with its cascade) or a restore. Only a grant counts (and
+    /// the team implication of delivery and ADR boards, as before): a
+    /// member of a strategy or initiative board with no `manage_<type>`
+    /// grant cannot archive or restore what it did not create.
+    Archive,
 }
 
 /// THE EDIT RULE (COLLIERY-T-0228). A principal, a person or a service
@@ -642,6 +759,91 @@ mod tests {
         assert!(!team_implies_on_adr_board(ADMINISTER_MEMBERS));
         assert!(!team_implies_on_adr_board(GLOB_ALL));
         assert!(!team_implies_on_adr_board(GLOB_MANAGE));
+    }
+
+    /// KAIROS-T-0410: membership of a strategy or initiative board gives the
+    /// `manage_<type>` of the board and `transition_items`, and nothing
+    /// configuration- or membership-shaped. Other levels give nothing.
+    #[test]
+    fn board_membership_implies_edit_and_move_of_its_level_only() {
+        assert!(member_implies_on_strategy_board(MANAGE_STRATEGIES));
+        assert!(member_implies_on_strategy_board(TRANSITION_ITEMS));
+        assert!(member_implies_on_initiative_board(MANAGE_INITIATIVES));
+        assert!(member_implies_on_initiative_board(TRANSITION_ITEMS));
+
+        assert!(!member_implies_on_strategy_board(MANAGE_INITIATIVES));
+        assert!(!member_implies_on_initiative_board(MANAGE_STRATEGIES));
+        for implies in [
+            member_implies_on_strategy_board as fn(&str) -> bool,
+            member_implies_on_initiative_board,
+        ] {
+            for capability in [
+                MANAGE_TASKS,
+                MANAGE_DOCUMENTS,
+                MANAGE_ADRS,
+                CONFIGURE_BOARDS,
+                ADMINISTER_MEMBERS,
+                FILE_BACKLOG,
+                MANAGE_STRUCTURE,
+                GLOB_ALL,
+                GLOB_MANAGE,
+            ] {
+                assert!(!implies(capability), "{capability}");
+            }
+        }
+        assert_eq!(
+            board_member_capabilities("strategy"),
+            STRATEGY_BOARD_MEMBER_CAPABILITIES
+        );
+        assert_eq!(
+            board_member_capabilities("initiative"),
+            INITIATIVE_BOARD_MEMBER_CAPABILITIES
+        );
+        assert!(board_member_capabilities("delivery").is_empty());
+        assert!(board_member_capabilities("adr").is_empty());
+    }
+
+    /// KAIROS-T-0413: each level has the `manage_<type>` of its item type
+    /// and the four capabilities that each board has. Each applicable
+    /// capability is grantable, and each grantable capability applies on
+    /// some level.
+    #[test]
+    fn the_capabilities_of_each_level() {
+        let common = [
+            MANAGE_DOCUMENTS,
+            TRANSITION_ITEMS,
+            CONFIGURE_BOARDS,
+            ADMINISTER_MEMBERS,
+        ];
+        for (level, own) in [
+            ("strategy", MANAGE_STRATEGIES),
+            ("initiative", MANAGE_INITIATIVES),
+            ("delivery", MANAGE_TASKS),
+            ("adr", MANAGE_ADRS),
+        ] {
+            let applies = capabilities_of_level(level);
+            assert!(applies.contains(&own), "{level}");
+            for capability in common {
+                assert!(applies.contains(&capability), "{level} {capability}");
+            }
+            let extra = usize::from(level == "delivery");
+            assert_eq!(applies.len(), 5 + extra, "{level}");
+            assert!(applies.iter().all(|c| CAPABILITIES.contains(c)));
+        }
+        assert!(!capabilities_of_level("delivery").contains(&MANAGE_STRATEGIES));
+        assert!(!capabilities_of_level("strategy").contains(&MANAGE_TASKS));
+        // KAIROS-T-0406: sites are published from the team's delivery board.
+        assert!(capabilities_of_level("delivery").contains(&PAGES));
+        assert!(!capabilities_of_level("initiative").contains(&PAGES));
+        assert!(capabilities_of_level("team").is_empty());
+        for capability in CAPABILITIES {
+            assert!(
+                BOARD_LEVELS
+                    .iter()
+                    .any(|level| capabilities_of_level(level).contains(capability)),
+                "{capability} applies on no level"
+            );
+        }
     }
 
     /// COLLIERY-T-0228: each of the three facts is sufficient, and with

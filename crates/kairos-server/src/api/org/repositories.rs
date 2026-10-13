@@ -268,6 +268,9 @@ pub(crate) struct Change {
     /// The names of the fields that have a new value, in the sequence of
     /// the body. It is empty when the call changed nothing.
     pub changed: Vec<&'static str>,
+    /// The code index build jobs that the call cancelled: it set
+    /// `code_index_build` to off (KAIROS-T-0398).
+    pub cancelled_builds: usize,
 }
 
 /// Change a repository as `user`: the ONE implementation of
@@ -368,14 +371,28 @@ pub(crate) fn change(
     .into_iter()
     .filter_map(|(name, changed)| changed.then_some(name))
     .collect();
-    let repository = if changed.is_empty() {
-        current
+    // KAIROS-T-0398: off cancels the build jobs that wait, in the
+    // transaction of the switch. The sweep adds no new job for a
+    // repository that is off, and a build that runs now goes on.
+    let turned_off = changes.code_index_build.as_deref() == Some("off");
+    let (repository, cancelled_builds) = if changed.is_empty() {
+        (current, 0)
     } else {
-        repositories::update(conn, current.id, changes, user).map_err(map_error)?
+        crate::api::org::run_in_transaction(conn, |conn| {
+            let repository =
+                repositories::update(conn, current.id, changes, user).map_err(map_error)?;
+            let cancelled = if turned_off {
+                crate::code_index::jobs::cancel_builds(conn, tenant_slug, &repository)?
+            } else {
+                0
+            };
+            Ok((repository, cancelled))
+        })?
     };
     Ok(Change {
         repository: render_one(conn, repository)?,
         changed,
+        cancelled_builds,
     })
 }
 
@@ -434,6 +451,13 @@ pub(crate) fn render(
     // KAIROS-T-0358: where the summaries of each repository are made now.
     let code_index_settings =
         kairos_db::code_index_settings::load_or_default(conn).map_err(ApiError::internal)?;
+    // KAIROS-T-0399: the tripped breakers of the code index builder.
+    let breakers: HashMap<Uuid, kairos_db::code_index_breakers::Breaker> =
+        kairos_db::code_index_breakers::of(conn, &ids)
+            .map_err(ApiError::internal)?
+            .into_iter()
+            .map(|b| (b.repository_id, b))
+            .collect();
     // KAIROS-T-0406: the live publish of each site, and the tenant of the
     // base path.
     let live_sites = kairos_db::sites::live(conn, &ids).map_err(ApiError::internal)?;
@@ -484,6 +508,14 @@ pub(crate) fn render(
                     dto::CodeIndexSummaries::Hosted
                 } else {
                     dto::CodeIndexSummaries::Embedded
+                },
+                code_index_breaker: match breakers.get(&repo.id) {
+                    Some(breaker) => dto::CodeIndexBreaker {
+                        tripped: true,
+                        tripped_at: Some(breaker.tripped_at.to_rfc3339()),
+                        reason: Some(breaker.reason.clone()),
+                    },
+                    None => dto::CodeIndexBreaker::default(),
                 },
                 site,
                 created_at: repo.created_at.to_rfc3339(),
@@ -719,6 +751,13 @@ pub(crate) async fn create_repository(
 /// A body can have only the values that the repository has. That request
 /// gets 200 with the repository, and the server writes nothing
 /// (COLLIERY-T-0267).
+///
+/// To stop the code index builds of the repository, send
+/// `{"code_index_build": "off"}` (KAIROS-T-0398). Kairos cancels the
+/// build jobs of the repository that wait for a server, and their runs end
+/// as failed. The builder adds no new job. Kairos does not stop a build
+/// that runs now, but the build gets no further try. Send `"on"` to start
+/// the builds again. The MCP tool `update_repository` does the same.
 #[utoipa::path(
     patch,
     path = "/api/repositories/{slug}",

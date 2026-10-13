@@ -226,7 +226,8 @@ fn resolve_or_create_user(
 
 /// Revoke the org membership (deprovision): LAST_ADMIN-guarded, activity-
 /// logged, users row retained; the agent keys of the person are revoked
-/// (KAIROS-T-0388). Shared by PATCH `active:false`, PUT
+/// (KAIROS-T-0388), and the items that the person owns have no owner
+/// (KAIROS-T-0411). Shared by PATCH `active:false`, PUT
 /// `active:false`, and DELETE.
 pub(crate) fn revoke_membership(
     conn: &mut PgConnection,
@@ -269,6 +270,9 @@ pub(crate) fn revoke_membership(
             format!("agent_key_revoke_on_remove:{}", key.name),
         )?;
     }
+    // KAIROS-T-0411 (KAIROS-A-0025 decision 7): the strategies and the
+    // initiatives of the person have no owner now.
+    crate::owners::drop_on_leave(conn, user.id, ctx.actor_id).map_err(ScimError::internal)?;
     Ok(())
 }
 

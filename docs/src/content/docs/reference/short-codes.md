@@ -141,9 +141,20 @@ code and the reason.
 - Each document gets the delivery board as its owner board, also a document
   that supports a parent. So a document keeps its Metis number too.
 - Two Metis documents can want one code. Examples: a Metis code that 2 files
-  have, or the vision `X-V-0001` and the specification `X-S-0001`. The first
-  document keeps the code. The other document gets the next free number. Its
-  footer says why.
+  have, 2 Metis prefixes with one number, or the vision `X-V-0001` and the
+  specification `X-S-0001`. The order of the files does not decide which
+  document keeps the code. The importer uses these rules, in this sequence:
+  1. The document with the prefix that most Metis documents have keeps the
+     code.
+  2. A specification keeps the code, not the vision.
+  3. The older document (`created_at`) keeps the code. A document with no
+     date comes last.
+
+  The other document gets the next free number. Its footer says why. `plan`
+  shows each contested code, the document that keeps it and the rule.
+- Two files with one Metis code: the older file keeps the Metis code. The
+  importer gives the other file the code `<code>~2` in its plan and in its
+  state file.
 - After each item exists, the importer changes each reference in the text to
   the new code. The footer keeps the Metis code.
 

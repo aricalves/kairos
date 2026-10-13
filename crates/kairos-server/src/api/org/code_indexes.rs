@@ -202,7 +202,8 @@ pub(crate) async fn list_code_index_builds(
 /// the server `server_instance` (KAIROS-T-0354) and its build job
 /// (KAIROS-T-0374). A build job of the repository that waits (an update or
 /// a first build) becomes the requested build: it gets the priority of a
-/// request and names the run. The check and the writes are one
+/// request and names the run. The request resets the breaker of the
+/// repository (KAIROS-T-0399). The check and the writes are one
 /// transaction, with the row of the repository locked. The caller wakes
 /// the job worker after the write.
 pub(crate) fn request_rebuild(
@@ -289,6 +290,11 @@ pub(crate) fn request_rebuild(
                 }
             }
         }
+        // KAIROS-T-0399: a person asks for the build, so the breaker of the
+        // repository resets, and the sweep works on it again.
+        if kairos_db::code_index_breakers::reset(conn, repo.id).map_err(ApiError::internal)? {
+            tracing::info!(tenant = tenant_slug, repository = %repo.slug, "code index breaker reset by a requested build");
+        }
         crate::code_index::notify_run(conn, &repo.slug, Some(user))?;
         Ok((repo, run))
     })
@@ -324,6 +330,8 @@ pub(crate) fn no_builder() -> ApiError {
 
 /// Ask the builder for a full build of the code index of a repository
 /// (KAIROS-T-0332). The body is empty. The answer is 202 with the run.
+/// The request resets the breaker of the code index builder of the
+/// repository (`code_index_breaker`, KAIROS-T-0399).
 #[utoipa::path(
     post,
     path = "/api/repositories/{slug}/code-indexes/rebuild",

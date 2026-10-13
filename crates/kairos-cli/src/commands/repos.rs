@@ -501,6 +501,10 @@ impl ReposCommand {
                 println!("write-back:     {}", detail.repository.write_back.summary());
                 println!("index builder:  {}", detail.repository.code_index_build);
                 println!(
+                    "index breaker:  {}",
+                    detail.repository.code_index_breaker.summary()
+                );
+                println!(
                     "summaries:      {} (now: {})",
                     detail.repository.code_index_summaries,
                     detail.repository.code_index_summaries_resolved

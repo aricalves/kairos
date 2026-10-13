@@ -677,6 +677,56 @@ Request body (required): `application/json`, [`ReplaceCapabilitiesRequest`](../s
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown board, or user is not a member |
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Capability outside the A-0006 vocabulary |
 
+### `GET /api/members/{user_id}/grants`
+
+The grants of one person on the boards that the caller administers
+(KAIROS-T-0413). The answer also gives the teams of the person.
+
+An organization admin sees each live board. A holder of
+`administer_members` sees only the boards where it holds it. `teams` is
+`null` unless the caller can change team members.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `user_id` | path | yes | `string` | User id (UUID) |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`UserGrants`](../schemas/#usergrants) | The grants of the person on each board that the caller administers |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The caller administers no board |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The user is not a member of the organization |
+
+### `PATCH /api/members/{user_id}/grants`
+
+Change the grants of one person on one or more boards, in ONE
+transaction (KAIROS-T-0413).
+
+Each entry of `changes` names a board. It gives the capabilities to
+grant and the stored grants to revoke.
+
+The caller must administer each board. A board that the caller cannot
+administer refuses all of the change (403). The refusal names the board.
+A grant must apply at the level of the board (422).
+
+A grant that the person has already refuses all of the change (409).
+A revoke of a grant that the person does not have refuses it too (404).
+Each grant and each revoke writes its activity row. The answer is the
+new view, as `GET` gives it.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `user_id` | path | yes | `string` | User id (UUID) |
+
+Request body (required): `application/json`, [`ChangeUserGrantsRequest`](../schemas/#changeusergrantsrequest)
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`UserGrants`](../schemas/#usergrants) | All the changes were applied; the new grants |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The caller cannot administer a board of the change; no change was applied |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown board or user, or a revoke of a grant that the person does not have |
+| `409` | [`ErrorEnvelope`](../schemas/#errorenvelope) | A grant that the person has already |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | No change, a board two times, or a capability that does not apply at the level of the board |
+
 ## structure-grants
 
 ### `GET /api/structure-grants`
@@ -906,10 +956,10 @@ Remove a member from a team. An organization admin, or
 
 ### `GET /api/teams/{id}/work-documents`
 
-The documents attached to the team's WORK (KAIROS-T-0084): live
-documents whose supports-parent is a task of the team or an item on
-the team's delivery board. Open tenant-wide. Docs under org-level
-items deliberately absent — team attribution follows the parent item.
+The documents of the team (KAIROS-T-0084, KAIROS-T-0393). A board of
+the team owns each live document, or the document supports a task of
+the team or an item on its delivery board. Each row gives the reason.
+Open tenant-wide.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
@@ -917,7 +967,7 @@ items deliberately absent — team attribution follows the parent item.
 
 | Response | Body | Meaning |
 |---|---|---|
-| `200` | array of [`TeamWorkDocument`](../schemas/#teamworkdocument) | Derived work documents, by short code |
+| `200` | array of [`TeamWorkDocument`](../schemas/#teamworkdocument) | The documents of the team, by short code |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown team |
 
 ## team-pages
@@ -1215,7 +1265,8 @@ Request body (required): `application/json`, [`AddOrgMemberRequest`](../schemas/
 
 Remove a member. Removing the LAST admin is rejected (422 `LAST_ADMIN`).
 Kairos revokes the agent keys of the member in the same transaction
-(KAIROS-T-0388). Org-admin-only.
+(KAIROS-T-0388). Then the strategies and the initiatives of the member
+have no owner (KAIROS-T-0411). Org-admin-only.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|

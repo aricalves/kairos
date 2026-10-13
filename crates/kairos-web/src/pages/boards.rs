@@ -162,6 +162,9 @@ pub(crate) struct BoardPowers {
     pub(crate) create: bool,
     /// May create documents (`manage_documents`).
     pub(crate) documents: bool,
+    /// May manage the members and grants of the board (KAIROS-T-0412):
+    /// org admin, or `administer_members` / `configure_boards` on it.
+    pub(crate) members: bool,
 }
 
 /// The `manage_*` capability that creating this kind requires.
@@ -208,6 +211,16 @@ fn team_implies_on_team_board(required: &str) -> bool {
     team_implies(required) || required == "manage_adrs"
 }
 
+/// The link from a board to its members panel (KAIROS-T-0412): the admin
+/// page of the board, at the anchor of the panel
+/// ([`crate::pages::admin::MEMBERS_ANCHOR`]). Pure, host-tested.
+pub(crate) fn members_panel_href(board_id: &str) -> String {
+    format!(
+        "/admin/boards/{board_id}#{}",
+        crate::pages::admin::MEMBERS_ANCHOR
+    )
+}
+
 /// Compute [`BoardPowers`] from the whoami identity. Pure, host-tested.
 /// Also used by the item detail page's move control (KAIROS-T-0075) —
 /// the same `transition_items` gate as the board's drag affordance.
@@ -222,22 +235,32 @@ pub(crate) fn board_powers(
             transition: true,
             create: create_kind.is_some(),
             documents: true,
+            members: true,
         };
     }
     let team_member = board_team_id.is_some_and(|team| me.teams.iter().any(|mine| mine.id == team));
+    // KAIROS-T-0410: `implied` is what the server says membership of this
+    // board gives (the edit and the move on a strategy or initiative
+    // board). The server computes it; the mirror only reads it.
     let has = |required: &str| {
         (team_member && team_implies_on_team_board(required))
             || me
                 .capabilities
                 .iter()
                 .filter(|board| board.board_slug == board_slug)
-                .flat_map(|board| board.grants.iter())
-                .any(|grant| grant_covers(grant, required))
+                .any(|board| {
+                    board
+                        .grants
+                        .iter()
+                        .any(|grant| grant_covers(grant, required))
+                        || board.implied.iter().any(|implied| implied == required)
+                })
     };
     BoardPowers {
         transition: has("transition_items"),
         create: create_kind.is_some_and(|kind| has(create_capability(kind))),
         documents: has("manage_documents"),
+        members: crate::pages::admin::gating::may_administer_board(me, board_slug),
     }
 }
 
@@ -1011,11 +1034,16 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                 .collect();
             let mut cards: Vec<CardModel> = Vec::new();
             cards.extend(group.strategies.iter().map(|item| {
+                // KAIROS-T-0411: the owner, as a pill.
+                let meta = data::owner_pill(item.owner.as_ref())
+                    .map(|pill| (pill, token::TEAL))
+                    .into_iter()
+                    .collect();
                 card(
                     EntityKind::Strategy,
                     &item.short_code,
                     &item.title,
-                    Vec::new(),
+                    meta,
                     None,
                     None,
                     None,
@@ -1029,6 +1057,10 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                 if item.is_bucket {
                     let bucket = item.bucket_type.clone().unwrap_or_default();
                     meta.push((format!("bucket · {bucket}"), token::GOLD));
+                }
+                // KAIROS-T-0411: the owner, as a pill.
+                if let Some(pill) = data::owner_pill(item.owner.as_ref()) {
+                    meta.push((pill, token::TEAL));
                 }
                 card(
                     EntityKind::Initiative,
@@ -1340,6 +1372,8 @@ fn BoardBody(
     // KAIROS-T-0372: the flow panel, open or not.
     let flow_open = RwSignal::new(false);
     let flow_board = StoredValue::new(board.slug.clone());
+    // KAIROS-T-0412: the members panel of the board, in its admin page.
+    let members_href = StoredValue::new(members_panel_href(&board.id));
     // KAIROS-T-0363: the tasks that "Archive completed" takes.
     let completed = Memo::new(move |_| {
         model.with(|m| {
@@ -1601,6 +1635,14 @@ fn BoardBody(
                             on_click=Callback::new(move |_| archive_open.set(true))>
                             "Archive completed"
                         </Button>
+                    })}
+                    // KAIROS-T-0412: the members and grants of the board,
+                    // for a person who may manage them.
+                    {move || powers.get().members.then(|| view! {
+                        <Anchor href=members_href.get_value()
+                            attr:data-testid="board-members-link">
+                            "Members"
+                        </Anchor>
                     })}
                 </Group>
             }.into_any());
@@ -3093,6 +3135,65 @@ mod tests {
         // Org-wide (teamless) board: nothing.
         let orgwide = board_powers(&bob, "strategy", None, Some(EntityKind::Strategy));
         assert_eq!(orgwide, BoardPowers::default());
+    }
+
+    /// KAIROS-T-0410 client mirror: on a strategy or initiative board, the
+    /// `implied` list of the server (membership: any grant on the board)
+    /// gives the move and the create of the board's items. It does not give
+    /// Restore ([`holds_capability`] reads grants only), nor the members
+    /// panel.
+    #[test]
+    fn board_powers_read_the_implied_capabilities_of_board_membership() {
+        let member: crate::api::Whoami = serde_json::from_value(serde_json::json!({
+            "user": {"id": "u-1", "display_name": "u", "email": "u@x.test"},
+            "organization": {"slug": "demo", "role": "member"},
+            "teams": [],
+            "capabilities": [{
+                "board_slug": "initiatives",
+                "grants": ["configure_boards"],
+                "implied": ["manage_initiatives", "transition_items"],
+            }],
+        }))
+        .expect("test whoami");
+        let powers = board_powers(&member, "initiatives", None, Some(EntityKind::Initiative));
+        assert!(powers.transition && powers.create);
+        assert!(!powers.documents);
+        // Restore is an archive: a grant is necessary.
+        assert!(!holds_capability(
+            &member,
+            Some("initiatives"),
+            None,
+            "manage_initiatives"
+        ));
+        // Another board: nothing.
+        let other = board_powers(&member, "strategy", None, Some(EntityKind::Strategy));
+        assert!(!other.transition && !other.create);
+        // An older server sends no `implied`: the grants alone decide.
+        let old = me("member", &[], &[("initiatives", &["configure_boards"])]);
+        let powers = board_powers(&old, "initiatives", None, Some(EntityKind::Initiative));
+        assert!(!powers.transition && !powers.create);
+    }
+
+    /// KAIROS-T-0412: the board page links to its members panel for an
+    /// org admin and for a holder of `administer_members` or
+    /// `configure_boards` (globs included) on THAT board. A member of the
+    /// team, or a holder of other grants, does not see the link.
+    #[test]
+    fn the_members_link_is_for_who_may_manage_the_members() {
+        let admin = me("admin", &[], &[]);
+        assert!(board_powers(&admin, "initiatives", None, Some(EntityKind::Initiative)).members);
+
+        let grants = me("member", &[], &[("initiatives", &["administer_members"])]);
+        assert!(board_powers(&grants, "initiatives", None, Some(EntityKind::Initiative)).members);
+        assert!(!board_powers(&grants, "kairos", Some("t1"), Some(EntityKind::Task)).members);
+
+        let configurer = me("member", &[], &[("kairos", &["configure_*"])]);
+        assert!(board_powers(&configurer, "kairos", Some("t1"), Some(EntityKind::Task)).members);
+
+        let team = me("member", &["t1"], &[("kairos", &["manage_*"])]);
+        assert!(!board_powers(&team, "kairos", Some("t1"), Some(EntityKind::Task)).members);
+
+        assert_eq!(members_panel_href("b-1"), "/admin/boards/b-1#members");
     }
 
     /// COLLIERY-T-3108 client mirror: on the ADR board of the team, a member

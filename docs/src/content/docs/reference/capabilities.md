@@ -31,6 +31,51 @@ A `manage_<type>` capability gates the create of an item on the board. For an
 edit or a delete, the capability is one of three ways in: see
 [The edit rule](#the-edit-rule).
 
+### The capabilities of each board level
+
+A board holds one item type and documents. Thus not each capability applies
+on each board. These capabilities apply:
+
+| Board level | Capabilities that apply |
+|---|---|
+| `strategy` | `manage_strategies`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members` |
+| `initiative` | `manage_initiatives`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members` |
+| `delivery` | `manage_tasks`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members`, `pages` |
+| `adr` | `manage_adrs`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members` |
+
+The grants page of a person uses this table (see below). A change on that page
+can grant only a capability of the table.
+
+## Give one person grants on many boards
+
+Use the grants page of the person to set the grants of one person on many
+boards in one step.
+
+1. Open **Admin → Members**, and click the name of the person. The page is
+   `/admin/members/<user id>`.
+2. In the grid, each row is a board, and each column is a capability. The
+   rows are in groups by board level. A cell is off when its capability does
+   not apply at the level of the board.
+3. To grant a capability on each board, tick its column in the **All boards**
+   row. Kairos ticks the cell on each board where the capability applies. Click
+   the column again to clear it. Then change single rows if necessary.
+4. Click **Save**. Kairos sends only the changed cells. It applies all of them
+   in one transaction, or none of them. Each grant and each revoke writes an
+   activity row, as a single grant does.
+5. In **Teams**, add the person to a team or remove the person from a team.
+
+An organization admin sees each board and the teams. A person with
+`administer_members` on a board sees the **Members** tab too. The grid shows
+only the boards where that person has `administer_members`, and no teams. A
+stored glob (`*`, `manage_*`) is not a column. The page shows it as text. To
+change it, use the members panel of the board.
+
+The REST calls are `GET /api/members/{user_id}/grants` and
+`PATCH /api/members/{user_id}/grants`: see
+[Boards and teams](../rest/boards-and-teams/#board-members). Kairos refuses all
+of the change with 403 when the caller cannot administer a board of it.
+`details.board_slug` names the board.
+
 ### Templates and metadata definitions are not delegable
 
 Writes to document templates and metadata definitions are **org-admin only**,
@@ -113,7 +158,7 @@ cannot carry them; grant and revoke refuse them. `whoami` reports them under
 |---|---|
 | `file_backlog` | Every member of the tenant holds it on every live **delivery** board. It permits a request to any team: a **task** in the entry column of its delivery board, in the support lane. The server consults it only when the caller does not hold `manage_tasks` on the board. The work class of a request is `support`. The server refuses a request that sends the work class `planned`. The server refuses a request that names a column that is not the entry column. The repository is optional. It is not part of the condition. The capability permits the create only. The person who sends a request created it, so the [edit rule](#the-edit-rule) lets that person edit it and archive it. No rule lets that person move it. |
 
-Two further implications are computed the same way — by the authorisation
+These implications are computed the same way — by the authorisation
 check rather than by a stored row:
 
 - **An organization admin passes every check**, on every board, with zero
@@ -129,6 +174,32 @@ check rather than by a stored row:
   member of a different team cannot. The ADR board of the organization has no
   team, so `manage_adrs` on it needs a grant. The MCP tools `whoami` and
   `my_boards` show the capabilities that each team board gives.
+- **On a strategy or initiative board, a grant makes a person a member.** A
+  person with one or more grants on the board is a member of it. A member
+  holds these capabilities on the board with no further grant:
+
+  | Board level | Capabilities of a member |
+  |---|---|
+  | `strategy` | `manage_strategies`, `transition_items` |
+  | `initiative` | `manage_initiatives`, `transition_items` |
+
+  Thus a member can edit and move each item on the board. A grant of
+  `configure_boards` only is sufficient.
+
+  Archive and restore still need a grant of `manage_<type>`.
+  `configure_boards` and `administer_members` still need their own grants.
+  Delivery and ADR boards do not have this rule. When you revoke the last
+  grant of a person on the board, the person is not a member.
+
+  The REST `whoami` shows the capabilities under `implied`, for each board in
+  `capabilities`. The MCP tools `whoami` and `my_boards` show them too.
+
+  A member can also claim an item of the board that has no
+  [owner](../glossary/#owner) (`claim_item`, or
+  `POST /api/{entity_type}/{short_code}/owner/claim`). The owner can hand the
+  item off to a member of the board, or release it. An organization admin can
+  set or clear the owner. A new owner is always a member of the board. The
+  owner gets no capability.
 
 ## `manage_structure`
 
@@ -221,6 +292,10 @@ different board, its creator can continue to edit it.
 | `impacts` link of a document or of an ADR | `POST /api/{type}/{short_code}/impacts`, `DELETE /api/{type}/{short_code}/impacts/{repository}` | `link_items`, `unlink_items` |
 | Archive | `DELETE /api/{type}/{short_code}` | `delete_item` |
 | Restore | `POST /api/{type}/{short_code}/restore` | `restore_item` |
+
+For an archive and a restore, condition 2 needs a grant. Membership of a
+strategy or initiative board is not sufficient. See
+[Computed capabilities](#computed-capabilities).
 
 ### An archive applies the rule to each descendant
 

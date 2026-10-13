@@ -708,8 +708,9 @@ pub fn board_children_progress(
 // Derived team work-documents (KAIROS-T-0084)
 // ---------------------------------------------------------------------------
 
-/// One document attached to a team's work, with its supports-parent for
-/// attribution.
+/// One document of a team, with the reason it is listed: `owned` when a
+/// board of the team owns it, and the supports-parent when it supports
+/// the team's work. A row has at least one of the two.
 #[derive(Debug, Clone, QueryableByName)]
 pub struct TeamWorkDocument {
     #[diesel(sql_type = Text)]
@@ -718,41 +719,61 @@ pub struct TeamWorkDocument {
     pub title: String,
     #[diesel(sql_type = Text)]
     pub lifecycle: String,
-    #[diesel(sql_type = Text)]
-    pub parent_short_code: String,
-    #[diesel(sql_type = Text)]
-    pub parent_title: String,
-    #[diesel(sql_type = Text)]
-    pub parent_type: String,
+    /// A live board of the team is the owner board (`documents.board_id`).
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    pub owned: bool,
+    #[diesel(sql_type = Nullable<Text>)]
+    pub parent_short_code: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    pub parent_title: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    pub parent_type: Option<String>,
 }
 
-/// The documents attached to a team's WORK (KAIROS-T-0084): live documents
-/// whose `supports` PARENT (edge source) is (a) a live task with `team_id
-/// = {team}` or (b) any live item on the team's delivery board. One row
-/// per document (`DISTINCT ON`), parent chosen deterministically
-/// (lexicographically first short code), ordered by document short code.
+/// The documents of a team (KAIROS-T-0084, KAIROS-T-0393). A live
+/// document is listed when either holds:
 ///
-/// Documents supporting org-level items deliberately do NOT appear — team
-/// attribution follows the parent item. `delivery_board = None` (a team
-/// without a delivery board) leaves only path (a).
+/// - **owned**: its owner board (`documents.board_id`) is a live board of
+///   the team (`boards.team_id`). Most documents support an initiative on
+///   a shared board, or nothing, so ownership is what finds them;
+/// - **supports**: its `supports` PARENT (edge source) is (a) a live task
+///   with `team_id = {team}` or (b) any live item on the team's delivery
+///   board. The parent is chosen deterministically (lexicographically
+///   first short code).
+///
+/// One row per document, ordered by document short code. A document that
+/// only supports an org-level item, and is owned by a board of a
+/// different team, does not appear. `delivery_board = None` (a team
+/// without a delivery board) leaves only path (a) of supports.
 pub fn team_work_documents(
     conn: &mut PgConnection,
     team_id: Uuid,
     delivery_board: Option<Uuid>,
 ) -> Result<Vec<TeamWorkDocument>, DieselError> {
     sql_query(
-        "SELECT DISTINCT ON (d.short_code) \
-             d.short_code, d.title, d.lifecycle, \
-             p.short_code AS parent_short_code, \
-             p.title AS parent_title, \
-             p.entity_type AS parent_type \
-         FROM item_relationships r \
-         JOIN documents d ON d.id = r.target_id AND d.deleted_at IS NULL \
-         JOIN entity_directory p ON p.id = r.source_id AND p.deleted_at IS NULL \
-         LEFT JOIN tasks t ON t.id = r.source_id AND t.deleted_at IS NULL \
-         WHERE r.relationship = 'supports' \
-           AND (t.team_id = $1 OR p.board_id = $2) \
-         ORDER BY d.short_code, p.short_code",
+        "WITH supported AS ( \
+             SELECT DISTINCT ON (r.target_id) \
+                 r.target_id AS document_id, \
+                 p.short_code, p.title, p.entity_type \
+             FROM item_relationships r \
+             JOIN entity_directory p ON p.id = r.source_id AND p.deleted_at IS NULL \
+             LEFT JOIN tasks t ON t.id = r.source_id AND t.deleted_at IS NULL \
+             WHERE r.relationship = 'supports' \
+               AND (t.team_id = $1 OR p.board_id = $2) \
+             ORDER BY r.target_id, p.short_code \
+         ) \
+         SELECT d.short_code, d.title, d.lifecycle, \
+             (b.id IS NOT NULL) AS owned, \
+             s.short_code AS parent_short_code, \
+             s.title AS parent_title, \
+             s.entity_type AS parent_type \
+         FROM documents d \
+         LEFT JOIN boards b ON b.id = d.board_id AND b.deleted_at IS NULL \
+             AND b.team_id = $1 \
+         LEFT JOIN supported s ON s.document_id = d.id \
+         WHERE d.deleted_at IS NULL \
+           AND (b.id IS NOT NULL OR s.document_id IS NOT NULL) \
+         ORDER BY d.short_code",
     )
     .bind::<SqlUuid, _>(team_id)
     .bind::<diesel::sql_types::Nullable<SqlUuid>, _>(delivery_board)
@@ -1087,7 +1108,7 @@ pub fn blocks_summary(
 /// 3. its repository is OWNED by the team (`repositories.team_id`, A-0019).
 ///
 /// **Kept adjacent to [`team_work_documents`] on purpose**: paths 1 and 2
-/// are that function's exact predicate. If the definition of "this team's
+/// are that function's supports predicate. If the definition of "this team's
 /// work" ever changes, both must change together, and adjacency is what
 /// makes that obvious.
 ///

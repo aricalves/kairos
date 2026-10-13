@@ -85,8 +85,8 @@ const TENANT: &str = "acme";
 
 /// How many tools `tools/list` returns, and the word the reference pages
 /// use for that number (COLLIERY-T-0220, COLLIERY-T-0266).
-const TOOL_COUNT: usize = 44;
-const TOOL_COUNT_WORD: &str = "forty-four";
+const TOOL_COUNT: usize = 45;
+const TOOL_COUNT_WORD: &str = "forty-five";
 
 /// Every request carries a real `Host` header and the tenant resolves from
 /// its subdomain against the configured base domain — the S-0006 REQ-1.2
@@ -284,6 +284,13 @@ fn extract_code(text: &str, prefix: &str) -> String {
 // ---------------------------------------------------------------------------
 // Scratch-tenant scaffolding
 // ---------------------------------------------------------------------------
+
+/// The text of `get_repository` for acme-fidius (KAIROS-T-0399).
+async fn text_of_repository(session: &mut McpSession<'_>) -> String {
+    session
+        .call_ok("get_repository", json!({"repository": "acme-fidius"}))
+        .await
+}
 
 /// `public.users.id` by email (JIT-provisioned by a first request).
 fn user_id(conn: &mut PgConnection, email: &str) -> Uuid {
@@ -632,6 +639,9 @@ async fn mcp_endpoint_against_live_stack() {
         // and end it.
         "hand_off_item",
         "release_item",
+        // KAIROS-T-0411: take a strategy or an initiative with no owner.
+        // hand_off_item and release_item change the owner too.
+        "claim_item",
         // KAIROS-T-0362: cancel a task with a reason, and delete a task for
         // good.
         "cancel_item",
@@ -702,6 +712,7 @@ async fn mcp_endpoint_against_live_stack() {
             "thirty-one",
             "thirty-nine",
             "forty-one",
+            "forty-four",
         ] {
             assert!(
                 !reference.contains(stale),
@@ -2720,7 +2731,13 @@ async fn repository_tools_against_live_stack() {
     // No `slug` and no `team`: the tool changes neither.
     assert_eq!(
         arguments_of("update_repository"),
-        ["default_branch", "description", "repo_url", "repository"]
+        [
+            "code_index_build",
+            "default_branch",
+            "description",
+            "repo_url",
+            "repository"
+        ]
     );
     for name in ["add_repository", "update_repository"] {
         let tool = tool(name);
@@ -3217,13 +3234,13 @@ async fn repository_tools_against_live_stack() {
     // Nothing to change: no argument, and null for each.
     for arguments in [
         json!({"repository": "acme-fidius"}),
-        json!({"repository": "acme-fidius", "description": null, "default_branch": null, "repo_url": null}),
+        json!({"repository": "acme-fidius", "description": null, "default_branch": null, "repo_url": null, "code_index_build": null}),
     ] {
         let text = alice_session.call_err("update_repository", arguments).await;
         assert_eq!(
             text,
             "VALIDATION: The call has nothing to change. Send one or more of these \
-             arguments: description, default_branch, repo_url."
+             arguments: description, default_branch, repo_url, code_index_build."
         );
     }
     // The values that the repository has: a success that writes nothing.
@@ -3254,7 +3271,7 @@ async fn repository_tools_against_live_stack() {
             text.starts_with(&format!(
                 "VALIDATION: The call has the argument {argument:?}. This tool does not \
                  accept that argument. The arguments of this tool are: repository, \
-                 description, default_branch, repo_url."
+                 description, default_branch, repo_url, code_index_build."
             )),
             "{text}"
         );
@@ -3283,6 +3300,151 @@ async fn repository_tools_against_live_stack() {
         repository_row(&mut conn, "acme-fidius").unwrap().team,
         platform.id
     );
+
+    // --- KAIROS-T-0398: update_repository turns the code index builder off --
+    let text = alice_session
+        .call_ok("get_repository", json!({"repository": "acme-fidius"}))
+        .await;
+    assert!(text.contains("\n- code index build: on\n"), "{text}");
+    // A build job that waits, with its run (a requested build).
+    let fidius = kairos_db::repositories::load_by_slug(&mut conn, "acme-fidius").expect("row");
+    let key = kairos_server::code_index::job_key(TENANT, fidius.id);
+    let run =
+        kairos_db::code_index_builds::start(&mut conn, fidius.id, "request", None, None, None)
+            .expect("a run");
+    let waiting = kairos_db::jobs::enqueue(
+        &mut conn,
+        &kairos_db::jobs::NewJob {
+            tenant: Some(TENANT.into()),
+            payload: json!({"repository_id": fidius.id, "trigger": "request", "run": run.id}),
+            dedupe_key: Some(key.clone()),
+            ..kairos_db::jobs::NewJob::new("embedded_build")
+        },
+    )
+    .expect("enqueue")
+    .expect("a job");
+    // An unknown value is refused and named, and changes nothing.
+    let text = alice_session
+        .call_err(
+            "update_repository",
+            json!({"repository": "acme-fidius", "code_index_build": "paused"}),
+        )
+        .await;
+    assert!(
+        text.starts_with(
+            "VALIDATION: The argument code_index_build has the value \"paused\". Send \"on\" \
+             or \"off\".\ndetails: "
+        ),
+        "{text}"
+    );
+    assert!(text.contains("\"argument\":\"code_index_build\""), "{text}");
+    assert_eq!(
+        kairos_db::jobs::get(&mut conn, waiting.id)
+            .unwrap()
+            .unwrap()
+            .state,
+        "queued"
+    );
+    // Off: the job that waits is cancelled, and its run ends as failed.
+    let text = alice_session
+        .call_ok(
+            "update_repository",
+            json!({"repository": "acme-fidius", "code_index_build": "off"}),
+        )
+        .await;
+    assert_eq!(
+        text,
+        "Updated repository acme-fidius: code_index_build. The code index builder is off: \
+         1 waiting build job(s) cancelled."
+    );
+    let cancelled = kairos_db::jobs::get(&mut conn, waiting.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cancelled.state, "failed");
+    assert_eq!(
+        cancelled.last_error.as_deref(),
+        Some(kairos_server::code_index::TURNED_OFF)
+    );
+    assert!(
+        kairos_db::jobs::open_by_key(&mut conn, &key)
+            .unwrap()
+            .is_none()
+    );
+    let ended = kairos_db::code_index_builds::get(&mut conn, run.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(ended.outcome, "failed");
+    assert_eq!(
+        ended.error.as_deref(),
+        Some(kairos_server::code_index::TURNED_OFF)
+    );
+    let text = alice_session
+        .call_ok("get_repository", json!({"repository": "acme-fidius"}))
+        .await;
+    assert!(text.contains("\n- code index build: off\n"), "{text}");
+    // Off again changes nothing.
+    let text = alice_session
+        .call_ok(
+            "update_repository",
+            json!({"repository": "acme-fidius", "code_index_build": "off"}),
+        )
+        .await;
+    assert_eq!(
+        text,
+        "No change to repository acme-fidius: it has these values already."
+    );
+    // On clears it, and cancels nothing.
+    let text = alice_session
+        .call_ok(
+            "update_repository",
+            json!({"repository": "acme-fidius", "code_index_build": "on"}),
+        )
+        .await;
+    assert_eq!(text, "Updated repository acme-fidius: code_index_build.");
+    let text = alice_session
+        .call_ok("get_repository", json!({"repository": "acme-fidius"}))
+        .await;
+    assert!(text.contains("\n- code index build: on\n"), "{text}");
+    // bob is not in the owner team: refused, as for the other arguments.
+    let text = bob_session
+        .call_err(
+            "update_repository",
+            json!({"repository": "acme-fidius", "code_index_build": "off"}),
+        )
+        .await;
+    assert!(text.starts_with("FORBIDDEN: "), "{text}");
+
+    // --- KAIROS-T-0399: get_repository shows the code index breaker ---------
+    assert!(
+        text_of_repository(&mut alice_session)
+            .await
+            .contains("\n- code index breaker: not tripped\n"),
+        "no breaker"
+    );
+    let tripped = kairos_db::code_index_breakers::trip(
+        &mut conn,
+        fidius.id,
+        "The lease ran out on try 1 of 3: the server stopped or stalled.",
+        None,
+    )
+    .expect("tripped");
+    let text = text_of_repository(&mut alice_session).await;
+    assert!(
+        text.contains(&format!(
+            "\n- code index breaker: tripped at {}: The lease ran out on try 1 of 3: the server \
+             stopped or stalled. The builder starts no build",
+            tripped.tripped_at.to_rfc3339()
+        )),
+        "{text}"
+    );
+    kairos_db::code_index_breakers::reset(&mut conn, fidius.id).expect("reset");
+    assert!(
+        text_of_repository(&mut alice_session)
+            .await
+            .contains("\n- code index breaker: not tripped\n")
+    );
+    // The row after the switch, for the checks below.
+    let before = repository_row(&mut conn, "acme-fidius").expect("the row");
 
     // --- COLLIERY-T-0267: the form of the fields -----------------------------
     // Until COLLIERY-T-0267 the two tools accepted an empty value and a blank
