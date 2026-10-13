@@ -210,24 +210,27 @@ pub(crate) fn settings_body(
     default_summaries: Option<String>,
 ) -> PutCodeIndexSettings {
     PutCodeIndexSettings {
-        summary: PutSummaryProvider {
+        summary: Some(PutSummaryProvider {
             provider: summary_provider.unwrap_or_else(|| current.summary.provider.clone()),
             base_url: summary_url.or_else(|| current.summary.base_url.clone()),
             model: summary_model.or_else(|| current.summary.model.clone()),
             region: summary_region.or_else(|| current.summary.region.clone()),
             secret: summary_secret,
-        },
-        vectors: PutVectorProvider {
+        }),
+        vectors: Some(PutVectorProvider {
             provider: vector_provider.unwrap_or_else(|| current.vectors.provider.clone()),
             base_url: vector_url.or_else(|| current.vectors.base_url.clone()),
             model: vector_model.or_else(|| current.vectors.model.clone()),
             secret: vector_secret,
-        },
+        }),
         concurrency: Some(concurrency.unwrap_or(current.concurrency)),
         // clap accepts only embedded and hosted. Not given: the value stays.
         default_summaries: default_summaries
             .as_deref()
             .and_then(kairos_client::types_repositories::CodeIndexSummaries::parse),
+        // KAIROS-T-0415: the version that `current` has. A change by another
+        // person after the read makes the server refuse the set.
+        version: Some(current.version),
     }
 }
 
@@ -236,7 +239,10 @@ fn print_settings(settings: &CodeIndexSettings) {
         &status.set_by,
         &status.set_at,
     ) {
-        (Some(by), Some(at)) => format!("set by {by} at {at}"),
+        (Some(by), Some(at)) => format!(
+            "set by {} at {at}",
+            status.set_by_name.as_deref().unwrap_or(by)
+        ),
         _ if status.set => "set".to_string(),
         _ => "none".to_string(),
     };
@@ -264,8 +270,18 @@ fn print_settings(settings: &CodeIndexSettings) {
         "Default summarizer of the repositories: {}",
         settings.default_summaries
     );
+    if !settings.hosted_repositories.is_empty() {
+        println!(
+            "Repositories with hosted summaries: {}",
+            settings.hosted_repositories.join(", ")
+        );
+    }
     match (&settings.updated_by, &settings.updated_at) {
-        (Some(by), Some(at)) => println!("Set by {by} at {at}."),
+        (Some(by), Some(at)) => println!(
+            "Set by {} at {at} (version {}).",
+            settings.updated_by_name.as_deref().unwrap_or(by),
+            settings.version
+        ),
         _ => println!("Not set: the organization uses the embedded model."),
     }
 }
@@ -496,6 +512,9 @@ mod code_index_settings_tests {
             default_summaries: Default::default(),
             updated_by: None,
             updated_at: None,
+            updated_by_name: None,
+            version: 7,
+            hosted_repositories: vec![],
         }
     }
 
@@ -518,16 +537,28 @@ mod code_index_settings_tests {
             None,
         );
         assert_eq!(body.default_summaries, None, "no flag: the value stays");
-        assert_eq!(body.summary.provider, "ollama-cloud");
+        assert_eq!(body.summary.as_ref().unwrap().provider, "ollama-cloud");
         assert_eq!(
-            body.summary.base_url.as_deref(),
+            body.summary.as_ref().unwrap().base_url.as_deref(),
             Some("https://ollama.com/v1")
         );
-        assert_eq!(body.summary.model.as_deref(), Some("kimi-k2.7-code"));
-        assert_eq!(body.summary.secret, None, "no flag, no secret in the body");
-        assert_eq!(body.vectors.provider, "remote");
-        assert_eq!(body.vectors.model.as_deref(), Some("nomic-embed-text"));
+        assert_eq!(
+            body.summary.as_ref().unwrap().model.as_deref(),
+            Some("kimi-k2.7-code")
+        );
+        assert_eq!(
+            body.summary.as_ref().unwrap().secret,
+            None,
+            "no flag, no secret in the body"
+        );
+        assert_eq!(body.vectors.as_ref().unwrap().provider, "remote");
+        assert_eq!(
+            body.vectors.as_ref().unwrap().model.as_deref(),
+            Some("nomic-embed-text")
+        );
         assert_eq!(body.concurrency, Some(8));
+        // KAIROS-T-0415: the set names the version it read.
+        assert_eq!(body.version, Some(7));
     }
 
     #[test]
@@ -546,8 +577,15 @@ mod code_index_settings_tests {
             Some(2),
             Some("hosted".into()),
         );
-        assert_eq!(body.summary.provider, "embedded");
-        assert!(body.summary.secret.as_ref().is_some_and(|s| s.is_empty()));
+        assert_eq!(body.summary.as_ref().unwrap().provider, "embedded");
+        assert!(
+            body.summary
+                .as_ref()
+                .unwrap()
+                .secret
+                .as_ref()
+                .is_some_and(|s| s.is_empty())
+        );
         assert_eq!(body.concurrency, Some(2));
         assert_eq!(
             body.default_summaries,

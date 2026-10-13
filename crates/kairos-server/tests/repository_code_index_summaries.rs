@@ -174,19 +174,20 @@ async fn a_repository_opts_in_to_hosted_summaries() {
 
     // 2. The admin sets Ollama Cloud; bob opts the repository in.
     svc.put_code_index_settings(&PutCodeIndexSettings {
-        summary: PutSummaryProvider {
+        summary: Some(PutSummaryProvider {
             provider: "ollama-cloud".into(),
             base_url: Some("https://ollama.com/v1".into()),
             model: Some("gemma4:31b".into()),
             region: None,
             secret: Some(Secret::new("ollama_t0340_key")),
-        },
-        vectors: PutVectorProvider {
+        }),
+        vectors: Some(PutVectorProvider {
             provider: "embedded".into(),
             ..Default::default()
-        },
+        }),
         concurrency: None,
         default_summaries: None,
+        version: None,
     })
     .await
     .expect("the provider");
@@ -250,19 +251,20 @@ async fn a_repository_opts_in_to_hosted_summaries() {
     // 5. KAIROS-T-0358: the default of the organization.
     let ollama =
         |default_summaries: Option<CodeIndexSummaries>, provider: &str| PutCodeIndexSettings {
-            summary: PutSummaryProvider {
+            summary: Some(PutSummaryProvider {
                 provider: provider.into(),
                 base_url: (provider != "embedded").then(|| "https://ollama.com/v1".into()),
                 model: (provider != "embedded").then(|| "gemma4:31b".into()),
                 region: None,
                 secret: None,
-            },
-            vectors: PutVectorProvider {
+            }),
+            vectors: Some(PutVectorProvider {
                 provider: "embedded".into(),
                 ..Default::default()
-            },
+            }),
             concurrency: None,
             default_summaries,
+            version: None,
         };
     //    A member who is not an organization admin cannot set it.
     let err = bob
