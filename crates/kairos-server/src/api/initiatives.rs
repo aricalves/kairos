@@ -115,7 +115,12 @@ pub(crate) async fn list_initiatives(
                 .load(conn)
                 .map_err(ApiError::internal)?;
             Ok(dto::ListEnvelope {
-                items: rows.into_iter().map(IntoDto::into_dto).collect(),
+                items: {
+                    // KAIROS-T-0411: the owner of each item, two queries.
+                    let mut items: Vec<_> = rows.into_iter().map(IntoDto::into_dto).collect();
+                    crate::owners::attach_owners(conn, &mut items)?;
+                    items
+                },
                 total,
                 limit,
                 offset,
@@ -144,7 +149,8 @@ pub(crate) async fn get_initiative(
     let initiative = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            Ok(load(conn, &short_code, Liveness::IncludeArchived)?.into_dto())
+            let item = load(conn, &short_code, Liveness::IncludeArchived)?.into_dto();
+            crate::owners::attach_owner(conn, item)
         })
         .await?;
     Ok(Json(initiative))
@@ -250,7 +256,10 @@ pub(crate) async fn update_initiative(
                 update,
                 user,
             ) {
-                Ok(_) => Ok(load(conn, &short_code, Liveness::LiveOnly)?.into_dto()),
+                Ok(_) => {
+                    let item = load(conn, &short_code, Liveness::LiveOnly)?.into_dto();
+                    crate::owners::attach_owner(conn, item)
+                }
                 Err(items::ItemError::VersionConflict {
                     expected_version,
                     current_version,
@@ -362,7 +371,8 @@ pub(crate) async fn transition_initiative(
             boards::transition_initiative(conn, initiative.id, to_column_id, user)
                 .map_err(map_board_error)?;
             crate::claims::note_wip(conn, to_column_id, &short_code)?;
-            Ok(load(conn, &short_code, Liveness::LiveOnly)?.into_dto())
+            let item = load(conn, &short_code, Liveness::LiveOnly)?.into_dto();
+            crate::owners::attach_owner(conn, item)
         })
         .await?;
     Ok(Json(transitioned))

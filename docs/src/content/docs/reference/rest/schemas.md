@@ -1080,6 +1080,7 @@ An initiative (Flight Level 2), as returned by `/api/initiatives`.
 | `created_by` | `string` | yes | Creator user id (UUID). |
 | `id` | `string` | yes | Entity id (UUID). |
 | `is_bucket` | `boolean` | yes | Whether this initiative is a bucket. |
+| `owner` | [`ItemOwner`](#itemowner), nullable | no |  |
 | `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-I-{NNNN}`). |
 | `title` | `string` | yes |  |
 | `updated_at` | `string` | yes | RFC 3339. |
@@ -1121,6 +1122,25 @@ Response of `GET/PATCH /api/{entity_type}/{short_code}/metadata`.
 |---|---|---|---|
 | `short_code` | `string` | yes | The item the values belong to. |
 | `values` | array of [`MetadataValue`](#metadatavalue) | yes | All metadata values on the item, ordered by definition slug. |
+
+## ItemOwner
+
+The owner of a strategy or an initiative (KAIROS-T-0411): the one person who answers for the item. A member of the board claims an item with no owner. The owner hands it off. An organization admin sets or clears it. The owner gives no right.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `claimed_at` | `string` | yes | When the person became the owner, RFC 3339. |
+| `display_name` | `string` | yes | The display name of the person. |
+| `user_id` | `string` | yes | The person (UUID). |
+
+## ItemOwnerResponse
+
+Response of `GET /api/{entity_type}/{short_code}/owner` and of the changes of the owner (KAIROS-T-0411).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `owner` | [`ItemOwner`](#itemowner), nullable | no |  |
+| `short_code` | `string` | yes | The short code of the strategy or the initiative. |
 
 ## ItemRelationshipsResponse
 
@@ -2073,6 +2093,7 @@ A strategy (Flight Level 3), as returned by `/api/strategies`.
 | `created_by` | `string` | yes | Creator user id (UUID). |
 | `hypothesis` | `string`, nullable | no |  |
 | `id` | `string` | yes | Entity id (UUID). |
+| `owner` | [`ItemOwner`](#itemowner), nullable | no |  |
 | `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-S-{NNNN}`). |
 | `title` | `string` | yes |  |
 | `updated_at` | `string` | yes | RFC 3339. |

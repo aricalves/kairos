@@ -1156,6 +1156,40 @@ pub(crate) async fn board_items(
                     group.tasks = by_column.remove(&group.column.id).unwrap_or_default();
                 }
             }
+            // KAIROS-T-0411: the owner of each strategy and initiative of
+            // the page, two queries for the page.
+            {
+                let ids: Vec<Uuid> = groups
+                    .iter()
+                    .flat_map(|g| {
+                        g.strategies
+                            .iter()
+                            .map(|s| s.id.as_str())
+                            .chain(g.initiatives.iter().map(|i| i.id.as_str()))
+                    })
+                    .filter_map(|id| id.parse().ok())
+                    .collect();
+                let mut owners =
+                    crate::owners::owner_dtos(conn, &ids).map_err(ApiError::internal)?;
+                if !owners.is_empty() {
+                    for group in groups.iter_mut() {
+                        for strategy in &mut group.strategies {
+                            strategy.owner = strategy
+                                .id
+                                .parse()
+                                .ok()
+                                .and_then(|id: Uuid| owners.remove(&id));
+                        }
+                        for initiative in &mut group.initiatives {
+                            initiative.owner = initiative
+                                .id
+                                .parse()
+                                .ok()
+                                .and_then(|id: Uuid| owners.remove(&id));
+                        }
+                    }
+                }
+            }
             // COLLIERY-T-0269: the `impacts` links of each ADR, ONE query
             // for the whole page.
             {

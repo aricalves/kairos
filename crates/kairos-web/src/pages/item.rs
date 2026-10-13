@@ -28,6 +28,7 @@ mod create_doc;
 mod delete;
 mod editor;
 mod end;
+mod item_owner;
 pub(crate) mod markdown;
 mod metadata;
 mod owner;
@@ -54,6 +55,7 @@ use create_doc::CreateDocumentDialog;
 use delete::DeleteDialog;
 use editor::ContentEditor;
 use end::{CancelDialog, CancelledBanner, PurgeDialog};
+use item_owner::OwnerPanel;
 use metadata::MetadataPanel;
 use owner::{ImpactsPanel, OwnerBoardPanel};
 use teams::TeamsPanel;
@@ -249,6 +251,7 @@ fn ItemLoaded(
     let task_column = item.column_id.clone();
     let claim_column = item.column_id.clone();
     let task_claim = item.claim.clone();
+    let item_owner = item.owner.clone();
     let lane = item.work_class.clone();
     let repository = item.repository.as_ref().map(|r| r.slug.clone());
     let lifecycle = item.lifecycle.clone();
@@ -404,6 +407,12 @@ fn ItemLoaded(
                 {matches!(family, Family::Document | Family::Adr).then(|| view! {
                     <ImpactsPanel family code=short_code.clone() impacts board
                         created_by=impacts_creator archived on_moved/>
+                })}
+                // KAIROS-T-0411: the owner of a strategy or an initiative,
+                // with Claim, Hand off and Clear.
+                {matches!(family, Family::Strategy | Family::Initiative).then(|| view! {
+                    <OwnerPanel family code=short_code.clone() owner=item_owner board
+                        archived on_moved/>
                 })}
                 // KAIROS-T-0322: the teams of an initiative or a strategy.
                 {matches!(family, Family::Strategy | Family::Initiative).then(|| view! {

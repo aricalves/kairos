@@ -231,6 +231,29 @@ pub fn on_hand_off(
     Ok(())
 }
 
+/// `hand_off` of an owner (KAIROS-T-0411): `actor` made `to_user` the
+/// owner of the strategy or the initiative `(id, code, title)`.
+pub fn on_owner_hand_off(
+    conn: &mut PgConnection,
+    (item_id, code, title): (Uuid, &str, &str),
+    to_user: Uuid,
+    actor: Uuid,
+) -> Result<(), DieselError> {
+    let text = format!(
+        "{} made you the owner of {code}: {title}",
+        name_of(conn, actor)?
+    );
+    notify(
+        conn,
+        &[to_user],
+        NotificationKind::HandOff,
+        Some((item_id, code)),
+        &text,
+        actor,
+    )?;
+    Ok(())
+}
+
 /// `cancelled`: `actor` cancelled the task, with `reason`. The person who
 /// created the task is told.
 pub fn on_cancel(

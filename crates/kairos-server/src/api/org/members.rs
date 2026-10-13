@@ -387,7 +387,8 @@ pub(crate) async fn update_member(
 
 /// Remove a member. Removing the LAST admin is rejected (422 `LAST_ADMIN`).
 /// Kairos revokes the agent keys of the member in the same transaction
-/// (KAIROS-T-0388). Org-admin-only.
+/// (KAIROS-T-0388). Then the strategies and the initiatives of the member
+/// have no owner (KAIROS-T-0411). Org-admin-only.
 #[utoipa::path(
     delete,
     path = "/api/members/{user_id}",
@@ -449,6 +450,9 @@ pub(crate) async fn remove_member(
                         .execute(conn)
                         .map_err(ApiError::internal)?;
                 }
+                // KAIROS-T-0411 (KAIROS-A-0025 decision 7): the strategies
+                // and the initiatives of the person have no owner now.
+                crate::owners::drop_on_leave(conn, target, user).map_err(ApiError::internal)?;
                 Ok(dto::RemoveOrgMemberResponse {
                     user_id: target.to_string(),
                     removed: true,

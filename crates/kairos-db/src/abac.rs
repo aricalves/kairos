@@ -203,6 +203,25 @@ fn check_capability_with(
     Ok(row.authorized)
 }
 
+/// Whether `user_id` is a MEMBER of the board: it holds any grant on it
+/// (KAIROS-T-0410, KAIROS-A-0025 decision 1). The third arm of
+/// [`check_capability`] asks the same test. On a strategy or an initiative
+/// board, a member may claim an item with no owner (KAIROS-T-0411).
+pub fn is_board_member(
+    conn: &mut PgConnection,
+    board_id: Uuid,
+    user_id: Uuid,
+) -> Result<bool, AbacError> {
+    use crate::schema::board_member_capabilities::dsl;
+    let member: bool = diesel::select(diesel::dsl::exists(
+        dsl::board_member_capabilities
+            .filter(dsl::board_id.eq(board_id))
+            .filter(dsl::user_id.eq(user_id)),
+    ))
+    .get_result(conn)?;
+    Ok(member)
+}
+
 /// Whether `user_id` is an org admin (`public.organization_members.role =
 /// 'admin'`) of the organization identified by `org_slug` (module docs:
 /// the tenant's slug is how the org row is identified).

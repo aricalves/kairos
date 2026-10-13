@@ -3,8 +3,8 @@ title: "MCP tools"
 ---
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-forty-four tools. A drift gate in the test suite
-asserts that `tools/list` returns these forty-four and no others. The same
+forty-five tools. A drift gate in the test suite
+asserts that `tools/list` returns these forty-five and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -53,6 +53,7 @@ Codes an agent can receive, and what each means.
 | `RENAME_NOT_NEEDED` | A `move_item` with `rename` to a board whose prefix the code has already. |
 | `NOT_CLAIMABLE` | A `hand_off_item` or a `release_item` of a task that is not in Active (a column that holds claims). |
 | `NO_CLAIM` | A `release_item` of a task that has no claim. |
+| `NO_OWNER` | A `release_item` of a strategy or an initiative that has no owner. |
 | `TASK_DONE` | A `cancel_item` of a task that is in a done column. |
 | `NO_DONE_COLUMN` | A `cancel_item` of a task whose board has no done column. |
 
@@ -383,6 +384,9 @@ slugs of the teams. See [the teams of an item](#the-teams-of-an-initiative-or-a-
 A task with a claim carries `[claimed by Alice]`, or `[claimed by Alice
 (agent)]` when the agent of the person made the claim.
 
+A strategy or an initiative with an [owner](../glossary/#owner) carries
+`[owner: Alice]`.
+
 A [cancelled](../glossary/#cancel) task carries `[cancelled]`.
 
 A column with a WIP limit shows its live count against the limit after its
@@ -479,6 +483,14 @@ line too:
 ```text
 - claim: Alice (agent) since 2026-10-09T10:00:00Z
 - claim: none. The task is free: the next person who moves it to Active gets the claim.
+```
+
+A strategy and an initiative have the line `owner`, in each column and in the
+archive:
+
+```text
+- owner: Alice since 2026-10-12T10:00:00Z
+- owner: none. A member of the board can claim it (claim_item).
 ```
 
 A [cancelled](../glossary/#cancel) task has the line `cancelled`, with who
@@ -1080,50 +1092,89 @@ The tool refuses with these codes:
 | `SAME_BOARD`, `NOT_DELIVERY_BOARD`, `NO_ENTRY_COLUMN` | For a task only. |
 | `RENAME_NOT_NEEDED` | A rename to a board whose prefix the code has already, or a rename of a document whose owner board does not change. |
 
-### `hand_off_item`
+### `claim_item`
 
-Gives the [claim](../glossary/#claim) of a task in Active to a different person.
-The task stays in Active.
+Makes you the [owner](../glossary/#owner) of a strategy or an initiative that
+has no owner. The owner is the one person who answers for the item.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `short_code` | string | yes | — | The task's short code. The task must be in Active. |
-| `to` | string | yes | — | The person who gets the claim: a user id, an email or a user name of a person of the organization. |
+| `short_code` | string | yes | — | The short code of a strategy or an initiative with no owner. |
 
-The person who has the claim can hand it off. Any other principal needs
-`transition_items` on the board of the task. A service account cannot have a
-claim. A task in Active with no claim can get a claim by a hand-off. The answer
-has the line `claim` with the new claim.
+You must be a person and a member of the board of the item. A member has a
+grant on the board. An organization admin can also claim. The owner stays in each
+column, Completed too. The owner gets no right from the claim. The answer has
+the line `owner` with the new owner.
 
 Refuses:
 
-- `NOT_FOUND` for an unknown short code or an archived task.
-- `VALIDATION` for an item that is not a task.
+- `NOT_FOUND` for an unknown short code or an archived item.
+- `RELATIONSHIP_RULE` for an item that is not a strategy or an initiative.
+- `FORBIDDEN` for a service account, and for a person who is not a member of
+  the board and not an organization admin.
+- `CONFLICT` when the item has an owner. The text names the owner.
+
+### `hand_off_item`
+
+Changes the [claim](../glossary/#claim) of a task in Active, or the
+[owner](../glossary/#owner) of a strategy or an initiative.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `short_code` | string | yes | — | The short code of a task in Active, or of a strategy or an initiative. |
+| `to` | string | yes | — | The person who gets the claim or who becomes the owner: a user id, an email or a user name of a person of the organization. |
+
+A task: the person who has the claim can hand it off. Any other principal needs
+`transition_items` on the board of the task. A task in Active with no claim can
+get a claim by a hand-off. The task stays in Active. The answer has the line
+`claim` with the new claim.
+
+A strategy or an initiative: the owner can hand it off. An organization admin
+can set the owner of each item, also of an item with no owner. Nobody else can.
+The new owner gets a notification. The answer has the line `owner` with the
+new owner.
+
+A service account cannot have a claim or be an owner.
+
+Refuses:
+
+- `NOT_FOUND` for an unknown short code or an archived item.
+- `VALIDATION` for an item that is not a task, a strategy or an initiative.
 - `VALIDATION` for `to` that is not a person of the organization.
-- `FORBIDDEN` without the claim and without `transition_items`.
+- `FORBIDDEN` for a task, without the claim and without `transition_items`.
+- `FORBIDDEN` for a strategy or an initiative, for a principal that is not
+  the owner and not an organization admin.
 - `NOT_CLAIMABLE` for a task that is not in Active.
-- `CONFLICT` when the person has the claim already.
+- `CONFLICT` when the person has the claim or is the owner already.
 
 ### `release_item`
 
-Ends the [claim](../glossary/#claim) of a task in Active. The task stays in
-Active with no claim, free for anyone. The next person who moves the task to
-Active gets the claim.
+Ends the [claim](../glossary/#claim) of a task in Active, or removes the
+[owner](../glossary/#owner) of a strategy or an initiative.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `short_code` | string | yes | — | The task's short code. The task must be in Active. |
+| `short_code` | string | yes | — | The short code of a task in Active, or of a strategy or an initiative. |
 
-The person who has the claim can release it. Any other principal needs
-`transition_items` on the board of the task.
+A task: the task stays in Active with no claim, free for anyone. The next
+person who moves the task to Active gets the claim. The person who has the
+claim can release it. Any other principal needs `transition_items` on the
+board of the task.
+
+A strategy or an initiative: only an organization admin can remove the owner.
+The owner hands the item off instead. The item then has no owner, and a member
+of its board can claim it.
 
 Refuses:
 
-- `NOT_FOUND` for an unknown short code or an archived task.
-- `VALIDATION` for an item that is not a task.
-- `FORBIDDEN` without the claim and without `transition_items`.
+- `NOT_FOUND` for an unknown short code or an archived item.
+- `VALIDATION` for an item that is not a task, a strategy or an initiative.
+- `FORBIDDEN` for a task, without the claim and without `transition_items`.
+- `FORBIDDEN` for a strategy or an initiative, for a principal that is not an
+  organization admin.
 - `NOT_CLAIMABLE` for a task that is not in Active.
 - `NO_CLAIM` for a task that has no claim.
+- `NO_OWNER` for a strategy or an initiative that has no owner.
 
 ### `cancel_item`
 

@@ -114,7 +114,12 @@ pub(crate) async fn list_strategies(
                 .load(conn)
                 .map_err(ApiError::internal)?;
             Ok(dto::ListEnvelope {
-                items: rows.into_iter().map(IntoDto::into_dto).collect(),
+                items: {
+                    // KAIROS-T-0411: the owner of each item, two queries.
+                    let mut items: Vec<_> = rows.into_iter().map(IntoDto::into_dto).collect();
+                    crate::owners::attach_owners(conn, &mut items)?;
+                    items
+                },
                 total,
                 limit,
                 offset,
@@ -143,7 +148,8 @@ pub(crate) async fn get_strategy(
     let strategy = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            Ok(load(conn, &short_code, Liveness::IncludeArchived)?.into_dto())
+            let item = load(conn, &short_code, Liveness::IncludeArchived)?.into_dto();
+            crate::owners::attach_owner(conn, item)
         })
         .await?;
     Ok(Json(strategy))
@@ -232,7 +238,10 @@ pub(crate) async fn update_strategy(
                 expected_version: body.version,
             };
             match items::update_item_content(conn, ItemType::Strategy, strategy.id, update, user) {
-                Ok(_) => Ok(load(conn, &short_code, Liveness::LiveOnly)?.into_dto()),
+                Ok(_) => {
+                    let item = load(conn, &short_code, Liveness::LiveOnly)?.into_dto();
+                    crate::owners::attach_owner(conn, item)
+                }
                 Err(items::ItemError::VersionConflict {
                     expected_version,
                     current_version,
@@ -339,7 +348,8 @@ pub(crate) async fn transition_strategy(
             boards::transition_strategy(conn, strategy.id, to_column_id, user)
                 .map_err(map_board_error)?;
             crate::claims::note_wip(conn, to_column_id, &short_code)?;
-            Ok(load(conn, &short_code, Liveness::LiveOnly)?.into_dto())
+            let item = load(conn, &short_code, Liveness::LiveOnly)?.into_dto();
+            crate::owners::attach_owner(conn, item)
         })
         .await?;
     Ok(Json(transitioned))

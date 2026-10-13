@@ -461,6 +461,22 @@ and work. An item with no board takes the prefix of the organization: the
 organization slug in capitals, with letters and digits only. Each other item
 takes the prefix of its board. See [short code](#short-code).
 
+## owner
+
+The one person who answers for a strategy or an initiative (KAIROS-T-0411,
+KAIROS-A-0025). An item has one owner at most, and it can have none. A new item
+and an imported item have no owner.
+
+A member of the board can claim an item with no owner. A member has a grant on
+the board. The owner can hand it off to a different person.
+An organization admin can set or clear it. Nobody else can change it.
+
+The owner stays in each column, Completed too. The owner gets no right: the
+owner can do what a member of the board can do. When the owner leaves the
+organization, the item has no owner. Do not confuse it with the
+[owner board](#owner-board) of a document, or with the [claim](#claim) of a
+task.
+
 ## owner board
 
 The board that a document names as its owner. The owner board gives the right

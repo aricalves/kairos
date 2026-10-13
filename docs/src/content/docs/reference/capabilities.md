@@ -149,6 +149,12 @@ check rather than by a stored row:
   The REST `whoami` shows the capabilities under `implied`, for each board in
   `capabilities`. The MCP tools `whoami` and `my_boards` show them too.
 
+  A member can also claim an item of the board that has no
+  [owner](../glossary/#owner) (`claim_item`, or
+  `POST /api/{entity_type}/{short_code}/owner/claim`). The owner can hand the
+  item off. An organization admin can set or clear the owner. The owner gets
+  no capability.
+
 ## `manage_structure`
 
 `manage_structure` is the structure of the organization: teams, boards and

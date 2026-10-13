@@ -1034,11 +1034,16 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                 .collect();
             let mut cards: Vec<CardModel> = Vec::new();
             cards.extend(group.strategies.iter().map(|item| {
+                // KAIROS-T-0411: the owner, as a pill.
+                let meta = data::owner_pill(item.owner.as_ref())
+                    .map(|pill| (pill, token::TEAL))
+                    .into_iter()
+                    .collect();
                 card(
                     EntityKind::Strategy,
                     &item.short_code,
                     &item.title,
-                    Vec::new(),
+                    meta,
                     None,
                     None,
                     None,
@@ -1052,6 +1057,10 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                 if item.is_bucket {
                     let bucket = item.bucket_type.clone().unwrap_or_default();
                     meta.push((format!("bucket · {bucket}"), token::GOLD));
+                }
+                // KAIROS-T-0411: the owner, as a pill.
+                if let Some(pill) = data::owner_pill(item.owner.as_ref()) {
+                    meta.push((pill, token::TEAL));
                 }
                 card(
                     EntityKind::Initiative,

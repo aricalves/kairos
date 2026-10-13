@@ -369,6 +369,14 @@ diesel::table! {
 }
 
 diesel::table! {
+    item_owners (item_id) {
+        item_id -> Uuid,
+        user_id -> Uuid,
+        claimed_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
     item_relationships (id) {
         id -> Uuid,
         source_id -> Uuid,
@@ -708,6 +716,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     item_impacts,
     item_links,
     item_metadata,
+    item_owners,
     item_relationships,
     metadata_definition_scopes,
     metadata_definitions,

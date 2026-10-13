@@ -41,7 +41,7 @@ const SCRATCH_DB: &str = "kairos_tenant_provisioning_test";
 /// The tenant tables (sorted): the 21 from the KAIROS-S-0004 DDL plus
 /// `scim_tokens` (KAIROS-T-0025 / A-0016) and `api_keys` (KAIROS-T-0057 /
 /// A-0017 service-account API keys).
-const EXPECTED_TABLES: [&str; 54] = [
+const EXPECTED_TABLES: [&str; 55] = [
     "activity_log",
     "adrs",
     "api_keys",
@@ -78,6 +78,8 @@ const EXPECTED_TABLES: [&str; 54] = [
     "item_impacts",
     "item_links",
     "item_metadata",
+    // KAIROS-T-0411: the owner of a strategy or an initiative.
+    "item_owners",
     "item_relationships",
     // KAIROS-T-0201: sessions minted by a password login (KAIROS-I-0018).
     "metadata_definition_scopes",
@@ -135,7 +137,7 @@ const EXPECTED_SEQUENCES: [&str; 5] = [
 /// block no longer re-pins (KAIROS-T-0093), and it now compares the whole schema
 /// rather than named objects — so this list is a readable statement of what a
 /// tenant carries, not a rescue from a test that kept forgetting.
-const EXPECTED_INDEXES: [&str; 25] = [
+const EXPECTED_INDEXES: [&str; 26] = [
     "board_columns_live_name_key",
     // COLLIERY-T-3099: (prefix, level) is unique among the live boards.
     "boards_live_code_prefix_key",
@@ -161,6 +163,8 @@ const EXPECTED_INDEXES: [&str; 25] = [
     "idx_tasks_column",
     "idx_tasks_team",
     "idx_tasks_tsv",
+    // KAIROS-T-0411: the items that a person owns.
+    "item_owners_user_id_idx",
     // KAIROS-T-0359: the claims of a person.
     "task_claims_user_id_idx",
 ];

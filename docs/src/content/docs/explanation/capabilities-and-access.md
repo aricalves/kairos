@@ -136,6 +136,14 @@ or its members. Delivery and ADR boards are not affected; there a grant gives
 exactly what it names. The implication is computed, like the team rule, so the
 revoke of the last grant on the board *is* the revocation.
 
+Membership also lets a person **claim** a strategy or an initiative that has no
+[owner](../../reference/glossary/#owner): the one person who answers for it.
+The owner is a label of responsibility, not a capability. It gives nothing
+beyond membership, so the owner who has no grant on the board cannot edit the
+item, and a member who is not the owner can still edit and move it. Only the
+owner (by a hand-off) or an organisation admin changes the owner, and a person
+who leaves the organisation stops being the owner of anything.
+
 **Every member may send a request to any team.** A member who does not manage
 a delivery board may still create a task on it, and that task is a request: it
 goes to the board's entry column, as support work, and the receiving team

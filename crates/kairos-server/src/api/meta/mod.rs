@@ -51,6 +51,7 @@ pub mod history;
 // COLLIERY-T-0269: the relationship `impacts`, to a repository.
 pub mod impacts;
 // KAIROS-T-0321: the teams of an initiative or a strategy.
+pub mod item_owners;
 pub mod item_teams;
 pub mod metadata;
 // KAIROS-T-0367: append a note to an item.
@@ -79,6 +80,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .merge(relationships::router())
         .merge(impacts::router())
+        .merge(item_owners::router())
         .merge(item_teams::router())
         .merge(restore::router())
         .merge(metadata::router())

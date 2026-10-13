@@ -24,6 +24,7 @@ pub mod flow;
 pub mod forge;
 pub mod graph;
 pub mod impacts;
+pub mod item_owners;
 pub mod item_teams;
 pub mod items;
 pub mod jobs;
