@@ -65,6 +65,7 @@ use kairos_core::retention::{
     ArchiveTarget, HistoryRowMeta, RetentionConfig, RetentionMode, plan_history_compaction,
 };
 
+use crate::models::enums::ActivityAction;
 use crate::models::graph::ItemHistory;
 use crate::tenant::{self, TenantError};
 
@@ -196,8 +197,8 @@ impl<'a> From<&'a ItemHistory> for HistoryArchiveRow<'a> {
 
 /// A loaded `activity_log` row. Loaded with `action` as raw TEXT (NOT the
 /// [`crate::models::enums::ActivityAction`] enum) because archived logs may
-/// contain actions outside the enum — `retention_sweep` rows from earlier
-/// sweeps age out through this same path.
+/// contain actions from older releases that the enum no longer knows; the
+/// sweep must age those rows out, not fail on them.
 type ActivityRow = (
     Uuid,
     Uuid,
@@ -464,7 +465,7 @@ fn sweep_current_schema(
         diesel::insert_into(activity_log::table)
             .values((
                 activity_log::actor_id.eq(Uuid::nil()),
-                activity_log::action.eq("retention_sweep"),
+                activity_log::action.eq(ActivityAction::RetentionSweep),
                 activity_log::details.eq(report.details()),
                 activity_log::occurred_at.eq(now),
             ))
