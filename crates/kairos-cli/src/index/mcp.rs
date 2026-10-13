@@ -32,7 +32,7 @@ use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt, tool, tool_handler,
 use serde::Deserialize;
 
 use super::arguments::{Parameters, tool_error_of};
-use super::error::{IndexCommandError, ToolError};
+use super::error::{Choose, IndexCommandError, Place, SymbolArguments, ToolError};
 use super::query::{QuerySource, ROUTE_TIMEOUT, RouteFailure};
 
 /// The results of `code_search` when the call gives no `limit`.
@@ -101,21 +101,31 @@ pub struct SearchParams {
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 pub struct SymbolParams {
-    /// A name, `Type::name` (Rust) or `Type.name`.
+    /// A name, `Type::name` (Rust) or `Type.name`. A candidate from the list
+    /// of an AMBIGUOUS error, `name (file:line)`, is also correct.
     pub symbol: String,
     /// The file of the symbol, from the root of the checkout, or the end of
     /// its path. Give it when more than one symbol has the name.
     pub file: Option<String>,
+    /// A line of the symbol: the symbol that starts on it, or else the
+    /// smallest symbol that holds it. Give it when more than one symbol of
+    /// one file has the name.
+    pub line: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 pub struct EdgeParams {
-    /// A name, `Type::name` (Rust) or `Type.name`.
+    /// A name, `Type::name` (Rust) or `Type.name`. A candidate from the list
+    /// of an AMBIGUOUS error, `name (file:line)`, is also correct.
     pub symbol: String,
     /// The file of the symbol, when more than one symbol has the name.
     pub file: Option<String>,
+    /// A line of the symbol, when more than one symbol of one file has the
+    /// name: the symbol that starts on it, or else the smallest symbol that
+    /// holds it.
+    pub line: Option<u32>,
     /// Also give the possible calls: calls by a name that more than one
     /// function has. Default false.
     pub possible: Option<bool>,
@@ -125,14 +135,18 @@ pub struct EdgeParams {
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 pub struct PathParams {
-    /// The symbol where the chain starts.
+    /// The symbol where the chain starts, as `symbol` of the tool `symbol`.
     pub from: String,
-    /// The symbol where the chain stops.
+    /// The symbol where the chain stops, as `symbol` of the tool `symbol`.
     pub to: String,
     /// The file of `from`, when more than one symbol has the name.
     pub from_file: Option<String>,
     /// The file of `to`, when more than one symbol has the name.
     pub to_file: Option<String>,
+    /// A line of `from`, when more than one symbol of one file has the name.
+    pub from_line: Option<u32>,
+    /// A line of `to`, when more than one symbol of one file has the name.
+    pub to_line: Option<u32>,
 }
 
 /// A kind of repeated code, as an argument.
@@ -403,19 +417,53 @@ impl CodeTools {
     }
 }
 
-/// Find the symbol, or the error that says why not.
-fn find(index: &Index, symbol: &str, file: Option<&str>) -> Result<SymbolInfo, ToolError> {
-    match index.lookup(symbol, file)? {
+/// The arguments that choose a symbol in `symbol`, `callers` and `callees`.
+const SYMBOL: SymbolArguments = SymbolArguments {
+    symbol: "symbol",
+    file: "file",
+    line: "line",
+};
+/// The arguments of `path` for `from`.
+const FROM: SymbolArguments = SymbolArguments {
+    symbol: "from",
+    file: "from_file",
+    line: "from_line",
+};
+/// The arguments of `path` for `to`.
+const TO: SymbolArguments = SymbolArguments {
+    symbol: "to",
+    file: "to_file",
+    line: "to_line",
+};
+
+/// Find the symbol, or the error that says why not. Each tool that takes a
+/// symbol finds it here (KAIROS-T-0417).
+fn find(
+    index: &Index,
+    symbol: &str,
+    file: Option<&str>,
+    line: Option<u32>,
+    args: SymbolArguments,
+) -> Result<SymbolInfo, ToolError> {
+    match index.lookup(symbol, file, line)? {
         Lookup::Found(found) => Ok(found),
-        Lookup::Missing => Err(ToolError::NoSymbol(match file {
-            Some(file) => format!("{symbol}\" in \"{file}"),
-            None => symbol.to_string(),
-        })),
-        Lookup::Ambiguous(all) => Err(ToolError::Ambiguous {
-            name: symbol.to_string(),
-            count: all.len(),
-            candidates: all.iter().take(20).map(described).collect(),
+        Lookup::Missing => Err(ToolError::NoSymbol {
+            name: symbol.trim().to_string(),
+            place: Place::of(file, line),
         }),
+        Lookup::Ambiguous(all) => Err(ambiguous(symbol, &all, args)),
+    }
+}
+
+/// The error for more than one symbol: the candidates, and the argument
+/// that chooses one of them.
+fn ambiguous(symbol: &str, all: &[SymbolInfo], args: SymbolArguments) -> ToolError {
+    let files: std::collections::HashSet<&str> = all.iter().map(|s| s.file.as_str()).collect();
+    ToolError::Ambiguous {
+        name: symbol.trim().to_string(),
+        count: all.len(),
+        candidates: all.iter().take(20).map(described).collect(),
+        choose: Choose::of(files.len(), all.len(), args),
     }
 }
 
@@ -613,7 +661,7 @@ impl CodeTools {
     }
 
     #[tool(
-        description = "One symbol of this checkout: its kind, file, lines, signature and summary. `symbol` is a name, `Type::name` or `Type.name`. If more than one symbol has the name, the error lists them: give `file` to choose one."
+        description = "One symbol of this checkout: its kind, file, lines, signature and summary. `symbol` is a name, `Type::name` or `Type.name`. When a type and its impl blocks have the name, the result is the type. If more than one symbol has the name, the error lists them: give `file`, `line`, or a candidate from the list as `symbol`, to choose one."
     )]
     async fn symbol(
         &self,
@@ -621,7 +669,13 @@ impl CodeTools {
     ) -> Result<CallToolResult, ErrorData> {
         result((|| {
             let index = self.open()?;
-            let s = find(&index, &params.symbol, params.file.as_deref())?;
+            let s = find(
+                &index,
+                &params.symbol,
+                params.file.as_deref(),
+                params.line,
+                SYMBOL,
+            )?;
             let mut out = format!(
                 "{} ({}, {})\nFile: {}:{}-{}",
                 s.qualified(),
@@ -647,7 +701,7 @@ impl CodeTools {
     }
 
     #[tool(
-        description = "The functions that call a symbol of this checkout. The result has the certain calls only, unless `possible` is true. A possible call is a call by a name that more than one function has: the result marks it. A call marked \"by name until the next SCIP run\" is in changed Rust code."
+        description = "The functions that call a symbol of this checkout. Give the symbol as for the tool `symbol`, with `file` and `line` when more than one symbol has the name. The result has the certain calls only, unless `possible` is true. A possible call is a call by a name that more than one function has: the result marks it. A call marked \"by name until the next SCIP run\" is in changed Rust code."
     )]
     async fn callers(
         &self,
@@ -655,7 +709,13 @@ impl CodeTools {
     ) -> Result<CallToolResult, ErrorData> {
         result((|| {
             let index = self.open()?;
-            let s = find(&index, &params.symbol, params.file.as_deref())?;
+            let s = find(
+                &index,
+                &params.symbol,
+                params.file.as_deref(),
+                params.line,
+                SYMBOL,
+            )?;
             let all = index.callers(s.id, true)?;
             let possible = params.possible.unwrap_or(false);
             let (shown, hidden): (Vec<&CallEdge>, Vec<&CallEdge>) =
@@ -691,7 +751,7 @@ impl CodeTools {
     }
 
     #[tool(
-        description = "The functions of this checkout that a symbol calls, and the names outside the checkout that it calls. The result has the certain calls only, unless `possible` is true. A possible call has one line for each function with that name, and the result marks it."
+        description = "The functions of this checkout that a symbol calls, and the names outside the checkout that it calls. Give the symbol as for the tool `symbol`, with `file` and `line` when more than one symbol has the name. The result has the certain calls only, unless `possible` is true. A possible call has one line for each function with that name, and the result marks it."
     )]
     async fn callees(
         &self,
@@ -699,7 +759,13 @@ impl CodeTools {
     ) -> Result<CallToolResult, ErrorData> {
         result((|| {
             let index = self.open()?;
-            let s = find(&index, &params.symbol, params.file.as_deref())?;
+            let s = find(
+                &index,
+                &params.symbol,
+                params.file.as_deref(),
+                params.line,
+                SYMBOL,
+            )?;
             let possible = params.possible.unwrap_or(false);
             let kairos_index::Callees {
                 edges,
@@ -773,7 +839,7 @@ impl CodeTools {
     }
 
     #[tool(
-        description = "How one symbol of this checkout reaches another: the 3 shortest chains of certain calls from `from` to `to`, shortest first, each with other steps. Each chain has one call on each line, in order. Possible calls are not followed."
+        description = "How one symbol of this checkout reaches another: the 3 shortest chains of certain calls from `from` to `to`, shortest first, each with other steps. Give `from` and `to` as `symbol` of the tool `symbol`, with `from_file`, `from_line`, `to_file` and `to_line` when more than one symbol has a name. Each chain has one call on each line, in order. Possible calls are not followed."
     )]
     async fn path(
         &self,
@@ -781,8 +847,20 @@ impl CodeTools {
     ) -> Result<CallToolResult, ErrorData> {
         result((|| {
             let index = self.open()?;
-            let from = find(&index, &params.from, params.from_file.as_deref())?;
-            let to = find(&index, &params.to, params.to_file.as_deref())?;
+            let from = find(
+                &index,
+                &params.from,
+                params.from_file.as_deref(),
+                params.from_line,
+                FROM,
+            )?;
+            let to = find(
+                &index,
+                &params.to,
+                params.to_file.as_deref(),
+                params.to_line,
+                TO,
+            )?;
             let chains = index.paths(from.id, to.id, MAX_CHAINS)?;
             if chains.is_empty() {
                 return Ok(format!(
@@ -939,4 +1017,81 @@ const MAX_CHAINS: usize = 3;
 
 fn display(path: &Path) -> String {
     path.display().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sym(file: &str, line: u32) -> SymbolInfo {
+        SymbolInfo {
+            id: i64::from(line),
+            file: file.into(),
+            name: "ContentHash".into(),
+            container: None,
+            kind: "implementation".into(),
+            language: "rust".into(),
+            start_line: line,
+            end_line: line + 5,
+            signature: None,
+            is_test: false,
+            summary: None,
+        }
+    }
+
+    #[test]
+    fn candidates_in_one_file_ask_for_the_line() {
+        let all = [sym("src/document.rs", 126), sym("src/document.rs", 168)];
+        assert_eq!(
+            ambiguous("ContentHash", &all, SYMBOL).text(),
+            "AMBIGUOUS: 2 symbols have the name \"ContentHash\". They are in one file. \
+             Give the argument `line` to choose one. Or give a candidate from the list as \
+             `symbol`.\ndetails: {\"candidates\":[\"ContentHash (src/document.rs:126)\",\
+             \"ContentHash (src/document.rs:168)\"]}"
+        );
+    }
+
+    #[test]
+    fn candidates_in_different_files_ask_for_the_file() {
+        let all = [sym("src/a.rs", 1), sym("src/b.rs", 1)];
+        assert_eq!(
+            ambiguous("ContentHash", &all, FROM).to_string(),
+            "2 symbols have the name \"ContentHash\". Give the argument `from_file` to choose \
+             one. Or give a candidate from the list as `from`."
+        );
+        let all = [sym("src/a.rs", 1), sym("src/a.rs", 9), sym("src/b.rs", 1)];
+        assert_eq!(
+            ambiguous("ContentHash", &all, TO).to_string(),
+            "3 symbols have the name \"ContentHash\". Give the arguments `to_file` and \
+             `to_line` to choose one. Or give a candidate from the list as `to`."
+        );
+    }
+
+    #[test]
+    fn the_not_found_text_quotes_the_name_and_the_file() {
+        let text = |file, line| {
+            ToolError::NoSymbol {
+                name: "ContentHash".into(),
+                place: Place::of(file, line),
+            }
+            .text()
+        };
+        assert_eq!(
+            text(None, None),
+            "NOT_FOUND: No symbol has the name \"ContentHash\"."
+        );
+        assert_eq!(
+            text(Some("src/document.rs"), None),
+            "NOT_FOUND: No symbol has the name \"ContentHash\" in the file \"src/document.rs\"."
+        );
+        assert_eq!(
+            text(Some("src/document.rs"), Some(12)),
+            "NOT_FOUND: No symbol has the name \"ContentHash\" in the file \"src/document.rs\" \
+             at line 12."
+        );
+        assert_eq!(
+            text(None, Some(12)),
+            "NOT_FOUND: No symbol has the name \"ContentHash\" at line 12."
+        );
+    }
 }

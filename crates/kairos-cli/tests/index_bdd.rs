@@ -256,6 +256,8 @@ struct CliWorld {
     agent: Option<Agent>,
     /// The result of the last tool call.
     result: Option<ToolResult>,
+    /// The texts of some calls of one step.
+    texts: Vec<String>,
     /// The scenarios of the base index.
     base: base::BaseWorld,
 }
@@ -661,6 +663,76 @@ fn refused(world: &mut CliWorld) {
         result.text
     );
     assert!(result.text.contains("\"verbose\""), "{}", result.text);
+    // The list of the arguments has `line` (KAIROS-T-0417).
+    assert!(result.text.contains("\"line\""), "{}", result.text);
+}
+
+// KAIROS-T-0417: the choice of one symbol.
+
+#[when(expr = "an agent calls symbol and callers for {string} in {string}")]
+fn symbol_and_callers_in_file(world: &mut CliWorld, name: String, file: String) {
+    world.call("symbol", json!({"symbol": name, "file": file}));
+    let symbol = world.text().to_string();
+    world.call("callers", json!({"symbol": name, "file": file}));
+    let callers = world.text().to_string();
+    world.texts = vec![symbol, callers];
+}
+
+#[then("the 2 results are about the struct")]
+fn about_the_struct(world: &mut CliWorld) {
+    let [symbol, callers] = world.texts.as_slice() else {
+        panic!("not 2 results: {:?}", world.texts);
+    };
+    assert!(
+        symbol.starts_with("Checksum (struct, rust)\nFile: src/checksum.rs:6-"),
+        "{symbol}"
+    );
+    assert!(
+        callers.contains(" of Checksum (src/checksum.rs:6):"),
+        "{callers}"
+    );
+}
+
+#[when(expr = "an agent calls symbol for {string} with no file")]
+fn symbol_with_no_file(world: &mut CliWorld, name: String) {
+    world.call("symbol", json!({"symbol": name}));
+}
+
+#[then("the error lists the 2 structs and tells the agent to give the file")]
+fn lists_the_structs(world: &mut CliWorld) {
+    let result = world.result();
+    assert!(result.is_error, "{}", result.text);
+    assert_eq!(
+        result.text,
+        "AMBIGUOUS: 2 symbols have the name \"Checksum\". Give the argument `file` to choose \
+         one. Or give a candidate from the list as `symbol`.\ndetails: {\"candidates\":\
+         [\"Checksum (src/checksum.rs:6)\",\"Checksum (src/legacy.rs:4)\"]}"
+    );
+}
+
+#[then("each candidate in the list, given back as the symbol, gives that symbol")]
+fn candidates_given_back(world: &mut CliWorld) {
+    for (candidate, file, line) in [
+        ("Checksum (src/checksum.rs:6)", "src/checksum.rs", 6),
+        ("Checksum (src/legacy.rs:4)", "src/legacy.rs", 4),
+    ] {
+        world.call("symbol", json!({ "symbol": candidate }));
+        let text = world.text();
+        assert!(
+            text.starts_with(&format!("Checksum (struct, rust)\nFile: {file}:{line}-")),
+            "{candidate}: {text}"
+        );
+    }
+    // The impl block, by its line.
+    world.call(
+        "symbol",
+        json!({"symbol": "Checksum", "file": "src/checksum.rs", "line": 10}),
+    );
+    let text = world.text();
+    assert!(
+        text.starts_with("Checksum (implementation, rust)\nFile: src/checksum.rs:10-"),
+        "{text}"
+    );
 }
 
 #[then("the result has the exact copy of checksum, with the files, the lines and a score")]

@@ -31,6 +31,15 @@ Feature: The CLI and the code tools
     When an agent calls symbol with an argument that the tool does not have
     Then the call is refused, and the error names the argument
 
+  # KAIROS-T-0417: a Rust struct and its impl block have the same name.
+  Scenario: An agent gets a type, not its impl block
+    Given an index of the polyglot fixture
+    When an agent calls symbol and callers for "Checksum" in "src/checksum.rs"
+    Then the 2 results are about the struct
+    When an agent calls symbol for "Checksum" with no file
+    Then the error lists the 2 structs and tells the agent to give the file
+    And each candidate in the list, given back as the symbol, gives that symbol
+
   Scenario: module_map replaces the Metis index
     Given an index of the polyglot fixture
     When an agent calls module_map

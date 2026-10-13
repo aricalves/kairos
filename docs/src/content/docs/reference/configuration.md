@@ -837,6 +837,28 @@ commit, the CLI builds nothing. It tells you to rebase on the default branch,
 or to run `kairos index --full`. It also gives the time of a full build. If
 the CLI cannot reach Kairos, it updates the local index and says so.
 
+### The code tools: choose one symbol
+
+The tools `symbol`, `callers`, `callees` and `path` of `kairos index mcp`
+find a symbol by its name: `name`, `Type::name` or `Type.name`. When more
+than one symbol has the name, the tool uses these steps:
+
+1. `file` keeps the symbols of that file. The value is a path from the root
+   of the checkout, or the end of the path.
+2. `line` keeps the symbol that starts on that line. If no symbol starts on
+   it, `line` keeps the smallest symbol that holds the line.
+3. A Rust `impl` block has the name of its type. When the name matches a
+   type and its `impl` blocks, the tool uses the type. To get an `impl`
+   block, give its `line`.
+4. When only one of the symbols is a function or a type, the tool uses it.
+
+If more than one symbol is left, the tool gives the error `AMBIGUOUS`. The
+error lists the candidates as `name (file:line)`. Give a candidate as the
+symbol to choose it. The error also tells you which argument to give. It
+is `file` when the candidates are in different files, and `line` when they
+are in one file. `path` has the arguments `from_file`, `from_line`, `to_file` and
+`to_line`.
+
 ## Helm chart values
 
 `deploy/helm/kairos/values.yaml`. Most values under `config` become entries in a

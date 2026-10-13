@@ -315,12 +315,23 @@ impl Index {
     }
 
     /// The symbol that `symbol` names: `name`, `Container::name` or
-    /// `Container.name`. `file` is a path from the root, or its end; it
-    /// chooses among symbols of the same name. When more than one symbol
-    /// matches and only one of them is a function or a type, that one is
-    /// found (a Rust struct and its `impl` block have the same name).
-    pub fn lookup(&self, symbol: &str, file: Option<&str>) -> Result<Lookup, IndexError> {
-        let symbol = symbol.trim();
+    /// `Container.name`, or a candidate as an ambiguity lists it,
+    /// `name (file:line)`. `file` is a path from the root, or its end; it
+    /// chooses among symbols of the same name. `line` chooses the symbol that
+    /// starts on that line, or else the smallest one that holds it. `choose`
+    /// makes the choice among the symbols that are left (KAIROS-T-0417).
+    pub fn lookup(
+        &self,
+        symbol: &str,
+        file: Option<&str>,
+        line: Option<u32>,
+    ) -> Result<Lookup, IndexError> {
+        let (symbol, file, line) = match candidate_parts(symbol) {
+            Some((name, at_file, at_line)) => {
+                (name, file.or(Some(at_file)), line.or(Some(at_line)))
+            }
+            None => (symbol.trim(), file, line),
+        };
         let (container, name) = match symbol.rfind("::").map(|at| (at, 2)).or_else(|| {
             symbol
                 .rfind('.')
@@ -351,21 +362,7 @@ impl Index {
                 None => true,
             })
             .collect();
-        Ok(match found.len() {
-            0 => Lookup::Missing,
-            1 => Lookup::Found(found.into_iter().next().expect("one")),
-            _ => {
-                let typed: Vec<&SymbolInfo> = found
-                    .iter()
-                    .filter(|s| SUMMARIZED_KINDS.contains(&s.kind.as_str()))
-                    .collect();
-                if typed.len() == 1 {
-                    Lookup::Found(typed[0].clone())
-                } else {
-                    Lookup::Ambiguous(found)
-                }
-            }
-        })
+        Ok(choose(found, line))
     }
 
     fn symbol_by_id(&self, id: i64) -> Result<SymbolInfo, IndexError> {
@@ -897,6 +894,62 @@ fn words(text: &str) -> Vec<String> {
     out
 }
 
+/// `name (file:line)`, the text of a candidate of an ambiguity, as its
+/// parts. `None` for any other text.
+fn candidate_parts(text: &str) -> Option<(&str, &str, u32)> {
+    let inner = text.trim().strip_suffix(')')?;
+    let (name, place) = inner.rsplit_once(" (")?;
+    let (file, line) = place.rsplit_once(':')?;
+    let line = line.parse().ok()?;
+    let name = name.trim();
+    (!name.is_empty() && !file.is_empty()).then_some((name, file, line))
+}
+
+/// The choice among the symbols that match a name (KAIROS-T-0417):
+///
+/// 1. With `line`, the symbols that start on that line, or else the
+///    smallest symbols that hold it.
+/// 2. A Rust `impl` block has the name of its type. When the name matches a
+///    type and impl blocks, the impl blocks are left out: the agent asks for
+///    the type, and `line` chooses an impl block.
+/// 3. When only one of the symbols left is a function or a type, that one.
+pub(crate) fn choose(found: Vec<SymbolInfo>, line: Option<u32>) -> Lookup {
+    let mut found = found;
+    if let Some(line) = line {
+        found.retain(|s| s.start_line <= line && line <= s.end_line);
+        if found.iter().any(|s| s.start_line == line) {
+            found.retain(|s| s.start_line == line);
+        } else if let Some(least) = found
+            .iter()
+            .map(|s| s.end_line.saturating_sub(s.start_line))
+            .min()
+        {
+            found.retain(|s| s.end_line.saturating_sub(s.start_line) == least);
+        }
+    }
+    if found.len() > 1
+        && found.iter().any(|s| s.kind == "implementation")
+        && found.iter().any(|s| s.kind != "implementation")
+    {
+        found.retain(|s| s.kind != "implementation");
+    }
+    match found.len() {
+        0 => Lookup::Missing,
+        1 => Lookup::Found(found.into_iter().next().expect("one")),
+        _ => {
+            let typed: Vec<&SymbolInfo> = found
+                .iter()
+                .filter(|s| SUMMARIZED_KINDS.contains(&s.kind.as_str()))
+                .collect();
+            if typed.len() == 1 {
+                Lookup::Found(typed[0].clone())
+            } else {
+                Lookup::Ambiguous(found)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -941,5 +994,90 @@ mod tests {
         let order: Vec<usize> = ranked(&scores).into_iter().map(|(i, _)| i).collect();
         assert_eq!(order, [1, 0]);
         assert!(bm25(&words("queue"), &docs).iter().all(|(_, s)| *s == 0.0));
+    }
+
+    fn sym(id: i64, file: &str, kind: &str, lines: (u32, u32)) -> SymbolInfo {
+        SymbolInfo {
+            id,
+            file: file.into(),
+            name: "ContentHash".into(),
+            container: None,
+            kind: kind.into(),
+            language: "rust".into(),
+            start_line: lines.0,
+            end_line: lines.1,
+            signature: None,
+            is_test: false,
+            summary: None,
+        }
+    }
+
+    fn found_id(lookup: Lookup) -> i64 {
+        match lookup {
+            Lookup::Found(s) => s.id,
+            other => panic!("not one symbol: {other:?}"),
+        }
+    }
+
+    /// The struct and its 2 impl blocks in one file (KAIROS-T-0417).
+    fn struct_and_impls() -> Vec<SymbolInfo> {
+        vec![
+            sym(1, "src/document.rs", "struct", (121, 124)),
+            sym(2, "src/document.rs", "implementation", (126, 160)),
+            sym(3, "src/document.rs", "implementation", (168, 175)),
+        ]
+    }
+
+    #[test]
+    fn a_type_is_chosen_over_its_impl_blocks() {
+        assert_eq!(found_id(choose(struct_and_impls(), None)), 1);
+    }
+
+    #[test]
+    fn a_line_chooses_one_symbol_of_a_file() {
+        assert_eq!(found_id(choose(struct_and_impls(), Some(126))), 2);
+        assert_eq!(found_id(choose(struct_and_impls(), Some(168))), 3);
+        // A line inside a symbol chooses the smallest symbol that holds it.
+        assert_eq!(found_id(choose(struct_and_impls(), Some(130))), 2);
+        assert_eq!(choose(struct_and_impls(), Some(165)), Lookup::Missing);
+    }
+
+    #[test]
+    fn impl_blocks_with_no_type_stay_ambiguous() {
+        let impls = struct_and_impls().split_off(1);
+        match choose(impls, None) {
+            Lookup::Ambiguous(all) => assert_eq!(all.len(), 2),
+            other => panic!("not ambiguous: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn two_types_of_one_name_stay_ambiguous() {
+        let all = vec![
+            sym(1, "src/a.rs", "struct", (1, 3)),
+            sym(2, "src/a.rs", "implementation", (5, 9)),
+            sym(3, "src/b.rs", "struct", (1, 3)),
+        ];
+        match choose(all, None) {
+            Lookup::Ambiguous(left) => {
+                assert_eq!(left.iter().map(|s| s.id).collect::<Vec<_>>(), [1, 3])
+            }
+            other => panic!("not ambiguous: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_text_of_a_candidate_has_its_parts() {
+        assert_eq!(
+            candidate_parts("ContentHash (crates/a/src/document.rs:121)"),
+            Some(("ContentHash", "crates/a/src/document.rs", 121))
+        );
+        assert_eq!(
+            candidate_parts("Stack::pop (src/stack.rs:20)"),
+            Some(("Stack::pop", "src/stack.rs", 20))
+        );
+        assert_eq!(candidate_parts("ContentHash"), None);
+        assert_eq!(candidate_parts("f (x)"), None);
+        assert_eq!(candidate_parts(" (src/a.rs:1)"), None);
     }
 }

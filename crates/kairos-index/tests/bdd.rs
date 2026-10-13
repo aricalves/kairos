@@ -1085,7 +1085,10 @@ fn not_certain_to_c_start(world: &mut IndexWorld) {
 
 /// The id of the function `name` in `file`.
 fn symbol_id(index: &Index, name: &str, file: &str) -> i64 {
-    match index.lookup(name, Some(file)).expect("look up a symbol") {
+    match index
+        .lookup(name, Some(file), None)
+        .expect("look up a symbol")
+    {
         Lookup::Found(s) => s.id,
         other => panic!("{name} in {file}: {other:?}"),
     }
@@ -3743,4 +3746,79 @@ async fn main() {
         .fail_on_skipped()
         .run_and_exit(features)
         .await;
+}
+
+// KAIROS-T-0417: the choice of one symbol.
+
+#[then(expr = "{string} in {string} gives the struct")]
+fn lookup_gives_the_struct(world: &mut IndexWorld, name: String, file: String) {
+    match world
+        .index()
+        .lookup(&name, Some(&file), None)
+        .expect("look up")
+    {
+        Lookup::Found(s) => assert_eq!(
+            (s.kind.as_str(), s.file.as_str()),
+            ("struct", file.as_str())
+        ),
+        other => panic!("{name} in {file}: {other:?}"),
+    }
+}
+
+#[then(expr = "{string} with no file gives the 2 structs as candidates")]
+fn lookup_lists_the_structs(world: &mut IndexWorld, name: String) {
+    match world.index().lookup(&name, None, None).expect("look up") {
+        Lookup::Ambiguous(all) => {
+            let found: Vec<(&str, &str)> = all
+                .iter()
+                .map(|s| (s.kind.as_str(), s.file.as_str()))
+                .collect();
+            assert_eq!(
+                found,
+                [("struct", "src/checksum.rs"), ("struct", "src/legacy.rs")]
+            );
+        }
+        other => panic!("{name}: {other:?}"),
+    }
+}
+
+#[then(expr = "{string} at line {int} of {string} gives the impl block")]
+fn lookup_by_line(world: &mut IndexWorld, name: String, line: u32, file: String) {
+    match world
+        .index()
+        .lookup(&name, Some(&file), Some(line))
+        .expect("look up")
+    {
+        Lookup::Found(s) => {
+            assert_eq!((s.kind.as_str(), s.start_line), ("implementation", line))
+        }
+        other => panic!("{name} at {file}:{line}: {other:?}"),
+    }
+}
+
+#[then(expr = "each candidate of {string}, given back as the name, gives that symbol")]
+fn candidates_given_back(world: &mut IndexWorld, name: String) {
+    let index = world.index();
+    let Lookup::Ambiguous(all) = index.lookup(&name, None, None).expect("look up") else {
+        panic!("{name} is not ambiguous");
+    };
+    // The structs, and the impl blocks that the struct hides.
+    let mut every = all.clone();
+    for s in &all {
+        let line = s.start_line + 4;
+        if let Lookup::Found(block) = index
+            .lookup(&name, Some(&s.file), Some(line))
+            .expect("look up")
+        {
+            every.push(block);
+        }
+    }
+    assert_eq!(every.len(), 4, "{every:#?}");
+    for s in every {
+        let candidate = format!("{} ({})", s.qualified(), s.place());
+        match index.lookup(&candidate, None, None).expect("look up") {
+            Lookup::Found(found) => assert_eq!(found.id, s.id, "{candidate}"),
+            other => panic!("{candidate}: {other:?}"),
+        }
+    }
 }
