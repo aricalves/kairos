@@ -11,8 +11,7 @@ plugin/
 │   ├── review/       # architecture-review, diataxis-review
 │   └── meta/         # kairos (router), kairos-vocabulary, grill-me, grilling, handoff, writing-great-skills, bootstrap
 ├── references/       # rendered review specs (see below)
-├── hooks/            # SessionStart context injection, the Ralph loop (Stop hook), the active work after a compaction, the code index
-└── .mcp.json         # MCP endpoint template (see below)
+└── hooks/            # SessionStart context injection, the Ralph loop (Stop hook), the active work after a compaction, the code index
 ```
 
 Shipped (KAIROS-T-0027..T-0034): all four buckets plus the SessionStart hook.
@@ -114,9 +113,7 @@ The plugin gives each session the code index of the checkout (COLLIERY-T-1855, C
   `code_search`, `symbol`, `callers`, `callees`, `path` and `fetch_index`. A session that starts
   outside a checkout (a board folder) has no index open: the agent calls `fetch_index` with the
   path of the checkout, and the server takes the nearest index of the repository from Kairos
-  (KAIROS-T-0348). Claude Code loads it in addition to
-  the `.mcp.json` of the plugin root. It is not in `plugin/.mcp.json`, because the plugin does
-  not load that template. If `kairos` is not on PATH, `bin/kairos-code` is an MCP server with no
+  (KAIROS-T-0348). If `kairos` is not on PATH, `bin/kairos-code` is an MCP server with no
   tools (COLLIERY-T-2529). Its instructions tell the agent that `kairos` is not on PATH, and
   Claude Code shows no connection error.
 - **The update at the start.** `hooks/index_update.py start` is a `SessionStart` hook. If
@@ -164,20 +161,18 @@ header `Authorization: Bearer ${KAIROS_MCP_KEY}`. A person who puts both variabl
 `.mcp.json` and no `claude mcp add`; `/kairos:bootstrap` then writes only
 `.claude/kairos.local.md`. The server is for the agent-key path (KAIROS-A-0024). Its
 `Authorization` header turns off the OAuth flow of the client, so on an OAuth deployment
-leave `KAIROS_URL` unset and use a project or user entry with no header. With `KAIROS_URL`
-unset, `/mcp` shows the server as failed ("Missing environment variables"); disable it there.
+leave `KAIROS_URL` unset and add a user-scope entry with no header
+(`claude mcp add --scope user`). With `KAIROS_URL` unset, `/mcp` shows the server as failed
+("Missing environment variables"); disable it there.
 The hooks match the tools of both names (`mcp__kairos__*` and `mcp__plugin_kairos_kairos__*`).
 
-## `.mcp.json` is a template
+## The connection belongs to the user
 
-JSON cannot carry comments, so this note lives here: `plugin/.mcp.json` ships with a
-`{{KAIROS_DEPLOYMENT_URL}}` placeholder instead of a real deployment URL. The `/bootstrap`
-skill fills it per-repo (KAIROS-A-0014): it asks for the Kairos deployment URL and writes the
-concrete MCP endpoint (`<deployment-url>/mcp`) into the consuming repo's configuration, along
-with `.claude/kairos.local.md`. On a deployment with no issuer it also writes the header
-`"Authorization": "Bearer ${KAIROS_MCP_KEY}"`. The header holds the name of an environment
-variable, never the agent key (`skills/meta/bootstrap/AGENT-KEY.md`). Do not replace the placeholder in this file with a real URL —
-the template must stay deployment-agnostic.
+`/kairos:bootstrap` writes no MCP config in the repository by default. The connection is the
+plugin server (agent key) or a user-scope entry (OAuth), and each repository of the user uses
+it. The skill writes a project `.mcp.json` only when the user asks for a connection in one
+repository only, for example a second deployment. In the repository it writes only
+`.claude/kairos.local.md`.
 
 ## `references/` are rendered artifacts
 
