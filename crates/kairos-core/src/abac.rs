@@ -226,6 +226,7 @@ pub fn capabilities_of_level(board_level: &str) -> &'static [&'static str] {
         TRANSITION_ITEMS,
         CONFIGURE_BOARDS,
         ADMINISTER_MEMBERS,
+        PAGES,
     ];
     const ADR: &[&str] = &[
         MANAGE_ADRS,
@@ -825,11 +826,15 @@ mod tests {
             for capability in common {
                 assert!(applies.contains(&capability), "{level} {capability}");
             }
-            assert_eq!(applies.len(), 5, "{level}");
+            let extra = usize::from(level == "delivery");
+            assert_eq!(applies.len(), 5 + extra, "{level}");
             assert!(applies.iter().all(|c| CAPABILITIES.contains(c)));
         }
         assert!(!capabilities_of_level("delivery").contains(&MANAGE_STRATEGIES));
         assert!(!capabilities_of_level("strategy").contains(&MANAGE_TASKS));
+        // KAIROS-T-0406: sites are published from the team's delivery board.
+        assert!(capabilities_of_level("delivery").contains(&PAGES));
+        assert!(!capabilities_of_level("initiative").contains(&PAGES));
         assert!(capabilities_of_level("team").is_empty());
         for capability in CAPABILITIES {
             assert!(

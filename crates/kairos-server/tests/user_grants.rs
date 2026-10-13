@@ -195,7 +195,8 @@ async fn the_grants_of_one_person_on_many_boards_against_live_stack() {
             "manage_documents",
             "transition_items",
             "configure_boards",
-            "administer_members"
+            "administer_members",
+            "pages"
         ]
     );
     assert!(strings(&row(&view, "strategy")["applicable"]).contains(&"manage_strategies".into()));

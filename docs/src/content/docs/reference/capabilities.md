@@ -40,7 +40,7 @@ on each board. These capabilities apply:
 |---|---|
 | `strategy` | `manage_strategies`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members` |
 | `initiative` | `manage_initiatives`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members` |
-| `delivery` | `manage_tasks`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members` |
+| `delivery` | `manage_tasks`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members`, `pages` |
 | `adr` | `manage_adrs`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members` |
 
 The grants page of a person uses this table (see below). A change on that page
