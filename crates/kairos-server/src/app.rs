@@ -62,6 +62,10 @@ pub struct AppState {
     /// is the id of the start of this server (KAIROS-T-0354): the code-index
     /// runs record the same id.
     pub jobs: Arc<crate::jobs::Worker>,
+    /// The store of the uploaded repository sites (KAIROS-T-0405), when
+    /// `KAIROS_PAGES_STORE` is set. `None`: a publish is refused; the
+    /// rendered sites still work.
+    pub site_store: Option<crate::site_store::SiteStore>,
 }
 
 /// Why [`build_state`] failed (startup-time, fail-fast).
@@ -73,6 +77,9 @@ pub enum BuildError {
     /// OIDC discovery/JWKS priming failed.
     #[error(transparent)]
     Oidc(#[from] DiscoveryError),
+    /// The site store of `KAIROS_PAGES_STORE` could not start (KAIROS-T-0405).
+    #[error(transparent)]
+    SiteStore(#[from] crate::site_store::StoreError),
 }
 
 /// Pool size for the server. Fixed for now; becomes configuration when a
@@ -125,6 +132,7 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
         config.public_url.clone(),
     )
     .register(&jobs);
+    let site_store = site_store(&config, &jobs)?;
     Ok(AppState {
         config: Arc::new(config),
         pool,
@@ -136,7 +144,22 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
         code_index,
         tenant_readiness: Arc::new(crate::tenant_readiness::TenantReadiness::default()),
         jobs,
+        site_store,
     })
+}
+
+/// The site store of `KAIROS_PAGES_STORE` with its cleanup jobs on
+/// `worker`, or `None` when no store is set (KAIROS-T-0405).
+fn site_store(
+    config: &AppConfig,
+    worker: &crate::jobs::Worker,
+) -> Result<Option<crate::site_store::SiteStore>, crate::site_store::StoreError> {
+    let Some(store_config) = &config.pages.store else {
+        return Ok(None);
+    };
+    let store = crate::site_store::SiteStore::new(store_config)?;
+    crate::site_store::CleanupHandler::register(store.clone(), worker);
+    Ok(Some(store))
 }
 
 /// The clones of the base code index (COLLIERY-T-1853), or `None` when
@@ -297,6 +320,7 @@ pub fn state_with(config: AppConfig, pool: TenantPool, auth: Arc<Authenticator>)
         config.public_url.clone(),
     )
     .register(&jobs);
+    let site_store = site_store(&config, &jobs).expect("the site store of a test config starts");
     AppState {
         config: Arc::new(config),
         pool,
@@ -310,6 +334,7 @@ pub fn state_with(config: AppConfig, pool: TenantPool, auth: Arc<Authenticator>)
         code_index: None,
         tenant_readiness: Arc::new(crate::tenant_readiness::TenantReadiness::default()),
         jobs,
+        site_store,
     }
 }
 

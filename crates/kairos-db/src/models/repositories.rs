@@ -49,6 +49,11 @@ pub struct Repository {
     /// `organization`, the default of the organization decides. See
     /// [`CODE_INDEX_SUMMARIES_VALUES`] and [`Repository::summaries_with`].
     pub code_index_summaries: String,
+    /// The site switch (KAIROS-T-0406): off, a publish is refused and the
+    /// site is not served.
+    pub site_enabled: bool,
+    /// The live publish of the site (`site_publishes`), or `None`.
+    pub site_publish_id: Option<uuid::Uuid>,
 }
 
 /// The values of [`Repository::code_index_build`]. The column has a CHECK
@@ -107,6 +112,8 @@ pub struct RepositoryChangeset {
     pub code_index_build: Option<String>,
     /// `embedded`, `hosted` or `organization` (KAIROS-T-0340, KAIROS-T-0358).
     pub code_index_summaries: Option<String>,
+    /// The site switch (KAIROS-T-0406).
+    pub site_enabled: Option<bool>,
     pub updated_by: Option<Uuid>,
     pub updated_at: Option<DateTime<Utc>>,
 }

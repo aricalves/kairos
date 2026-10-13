@@ -225,6 +225,7 @@ impl Deployment {
             jobs: Default::default(),
             webhooks: Default::default(),
             writeback: Default::default(),
+            pages: Default::default(),
             bootstrap_admin: None,
             bootstrap_password: None,
             bootstrap_password_hash: None,

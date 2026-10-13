@@ -290,6 +290,7 @@ async fn cli_command_tree_golden_path_live() {
         jobs: Default::default(),
         webhooks: Default::default(),
         writeback: Default::default(),
+        pages: Default::default(),
         bootstrap_admin: None,
         bootstrap_password: None,
         bootstrap_password_hash: None,

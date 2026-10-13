@@ -1263,6 +1263,17 @@ The S-0005 list envelope: `{items, total, limit, offset}`.
 | `offset` | `integer` | yes | The applied offset. |
 | `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). |
 
+## ListEnvelope_SitePublish
+
+The S-0005 list envelope: `{items, total, limit, offset}`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `items` | array of `object` | yes |  |
+| `limit` | `integer` | yes | The applied limit. |
+| `offset` | `integer` | yes | The applied offset. |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). |
+
 ## ListEnvelope_Strategy
 
 The S-0005 list envelope: `{items, total, limit, offset}`.
@@ -1707,6 +1718,7 @@ One repository, as returned by `/api/repositories` (KAIROS-T-0106).
 | `open_tasks` | `integer` | yes | Live tasks that link to this repository and are not in a done column, on all boards of all teams (COLLIERY-T-0219). |
 | `repo_full_name` | `string` | yes | `owner/repo` on GitHub, `group/subgroup/project` on GitLab. |
 | `repo_url` | `string` | yes | Browser URL of the repository. |
+| `site` | [`RepositorySite`](#repositorysite) | no | The published site of the repository (KAIROS-T-0406). |
 | `slug` | `string` | yes | Tenant-unique slug (`^[a-z0-9][a-z0-9-]{1,62}$`). |
 | `team` | [`RepositoryTeam`](#repositoryteam) | yes | The one owning team. |
 | `updated_at` | `string` | yes | RFC 3339. |
@@ -1741,6 +1753,17 @@ The repository a task is bound to, embedded on [`super::types::Task`] so cards a
 | `repo_full_name` | `string` | yes | `owner/repo` on GitHub, `group/subgroup/project` on GitLab. |
 | `slug` | `string` | yes | Tenant-unique slug — what agents and the CLI address. |
 | `team_id` | `string` | yes | Owning team (UUID). |
+
+## RepositorySite
+
+The site of a repository, on [`crate::types_repositories::Repository`].
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `base_path` | `string` | yes | The path where Kairos serves the site, and the base path that its build must use, e.g. `/pages/acme/platform/repos/payments-api/`. |
+| `enabled` | `boolean` | yes | The site switch. Off: a publish is refused, and the site is not served. |
+| `needs_republish` | `boolean` | no | True when the live publish was built for a different base path (the repository moved to another team, or a slug changed): publish again. |
+| `published` | [`SitePublish`](#sitepublish), nullable | no |  |
 
 ## RepositoryTeam
 
@@ -2047,6 +2070,28 @@ transitions â the board rules engine is never consulted.
 | `work_class` | `string` | yes | `planned|support`. |
 
 The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
+
+## SiteArchive
+
+A site archive in the OpenAPI document: the bytes of a `.tar.gz`.
+
+## SitePublish
+
+One publish of a site.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `agent_key_id` | `string`, nullable | no | The agent key that sent it (UUID), if one did. |
+| `base_path` | `string` | yes | The base path the site was published for. |
+| `files` | `integer` | yes | Entries of the archive (files and folders). |
+| `md5` | `string` | yes | MD5 of the uploaded archive, lower-case hex. |
+| `principal_id` | `string` | yes | The user or service account that sent it (UUID). |
+| `publish_id` | `string` | yes | Publish id (UUID). |
+| `published_at` | `string` | yes | RFC 3339. |
+| `repository_slug` | `string` | yes | The slug of the repository at the time of the publish. |
+| `size` | `integer` | yes | Bytes of the archive. |
+| `state` | `string` | yes | `live`, `replaced` or `unpublished`. |
+| `unpacked_size` | `integer` | yes | Bytes of the files. |
 
 ## Strategy
 
@@ -2441,6 +2486,7 @@ Body of `PATCH /api/repositories/{slug}` — every field optional; `team` re-hom
 | `default_branch` | `string`, nullable | no | The form is that of `default_branch` in `CreateRepositoryRequest`. |
 | `description` | `string`, nullable | no |  |
 | `repo_url` | `string`, nullable | no | The form is that of `repo_url` in `CreateRepositoryRequest`. |
+| `site_enabled` | `boolean`, nullable | no | The site switch (KAIROS-T-0406). Off: a publish is refused, and the site is not served. |
 | `slug` | `string`, nullable | no |  |
 | `team` | `string`, nullable | no | New owning team (UUID or slug). |
 
