@@ -197,11 +197,13 @@ pub fn history(
 
 /// The live publish served at `base_path`: the live publish of a repository
 /// with its site on, built for that base path (KAIROS-T-0407).
-pub fn live_at(conn: &mut PgConnection, base_path: &str) -> Result<Option<SitePublish>, DieselError> {
+pub fn live_at(
+    conn: &mut PgConnection,
+    base_path: &str,
+) -> Result<Option<SitePublish>, DieselError> {
     site_publishes::table
         .inner_join(
-            repositories::table
-                .on(repositories::site_publish_id.eq(site_publishes::id.nullable())),
+            repositories::table.on(repositories::site_publish_id.eq(site_publishes::id.nullable())),
         )
         .filter(site_publishes::base_path.eq(base_path))
         .filter(repositories::site_enabled.eq(true))
@@ -221,8 +223,7 @@ pub fn live_of(
     use crate::schema::teams;
     site_publishes::table
         .inner_join(
-            repositories::table
-                .on(repositories::site_publish_id.eq(site_publishes::id.nullable())),
+            repositories::table.on(repositories::site_publish_id.eq(site_publishes::id.nullable())),
         )
         .inner_join(teams::table.on(teams::id.eq(repositories::team_id)))
         .filter(teams::slug.eq(team))
@@ -237,7 +238,10 @@ pub fn live_of(
 
 /// A base path that a repository's site had before it was published again
 /// under a new one: the base path of its live publish now.
-pub fn moved_to(conn: &mut PgConnection, old_base_path: &str) -> Result<Option<String>, DieselError> {
+pub fn moved_to(
+    conn: &mut PgConnection,
+    old_base_path: &str,
+) -> Result<Option<String>, DieselError> {
     #[derive(QueryableByName)]
     struct Row {
         #[diesel(sql_type = diesel::sql_types::Text)]

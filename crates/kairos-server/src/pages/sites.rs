@@ -62,7 +62,11 @@ fn decode_segment(raw: &str) -> Option<String> {
         }
     }
     let text = String::from_utf8(out).ok()?;
-    if text.contains('/') || text.contains('\\') || text.contains('\0') || text == ".." || text == "."
+    if text.contains('/')
+        || text.contains('\\')
+        || text.contains('\0')
+        || text == ".."
+        || text == "."
     {
         return None;
     }
@@ -97,7 +101,7 @@ pub(super) fn parse(path: &str, tenant: &str) -> Option<SitePath> {
 }
 
 /// What a site path asks for, from the database.
-enum Found {
+enum Lookup {
     /// A file of a live publish (or the site's 404 page, with 404).
     File {
         key: PublishKey,
@@ -111,13 +115,11 @@ enum Found {
 /// Each GET of a site path.
 pub(super) async fn serve(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
     match find(&state, uri.path()).await {
-        Ok(Found::File { key, file, status }) => {
+        Ok(Lookup::File { key, file, status }) => {
             send_file(&state, &headers, key, file, status).await
         }
-        Ok(Found::Redirect(status, to)) => {
-            (status, [(header::LOCATION, to)]).into_response()
-        }
-        Ok(Found::NotFound) => sandboxed(error_page(StatusCode::NOT_FOUND)),
+        Ok(Lookup::Redirect(status, to)) => (status, [(header::LOCATION, to)]).into_response(),
+        Ok(Lookup::NotFound) => sandboxed(error_page(StatusCode::NOT_FOUND)),
         Err(e) => {
             tracing::warn!(error = %e.message, "cannot serve a repository site");
             sandboxed(error_page(StatusCode::INTERNAL_SERVER_ERROR))
@@ -125,17 +127,17 @@ pub(super) async fn serve(State(state): State<AppState>, headers: HeaderMap, uri
     }
 }
 
-async fn find(state: &AppState, path: &str) -> Result<Found, ApiError> {
+async fn find(state: &AppState, path: &str) -> Result<Lookup, ApiError> {
     let tenant = path
         .strip_prefix("/pages/")
         .and_then(|rest| rest.split('/').next())
         .unwrap_or("")
         .to_string();
     let Some(site_path) = parse(path, &tenant) else {
-        return Ok(Found::NotFound);
+        return Ok(Lookup::NotFound);
     };
     let Some(org_id) = org_id(state, &tenant).await? else {
-        return Ok(Found::NotFound);
+        return Ok(Lookup::NotFound);
     };
     let path = path.to_string();
     let pinned = tenant.clone();
@@ -150,16 +152,16 @@ async fn find(state: &AppState, path: &str) -> Result<Found, ApiError> {
                     .map_err(ApiError::internal)?
                 {
                     let rest = path.strip_prefix(&base).unwrap_or("");
-                    return Ok(Found::Redirect(
+                    return Ok(Lookup::Redirect(
                         StatusCode::FOUND,
                         format!("{}{rest}", live.base_path),
                     ));
                 }
                 // An old base path, after a publish under the new one.
                 if let Some(new_base) = sites::moved_to(conn, &base).map_err(ApiError::internal)? {
-                    return Ok(Found::Redirect(StatusCode::MOVED_PERMANENTLY, new_base));
+                    return Ok(Lookup::Redirect(StatusCode::MOVED_PERMANENTLY, new_base));
                 }
-                return Ok(Found::NotFound);
+                return Ok(Lookup::NotFound);
             };
             let key = PublishKey {
                 org_id,
@@ -175,8 +177,10 @@ async fn find(state: &AppState, path: &str) -> Result<Found, ApiError> {
             } else {
                 site_path.file.clone()
             };
-            if let Some(file) = sites::file(conn, publish.id, &wanted).map_err(ApiError::internal)? {
-                return Ok(Found::File {
+            if let Some(file) =
+                sites::file(conn, publish.id, &wanted).map_err(ApiError::internal)?
+            {
+                return Ok(Lookup::File {
                     key,
                     file,
                     status: StatusCode::OK,
@@ -189,18 +193,18 @@ async fn find(state: &AppState, path: &str) -> Result<Found, ApiError> {
                     .map_err(ApiError::internal)?
                     .is_some()
             {
-                return Ok(Found::Redirect(
+                return Ok(Lookup::Redirect(
                     StatusCode::MOVED_PERMANENTLY,
                     format!("{path}/"),
                 ));
             }
             match sites::file(conn, publish.id, "404.html").map_err(ApiError::internal)? {
-                Some(file) => Ok(Found::File {
+                Some(file) => Ok(Lookup::File {
                     key,
                     file,
                     status: StatusCode::NOT_FOUND,
                 }),
-                None => Ok(Found::NotFound),
+                None => Ok(Lookup::NotFound),
             }
         })
         .await
@@ -308,8 +312,14 @@ mod tests {
 
     #[test]
     fn site_paths_split() {
-        assert_eq!(parse("/pages/acme/web/repos/app/", "acme"), site("web", "app", "", true));
-        assert_eq!(parse("/pages/acme/web/repos/app", "acme"), site("web", "app", "", false));
+        assert_eq!(
+            parse("/pages/acme/web/repos/app/", "acme"),
+            site("web", "app", "", true)
+        );
+        assert_eq!(
+            parse("/pages/acme/web/repos/app", "acme"),
+            site("web", "app", "", false)
+        );
         assert_eq!(
             parse("/pages/acme/web/repos/app/guide/install.html", "acme"),
             site("web", "app", "guide/install.html", false)

@@ -133,7 +133,9 @@ fn site(files: &[(&str, &[u8])]) -> Vec<u8> {
             let mut header = tar::Header::new_gnu();
             header.set_mode(0o644);
             header.set_size(data.len() as u64);
-            builder.append_data(&mut header, path, *data).expect("append");
+            builder
+                .append_data(&mut header, path, *data)
+                .expect("append");
         }
         builder.into_inner().expect("tar").finish().expect("gz");
     }
@@ -232,8 +234,10 @@ async fn kairos_serves_a_repository_site_against_live_stack() {
         Method::POST,
         "/api/repositories",
         &t,
-        Some(json!({"slug": "payments", "forge": "other", "repo_full_name": "payments",
-                    "repo_url": "https://example.com/payments", "team": "platform"})),
+        Some(
+            json!({"slug": "payments", "forge": "other", "repo_full_name": "payments",
+                    "repo_url": "https://example.com/payments", "team": "platform"}),
+        ),
         None,
     )
     .await;
@@ -275,9 +279,15 @@ async fn kairos_serves_a_repository_site_against_live_stack() {
     assert_eq!(root.body, index);
     assert_eq!(root.header("content-security-policy"), Some(SANDBOX));
     assert_eq!(root.header("x-content-type-options"), Some("nosniff"));
-    assert_eq!(root.header("content-type"), Some("text/html; charset=utf-8"));
+    assert_eq!(
+        root.header("content-type"),
+        Some("text/html; charset=utf-8")
+    );
     assert_eq!(root.header("cache-control"), Some("public, max-age=60"));
-    let sha: String = Sha256::digest(index).iter().map(|b| format!("{b:02x}")).collect();
+    let sha: String = Sha256::digest(index)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     let etag = format!("\"{sha}\"");
     assert_eq!(root.header("etag"), Some(etag.as_str()));
     assert!(root.header("set-cookie").is_none(), "no cookie is set");
@@ -294,7 +304,10 @@ async fn kairos_serves_a_repository_site_against_live_stack() {
     assert_eq!(guide.text(), "<h1>Guide</h1>");
     let no_slash = fetch(&router, Method::GET, &format!("{ROOT}guide"), &[]).await;
     assert_eq!(no_slash.status, StatusCode::MOVED_PERMANENTLY);
-    assert_eq!(no_slash.header("location"), Some(format!("{ROOT}guide/").as_str()));
+    assert_eq!(
+        no_slash.header("location"),
+        Some(format!("{ROOT}guide/").as_str())
+    );
     let lost = fetch(&router, Method::GET, &format!("{ROOT}nothing.html"), &[]).await;
     assert_eq!(lost.status, StatusCode::NOT_FOUND);
     assert_eq!(lost.text(), "<h1>Lost</h1>", "the site's own 404 page");
@@ -306,7 +319,11 @@ async fn kairos_serves_a_repository_site_against_live_stack() {
     ] {
         let reply = fetch(&router, Method::GET, &bad, &[]).await;
         assert_eq!(reply.status, StatusCode::NOT_FOUND, "{bad}");
-        assert_ne!(reply.text(), "<h1>Lost</h1>", "{bad} is refused before the site");
+        assert_ne!(
+            reply.text(),
+            "<h1>Lost</h1>",
+            "{bad} is refused before the site"
+        );
     }
 
     // --- the team landing links to the site --------------------------------------
@@ -317,7 +334,11 @@ async fn kairos_serves_a_repository_site_against_live_stack() {
         &[("cookie", &format!("kairos_session={t}"))],
     )
     .await;
-    assert!(landing.text().contains(&format!(r#"href="{ROOT}""#)), "{}", landing.text());
+    assert!(
+        landing.text().contains(&format!(r#"href="{ROOT}""#)),
+        "{}",
+        landing.text()
+    );
 
     // --- a file the store lost: 503 ------------------------------------------------
     let org_id: String = {
@@ -329,7 +350,15 @@ async fn kairos_serves_a_repository_site_against_live_stack() {
             .expect("org")
             .to_string()
     };
-    let repo = api(&router, Method::GET, "/api/repositories/payments", &t, None, None).await;
+    let repo = api(
+        &router,
+        Method::GET,
+        "/api/repositories/payments",
+        &t,
+        None,
+        None,
+    )
+    .await;
     let repo_id = repo["id"].as_str().unwrap().to_string();
     std::fs::remove_file(
         store_root
@@ -367,7 +396,10 @@ async fn kairos_serves_a_repository_site_against_live_stack() {
     assert_eq!(old.status, StatusCode::OK, "the old path still serves");
     let new = fetch(&router, Method::GET, &format!("{NEW_ROOT}guide/"), &[]).await;
     assert_eq!(new.status, StatusCode::FOUND);
-    assert_eq!(new.header("location"), Some(format!("{ROOT}guide/").as_str()));
+    assert_eq!(
+        new.header("location"),
+        Some(format!("{ROOT}guide/").as_str())
+    );
     api(
         &router,
         Method::PUT,
@@ -384,7 +416,13 @@ async fn kairos_serves_a_repository_site_against_live_stack() {
     assert_eq!(old.status, StatusCode::MOVED_PERMANENTLY);
     assert_eq!(old.header("location"), Some(NEW_ROOT));
     // No 404.html in this publish: Kairos's plain 404.
-    let lost = fetch(&router, Method::GET, &format!("{NEW_ROOT}nothing.html"), &[]).await;
+    let lost = fetch(
+        &router,
+        Method::GET,
+        &format!("{NEW_ROOT}nothing.html"),
+        &[],
+    )
+    .await;
     assert_eq!(lost.status, StatusCode::NOT_FOUND);
     assert!(lost.text().contains("Not found"), "{}", lost.text());
 
