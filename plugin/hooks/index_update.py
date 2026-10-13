@@ -81,8 +81,8 @@ NOT_A_CHECKOUT_TEXT = (
     "`kairos-code` has no index open. Call its tool `fetch_index` with `root`, "
     "the path of the checkout you work on (the clone of the repository of your "
     "task). It takes the nearest index from Kairos. Then use `module_map`, "
-    "`code_search`, `symbol`, `callers`, `callees` and `path` before you read "
-    "files."
+    "`code_search`, `symbol`, `callers`, `callees`, `references` and `path` "
+    "before you read files."
 )
 
 
@@ -156,12 +156,14 @@ def session_text(project, log):
     lines = [
         "Code index of this checkout: the local MCP server `kairos-code` "
         "(`kairos index mcp`) gives the tools `module_map`, `code_search`, "
-        "`symbol`, `callers`, `callees` and `path`. Use them before you read "
-        "files. `module_map` gives the modules and their summaries. "
-        "`code_search` finds code from a description of what it does. `symbol` "
-        "gives the summary, the signature and the location of one symbol. "
-        "`callers`, `callees` and `path` give the call graph. Then read only "
-        "the files that the tools name.",
+        "`symbol`, `callers`, `callees`, `references` and `path`. Use them "
+        "before you read files. `module_map` gives the modules and their "
+        "summaries. `code_search` finds code from a description of what it "
+        "does. `symbol` gives the summary, the signature and the location of "
+        "one symbol. `callers`, `callees` and `path` give the call graph. "
+        "`references` gives each use of a symbol: in Rust, also the uses as a "
+        "type, a field or an import. Then read only the files that the tools "
+        "name.",
         "`kairos index update --link-only` runs in the background now, so the "
         "index can be some seconds old at the start of the session. It runs no "
         "model: it links the summaries that are in the pool, and a changed "

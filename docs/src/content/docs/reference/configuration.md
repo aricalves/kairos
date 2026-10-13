@@ -841,7 +841,7 @@ the CLI cannot reach Kairos, it updates the local index and says so.
 
 ### The code tools: choose one symbol
 
-The tools `symbol`, `callers`, `callees` and `path` of `kairos index mcp`
+The tools `symbol`, `callers`, `callees`, `references` and `path` of `kairos index mcp`
 find a symbol by its name: `name`, `Type::name` or `Type.name`. When more
 than one symbol has the name, the tool uses these steps:
 
@@ -874,6 +874,31 @@ bytes of the symbol that the index has.
   warning: the source can be different from the symbol. Run
   `kairos index update` to update the index.
 - If the file is not in the checkout, the result has no source.
+
+### The code tools: the uses of a symbol
+
+The tool `references` gives each use of a symbol, not only the calls.
+`kairos index references <symbol>` gives the same text. The tool chooses the
+symbol as `symbol` does.
+
+- For Rust, the uses come from the SCIP data of rust-analyzer. Each use has
+  its file, its line, its kind and the symbol that holds it. The kinds are
+  `call`, `type`, `field`, `import` and `other` (a constant, a module or an
+  enum variant). A use of a field of a struct is a use of the struct, with
+  the kind `field`. The definition and `Self` are not uses.
+- For Python, TypeScript, JavaScript and Go, the index has the calls only.
+  The result says so.
+- `kairos index update` with no `--rust-edges` keeps the uses of each Rust
+  file that did not change. A changed Rust file has its calls only until
+  the next SCIP run. The result gives the count of these files. Run
+  `kairos index update --rust-edges` to get all the uses again.
+- The result shows the possible calls only when `possible` is true. A
+  possible call is a call by a name that more than one function has.
+- `limit` is the most uses to show, from 1 to 1000. The default is 100.
+
+The uses are part of the index since schema version 7. Kairos refuses an
+index of an earlier version. Run `kairos index --full`, or take a new base
+index from Kairos.
 
 ## Helm chart values
 

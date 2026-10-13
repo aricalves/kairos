@@ -23,7 +23,7 @@ DEFAULT_PROTOCOL = "2025-06-18"
 INSTRUCTIONS = (
     "The code tools of Kairos are off: `kairos` is not on PATH. Put the "
     "`kairos` CLI on PATH and start the session again to get `module_map`, "
-    "`code_search`, `symbol`, `callers`, `callees` and `path`."
+    "`code_search`, `symbol`, `callers`, `callees`, `references` and `path`."
 )
 
 

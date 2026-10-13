@@ -31,6 +31,7 @@ pub mod hosted;
 #[cfg(feature = "llama")]
 mod llama;
 mod parse_cache;
+mod refs;
 
 /// How long a connection to an index waits for the lock of another
 /// process (a build, an update, a fetch) before it fails: several agents
@@ -63,8 +64,8 @@ pub use duplicates::{
 #[cfg(feature = "llama")]
 pub use llama::{LlamaModelFile, LlamaSummarizer, MAX_NEW_TOKENS};
 pub use query::{
-    CallEdge, Callees, Counts, External, FileInfo, Lookup, ModuleInfo, NoSymbolCallee, PathStep,
-    SearchHit, SearchMode, SearchResult, SymbolInfo, SymbolSource,
+    CallEdge, Callees, Counts, Coverage, External, FileInfo, Lookup, ModuleInfo, NoSymbolCallee,
+    PathStep, Reference, References, SearchHit, SearchMode, SearchResult, SymbolInfo, SymbolSource,
 };
 pub use rules::{Decision, Origin, RuleSet};
 pub use rust_analyzer::BuildOptions;
@@ -99,6 +100,9 @@ pub struct BuildReport {
     pub scip: Option<ScipRun>,
     /// The token vectors of the functions (COLLIERY-T-1857).
     pub token_vectors: TokenVectorStats,
+    /// The uses of symbols that SCIP gave, or that the base kept
+    /// (KAIROS-T-0419).
+    pub refs: usize,
 }
 
 /// The token vectors of a build: made from the code, or reused from the
@@ -482,6 +486,7 @@ fn build(
         edges: EdgeStats::default(),
         scip: None,
         token_vectors: TokenVectorStats::default(),
+        refs: 0,
     };
     let cache = match parse {
         Parse::Changed => parse_cache::Reader::open(db)?,
@@ -577,6 +582,7 @@ fn build(
     let tx = conn.transaction()?;
     tx.execute_batch(
         "DELETE FROM edge_candidates; DELETE FROM edges; DELETE FROM scip_covered;
+         DELETE FROM refs; DELETE FROM refs_files;
          DELETE FROM symbols; DELETE FROM files; DELETE FROM modules;",
     )?;
     {
@@ -593,6 +599,7 @@ fn build(
 
         let mut parsed = Vec::new();
         let mut file_ids = Vec::new();
+        let mut hashes = Vec::new();
         for p in &prepared {
             insert_file.execute(params![
                 p.rel,
@@ -658,9 +665,18 @@ fn build(
                 macro_ranges: &found.macro_ranges,
             });
             file_ids.push(file_id);
+            hashes.push(p.file.content_hash.as_str());
         }
 
         let resolved = edges::resolve(&parsed, rust);
+        // The uses of each symbol (KAIROS-T-0419).
+        let source = match (&scip_index, &mode) {
+            (Some((index, crates)), _) => refs::Source::Scip(index, crates),
+            (None, Mode::Keep(bases)) => refs::Source::Base { bases, workspace },
+            _ => refs::Source::Nothing,
+        };
+        let uses = refs::resolve(&parsed, &hashes, source);
+        report.refs = uses.refs.len();
         report.edges = resolved.stats;
         let new_edges = resolved.edges;
         let mut insert_covered =
@@ -694,6 +710,25 @@ fn build(
             for c in &e.candidates {
                 insert_candidate.execute(params![edge_id, c])?;
             }
+        }
+        let mut insert_refs_file =
+            tx.prepare("INSERT INTO refs_files (file_id, pending) VALUES (?1, ?2)")?;
+        for (file, pending) in &uses.files {
+            insert_refs_file.execute(params![file_ids[*file], pending])?;
+        }
+        let mut insert_ref = tx.prepare(
+            "INSERT INTO refs (file_id, target_id, enclosing_id, line, col, use_kind)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?;
+        for r in &uses.refs {
+            insert_ref.execute(params![
+                file_ids[r.file],
+                r.target_id,
+                r.enclosing_id,
+                r.line as i64,
+                r.col as i64,
+                r.kind,
+            ])?;
         }
     }
     parse_cache::write(&tx, &used_keys, &fresh)?;

@@ -133,6 +133,25 @@ pub enum IndexCommand {
         #[arg(long, default_value_t = mcp::DEFAULT_GROUPS as u64, value_parser = clap::value_parser!(u64).range(1..=mcp::MAX_GROUPS as u64))]
         limit: u64,
     },
+    /// Show each use of a symbol: in Rust, the uses as a type, a field, an import and a call; in the other languages, the calls
+    References {
+        #[command(flatten)]
+        root: RootArg,
+        /// The symbol: a name, `Type::name` or `Type.name`, or a candidate `name (file:line)`
+        symbol: String,
+        /// The file of the symbol, when more than one symbol has the name
+        #[arg(long)]
+        file: Option<String>,
+        /// A line of the symbol, when more than one symbol of one file has the name
+        #[arg(long)]
+        line: Option<u32>,
+        /// Also show the possible calls: calls by a name that more than one function has
+        #[arg(long)]
+        possible: bool,
+        /// The most uses to show, from 1 to 1000
+        #[arg(long, default_value_t = mcp::DEFAULT_USES as u64, value_parser = clap::value_parser!(u64).range(1..=mcp::MAX_USES as u64))]
+        limit: u64,
+    },
     /// Serve the code tools of the index to an agent: MCP over stdio
     Mcp {
         #[command(flatten)]
@@ -192,6 +211,23 @@ impl IndexCommand {
                     ..DuplicateOptions::default()
                 };
                 duplicates(&root, &options, limit as usize)
+            }),
+            IndexCommand::References {
+                root,
+                symbol,
+                file,
+                line,
+                possible,
+                limit,
+            } => resolve_root(root).and_then(|root| {
+                references(
+                    &root,
+                    &symbol,
+                    file.as_deref(),
+                    line,
+                    possible,
+                    limit as usize,
+                )
             }),
             IndexCommand::Mcp { root } => match resolve_root(root) {
                 Ok(root) => mcp::serve(root).await,
@@ -678,6 +714,26 @@ fn duplicates(
     }
     let index = Index::open(&db)?;
     println!("{}", mcp::duplicates_text(&index, options, limit)?);
+    Ok(())
+}
+
+/// `kairos index references` (KAIROS-T-0419): the text of the MCP tool.
+fn references(
+    root: &Path,
+    symbol: &str,
+    file: Option<&str>,
+    line: Option<u32>,
+    possible: bool,
+    limit: usize,
+) -> Result<(), IndexCommandError> {
+    let db = db_path(root);
+    if !db.is_file() {
+        return Err(IndexCommandError::NoIndex(db));
+    }
+    let index = Index::open(&db)?;
+    let s = mcp::find(&index, symbol, file, line, mcp::SYMBOL)
+        .map_err(|e| IndexCommandError::Symbol(Box::new(e)))?;
+    println!("{}", mcp::references_text(&index, &s, possible, limit)?);
     Ok(())
 }
 

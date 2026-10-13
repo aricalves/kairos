@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use cucumber::{World, given, then, when};
 use kairos_embed::DeterministicProvider;
 use kairos_index::{
-    BuildOptions, BuildReport, DuplicateKind, DuplicateOptions, Duplicates, EdgeRecord,
+    BuildOptions, BuildReport, Coverage, DuplicateKind, DuplicateOptions, Duplicates, EdgeRecord,
     FakeSummarizer, FileRecord, Index, Level, Lookup, SUMMARIZED_KINDS, SearchResult,
     SummarizeOptions, Summarizer, SummaryReport, SummaryRequest, SymbolRecord, SymbolRef,
     UpdateOptions, UpdateReport, build_structure_with, merge, rust_analyzer, summarize, update,
@@ -3913,4 +3913,97 @@ fn candidates_given_back(world: &mut IndexWorld, name: String) {
             other => panic!("{candidate}: {other:?}"),
         }
     }
+}
+
+// KAIROS-T-0419: the uses of a symbol.
+
+/// The uses of `name` in `file`, as `file:line kind enclosing origin class`.
+fn uses_of(world: &IndexWorld, name: &str, file: &str, possible: bool) -> (Vec<String>, Coverage) {
+    let index = world.index();
+    let Lookup::Found(s) = index.lookup(name, Some(file), None).expect("look up") else {
+        panic!("no one symbol {name} in {file}");
+    };
+    let found = index.references(s.id, possible).expect("the uses");
+    let uses = found
+        .uses
+        .iter()
+        .map(|u| {
+            format!(
+                "{}:{} {} {} {} {}",
+                u.file,
+                u.line,
+                u.kind,
+                u.enclosing
+                    .as_ref()
+                    .map_or("-".to_string(), |e| e.qualified()),
+                u.origin,
+                u.class
+            )
+        })
+        .collect();
+    (uses, found.coverage)
+}
+
+/// The uses of `Queue` in the fixture (KAIROS-T-0419).
+const QUEUE_USES: &[&str] = &[
+    "src/lib.rs:8 import -",
+    "src/lib.rs:12 type enqueue_all",
+    "src/lib.rs:13 type enqueue_all",
+    "src/queue.rs:8 type Queue",
+    "src/queue.rs:10 type Queue::new",
+    "src/queue.rs:11 field Queue::new",
+    "src/queue.rs:16 field Queue::push",
+    "src/queue.rs:20 field Queue::len",
+];
+
+#[then(expr = "the uses of {string} in {string} are its import, its types and its fields")]
+fn uses_of_queue(world: &mut IndexWorld, name: String, file: String) {
+    let (uses, coverage) = uses_of(world, &name, &file, false);
+    let uses: Vec<String> = uses
+        .iter()
+        .map(|u| u.splitn(4, ' ').take(3).collect::<Vec<_>>().join(" "))
+        .collect();
+    assert_eq!(uses, QUEUE_USES);
+    // After an update with no SCIP run, a changed file waits for the run.
+    assert!(
+        matches!(coverage, Coverage::Full | Coverage::Pending(_)),
+        "{coverage:?}"
+    );
+}
+
+#[then(expr = "the uses of {string} in {string} are 1 use in {string} at line {int}")]
+fn one_use(world: &mut IndexWorld, name: String, file: String, enclosing: String, line: u32) {
+    let (uses, coverage) = uses_of(world, &name, &file, false);
+    assert_eq!(
+        uses,
+        [format!("{file}:{line} other {enclosing} scip certain")]
+    );
+    assert_eq!(coverage, Coverage::Full);
+}
+
+#[then(
+    expr = "the uses of {string} in {string} are its 2 calls, and the result says that it has the calls only"
+)]
+fn python_calls_only(world: &mut IndexWorld, name: String, file: String) {
+    let (uses, coverage) = uses_of(world, &name, &file, false);
+    assert_eq!(
+        uses,
+        [
+            "python/polyglot/report.py:19 call build_report name certain",
+            "python/tests/test_report.py:5 call test_render_joins_rows name certain",
+        ]
+    );
+    assert_eq!(coverage, Coverage::CallsOnly);
+}
+
+#[then(expr = "{int} Rust file waits for a SCIP run")]
+fn files_wait(world: &mut IndexWorld, count: usize) {
+    let (_, coverage) = uses_of(world, "Queue", "src/queue.rs", false);
+    assert_eq!(coverage, Coverage::Pending(count));
+}
+
+#[then(expr = "{string} in {string} has no use")]
+fn no_use(world: &mut IndexWorld, name: String, file: String) {
+    let (uses, _) = uses_of(world, &name, &file, true);
+    assert!(uses.is_empty(), "{uses:?}");
 }

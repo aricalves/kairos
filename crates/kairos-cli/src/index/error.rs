@@ -39,6 +39,10 @@ pub enum IndexCommandError {
     Index(#[from] kairos_index::IndexError),
     #[error("The MCP server stopped: {0}.")]
     Server(String),
+    /// The symbol of a command is not found, or is not one symbol: the
+    /// error of the code tools (KAIROS-T-0419).
+    #[error(transparent)]
+    Symbol(Box<ToolError>),
 }
 
 impl From<IndexCommandError> for CliError {

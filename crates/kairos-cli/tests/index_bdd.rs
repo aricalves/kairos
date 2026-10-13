@@ -503,6 +503,65 @@ fn symbol_with_unknown_argument(world: &mut CliWorld) {
     world.call("symbol", json!({"symbol": "pop", "verbose": true}));
 }
 
+// KAIROS-T-0419: each use of a symbol.
+
+#[when(expr = "an agent calls references for {string} in {string}")]
+fn references_in_file(world: &mut CliWorld, name: String, file: String) {
+    world.call("references", json!({"symbol": name, "file": file}));
+}
+
+#[when("an agent calls references with an argument that the tool does not have")]
+fn references_with_unknown_argument(world: &mut CliWorld) {
+    world.call("references", json!({"symbol": "Queue", "verbose": true}));
+}
+
+#[then(
+    "the result has the uses of the type by file, each with its line, its kind and the symbol that holds it"
+)]
+fn uses_of_the_type(world: &mut CliWorld) {
+    let text = world.text();
+    let expected = "8 uses of Queue (src/queue.rs:4) in 2 files: 4 type, 3 field, 1 import.\n\
+         src/lib.rs:\n\
+         - line 8: import, at the top of the file\n\
+         - line 12: type, in enqueue_all\n\
+         - line 13: type, in enqueue_all\n\
+         src/queue.rs:\n\
+         - line 8: type, in Queue\n\
+         - line 10: type, in Queue::new\n\
+         - line 11: field, in Queue::new\n\
+         - line 16: field, in Queue::push\n\
+         - line 20: field, in Queue::len";
+    assert_eq!(text, expected);
+}
+
+#[then("the result has the 2 calls, and it says that it has the calls only for python code")]
+fn python_calls_only(world: &mut CliWorld) {
+    let text = world.text();
+    assert!(
+        text.starts_with(
+            "2 uses of Report (python/polyglot/report.py:9) in 2 files: 2 call. For python \
+             code, the index has the calls only:"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("python/polyglot/report.py:\n- line 19: call, in build_report, by name"),
+        "{text}"
+    );
+}
+
+#[then(expr = "{string} gives the same text")]
+fn the_cli_gives_the_same_text(world: &mut CliWorld, command: String) {
+    let args: Vec<&str> = command
+        .strip_prefix("kairos ")
+        .expect("a kairos command")
+        .split(' ')
+        .collect();
+    let root = world.root().to_path_buf();
+    let out = kairos(&args, &root);
+    assert_eq!(out.trim_end(), world.text().trim_end());
+}
+
 #[when("an agent calls duplicates")]
 fn duplicates(world: &mut CliWorld) {
     world.call("duplicates", json!({}));
@@ -693,7 +752,8 @@ fn refused(world: &mut CliWorld) {
     if result.text.contains("\"symbol\"") {
         assert!(result.text.contains("\"line\""), "{}", result.text);
     }
-    // `symbol` lists `source` too (KAIROS-T-0420).
+    // `symbol` lists `source` too (KAIROS-T-0420). `callers` and
+    // `references` list `possible` in its place.
     if result.text.contains("\"symbol\"") && !result.text.contains("\"possible\"") {
         assert!(result.text.contains("\"source\""), "{}", result.text);
     }

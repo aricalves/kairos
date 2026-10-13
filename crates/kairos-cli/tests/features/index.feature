@@ -55,6 +55,20 @@ Feature: The CLI and the code tools
     When the file "src/checksum.rs" changes and the agent calls symbol with source again
     Then the result says that the source can be different from the symbol
 
+  # KAIROS-T-0419: callers missed the uses of a type in a signature and the
+  # uses of its fields.
+  Scenario: references gives each use of a symbol, not only its calls
+    Given an index of the polyglot fixture
+    When an agent calls references for "Queue" in "src/queue.rs"
+    Then the result has the uses of the type by file, each with its line, its kind and the symbol that holds it
+    And "kairos index references Queue --file src/queue.rs" gives the same text
+    When an agent calls references for "Report" in "python/polyglot/report.py"
+    Then the result has the 2 calls, and it says that it has the calls only for python code
+
+  Scenario: An unknown argument of references is refused
+    When an agent calls references with an argument that the tool does not have
+    Then the call is refused, and the error names the argument
+
   Scenario: module_map replaces the Metis index
     Given an index of the polyglot fixture
     When an agent calls module_map

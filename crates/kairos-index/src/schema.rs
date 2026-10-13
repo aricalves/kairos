@@ -1,8 +1,8 @@
 //! The SQLite schema of an index (COLLIERY-I-0264, "The two parts of an
 //! index").
 //!
-//! - The structure: `files`, `symbols`, `edges`, `edge_candidates` and
-//!   `scip_covered`. A build deletes and writes it again.
+//! - The structure: `files`, `symbols`, `edges`, `edge_candidates`,
+//!   `scip_covered`, `refs` and `refs_files`. A build deletes and writes it again.
 //! - The summary pool: `summaries` and `pool_meta`. A build of the structure
 //!   keeps it. `symbols.summary_key`, `files.summary_key` and `modules` link
 //!   the structure to the pool; the summarizer writes them (COLLIERY-T-1850).
@@ -26,6 +26,10 @@
 //! the last summary run. The model is part of each summary key, so a pool
 //! holds the summaries of 2 models as 2 sets of rows.
 //!
+//! Version 7 (KAIROS-T-0419): `refs`, each use of a symbol that SCIP gives
+//! (a type, a field, an import, a call), and `refs_files`, the Rust files
+//! that have SCIP uses.
+//!
 //! An index of an earlier version is refused.
 //!
 //! `PRAGMA user_version` holds the schema version.
@@ -35,7 +39,7 @@ use rusqlite::Connection;
 use crate::IndexError;
 
 /// The schema version that this code writes and reads.
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 const SCHEMA: &str = r#"
 -- One row for each file of the tree, with the decision of the file rules.
@@ -120,6 +124,29 @@ CREATE TABLE scip_covered (
     start_byte INTEGER NOT NULL,
     PRIMARY KEY (file_id, start_byte)
 ) STRICT, WITHOUT ROWID;
+
+-- Each use of a symbol in a Rust file, from SCIP (KAIROS-T-0419): the file
+-- and the place of the use, the symbol that it uses, the smallest symbol
+-- that holds it, and the kind of the use. The definition is not a use. A use
+-- of a struct field goes to the struct, with the kind 'field'.
+CREATE TABLE refs (
+    id           INTEGER PRIMARY KEY,
+    file_id      INTEGER NOT NULL REFERENCES files (id) ON DELETE CASCADE,
+    target_id    INTEGER NOT NULL REFERENCES symbols (id) ON DELETE CASCADE,
+    enclosing_id INTEGER REFERENCES symbols (id) ON DELETE CASCADE,
+    line         INTEGER NOT NULL,          -- from 1
+    col          INTEGER NOT NULL,          -- from 1, as SCIP gives it
+    use_kind     TEXT    NOT NULL CHECK (use_kind IN
+                     ('call', 'type', 'field', 'import', 'other'))
+) STRICT;
+CREATE INDEX refs_target ON refs (target_id);
+
+-- The Rust files with SCIP uses in refs. pending = 1: the file changed after
+-- the last SCIP run, so it has no uses until the next run.
+CREATE TABLE refs_files (
+    file_id INTEGER PRIMARY KEY REFERENCES files (id) ON DELETE CASCADE,
+    pending INTEGER NOT NULL CHECK (pending IN (0, 1))
+) STRICT;
 
 -- The summary pool (COLLIERY-T-1850). The key is a hash of what made the
 -- summary: the tree hash and the callee signatures of a symbol, the path and

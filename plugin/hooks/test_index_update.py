@@ -183,7 +183,7 @@ class SessionStart(Harness):
         context = json.loads(result.stdout)["hookSpecificOutput"]
         self.assertEqual(context["hookEventName"], "SessionStart")
         text = context["additionalContext"]
-        for tool in ("module_map", "code_search", "callers", "callees"):
+        for tool in ("module_map", "code_search", "callers", "callees", "references"):
             self.assertIn(f"`{tool}`", text)
         self.assertIn("before you read files", text)
         self.assertIn("kairos-code", text)

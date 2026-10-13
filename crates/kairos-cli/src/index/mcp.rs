@@ -17,8 +17,8 @@ use std::sync::{Arc, Mutex};
 
 use kairos_embed::EmbeddingProvider;
 use kairos_index::{
-    CallEdge, DEFAULT_MIN_LINES, DuplicateKind, DuplicateOptions, Index, IndexError, Lookup,
-    SearchMode, SymbolInfo, SymbolSource, UpdateOptions,
+    CallEdge, Coverage, DEFAULT_MIN_LINES, DuplicateKind, DuplicateOptions, Index, IndexError,
+    Lookup, Reference, SearchMode, SymbolInfo, SymbolSource, UpdateOptions,
 };
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
@@ -41,6 +41,10 @@ const DEFAULT_LIMIT: usize = 10;
 const MAX_LIMIT: usize = 50;
 /// The most bytes of source text that `symbol` gives (KAIROS-T-0420).
 const SOURCE_LIMIT: usize = 16 * 1024;
+/// The uses of `references` when the call gives no `limit` (KAIROS-T-0419).
+pub(super) const DEFAULT_USES: usize = 100;
+/// The most uses of one `references`.
+pub(super) const MAX_USES: usize = 1000;
 /// The groups of `duplicates` when the call gives no `limit`.
 pub(super) const DEFAULT_GROUPS: usize = 20;
 /// The most groups of one `duplicates`.
@@ -134,6 +138,26 @@ pub struct EdgeParams {
     /// Also give the possible calls: calls by a name that more than one
     /// function has. Default false.
     pub possible: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct ReferencesParams {
+    /// A name, `Type::name` (Rust) or `Type.name`. A candidate from the list
+    /// of an AMBIGUOUS error, `name (file:line)`, is also correct.
+    pub symbol: String,
+    /// The file of the symbol, when more than one symbol has the name.
+    pub file: Option<String>,
+    /// A line of the symbol, when more than one symbol of one file has the
+    /// name: the symbol that starts on it, or else the smallest symbol that
+    /// holds it.
+    pub line: Option<u32>,
+    /// Also give the possible calls: calls by a name that more than one
+    /// function has. Default false.
+    pub possible: Option<bool>,
+    /// The most uses to give, from 1 to 1000. Default 100.
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -422,8 +446,9 @@ impl CodeTools {
     }
 }
 
-/// The arguments that choose a symbol in `symbol`, `callers` and `callees`.
-const SYMBOL: SymbolArguments = SymbolArguments {
+/// The arguments that choose a symbol in `symbol`, `callers`, `callees`
+/// and `references`.
+pub(super) const SYMBOL: SymbolArguments = SymbolArguments {
     symbol: "symbol",
     file: "file",
     line: "line",
@@ -443,7 +468,7 @@ const TO: SymbolArguments = SymbolArguments {
 
 /// Find the symbol, or the error that says why not. Each tool that takes a
 /// symbol finds it here (KAIROS-T-0417).
-fn find(
+pub(super) fn find(
     index: &Index,
     symbol: &str,
     file: Option<&str>,
@@ -553,6 +578,108 @@ fn marks(edge: &CallEdge) -> String {
         out.push_str(", by name until the next SCIP run");
     }
     out
+}
+
+/// The marks of a use after its kind (KAIROS-T-0419): how the index knows
+/// a call that SCIP did not give.
+fn use_marks(r: &Reference) -> String {
+    let mut out = String::new();
+    if r.origin != "scip" {
+        out.push_str(", by name");
+    }
+    if r.class == "possible" {
+        out.push_str(&format!(
+            ", possible: 1 of {} functions with this name",
+            r.candidates
+        ));
+    }
+    if r.origin == "macro-text" {
+        out.push_str(", in the text of a macro");
+    }
+    if r.scip_pending {
+        out.push_str(", until the next SCIP run");
+    }
+    out
+}
+
+/// The text of `references`, for the MCP tool and for `kairos index
+/// references` (KAIROS-T-0419): the count of the uses by kind, what the
+/// index has for the language, then the uses by file.
+pub(super) fn references_text(
+    index: &Index,
+    s: &SymbolInfo,
+    possible: bool,
+    limit: usize,
+) -> Result<String, IndexError> {
+    let found = index.references(s.id, possible)?;
+    let uses = &found.uses;
+    let files: std::collections::BTreeSet<&str> = uses.iter().map(|u| u.file.as_str()).collect();
+    let mut out = format!("{} of {}", plural(uses.len(), "use", "uses"), described(s));
+    if uses.is_empty() {
+        out.push('.');
+    } else {
+        let kinds: Vec<String> = ["call", "type", "field", "import", "other"]
+            .iter()
+            .filter_map(|kind| {
+                let n = uses.iter().filter(|u| u.kind == *kind).count();
+                (n > 0).then(|| format!("{n} {kind}"))
+            })
+            .collect();
+        out.push_str(&format!(
+            " in {}: {}.",
+            plural(files.len(), "file", "files"),
+            kinds.join(", ")
+        ));
+    }
+    match found.coverage {
+        Coverage::Full => {}
+        Coverage::Pending(n) => out.push_str(&format!(
+            " {} after the last SCIP run: in them, the result has the calls only. Run \
+             `kairos index update --rust-edges` to get all the uses.",
+            plural(n, "Rust file changed", "Rust files changed")
+        )),
+        Coverage::CallsOnly if s.language == "rust" => out.push_str(
+            " The index has no SCIP data for the Rust files, so the result has the calls only. \
+             A build in a Cargo workspace runs SCIP.",
+        ),
+        Coverage::CallsOnly => out.push_str(&format!(
+            " For {} code, the index has the calls only: the uses as a type, a field or an \
+             import are not in the result.",
+            s.language
+        )),
+    }
+    if uses.len() > limit {
+        out.push_str(&format!(
+            " Only the first {limit} are shown. Give a larger `limit`, up to {MAX_USES}."
+        ));
+    }
+    let mut file = "";
+    for u in uses.iter().take(limit) {
+        if u.file != file {
+            file = &u.file;
+            out.push_str(&format!("\n{file}:"));
+        }
+        let place = match &u.enclosing {
+            Some(e) => format!("in {}", e.qualified()),
+            None => "at the top of the file".to_string(),
+        };
+        out.push_str(&format!(
+            "\n- line {}: {}, {place}{}",
+            u.line,
+            u.kind,
+            use_marks(u)
+        ));
+    }
+    if !possible {
+        let all = index.references(s.id, true)?.uses.len();
+        if all > uses.len() {
+            out.push_str(&format!(
+                "\n{} not shown. Set `possible` to true to see them.",
+                plural(all - uses.len(), "possible call is", "possible calls are")
+            ));
+        }
+    }
+    Ok(out)
 }
 
 /// The text of `duplicates`, for the MCP tool and for `kairos index
@@ -752,7 +879,7 @@ impl CodeTools {
     }
 
     #[tool(
-        description = "The functions that call a symbol of this checkout. Give the symbol as for the tool `symbol`, with `file` and `line` when more than one symbol has the name. The result has the certain calls only, unless `possible` is true. A possible call is a call by a name that more than one function has: the result marks it. A call marked \"by name until the next SCIP run\" is in changed Rust code."
+        description = "The functions that call a symbol of this checkout. Give the symbol as for the tool `symbol`, with `file` and `line` when more than one symbol has the name. The result has the certain calls only, unless `possible` is true. A possible call is a call by a name that more than one function has: the result marks it. A call marked \"by name until the next SCIP run\" is in changed Rust code. For each use of the symbol, not only the calls, use `references`."
     )]
     async fn callers(
         &self,
@@ -886,6 +1013,35 @@ impl CodeTools {
                 }
             }
             Ok(out)
+        })())
+    }
+
+    #[tool(
+        description = "Each use of a symbol of this checkout, not only the calls: in Rust, each use as a type, a field (a field of a type is a use of the type), an import, a call or other (a constant, a module), from the SCIP data of rust-analyzer. Each use has its file, its line, its kind and the symbol that holds it, by file. For Python, TypeScript, JavaScript and Go, the index has the calls only, and the result says so. Give the symbol as for the tool `symbol`, with `file` and `line` when more than one symbol has the name. Possible calls (by a name that more than one function has) are not shown, unless `possible` is true. `limit`: the most uses to give, from 1 to 1000, default 100."
+    )]
+    async fn references(
+        &self,
+        Parameters(params): Parameters<ReferencesParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        result((|| {
+            let limit = params.limit.unwrap_or(DEFAULT_USES);
+            if !(1..=MAX_USES).contains(&limit) {
+                return Err(ToolError::Limit(MAX_USES));
+            }
+            let index = self.open()?;
+            let s = find(
+                &index,
+                &params.symbol,
+                params.file.as_deref(),
+                params.line,
+                SYMBOL,
+            )?;
+            Ok(references_text(
+                &index,
+                &s,
+                params.possible.unwrap_or(false),
+                limit,
+            )?)
         })())
     }
 
@@ -1054,6 +1210,7 @@ impl ServerHandler for CodeTools {
                 "{} Use these tools before you read files: \
                  `module_map` for the map, `code_search` to find code by what it does, \
                  `symbol` for one symbol, `callers` and `callees` for the call graph, \
+                 `references` for each use of a symbol (types, fields, imports and calls), \
                  `path` for how one symbol reaches another, and `duplicates` for repeated \
                  code. `fetch_index` opens a checkout: it takes the nearest index of the \
                  repository from Kairos. Run `kairos index update` after you change code.",

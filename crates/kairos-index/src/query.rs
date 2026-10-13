@@ -10,6 +10,9 @@
 //! - [`Index::lookup`]: a symbol from the name that an agent gives.
 //! - [`Index::callers`] and [`Index::callees`]: `certain` edges, and the
 //!   `possible` ones on request.
+//! - [`Index::references`]: each use of a symbol: the SCIP uses of a Rust
+//!   symbol (a type, a field, an import, a call), and the calls by name of
+//!   the other languages (KAIROS-T-0419).
 //! - [`Index::paths`]: the 3 shortest chains of `certain` calls from one
 //!   symbol to another, with other steps (COLLIERY-T-2531).
 //! - [`Index::module_map`]: the folders of source files with their
@@ -118,7 +121,52 @@ pub struct NoSymbolCallee {
     pub call_line: u32,
 }
 
-/// What `callees` gives.
+/// One use of a symbol, as `references` shows it (KAIROS-T-0419).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Reference {
+    /// The file and the place of the use. The column is from 1.
+    pub file: String,
+    pub line: u32,
+    pub col: u32,
+    /// `call`, `type`, `field`, `import` or `other`.
+    pub kind: String,
+    /// The smallest symbol that holds the use. `None` at the top of a file.
+    pub enclosing: Option<SymbolInfo>,
+    /// `scip` for a use that SCIP gave; else the origin of the call edge:
+    /// `name` or `macro-text`.
+    pub origin: String,
+    /// `certain`, or `possible` for a call by a name that more than one
+    /// function has.
+    pub class: String,
+    /// The count of the candidates of a `possible` call.
+    pub candidates: usize,
+    /// A call by name that waits for a SCIP run.
+    pub scip_pending: bool,
+}
+
+/// What the index has for the uses of a symbol (KAIROS-T-0419).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Coverage {
+    /// Each use that SCIP gives: Rust, after a SCIP run.
+    Full,
+    /// Rust, but this count of files changed after the last SCIP run: they
+    /// have their calls only.
+    Pending(usize),
+    /// The calls only: the language has no SCIP run, or the index has no
+    /// SCIP data.
+    CallsOnly,
+}
+
+/// What `references` gives.
+#[derive(Debug, Clone, PartialEq)]
+pub struct References {
+    pub target: SymbolInfo,
+    /// By file, line and column.
+    pub uses: Vec<Reference>,
+    pub coverage: Coverage,
+}
+
+/// What `callees` gives./// What `callees` gives.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Callees {
     /// The callees with a symbol.
@@ -499,6 +547,90 @@ impl Index {
             edges,
             no_symbol,
             externals,
+        })
+    }
+
+    /// The uses of the symbol `id` (KAIROS-T-0419): the SCIP uses of
+    /// `refs`, and the calls of the edges that `refs` does not have (by
+    /// name, in the text of a macro, or in a Rust file that changed after the
+    /// SCIP run). With `possible`, also the `possible` calls that have it as
+    /// a candidate. By file, line and column.
+    pub fn references(&self, id: i64, possible: bool) -> Result<References, IndexError> {
+        let target = self.symbol_by_id(id)?;
+        let enclosing_columns = SYMBOL_COLUMNS.replace("f.path", "sf.path");
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT f.path, r.line, r.col, r.use_kind, {enclosing_columns}
+             FROM refs r JOIN files f ON f.id = r.file_id
+             LEFT JOIN symbols s ON s.id = r.enclosing_id
+             LEFT JOIN files sf ON sf.id = s.file_id
+             LEFT JOIN summaries m ON m.key = s.summary_key
+             WHERE r.target_id = ?1"
+        ))?;
+        let rows = stmt.query_map([id], |r| {
+            Ok(Reference {
+                file: r.get(0)?,
+                line: r.get(1)?,
+                col: r.get(2)?,
+                kind: r.get(3)?,
+                enclosing: match r.get::<_, Option<i64>>(4)? {
+                    Some(_) => Some(symbol_info(r, 4)?),
+                    None => None,
+                },
+                origin: "scip".to_string(),
+                class: "certain".to_string(),
+                candidates: 0,
+                scip_pending: false,
+            })
+        })?;
+        let mut uses: Vec<Reference> = rows.collect::<Result<_, _>>()?;
+
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {SYMBOL_COLUMNS}, e.class, e.origin, e.line, e.col, e.scip_pending,
+                    (SELECT count(*) FROM edge_candidates c WHERE c.edge_id = e.id)
+             FROM edges e JOIN symbols s ON s.id = e.caller_id
+             JOIN files f ON f.id = s.file_id LEFT JOIN summaries m ON m.key = s.summary_key
+             WHERE ((e.callee_id = ?1 AND e.class = 'certain')
+                OR (?2 AND e.class = 'possible'
+                    AND e.id IN (SELECT edge_id FROM edge_candidates WHERE symbol_id = ?1)))
+               AND NOT (e.origin = 'scip'
+                    AND s.file_id IN (SELECT file_id FROM refs_files WHERE pending = 0))"
+        ))?;
+        let rows = stmt.query_map(params![id, possible], |r| {
+            let caller = symbol_info(r, 0)?;
+            Ok(Reference {
+                file: caller.file.clone(),
+                line: r.get(13)?,
+                col: r.get(14)?,
+                kind: "call".to_string(),
+                enclosing: Some(caller),
+                class: r.get(11)?,
+                origin: r.get(12)?,
+                scip_pending: r.get(15)?,
+                candidates: r.get::<_, i64>(16)? as usize,
+            })
+        })?;
+        for row in rows {
+            uses.push(row?);
+        }
+        uses.sort_by(|a, b| (&a.file, a.line, a.col).cmp(&(&b.file, b.line, b.col)));
+
+        let count = |sql: &str| -> Result<usize, IndexError> {
+            Ok(self.conn.query_row(sql, [], |r| r.get::<_, i64>(0))? as usize)
+        };
+        let coverage = if target.language != "rust"
+            || count("SELECT count(*) FROM refs_files WHERE pending = 0")? == 0
+        {
+            Coverage::CallsOnly
+        } else {
+            match count("SELECT count(*) FROM refs_files WHERE pending = 1")? {
+                0 => Coverage::Full,
+                n => Coverage::Pending(n),
+            }
+        };
+        Ok(References {
+            target,
+            uses,
+            coverage,
         })
     }
 
