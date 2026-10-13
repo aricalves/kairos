@@ -524,17 +524,30 @@ pub(crate) async fn set_work_class(
         .blocking
         .run(&tenant.slug, move |conn| {
             let task = load(conn, &short_code, Liveness::LiveOnly)?;
-            // NOT an edit (COLLIERY-T-0228): creation grants no right here.
-            // The creator of an item needs this capability as all others do,
-            // because a team controls its own plan (COLLIERY-T-0218).
-            require_capability(conn, &slug, Some(task.board_id), user, "transition_items")?;
-            crate::claims::note(conn, task.id, user)?;
-            let updated = items::set_task_work_class(conn, task.id, work_class, user)
-                .map_err(map_item_error)?;
+            let updated = change_task_lane(conn, &slug, task.id, task.board_id, work_class, user)?;
             embed(conn, updated.into_dto())
         })
         .await?;
     Ok(Json(updated))
+}
+
+/// Change the lane of a task: the ONE write path of
+/// `POST /api/tasks/{short_code}/work-class` and of MCP `set_work_class`
+/// (KAIROS-T-0433). A lane the task already has changes nothing.
+pub(crate) fn change_task_lane(
+    conn: &mut PgConnection,
+    slug: &str,
+    task_id: Uuid,
+    board_id: Uuid,
+    work_class: WorkClass,
+    user: Uuid,
+) -> Result<Task, ApiError> {
+    // NOT an edit (COLLIERY-T-0228): creation grants no right here.
+    // The creator of an item needs this capability as all others do,
+    // because a team controls its own plan (COLLIERY-T-0218).
+    require_capability(conn, slug, Some(board_id), user, "transition_items")?;
+    crate::claims::note(conn, task_id, user)?;
+    items::set_task_work_class(conn, task_id, work_class, user).map_err(map_item_error)
 }
 
 /// Set or clear the link from a task to a repository: the ONE write path of

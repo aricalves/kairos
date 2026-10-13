@@ -1082,6 +1082,48 @@ async fn edit_rule_and_link_rule_against_live_stack() {
         bob.set_task_work_class(&managed.short_code, "planned")
             .await,
     );
+    // KAIROS-T-0433: MCP changes the lane by the same rule.
+    let reply = bob_mcp
+        .call(
+            "set_work_class",
+            json!({"short_code": managed.short_code, "work_class": "support"}),
+        )
+        .await;
+    checks.mcp_allowed("6 MCP set_work_class: the manager changes the lane", &reply);
+    checks.check(
+        "6 MCP set_work_class: the reply names the lanes",
+        reply.1.contains("support lane (was planned)"),
+        &reply.1,
+    );
+    let reply = bob_mcp
+        .call(
+            "set_work_class",
+            json!({"short_code": managed.short_code, "work_class": "support"}),
+        )
+        .await;
+    checks.check(
+        "6 MCP set_work_class: the same lane changes nothing",
+        !reply.0 && reply.1.contains("nothing changed"),
+        &reply.1,
+    );
+    let reply = bob_mcp
+        .call(
+            "set_work_class",
+            json!({"short_code": managed.short_code, "work_class": "expedite"}),
+        )
+        .await;
+    checks.check(
+        "6 MCP set_work_class: an unknown lane is refused",
+        reply.0 && reply.1.contains("work_class"),
+        &reply.1,
+    );
+    let reply = bob_mcp
+        .call(
+            "set_work_class",
+            json!({"short_code": managed.short_code, "work_class": "planned"}),
+        )
+        .await;
+    checks.mcp_allowed("6 MCP set_work_class: back to planned", &reply);
     checks.allowed(
         "6: the manager moves it out of the entry column",
         bob.transition_task(&managed.short_code, &todo).await,
@@ -1171,6 +1213,13 @@ async fn edit_rule_and_link_rule_against_live_stack() {
         )
         .await;
     checks.mcp_refused("9 MCP move_item: the creator", &reply);
+    let reply = alice_mcp
+        .call(
+            "set_work_class",
+            json!({"short_code": mcp_code, "work_class": "planned"}),
+        )
+        .await;
+    checks.mcp_refused("8 MCP set_work_class: the creator", &reply);
     let after = svc.get_task(&code).await.expect("read");
     checks.check(
         "7-9 REST: the request did not move",

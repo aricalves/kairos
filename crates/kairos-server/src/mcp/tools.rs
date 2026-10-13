@@ -543,6 +543,17 @@ pub struct SetRepositoryParams {
     pub repository: Option<String>,
 }
 
+/// Parameters for `set_work_class` (KAIROS-T-0433).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct SetWorkClassParams {
+    /// The short code of the task (e.g. "ACME-T-0012").
+    pub short_code: String,
+    /// The lane: planned | support.
+    pub work_class: String,
+}
+
 /// Parameters for `set_team` and `clear_team` (KAIROS-T-0321).
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -2554,6 +2565,51 @@ impl KairosMcp {
                     "Cleared the repository of {}: the task has no repository.",
                     updated.short_code
                 ),
+            })
+        })
+        .await
+    }
+
+    // KAIROS-T-0433: the lane of a task could change only on the GUI and
+    // REST. A tool of its own, as `set_repository`: the lane is not
+    // content, and it must not fail on a stale version. REST and this tool
+    // call one function (`crate::api::tasks::change_task_lane`).
+    #[tool(
+        description = "Change the lane of a TASK: `work_class` is planned or support. Moving a support request to the planned backlog is a lane change. The task stays in its column. A lane the task already has changes nothing. You need `transition_items` on the board of the task; creating the task gives no right here. `create_item` sets the lane of a new task."
+    )]
+    pub async fn set_work_class(
+        &self,
+        Parameters(params): Parameters<SetWorkClassParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            let work_class = parse_enum(&params.work_class, "work_class", WorkClass::ALL)?;
+            let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
+            if item.item_type != ItemType::Task {
+                return Err(ApiError::validation(format!(
+                    "The {} {} is not a task. set_work_class applies to tasks only.",
+                    item.item_type, item.short_code
+                )));
+            }
+            let (Some(board_id), Some(before)) = (item.board_id, item.work_class) else {
+                return Err(ApiError::internal("a task has a board and a lane"));
+            };
+            let updated = crate::api::tasks::change_task_lane(
+                conn, &slug, item.id, board_id, work_class, user,
+            )?;
+            Ok(if before == updated.work_class {
+                format!(
+                    "{} is already in the {} lane: nothing changed.",
+                    updated.short_code, updated.work_class
+                )
+            } else {
+                format!(
+                    "Moved {} to the {} lane (was {}).",
+                    updated.short_code, updated.work_class, before
+                )
             })
         })
         .await
