@@ -1,10 +1,11 @@
 /*
  * Kairos-only chrome (KAIROS-T-0039, COLLIERY-T-1836). Everything visual
  * comes from Aurora tokens (var(--…)): no raw colours here, per the
- * conventions grep in docs/gui-conventions.md. Each token has a light and
- * a dark value, so each rule here works in the two themes.
+ * conventions grep in docs/gui-conventions.md. Each token has a value in
+ * each theme (light, dark, and the opt-in hyper), so each rule here works
+ * in all of them.
  *
- * Aurora 0.4 draws the frame (AppShell, SideNav, Tabs), the dialogs
+ * Aurora draws the frame (AppShell, SideNav, Tabs), the dialogs
  * (Modal, ConfirmDialog), the toasts, the cards, the chips, the graph
  * (Dag) and the segmented bar. What stays here is the Kairos-only work:
  * the board bands, the kanban columns and drag and drop, the item cards,

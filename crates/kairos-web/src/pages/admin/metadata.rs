@@ -131,7 +131,7 @@ pub fn AdminMetadataPage() -> impl IntoView {
                         <TextInput label="Name" value=name placeholder="e.g. Priority"/>
                         <TextInput label="Slug" value=slug placeholder="e.g. priority"/>
                         <Select label="Type"
-                            options=FIELD_TYPES.iter().map(|t| t.to_string()).collect()
+                            options={FIELD_TYPES.iter().map(|t| t.to_string()).collect::<Vec<_>>()}
                             value=field_type/>
                     </Group>
                     <Show when=move || field_type.get() == "enum">

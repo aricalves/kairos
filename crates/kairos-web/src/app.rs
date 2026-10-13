@@ -54,8 +54,15 @@ use crate::pages;
 ///
 /// COLLIERY-T-1836: the page follows the theme of the operating system;
 /// the `ThemeToggle` in the top bar changes it, and `index.html` sets the
-/// stored choice before the first paint. The toasts are the short notices
-/// of a mutation (the board, the item page).
+/// stored choice before the first paint. KAIROS-T-0397: the toggle offers
+/// the hyper theme of Aurora too ([`OFFER_HYPER`]); the default stays
+/// System. The toasts are the short notices of a mutation (the board, the
+/// item page).
+/// KAIROS-T-0397: the theme toggle of the top bar offers Hyper (Light /
+/// Dark / Hyper / System). `index.html` links the hyper stylesheet that
+/// it needs (`style/hyper.css`, written by `kairos-web-css`).
+pub const OFFER_HYPER: bool = true;
+
 #[component]
 pub fn App() -> impl IntoView {
     auth::provide_auth();
@@ -129,7 +136,7 @@ fn Shell() -> impl IntoView {
                     <Group justify="end" gap="sm">
                         <pages::NotificationBell/>
                         <WhoamiBadge whoami/>
-                        <ThemeToggle/>
+                        <ThemeToggle hyper=OFFER_HYPER/>
                         <LogoutButton/>
                     </Group>
                 }.into_any())
@@ -356,5 +363,40 @@ mod tests {
         assert!(at < css, "the theme script comes before the stylesheet");
         assert!(at < head_end, "the theme script is in the head");
         assert!(html.contains(r#"<meta name="color-scheme" content="light dark" />"#));
+    }
+
+    /// KAIROS-T-0397: the toggle offers Hyper after Light and Dark, and
+    /// System stays (with no stored choice, the page follows the OS).
+    #[test]
+    fn the_theme_toggle_offers_hyper() {
+        use aurora_dark::theme::{Theme, toggle_choices};
+        assert_eq!(
+            toggle_choices(super::OFFER_HYPER),
+            vec![Theme::Light, Theme::Dark, Theme::Hyper, Theme::System]
+        );
+    }
+
+    /// KAIROS-T-0397: `index.html` links the hyper stylesheet after the
+    /// Aurora stylesheet (Aurora asks for this order) and before the
+    /// Kairos rules; the theme script comes before each of them.
+    #[test]
+    fn index_html_links_the_hyper_stylesheet_after_aurora() {
+        let html = include_str!("../index.html");
+        let link = |href: &str| {
+            html.find(&format!(r#"<link data-trunk rel="css" href="{href}" />"#))
+                .unwrap_or_else(|| panic!("index.html links {href}"))
+        };
+        let script = html
+            .find(&format!(
+                "<script>{}</script>",
+                aurora_dark::THEME_INIT_SCRIPT
+            ))
+            .expect("index.html has THEME_INIT_SCRIPT as it is");
+        let (aurora, hyper, app) = (
+            link("style/aurora.css"),
+            link("style/hyper.css"),
+            link("app.css"),
+        );
+        assert!(script < aurora && aurora < hyper && hyper < app);
     }
 }

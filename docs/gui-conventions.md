@@ -92,23 +92,26 @@ Two dev-stack facts worth knowing (both are deployment config, not code):
 
 ## 2. Design system: Aurora, tokens only
 
-Aurora (it was "Aurora Dark"; crates.io: `colliery-io-aurora` 0.4, the
+Aurora (it was "Aurora Dark"; crates.io: `colliery-io-aurora` 0.6, the
 workspace key is still `aurora-dark`, so the code imports `aurora_dark`)
 is the design system. The stylesheet is a linked file: the trunk
 `pre_build` hook (`Trunk.toml`) runs `crates/kairos-web-css`, which calls
-`aurora_dark::write_css` to write `crates/kairos-web/style/aurora.css`
-(git ignores it), and `index.html` links it before `app.css`. The page so
-has the styles at its first paint (KAIROS-T-0326, Aurora 0.4.1).
+`aurora_dark::write_css` and `aurora_dark::write_hyper_css` to write
+`crates/kairos-web/style/aurora.css` and `style/hyper.css` (git ignores
+them), and `index.html` links them in that order, before `app.css`. The
+page so has the styles at its first paint (KAIROS-T-0326, KAIROS-T-0397).
 
-**Light and dark (COLLIERY-T-1836).** Aurora has a light and a dark
-theme. With no choice, the page follows the operating system
-(`prefers-color-scheme`). The `ThemeToggle` in the top bar (`app.rs`)
-sets `data-theme="light"` or `"dark"` on `<html>` and stores the choice
-in the browser (`aurora-theme`); "System" removes it. `index.html` has
+**Light, dark and hyper (COLLIERY-T-1836, KAIROS-T-0397).** Aurora has a
+light and a dark theme, and the opt-in hyper theme (neon on a dark base,
+`style/hyper.css`). With no choice, the page follows the operating system
+(`prefers-color-scheme`). The `ThemeToggle` in the top bar (`app.rs`,
+`hyper=OFFER_HYPER`) offers Light, Dark, Hyper and System. It sets
+`data-theme="light"`, `"dark"` or `"hyper"` on `<html>` and stores the
+choice in the browser (`aurora-theme`); "System" removes it. `index.html` has
 Aurora's `THEME_INIT_SCRIPT` in the `<head>`, before the stylesheet, so
 the first paint has the stored theme (a unit test in `app.rs` compares it
 with the crate constant). `e2e/tests/theme.spec.ts` checks the toggle,
-the reload, and the main pages in the two themes.
+the reload (of dark and of hyper), and the main pages in light and dark.
 
 **The token rule.** No raw color literals anywhere in this crate — not
 in Rust, not in CSS, not in inline `style=`, not in SVG. Color arrives
@@ -122,8 +125,8 @@ two ways only:
   use `tint(token::ICE, 12)`, `fill_for` or `pill_bg`;
 - CSS (including inline styles and SVG): `var(--ice)`, `var(--panel)`,
   … For SVG, put the var in `style="stroke:var(--ice);"` — presentation
-  attributes don't resolve CSS variables. Each token has a light and a
-  dark value; for text on a status fill use `--x-fg` on `--x-bg`.
+  attributes don't resolve CSS variables. Each token has a value in
+  each theme; for text on a status fill use `--x-fg` on `--x-bg`.
 
 Mechanized as **`angreal web lint`** (a CI gate): greps
 `crates/kairos-web` (`src/**/*.rs`, `*.css`, `index.html`) for
@@ -142,9 +145,9 @@ after a mutation is a toast (`use_toaster()`); a list of pages uses
 and its drag and drop, the item cards, the markdown editor and preview,
 the history diff, the badges of Kairos states) lives in `app.css`, uses
 `.kairos-*` class names, and consumes tokens. `app.css` does not restyle
-`.cl-*` classes (two exceptions: the height of the card in a
-`.kairos-board-tile`, and the bottom alignment of a `Group` that holds a
-field and a button, which Aurora 0.4 does not offer).
+`.cl-*` classes (one exception: the height of the card in a
+`.kairos-board-tile`; a `Group` that holds a field and a button uses
+`align="end"`).
 
 ## 3. Module layout and routes
 

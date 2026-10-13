@@ -1310,9 +1310,9 @@ fn MoveBoardControl(
                 <Group align="end" gap="sm">
                     <Select
                         label="Board"
-                        option_pairs=std::iter::once((THIS_BOARD.to_string(), THIS_BOARD.to_string()))
+                        option_pairs={std::iter::once((THIS_BOARD.to_string(), THIS_BOARD.to_string()))
                             .chain(targets.get())
-                            .collect()
+                            .collect::<Vec<_>>()}
                         value=value
                     />
                     <Switch checked=rename label="Give it a code of the new board"/>

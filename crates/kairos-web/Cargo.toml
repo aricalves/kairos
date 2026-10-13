@@ -14,7 +14,7 @@ license.workspace = true
 # The binary selects the renderer (A-0015: CSR, no SSR).
 leptos = { workspace = true, features = ["csr"] }
 leptos_router = { workspace = true }
-# Aurora design system (A-0015; 0.4: light and dark theme, COLLIERY-T-1836):
+# Aurora design system (A-0015; light, dark (COLLIERY-T-1836) and hyper (KAIROS-T-0397) themes):
 # tokens + components only — see docs/gui-conventions.md for the "tokens
 # only, no hardcoded colors" rule.
 aurora-dark = { workspace = true, features = ["components"] }

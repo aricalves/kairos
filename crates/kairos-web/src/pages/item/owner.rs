@@ -214,12 +214,12 @@ pub fn OwnerBoardPanel(
                             {move || (!targets.with(Vec::is_empty)).then(|| view! {
                                 <Select
                                     label="New owner board"
-                                    option_pairs=std::iter::once((
+                                    option_pairs={std::iter::once((
                                         NO_CHOICE.to_string(),
                                         "(select a board)".to_string(),
                                     ))
                                     .chain(targets.get())
-                                    .collect()
+                                    .collect::<Vec<_>>()}
                                     value=value
                                 />
                                 <Switch checked=rename label="Give it a code of the new board"/>
@@ -374,12 +374,12 @@ pub fn ImpactsPanel(
                     <Group align="end" gap="sm" attr:data-testid="impacts-add">
                         <Select
                             label="Repository"
-                            option_pairs=std::iter::once((
+                            option_pairs={std::iter::once((
                                 NO_CHOICE.to_string(),
                                 "(select a repository)".to_string(),
                             ))
                             .chain(options.get())
-                            .collect()
+                            .collect::<Vec<_>>()}
                             value=value
                         />
                         <Button
