@@ -2659,6 +2659,7 @@ dependencies = [
  "kairos-db",
  "kairos-embed",
  "kairos-index",
+ "md-5 0.10.6",
  "mime_guess",
  "object_store",
  "opentelemetry",

@@ -43,12 +43,35 @@ pub const CLEANUP_PRIORITY: i32 = 5;
 /// in the middle of loading a page does not see holes.
 pub const REPLACED_GRACE: Duration = Duration::from_secs(5 * 60);
 
+/// The default limit of the files of one site: 1 GiB, as GitHub Pages
+/// ("a published site may be no larger than 1 GB").
+pub const DEFAULT_MAX_SIZE: u64 = 1 << 30;
+
+/// The default limit of the entries (files and folders) of one site, as
+/// GitLab Pages (200,000 file entries).
+pub const DEFAULT_MAX_FILES: u64 = 200_000;
+
 /// The settings of the docs sites (`KAIROS_PAGES_*`).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PagesSettings {
     /// Where the uploaded sites are kept; `None`: no store, and a publish is
     /// refused.
     pub store: Option<StoreConfig>,
+    /// `KAIROS_PAGES_MAX_SIZE`: the bytes of the files of one site, and of
+    /// its archive (KAIROS-T-0406).
+    pub max_size: u64,
+    /// `KAIROS_PAGES_MAX_FILES`: the entries of one archive.
+    pub max_files: u64,
+}
+
+impl Default for PagesSettings {
+    fn default() -> Self {
+        PagesSettings {
+            store: None,
+            max_size: DEFAULT_MAX_SIZE,
+            max_files: DEFAULT_MAX_FILES,
+        }
+    }
 }
 
 /// `KAIROS_PAGES_STORE` and the variables of its backend.
@@ -102,7 +125,23 @@ pub fn parse_settings(get: &impl Fn(&str) -> Option<String>) -> Result<PagesSett
             });
         }
     };
-    Ok(PagesSettings { store })
+    let limit = |var: &'static str, default: u64| -> Result<u64, ConfigError> {
+        match get(var) {
+            None => Ok(default),
+            Some(value) => match value.trim().parse::<u64>() {
+                Ok(n) if n > 0 => Ok(n),
+                _ => Err(ConfigError::Invalid {
+                    var,
+                    message: format!("{value:?} is not a number larger than 0"),
+                }),
+            },
+        }
+    };
+    Ok(PagesSettings {
+        store,
+        max_size: limit("KAIROS_PAGES_MAX_SIZE", DEFAULT_MAX_SIZE)?,
+        max_files: limit("KAIROS_PAGES_MAX_FILES", DEFAULT_MAX_FILES)?,
+    })
 }
 
 /// A failure of the store.
@@ -360,6 +399,20 @@ mod tests {
                 region: Some("us-east-1".into()),
             })
         );
+    }
+
+    #[test]
+    fn the_limits() {
+        let settings = parse_settings(&env(&[])).unwrap();
+        assert_eq!((settings.max_size, settings.max_files), (1 << 30, 200_000));
+        let settings = parse_settings(&env(&[
+            ("KAIROS_PAGES_MAX_SIZE", "1048576"),
+            ("KAIROS_PAGES_MAX_FILES", "10"),
+        ]))
+        .unwrap();
+        assert_eq!((settings.max_size, settings.max_files), (1 << 20, 10));
+        let err = parse_settings(&env(&[("KAIROS_PAGES_MAX_FILES", "0")])).unwrap_err();
+        assert!(err.to_string().contains("KAIROS_PAGES_MAX_FILES"), "{err}");
     }
 
     #[test]
