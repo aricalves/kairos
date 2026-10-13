@@ -306,7 +306,7 @@ pub fn AdminBoardsPage() -> impl IntoView {
                             <TextInput label="Prefix" value=code_prefix
                                     placeholder="e.g. PLAT"
                                     error=refusal_for(refused, "code_prefix")/>
-                            <Select label="Level" options=LEVELS.iter().map(|l| l.to_string()).collect() value=level/>
+                            <Select label="Level" options={LEVELS.iter().map(|l| l.to_string()).collect::<Vec<_>>()} value=level/>
                         </Group>
                         <Text dimmed=true size="xs" attr:data-testid="slug-rule">{SLUG_HINT}</Text>
                         <Text dimmed=true size="xs" attr:data-testid="prefix-rule">{PREFIX_HINT}</Text>

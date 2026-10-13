@@ -336,7 +336,7 @@ pub fn DispatchPanel(
                                 <Select label="Column" options=column_names.get_value() value=rule_column/>
                                 <Select label="Target" options=target_names value=rule_target/>
                                 <Select label="Task type"
-                                    options=TASK_TYPES.iter().map(|t| t.to_string()).collect()
+                                    options={TASK_TYPES.iter().map(|t| t.to_string()).collect::<Vec<_>>()}
                                     value=rule_type/>
                                 <TextInput label="Metadata (slug=value)" value=rule_metadata
                                     placeholder="priority=high"/>
