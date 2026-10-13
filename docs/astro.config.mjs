@@ -54,6 +54,7 @@ export default defineConfig({
 								page('how-to/provision-a-tenant', 'Provision a tenant'),
 								page('how-to/connect-a-git-forge', 'Connect a git forge'),
 								page('how-to/read-a-private-repository', 'Read a private repository'),
+								page('how-to/publish-a-docs-site', 'Publish the docs site of a repository'),
 								page('how-to/turn-on-github-write-back', 'Turn on GitHub write-back'),
 								page('how-to/build-the-code-index-again', 'Build the code index again'),
 								page(

@@ -467,6 +467,7 @@ fn TeamBody(view_model: TeamView, on_changed: Callback<()>) -> impl IntoView {
                                 let documents_slug = repo.slug.clone();
                                 let code_index_slug = repo.slug.clone();
                                 let owner_team_slug = repo.team.slug.clone();
+                                let site = repo.site.clone();
                                 // KAIROS-T-0124 #6a: the "how to work here"
                                 // blurb agents read over MCP is visible to the
                                 // humans on the team page too.
@@ -496,6 +497,7 @@ fn TeamBody(view_model: TeamView, on_changed: Callback<()>) -> impl IntoView {
                                         // about the repository.
                                         <crate::pages::repositories::documents::RepositoryDocuments
                                             slug=documents_slug/>
+                                        <crate::pages::repositories::site::RepositorySiteLine site/>
                                         <crate::pages::repositories::code_index::CodeIndexPanel
                                             slug=code_index_slug owner_team=owner_team_slug/>
                                     </Stack>

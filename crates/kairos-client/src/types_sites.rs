@@ -40,6 +40,9 @@ pub struct SitePublish {
     pub files: i32,
     /// The user or service account that sent it (UUID).
     pub principal_id: String,
+    /// Its display name (KAIROS-T-0408).
+    #[serde(default)]
+    pub principal_name: Option<String>,
     /// The agent key that sent it (UUID), if one did.
     #[serde(default)]
     pub agent_key_id: Option<String>,

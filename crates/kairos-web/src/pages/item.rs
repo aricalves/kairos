@@ -240,6 +240,19 @@ fn ItemLoaded(
     let copy_code = item.short_code.clone();
     let version_label = format!("v{}", item.version);
     let history_href = format!("/activity/history/{}", item.short_code);
+    // KAIROS-T-0408: the page of a document or an ADR in the docs sites. The
+    // org path is enough: the server sends a team's item on to its team site,
+    // and answers 404 when the item has no page.
+    let site_href = matches!(family, Family::Document | Family::Adr)
+        .then(|| {
+            let section = if family == Family::Adr {
+                "adrs"
+            } else {
+                "docs"
+            };
+            crate::app::docs_sites_path().map(|org| format!("{org}{section}/{}/", item.short_code))
+        })
+        .flatten();
     let code = item.short_code.clone();
     let delete_title = item.title.clone();
     let cancel_title = item.title.clone();
@@ -335,6 +348,11 @@ fn ItemLoaded(
                 <TypeFacts item=facts/>
             </Group>
             <Group gap="sm">
+                {site_href.filter(|_| !archived).map(|href| view! {
+                    <Anchor href=href attr:rel="external" attr:data-testid="open-in-site">
+                        "Open in site"
+                    </Anchor>
+                })}
                 <Anchor href=history_href>"History"</Anchor>
                 // Archived work is read-only server-side (every write path
                 // resolves live-only), so the write affordances are

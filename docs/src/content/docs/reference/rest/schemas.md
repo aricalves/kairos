@@ -2086,6 +2086,7 @@ One publish of a site.
 | `files` | `integer` | yes | Entries of the archive (files and folders). |
 | `md5` | `string` | yes | MD5 of the uploaded archive, lower-case hex. |
 | `principal_id` | `string` | yes | The user or service account that sent it (UUID). |
+| `principal_name` | `string`, nullable | no | Its display name (KAIROS-T-0408). |
 | `publish_id` | `string` | yes | Publish id (UUID). |
 | `published_at` | `string` | yes | RFC 3339. |
 | `repository_slug` | `string` | yes | The slug of the repository at the time of the publish. |

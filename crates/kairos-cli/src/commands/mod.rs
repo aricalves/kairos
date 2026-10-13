@@ -10,6 +10,7 @@ pub mod grants;
 pub mod keys;
 pub mod members;
 pub mod orgs;
+pub mod pages;
 pub mod repos;
 pub mod search;
 pub mod service_accounts;

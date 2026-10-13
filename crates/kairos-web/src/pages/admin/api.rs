@@ -295,11 +295,17 @@ pub async fn update_team(
     name: &str,
     slug: &str,
     team_type: &str,
+    site_enabled: bool,
 ) -> Result<Value, Refusal> {
     patch_json_refusal(
         auth,
         &format!("/api/teams/{team_id}"),
-        &json!({ "name": name, "slug": slug, "team_type": team_type }),
+        &json!({
+            "name": name,
+            "slug": slug,
+            "team_type": team_type,
+            "site_enabled": site_enabled,
+        }),
     )
     .await
 }
@@ -763,6 +769,8 @@ pub struct RepositoryEdit<'a> {
     pub code_index_build: Option<&'a str>,
     /// `embedded` or `hosted` (KAIROS-T-0340).
     pub code_index_summaries: Option<&'a str>,
+    /// The site switch (KAIROS-T-0408).
+    pub site_enabled: Option<bool>,
 }
 
 /// `PATCH /api/repositories/{slug}` — every field optional; `team` re-homes.
@@ -786,6 +794,9 @@ pub async fn update_repository(
         if let Some(value) = value {
             body.insert(key.to_string(), Value::String(value.to_string()));
         }
+    }
+    if let Some(on) = edit.site_enabled {
+        body.insert("site_enabled".to_string(), Value::Bool(on));
     }
     patch_json_refusal(
         auth,

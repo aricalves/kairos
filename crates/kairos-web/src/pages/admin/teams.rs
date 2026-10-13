@@ -174,6 +174,9 @@ fn TeamRow(
     let edit_name = RwSignal::new(team.name.clone());
     let edit_slug = RwSignal::new(team.slug.clone());
     let edit_type = RwSignal::new(team.team_type.clone());
+    let edit_site = RwSignal::new(if team.site_enabled { "on" } else { "off" }.to_string());
+    let site_path = crate::app::docs_sites_path().map(|org| format!("{org}{}/", team.slug));
+    let site_on = team.site_enabled;
     let team_name = team.name.clone();
     let deleted_name = team.name.clone();
     let refused: RwSignal<Option<api::Refusal>> = RwSignal::new(None);
@@ -185,6 +188,7 @@ fn TeamRow(
             edit_slug.get_untracked(),
             edit_type.get_untracked(),
         );
+        let site = edit_site.get_untracked() == "on";
         // The editor stays open: a refusal about the slug shows below the
         // field (COLLIERY-T-0265). A success reads the list again, and the
         // new row has a closed editor.
@@ -195,7 +199,11 @@ fn TeamRow(
             refused,
             &SLUG_FIELD,
             format!("Kairos changed the team \"{n}\"."),
-            async move { api::update_team(auth, &id, &n, &s, &t).await.map(|_| ()) },
+            async move {
+                api::update_team(auth, &id, &n, &s, &t, site)
+                    .await
+                    .map(|_| ())
+            },
         );
     };
     let on_delete = move |_| {
@@ -231,6 +239,13 @@ fn TeamRow(
                     {team.delivery_board_id.clone().map(|board_id| view! {
                         <Anchor href=format!("/admin/boards/{board_id}")>"delivery board"</Anchor>
                     })}
+                    // KAIROS-T-0408: the docs site of the team, rendered by
+                    // the server (a full page load).
+                    {site_path.filter(|_| site_on).map(|href| view! {
+                        <Anchor href=href attr:rel="external" attr:data-testid="team-site">
+                            "team site"
+                        </Anchor>
+                    })}
                 </Group>
                 <Group gap="xs">
                     <Button variant="default" size="xs" on_click=Callback::new(toggle_members)>
@@ -254,6 +269,9 @@ fn TeamRow(
                         <Select label="Type"
                             options=TEAM_TYPES.iter().map(|t| t.to_string()).collect()
                             value=edit_type/>
+                        <Select label="Team site"
+                            options=vec!["on".to_string(), "off".to_string()]
+                            value=edit_site/>
                         <Button size="xs" on_click=Callback::new(on_save)>"Save"</Button>
                     </Group>
                     <Text dimmed=true size="xs" attr:data-testid="slug-rule">{SLUG_HINT}</Text>
