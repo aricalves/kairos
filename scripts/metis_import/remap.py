@@ -17,6 +17,7 @@ item keeps its Metis number when the board that gives its code has the
 prefix `--prefix` (see keep_codes). The other items get a new code.
 """
 
+import collections
 import re
 
 from .metis import letter, number
@@ -39,8 +40,6 @@ ROUTE = {
 }
 # Creation order of the types: the ORDER of the keep mode without strategy.
 ORDER = ["initiative", "adr", "document", "task"]
-# Within the documents, the vision comes before the specifications.
-LEVEL_RANK = {"vision": 0, "specification": 1}
 
 # Metis phase -> Kairos column name, per type that has a column.
 COLUMN = {
@@ -92,14 +91,63 @@ def kind_of(doc):
     return KIND[doc["level"]]
 
 
+def prefix_of(code):
+    return code.split("-", 1)[0]
+
+
+def major_prefix(docs):
+    """The Metis prefix of the most documents. A tie goes to the prefix
+    that sorts first."""
+    counts = collections.Counter(prefix_of(c) for c in docs)
+    return min(counts, key=lambda p: (-counts[p], p)) if counts else None
+
+
+def order_key(doc, major):
+    """The order of the documents of one type (KAIROS-T-0395): the number,
+    then the majority prefix, then a specification before the vision, then
+    the older `created_at` (no date comes last), then the code. When 2
+    documents want one code in keep mode, the first in this order keeps it.
+    The file order decides nothing."""
+    code = doc["short_code"]
+    created = doc.get("created_at") or ""
+    return (number(code), prefix_of(code) != major, doc["level"] == "vision",
+            not created, created, code)
+
+
+# The parts of order_key that can decide a contest, and the words of plan.
+WHY = ("it has the majority prefix %(major)s", "a specification comes before the vision",
+       "it has a date of creation", "it is older", "its code sorts first")
+
+
 def creation_order(docs):
     """The documents in creation order: the types in ORDER, and within a type
-    ascending old number (the vision before the specifications)."""
+    order_key."""
+    major = major_prefix(docs)
     out = []
     for kind in ORDER:
         group = [d for d in docs.values() if KIND[d["level"]] == kind]
-        group.sort(key=lambda d: (LEVEL_RANK.get(d["level"], 0), number(d["short_code"])))
+        group.sort(key=lambda d: order_key(d, major))
         out.extend(group)
+    return out
+
+
+def contests(docs, displaced):
+    """The codes that 2 or more documents want in keep mode, for plan.
+
+    Returns a list of (code, winner, losers, why), by code. winner is the
+    old code that keeps the code, losers the old codes that get the next
+    free number, why the reason of order_key that put the winner first."""
+    major = major_prefix(docs)
+    by_code = {}
+    for old, (code, holder) in displaced.items():
+        by_code.setdefault((code, holder), []).append(old)
+    out = []
+    for (code, holder), losers in sorted(by_code.items()):
+        losers.sort(key=lambda c: order_key(docs[c], major))
+        a = order_key(docs[holder], major)[1:]
+        b = order_key(docs[losers[0]], major)[1:]
+        at = next((i for i in range(len(a)) if a[i] != b[i]), len(WHY) - 1)
+        out.append((code, holder, losers, WHY[at] % {"major": major}))
     return out
 
 
@@ -225,9 +273,10 @@ def keep_codes(docs, order, prefix, prefixes):
     code is `<prefix>-<Kairos letter>-<Metis number>`. Each other item gets
     the next code of its board.
 
-    When 2 documents want one code (a duplicated Metis code, or the vision
-    X-V-0001 and the specification X-S-0001, which both become D-0001), the
-    first in `order` keeps it. The other gets the next free number.
+    When 2 documents want one code (a duplicated Metis code, the vision
+    X-V-0001 and the specification X-S-0001, which both become D-0001, or 2
+    Metis prefixes with one number), the first in `order` keeps it
+    (creation_order: see order_key). The other gets the next free number.
 
     Returns (wanted, displaced, order):
     - wanted: old code -> the code that the item must get;

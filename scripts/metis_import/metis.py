@@ -74,12 +74,15 @@ def inventory(metis_dir, strict=True):
     short code, unknown levels, and duplicate short codes. With strict=True a
     duplicate is an error (the keep-the-numbers mode needs that).
 
-    With strict=False each document of a duplicated code is kept: the first
-    under the code, each later one under `<code>~<n>`. Each of them gets
+    With strict=False each document of a duplicated code is kept: the oldest
+    (`created_at`) under the code, each other one under `<code>~<n>`, from
+    old to new (KAIROS-T-0395). A document with no `created_at` comes after
+    the documents that have one; equal dates follow the path. So the file
+    order does not decide which document keeps the code. Each of them gets
     `metis_code` (the code in the file) and `metis_path` (its path in the
     archive), and the code is listed in issues["ambiguous"]: a reference to it
     cannot say which document it means, so the import leaves it as written."""
-    docs = {}
+    groups = {}
     issues = {"duplicates": [], "unreadable": [], "unknown_level": [], "ambiguous": []}
     for path, doc in walk(metis_dir):
         if doc is None:
@@ -91,21 +94,24 @@ def inventory(metis_dir, strict=True):
             issues["unknown_level"].append("%s (%s)" % (doc["short_code"], doc["level"]))
             continue
         code = doc["short_code"]
-        if code in docs:
+        if code in groups:
             if strict:
                 raise ValueError("duplicate Metis short code %s" % code)
             if code not in issues["ambiguous"]:
                 issues["ambiguous"].append(code)
-                first = docs[code]
-                first["metis_code"] = code
-                first["metis_path"] = os.path.relpath(first["path"], metis_dir)
-            n = 2
-            while "%s~%d" % (code, n) in docs:
-                n += 1
+        groups.setdefault(code, []).append(doc)
+    docs = {}
+    for code, group in groups.items():
+        if len(group) == 1:
+            docs[code] = group[0]
+            continue
+        group.sort(key=lambda d: (not d.get("created_at"), d.get("created_at") or "", d["path"]))
+        for n, doc in enumerate(group, 1):
             doc["metis_code"] = code
-            doc["metis_path"] = os.path.relpath(path, metis_dir)
-            doc["short_code"] = "%s~%d" % (code, n)
-        docs[doc["short_code"]] = doc
+            doc["metis_path"] = os.path.relpath(doc["path"], metis_dir)
+            if n > 1:
+                doc["short_code"] = "%s~%d" % (code, n)
+            docs[doc["short_code"]] = doc
     return docs, issues
 
 

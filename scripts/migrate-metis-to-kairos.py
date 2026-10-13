@@ -12,8 +12,11 @@ default, so a run always names its mode.
   prefix. `SKADI-T-0577` stays `SKADI-T-0577`; a specification
   `SKADI-S-0003` becomes the document `SKADI-D-0003`. Each other item (an
   initiative on the shared board `initiatives`) gets the next code of its
-  board. When 2 documents want one code, the first keeps it and the
-  other gets the next free number; its footer says why. Keep mode needs an
+  board. When 2 documents want one code, one keeps it and the other gets
+  the next free number; its footer says why. The file order does not decide
+  (KAIROS-T-0395): the majority Metis prefix wins, then a specification
+  before the vision, then the older `created_at`. plan lists each contested
+  code and its winner. Keep mode needs an
   organization admin (KAIROS_KEY or KAIROS_ADMIN_TOKEN), because it sets the
   code sequence of the board before each create.
 - `--codes remap` gives each item the next code of its board.
