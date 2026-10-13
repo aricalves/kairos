@@ -287,6 +287,9 @@ pub struct AppConfig {
     /// `KAIROS_GITHUB_API_URL` (KAIROS-T-0386): the REST API of GitHub for
     /// the write-back ([`crate::forge::writeback`]).
     pub writeback: crate::forge::writeback::WriteBackSettings,
+    /// `KAIROS_PAGES_*` (KAIROS-T-0405): the store of the uploaded
+    /// repository sites ([`crate::site_store`]).
+    pub pages: crate::site_store::PagesSettings,
     /// `KAIROS_BOOTSTRAP_ADMIN` (KAIROS-T-0204): the email of a first-boot admin,
     /// created **only when the deployment has no users at all**.
     ///
@@ -642,6 +645,7 @@ impl AppConfig {
                     }),
                 ..Default::default()
             },
+            pages: crate::site_store::parse_settings(&get)?,
             bootstrap_admin,
             bootstrap_password,
             bootstrap_password_hash,
