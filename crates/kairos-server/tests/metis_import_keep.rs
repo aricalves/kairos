@@ -211,7 +211,7 @@ fn tags(level: &str, phase: &str) -> String {
 /// A small Metis record of the repository skadi:
 ///
 /// - the vision SKADI-V-0001 and the specification SKADI-S-0001, which both
-///   want SKADI-D-0001 (the vision comes first);
+///   want SKADI-D-0001 (the specification keeps it, KAIROS-T-0395);
 /// - the specification SKADI-S-0003;
 /// - the initiative SKADI-I-0002 (it goes on the shared board, ACME);
 /// - the tasks SKADI-T-0002 and SKADI-T-0005 (numbers with gaps), and a
@@ -501,11 +501,11 @@ async fn the_import_keeps_the_metis_numbers_with_the_board_prefix_against_live_s
     assert_eq!(codes["SKADI-T-0002"], "SKADI-T-0002", "{ledger}");
     assert_eq!(codes["SKADI-T-0005"], "SKADI-T-0005", "{ledger}");
     assert_eq!(codes["SKADI-A-0001"], "SKADI-A-0001", "{ledger}");
-    assert_eq!(codes["SKADI-V-0001"], "SKADI-D-0001", "{ledger}");
+    assert_eq!(codes["SKADI-S-0001"], "SKADI-D-0001", "{ledger}");
     assert_eq!(codes["SKADI-S-0003"], "SKADI-D-0003", "{ledger}");
     // The second document that wants a code gets the next free number.
     assert_eq!(codes["SKADI-T-0005~2"], "SKADI-T-0006", "{ledger}");
-    assert_eq!(codes["SKADI-S-0001"], "SKADI-D-0004", "{ledger}");
+    assert_eq!(codes["SKADI-V-0001"], "SKADI-D-0004", "{ledger}");
     // The initiative goes on the shared board, with its prefix.
     assert_eq!(codes["SKADI-I-0002"], "ACME-I-0001", "{ledger}");
     assert_eq!(ledger["mode"], "keep", "{ledger}");
@@ -516,7 +516,7 @@ async fn the_import_keeps_the_metis_numbers_with_the_board_prefix_against_live_s
         task["content"]
             .as_str()
             .unwrap_or_default()
-            .contains("After SKADI-T-0005. Read SKADI-D-0004 and SKADI-D-0003."),
+            .contains("After SKADI-T-0005. Read SKADI-D-0001 and SKADI-D-0003."),
         "the references change to the new codes: {task}"
     );
     let second = stack.get("/api/tasks/SKADI-T-0006").await;
@@ -530,7 +530,7 @@ async fn the_import_keeps_the_metis_numbers_with_the_board_prefix_against_live_s
     );
     let adr = stack.get("/api/adrs/SKADI-A-0001").await;
     assert_eq!(adr["title"], "Use SQLite");
-    let spec = stack.get("/api/documents/SKADI-D-0004").await;
+    let spec = stack.get("/api/documents/SKADI-D-0001").await;
     assert_eq!(spec["title"], "Index format");
 
     let (code, out, err) = run_importer(
