@@ -16,12 +16,18 @@
 //! ([`enqueue_updates`]) and the first-build jobs ([`enqueue_first_builds`]).
 //! The API adds a requested build
 //! ([`crate::api::org::code_indexes::request_rebuild`]).
+//!
+//! A build job is not run again when its lease ran out or the watchdog
+//! killed it ([`JobHandler::retry_stopped`]): the breaker of its repository
+//! trips (KAIROS-T-0399), and the sweep skips the repository until a person
+//! asks for a build.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use diesel::pg::PgConnection;
+use kairos_db::code_index_breakers as breakers;
 use kairos_db::code_index_builds as runs;
 use kairos_db::jobs::{self as queue, Job, NewJob};
 use kairos_db::models::repositories::Repository;
@@ -29,9 +35,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{
-    ACTIVE_RUN, BuildCtx, BuildOutcome, CodeIndexService, Fetched, MIN_REBUILD, OPTED_OUT, Pass,
-    STOPPED, SummarizerSource, YIELDED, build_repository, fetch_head, full_build_repository,
-    notify_run, repositories_of, update_order,
+    ACTIVE_RUN, BREAKER_TRIPPED, BuildCtx, BuildOutcome, CodeIndexService, Fetched, MIN_REBUILD,
+    OPTED_OUT, Pass, STOPPED, SummarizerSource, YIELDED, build_repository, fetch_head,
+    full_build_repository, notify_run, repositories_of, update_order,
 };
 use crate::blocking::BlockingTenantPool;
 use crate::error::ApiError;
@@ -159,6 +165,36 @@ pub(crate) fn cancel_builds(
     Ok(cancelled.len())
 }
 
+/// The note of a repository whose breaker is tripped (KAIROS-T-0399).
+fn breaker_note(breaker: &breakers::Breaker) -> String {
+    format!(
+        "{BREAKER_TRIPPED} since {}: {}",
+        breaker.tripped_at.to_rfc3339(),
+        breaker.reason
+    )
+}
+
+/// The tripped breaker of the repository `repo` of `tenant`. An error is
+/// logged, and reads as not tripped: the build job checks again.
+async fn tripped(
+    blocking: &BlockingTenantPool,
+    tenant: &str,
+    repo: Uuid,
+) -> Option<breakers::Breaker> {
+    match blocking
+        .run(tenant, move |conn| {
+            breakers::get(conn, repo).map_err(ApiError::internal)
+        })
+        .await
+    {
+        Ok(found) => found,
+        Err(e) => {
+            tracing::warn!(tenant, repository = %repo, error = ?e, "code index breaker not read");
+            None
+        }
+    }
+}
+
 /// The note of a repository whose build job `job` is open.
 fn open_note(job: &Job) -> String {
     let payload: Option<BuildPayload> = serde_json::from_str(&job.payload).ok();
@@ -243,6 +279,14 @@ async fn enqueue_updates_with(
         }
         if !repo.code_index_build_on() {
             notes.push(note_of(&tenant, &repo, "", OPTED_OUT.into()));
+            continue;
+        }
+        if let Some(breaker) = tripped(blocking, &tenant, repo.id).await {
+            let note = breaker_note(&breaker);
+            if service.note_changed(repo.id, &note) {
+                tracing::info!(tenant = %tenant, repository = %repo.slug, %note, "code index update not added");
+            }
+            notes.push(note_of(&tenant, &repo, "", note));
             continue;
         }
         let mut commit = String::new();
@@ -331,6 +375,14 @@ pub async fn enqueue_first_builds(
                     tracing::info!(tenant = %tenant, repository = %repo.slug, note = OPTED_OUT, "code index first build not started");
                 }
                 notes.push(note_of(&tenant, &repo, "", OPTED_OUT.into()));
+                continue;
+            }
+            if let Some(breaker) = tripped(blocking, &tenant, repo.id).await {
+                let note = breaker_note(&breaker);
+                if service.note_changed(repo.id, &note) {
+                    tracing::info!(tenant = %tenant, repository = %repo.slug, %note, "code index first build not started");
+                }
+                notes.push(note_of(&tenant, &repo, "", note));
                 continue;
             }
             let added = {
@@ -463,6 +515,28 @@ impl BuildHandler {
                 return Err(JobError::fail(note));
             }
         };
+        // KAIROS-T-0399: a job that waited while the breaker of its
+        // repository tripped does not build. A request resets the breaker
+        // before its job is added.
+        if payload.trigger != REQUEST
+            && let Some(breaker) = tripped(&self.blocking, &tenant, repo_id).await
+        {
+            let note = breaker_note(&breaker);
+            super::record_end(&self.blocking, &tenant, payload.run, Err(&note)).await;
+            log_outcome(
+                &self.service,
+                &payload.trigger,
+                repo_id,
+                &note_of(&tenant, &repo, "", note.clone()),
+            );
+            if let Some(outcomes) = &self.outcomes {
+                outcomes
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(note_of(&tenant, &repo, "", note));
+            }
+            return Ok(());
+        }
         let ctx = BuildCtx {
             handle: handle.clone(),
             instance,
@@ -524,6 +598,50 @@ impl BuildHandler {
         result
     }
 
+    /// The lease of the job ran out, or the watchdog killed it
+    /// (KAIROS-T-0399): trip the breaker of its repository, with the reason.
+    async fn trip(self, job: Job) {
+        let (Some(tenant), Ok(payload)) = (
+            job.tenant.clone(),
+            serde_json::from_str::<BuildPayload>(&job.payload),
+        ) else {
+            return;
+        };
+        let repo = payload.repository_id;
+        let reason = job
+            .last_error
+            .clone()
+            .unwrap_or_else(|| "the build job stopped".to_string());
+        let job_id = job.id;
+        let tripped = {
+            let reason = reason.clone();
+            self.blocking
+                .run(&tenant, move |conn| {
+                    crate::api::org::run_in_transaction(conn, |conn| {
+                        breakers::trip(conn, repo, &reason, Some(job_id))
+                            .map_err(ApiError::internal)?;
+                        if let Ok(found) = kairos_db::repositories::load(conn, repo) {
+                            notify_run(conn, &found.slug, None)?;
+                        }
+                        Ok(())
+                    })
+                })
+                .await
+        };
+        match tripped {
+            Ok(()) => tracing::warn!(
+                tenant = %tenant,
+                repository = %repo,
+                job = %job_id,
+                %reason,
+                "code index breaker tripped: the build is not run again until a person asks for a build"
+            ),
+            Err(e) => {
+                tracing::warn!(tenant = %tenant, repository = %repo, error = ?e, "code index breaker not tripped")
+            }
+        }
+    }
+
     /// The job failed after its last try: end its run as failed, with the
     /// reason.
     async fn end_run(self, job: Job) {
@@ -570,6 +688,16 @@ impl JobHandler for BuildHandler {
 
     fn failed(&self, job: Job) -> UnitFuture {
         Box::pin(self.clone().end_run(job))
+    }
+
+    /// A build that took its server down would take it down again (GitHub
+    /// #34): it is not run again (KAIROS-T-0399).
+    fn retry_stopped(&self) -> bool {
+        false
+    }
+
+    fn stopped(&self, job: Job) -> UnitFuture {
+        Box::pin(self.clone().trip(job))
     }
 }
 

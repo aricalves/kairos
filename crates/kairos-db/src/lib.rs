@@ -12,6 +12,7 @@ pub mod api_keys;
 pub mod auth_failures;
 pub mod board_items;
 pub mod boards;
+pub mod code_index_breakers;
 pub mod code_index_builds;
 pub mod code_index_settings;
 pub mod code_indexes;

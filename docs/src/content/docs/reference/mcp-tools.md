@@ -162,6 +162,11 @@ One repository in full. The output has these parts:
 - `code index build`: `on` or `off`. When it is `off`, the builder of the
   server does not build the code index of the repository.
   `update_repository` sets it.
+- `code index breaker`: `not tripped`, or when the breaker tripped and why.
+  A build job that stops its server (for example, it runs out of memory) or
+  stalls trips the breaker. Then the builder starts no build of the
+  repository. `rebuild_code_index` resets it. See
+  [Build the code index again](../../how-to/build-the-code-index-again/#the-breaker-of-a-repository).
 - the team's description of how to work in the repository
 - the documents and the ADRs that impact the repository
 - the in-flight branches and pull requests, each with its work item
@@ -320,6 +325,9 @@ index replaces the index of that commit.
 The answer names the run. Read the runs of the repository on its page in
 the GUI, with `kairos repos builds <slug>`, or with
 `GET /api/repositories/{slug}/code-indexes/builds`.
+
+The request resets the breaker of the builder for the repository (the line
+`code index breaker` of `get_repository`).
 
 Refusals:
 

@@ -104,6 +104,16 @@
 //! ([`jobs::end_stale_runs`]). A job that fails after its last try ends its
 //! run as failed, with the reason.
 //!
+//! # The breaker
+//!
+//! A build job whose lease ran out (its server stopped, ran out of memory,
+//! or stalled), or that the watchdog killed, is not run again: the breaker
+//! of its repository trips (KAIROS-T-0399, GitHub #34,
+//! [`kairos_db::code_index_breakers`]). While it is tripped, the sweep adds
+//! no update and no first build for the repository, and a build job of the
+//! repository that waits ends with [`BREAKER_TRIPPED`]. A build that a
+//! person asks for resets it.
+//!
 //! # The tools
 //!
 //! The image does not hold the tools of the builder (COLLIERY-T-2525). At
@@ -769,6 +779,11 @@ pub const OPTED_OUT: &str = "the repository has code_index_build off";
 /// The error of a build job, and of its run, that waited for a server when
 /// `code_index_build` was set to off (KAIROS-T-0398).
 pub const TURNED_OFF: &str = "cancelled: code_index_build was set to off";
+
+/// The note of a repository whose breaker is tripped (KAIROS-T-0399): a
+/// build job of the repository stopped its server or stalled. A build that a
+/// person asks for resets it.
+pub const BREAKER_TRIPPED: &str = "the code index breaker of the repository tripped";
 
 /// The note of an `embedded` repository on a server with no embedded model
 /// (KAIROS-T-0341, KAIROS-T-0344).

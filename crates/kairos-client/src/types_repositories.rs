@@ -180,6 +180,12 @@ pub struct Repository {
     /// `organization`, the default of the organization (KAIROS-T-0358).
     #[serde(default)]
     pub code_index_summaries_resolved: CodeIndexSummaries,
+    /// The breaker of the code index builder of the repository
+    /// (KAIROS-T-0399): tripped when a build job stopped its server or
+    /// stalled. While it is tripped, the builder starts no build of the
+    /// repository. A requested build resets it.
+    #[serde(default)]
+    pub code_index_breaker: CodeIndexBreaker,
     /// RFC 3339.
     pub created_at: String,
     /// RFC 3339.
@@ -474,6 +480,40 @@ impl RepositoryWriteBack {
     }
 }
 
+/// The breaker of the code index builder of a repository (KAIROS-T-0399),
+/// as [`Repository`] carries it. A build job whose lease ran out (its
+/// server stopped, ran out of memory, or stalled) trips it, and the build is
+/// not run again. While it is tripped, the builder starts no build of the
+/// repository: no update, no first build. A build that a person asks for
+/// (`POST /api/repositories/{slug}/code-indexes/rebuild`) resets it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CodeIndexBreaker {
+    /// True: the breaker is tripped.
+    pub tripped: bool,
+    /// When the breaker tripped, RFC 3339.
+    #[serde(default)]
+    pub tripped_at: Option<String>,
+    /// Why: the error of the build job that tripped it.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+impl CodeIndexBreaker {
+    /// One line about the breaker, for the CLI and the MCP tools.
+    pub fn summary(&self) -> String {
+        if !self.tripped {
+            return "not tripped".to_string();
+        }
+        format!(
+            "tripped at {}: {}. The builder starts no build of the repository until a person \
+             asks for a build (the MCP tool rebuild_code_index, `kairos repos reindex`, or POST \
+             /api/repositories/{{slug}}/code-indexes/rebuild).",
+            self.tripped_at.as_deref().unwrap_or("-"),
+            self.reason.as_deref().unwrap_or("-").trim_end_matches('.')
+        )
+    }
+}
+
 /// Body of `PUT /api/repositories/{slug}/credential` (COLLIERY-T-3105):
 /// the read token of the repository. Use a GitHub fine-grained personal
 /// access token with only "Contents: read" on the one repository.
@@ -527,5 +567,32 @@ mod credential_tests {
         let ok: SetRepositoryCredentialRequest =
             serde_json::from_str(r#"{"token":"ghp_x"}"#).unwrap();
         assert!(!format!("{ok:?}").contains("ghp_x"));
+    }
+}
+
+#[cfg(test)]
+mod breaker_tests {
+    use super::*;
+
+    #[test]
+    fn the_breaker_summary_says_when_and_why() {
+        assert_eq!(CodeIndexBreaker::default().summary(), "not tripped");
+        let tripped = CodeIndexBreaker {
+            tripped: true,
+            tripped_at: Some("2026-10-12T00:00:00+00:00".into()),
+            reason: Some("The lease ran out".into()),
+        };
+        let line = tripped.summary();
+        assert!(line.starts_with("tripped at 2026-10-12T00:00:00+00:00: The lease ran out."));
+        assert!(
+            line.contains("/api/repositories/{slug}/code-indexes/rebuild"),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn an_older_server_sends_no_breaker() {
+        let breaker: CodeIndexBreaker = serde_json::from_str("{\"tripped\":false}").unwrap();
+        assert_eq!(breaker, CodeIndexBreaker::default());
     }
 }

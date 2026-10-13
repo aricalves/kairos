@@ -337,6 +337,7 @@ fn RepositoryRow(
     let edit_description = RwSignal::new(repo.description.clone());
     let edit_code_index_build = RwSignal::new(repo.code_index_build.clone());
     let code_index_build_summary = repo.code_index_build_summary();
+    let code_index_breaker_summary = repo.code_index_breaker.summary();
     let edit_code_index_summaries = RwSignal::new(repo.code_index_summaries.clone());
     let code_index_summaries_summary = repo.code_index_summaries_summary();
     let team_slugs = StoredValue::new(
@@ -593,6 +594,9 @@ fn RepositoryRow(
             })}
             <Text dimmed=true size="xs" attr:data-testid="code-index-build-status">
                 {code_index_build_summary}
+            </Text>
+            <Text dimmed=true size="xs" attr:data-testid="code-index-breaker-status">
+                {code_index_breaker_summary}
             </Text>
             <Text dimmed=true size="xs" attr:data-testid="code-index-summaries-status">
                 {code_index_summaries_summary}

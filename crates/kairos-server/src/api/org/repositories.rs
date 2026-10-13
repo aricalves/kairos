@@ -442,6 +442,13 @@ pub(crate) fn render(
     // KAIROS-T-0358: where the summaries of each repository are made now.
     let code_index_settings =
         kairos_db::code_index_settings::load_or_default(conn).map_err(ApiError::internal)?;
+    // KAIROS-T-0399: the tripped breakers of the code index builder.
+    let breakers: HashMap<Uuid, kairos_db::code_index_breakers::Breaker> =
+        kairos_db::code_index_breakers::of(conn, &ids)
+            .map_err(ApiError::internal)?
+            .into_iter()
+            .map(|b| (b.repository_id, b))
+            .collect();
 
     rows.into_iter()
         .map(|repo| {
@@ -476,6 +483,14 @@ pub(crate) fn render(
                     dto::CodeIndexSummaries::Hosted
                 } else {
                     dto::CodeIndexSummaries::Embedded
+                },
+                code_index_breaker: match breakers.get(&repo.id) {
+                    Some(breaker) => dto::CodeIndexBreaker {
+                        tripped: true,
+                        tripped_at: Some(breaker.tripped_at.to_rfc3339()),
+                        reason: Some(breaker.reason.clone()),
+                    },
+                    None => dto::CodeIndexBreaker::default(),
                 },
                 created_at: repo.created_at.to_rfc3339(),
                 updated_at: repo.updated_at.to_rfc3339(),

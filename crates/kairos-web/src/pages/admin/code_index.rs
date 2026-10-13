@@ -7,9 +7,15 @@
 //! form does; the button "Remove" sends an empty secret, which removes it.
 //! The page never shows a secret: the server gives a status (set by whom,
 //! when).
+//!
+//! The panel "Breakers" lists the repositories whose code index breaker is
+//! tripped (KAIROS-T-0399): a build job stopped its server or stalled, and
+//! the builder starts no build of the repository until a person pushes
+//! "Build again" in the panel Code index of the repository (on the page
+//! Repositories, or on the team page).
 
 use aurora_dark::components::{
-    Button, ErrorState, Group, Loading, PageHeader, Panel, Select, Stack, Text, TextInput,
+    Anchor, Button, ErrorState, Group, Loading, PageHeader, Panel, Select, Stack, Text, TextInput,
 };
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -17,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use super::{MutationNotice, MutationOutcome, run_mutation};
 use crate::api::{get_json, put_json};
 use crate::auth::{Auth, use_auth};
+use crate::pages::repositories::api::{Repository, list_repositories};
 
 /// mirror of: `kairos_client::types_code_index::SecretStatus`.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
@@ -172,6 +179,7 @@ pub fn AdminCodeIndexPage() -> impl IntoView {
                     <SettingsForm current busy outcome reload/>
                 }.into_any(),
             }}
+            <Breakers/>
         </Stack>
     }
 }
@@ -316,6 +324,69 @@ fn SettingsForm(
     }
 }
 
+/// The repositories whose code index breaker is tripped (KAIROS-T-0399),
+/// by slug. Pure, host-tested.
+pub(crate) fn tripped(repos: &[Repository]) -> Vec<&Repository> {
+    let mut out: Vec<&Repository> = repos
+        .iter()
+        .filter(|repo| repo.code_index_breaker.tripped)
+        .collect();
+    out.sort_by(|a, b| a.slug.cmp(&b.slug));
+    out
+}
+
+const BREAKERS_HINT: &str = "A build job that stops its server (for example, it runs out of \
+                             memory) or stalls trips the breaker of its repository. Kairos then \
+                             starts no build of the repository: no update, no first build. To \
+                             reset the breaker, push \"Build again\" in the panel Code index of \
+                             the repository on the page Repositories.";
+
+/// The panel of the tripped breakers (KAIROS-T-0399).
+#[component]
+fn Breakers() -> impl IntoView {
+    let auth = use_auth();
+    let reload = RwSignal::new(0u32);
+    let repos = LocalResource::new(move || {
+        let _ = auth.token();
+        reload.get();
+        list_repositories(auth, None)
+    });
+    view! {
+        <Panel title="Breakers" caption="the repositories that the builder does not build now">
+            <Stack gap="sm" attr:data-testid="code-index-breakers">
+                {move || match repos.get() {
+                    None => view! { <Loading/> }.into_any(),
+                    Some(Err(error)) => view! {
+                        <ErrorState error on_retry=Callback::new(move |_| reload.update(|n| *n += 1))/>
+                    }.into_any(),
+                    Some(Ok(repos)) => {
+                        let tripped: Vec<Repository> = tripped(&repos).into_iter().cloned().collect();
+                        if tripped.is_empty() {
+                            view! { <Text size="sm">"No breaker is tripped."</Text> }.into_any()
+                        } else {
+                            tripped
+                                .into_iter()
+                                .map(|repo| {
+                                    let href = "/admin/repositories".to_string();
+                                    let line = repo.code_index_breaker.summary();
+                                    view! {
+                                        <Stack gap="xs">
+                                            <Anchor href=href>{repo.slug.clone()}</Anchor>
+                                            <Text dimmed=true size="xs">{line}</Text>
+                                        </Stack>
+                                    }
+                                })
+                                .collect_view()
+                                .into_any()
+                        }
+                    }
+                }}
+                <Text dimmed=true size="xs">{BREAKERS_HINT}</Text>
+            </Stack>
+        </Panel>
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,5 +423,39 @@ mod tests {
         assert!(settings.summary.secret.set);
         assert!(!settings.vectors.secret.set);
         assert_eq!(settings.default_summaries, "embedded", "an older server");
+    }
+
+    fn repo(slug: &str, breaker: &str) -> Repository {
+        serde_json::from_str(&format!(
+            r#"{{"id":"r-{slug}","slug":"{slug}","forge":"github","repo_full_name":"o/{slug}",
+                "repo_url":"https://example.com/o/{slug}","default_branch":"main",
+                "team":{{"id":"t1","slug":"platform","name":"Platform"}}{breaker}}}"#
+        ))
+        .expect("decodes")
+    }
+
+    #[test]
+    fn the_panel_lists_the_tripped_breakers_by_slug() {
+        let tripped_breaker = r#","code_index_breaker":{"tripped":true,
+            "tripped_at":"2026-10-12T00:00:00+00:00","reason":"The lease ran out."}"#;
+        let repos = vec![
+            repo("zeta", tripped_breaker),
+            repo("plain", ""),
+            repo("alpha", tripped_breaker),
+        ];
+        let slugs: Vec<&str> = tripped(&repos).iter().map(|r| r.slug.as_str()).collect();
+        assert_eq!(slugs, ["alpha", "zeta"]);
+        assert_eq!(
+            repos[1].code_index_breaker.summary(),
+            "Code index breaker: not tripped.",
+            "an older server sends no breaker"
+        );
+        let line = repos[0].code_index_breaker.summary();
+        assert!(
+            line.starts_with(
+                "Code index breaker: tripped at 2026-10-12T00:00:00+00:00. The lease ran out."
+            ),
+            "{line}"
+        );
     }
 }

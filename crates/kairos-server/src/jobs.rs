@@ -33,6 +33,16 @@
 //! jobs again. A job whose lease ran out on its last try is failed by the
 //! next worker that looks ([`kairos_db::jobs::fail_expired`]); the
 //! [`JobHandler::failed`] of its kind then runs.
+//!
+//! # A kind that is not run again after a stop
+//!
+//! A kind whose [`JobHandler::retry_stopped`] is false (the code index
+//! builds, KAIROS-T-0399) is not run again when its server stopped or the
+//! job stalled: a job that took its server down would take it down again
+//! (GitHub #34). The next worker that looks fails a job of that kind whose
+//! lease ran out, on any try, and no server takes it again
+//! ([`kairos_db::jobs::fail_expired_with`]). A job that the watchdog kills
+//! fails too. [`JobHandler::stopped`], then [`JobHandler::failed`], run.
 
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
@@ -241,6 +251,22 @@ pub trait JobHandler: Send + Sync {
     /// the server that saw the failure, which is not always the server of
     /// the last try.
     fn failed(&self, job: Job) -> UnitFuture {
+        let _ = job;
+        Box::pin(async {})
+    }
+
+    /// False: a job of this kind whose lease ran out (its server stopped or
+    /// stalled), or that the watchdog killed, is not run again: it fails,
+    /// and [`JobHandler::stopped`] runs (KAIROS-T-0399). True (the
+    /// default): it is queued again while it has tries.
+    fn retry_stopped(&self) -> bool {
+        true
+    }
+
+    /// The job ended `failed` because its lease ran out or the watchdog
+    /// killed it, with the reason in `job.last_error`. It runs before
+    /// [`JobHandler::failed`], on the server that saw the failure.
+    fn stopped(&self, job: Job) -> UnitFuture {
         let _ = job;
         Box::pin(async {})
     }
@@ -462,6 +488,19 @@ impl Worker {
             .cloned()
     }
 
+    /// The kinds of this worker that are not run again after a stop
+    /// ([`JobHandler::retry_stopped`]).
+    fn no_retake(&self) -> Vec<String> {
+        let handlers = self.handlers.read().unwrap_or_else(|e| e.into_inner());
+        let mut kinds: Vec<String> = handlers
+            .iter()
+            .filter(|(_, handler)| !handler.retry_stopped())
+            .map(|(kind, _)| kind.clone())
+            .collect();
+        kinds.sort();
+        kinds
+    }
+
     fn kinds(&self) -> Vec<String> {
         let mut kinds: Vec<String> = self
             .handlers
@@ -511,10 +550,12 @@ impl Worker {
             }
             let instance = self.instance;
             let lease = self.settings.lease.as_secs_f64();
+            let no_retake = self.no_retake();
             let taken = self
                 .blocking
                 .run_public(move |conn| {
-                    db::take(conn, instance, &kinds, lease).map_err(ApiError::internal)
+                    db::take_with(conn, instance, &kinds, &no_retake, lease)
+                        .map_err(ApiError::internal)
                 })
                 .await;
             match taken {
@@ -566,13 +607,14 @@ impl Worker {
             .iter()
             .filter_map(|kind| self.handler(kind).map(|h| (kind.clone(), h)))
             .collect();
+        let no_retake = self.no_retake();
         // The job that follows each failed job is added in the transaction
         // of the failure (KAIROS-T-0376).
         let failed = self
             .blocking
             .run_public(move |conn| {
                 conn.transaction::<_, diesel::result::Error, _>(|conn| {
-                    let jobs = db::fail_expired(conn, &kinds)?;
+                    let jobs = db::fail_expired_with(conn, &kinds, &no_retake)?;
                     for job in &jobs {
                         if let Some(next) = handlers.get(&job.kind).and_then(|h| h.next(job)) {
                             db::enqueue(conn, &next)?;
@@ -591,9 +633,10 @@ impl Worker {
                         kind = %job.kind,
                         tenant = ?job.tenant,
                         reason = ?job.last_error,
-                        "job failed: its lease ran out on its last try"
+                        "job failed: its lease ran out"
                     );
                     if let Some(handler) = self.handler(&job.kind) {
+                        handler.stopped(job.clone()).await;
                         handler.failed(job).await;
                     }
                 }
@@ -681,7 +724,7 @@ impl Worker {
                         Err(e) if e.is_panic() => Err(JobError::retry(format!("The job stopped with a panic: {e}"))),
                         Err(e) => Err(JobError::retry(format!("The job stopped: {e}"))),
                     };
-                    return self.finish(&job, &handler, result).await;
+                    return self.finish(&job, &handler, result, false).await;
                 }
                 _ = ticker.tick() => {
                     if handle.since_progress() >= self.settings.kill_after() {
@@ -693,7 +736,14 @@ impl Worker {
                             self.instance
                         );
                         tracing::warn!(job = %job.id, kind = %job.kind, %reason, "job stalled");
-                        return self.finish(&job, &handler, Err(JobError::retry(reason))).await;
+                        // KAIROS-T-0399: a kind that is not run again after
+                        // a stop fails now.
+                        let error = if handler.retry_stopped() {
+                            JobError::retry(reason)
+                        } else {
+                            JobError::fail(reason)
+                        };
+                        return self.finish(&job, &handler, Err(error), true).await;
                     }
                     // The database did not take a heartbeat for the lease
                     // time: the lease is about to run out, and another server
@@ -742,11 +792,14 @@ impl Worker {
 
     /// Write the end of `job`, and add the job that follows it
     /// ([`JobHandler::next`]) in the same transaction when the job ended.
+    /// `stopped`: the watchdog killed the job; when it fails,
+    /// [`JobHandler::stopped`] runs before [`JobHandler::failed`].
     async fn finish(
         &self,
         job: &Job,
         handler: &Arc<dyn JobHandler>,
         result: Result<(), JobError>,
+        stopped: bool,
     ) -> Ended {
         let (id, instance) = (job.id, self.instance);
         let deferred_after = self.settings.retry_after.as_secs_f64();
@@ -834,6 +887,9 @@ impl Worker {
                 .run_public(move |conn| db::get(conn, id).map_err(ApiError::internal))
                 .await;
             if let Ok(Some(row)) = row {
+                if stopped {
+                    handler.stopped(row.clone()).await;
+                }
                 handler.failed(row).await;
             }
         }

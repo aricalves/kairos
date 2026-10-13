@@ -183,6 +183,8 @@ commit.
 
 Ask the builder for a full build of the code index of a repository
 (KAIROS-T-0332). The body is empty. The answer is 202 with the run.
+The request resets the breaker of the code index builder of the
+repository (`code_index_breaker`, KAIROS-T-0399).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|

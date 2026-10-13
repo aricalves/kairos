@@ -101,6 +101,39 @@ When the builder is off:
 `GET /api/repositories/{slug}` show the value. To start the builds again,
 set it to `on`.
 
+## The breaker of a repository
+
+A build job can stop its server: for example, the build runs out of memory
+and the server stops. A build job can also stall: it makes no progress for
+the lease time (`KAIROS_JOB_LEASE_SECS`). Kairos does not run that build
+again, because it can stop the server again. The breaker of the
+repository trips:
+
+- The build job fails on its first try. Its run ends as failed.
+- The builder adds no new job for the repository: no update after a push,
+  and no first build.
+- A build job of the repository that waits ends with the text "the code
+  index breaker of the repository tripped". It does not build.
+- An upload of an index from a checkout still works.
+
+These show the breaker, the time it tripped and the reason:
+
+- `kairos repos show <slug>`: the line `index breaker`.
+- The MCP tool `get_repository`: the line `code index breaker`.
+- `GET /api/repositories/{slug}`: the field `code_index_breaker`, with
+  `tripped`, `tripped_at` and `reason`.
+- The GUI page Admin, Code index: the panel Breakers lists each repository
+  whose breaker tripped.
+
+To reset the breaker, find the cause first (for example, give the server
+more memory). Then ask for a build, as in
+[Ask for a new index](#ask-for-a-new-index). The request resets the breaker,
+and the builder works on the repository again.
+
+Other jobs of the job queue (webhook deliveries, GitHub write-back, the
+periodic passes) do not use a breaker. A job of these kinds whose server
+stopped runs again while it has tries (`KAIROS_JOB_MAX_TRIES`).
+
 ## Related
 
 - [Read a private repository](../read-a-private-repository/): the read

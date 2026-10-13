@@ -1031,7 +1031,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "One repository in full: owner team, the delivery board of that team, the open task count on all boards, default branch, the team's `description` of how to work in it (READ THIS before working in or filing against an unfamiliar repo), the documents and the ADRs that impact the repository (its vision, its architecture, the decisions about it: read them with `get_item` before you plan work in the repository), and its in-flight branches and pull requests with the work items they belong to. The line `read token` says whether the builder of the code index has a token for the repository, who set it and the last check; no tool gives or sets the token. The line `write-back` says whether Kairos writes a comment and the commit status `kairos` on the GitHub pull requests that link to an item (on with a write token, else off), and the last write. The line `code index build` says whether the code index builder of the server works on the repository (on or off; `update_repository` sets it). `repository` is a slug or UUID. `include_deleted: true` adds the archived documents and ADRs, each marked [archived]."
+        description = "One repository in full: owner team, the delivery board of that team, the open task count on all boards, default branch, the team's `description` of how to work in it (READ THIS before working in or filing against an unfamiliar repo), the documents and the ADRs that impact the repository (its vision, its architecture, the decisions about it: read them with `get_item` before you plan work in the repository), and its in-flight branches and pull requests with the work items they belong to. The line `read token` says whether the builder of the code index has a token for the repository, who set it and the last check; no tool gives or sets the token. The line `write-back` says whether Kairos writes a comment and the commit status `kairos` on the GitHub pull requests that link to an item (on with a write token, else off), and the last write. The line `code index build` says whether the code index builder of the server works on the repository (on or off; `update_repository` sets it). The line `code index breaker` says whether the breaker of the builder is tripped, when, and why: a build job that stopped its server (for example, it ran out of memory) or stalled trips it, and the builder then starts no build of the repository. `rebuild_code_index` resets it. `repository` is a slug or UUID. `include_deleted: true` adds the archived documents and ADRs, each marked [archived]."
     )]
     pub async fn get_repository(
         &self,
@@ -1065,7 +1065,7 @@ impl KairosMcp {
                 graph::repository_link_rollup(conn, repo_id, &["open", "draft"], 50)
                     .map_err(ApiError::internal)?;
             let mut out = format!(
-                "# Repository {} — {} {}\n- url: {}\n- default branch: {}\n- owner team: {} ({})\n- owner's delivery board: {}\n- open tasks (all boards): {}\n- webhooks: {}\n- read token: {}\n- write-back: {}\n- code index build: {}\n- code index summaries: {}\n",
+                "# Repository {} — {} {}\n- url: {}\n- default branch: {}\n- owner team: {} ({})\n- owner's delivery board: {}\n- open tasks (all boards): {}\n- webhooks: {}\n- read token: {}\n- write-back: {}\n- code index build: {}\n- code index breaker: {}\n- code index summaries: {}\n",
                 rendered.slug,
                 rendered.forge,
                 rendered.repo_full_name,
@@ -1084,6 +1084,9 @@ impl KairosMcp {
                 rendered.write_back.summary(),
                 // KAIROS-T-0398: on or off; `update_repository` sets it.
                 rendered.code_index_build.as_str(),
+                // KAIROS-T-0399: a build job that stopped its server trips
+                // it; a requested build resets it.
+                rendered.code_index_breaker.summary(),
                 // KAIROS-T-0340: where the summaries of the checkout come
                 // from. On `hosted`, the CLI makes none (KAIROS-T-0343).
                 // KAIROS-T-0358: `organization` shows what it resolves to.
@@ -2721,7 +2724,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Ask Kairos to build the code index of a repository again: a full index of the head of the default branch, made by the builder of the server, which replaces the index of that commit. Use it when the index of a repository is missing, old or wrong. `repository` is a slug or UUID. The answer names the run; the runs of a repository are on the GUI page of the repository, with the CLI (`kairos repos builds`) or with the REST API (GET /api/repositories/{slug}/code-indexes/builds). Refused while a run of the repository is active (CODE_INDEX_BUILD_RUNNING), when the repository has the builder off (CODE_INDEX_BUILD_OFF: set code_index_build to on first), and when the deployment has no builder (CODE_INDEX_BUILDER_OFF). You must be a member of the owner team, or an organization admin."
+        description = "Ask Kairos to build the code index of a repository again: a full index of the head of the default branch, made by the builder of the server, which replaces the index of that commit. Use it when the index of a repository is missing, old or wrong. The build also resets the breaker of the builder for the repository (the line `code index breaker` of `get_repository`): a build that stopped its server trips it, and the builder then starts no build until a person asks. `repository` is a slug or UUID. The answer names the run; the runs of a repository are on the GUI page of the repository, with the CLI (`kairos repos builds`) or with the REST API (GET /api/repositories/{slug}/code-indexes/builds). Refused while a run of the repository is active (CODE_INDEX_BUILD_RUNNING), when the repository has the builder off (CODE_INDEX_BUILD_OFF: set code_index_build to on first), and when the deployment has no builder (CODE_INDEX_BUILDER_OFF). You must be a member of the owner team, or an organization admin."
     )]
     pub async fn rebuild_code_index(
         &self,

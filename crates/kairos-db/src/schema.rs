@@ -112,6 +112,15 @@ diesel::table! {
 }
 
 diesel::table! {
+    code_index_breakers (repository_id) {
+        repository_id -> Uuid,
+        tripped_at -> Timestamptz,
+        reason -> Text,
+        job_id -> Nullable<Uuid>,
+    }
+}
+
+diesel::table! {
     code_index_builds (id) {
         id -> Uuid,
         repository_id -> Uuid,
@@ -683,6 +692,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     board_member_capabilities,
     board_transitions,
     boards,
+    code_index_breakers,
     code_index_builds,
     code_index_settings,
     code_index_summaries,

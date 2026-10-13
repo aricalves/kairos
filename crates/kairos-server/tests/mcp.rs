@@ -285,6 +285,13 @@ fn extract_code(text: &str, prefix: &str) -> String {
 // Scratch-tenant scaffolding
 // ---------------------------------------------------------------------------
 
+/// The text of `get_repository` for acme-fidius (KAIROS-T-0399).
+async fn text_of_repository(session: &mut McpSession<'_>) -> String {
+    session
+        .call_ok("get_repository", json!({"repository": "acme-fidius"}))
+        .await
+}
+
 /// `public.users.id` by email (JIT-provisioned by a first request).
 fn user_id(conn: &mut PgConnection, email: &str) -> Uuid {
     users::table
@@ -3402,6 +3409,36 @@ async fn repository_tools_against_live_stack() {
         )
         .await;
     assert!(text.starts_with("FORBIDDEN: "), "{text}");
+
+    // --- KAIROS-T-0399: get_repository shows the code index breaker ---------
+    assert!(
+        text_of_repository(&mut alice_session)
+            .await
+            .contains("\n- code index breaker: not tripped\n"),
+        "no breaker"
+    );
+    let tripped = kairos_db::code_index_breakers::trip(
+        &mut conn,
+        fidius.id,
+        "The lease ran out on try 1 of 3: the server stopped or stalled.",
+        None,
+    )
+    .expect("tripped");
+    let text = text_of_repository(&mut alice_session).await;
+    assert!(
+        text.contains(&format!(
+            "\n- code index breaker: tripped at {}: The lease ran out on try 1 of 3: the server \
+             stopped or stalled. The builder starts no build",
+            tripped.tripped_at.to_rfc3339()
+        )),
+        "{text}"
+    );
+    kairos_db::code_index_breakers::reset(&mut conn, fidius.id).expect("reset");
+    assert!(
+        text_of_repository(&mut alice_session)
+            .await
+            .contains("\n- code index breaker: not tripped\n")
+    );
     // The row after the switch, for the checks below.
     let before = repository_row(&mut conn, "acme-fidius").expect("the row");
 

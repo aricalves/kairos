@@ -53,8 +53,8 @@ use kairos_embed::{DeterministicProvider, EmbeddingProvider};
 use kairos_index::{FakeSummarizer, Index, Level, UpdateOptions};
 use kairos_server::app;
 use kairos_server::code_index::{
-    ACTIVE_RUN, CodeIndexService, FakeSummarizers, MIN_REBUILD, OPTED_OUT, SummarizerSource,
-    end_stale_runs, first_builds, job_key, requested_builds, run_builder, sweep,
+    ACTIVE_RUN, BREAKER_TRIPPED, CodeIndexService, FakeSummarizers, MIN_REBUILD, OPTED_OUT,
+    SummarizerSource, end_stale_runs, first_builds, job_key, requested_builds, run_builder, sweep,
 };
 use kairos_server::middleware::auth::Authenticator;
 
@@ -1859,6 +1859,170 @@ async fn turning_the_builder_off_lets_a_running_build_go_on_with_no_new_try() {
 }
 
 // ===========================================================================
+// KAIROS-T-0399: a build that stalls or stops its server trips the breaker
+// of its repository
+// ===========================================================================
+
+// Scenario: a stalled update trips the breaker; the sweep and a waiting
+// job start no build; a request resets it
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stalled_build_trips_the_breaker_until_a_request() {
+    // Given an index of A, and a push of B whose update stalls at its first
+    // summary
+    const DB: &str = "kairos_code_index_t0399_stall";
+    let mut w = World::new(DB).await;
+    let a = w.a.clone();
+    w.bob
+        .upload_code_index("payments-api", &a, Some("main"), w.index(&a))
+        .await
+        .expect("the index of A");
+    let b = commit_extra(&w.git);
+    let key = job_key("acme", w.repo_id);
+    let frozen = FrozenSummarizers {
+        keys: Arc::new(Mutex::new(Vec::new())),
+        limit: 0,
+    };
+    // A pool of its own: the stalled step keeps its connection.
+    let url = with_database(&common::admin_database_url(), DB);
+    let (worker, outcomes) = build_worker(
+        kairos_server::blocking::BlockingTenantPool::new(&url, 4),
+        &w.service,
+        Arc::new(frozen),
+        quick_jobs(),
+    );
+    kairos_server::code_index::enqueue_updates(&w.state.blocking, &w.service, &worker).await;
+    let job = kairos_db::jobs::open_by_key(&mut w.conn, &key)
+        .unwrap()
+        .expect("the update job");
+
+    // When the worker runs it, and the job makes no progress. A runtime of
+    // its own: the stalled step parks its thread for ever, and a runtime
+    // waits for its threads when it stops.
+    let stalled = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    stalled.spawn(Arc::clone(&worker).run());
+    wait_for_breaker(&w, DB, &key).await;
+    stalled.shutdown_background();
+
+    // Then the watchdog killed it, it failed on its first try, and the
+    // breaker tripped with the reason
+    let job = kairos_db::jobs::get(&mut w.conn, job.id).unwrap().unwrap();
+    assert_eq!(job.state, "failed", "{job:?}");
+    assert_eq!(job.tries, 1);
+    let reason = job.last_error.clone().unwrap();
+    assert!(reason.contains("made no progress"), "{reason}");
+    assert_eq!(reports(&outcomes), 0);
+    let breaker = kairos_db::code_index_breakers::get(&mut w.conn, w.repo_id)
+        .unwrap()
+        .expect("tripped");
+    assert_eq!(breaker.reason, reason);
+    assert_eq!(breaker.job_id, Some(job.id));
+
+    // And the REST repository shows it
+    let shown = w
+        .svc
+        .get_repository("payments-api")
+        .await
+        .unwrap()
+        .repository
+        .code_index_breaker;
+    assert!(shown.tripped);
+    assert_eq!(shown.reason.as_deref(), Some(reason.as_str()));
+    assert_eq!(
+        shown.tripped_at.as_deref(),
+        Some(breaker.tripped_at.to_rfc3339().as_str())
+    );
+
+    // And the sweep adds no update while it is tripped
+    let notes = w.sweep().await;
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].report.is_none(), "{notes:?}");
+    assert!(
+        notes[0]
+            .note
+            .as_deref()
+            .is_some_and(|n| n.starts_with(BREAKER_TRIPPED)),
+        "{notes:?}"
+    );
+    assert!(
+        kairos_db::jobs::open_by_key(&mut w.conn, &key)
+            .unwrap()
+            .is_none()
+    );
+
+    // And a build job that waits (an update queued again) does not build
+    let waiting = kairos_db::jobs::enqueue(
+        &mut w.conn,
+        &kairos_db::jobs::NewJob {
+            tenant: Some("acme".to_string()),
+            payload: serde_json::json!({ "repository_id": w.repo_id, "trigger": "push" }),
+            dedupe_key: Some(key.clone()),
+            ..kairos_db::jobs::NewJob::new(kairos_server::jobs::kinds::EMBEDDED_BUILD)
+        },
+    )
+    .unwrap()
+    .expect("a waiting update");
+    let outcomes = w.requested_builds().await;
+    assert_eq!(outcomes.len(), 1, "{outcomes:?}");
+    assert!(outcomes[0].report.is_none(), "{outcomes:?}");
+    assert!(
+        outcomes[0]
+            .note
+            .as_deref()
+            .is_some_and(|n| n.starts_with(BREAKER_TRIPPED)),
+        "{outcomes:?}"
+    );
+    let waiting = kairos_db::jobs::get(&mut w.conn, waiting.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(waiting.state, "done", "{waiting:?}");
+    assert!(
+        w.alice
+            .download_code_index("payments-api", &b)
+            .await
+            .is_err(),
+        "no index of B"
+    );
+
+    // When bob asks for a build
+    w.bob
+        .rebuild_code_index("payments-api")
+        .await
+        .expect("202 with the run");
+
+    // Then the breaker is reset, and the requested build makes the index of B
+    assert!(
+        kairos_db::code_index_breakers::get(&mut w.conn, w.repo_id)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        !w.svc
+            .get_repository("payments-api")
+            .await
+            .unwrap()
+            .repository
+            .code_index_breaker
+            .tripped
+    );
+    let outcomes = w.requested_builds().await;
+    assert_eq!(outcomes.len(), 1, "{outcomes:?}");
+    assert_eq!(outcomes[0].commit, b);
+    assert!(outcomes[0].report.is_some(), "{outcomes:?}");
+    // And the sweep works on the repository again
+    let notes = w.sweep().await;
+    assert!(
+        notes
+            .iter()
+            .all(|n| !n.note.as_deref().unwrap_or("").starts_with(BREAKER_TRIPPED)),
+        "{notes:?}"
+    );
+}
+
+// ===========================================================================
 // KAIROS-T-0341: the builder chooses the summarizer of each build, and a
 // hosted summarizer sends N requests at a time with retries
 // ===========================================================================
@@ -3058,8 +3222,11 @@ impl SummarizerSource for FrozenSummarizers {
     }
 }
 
+// KAIROS-T-0399 (GitHub #34): a build whose server stopped is not taken
+// again; the breaker of its repository trips. A request resets it, and the
+// requested build keeps the summaries of the stopped server (KAIROS-T-0378).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_killed_servers_build_is_re_leased_and_ends_ok_with_its_summaries() {
+async fn a_killed_servers_build_trips_the_breaker_and_a_request_ends_ok_with_its_summaries() {
     // Given a repository with no index, whose first build starts on a
     // server that stops after 3 summaries
     const DB: &str = "kairos_code_index_t0374_killed";
@@ -3121,9 +3288,75 @@ async fn a_killed_servers_build_is_re_leased_and_ends_ok_with_its_summaries() {
         quick_jobs(),
     );
     let jobs = tokio::spawn(Arc::clone(&worker).run());
+    wait_for_breaker(&w, DB, &key).await;
+
+    // Then the job is not taken again: it failed on its first try, and the
+    // breaker of the repository tripped with the reason
+    let job = kairos_db::jobs::get(&mut scratch_conn(DB), leased.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(job.state, "failed", "{job:?}");
+    assert_eq!(job.tries, 1);
+    let reason = job.last_error.clone().unwrap();
+    assert!(
+        reason.contains("The lease ran out on try 1 of 3"),
+        "{reason}"
+    );
+    assert_eq!(reports(&outcomes), 0, "{:?}", outcomes.lock().unwrap());
+    assert!(keys.lock().unwrap().is_empty(), "no summary made again");
+    let breaker = w
+        .bob
+        .get_repository("payments-api")
+        .await
+        .unwrap()
+        .repository
+        .code_index_breaker;
+    assert!(breaker.tripped, "{breaker:?}");
+    assert_eq!(breaker.reason.as_deref(), Some(reason.as_str()));
+    assert!(breaker.tripped_at.is_some());
+    let runs = runs_of(&w).await;
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    assert_eq!(runs[0].trigger, "first");
+    assert_eq!(runs[0].outcome, "failed", "{runs:?}");
+
+    // And the sweep adds no first build while it is tripped
+    let notes =
+        kairos_server::code_index::enqueue_first_builds(&w.state.blocking, &w.service, &worker)
+            .await;
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(
+        notes[0]
+            .note
+            .as_deref()
+            .is_some_and(|n| n.starts_with(BREAKER_TRIPPED)),
+        "{notes:?}"
+    );
+    assert!(
+        kairos_db::jobs::open_by_key(&mut scratch_conn(DB), &key)
+            .unwrap()
+            .is_none()
+    );
+
+    // When bob asks for a build
+    let requested = w
+        .bob
+        .rebuild_code_index("payments-api")
+        .await
+        .expect("202 with the run");
+    assert!(
+        !w.bob
+            .get_repository("payments-api")
+            .await
+            .unwrap()
+            .repository
+            .code_index_breaker
+            .tripped,
+        "the request resets the breaker"
+    );
+    worker.wake();
     wait_for(
         std::time::Duration::from_secs(60),
-        "the end of the job",
+        "the end of the requested build",
         || {
             let key = key.clone();
             async move {
@@ -3136,20 +3369,14 @@ async fn a_killed_servers_build_is_re_leased_and_ends_ok_with_its_summaries() {
     .await;
     jobs.abort();
 
-    // Then the job was taken again and ended ok, in the one run, with the
-    // summaries of the stopped server kept
-    let job = kairos_db::jobs::get(&mut scratch_conn(DB), leased.id)
-        .unwrap()
-        .unwrap();
-    assert_eq!(job.state, "done", "{job:?}");
-    assert_eq!(job.tries, 2);
-    assert_eq!(job.leased_by, Some(w.service.instance()));
+    // Then the requested build ends ok, with the summaries of the stopped
+    // server kept
     assert_eq!(reports(&outcomes), 1, "{:?}", outcomes.lock().unwrap());
     let again: BTreeSet<String> = keys.lock().unwrap().iter().cloned().collect();
     assert!(again.is_disjoint(&made), "made again: {again:?}");
     let runs = runs_of(&w).await;
-    assert_eq!(runs.len(), 1, "one run: {runs:?}");
-    assert_eq!(runs[0].trigger, "first");
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    assert_eq!(runs[0].id, requested.id);
     assert_eq!(runs[0].outcome, "ok", "{runs:?}");
     assert!(
         runs[0].summaries_reused.is_some_and(|n| n as usize >= MADE),
@@ -3165,6 +3392,32 @@ async fn a_killed_servers_build_is_re_leased_and_ends_ok_with_its_summaries() {
         .await
         .expect("the index of A");
     assert_eq!(content_of(&built), content_of(&w.index(&w.a)));
+}
+
+/// Wait until the build job with `key` is not open, its run has ended, and
+/// the breaker of payments-api has tripped (KAIROS-T-0399).
+async fn wait_for_breaker(w: &World, db: &str, key: &str) {
+    let repo = w.repo_id;
+    wait_for(
+        std::time::Duration::from_secs(60),
+        "the breaker trips and the run ends",
+        || {
+            let (key, db) = (key.to_string(), db.to_string());
+            async move {
+                let mut conn = scratch_conn(&db);
+                kairos_db::jobs::open_by_key(&mut conn, &key)
+                    .unwrap()
+                    .is_none()
+                    && kairos_db::code_index_breakers::get(&mut conn, repo)
+                        .unwrap()
+                        .is_some()
+                    && kairos_db::code_index_builds::running(&mut conn, repo)
+                        .unwrap()
+                        .is_none()
+            }
+        },
+    )
+    .await;
 }
 
 // ===========================================================================
@@ -3254,8 +3507,9 @@ async fn a_build_stopped_on_one_server_finishes_on_another_with_an_empty_folder(
     )
     .await;
 
-    // When server B, with an empty folder of its own, takes the job after
-    // the lease ran out
+    // When server B, with an empty folder of its own, runs after the lease
+    // ran out: the job is not taken again, and the breaker trips
+    // (KAIROS-T-0399). Then bob asks for a build, and server B runs it
     let folder_b = w.work().join("server-b");
     assert!(!folder_b.exists(), "server B has an empty folder");
     let server_b = second_service(&w, &folder_b);
@@ -3271,9 +3525,16 @@ async fn a_build_stopped_on_one_server_finishes_on_another_with_an_empty_folder(
     );
     let jobs = tokio::spawn(Arc::clone(&worker).run());
     let key = job_key("acme", w.repo_id);
+    wait_for_breaker(&w, DB, &key).await;
+    assert!(keys.lock().unwrap().is_empty(), "no summary made again");
+    w.bob
+        .rebuild_code_index("payments-api")
+        .await
+        .expect("202 with the run");
+    worker.wake();
     wait_for(
         std::time::Duration::from_secs(60),
-        "the end of the job",
+        "the end of the requested build",
         || {
             let key = key.clone();
             async move {
@@ -3295,7 +3556,13 @@ async fn a_build_stopped_on_one_server_finishes_on_another_with_an_empty_folder(
     let union: BTreeSet<String> = again.union(&made).cloned().collect();
     assert_eq!(union, all);
     let runs = runs_of(&w).await;
-    assert_eq!(runs.len(), 1, "one run: {runs:?}");
+    assert_eq!(
+        runs.len(),
+        2,
+        "the first build failed, the request: {runs:?}"
+    );
+    assert_eq!(runs[1].outcome, "failed", "{runs:?}");
+    assert_eq!(runs[0].trigger, "request", "{runs:?}");
     assert_eq!(runs[0].outcome, "ok", "{runs:?}");
     assert_eq!(runs[0].summaries_made, Some((all.len() - MADE) as i32));
     let row = kairos_db::code_index_builds::get(&mut scratch_conn(DB), runs[0].id.parse().unwrap())
