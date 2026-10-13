@@ -430,6 +430,27 @@ to the done column of its board with the mark "cancelled" and the reason.
 `tasks get` shows the mark in the line `cancelled`. A move out of the done
 column removes the mark. You need `transition_items` on the board of the task.
 
+### `tasks lane`
+
+```
+kairos tasks lane <SHORT_CODE> <LANE> [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<SHORT_CODE>` | string | required | The task's short code. |
+| `<LANE>` | string | required | `planned` or `support`. |
+
+Changes the lane of a task. Moving a support request to the planned backlog
+is a lane change. The task stays in its column. You need `transition_items`
+on the board of the task; creating the task gives no right here. A lane the
+task already has changes nothing. The command prints one of these lines:
+
+```text
+Moved ACME-T-0001 to the planned lane (was support).
+ACME-T-0001 is already in the planned lane: nothing changed.
+```
+
 ### `documents move`
 
 ```
