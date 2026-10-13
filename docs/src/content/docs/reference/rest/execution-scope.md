@@ -305,6 +305,58 @@ token removed.
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown repository, or the repository has no token |
 | `409` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The stored token does not decrypt with the key of the deployment |
 
+### `PUT /api/repositories/{slug}/site`
+
+Publish the built site of a repository: one `.tar.gz` of the build
+folder, with `index.html` at its root.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `slug` | path | yes | `string` | Repository slug (or UUID) |
+| `Content-MD5` | header | no | `string`, nullable | MD5 of the body, base64. When sent, it must match |
+
+Request body (required): `application/gzip`, [`SiteArchive`](../schemas/#sitearchive)
+
+| Response | Body | Meaning |
+|---|---|---|
+| `201` | [`SitePublish`](../schemas/#sitepublish) | Published; it is the live site now |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | No capability pages on the delivery board of the owner team |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown repository |
+| `409` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The site of the repository is off (SITE_OFF) |
+| `413` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The archive is larger than the limit (TOO_LARGE) |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The archive is refused (ARCHIVE_REFUSED), or Content-MD5 does not match (MD5_MISMATCH) |
+| `501` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The deployment has no site store (NO_SITE_STORE) |
+
+### `DELETE /api/repositories/{slug}/site`
+
+Unpublish the site of a repository. Its files are deleted from the
+store; the history stays.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `slug` | path | yes | `string` | Repository slug (or UUID) |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `204` | — | Unpublished |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | No capability pages, and no right to change the repository |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown repository, or no published site |
+
+### `GET /api/repositories/{slug}/site/publishes`
+
+The publishes of the site of a repository, newest first.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `slug` | path | yes | `string` | Repository slug (or UUID) |
+| `limit` | query | no | `integer` | Page size (default 50, max 200). |
+| `offset` | query | no | `integer` | Rows to skip (default 0). |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`ListEnvelope_SitePublish`](../schemas/#listenvelope_sitepublish) | The publishes, newest first |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown repository |
+
 ### `GET /api/repositories/{slug}/write-token`
 
 The status of the GitHub write-back of a repository. It never has the

@@ -41,6 +41,11 @@ const CREDENTIALS_VERSION: &str = "20261003000001";
 /// (KAIROS-T-0385: `dispatch_rules`; KAIROS-T-0386: the GitHub write-back),
 /// newest first. Reverted and applied again as the credentials above.
 const LATER_DEPENDENTS: &[(&str, &str)] = &[
+    // KAIROS-T-0406: site_publishes has a foreign key to repositories.
+    (
+        include_str!("../migrations/tenant/2026-10-13-000001_repository_sites/down.sql"),
+        "20261013000001",
+    ),
     (
         include_str!("../migrations/tenant/2026-10-12-000004_github_write_back/down.sql"),
         "20261012000004",

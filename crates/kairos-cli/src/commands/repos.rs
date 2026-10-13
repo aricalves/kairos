@@ -622,6 +622,8 @@ impl ReposCommand {
                             description,
                             code_index_build,
                             code_index_summaries,
+                            // The site switch has its own command (KAIROS-T-0408).
+                            site_enabled: None,
                         },
                     )
                     .await?;

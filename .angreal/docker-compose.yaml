@@ -57,6 +57,24 @@ services:
       timeout: 5s
       retries: 5
 
+  # KAIROS-T-0405: an S3-compatible store for the S3 backend of the site
+  # store. Adobe S3Mock (Apache-2.0) is made for tests: it takes any
+  # credentials and makes the bucket at start. (MinIO no longer publishes
+  # images.) No volume: the tests make their own data.
+  s3:
+    image: adobe/s3mock:4.7.0
+    container_name: kairos-dev-s3
+    environment:
+      COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS: kairos-sites
+    ports:
+      - "41900:9090"
+    healthcheck:
+      # Healthy when the bucket answers a listing (the JVM takes some seconds).
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/kairos-sites"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
 volumes:
   # No `name:`. Compose derives `kairos-dev_postgres_data` from the project
   # above, which is the point: see the note on `name:` at the top.

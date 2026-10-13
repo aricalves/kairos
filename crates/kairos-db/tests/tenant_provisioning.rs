@@ -41,7 +41,7 @@ const SCRATCH_DB: &str = "kairos_tenant_provisioning_test";
 /// The tenant tables (sorted): the 21 from the KAIROS-S-0004 DDL plus
 /// `scim_tokens` (KAIROS-T-0025 / A-0016) and `api_keys` (KAIROS-T-0057 /
 /// A-0017 service-account API keys).
-const EXPECTED_TABLES: [&str; 55] = [
+const EXPECTED_TABLES: [&str; 57] = [
     "activity_log",
     "adrs",
     "api_keys",
@@ -98,6 +98,9 @@ const EXPECTED_TABLES: [&str; 55] = [
     "scim_tokens",
     // COLLIERY-T-3099: the sequence of each (prefix, type).
     "short_code_sequences",
+    // KAIROS-T-0406: the published sites of the repositories.
+    "site_files",
+    "site_publishes",
     "strategies",
     // KAIROS-T-0337: the grants of `manage_structure`.
     "structure_grants",

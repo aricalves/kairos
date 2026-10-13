@@ -29,7 +29,7 @@ mod delete;
 mod editor;
 mod end;
 mod item_owner;
-pub(crate) mod markdown;
+pub(crate) use kairos_markdown as markdown;
 mod metadata;
 mod owner;
 mod teams;

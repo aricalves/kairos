@@ -452,6 +452,35 @@ diesel::table! {
         updated_at -> Timestamptz,
         code_index_build -> Text,
         code_index_summaries -> Text,
+        site_enabled -> Bool,
+        site_publish_id -> Nullable<Uuid>,
+    }
+}
+
+diesel::table! {
+    site_files (publish_id, path) {
+        publish_id -> Uuid,
+        path -> Text,
+        size -> Int8,
+        sha256 -> Text,
+        content_type -> Text,
+    }
+}
+
+diesel::table! {
+    site_publishes (id) {
+        id -> Uuid,
+        repository_id -> Uuid,
+        repository_slug -> Text,
+        base_path -> Text,
+        md5 -> Text,
+        size -> Int8,
+        unpacked_size -> Int8,
+        files -> Int4,
+        principal_id -> Uuid,
+        agent_key_id -> Nullable<Uuid>,
+        published_at -> Timestamptz,
+        state -> Text,
     }
 }
 
@@ -688,6 +717,7 @@ diesel::joinable!(team_delivery_streams -> delivery_streams (delivery_stream_id)
 diesel::joinable!(team_delivery_streams -> teams (team_id));
 diesel::joinable!(team_members -> teams (team_id));
 diesel::joinable!(team_page_history -> team_pages (page_id));
+diesel::joinable!(site_files -> site_publishes (publish_id));
 diesel::joinable!(team_pages -> teams (team_id));
 diesel::joinable!(template_metadata -> metadata_definitions (metadata_definition_id));
 diesel::joinable!(template_metadata -> templates (template_id));
@@ -725,6 +755,8 @@ diesel::allow_tables_to_appear_in_same_query!(
     notifications,
     repositories,
     repository_credentials,
+    site_files,
+    site_publishes,
     retired_codes,
     scim_tokens,
     short_code_sequences,

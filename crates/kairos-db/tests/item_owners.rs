@@ -34,8 +34,8 @@ const DEFAULT_DATABASE_URL: &str = "postgres://kairos:kairos@localhost:41432/kai
 const SCRATCH_DB: &str = "kairos_item_owners_t0411_test";
 
 /// The migration under test, verbatim.
-const UP: &str = include_str!("../migrations/tenant/2026-10-13-000001_item_owners/up.sql");
-const DOWN: &str = include_str!("../migrations/tenant/2026-10-13-000001_item_owners/down.sql");
+const UP: &str = include_str!("../migrations/tenant/2026-10-13-000002_item_owners/up.sql");
+const DOWN: &str = include_str!("../migrations/tenant/2026-10-13-000002_item_owners/down.sql");
 
 fn admin_database_url() -> String {
     std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())

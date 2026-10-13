@@ -194,6 +194,12 @@ pub enum TeamPageError {
     /// A sibling with this slug already exists.
     #[error("A page in the same folder has the slug {0:?} already.")]
     SlugConflict(String),
+    /// A page or folder at the top of the tree cannot have a slug that the
+    /// docs sites use as a path segment (KAIROS-T-0403).
+    #[error(
+        "A page or folder at the top of the tree cannot have the slug {0:?}. The docs sites use docs, adrs and repos in their paths. Use a different slug, or put the page in a folder."
+    )]
+    ReservedSlug(String),
     /// The referenced parent is missing, deleted, on another team, or not
     /// a folder.
     #[error("The parent {0} is not a live folder of this team.")]
@@ -296,6 +302,9 @@ pub fn create_page(
 ) -> Result<TeamPage, TeamPageError> {
     conn.transaction::<_, TeamPageError, _>(|conn| {
         check_size(input.content)?;
+        if input.parent_id.is_none() && kairos_core::slug::is_site_reserved(input.slug) {
+            return Err(TeamPageError::ReservedSlug(input.slug.to_string()));
+        }
         if let Some(parent) = input.parent_id {
             check_parent(conn, team_id, parent)?;
         }
@@ -424,6 +433,16 @@ pub fn rename_move_page(
         let new_position = new_position.filter(|position| *position != current.position);
         if new_slug.is_none() && new_parent.is_none() && new_position.is_none() {
             return Ok(current);
+        }
+        // KAIROS-T-0403: a rename or a move that puts a reserved slug at the
+        // top of the tree. A page that has one there from before stays.
+        let final_slug = new_slug.unwrap_or(&current.slug);
+        let final_parent = new_parent.unwrap_or(current.parent_id);
+        if (new_slug.is_some() || new_parent.is_some())
+            && final_parent.is_none()
+            && kairos_core::slug::is_site_reserved(final_slug)
+        {
+            return Err(TeamPageError::ReservedSlug(final_slug.to_string()));
         }
         if let Some(Some(parent)) = new_parent {
             check_parent(conn, team_id, parent)?;

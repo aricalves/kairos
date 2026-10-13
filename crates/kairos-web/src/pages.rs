@@ -37,10 +37,36 @@ use crate::auth::{self, use_auth};
 /// Deliberately no authenticated-redirect: a logout arrives here *before* the session
 /// clears (see `LogoutButton`), and an authenticated visitor pressing "Sign in" is
 /// harmless.
+///
+/// One exception (KAIROS-T-0403): with `?next=` a page of the docs sites. The sites
+/// send a reader here when their request had no session; the cookie is
+/// `SameSite=Strict`, so a link from another site arrives without it. A reader who
+/// is signed in goes straight back to `next`, with a full page load; one who is
+/// not lands there after the sign-in.
 #[component]
 pub fn LoginPage() -> impl IntoView {
     let auth = use_auth();
     let config = LocalResource::new(move || async move { auth.config_cached().await });
+    let next = leptos_router::hooks::use_query_map()
+        .get_untracked()
+        .get("next")
+        .and_then(|raw| {
+            // A link may carry `next` percent-encoded (`%2Fpages%2F...`): decode once.
+            auth::pages_next(&raw).or_else(|| {
+                js_sys::decode_uri_component(&raw)
+                    .ok()
+                    .and_then(|decoded| decoded.as_string())
+                    .and_then(|decoded| auth::pages_next(&decoded))
+            })
+        });
+    if let Some(next) = next {
+        auth::stash_return_to(&next);
+        Effect::new(move |_| {
+            if !auth.restoring() && auth.is_authenticated() {
+                auth::go_to(&next, |_, _| {});
+            }
+        });
+    }
 
     // COLLIERY-T-1836: the Aurora `CenterScreen` + `AuthCard`.
     view! {
@@ -160,7 +186,9 @@ fn PasswordForm() -> impl IntoView {
                     // in memory either way, but there is no reason for it to outlive the
                     // request that used it.
                     password.set(String::new());
-                    navigate(&auth::take_return_to(), Default::default());
+                    auth::go_to(&auth::take_return_to(), |path, options| {
+                        navigate(path, options)
+                    });
                 }
                 Err(message) => {
                     // Rendered VERBATIM (KAIROS-T-0203): the server's 401 is one message
@@ -226,6 +254,11 @@ pub fn CallbackPage() -> impl IntoView {
         <CenterScreen>
             {move || match exchange.get() {
                 None => view! { <Loading label="Completing sign-in…"/> }.into_any(),
+                // KAIROS-T-0403: a docs site page is a full page load.
+                Some(Ok(return_to)) if auth::is_pages_path(&return_to) => {
+                    auth::go_to(&return_to, |_, _| {});
+                    view! { <Loading label="Opening the page…"/> }.into_any()
+                }
                 Some(Ok(return_to)) => view! { <Redirect path=return_to/> }.into_any(),
                 Some(Err(message)) => view! {
                     <Stack gap="sm" center=true>

@@ -34,6 +34,7 @@ pub mod members;
 pub mod repositories;
 pub mod repository_credentials;
 pub mod repository_write_tokens;
+pub mod sites;
 pub mod streams;
 pub mod structure_grants;
 pub mod team_pages;
@@ -62,6 +63,8 @@ pub fn router() -> Router<AppState> {
         .merge(forge::router())
         .merge(repositories::router())
         .merge(code_indexes::router())
+        // KAIROS-T-0406: the published site of a repository.
+        .merge(sites::router())
         .merge(code_index_settings::router())
         .merge(code_index_query::router())
         .merge(repository_credentials::router())
@@ -137,6 +140,22 @@ pub fn check_slug_form(kind: &str, slug: &str) -> Result<(), ApiError> {
         kairos_core::slug::SLUG_RULE
     ))
     .with_details(json!({ "field": "slug" })))
+}
+
+/// [`check_slug_form`] for a team, and the slug must not be one of the names
+/// that the docs sites use as path segments (KAIROS-T-0403,
+/// [`kairos_core::slug::SITE_RESERVED_SLUGS`]).
+pub fn check_team_slug(slug: &str) -> Result<(), ApiError> {
+    check_slug_form("team", slug)?;
+    if kairos_core::slug::is_site_reserved(slug) {
+        return Err(ApiError::validation(format!(
+            "You cannot use the team slug {slug:?}: the docs sites use {} in their paths. \
+             Send a different slug.",
+            kairos_core::slug::SITE_RESERVED_SLUGS.join(", ")
+        ))
+        .with_details(json!({ "field": "slug" })));
+    }
+    Ok(())
 }
 
 /// Load a live board by id, or 404.

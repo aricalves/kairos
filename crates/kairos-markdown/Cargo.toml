@@ -1,0 +1,12 @@
+[package]
+name = "kairos-markdown"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The markdown renderer of the web app and of the docs sites
+# (KAIROS-T-0402, KAIROS-D-0013). Pure Rust, no I/O: it builds for wasm32
+# and for the server.
+
+[dependencies]
+pulldown-cmark = { workspace = true }

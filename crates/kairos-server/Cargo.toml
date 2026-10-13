@@ -69,6 +69,14 @@ kairos-index = { path = "../kairos-index" }
 # The work folders of the builder, and the tree of a commit from
 # `git archive`.
 tempfile = "3.14.0"
+# The store of the uploaded repository sites, on disk or in S3
+# (KAIROS-T-0405). Apache-2.0; its reqwest is the 0.12 that the server has.
+object_store = { version = "0.12", default-features = false, features = ["aws", "fs"] }
+bytes = "1"
+futures-util = "0.3.31"
+# The .tar.gz of a site upload (KAIROS-T-0406).
+flate2 = "1"
+md-5 = "0.10"
 tar = "0.4"
 
 [features]
