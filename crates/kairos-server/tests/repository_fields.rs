@@ -444,7 +444,8 @@ async fn repository_fields_against_live_stack() {
             "team",
             "description",
             "code_index_build",
-            "code_index_summaries"
+            "code_index_summaries",
+            "site_enabled"
         ]),
         "{response}"
     );
