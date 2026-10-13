@@ -29,8 +29,8 @@ gloo-net = { workspace = true }
 # algorithm family, battle-tested, wasm-clean).
 similar = { workspace = true }
 # Markdown edit+preview on the item detail page (KAIROS-T-0041); rendered
-# client-side, raw HTML events escaped (see pages/item/markdown.rs).
-pulldown-cmark = { workspace = true }
+# client-side by the shared renderer (KAIROS-T-0402).
+kairos-markdown = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 # `join!`/`join_all` for the team page's concurrent per-team reads
