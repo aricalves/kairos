@@ -54,6 +54,7 @@ Codes an agent can receive, and what each means.
 | `NOT_CLAIMABLE` | A `hand_off_item` or a `release_item` of a task that is not in Active (a column that holds claims). |
 | `NO_CLAIM` | A `release_item` of a task that has no claim. |
 | `NO_OWNER` | A `release_item` of a strategy or an initiative that has no owner. |
+| `NOT_BOARD_MEMBER` | A `hand_off_item` of a strategy or an initiative to a person who is not a member of the board of the item. |
 | `TASK_DONE` | A `cancel_item` of a task that is in a done column. |
 | `NO_DONE_COLUMN` | A `cancel_item` of a task whose board has no done column. |
 
@@ -1122,7 +1123,7 @@ Changes the [claim](../glossary/#claim) of a task in Active, or the
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `short_code` | string | yes | — | The short code of a task in Active, or of a strategy or an initiative. |
-| `to` | string | yes | — | The person who gets the claim or who becomes the owner: a user id, an email or a user name of a person of the organization. |
+| `to` | string | yes | — | The person who gets the claim or who becomes the owner: a user id, an email or a user name of a person of the organization. A new owner must be a member of the board of the item. |
 
 A task: the person who has the claim can hand it off. Any other principal needs
 `transition_items` on the board of the task. A task in Active with no claim can
@@ -1131,7 +1132,9 @@ get a claim by a hand-off. The task stays in Active. The answer has the line
 
 A strategy or an initiative: the owner can hand it off. An organization admin
 can set the owner of each item, also of an item with no owner. Nobody else can.
-The new owner gets a notification. The answer has the line `owner` with the
+
+The new owner must be a member of the board of the item. A member has a grant
+on the board. The new owner gets a notification. The answer has the line `owner` with the
 new owner.
 
 A service account cannot have a claim or be an owner.
@@ -1144,6 +1147,8 @@ Refuses:
 - `FORBIDDEN` for a task, without the claim and without `transition_items`.
 - `FORBIDDEN` for a strategy or an initiative, for a principal that is not
   the owner and not an organization admin.
+- `NOT_BOARD_MEMBER` for a strategy or an initiative, when `to` is not a
+  member of the board of the item.
 - `NOT_CLAIMABLE` for a task that is not in Active.
 - `CONFLICT` when the person has the claim or is the owner already.
 
@@ -1161,17 +1166,17 @@ person who moves the task to Active gets the claim. The person who has the
 claim can release it. Any other principal needs `transition_items` on the
 board of the task.
 
-A strategy or an initiative: only an organization admin can remove the owner.
-The owner hands the item off instead. The item then has no owner, and a member
-of its board can claim it.
+A strategy or an initiative: the owner can release it. An organization admin
+can remove each owner. Nobody else can. The item then has no owner, and a
+member of its board can claim it.
 
 Refuses:
 
 - `NOT_FOUND` for an unknown short code or an archived item.
 - `VALIDATION` for an item that is not a task, a strategy or an initiative.
 - `FORBIDDEN` for a task, without the claim and without `transition_items`.
-- `FORBIDDEN` for a strategy or an initiative, for a principal that is not an
-  organization admin.
+- `FORBIDDEN` for a strategy or an initiative, for a principal that is not
+  the owner and not an organization admin.
 - `NOT_CLAIMABLE` for a task that is not in Active.
 - `NO_CLAIM` for a task that has no claim.
 - `NO_OWNER` for a strategy or an initiative that has no owner.

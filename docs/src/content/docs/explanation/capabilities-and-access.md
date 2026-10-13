@@ -141,8 +141,10 @@ Membership also lets a person **claim** a strategy or an initiative that has no
 The owner is a label of responsibility, not a capability. It gives nothing
 beyond membership, so the owner who has no grant on the board cannot edit the
 item, and a member who is not the owner can still edit and move it. Only the
-owner (by a hand-off) or an organisation admin changes the owner, and a person
-who leaves the organisation stops being the owner of anything.
+owner (by a hand-off or a release) or an organisation admin changes the owner.
+A hand-off goes only to a member of the board, so the owner is a member when
+the item gets them; a later revoke of the grant does not end the ownership. A
+person who leaves the organisation stops being the owner of anything.
 
 **Every member may send a request to any team.** A member who does not manage
 a delivery board may still create a task on it, and that task is a request: it

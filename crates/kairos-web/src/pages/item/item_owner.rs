@@ -8,9 +8,10 @@
 //! - Claim: a member of the board (a grant on it) or an org admin takes an
 //!   item that has no owner.
 //! - Hand off: the owner or an org admin gives the item to a different
-//!   member of the organization. An org admin also sets the owner of an
-//!   item with no owner with it.
-//! - Clear: an org admin removes the owner.
+//!   member of the board (a grant on it). An org admin also sets the owner
+//!   of an item with no owner with it.
+//! - Release: the owner gives up the item.
+//! - Clear: an org admin removes the owner of a different person.
 //!
 //! The owner stays in each column and gives no right. The server stays the
 //! authority: a refusal shows in the panel.
@@ -23,7 +24,7 @@ use serde::Deserialize;
 use super::api::{self, BoardInfo, Family, Owner};
 use crate::auth::use_auth;
 
-/// mirror of: `kairos_client::types_org::OrgMember` (partial).
+/// mirror of: `kairos_client::types_org::BoardMember` (partial).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct Member {
     user_id: String,
@@ -49,12 +50,14 @@ pub(crate) const NO_OWNER: &str = "No owner. A member of the board can claim it.
 pub(crate) struct OwnerPowers {
     pub claim: bool,
     pub hand_off: bool,
+    pub release: bool,
     pub clear: bool,
 }
 
 /// The rules of the server (`kairos_server::owners`), mirrored: a member
 /// of the board or an admin claims an item with no owner; the owner or an
-/// admin hands it off; an admin clears it.
+/// admin hands it off; the owner releases it; an admin clears the owner of
+/// a different person.
 pub(crate) fn owner_powers(
     me: &str,
     admin: bool,
@@ -65,7 +68,8 @@ pub(crate) fn owner_powers(
     OwnerPowers {
         claim: owner.is_none() && (member || admin),
         hand_off: is_owner || admin,
-        clear: owner.is_some() && admin,
+        release: is_owner,
+        clear: owner.is_some() && admin && !is_owner,
     }
 }
 
@@ -76,8 +80,8 @@ pub(crate) fn is_board_member(me: &crate::api::Whoami, board_slug: &str) -> bool
         .any(|board| board.board_slug == board_slug && !board.grants.is_empty())
 }
 
-/// The members the item can go to: each member that is not the owner, as
-/// `(user id, label)`. Pure, host-tested.
+/// The members the item can go to: each member of the board that is not
+/// the owner, as `(user id, label)`. Pure, host-tested.
 fn hand_off_options(members: &[Member], owner: Option<&str>) -> Vec<(String, String)> {
     members
         .iter()
@@ -141,6 +145,10 @@ pub fn OwnerPanel(
                         <OwnerControls
                             family
                             code=code.get_value()
+                            board_slug=match board.get() {
+                                Some(Ok(Some(board))) => Some(board.slug),
+                                _ => None,
+                            }
                             owner=owner.with_value(|o| o.as_ref().map(|o| o.user_id.clone()))
                             powers=powers.get()
                             on_moved
@@ -152,11 +160,13 @@ pub fn OwnerPanel(
     }
 }
 
-/// Claim, Hand off and Clear.
+/// Claim, Hand off, Release and Clear.
 #[component]
 fn OwnerControls(
     family: Family,
     code: String,
+    /// The board of the item: a new owner is a member of it.
+    board_slug: Option<String>,
     owner: Option<String>,
     powers: OwnerPowers,
     on_moved: Callback<String>,
@@ -169,11 +179,17 @@ fn OwnerControls(
     let error = RwSignal::new(None::<ApiError>);
     let members = LocalResource::new(move || {
         let _ = auth.token();
+        let board_slug = board_slug.clone();
         async move {
-            if powers.hand_off {
-                crate::api::get_all::<Member>(auth, "/api/members").await
-            } else {
-                Ok(Vec::new())
+            match (powers.hand_off, board_slug.as_deref()) {
+                (true, Some(slug)) => {
+                    crate::api::get_json::<Vec<Member>>(
+                        auth,
+                        &format!("/api/boards/{slug}/members"),
+                    )
+                    .await
+                }
+                _ => Ok(Vec::new()),
             }
         }
     });
@@ -215,11 +231,11 @@ fn OwnerControls(
             }
         });
     });
-    let clear: Callback<()> = Callback::new(move |()| {
+    let release: Callback<()> = Callback::new(move |()| {
         busy.set(true);
         error.set(None);
         leptos::task::spawn_local(async move {
-            match api::clear_owner(auth, family, &code.get_value()).await {
+            match api::release_owner(auth, family, &code.get_value()).await {
                 Ok(_) => on_moved.run("The item has no owner.".to_string()),
                 Err(e) => {
                     error.set(Some(e));
@@ -238,7 +254,7 @@ fn OwnerControls(
             {move || powers.hand_off.then(|| match members.get() {
                 None => view! { <Text size="xs" dimmed=true>"Loading members…"</Text> }.into_any(),
                 Some(Err(_)) => view! {
-                    <Text size="xs" dimmed=true>"The members are not available."</Text>
+                    <Text size="xs" dimmed=true>"The members of the board are not available."</Text>
                 }.into_any(),
                 Some(Ok(list)) => {
                     let options = owner.with_value(|o| hand_off_options(&list, o.as_deref()));
@@ -259,9 +275,16 @@ fn OwnerControls(
                     }.into_any()
                 }
             })}
+            {powers.release.then(|| view! {
+                <Group gap="sm">
+                    <Button variant="default" size="xs" disabled=busy on_click=release>
+                        "Release"
+                    </Button>
+                </Group>
+            })}
             {powers.clear.then(|| view! {
                 <Group gap="sm">
-                    <Button variant="default" size="xs" disabled=busy on_click=clear>
+                    <Button variant="default" size="xs" disabled=busy on_click=release>
                         "Clear owner"
                     </Button>
                 </Group>
@@ -300,8 +323,15 @@ mod tests {
         assert!(owner_powers("u1", false, false, Some("u1")).hand_off);
         assert!(!owner_powers("u2", false, true, Some("u1")).hand_off);
         assert!(owner_powers("u2", true, false, Some("u1")).hand_off);
-        // Only an admin clears, and only an owned item.
+        // The owner releases; a member does not; an admin who is the owner
+        // releases too.
+        assert!(owner_powers("u1", false, true, Some("u1")).release);
+        assert!(!owner_powers("u2", false, true, Some("u1")).release);
+        assert!(owner_powers("u1", true, false, Some("u1")).release);
+        // An admin clears the owner of a different person, and only an
+        // owned item.
         assert!(!owner_powers("u1", false, true, Some("u1")).clear);
+        assert!(!owner_powers("u1", true, false, Some("u1")).clear);
         assert!(owner_powers("u2", true, false, Some("u1")).clear);
         assert!(!owner_powers("u2", true, false, None).clear);
         assert_eq!(owner_powers("", false, false, None), OwnerPowers::default());

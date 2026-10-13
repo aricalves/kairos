@@ -212,9 +212,9 @@ read it. An item with no owner has no `owner`.
 
 ### `DELETE /api/{entity_type}/{short_code}/owner`
 
-Remove the owner of a strategy or an initiative. Only an organization
-admin can do it. The item then has no owner, and a member of its board
-can claim it.
+Release the owner of a strategy or an initiative. The owner can release
+it, and an organization admin can remove each owner. Nobody else. The
+item then has no owner, and a member of its board can claim it.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
@@ -224,7 +224,7 @@ can claim it.
 | Response | Body | Meaning |
 |---|---|---|
 | `200` | [`ItemOwnerResponse`](../schemas/#itemownerresponse) | The item has no owner (release activity row written) |
-| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The caller is not an organization admin |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The caller is not the owner and not an organization admin |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown family or short code |
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | RELATIONSHIP_RULE: the item is not a strategy and not an initiative. NO_OWNER: the item has no owner |
 
@@ -251,9 +251,10 @@ owner gets no right from the claim.
 ### `POST /api/{entity_type}/{short_code}/owner/hand-off`
 
 Give a strategy or an initiative to a different person. `to` is a user
-id, an email or a user name of a person of the organization. The owner
-can hand it off. An organization admin can set the owner of each item,
-also of an item with no owner. The new owner gets a notification.
+id, an email or a user name of a person of the organization. The new
+owner must be a member of the board of the item (a grant on it). The
+owner can hand it off. An organization admin can set the owner of each
+item, also of an item with no owner. The new owner gets a notification.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
@@ -268,7 +269,7 @@ Request body (required): `application/json`, [`HandOffRequest`](../schemas/#hand
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The caller is not the owner and not an organization admin |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown family or short code |
 | `409` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The person is the owner already |
-| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | RELATIONSHIP_RULE: the item is not a strategy and not an initiative. VALIDATION: `to` is not a person of the organization |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | RELATIONSHIP_RULE: the item is not a strategy and not an initiative. VALIDATION: `to` is not a person of the organization. NOT_BOARD_MEMBER: `to` is not a member of the board of the item |
 
 ### `GET /api/{entity_type}/{short_code}/relationships`
 

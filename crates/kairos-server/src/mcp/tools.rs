@@ -628,7 +628,8 @@ pub struct HandOffItemParams {
     pub short_code: String,
     /// The person who gets the claim (a task) or who becomes the owner (a
     /// strategy or an initiative): a user id, an email or a user name of a
-    /// person of the organization.
+    /// person of the organization. A new owner must be a member of the
+    /// board of the item.
     pub to: String,
 }
 
@@ -2897,7 +2898,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Take a STRATEGY or an INITIATIVE that has no owner: you become its owner. The owner is the one person who answers for the item (KAIROS-A-0025). You must be a person and a member of the board of the item (a grant on the board), or an organization admin. An item with an owner is refused, with the name of the owner: the owner can hand it off, or an organization admin can change it. The owner stays in each column, Completed too, and gives no right beyond those of a member of the board. A task has no owner: a task gets a claim when a person moves it to Active."
+        description = "Take a STRATEGY or an INITIATIVE that has no owner: you become its owner. The owner is the one person who answers for the item (KAIROS-A-0025). You must be a person and a member of the board of the item (a grant on the board), or an organization admin. An item with an owner is refused, with the name of the owner: the owner can hand it off or release it, or an organization admin can change it. The owner stays in each column, Completed too, and gives no right beyond those of a member of the board. A task has no owner: a task gets a claim when a person moves it to Active."
     )]
     pub async fn claim_item(
         &self,
@@ -2926,7 +2927,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Give the claim of a TASK in Active, or the owner of a STRATEGY or an INITIATIVE, to a different person. `to` is a user id, an email or a user name of a person of the organization; a service account cannot have a claim or be an owner. A task: the claim says who works on the task, and the task stays in Active. You can hand off a claim that you have, or any claim with `transition_items` on the board of the task. A strategy or an initiative: the owner can hand it off, and an organization admin can set the owner of each item, also of an item with no owner. Nobody else. The new owner gets a notification. The answer shows the new claim or owner."
+        description = "Give the claim of a TASK in Active, or the owner of a STRATEGY or an INITIATIVE, to a different person. `to` is a user id, an email or a user name of a person of the organization; a service account cannot have a claim or be an owner. A task: the claim says who works on the task, and the task stays in Active. You can hand off a claim that you have, or any claim with `transition_items` on the board of the task. A strategy or an initiative: the owner can hand it off, and an organization admin can set the owner of each item, also of an item with no owner. Nobody else. The new owner must be a member of the board of the item (a grant on the board); a different person is refused with NOT_BOARD_MEMBER. The new owner gets a notification. The answer shows the new claim or owner."
     )]
     pub async fn hand_off_item(
         &self,
@@ -2969,7 +2970,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "End the claim on a TASK in Active, or remove the owner of a STRATEGY or an INITIATIVE. A task: the task stays in Active, free for anyone; the next person who moves the task to Active gets the claim. A claim also ends when the task leaves Active. You can release a claim that you have, or any claim with `transition_items` on the board of the task. A strategy or an initiative: only an organization admin can remove the owner; the owner hands it off instead. The item then has no owner, and a member of its board can claim it (`claim_item`)."
+        description = "End the claim on a TASK in Active, or remove the owner of a STRATEGY or an INITIATIVE. A task: the task stays in Active, free for anyone; the next person who moves the task to Active gets the claim. A claim also ends when the task leaves Active. You can release a claim that you have, or any claim with `transition_items` on the board of the task. A strategy or an initiative: the owner can release it, and an organization admin can remove each owner. Nobody else. The item then has no owner, and a member of its board can claim it (`claim_item`)."
     )]
     pub async fn release_item(
         &self,
@@ -2982,7 +2983,7 @@ impl KairosMcp {
         self.run_tool(&tenant, move |conn| {
             let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
             if kairos_db::item_owners::is_subject(item.item_type) {
-                let ended = crate::owners::clear(
+                let ended = crate::owners::release(
                     conn,
                     &slug,
                     user,

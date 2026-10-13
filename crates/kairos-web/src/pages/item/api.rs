@@ -1135,8 +1135,8 @@ pub async fn hand_off_owner(
 }
 
 /// `DELETE /api/{family}/{short_code}/owner` — the item has no owner
-/// (KAIROS-T-0411). An org admin only.
-pub async fn clear_owner(
+/// (KAIROS-T-0411, KAIROS-A-0025 amendment 3). The owner or an org admin.
+pub async fn release_owner(
     auth: Auth,
     family: Family,
     code: &str,

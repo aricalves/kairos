@@ -13,11 +13,13 @@
 //!   admin, takes an item that has NO owner. A service account cannot be
 //!   an owner. An item with an owner is 409 `CONFLICT`, with the name of
 //!   the owner.
-//! - HAND OFF ([`hand_off`]): the owner gives the item to a person of the
-//!   organization. An org admin can do it for each item, also to SET the
-//!   owner of an item with no owner. Nobody else.
-//! - CLEAR ([`clear`]): an org admin removes the owner. Nobody else: the
-//!   owner who wants to stop hands the item off.
+//! - HAND OFF ([`hand_off`]): the owner gives the item to a person who is
+//!   a member of the board of the item (any grant on it). An org admin can
+//!   do it for each item, also to SET the owner of an item with no owner,
+//!   with the same rule for the new owner. Nobody else. A person who is not
+//!   a member of the board is 422 `NOT_BOARD_MEMBER`.
+//! - RELEASE ([`release`]): the owner gives up the item, or an org admin
+//!   removes the owner. The item then has no owner. Nobody else.
 //!
 //! The owner gives no right: nothing in the ABAC check reads it. And it
 //! gives no warning on a write, as the claim of a task does
@@ -210,6 +212,24 @@ fn is_org_admin(conn: &mut PgConnection, slug: &str, user: Uuid) -> Result<bool,
     kairos_db::abac::is_org_admin(conn, slug, user).map_err(ApiError::internal)
 }
 
+/// The board of the item, and whether `user` is a member of it (any
+/// grant on it).
+fn board_membership(
+    conn: &mut PgConnection,
+    item_id: Uuid,
+    user: Uuid,
+) -> Result<(Option<Uuid>, bool), ApiError> {
+    let board =
+        kairos_db::abac::resolve_authorization_board(conn, item_id).map_err(ApiError::internal)?;
+    let member = match board {
+        Some(board_id) => {
+            kairos_db::abac::is_board_member(conn, board_id, user).map_err(ApiError::internal)?
+        }
+        None => false,
+    };
+    Ok((board, member))
+}
+
 /// CLAIM (module docs): `user` takes the item, which has no owner.
 pub fn claim(
     conn: &mut PgConnection,
@@ -224,14 +244,7 @@ pub fn claim(
             "A service account cannot be the owner of {short_code}. Only a person can claim it."
         )));
     }
-    let board =
-        kairos_db::abac::resolve_authorization_board(conn, item_id).map_err(ApiError::internal)?;
-    let member = match board {
-        Some(board_id) => {
-            kairos_db::abac::is_board_member(conn, board_id, user).map_err(ApiError::internal)?
-        }
-        None => false,
-    };
+    let (board, member) = board_membership(conn, item_id, user)?;
     if !member && !is_org_admin(conn, slug, user)? {
         return Err(ApiError::forbidden(format!(
             "To claim {short_code}, you must be a member of its board: you need a grant on the \
@@ -244,7 +257,7 @@ pub fn claim(
 }
 
 /// HAND OFF (module docs): the item gets the person that `to` names (a
-/// user id, an email or a user name).
+/// user id, an email or a user name), who must be a member of the board.
 pub fn hand_off(
     conn: &mut PgConnection,
     slug: &str,
@@ -267,14 +280,26 @@ pub fn hand_off(
             "{why} An organization admin can also set the owner."
         )));
     }
+    let to_name = to;
     let to = crate::claims::resolve_person(conn, slug, to)?;
+    let (board, member) = board_membership(conn, item_id, to)?;
+    if !member {
+        return Err(ApiError::unprocessable(
+            "NOT_BOARD_MEMBER",
+            format!(
+                "{to_name} is not a member of the board of {short_code}. The owner must have a \
+                 grant on the board. Give the person a grant first, or send a member of the board."
+            ),
+        )
+        .with_details(json!({ "board_id": board, "user_id": to })));
+    }
     item_owners::hand_off(conn, item_id, to, user).map_err(map_owner_error)?;
     owner_of(conn, item_id)?.ok_or_else(|| ApiError::internal("the owner vanished"))
 }
 
-/// CLEAR (module docs): an org admin removes the owner. Returns the owner
-/// that the item had.
-pub fn clear(
+/// RELEASE (module docs): the owner gives up the item, or an org admin
+/// removes the owner. Returns the owner that the item had.
+pub fn release(
     conn: &mut PgConnection,
     slug: &str,
     user: Uuid,
@@ -282,10 +307,12 @@ pub fn clear(
     short_code: &str,
 ) -> Result<ItemOwner, ApiError> {
     require_subject(item_type, short_code)?;
-    if !is_org_admin(conn, slug, user)? {
+    let owner = item_owners::owner_of(conn, item_id).map_err(ApiError::internal)?;
+    let is_owner = owner.as_ref().is_some_and(|o| o.user_id == user);
+    if owner.is_some() && !is_owner && !is_org_admin(conn, slug, user)? {
         return Err(ApiError::forbidden(format!(
-            "Only an organization admin can clear the owner of {short_code}. The owner can hand \
-             it off to a different person."
+            "Only the owner of {short_code} can release it. An organization admin can also \
+             clear the owner."
         )));
     }
     item_owners::clear(conn, item_id, user).map_err(map_owner_error)

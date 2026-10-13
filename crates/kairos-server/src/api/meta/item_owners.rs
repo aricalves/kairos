@@ -23,7 +23,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route(
             "/api/{entity_type}/{short_code}/owner",
-            get(get_owner).delete(clear_owner),
+            get(get_owner).delete(release_owner),
         )
         .route(
             "/api/{entity_type}/{short_code}/owner/claim",
@@ -114,9 +114,10 @@ pub(crate) async fn claim_owner(
 }
 
 /// Give a strategy or an initiative to a different person. `to` is a user
-/// id, an email or a user name of a person of the organization. The owner
-/// can hand it off. An organization admin can set the owner of each item,
-/// also of an item with no owner. The new owner gets a notification.
+/// id, an email or a user name of a person of the organization. The new
+/// owner must be a member of the board of the item (a grant on it). The
+/// owner can hand it off. An organization admin can set the owner of each
+/// item, also of an item with no owner. The new owner gets a notification.
 #[utoipa::path(
     post,
     path = "/api/{entity_type}/{short_code}/owner/hand-off",
@@ -131,7 +132,7 @@ pub(crate) async fn claim_owner(
         (status = 403, description = "The caller is not the owner and not an organization admin", body = dto::ErrorEnvelope),
         (status = 404, description = "Unknown family or short code", body = dto::ErrorEnvelope),
         (status = 409, description = "The person is the owner already", body = dto::ErrorEnvelope),
-        (status = 422, description = "RELATIONSHIP_RULE: the item is not a strategy and not an initiative. VALIDATION: `to` is not a person of the organization", body = dto::ErrorEnvelope),
+        (status = 422, description = "RELATIONSHIP_RULE: the item is not a strategy and not an initiative. VALIDATION: `to` is not a person of the organization. NOT_BOARD_MEMBER: `to` is not a member of the board of the item", body = dto::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn hand_off_owner(
@@ -157,9 +158,9 @@ pub(crate) async fn hand_off_owner(
     Ok(Json(response))
 }
 
-/// Remove the owner of a strategy or an initiative. Only an organization
-/// admin can do it. The item then has no owner, and a member of its board
-/// can claim it.
+/// Release the owner of a strategy or an initiative. The owner can release
+/// it, and an organization admin can remove each owner. Nobody else. The
+/// item then has no owner, and a member of its board can claim it.
 #[utoipa::path(
     delete,
     path = "/api/{entity_type}/{short_code}/owner",
@@ -170,12 +171,12 @@ pub(crate) async fn hand_off_owner(
     ),
     responses(
         (status = 200, description = "The item has no owner (release activity row written)", body = dto::ItemOwnerResponse),
-        (status = 403, description = "The caller is not an organization admin", body = dto::ErrorEnvelope),
+        (status = 403, description = "The caller is not the owner and not an organization admin", body = dto::ErrorEnvelope),
         (status = 404, description = "Unknown family or short code", body = dto::ErrorEnvelope),
         (status = 422, description = "RELATIONSHIP_RULE: the item is not a strategy and not an initiative. NO_OWNER: the item has no owner", body = dto::ErrorEnvelope),
     ),
 )]
-pub(crate) async fn clear_owner(
+pub(crate) async fn release_owner(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Extension(tenant): Extension<TenantContext>,
@@ -187,7 +188,7 @@ pub(crate) async fn clear_owner(
         .blocking
         .run(&tenant.slug, move |conn| {
             let item = resolve_family_item(conn, &family, &short_code, Liveness::LiveOnly)?;
-            crate::owners::clear(conn, &slug, user, item, &short_code)?;
+            crate::owners::release(conn, &slug, user, item, &short_code)?;
             Ok(dto::ItemOwnerResponse {
                 short_code,
                 owner: None,

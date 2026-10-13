@@ -197,8 +197,9 @@ check rather than by a stored row:
   A member can also claim an item of the board that has no
   [owner](../glossary/#owner) (`claim_item`, or
   `POST /api/{entity_type}/{short_code}/owner/claim`). The owner can hand the
-  item off. An organization admin can set or clear the owner. The owner gets
-  no capability.
+  item off to a member of the board, or release it. An organization admin can
+  set or clear the owner. A new owner is always a member of the board. The
+  owner gets no capability.
 
 ## `manage_structure`
 

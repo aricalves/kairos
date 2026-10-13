@@ -34,7 +34,8 @@
 //! - `claim`: `claim:<user id>`.
 //! - `hand_off`: `hand_off:<user id or none>-><user id>`.
 //! - `release`: `release:<user id> reason:<reason>`, where the reason is
-//!   `clear` (an org admin) or `left` (the person left the organization).
+//!   `release` (the owner gave it up), `clear` (an org admin removed a
+//!   different person) or `left` (the person left the organization).
 //!
 //! Each change also emits `item.updated` for the item.
 //!
@@ -296,8 +297,9 @@ pub fn hand_off(
     })
 }
 
-/// Remove the owner of the item (decision 4, an org admin). Returns the
-/// owner that the item had.
+/// Remove the owner of the item (decision 4 and its amendment 3: the owner
+/// or an org admin). The reason is `release` when `actor_id` is the owner,
+/// else `clear`. Returns the owner that the item had.
 pub fn clear(
     conn: &mut PgConnection,
     item_id: Uuid,
@@ -317,7 +319,15 @@ pub fn clear(
             actor_id,
             ActivityAction::Release,
             (item_id, entity_type),
-            format!("release:{} reason:clear", ended.user_id),
+            format!(
+                "release:{} reason:{}",
+                ended.user_id,
+                if ended.user_id == actor_id {
+                    "release"
+                } else {
+                    "clear"
+                }
+            ),
         )?;
         events::emit_item_event_by_id(
             conn,

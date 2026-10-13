@@ -6,9 +6,11 @@
 //! - a member of the board (any grant on it) claims an item with no owner;
 //!   a person with no grant is refused; a second claim is refused with the
 //!   name of the owner;
-//! - the owner hands it off; a member who is not the owner cannot hand it
-//!   off or clear it; the owner cannot clear it; an org admin clears it
-//!   and sets it;
+//! - the owner hands it off, only to a member of the board
+//!   (`NOT_BOARD_MEMBER` else); a member who is not the owner cannot hand
+//!   it off or release it; the owner releases it (KAIROS-A-0025 amendments
+//!   3 and 4); an org admin clears it and sets it, also only to a member of
+//!   the board;
 //! - the owner stays in each column, Completed too, and in the archive;
 //! - the owner gives no right: an owner with no grant cannot edit;
 //! - an owner who leaves the organization (`DELETE /api/members`): the
@@ -325,8 +327,7 @@ async fn a_strategy_or_an_initiative_has_one_owner_by_claim_against_live_stack()
     let alice_name = rest_owner(&router, &bob, &code).await.expect("an owner");
     assert!(body.to_string().contains(&alice_name), "{body}");
 
-    // --- Nobody else changes it: bob cannot hand off or clear; the owner
-    // cannot clear.
+    // --- Nobody else changes it: bob cannot hand off or release.
     let hand_off_uri = format!("{owner_uri}/hand-off");
     let (status, body) = as_user(
         &bob,
@@ -337,8 +338,6 @@ async fn a_strategy_or_an_initiative_has_one_owner_by_claim_against_live_stack()
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     let (status, body) = as_user(&bob, Method::DELETE, &owner_uri, None).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    let (status, body) = as_user(&alice, Method::DELETE, &owner_uri, None).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert_eq!(
         rest_owner(&router, &bob, &code).await,
@@ -393,7 +392,30 @@ async fn a_strategy_or_an_initiative_has_one_owner_by_claim_against_live_stack()
         .expect("the card");
     assert_eq!(card["owner"]["display_name"], json!(alice_name), "{card}");
 
-    // --- The owner hands it off to carol, who has no grant.
+    // --- A hand-off to carol, who has no grant on the board, is refused.
+    let (status, body) = as_user(
+        &alice,
+        Method::POST,
+        &hand_off_uri,
+        Some(json!({ "to": carol_id.to_string() })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "NOT_BOARD_MEMBER", "{body}");
+    assert_eq!(
+        rest_owner(&router, &bob, &code).await,
+        Some(alice_name.clone())
+    );
+    // carol gets a grant; the owner hands it off to her.
+    let carol_member = format!("/api/boards/{board}/members/{carol_id}");
+    let (status, body) = as_user(
+        &svc,
+        Method::POST,
+        &format!("/api/boards/{board}/members"),
+        Some(json!({ "user_id": carol_id, "capabilities": ["configure_boards"] })),
+    )
+    .await;
+    assert!(status.is_success(), "{status}: {body}");
     let (status, body) = as_user(
         &alice,
         Method::POST,
@@ -407,7 +429,11 @@ async fn a_strategy_or_an_initiative_has_one_owner_by_claim_against_live_stack()
         json!(carol_id.to_string()),
         "{body}"
     );
-    // The claim gives no right: carol, the owner, cannot edit it.
+    // The owner gives no right: carol loses her grant, stays the owner, and
+    // cannot edit it.
+    let (status, body) = as_user(&svc, Method::DELETE, &carol_member, None).await;
+    assert!(status.is_success(), "{status}: {body}");
+    assert!(rest_owner(&router, &bob, &code).await.is_some());
     let (status, body) =
         as_user(&svc, Method::GET, &format!("/api/initiatives/{code}"), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -430,13 +456,23 @@ async fn a_strategy_or_an_initiative_has_one_owner_by_claim_against_live_stack()
     .n;
     assert_eq!(told, 1);
 
-    // --- An org admin clears it, and sets it.
+    // --- An org admin clears it, and sets it, only to a member of the
+    // board.
     let (status, body) = as_user(&svc, Method::DELETE, &owner_uri, None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(rest_owner(&router, &bob, &code).await, None);
     let (status, body) = as_user(&svc, Method::DELETE, &owner_uri, None).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(body["error"]["code"], "NO_OWNER", "{body}");
+    let (status, body) = as_user(
+        &svc,
+        Method::POST,
+        &hand_off_uri,
+        Some(json!({ "to": carol_id.to_string() })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "NOT_BOARD_MEMBER", "{body}");
     let (status, body) = as_user(
         &svc,
         Method::POST,
@@ -503,8 +539,29 @@ async fn a_strategy_or_an_initiative_has_one_owner_by_claim_against_live_stack()
         text.contains(&format!("- owner: {alice_name} since ")),
         "{text}"
     );
-    // release_item: the owner cannot; an org admin can.
+    // A hand-off to a person with no grant on the board is refused.
     let alice_session = connect(&router, &alice).await;
+    let (is_error, text) = call(
+        &router,
+        &alice,
+        alice_session.as_deref(),
+        "hand_off_item",
+        json!({ "short_code": code, "to": "carol@kairos.test" }),
+    )
+    .await;
+    assert!(is_error, "{text}");
+    assert!(text.contains("NOT_BOARD_MEMBER"), "{text}");
+    // release_item: a member who is not the owner cannot; the owner can.
+    let (is_error, text) = call(
+        &router,
+        &bob,
+        session.as_deref(),
+        "release_item",
+        json!({ "short_code": code }),
+    )
+    .await;
+    assert!(is_error, "{text}");
+    assert!(text.contains("Only the owner"), "{text}");
     let (is_error, text) = call(
         &router,
         &alice,
@@ -513,8 +570,26 @@ async fn a_strategy_or_an_initiative_has_one_owner_by_claim_against_live_stack()
         json!({ "short_code": code }),
     )
     .await;
-    assert!(is_error, "{text}");
-    assert!(text.contains("organization admin"), "{text}");
+    assert!(!is_error, "{text}");
+    assert!(text.contains(&format!("Released {code}")), "{text}");
+    let released: i64 = diesel::sql_query(format!(
+        "SELECT count(*) AS n FROM org_acme.activity_log WHERE action = 'release' \
+         AND details = 'release:{alice_id} reason:release'"
+    ))
+    .get_result::<Count>(&mut conn)
+    .expect("activity")
+    .n;
+    assert_eq!(released, 1);
+    // An org admin can release the owner of a different person.
+    let (is_error, text) = call(
+        &router,
+        &bob,
+        session.as_deref(),
+        "claim_item",
+        json!({ "short_code": code }),
+    )
+    .await;
+    assert!(!is_error, "{text}");
     let svc_session = connect(&router, &svc).await;
     let (is_error, text) = call(
         &router,

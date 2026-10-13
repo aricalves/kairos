@@ -468,8 +468,9 @@ KAIROS-A-0025). An item has one owner at most, and it can have none. A new item
 and an imported item have no owner.
 
 A member of the board can claim an item with no owner. A member has a grant on
-the board. The owner can hand it off to a different person.
-An organization admin can set or clear it. Nobody else can change it.
+the board. The owner can hand it off to a different member of the board, or
+release it. An organization admin can set or clear it. A new owner is always a
+member of the board. Nobody else can change it.
 
 The owner stays in each column, Completed too. The owner gets no right: the
 owner can do what a member of the board can do. When the owner leaves the
