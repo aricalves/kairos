@@ -956,10 +956,10 @@ Remove a member from a team. An organization admin, or
 
 ### `GET /api/teams/{id}/work-documents`
 
-The documents of the team (KAIROS-T-0084, KAIROS-T-0393): live
-documents that a board of the team owns, or whose supports-parent is a
-task of the team or an item on the team's delivery board. Each row
-says why it is listed. Open tenant-wide.
+The documents of the team (KAIROS-T-0084, KAIROS-T-0393). A board of
+the team owns each live document, or the document supports a task of
+the team or an item on its delivery board. Each row gives the reason.
+Open tenant-wide.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|

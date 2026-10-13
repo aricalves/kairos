@@ -181,9 +181,9 @@ pub struct Repository {
     #[serde(default)]
     pub code_index_summaries_resolved: CodeIndexSummaries,
     /// The breaker of the code index builder of the repository
-    /// (KAIROS-T-0399): tripped when a build job stopped its server or
-    /// stalled. While it is tripped, the builder starts no build of the
-    /// repository. A requested build resets it.
+    /// (KAIROS-T-0399). A build job that stopped its server or stalled
+    /// trips it. Then the builder starts no build of the repository. A
+    /// requested build resets it.
     #[serde(default)]
     pub code_index_breaker: CodeIndexBreaker,
     /// RFC 3339.
@@ -481,10 +481,10 @@ impl RepositoryWriteBack {
 }
 
 /// The breaker of the code index builder of a repository (KAIROS-T-0399),
-/// as [`Repository`] carries it. A build job whose lease ran out (its
-/// server stopped, ran out of memory, or stalled) trips it, and the build is
-/// not run again. While it is tripped, the builder starts no build of the
-/// repository: no update, no first build. A build that a person asks for
+/// as [`Repository`] carries it. The lease of a build job can run out:
+/// its server stopped, ran out of memory, or stalled. That trips the
+/// breaker, and the build does not run again. Then the builder starts no
+/// build of the repository: no update, no first build. A build that a person asks for
 /// (`POST /api/repositories/{slug}/code-indexes/rebuild`) resets it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CodeIndexBreaker {

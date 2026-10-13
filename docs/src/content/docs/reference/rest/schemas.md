@@ -382,7 +382,7 @@ One indexed commit of a repository.
 
 ## CodeIndexBreaker
 
-The breaker of the code index builder of a repository (KAIROS-T-0399), as [`Repository`] carries it. A build job whose lease ran out (its server stopped, ran out of memory, or stalled) trips it, and the build is not run again. While it is tripped, the builder starts no build of the repository: no update, no first build. A build that a person asks for (`POST /api/repositories/{slug}/code-indexes/rebuild`) resets it.
+The breaker of the code index builder of a repository (KAIROS-T-0399), as [`Repository`] carries it. The lease of a build job can run out: its server stopped, ran out of memory, or stalled. That trips the breaker, and the build does not run again. Then the builder starts no build of the repository: no update, no first build. A build that a person asks for (`POST /api/repositories/{slug}/code-indexes/rebuild`) resets it.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -1745,7 +1745,7 @@ One repository, as returned by `/api/repositories` (KAIROS-T-0106).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `code_index_breaker` | [`CodeIndexBreaker`](#codeindexbreaker) | no | The breaker of the code index builder of the repository (KAIROS-T-0399): tripped when a build job stopped its server or stalled. While it is tripped, the builder starts no build of the repository. A requested build resets it. |
+| `code_index_breaker` | [`CodeIndexBreaker`](#codeindexbreaker) | no | The breaker of the code index builder of the repository (KAIROS-T-0399). A build job that stopped its server or stalled trips it. Then the builder starts no build of the repository. A requested build resets it. |
 | `code_index_build` | [`CodeIndexBuild`](#codeindexbuild) | no | Whether the code index builder works on the repository (KAIROS-T-0318): `on` (the default) or `off`. |
 | `code_index_summaries` | [`CodeIndexSummaries`](#codeindexsummaries) | no | Where the summaries of the code index of the repository are made (KAIROS-T-0340): `embedded`, `hosted`, or `organization` (the default, KAIROS-T-0358): the default of the organization decides. |
 | `code_index_summaries_resolved` | [`CodeIndexSummaries`](#codeindexsummaries) | no | Where the summaries are made now: `embedded` or `hosted`. For `organization`, the default of the organization (KAIROS-T-0358). |
@@ -2276,7 +2276,7 @@ One node of a team's page tree, as returned by `GET /api/teams/{id}/pages` (a FL
 
 ## TeamWorkDocument
 
-One row of `GET /api/teams/{id}/work-documents` (KAIROS-T-0084, KAIROS-T-0393): a live document of the team. It is listed when a board of the team owns it (`owned`), or when its `supports` parent is a task of the team or an item on the team's delivery board (`parent_*`). A row has at least one of the two reasons.
+One row of `GET /api/teams/{id}/work-documents` (KAIROS-T-0084, KAIROS-T-0393): a live document of the team. A board of the team owns it (`owned`), or it supports a task of the team or an item on the delivery board of the team (`parent_*`). Each row has one reason or both.
 
 | Field | Type | Required | Description |
 |---|---|---|---|

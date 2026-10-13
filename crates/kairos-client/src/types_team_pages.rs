@@ -107,10 +107,10 @@ pub struct TeamAnnouncement {
 }
 
 /// One row of `GET /api/teams/{id}/work-documents` (KAIROS-T-0084,
-/// KAIROS-T-0393): a live document of the team. It is listed when a board
-/// of the team owns it (`owned`), or when its `supports` parent is a task
-/// of the team or an item on the team's delivery board (`parent_*`). A
-/// row has at least one of the two reasons.
+/// KAIROS-T-0393): a live document of the team. A board of the team owns
+/// it (`owned`), or it supports a task of the team or an item on the
+/// delivery board of the team (`parent_*`). Each row has one reason or
+/// both.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct TeamWorkDocument {
     /// Document short code (links to `/items/{code}`).
