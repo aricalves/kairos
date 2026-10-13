@@ -1275,6 +1275,53 @@ mod tests {
         assert_eq!(names("validated"), ["validate_policy"]);
     }
 
+    /// KAIROS-T-0422: test code ranks below the other code, with and
+    /// without summaries, unless the query is about tests. A Rust helper in
+    /// tests/ is test code.
+    #[test]
+    fn test_code_ranks_below_unless_the_query_is_about_tests() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::create_dir_all(repo.join("tests")).unwrap();
+        std::fs::write(repo.join("src/lib.rs"), "pub fn load_policy() {}\n").unwrap();
+        std::fs::write(
+            repo.join("tests/policy.rs"),
+            "fn load_policy_policy_sample() {}\n\n#[test]\nfn load_policy_policy_works() {}\n",
+        )
+        .unwrap();
+        let db = dir.path().join("index.sqlite");
+        let found = |query: &str| -> (query::SearchMode, Vec<(String, bool)>) {
+            let result = Index::open(&db).unwrap().search(query, None, 10).unwrap();
+            let hits = result
+                .hits
+                .into_iter()
+                .map(|h| (h.symbol.name, h.symbol.is_test))
+                .collect();
+            (result.mode, hits)
+        };
+        let check = |mode: query::SearchMode| {
+            // The names of the tests have "policy" two times, so their text
+            // rank is above the source.
+            let (got, hits) = found("load policy");
+            assert_eq!(got, mode);
+            assert_eq!(hits.len(), 3, "{hits:?}");
+            assert_eq!(hits[0], ("load_policy".to_string(), false), "{hits:?}");
+            assert!(hits[1].1 && hits[2].1, "{hits:?}");
+            let (_, hits) = found("how is load policy tested");
+            assert!(hits[0].1, "{hits:?}");
+            assert_eq!(hits[2], ("load_policy".to_string(), false), "{hits:?}");
+        };
+
+        build_structure(&repo, &db).unwrap();
+        check(query::SearchMode::Names);
+
+        let embedder = kairos_embed::DeterministicProvider::default();
+        let mut fake = FakeSummarizer::default();
+        update(&repo, &db, &mut fake, &embedder, &UpdateOptions::default()).unwrap();
+        check(query::SearchMode::SummaryText);
+    }
+
     /// COLLIERY-T-1854: with no model, each key that the pool has is linked,
     /// and each other key is counted as left.
     #[test]

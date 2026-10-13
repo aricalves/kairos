@@ -7,7 +7,8 @@
 //!   scale, but 2 ranks do. The text rank is the FTS5 table of `text`, with
 //!   the Porter stemmer and BM25 (KAIROS-T-0423). With no summaries, the
 //!   search reads the names, the signatures and the paths. Test code ranks
-//!   below the other symbols (COLLIERY-T-1857).
+//!   below the other symbols, unless the query is about tests
+//!   (COLLIERY-T-1857, KAIROS-T-0422).
 //! - [`Index::lookup`]: a symbol from the name that an agent gives.
 //! - [`Index::callers`] and [`Index::callees`]: `certain` edges, and the
 //!   `possible` ones on request.
@@ -33,6 +34,38 @@ const RRF_K: f64 = 60.0;
 
 /// The most edges that a search for a path follows from one symbol.
 const MAX_PATH_DEPTH: usize = 16;
+
+/// The words that make a query about tests (KAIROS-T-0422): with one of
+/// them, test code ranks with the other code; with none, it ranks below it.
+/// A word of the query is compared after [`crate::text::words`] cuts it, so
+/// `test_parse` has "test".
+const TEST_WORDS: &[&str] = &[
+    "test",
+    "tests",
+    "testing",
+    "tested",
+    "spec",
+    "specs",
+    "fixture",
+    "fixtures",
+    "mock",
+    "mocks",
+    "mocked",
+    "mocking",
+    "stub",
+    "stubs",
+    "assert",
+    "asserts",
+    "assertion",
+    "assertions",
+];
+
+/// True when `query` is about tests: it has a word of [`TEST_WORDS`].
+pub(crate) fn about_tests(query: &str) -> bool {
+    crate::text::words(query)
+        .iter()
+        .any(|w| TEST_WORDS.contains(&w.as_str()))
+}
 
 /// One symbol, as the tools show it.
 #[derive(Debug, Clone, PartialEq)]
@@ -730,6 +763,9 @@ impl Index {
     /// the pool. A symbol with no summary (code that waits for its summary)
     /// is ranked by its name, its signature and its path
     /// (KAIROS-T-0352); with no summary in the index, each symbol is.
+    ///
+    /// Test code ranks below each other symbol, in each mode, unless the
+    /// query is about tests ([`about_tests`], KAIROS-T-0422).
     pub fn search(
         &self,
         query: &str,
@@ -804,11 +840,14 @@ impl Index {
             }
         }
 
-        // With no summaries, test code ranks below each other symbol
-        // (COLLIERY-T-1857): the names of test functions often have the
-        // words of the query. With summaries, a test symbol ranks by its own
-        // score, so the search can find it (KAIROS-T-0352, KAIROS-T-0421).
-        let tests_last = mode == SearchMode::Names;
+        // Test code ranks below each other symbol (COLLIERY-T-1857,
+        // KAIROS-T-0422): the names of test functions and the summaries of
+        // tests ("Tests that a policy document is parsed") often have the
+        // words of the query. It is a tier, not a factor on the score, so it
+        // holds in each mode, with and without summaries. A query about
+        // tests ranks all the code by its score, so the search finds a test
+        // by what it checks (KAIROS-T-0421).
+        let tests_last = !about_tests(query);
         let mut order: Vec<(usize, f64)> = fused.into_iter().collect();
         order.sort_by(|a, b| {
             let (test_a, test_b) = if tests_last {
@@ -1173,6 +1212,30 @@ mod tests {
                 assert_eq!(left.iter().map(|s| s.id).collect::<Vec<_>>(), [1, 3])
             }
             other => panic!("not ambiguous: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_query_with_a_test_word_is_about_tests() {
+        for query in [
+            "how is parsing tested",
+            "the tests of the parser",
+            "Testing the policy parser",
+            "which fixture has a sample policy",
+            "mock the clock",
+            "where do we assert the rules",
+            "test_parse_document",
+            "the spec of validate",
+        ] {
+            assert!(about_tests(query), "{query}");
+        }
+        for query in [
+            "how are policy documents defined, parsed and validated",
+            "latest contest results",
+            "attest the signature",
+            "",
+        ] {
+            assert!(!about_tests(query), "{query}");
         }
     }
 

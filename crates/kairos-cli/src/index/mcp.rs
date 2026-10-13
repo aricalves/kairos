@@ -761,7 +761,7 @@ impl CodeTools {
     }
 
     #[tool(
-        description = "Search the code of this checkout by what it does. Give a description in plain words. The result is the best functions and types, with their files, lines and summaries. If the index has no summaries, the search reads the names, the signatures and the paths, and the result says so."
+        description = "Search the code of this checkout by what it does. Give a description in plain words. The result is the best functions and types, with their files, lines and summaries. If the index has no summaries, the search reads the names, the signatures and the paths, and the result says so. Test code ranks below the other code. To find tests, put a word such as \"test\" or \"tested\" in the description."
     )]
     async fn code_search(
         &self,

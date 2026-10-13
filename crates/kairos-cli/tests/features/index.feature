@@ -19,11 +19,18 @@ Feature: The CLI and the code tools
     Then that function is in the first 3 results
 
   # KAIROS-T-0421: test code has a summary, so the search finds a test by
-  # what it checks. The result marks it as test code.
+  # what it checks. The result marks it as test code. The query says "test":
+  # other queries rank test code below the other code (KAIROS-T-0422).
   Scenario: An agent finds a test by what it checks
     Given an index of the polyglot fixture whose summaries have no vectors
     When an agent calls code_search with what a test checks
     Then the first result is that test, marked as test code, with its summary
+
+  # KAIROS-T-0422: a helper in a Rust tests/ folder is test harness code.
+  Scenario: A helper in a Rust tests folder is test code
+    Given an index of the polyglot fixture whose summaries have no vectors
+    When an agent calls symbol, code_search and module_map for "helper" in "tests/common/mod.rs"
+    Then each of the 3 results marks tests/common/mod.rs and its helper as test code
 
   Scenario: callers shows only certain edges by default
     Given an index where a Python function has 1 certain caller and 1 possible caller

@@ -3819,8 +3819,8 @@ fn a_summarized_policy_index(world: &mut IndexWorld, step: &cucumber::gherkin::S
     // so the search uses the text rank only (SummaryText mode).
 }
 
-#[then(expr = "{word} and {word} are in the first {int} results that are not test code")]
-fn two_are_in_the_first(world: &mut IndexWorld, a: String, b: String, n: usize) {
+/// The results of the last search, one line each, for a message.
+fn search_order(world: &IndexWorld) -> Vec<String> {
     let found = world.search.as_ref().expect("no search ran");
     let order: Vec<String> = found
         .hits
@@ -3828,16 +3828,51 @@ fn two_are_in_the_first(world: &mut IndexWorld, a: String, b: String, n: usize) 
         .map(|h| format!("{} test={}", h.symbol.qualified(), h.symbol.is_test))
         .collect();
     eprintln!("the search ({:?}): {order:#?}", found.mode);
-    let first: Vec<&str> = found
+    order
+}
+
+#[then(expr = "{word} and {word} are in the first {int} results")]
+fn two_are_in_the_first(world: &mut IndexWorld, a: String, b: String, n: usize) {
+    let order = search_order(world);
+    let first: Vec<&str> = world
+        .search
+        .as_ref()
+        .expect("no search ran")
         .hits
         .iter()
-        .filter(|h| !h.symbol.is_test)
         .take(n)
         .map(|h| h.symbol.name.as_str())
         .collect();
     assert!(
         first.contains(&a.as_str()) && first.contains(&b.as_str()),
-        "{a} and {b} are not in the first {n} results that are not test code: {order:#?}"
+        "{a} and {b} are not in the first {n} results: {order:#?}"
+    );
+}
+
+/// KAIROS-T-0422: a helper in a Rust tests/ folder is test code.
+#[then(expr = "{word} is test code")]
+fn is_test_code(world: &mut IndexWorld, name: String) {
+    let symbol = world
+        .symbols()
+        .into_iter()
+        .find(|s| s.name == name)
+        .unwrap_or_else(|| panic!("{name} is not in the index"));
+    assert!(symbol.is_test, "{symbol:?}");
+}
+
+#[then("the first result is test code")]
+fn the_first_is_test_code(world: &mut IndexWorld) {
+    the_first_are_test_code(world, 1);
+}
+
+#[then(expr = "the first {int} results are test code")]
+fn the_first_are_test_code(world: &mut IndexWorld, n: usize) {
+    let order = search_order(world);
+    let hits = &world.search.as_ref().expect("no search ran").hits;
+    assert!(hits.len() >= n, "fewer than {n} results: {order:#?}");
+    assert!(
+        hits.iter().take(n).all(|h| h.symbol.is_test),
+        "the first {n} results are not all test code: {order:#?}"
     );
 }
 

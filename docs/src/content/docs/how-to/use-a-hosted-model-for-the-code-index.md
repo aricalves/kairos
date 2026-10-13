@@ -111,6 +111,13 @@ words: `parseDocument` and `parse_document` give "parse" and "document".
 It finds the stem of each word: "parsed" finds "parse". The index keeps
 these words in an SQLite FTS5 table with the Porter stemmer.
 
+Test code ranks below the other code. A Rust file in a `tests/` folder is
+test code too, with its helpers. To find tests, put a test word in the
+query. The test words are "test", "tested", "spec", "fixture", "mock",
+"stub", "assert" and their plurals. Then the test code ranks with the other
+code.
+For example, "how is parsing tested" gives the tests first.
+
 So with `--vector-provider remote`, the search uses vectors when the CLI
 can connect to Kairos. A CLI with no local vector model (the release build
 for Intel macOS) uses Kairos too. The text of the query goes to Kairos,

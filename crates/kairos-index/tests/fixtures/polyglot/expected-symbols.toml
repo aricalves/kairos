@@ -555,8 +555,8 @@ lines = [4, 6]
 is_test = false
 
 # --- Rust test crates that share a module (COLLIERY-T-1849, T-1858) ----------
-# The items of a file in tests/ that are not a #[test] are helpers, not test
-# code: the rule test-helper (KAIROS-T-0352).
+# The items of a Rust file in tests/ that are not a #[test] are helpers of
+# the tests: test code too, by the rule rust-test-crate (KAIROS-T-0422).
 
 [[symbol]]
 file = "tests/common/mod.rs"
@@ -565,7 +565,7 @@ container = ""
 kind = "function"
 language = "rust"
 lines = [4, 6]
-is_test = false
+is_test = true
 
 [[symbol]]
 file = "tests/first.rs"
@@ -574,7 +574,7 @@ container = ""
 kind = "module"
 language = "rust"
 lines = [1, 1]
-is_test = false
+is_test = true
 
 [[symbol]]
 file = "tests/first.rs"
@@ -592,7 +592,7 @@ container = ""
 kind = "module"
 language = "rust"
 lines = [1, 1]
-is_test = false
+is_test = true
 
 [[symbol]]
 file = "tests/second.rs"
@@ -610,7 +610,7 @@ container = ""
 kind = "function"
 language = "rust"
 lines = [8, 10]
-is_test = false
+is_test = true
 
 [[symbol]]
 file = "tests/first.rs"
@@ -628,7 +628,7 @@ container = ""
 kind = "function"
 language = "rust"
 lines = [4, 6]
-is_test = false
+is_test = true
 
 [[symbol]]
 file = "tests/third.rs"
@@ -646,7 +646,7 @@ container = ""
 kind = "module"
 language = "rust"
 lines = [15, 15]
-is_test = false
+is_test = true
 
 [[symbol]]
 file = "tests/third.rs"

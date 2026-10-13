@@ -102,8 +102,9 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// A search for what a test checks, with no word of its name.
-const TEST_QUERY: &str = "puts each row on its own line";
+/// A search for what a test checks, with no word of its name. It has the
+/// word "test", so test code ranks with the other code (KAIROS-T-0422).
+const TEST_QUERY: &str = "which test puts each row on its own line";
 
 /// The description that the agent searches with: the words of the summary
 /// of `Stack::pop`, written as a question.
@@ -837,6 +838,43 @@ fn candidates_given_back(world: &mut CliWorld) {
     assert!(
         text.starts_with("Checksum (implementation, rust)\nFile: src/checksum.rs:10-"),
         "{text}"
+    );
+}
+
+// KAIROS-T-0422: a helper in a Rust tests/ folder is test code.
+
+#[when(expr = "an agent calls symbol, code_search and module_map for {string} in {string}")]
+fn symbol_search_and_map(world: &mut CliWorld, name: String, file: String) {
+    world.call("symbol", json!({"symbol": name, "file": file}));
+    let symbol = world.text().to_string();
+    world.call("code_search", json!({"query": name, "limit": 50}));
+    let search = world.text().to_string();
+    world.call("module_map", json!({}));
+    let map = world.text().to_string();
+    world.texts = vec![symbol, search, map];
+}
+
+#[then("each of the 3 results marks tests/common/mod.rs and its helper as test code")]
+fn the_helper_is_test_code(world: &mut CliWorld) {
+    let [symbol, search, map] = world.texts.as_slice() else {
+        panic!("not 3 results: {:?}", world.texts);
+    };
+    assert!(
+        symbol.starts_with("helper (function, rust)\nFile: tests/common/mod.rs:")
+            && symbol.contains("\nThis is test code."),
+        "{symbol}"
+    );
+    assert!(
+        numbered(search)
+            .iter()
+            .any(|l| l.contains("helper (tests/common/mod.rs:")
+                && l.contains(", function, test code")),
+        "{search}"
+    );
+    assert!(
+        map.lines()
+            .any(|l| l.starts_with("- tests/common/mod.rs") && l.contains("test code")),
+        "{map}"
     );
 }
 
