@@ -123,9 +123,12 @@ test('site sandbox: a site cannot act as the person who reads it', async ({ page
   expect(result.fetch, 'the API does not answer as the reader').not.toBe('status 200');
   expect(result.frame).toMatch(/^blocked/);
 
-  // A form posted to the API does not make an agent key. Wait for the answer
-  // to land in the form's frame, then look.
-  const answered = page.waitForEvent('framenavigated', (frame) => frame.name() === 'sink');
+  // A form posted to the API does not make an agent key. Wait for the
+  // answer of the API, then look.
+  const answered = page.waitForResponse(
+    (response) =>
+      response.url().endsWith('/api/me/agent-keys') && response.request().method() === 'POST',
+  );
   await page.evaluate(() => (document.getElementById('post') as HTMLFormElement).submit());
   await answered;
   expect(await agentKeys(page, token)).not.toContain('from-a-site');
