@@ -59,4 +59,7 @@ web-sys = { workspace = true, features = [
     "DataTransfer",
     # Markdown toolbar cursor insertion (KAIROS-T-0086)
     "HtmlTextAreaElement",
+    # Scroll to the members panel of a board (KAIROS-T-0412)
+    "Document",
+    "Element",
 ] }

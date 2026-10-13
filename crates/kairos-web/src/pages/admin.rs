@@ -56,6 +56,10 @@ mod teams;
 mod templates;
 
 pub use boards::{AdminBoardPage, AdminBoardsPage};
+
+/// The id of the members panel in the admin page of a board
+/// (KAIROS-T-0412). The board page links to `/admin/boards/<id>#members`.
+pub(crate) const MEMBERS_ANCHOR: &str = "members";
 pub use code_index::AdminCodeIndexPage;
 pub use members::AdminMembersPage;
 pub use metadata::AdminMetadataPage;
