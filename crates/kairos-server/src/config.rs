@@ -1373,6 +1373,21 @@ mod tests {
         AppConfig::from_lookup(|var| record(var, minimal.get(var).map(|v| v.to_string())))
             .expect("MINIMAL is a valid config");
 
+        // The site store (KAIROS-T-0405) branches on KAIROS_PAGES_STORE: the
+        // disk and the s3 arms read disjoint variables. Drive both.
+        for store in ["disk", "s3"] {
+            let _ = crate::site_store::parse_settings(&|var: &str| {
+                record(
+                    var,
+                    Some(match var {
+                        "KAIROS_PAGES_STORE" => store.to_string(),
+                        "KAIROS_PAGES_MAX_SIZE" | "KAIROS_PAGES_MAX_FILES" => "1".to_string(),
+                        _ => "x".to_string(),
+                    }),
+                )
+            });
+        }
+
         // Embedding config branches on the provider, and the remote and local
         // arms read disjoint variables. Drive every arm, or the union is short.
         for provider in ["none", "local", "remote", "deterministic"] {

@@ -150,6 +150,8 @@ FROM debian:trixie-slim AS runtime
 # tini (KAIROS-T-0336): the init that is PID 1, see ENTRYPOINT below.
 # /var/lib/kairos/code-index is the usual KAIROS_CODE_INDEX_DIR (a volume),
 # owned by the runtime user: the clones and the downloaded tools go there.
+# /var/lib/kairos/pages is the usual KAIROS_PAGES_DIR (KAIROS-T-0409), the
+# published repository sites; also a volume, also owned by the runtime user.
 # hadolint ignore=DL3008  # base image tag is pinned; see builder-stage note.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libpq5 \
@@ -161,7 +163,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tini \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --create-home --shell /usr/sbin/nologin kairos \
-    && install -d -o 10001 -g 10001 /var/lib/kairos/code-index
+    && install -d -o 10001 -g 10001 /var/lib/kairos/code-index /var/lib/kairos/pages
 
 # OCI provenance. `licenses` is the machine-readable answer to "what may I do
 # with this image?"; scanners and registries read it, and until 0.2.0 the

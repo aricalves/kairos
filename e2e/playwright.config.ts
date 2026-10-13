@@ -34,5 +34,17 @@ export default defineConfig({
   },
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    // KAIROS-T-0409: the sandbox of the uploaded sites is proved in each
+    // engine. Only that spec runs in Firefox and WebKit.
+    {
+      name: 'firefox',
+      use: { ...devices['Desktop Firefox'] },
+      testMatch: /site-sandbox\.spec\.ts/,
+    },
+    {
+      name: 'webkit',
+      use: { ...devices['Desktop Safari'] },
+      testMatch: /site-sandbox\.spec\.ts/,
+    },
   ],
 });
