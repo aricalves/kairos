@@ -180,6 +180,9 @@ pub struct Repository {
     /// `organization`, the default of the organization (KAIROS-T-0358).
     #[serde(default)]
     pub code_index_summaries_resolved: CodeIndexSummaries,
+    /// The published site of the repository (KAIROS-T-0406).
+    #[serde(default)]
+    pub site: crate::types_sites::RepositorySite,
     /// RFC 3339.
     pub created_at: String,
     /// RFC 3339.
@@ -280,6 +283,10 @@ pub struct UpdateRepositoryRequest {
     /// provider (`CODE_INDEX_NO_HOSTED_PROVIDER`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_index_summaries: Option<CodeIndexSummaries>,
+    /// The site switch (KAIROS-T-0406). Off: a publish is refused, and the
+    /// site is not served.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site_enabled: Option<bool>,
 }
 
 /// Where the summaries of the code index of a repository are made

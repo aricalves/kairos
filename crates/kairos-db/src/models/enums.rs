@@ -279,6 +279,8 @@ text_enum! {
         Release => "release",
         Cancel => "cancel",
         Purge => "purge",
+        Publish => "publish",
+        Unpublish => "unpublish",
     }
 }
 
@@ -422,6 +424,8 @@ mod tests {
                 "release",
                 "cancel",
                 "purge",
+                "publish",
+                "unpublish",
             ]
         );
     }

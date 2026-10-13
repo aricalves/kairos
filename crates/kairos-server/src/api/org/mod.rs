@@ -34,6 +34,7 @@ pub mod members;
 pub mod repositories;
 pub mod repository_credentials;
 pub mod repository_write_tokens;
+pub mod sites;
 pub mod streams;
 pub mod structure_grants;
 pub mod team_pages;
@@ -61,6 +62,8 @@ pub fn router() -> Router<AppState> {
         .merge(forge::router())
         .merge(repositories::router())
         .merge(code_indexes::router())
+        // KAIROS-T-0406: the published site of a repository.
+        .merge(sites::router())
         .merge(code_index_settings::router())
         .merge(code_index_query::router())
         .merge(repository_credentials::router())

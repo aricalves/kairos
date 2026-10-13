@@ -71,6 +71,11 @@ pub const CONFIGURE_BOARDS: &str = "configure_boards";
 /// of the prefix makes `manage_*` mean what it reads, without a second rule in
 /// the matcher.
 pub const ADMINISTER_MEMBERS: &str = "administer_members";
+/// Publish and unpublish the sites of the repositories of the board's team
+/// (KAIROS-T-0406, KAIROS-D-0012). Granted on the team's delivery board,
+/// usually to the service account of a repository's CI. Not implied by team
+/// membership, and no glob but `*` covers it.
+pub const PAGES: &str = "pages";
 
 /// Glob: all capabilities on the board (full access).
 pub const GLOB_ALL: &str = "*";
@@ -98,6 +103,7 @@ pub const CAPABILITIES: &[&str] = &[
     TRANSITION_ITEMS,
     CONFIGURE_BOARDS,
     ADMINISTER_MEMBERS,
+    PAGES,
 ];
 
 /// Every sanctioned glob form (trailing-`*` only, per A-0006).
