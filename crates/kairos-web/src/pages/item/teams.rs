@@ -187,12 +187,12 @@ pub fn TeamsPanel(
                     <Group align="end" gap="sm" attr:data-testid="item-teams-add">
                         <Select
                             label="Team"
-                            option_pairs=std::iter::once((
+                            option_pairs={std::iter::once((
                                 NO_CHOICE.to_string(),
                                 "(select a team)".to_string(),
                             ))
                             .chain(options.get())
-                            .collect()
+                            .collect::<Vec<_>>()}
                             value=value
                         />
                         <Button

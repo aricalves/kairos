@@ -164,6 +164,6 @@ test('lanes: support renders above planned; drags and the lane control move card
     });
     await laneField.locator('select').selectOption({ label: 'planned' });
     await boardPanel.getByRole('button', { name: 'Set lane', exact: true }).click();
-    await expect(page.getByText('Lane set to planned.')).toBeVisible();
+    await expect(page.locator('.cl-toast', { hasText: 'Lane set to planned.' })).toBeVisible();
   });
 });

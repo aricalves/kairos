@@ -283,7 +283,7 @@ journey(
       // Until COLLIERY-T-0217 this was refused with REPOSITORY_OWNER_MISMATCH
       // and the ticket had to be unbound first. A move does not look at the
       // repository now.
-      await expect(page.getByText(/Moved to /)).toBeVisible({ timeout: 10_000 });
+      await expect(page.locator('.cl-toast', { hasText: /Moved to / })).toBeVisible({ timeout: 10_000 });
       const moved = await (await alice.api()).task(filed);
       expect(moved.repository?.slug, 'the ticket keeps its repository').toBe(THEIR_REPO);
       await openBoard(page, theirBoard);

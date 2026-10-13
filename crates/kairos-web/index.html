@@ -12,7 +12,7 @@
       stay before the stylesheet. A unit test (src/app.rs) compares it with
       the constant of the Aurora crate.
     -->
-    <script>(function(){try{var t=localStorage.getItem("aurora-theme");if(t==="light"||t==="dark"){var d=document.documentElement;d.setAttribute("data-theme",t);d.style.colorScheme=t;}}catch(e){}})();</script>
+    <script>(function(){try{var t=localStorage.getItem("aurora-theme");if(t==="light"||t==="dark"||t==="hyper"){var d=document.documentElement;d.setAttribute("data-theme",t);if(t!=="hyper")d.style.colorScheme=t;}}catch(e){}})();</script>
     <!--
       KAIROS-T-0326: the Aurora stylesheet is a linked file, written by the
       pre_build hook of Trunk.toml (crates/kairos-web-css), so the page has
