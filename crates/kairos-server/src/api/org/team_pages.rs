@@ -126,6 +126,9 @@ fn map_page_error(e: TeamPageError) -> ApiError {
             "SLUG_CONFLICT",
             format!("A page in the same folder has the slug {slug:?} already."),
         ),
+        e @ TeamPageError::ReservedSlug(_) => {
+            ApiError::validation(e.to_string()).with_details(json!({ "field": "slug" }))
+        }
         TeamPageError::BadParent(id) => ApiError::validation(format!(
             "The parent {id} is not a live folder of this team."
         )),

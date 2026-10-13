@@ -27,7 +27,7 @@ use uuid::Uuid;
 use super::super::convert_org::team_to_dto;
 use super::super::{clamp_pagination, parse_enum, parse_uuid, require_structure};
 use super::{
-    check_slug_form, count_live_board_items, is_unique_violation, map_config_error,
+    check_team_slug, count_live_board_items, is_unique_violation, map_config_error,
     require_user_exists, run_in_transaction,
 };
 use crate::app::AppState;
@@ -397,7 +397,7 @@ pub(crate) fn create(
     // COLLIERY-T-0260: the form of the slug that the caller sent. The
     // slug `{slug}-delivery` of the delivery board is a slug that the
     // server makes, so it gets no check.
-    check_slug_form("team", &body.slug)?;
+    check_team_slug(&body.slug)?;
     require_structure(conn, slug, user)?;
     run_in_transaction(conn, |conn| {
         use kairos_db::schema::teams;
@@ -518,7 +518,7 @@ pub(crate) async fn update_team(
             if let Some(new_slug) = body.slug.as_deref()
                 && new_slug != team.slug
             {
-                check_slug_form("team", new_slug)?;
+                check_team_slug(new_slug)?;
             }
             // KAIROS-T-0268: only a value that is different from the value
             // of the row goes to the write. When no value is different, the

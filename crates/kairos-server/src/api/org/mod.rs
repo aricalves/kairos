@@ -137,6 +137,22 @@ pub fn check_slug_form(kind: &str, slug: &str) -> Result<(), ApiError> {
     .with_details(json!({ "field": "slug" })))
 }
 
+/// [`check_slug_form`] for a team, and the slug must not be one of the names
+/// that the docs sites use as path segments (KAIROS-T-0403,
+/// [`kairos_core::slug::SITE_RESERVED_SLUGS`]).
+pub fn check_team_slug(slug: &str) -> Result<(), ApiError> {
+    check_slug_form("team", slug)?;
+    if kairos_core::slug::is_site_reserved(slug) {
+        return Err(ApiError::validation(format!(
+            "You cannot use the team slug {slug:?}: the docs sites use {} in their paths. \
+             Send a different slug.",
+            kairos_core::slug::SITE_RESERVED_SLUGS.join(", ")
+        ))
+        .with_details(json!({ "field": "slug" })));
+    }
+    Ok(())
+}
+
 /// Load a live board by id, or 404.
 pub fn load_board(conn: &mut PgConnection, board_id: Uuid) -> Result<Board, ApiError> {
     use kairos_db::schema::boards::dsl;

@@ -78,23 +78,26 @@ fn host_without_port(host: &str) -> &str {
     host.split(':').next().unwrap_or(host)
 }
 
+/// The tenant that the deployment or the host fixes, if any: steps 1 and 2 of
+/// the module-level order (`KAIROS_SINGLE_TENANT`, then the `Host` subdomain),
+/// without the `X-Tenant` header. The docs sites take the tenant from the
+/// path, which must agree with this (KAIROS-T-0403, KAIROS-D-0013).
+pub fn fixed_slug(config: &AppConfig, headers: &HeaderMap) -> Option<String> {
+    if let Some(slug) = &config.single_tenant {
+        return Some(slug.clone());
+    }
+    let base = config.base_domain.as_ref()?;
+    let host = headers.get("host").and_then(|v| v.to_str().ok())?;
+    let host = host_without_port(host).to_ascii_lowercase();
+    let label = host.strip_suffix(&format!(".{}", base.to_ascii_lowercase()))?;
+    (!label.is_empty() && !label.contains('.')).then(|| label.to_string())
+}
+
 /// Resolve the tenant slug for a request per the module-level order.
 /// Pure over `(config, headers)` so it is unit-testable without a server.
 pub fn resolve_slug(config: &AppConfig, headers: &HeaderMap) -> Result<String, ApiError> {
-    if let Some(slug) = &config.single_tenant {
-        return Ok(slug.clone());
-    }
-
-    if let Some(base) = &config.base_domain
-        && let Some(host) = headers.get("host").and_then(|v| v.to_str().ok())
-    {
-        let host = host_without_port(host).to_ascii_lowercase();
-        if let Some(label) = host.strip_suffix(&format!(".{}", base.to_ascii_lowercase()))
-            && !label.is_empty()
-            && !label.contains('.')
-        {
-            return Ok(label.to_string());
-        }
+    if let Some(slug) = fixed_slug(config, headers) {
+        return Ok(slug);
     }
 
     if let Some(slug) = headers.get("x-tenant").and_then(|v| v.to_str().ok()) {

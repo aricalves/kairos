@@ -65,6 +65,8 @@ const RESERVED_PREFIXES: &[&str] = &[
     "/readyz",
     "/metrics",
     "/.well-known",
+    // The docs sites (KAIROS-T-0403): the `/pages` router answers, never the SPA.
+    "/pages",
 ];
 
 /// Issuer endpoints the SPA flow needs, resolved lazily from OIDC
@@ -582,6 +584,9 @@ mod tests {
             "/readyz",
             "/metrics",
             "/.well-known/oauth-protected-resource",
+            "/pages",
+            "/pages/acme/",
+            "/pages/acme/kairos/repos/kairos/index.html",
         ] {
             assert!(is_reserved(reserved), "{reserved} must be reserved");
         }
@@ -593,6 +598,7 @@ mod tests {
             "/login",
             "/apifoo",
             "/wsx",
+            "/pagesx",
         ] {
             assert!(!is_reserved(spa), "{spa} must fall through to the SPA");
         }

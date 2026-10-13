@@ -484,6 +484,9 @@ pub fn router(state: AppState) -> Router {
         // relay, and the SPA fallback serving the GUI at `/` (reserved
         // API prefixes still 404) — see crate::web module docs.
         .merge(crate::web::router(&state))
+        // The docs sites (KAIROS-T-0403): `/pages`, with its own tenant (from
+        // the path) and its own auth (none for a repository site).
+        .merge(crate::pages::router(&state))
         .fallback(crate::web::spa_fallback)
         // KAIROS-T-0049 (A-0013): the HTTP-metrics layer wraps the WHOLE
         // router (added last → outermost), so every request — matched route
