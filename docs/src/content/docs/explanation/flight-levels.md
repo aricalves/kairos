@@ -95,11 +95,6 @@ flowchart TD
     I -->|parent| D2
     I -.->|informs| A
     A -.->|informs| S
-
-    classDef org fill:#2b3a55,stroke:#7aa2f7,color:#e6e6e6
-    classDef team fill:#2b4a3a,stroke:#7ac28e,color:#e6e6e6
-    class S,I,A org
-    class D1,D2 team
 ```
 
 The solid edges are `parent`: strategy decomposes into initiatives, an

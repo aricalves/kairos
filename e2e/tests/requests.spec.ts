@@ -242,7 +242,7 @@ test('requests: a member who does not manage a delivery board sends a request to
     await expect(editor.locator('textarea.kairos-editor__textarea')).toBeVisible();
     await field(editor, 'Title').locator('input').fill(editedTitle);
     await editor.getByRole('button', { name: 'Save' }).click();
-    await expect(carol.getByText(/Saved — the item is now at v/)).toBeVisible();
+    await expect(carol.locator('.cl-toast', { hasText: /Saved — the item is now at v/ })).toBeVisible();
     expect((await readTask(GUI, alice, plain)).title).toBe(editedTitle);
     // She created it, so she can also archive it.
     await expect(carol.getByRole('button', { name: 'Archive', exact: true })).toBeEnabled();
@@ -266,7 +266,7 @@ test('requests: a member who does not manage a delivery board sends a request to
     });
     await field(boardPanel, 'Lane').locator('select').selectOption({ label: 'planned' });
     await boardPanel.getByRole('button', { name: 'Set lane', exact: true }).click();
-    await expect(bob.getByText('Lane set to planned.')).toBeVisible();
+    await expect(bob.locator('.cl-toast', { hasText: 'Lane set to planned.' })).toBeVisible();
     const task = await readTask(GUI, alice, plain);
     expect(task.work_class).toBe('planned');
     expect(task.column_id).toBe(platform.entryColumnId);
