@@ -688,8 +688,11 @@ fn refused(world: &mut CliWorld) {
         result.text
     );
     assert!(result.text.contains("\"verbose\""), "{}", result.text);
-    // The list of the arguments has `line` (KAIROS-T-0417).
-    assert!(result.text.contains("\"line\""), "{}", result.text);
+    // A tool that takes `symbol` lists `line` too (KAIROS-T-0417).
+    // `duplicates` has neither.
+    if result.text.contains("\"symbol\"") {
+        assert!(result.text.contains("\"line\""), "{}", result.text);
+    }
 }
 
 // KAIROS-T-0417: the choice of one symbol.
