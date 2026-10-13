@@ -31,6 +31,51 @@ A `manage_<type>` capability gates the create of an item on the board. For an
 edit or a delete, the capability is one of three ways in: see
 [The edit rule](#the-edit-rule).
 
+### The capabilities of each board level
+
+A board holds one item type and documents. Thus not each capability applies
+on each board. These capabilities apply:
+
+| Board level | Capabilities that apply |
+|---|---|
+| `strategy` | `manage_strategies`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members` |
+| `initiative` | `manage_initiatives`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members` |
+| `delivery` | `manage_tasks`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members` |
+| `adr` | `manage_adrs`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members` |
+
+The grants page of a person uses this table (see below). A change on that page
+can grant only a capability of the table.
+
+## Give one person grants on many boards
+
+Use the grants page of the person to set the grants of one person on many
+boards in one step.
+
+1. Open **Admin → Members**, and click the name of the person. The page is
+   `/admin/members/<user id>`.
+2. In the grid, each row is a board, and each column is a capability. The
+   rows are in groups by board level. A cell is off when its capability does
+   not apply at the level of the board.
+3. To grant a capability on each board, tick its column in the **All boards**
+   row. Kairos ticks the cell on each board where the capability applies. Click
+   the column again to clear it. Then change single rows if necessary.
+4. Click **Save**. Kairos sends only the changed cells. It applies all of them
+   in one transaction, or none of them. Each grant and each revoke writes an
+   activity row, as a single grant does.
+5. In **Teams**, add the person to a team or remove the person from a team.
+
+An organization admin sees each board and the teams. A person with
+`administer_members` on a board sees the **Members** tab too. The grid shows
+only the boards where that person has `administer_members`, and no teams. A
+stored glob (`*`, `manage_*`) is not a column. The page shows it as text. To
+change it, use the members panel of the board.
+
+The REST calls are `GET /api/members/{user_id}/grants` and
+`PATCH /api/members/{user_id}/grants`: see
+[Boards and teams](../rest/boards-and-teams/#board-members). Kairos refuses all
+of the change with 403 when the caller cannot administer a board of it.
+`details.board_slug` names the board.
+
 ### Templates and metadata definitions are not delegable
 
 Writes to document templates and metadata definitions are **org-admin only**,

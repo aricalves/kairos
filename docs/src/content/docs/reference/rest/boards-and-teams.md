@@ -677,6 +677,56 @@ Request body (required): `application/json`, [`ReplaceCapabilitiesRequest`](../s
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown board, or user is not a member |
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Capability outside the A-0006 vocabulary |
 
+### `GET /api/members/{user_id}/grants`
+
+The grants of one person on the boards that the caller administers
+(KAIROS-T-0413). The answer also gives the teams of the person.
+
+An organization admin sees each live board. A holder of
+`administer_members` sees only the boards where it holds it. `teams` is
+`null` unless the caller can change team members.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `user_id` | path | yes | `string` | User id (UUID) |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`UserGrants`](../schemas/#usergrants) | The grants of the person on each board that the caller administers |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The caller administers no board |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The user is not a member of the organization |
+
+### `PATCH /api/members/{user_id}/grants`
+
+Change the grants of one person on one or more boards, in ONE
+transaction (KAIROS-T-0413).
+
+Each entry of `changes` names a board. It gives the capabilities to
+grant and the stored grants to revoke.
+
+The caller must administer each board. A board that the caller cannot
+administer refuses all of the change (403). The refusal names the board.
+A grant must apply at the level of the board (422).
+
+A grant that the person has already refuses all of the change (409).
+A revoke of a grant that the person does not have refuses it too (404).
+Each grant and each revoke writes its activity row. The answer is the
+new view, as `GET` gives it.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `user_id` | path | yes | `string` | User id (UUID) |
+
+Request body (required): `application/json`, [`ChangeUserGrantsRequest`](../schemas/#changeusergrantsrequest)
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`UserGrants`](../schemas/#usergrants) | All the changes were applied; the new grants |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The caller cannot administer a board of the change; no change was applied |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown board or user, or a revoke of a grant that the person does not have |
+| `409` | [`ErrorEnvelope`](../schemas/#errorenvelope) | A grant that the person has already |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | No change, a board two times, or a capability that does not apply at the level of the board |
+
 ## structure-grants
 
 ### `GET /api/structure-grants`

@@ -184,6 +184,59 @@ pub fn board_member_capabilities(board_level: &str) -> &'static [&'static str] {
     }
 }
 
+/// The board levels (the text of `boards.board_level`), in the order that
+/// a page shows them: strategy, initiative, delivery, ADR (KAIROS-T-0413).
+pub const BOARD_LEVELS: &[&str] = &["strategy", "initiative", "delivery", "adr"];
+
+/// The grantable capabilities that APPLY on a board of the level
+/// `board_level` (KAIROS-T-0413): the capabilities that authorize a write
+/// that a board of that level can have. A board holds one item type and
+/// documents (`types_of_level` of the server), so each level has one
+/// `manage_<type>`, and `manage_documents`, `transition_items`,
+/// `configure_boards` and `administer_members`. An unknown level has none.
+///
+/// The ONE map of levels to capabilities: the server refuses a grant of a
+/// different capability in the change of the grants of one person over
+/// many boards, and sends this list to the GUI for each board, which
+/// enables only these cells of the grid.
+pub fn capabilities_of_level(board_level: &str) -> &'static [&'static str] {
+    const STRATEGY: &[&str] = &[
+        MANAGE_STRATEGIES,
+        MANAGE_DOCUMENTS,
+        TRANSITION_ITEMS,
+        CONFIGURE_BOARDS,
+        ADMINISTER_MEMBERS,
+    ];
+    const INITIATIVE: &[&str] = &[
+        MANAGE_INITIATIVES,
+        MANAGE_DOCUMENTS,
+        TRANSITION_ITEMS,
+        CONFIGURE_BOARDS,
+        ADMINISTER_MEMBERS,
+    ];
+    const DELIVERY: &[&str] = &[
+        MANAGE_TASKS,
+        MANAGE_DOCUMENTS,
+        TRANSITION_ITEMS,
+        CONFIGURE_BOARDS,
+        ADMINISTER_MEMBERS,
+    ];
+    const ADR: &[&str] = &[
+        MANAGE_ADRS,
+        MANAGE_DOCUMENTS,
+        TRANSITION_ITEMS,
+        CONFIGURE_BOARDS,
+        ADMINISTER_MEMBERS,
+    ];
+    match board_level {
+        "strategy" => STRATEGY,
+        "initiative" => INITIATIVE,
+        "delivery" => DELIVERY,
+        "adr" => ADR,
+        _ => &[],
+    }
+}
+
 /// A request to any team (KAIROS-T-0105, amended by COLLIERY-T-0218 for
 /// COLLIERY-A-0023 decisions 7 and 8): any member of the tenant may send a
 /// request to any team: a TASK in the entry column of its delivery board,
@@ -741,6 +794,45 @@ mod tests {
         );
         assert!(board_member_capabilities("delivery").is_empty());
         assert!(board_member_capabilities("adr").is_empty());
+    }
+
+    /// KAIROS-T-0413: each level has the `manage_<type>` of its item type
+    /// and the four capabilities that each board has. Each applicable
+    /// capability is grantable, and each grantable capability applies on
+    /// some level.
+    #[test]
+    fn the_capabilities_of_each_level() {
+        let common = [
+            MANAGE_DOCUMENTS,
+            TRANSITION_ITEMS,
+            CONFIGURE_BOARDS,
+            ADMINISTER_MEMBERS,
+        ];
+        for (level, own) in [
+            ("strategy", MANAGE_STRATEGIES),
+            ("initiative", MANAGE_INITIATIVES),
+            ("delivery", MANAGE_TASKS),
+            ("adr", MANAGE_ADRS),
+        ] {
+            let applies = capabilities_of_level(level);
+            assert!(applies.contains(&own), "{level}");
+            for capability in common {
+                assert!(applies.contains(&capability), "{level} {capability}");
+            }
+            assert_eq!(applies.len(), 5, "{level}");
+            assert!(applies.iter().all(|c| CAPABILITIES.contains(c)));
+        }
+        assert!(!capabilities_of_level("delivery").contains(&MANAGE_STRATEGIES));
+        assert!(!capabilities_of_level("strategy").contains(&MANAGE_TASKS));
+        assert!(capabilities_of_level("team").is_empty());
+        for capability in CAPABILITIES {
+            assert!(
+                BOARD_LEVELS
+                    .iter()
+                    .any(|level| capabilities_of_level(level).contains(capability)),
+                "{capability} applies on no level"
+            );
+        }
     }
 
     /// COLLIERY-T-0228: each of the three facts is sufficient, and with

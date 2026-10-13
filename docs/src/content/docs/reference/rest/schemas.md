@@ -251,6 +251,18 @@ The flow metrics of a board for a range (KAIROS-T-0372), from the history of the
 | `throughput` | array of [`FlowWeek`](#flowweek) | yes | One row for each week of the range (weeks start on Monday, UTC). |
 | `to` | `string` | yes | The last day of the range, `YYYY-MM-DD`. |
 
+## BoardGrantChange
+
+The changes on one board (an element of [`ChangeUserGrantsRequest::changes`]).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `board_id` | `string` | yes | The board (UUID). |
+| `grant` | array of `string` | no | The capabilities to grant. Each must apply at the level of the board, and the person must not have it. |
+| `revoke` | array of `string` | no | The stored grants to revoke (a glob too). The person must have each. |
+
+The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
+
 ## BoardItemsResponse
 
 Response of `GET /api/boards/{id}/items`: one page of the items on the board, grouped by column (columns in position order). The order of the items is: the position of the column, then the type, then the short code (COLLIERY-T-0261). The order of the types is: strategy, initiative, task, ADR. Each column is in each page, and a column can have no item on a page.
@@ -309,6 +321,16 @@ Response of `GET /api/{entity_type}/{short_code}/cascade-preview` (KAIROS-T-0051
 | `cascaded_short_codes` | array of `string` | yes | Short codes of the live descendants a delete would cascade to, sorted. |
 | `not_reached` | array of [`NotReached`](#notreached) | no | The live descendants that an archive BY THIS CALLER would not reach, sorted by short code (COLLIERY-T-0234). The preview answers for the caller who asks: a different caller can get a different answer. Absent when the archive would reach each descendant. |
 | `short_code` | `string` | yes | The item's short code (the cascade root). |
+
+## ChangeUserGrantsRequest
+
+Body of `PATCH /api/members/{user_id}/grants` (KAIROS-T-0413): the changes to the grants of one person on one or more boards. Kairos applies all of them in one transaction, or none.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `changes` | array of [`BoardGrantChange`](#boardgrantchange) | yes | One entry for each board (at least one; a board once only). |
+
+The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
 
 ## ChildColumnProgress
 
@@ -2540,6 +2562,41 @@ The answer to `PUT /api/repositories/{slug}/code-indexes/{commit}`.
 | `index` | [`CodeIndex`](#codeindex) | yes | The index as Kairos keeps it now. |
 | `new_summaries` | `integer` | yes | The summaries of the upload that the pool of the repository did not have. |
 | `pool_size` | `integer` | yes | The summaries in the pool of the repository after the upload. |
+
+## UserBoardGrants
+
+The grants of one person on one board (a row of [`UserGrants`]).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `applicable` | array of `string` | yes | The capabilities that apply at the level of the board. A change can grant only these on the board. |
+| `board_id` | `string` | yes | The board (UUID). |
+| `board_level` | `string` | yes | `strategy|initiative|delivery|adr`. |
+| `board_name` | `string` | yes |  |
+| `board_slug` | `string` | yes |  |
+| `capabilities` | array of `string` | yes | The stored grants of the person on the board (sorted). Globs too. |
+
+## UserGrants
+
+The grants of one person on the boards that the caller administers, and the teams of the person (KAIROS-T-0413). The answer of `GET` and `PATCH /api/members/{user_id}/grants`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `boards` | array of [`UserBoardGrants`](#userboardgrants) | yes | One row for each live board that the caller administers. The order is by level (strategy, initiative, delivery, ADR), then by name. |
+| `display_name` | `string` | yes |  |
+| `email` | `string` | yes |  |
+| `teams` | `array`, nullable | no | The teams of the person, by name. `null` when the caller cannot change team members. |
+| `user_id` | `string` | yes | `public.users.id` (UUID). |
+
+## UserTeam
+
+A team of a person (an element of [`UserGrants::teams`]).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | `string` | yes |  |
+| `slug` | `string` | yes |  |
+| `team_id` | `string` | yes | The team (UUID). |
 
 ## VectorProviderSettings
 

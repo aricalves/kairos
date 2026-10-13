@@ -21,6 +21,7 @@
 //! | `/admin/teams`  | teams CRUD + members | T-0043     |
 //! | `/admin/streams`| delivery streams CRUD + teams | T-0043 |
 //! | `/admin/members`| org members + roles  | T-0043     |
+//! | `/admin/members/:user` | the grants of one person on many boards, and the teams | T-0413 |
 //! | `/admin/code-index` | the providers of the code index | T-0339 |
 //! | `/admin/templates` | templates CRUD    | T-0043     |
 //! | `/admin/metadata`  | metadata definitions CRUD | T-0043 |
@@ -84,6 +85,7 @@ pub fn App() -> impl IntoView {
                         <Route path=path!("repositories") view=pages::admin::AdminRepositoriesPage/>
                         <Route path=path!("code-index") view=pages::admin::AdminCodeIndexPage/>
                         <Route path=path!("members") view=pages::admin::AdminMembersPage/>
+                        <Route path=path!("members/:user") view=pages::admin::AdminMemberGrantsPage/>
                         <Route path=path!("templates") view=pages::admin::AdminTemplatesPage/>
                         <Route path=path!("metadata") view=pages::admin::AdminMetadataPage/>
                     </ParentRoute>

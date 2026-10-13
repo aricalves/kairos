@@ -599,6 +599,74 @@ pub struct RemoveBoardMemberResponse {
     pub revoked_capabilities: Vec<String>,
 }
 
+/// The grants of one person on the boards that the caller administers, and
+/// the teams of the person (KAIROS-T-0413). The answer of `GET` and `PATCH
+/// /api/members/{user_id}/grants`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct UserGrants {
+    /// `public.users.id` (UUID).
+    pub user_id: String,
+    pub email: String,
+    pub display_name: String,
+    /// One row for each live board that the caller administers. The order
+    /// is by level (strategy, initiative, delivery, ADR), then by name.
+    pub boards: Vec<UserBoardGrants>,
+    /// The teams of the person, by name. `null` when the caller cannot
+    /// change team members.
+    pub teams: Option<Vec<UserTeam>>,
+}
+
+/// The grants of one person on one board (a row of [`UserGrants`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct UserBoardGrants {
+    /// The board (UUID).
+    pub board_id: String,
+    pub board_slug: String,
+    pub board_name: String,
+    /// `strategy|initiative|delivery|adr`.
+    pub board_level: String,
+    /// The capabilities that apply at the level of the board. A change
+    /// can grant only these on the board.
+    pub applicable: Vec<String>,
+    /// The stored grants of the person on the board (sorted). Globs too.
+    pub capabilities: Vec<String>,
+}
+
+/// A team of a person (an element of [`UserGrants::teams`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct UserTeam {
+    /// The team (UUID).
+    pub team_id: String,
+    pub slug: String,
+    pub name: String,
+}
+
+/// Body of `PATCH /api/members/{user_id}/grants` (KAIROS-T-0413): the
+/// changes to the grants of one person on one or more boards. Kairos
+/// applies all of them in one transaction, or none.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ChangeUserGrantsRequest {
+    /// One entry for each board (at least one; a board once only).
+    pub changes: Vec<BoardGrantChange>,
+}
+
+/// The changes on one board (an element of
+/// [`ChangeUserGrantsRequest::changes`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BoardGrantChange {
+    /// The board (UUID).
+    pub board_id: String,
+    /// The capabilities to grant. Each must apply at the level of the
+    /// board, and the person must not have it.
+    #[serde(default)]
+    pub grant: Vec<String>,
+    /// The stored grants to revoke (a glob too). The person must have each.
+    #[serde(default)]
+    pub revoke: Vec<String>,
+}
+
 /// Generic delete acknowledgement for organizational resources (boards,
 /// columns, transitions, teams, streams, membership rows).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

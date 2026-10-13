@@ -22,6 +22,11 @@
 //!   per-board configuration surface (`/admin/boards` + `/admin/boards/:id`).
 //!   The org-admin-only surfaces (teams, streams, org members, templates,
 //!   metadata, and board create/delete) stay hidden from them.
+//! - **Holders of `administer_members` on a board** also see the Members tab
+//!   (KAIROS-T-0413, [`gating::may_assign_members`]): the list of the
+//!   organization members, with no org-admin control, and a link to the
+//!   grants page of each person (`/admin/members/:user`). That page shows
+//!   them only the boards that they administer.
 //! - **Everyone else** (a plain member with no grants) gets the graceful
 //!   "admin access required" panel instead of a broken screen.
 //!
@@ -48,6 +53,7 @@ mod boards;
 mod capabilities;
 mod code_index;
 mod dispatch;
+mod member_grants;
 mod members;
 mod metadata;
 mod repositories;
@@ -61,6 +67,7 @@ pub use boards::{AdminBoardPage, AdminBoardsPage};
 /// (KAIROS-T-0412). The board page links to `/admin/boards/<id>#members`.
 pub(crate) const MEMBERS_ANCHOR: &str = "members";
 pub use code_index::AdminCodeIndexPage;
+pub use member_grants::AdminMemberGrantsPage;
 pub use members::AdminMembersPage;
 pub use metadata::AdminMetadataPage;
 pub use repositories::AdminRepositoriesPage;
@@ -90,9 +97,10 @@ pub fn AdminPage() -> impl IntoView {
             }.into_any(),
             Some(Ok(me)) => {
                 let is_admin = gating::is_org_admin(&me);
+                let assigns_members = gating::may_assign_members(&me);
                 view! {
                     <Stack gap="md">
-                        <SectionTabs is_admin/>
+                        <SectionTabs is_admin assigns_members/>
                         <Outlet/>
                     </Stack>
                 }.into_any()
@@ -152,9 +160,11 @@ pub fn AdminNavLink() -> impl IntoView {
 /// (COLLIERY-T-1836; links with `role="tab"`, the route selects the tab).
 /// Non-admins with a board-config grant see only Overview + Boards; the
 /// org-admin-only tabs (teams, streams, members, templates, metadata)
-/// render for admins only (KAIROS-T-0052).
+/// render for admins only (KAIROS-T-0052). A holder of
+/// `administer_members` on a board also sees Members (KAIROS-T-0413): the
+/// way to the grants page of a person.
 #[component]
-fn SectionTabs(is_admin: bool) -> impl IntoView {
+fn SectionTabs(is_admin: bool, assigns_members: bool) -> impl IntoView {
     let pathname = use_location().pathname;
     let mut sections: Vec<(&'static str, &'static str)> =
         vec![("/admin", "Overview"), ("/admin/boards", "Boards")];
@@ -167,6 +177,8 @@ fn SectionTabs(is_admin: bool) -> impl IntoView {
             ("/admin/templates", "Templates"),
             ("/admin/metadata", "Metadata"),
         ]);
+    } else if assigns_members {
+        sections.push(("/admin/members", "Members"));
     }
     let hrefs: Vec<&'static str> = sections.iter().map(|(href, _)| *href).collect();
     let current = move || {

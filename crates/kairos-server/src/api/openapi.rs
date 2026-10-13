@@ -179,6 +179,9 @@ use crate::app::AppState;
         crate::api::org::boards::add_board_member,
         crate::api::org::boards::replace_capabilities,
         crate::api::org::boards::remove_board_member,
+        // The grants of one person on many boards (KAIROS-T-0413).
+        crate::api::org::user_grants::get_user_grants,
+        crate::api::org::user_grants::change_user_grants,
         crate::api::org::forge::list_connections,
         crate::api::org::forge::get_connection,
         crate::api::org::forge::create_connection,

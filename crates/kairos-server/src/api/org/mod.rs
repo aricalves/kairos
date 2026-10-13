@@ -38,6 +38,7 @@ pub mod streams;
 pub mod structure_grants;
 pub mod team_pages;
 pub mod teams;
+pub mod user_grants;
 
 use axum::Router;
 use diesel::pg::PgConnection;
@@ -70,6 +71,7 @@ pub fn router() -> Router<AppState> {
         .merge(streams::router())
         .merge(structure_grants::router())
         .merge(members::router())
+        .merge(user_grants::router())
 }
 
 // ---------------------------------------------------------------------------
