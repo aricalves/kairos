@@ -389,10 +389,13 @@ def _ensure_playwright(package_dir=E2E_DIR):
         code = subprocess.run(["npm", "install"], cwd=str(package_dir)).returncode
         if code != 0:
             return code
-    print("Ensuring the Playwright chromium browser...", flush=True)
-    return subprocess.run(
-        ["npx", "playwright", "install", "chromium"], cwd=str(package_dir)
-    ).returncode
+    # KAIROS-T-0409: the sandbox spec runs in Firefox and WebKit too. On CI
+    # the system libraries of the browsers come with them (--with-deps).
+    print("Ensuring the Playwright browsers (chromium, firefox, webkit)...", flush=True)
+    command = ["npx", "playwright", "install", "chromium", "firefox", "webkit"]
+    if os.environ.get("CI"):
+        command.append("--with-deps")
+    return subprocess.run(command, cwd=str(package_dir)).returncode
 
 
 def _prepare_gui_stack(env, phase):
