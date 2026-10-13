@@ -146,7 +146,10 @@ pub(crate) fn resolve_team(conn: &mut PgConnection, reference: &str) -> Result<T
 /// several — the same exactly-one semantics routing uses
 /// ([`repositories::delivery_board_for_team`]), so the directory, the
 /// manage gate and routing never disagree (KAIROS-T-0112).
-fn delivery_board_of(conn: &mut PgConnection, team_id: Uuid) -> Result<Option<Uuid>, ApiError> {
+pub(crate) fn delivery_board_of(
+    conn: &mut PgConnection,
+    team_id: Uuid,
+) -> Result<Option<Uuid>, ApiError> {
     match repositories::delivery_board_for_team(conn, team_id) {
         Ok(board) => Ok(Some(board)),
         Err(RepositoryError::NoDeliveryBoard { .. }) => Ok(None),
@@ -163,7 +166,7 @@ fn delivery_board_of(conn: &mut PgConnection, team_id: Uuid) -> Result<Option<Uu
 /// action. Until then it was the refusal of [`require_capability`], which
 /// gives the id of a board and no more. The code and the `details` are the
 /// same as before.
-fn require_manage_for_team(
+pub(crate) fn require_manage_for_team(
     conn: &mut PgConnection,
     slug: &str,
     user: Uuid,
@@ -296,10 +299,12 @@ pub(crate) fn change(
         && body.description.is_none()
         && body.code_index_build.is_none()
         && body.code_index_summaries.is_none()
+        && body.site_enabled.is_none()
     {
         return Err(ApiError::validation(
             "The request has no field to change. Send one or more of slug, repo_url, \
-             default_branch, team, description, code_index_build and code_index_summaries.",
+             default_branch, team, description, code_index_build, code_index_summaries and \
+             site_enabled.",
         ));
     }
     // KAIROS-T-0340: `hosted` needs a hosted provider on the tenant.
@@ -342,6 +347,9 @@ pub(crate) fn change(
             body.code_index_summaries.map(|v| v.as_str().to_string()),
             &current.code_index_summaries,
         ),
+        site_enabled: body
+            .site_enabled
+            .filter(|enabled| *enabled != current.site_enabled),
         ..Default::default()
     };
     let changed: Vec<&'static str> = [
@@ -355,6 +363,7 @@ pub(crate) fn change(
             "code_index_summaries",
             changes.code_index_summaries.is_some(),
         ),
+        ("site_enabled", changes.site_enabled.is_some()),
     ]
     .into_iter()
     .filter_map(|(name, changed)| changed.then_some(name))
@@ -425,6 +434,10 @@ pub(crate) fn render(
     // KAIROS-T-0358: where the summaries of each repository are made now.
     let code_index_settings =
         kairos_db::code_index_settings::load_or_default(conn).map_err(ApiError::internal)?;
+    // KAIROS-T-0406: the live publish of each site, and the tenant of the
+    // base path.
+    let live_sites = kairos_db::sites::live(conn, &ids).map_err(ApiError::internal)?;
+    let tenant = kairos_db::sites::tenant_slug(conn).map_err(ApiError::internal)?;
 
     rows.into_iter()
         .map(|repo| {
@@ -433,6 +446,14 @@ pub(crate) fn render(
             })?;
             let (open_tasks, has_webhook) = counts.get(&repo.id).copied().unwrap_or((0, false));
             let hosted = crate::code_index::hosted_summaries(&repo, &code_index_settings);
+            let base_path = kairos_db::sites::base_path(&tenant, &team.slug, &repo.slug);
+            let published = live_sites.get(&repo.id).map(super::sites::publish_dto);
+            let site = kairos_client::types_sites::RepositorySite {
+                enabled: repo.site_enabled,
+                needs_republish: published.as_ref().is_some_and(|p| p.base_path != base_path),
+                base_path,
+                published,
+            };
             Ok(dto::Repository {
                 id: repo.id.to_string(),
                 slug: repo.slug,
@@ -460,6 +481,7 @@ pub(crate) fn render(
                 } else {
                     dto::CodeIndexSummaries::Embedded
                 },
+                site,
                 created_at: repo.created_at.to_rfc3339(),
                 updated_at: repo.updated_at.to_rfc3339(),
             })

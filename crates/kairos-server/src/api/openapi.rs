@@ -187,6 +187,9 @@ use crate::app::AppState;
         crate::api::org::repositories::update_repository,
         crate::api::org::repositories::delete_repository,
         // The base code index of a repository (COLLIERY-T-1853).
+        crate::api::org::sites::publish_site,
+        crate::api::org::sites::unpublish_site,
+        crate::api::org::sites::list_site_publishes,
         crate::api::org::code_indexes::list_code_indexes,
         crate::api::org::code_indexes::upload_code_index,
         crate::api::org::code_indexes::download_code_index,

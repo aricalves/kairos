@@ -2669,6 +2669,7 @@ dependencies = [
  "kairos-index",
  "kairos-markdown",
  "maud",
+ "md-5 0.10.6",
  "mime_guess",
  "object_store",
  "opentelemetry",
