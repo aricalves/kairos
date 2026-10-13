@@ -120,11 +120,46 @@ struct BoolRow {
 /// ([`kairos_core::abac::team_implies_on_adr_board`], bound as `$5`, tested
 /// against `boards.board_level`): it adds `manage_adrs` (COLLIERY-T-3108).
 /// The organization ADR board has no team, so the arm never matches there.
+///
+/// Third arm (KAIROS-T-0410, KAIROS-A-0025 decision 1): on a board of the
+/// level `strategy` or `initiative`, a principal who holds ANY grant on the
+/// board is a member of it, and membership implies `manage_<type>` of the
+/// board and `transition_items`
+/// ([`kairos_core::abac::member_implies_on_strategy_board`] bound as `$6`,
+/// [`kairos_core::abac::member_implies_on_initiative_board`] as `$7`).
+/// Nothing is stored: the revoke of the last grant is the revocation.
+/// Archive and restore do not take this arm: see
+/// [`check_granted_capability`].
 pub fn check_capability(
     conn: &mut PgConnection,
     board_id: Uuid,
     user_id: Uuid,
     required: &str,
+) -> Result<bool, AbacError> {
+    check_capability_with(conn, board_id, user_id, required, true)
+}
+
+/// [`check_capability`] without the membership arm of strategy and
+/// initiative boards (KAIROS-T-0410, KAIROS-A-0025 decision 8): a grant, or
+/// the team implication of delivery and ADR boards. The edit rule asks it
+/// for an archive and a restore ([`kairos_core::abac::EditUse::Archive`]),
+/// which stay explicit grants on strategy and initiative boards.
+pub fn check_granted_capability(
+    conn: &mut PgConnection,
+    board_id: Uuid,
+    user_id: Uuid,
+    required: &str,
+) -> Result<bool, AbacError> {
+    check_capability_with(conn, board_id, user_id, required, false)
+}
+
+/// The one query of [`check_capability`] and [`check_granted_capability`].
+fn check_capability_with(
+    conn: &mut PgConnection,
+    board_id: Uuid,
+    user_id: Uuid,
+    required: &str,
+    membership: bool,
 ) -> Result<bool, AbacError> {
     let row: BoolRow = sql_query(
         r"SELECT (
@@ -144,6 +179,17 @@ pub fn check_capability(
                   AND tm.user_id = $2
                   AND ($4 OR ($5 AND b.board_level = 'adr'))
             )
+            OR EXISTS (
+                SELECT 1
+                FROM boards b
+                WHERE b.id = $1
+                  AND (($6 AND b.board_level = 'strategy')
+                       OR ($7 AND b.board_level = 'initiative'))
+                  AND EXISTS (
+                      SELECT 1 FROM board_member_capabilities
+                      WHERE board_id = $1 AND user_id = $2
+                  )
+            )
           ) AS authorized",
     )
     .bind::<SqlUuid, _>(board_id)
@@ -151,6 +197,8 @@ pub fn check_capability(
     .bind::<Text, _>(required)
     .bind::<Bool, _>(kairos_core::abac::team_implies(required))
     .bind::<Bool, _>(kairos_core::abac::team_implies_on_adr_board(required))
+    .bind::<Bool, _>(membership && kairos_core::abac::member_implies_on_strategy_board(required))
+    .bind::<Bool, _>(membership && kairos_core::abac::member_implies_on_initiative_board(required))
     .get_result(conn)?;
     Ok(row.authorized)
 }
@@ -647,19 +695,30 @@ pub fn item_created_by(conn: &mut PgConnection, item_id: Uuid) -> Result<Option<
 /// The three facts are loaded each time, with no early return. The cost is
 /// a small number of indexed reads, and a caller that refuses can then say
 /// which capability is missing, on which board.
+///
+/// `edit_use` (KAIROS-T-0410): for [`kairos_core::abac::EditUse::Edit`],
+/// `holds_manage` is [`check_capability`], so membership of a strategy or
+/// initiative board counts. For an archive or a restore it is
+/// [`check_granted_capability`]: only a grant counts.
 pub fn edit_facts(
     conn: &mut PgConnection,
     org_slug: &str,
     user_id: Uuid,
     item_id: Uuid,
     manage_capability: &str,
+    edit_use: kairos_core::abac::EditUse,
 ) -> Result<(kairos_core::abac::EditFacts, Option<Uuid>), AbacError> {
     let created_item = item_created_by(conn, item_id)? == Some(user_id);
     let is_org_admin = is_org_admin(conn, org_slug, user_id)?;
     let board = resolve_authorization_board(conn, item_id)?;
-    let holds_manage = match board {
-        Some(board_id) => check_capability(conn, board_id, user_id, manage_capability)?,
-        None => false,
+    let holds_manage = match (board, edit_use) {
+        (Some(board_id), kairos_core::abac::EditUse::Edit) => {
+            check_capability(conn, board_id, user_id, manage_capability)?
+        }
+        (Some(board_id), kairos_core::abac::EditUse::Archive) => {
+            check_granted_capability(conn, board_id, user_id, manage_capability)?
+        }
+        (None, _) => false,
     };
     Ok((
         kairos_core::abac::EditFacts {
@@ -715,9 +774,11 @@ struct ItemFactRow {
 /// - one read of the five entity tables for the creator, the board, the
 ///   type and the short code of each item,
 /// - one read for the admin role,
-/// - one [`check_capability`] for each different pair of board and
-///   capability. It is the function that [`edit_facts`] calls, so the two
-///   cannot give different answers on a grant, a glob or a team.
+/// - one [`check_granted_capability`] for each different pair of board
+///   and capability. It is the function that [`edit_facts`] calls for an
+///   archive, so the two cannot give different answers on a grant, a glob
+///   or a team. The cascade is an archive, so membership of a strategy or
+///   initiative board does not count here (KAIROS-T-0410).
 ///
 /// A document has its owner board in its row (COLLIERY-T-0269, required
 /// since COLLIERY-T-3109). No `parent` edge has a document at an end
@@ -781,7 +842,8 @@ pub fn edit_facts_of_items(
             Some(board_id) => match held.get(&(board_id, manage_capability)) {
                 Some(answer) => *answer,
                 None => {
-                    let answer = check_capability(conn, board_id, user_id, manage_capability)?;
+                    let answer =
+                        check_granted_capability(conn, board_id, user_id, manage_capability)?;
                     held.insert((board_id, manage_capability), answer);
                     answer
                 }

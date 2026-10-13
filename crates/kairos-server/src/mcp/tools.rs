@@ -847,12 +847,17 @@ impl KairosMcp {
                 .map_err(ApiError::internal)?;
             let my_team_ids: Vec<Uuid> = member_teams.iter().map(|(id, ..)| *id).collect();
 
-            let grants: Vec<(String, String, String)> = caps::table
+            let grants: Vec<(String, String, BoardLevel, String)> = caps::table
                 .inner_join(boards::table)
                 .filter(caps::user_id.eq(user_id))
                 .filter(boards::deleted_at.is_null())
                 .order((boards::slug.asc(), caps::capability.asc()))
-                .select((boards::slug, boards::name, caps::capability))
+                .select((
+                    boards::slug,
+                    boards::name,
+                    boards::board_level,
+                    caps::capability,
+                ))
                 .load(conn)
                 .map_err(ApiError::internal)?;
 
@@ -889,9 +894,14 @@ impl KairosMcp {
             if is_admin {
                 out.push_str("- organization admin: you have each capability on each board.\n");
             }
-            let mut by_board: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
-            for (slug, name, capability) in grants {
-                by_board.entry((slug, name)).or_default().push(capability);
+            let mut by_board: BTreeMap<(String, String), (BoardLevel, Vec<String>)> =
+                BTreeMap::new();
+            for (slug, name, level, capability) in grants {
+                by_board
+                    .entry((slug, name))
+                    .or_insert_with(|| (level, Vec::new()))
+                    .1
+                    .push(capability);
             }
             // COLLIERY-T-3108: the capabilities the team rule gives on each
             // board of my teams, with no grant (KAIROS-T-0072). The ADR
@@ -907,8 +917,18 @@ impl KairosMcp {
             if by_board.is_empty() && team_boards.is_empty() && !is_admin {
                 out.push_str("(none. Each member can read. A write needs a capability.)\n");
             }
-            for ((slug, name), capabilities) in by_board {
+            for ((slug, name), (level, capabilities)) in by_board {
                 out.push_str(&format!("- {slug} ({name}): {}\n", capabilities.join(", ")));
+                // KAIROS-T-0410: a grant on a strategy or initiative board
+                // makes me a member of it, and membership gives the edit
+                // and the move of each item on it, with no grant.
+                let member = member_capabilities(level);
+                if !member.is_empty() {
+                    out.push_str(&format!(
+                        "- {slug} ({name}): {} (board member, no grant)\n",
+                        member.join(", ")
+                    ));
+                }
             }
             for (slug, name, level, team) in team_boards {
                 out.push_str(&format!(
@@ -1162,7 +1182,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "List boards in this organization grouped by level (strategy/initiative/delivery/adr), with column names and per-column item counts for my delivery boards. Each ADR board names its team, or the organization. Each board of a team of mine shows the capabilities that the team gives me with no grant: on the ADR board of the team, this includes manage_adrs. Optional `level` filter."
+        description = "List boards in this organization grouped by level (strategy/initiative/delivery/adr), with column names and per-column item counts for my delivery boards. Each ADR board names its team, or the organization. Each board of a team of mine shows the capabilities that the team gives me with no grant: on the ADR board of the team, this includes manage_adrs. Each strategy or initiative board on which I have a grant shows the capabilities that membership gives me with no grant: manage_strategies or manage_initiatives, and transition_items. Optional `level` filter."
     )]
     pub async fn my_boards(
         &self,
@@ -1277,6 +1297,12 @@ impl KairosMcp {
                         "  team capabilities: {}\n",
                         team_capabilities(board.board_level).join(", ")
                     ));
+                }
+                // KAIROS-T-0410: what membership of a strategy or initiative
+                // board (any grant on it) gives me, with no grant.
+                let member = member_capabilities(board.board_level);
+                if !member.is_empty() && my_grant_boards.contains(&board.id) {
+                    out.push_str(&format!("  member capabilities: {}\n", member.join(", ")));
                 }
             }
             Ok(out)
@@ -3157,7 +3183,7 @@ impl KairosMcp {
                     item.short_code
                 )));
             }
-            require_item_edit(conn, &slug, user, item.id, item.item_type)?;
+            crate::api::require_item_archive(conn, &slug, user, item.id, item.item_type)?;
             match items::restore_item(conn, item.item_type, item.id, user)
                 .map_err(map_item_error)?
             {
@@ -4898,6 +4924,14 @@ fn team_capabilities(level: BoardLevel) -> &'static [&'static str] {
     } else {
         kairos_core::abac::TEAM_IMPLIED_CAPABILITIES
     }
+}
+
+/// The capabilities that membership of a board of `level` gives with no
+/// grant (KAIROS-T-0410): on a strategy or initiative board, a member (any
+/// grant on it) edits and moves each item. The vocabulary is
+/// `kairos_core::abac`.
+fn member_capabilities(level: BoardLevel) -> &'static [&'static str] {
+    kairos_core::abac::board_member_capabilities(level.as_str())
 }
 
 /// The board level whose boards host this item type.

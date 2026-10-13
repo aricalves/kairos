@@ -52,8 +52,9 @@ pub mod webhooks;
 pub mod writeback;
 
 pub use abac::{
-    AbacError, StructureGrant, authorize, check_capability, grant_capability, holds_structure,
-    is_org_admin, resolve_authorization_board, revoke_capability,
+    AbacError, StructureGrant, authorize, check_capability, check_granted_capability,
+    grant_capability, holds_structure, is_org_admin, resolve_authorization_board,
+    revoke_capability,
 };
 pub use boards::{
     BoardError, CodePrefix, SeveralDeliveryBoards, add_column, add_transition,

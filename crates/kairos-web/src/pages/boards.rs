@@ -239,14 +239,22 @@ pub(crate) fn board_powers(
         };
     }
     let team_member = board_team_id.is_some_and(|team| me.teams.iter().any(|mine| mine.id == team));
+    // KAIROS-T-0410: `implied` is what the server says membership of this
+    // board gives (the edit and the move on a strategy or initiative
+    // board). The server computes it; the mirror only reads it.
     let has = |required: &str| {
         (team_member && team_implies_on_team_board(required))
             || me
                 .capabilities
                 .iter()
                 .filter(|board| board.board_slug == board_slug)
-                .flat_map(|board| board.grants.iter())
-                .any(|grant| grant_covers(grant, required))
+                .any(|board| {
+                    board
+                        .grants
+                        .iter()
+                        .any(|grant| grant_covers(grant, required))
+                        || board.implied.iter().any(|implied| implied == required)
+                })
     };
     BoardPowers {
         transition: has("transition_items"),
@@ -3117,6 +3125,43 @@ mod tests {
         // Org-wide (teamless) board: nothing.
         let orgwide = board_powers(&bob, "strategy", None, Some(EntityKind::Strategy));
         assert_eq!(orgwide, BoardPowers::default());
+    }
+
+    /// KAIROS-T-0410 client mirror: on a strategy or initiative board, the
+    /// `implied` list of the server (membership: any grant on the board)
+    /// gives the move and the create of the board's items. It does not give
+    /// Restore ([`holds_capability`] reads grants only), nor the members
+    /// panel.
+    #[test]
+    fn board_powers_read_the_implied_capabilities_of_board_membership() {
+        let member: crate::api::Whoami = serde_json::from_value(serde_json::json!({
+            "user": {"id": "u-1", "display_name": "u", "email": "u@x.test"},
+            "organization": {"slug": "demo", "role": "member"},
+            "teams": [],
+            "capabilities": [{
+                "board_slug": "initiatives",
+                "grants": ["configure_boards"],
+                "implied": ["manage_initiatives", "transition_items"],
+            }],
+        }))
+        .expect("test whoami");
+        let powers = board_powers(&member, "initiatives", None, Some(EntityKind::Initiative));
+        assert!(powers.transition && powers.create);
+        assert!(!powers.documents);
+        // Restore is an archive: a grant is necessary.
+        assert!(!holds_capability(
+            &member,
+            Some("initiatives"),
+            None,
+            "manage_initiatives"
+        ));
+        // Another board: nothing.
+        let other = board_powers(&member, "strategy", None, Some(EntityKind::Strategy));
+        assert!(!other.transition && !other.create);
+        // An older server sends no `implied`: the grants alone decide.
+        let old = me("member", &[], &[("initiatives", &["configure_boards"])]);
+        let powers = board_powers(&old, "initiatives", None, Some(EntityKind::Initiative));
+        assert!(!powers.transition && !powers.create);
     }
 
     /// KAIROS-T-0412: the board page links to its members panel for an

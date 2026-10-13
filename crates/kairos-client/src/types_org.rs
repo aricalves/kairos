@@ -892,6 +892,12 @@ pub struct WhoamiBoardCapabilities {
     /// The capability strings granted on this board (may include globs like
     /// `*`, `manage_*`, `configure_*`), sorted.
     pub grants: Vec<String>,
+    /// The capabilities that membership of this board gives with no grant
+    /// (KAIROS-T-0410): `manage_strategies` or `manage_initiatives`, and
+    /// `transition_items`, on a strategy or initiative board. Empty on other
+    /// boards, and absent from an older server.
+    #[serde(default)]
+    pub implied: Vec<String>,
 }
 
 /// The `user` object of [`WhoamiResponse`].

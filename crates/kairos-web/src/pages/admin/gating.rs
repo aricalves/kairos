@@ -120,6 +120,7 @@ mod tests {
                 .map(|(slug, gs)| WhoamiBoardCapabilities {
                     board_slug: (*slug).into(),
                     grants: gs.iter().map(|g| (*g).into()).collect(),
+                    implied: vec![],
                 })
                 .collect(),
             implicit: vec![],

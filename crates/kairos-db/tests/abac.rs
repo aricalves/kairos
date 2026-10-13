@@ -96,6 +96,12 @@ fn activity_details(conn: &mut PgConnection, action: ActivityAction, entity: Uui
 
 /// Assert the SQL check agrees with the pure core matcher for one stored
 /// grant — the two layers implement ONE contract (KAIROS-A-0006).
+///
+/// The matcher is about grants, so this asks `check_granted_capability`:
+/// on the strategy and initiative boards, `check_capability` also counts
+/// membership of the board (KAIROS-T-0410), which the
+/// `board_membership_gives_edit_and_move_on_strategy_and_initiative_boards`
+/// test covers.
 fn assert_check(
     conn: &mut PgConnection,
     board: Uuid,
@@ -104,7 +110,7 @@ fn assert_check(
     required: &str,
     expected: bool,
 ) {
-    let sql = abac::check_capability(conn, board, user, required).expect("check_capability");
+    let sql = abac::check_granted_capability(conn, board, user, required).expect("check");
     assert_eq!(
         sql, expected,
         "SQL check: grant {granted:?}, required {required:?}"
@@ -933,6 +939,315 @@ fn archived_items_resolve_the_same_capabilities_as_live_ones() {
     drop(conn);
     sql_query(format!(
         "DROP DATABASE IF EXISTS {ARCHIVE_SCRATCH_DB} WITH (FORCE)"
+    ))
+    .execute(&mut admin_conn)
+    .expect("dropping scratch database after test");
+}
+
+/// KAIROS-T-0410 (KAIROS-A-0025 decisions 1 and 8): on a strategy or
+/// initiative board, a principal with ANY grant on the board is a member,
+/// and membership satisfies `manage_<type>` of the board and
+/// `transition_items`. Not `configure_boards`, not `administer_members`,
+/// not archive (the edit rule for an archive reads grants only), and not on
+/// delivery or ADR boards. The revoke of the last grant removes it.
+#[test]
+fn board_membership_gives_edit_and_move_on_strategy_and_initiative_boards() {
+    use kairos_core::abac::EditUse;
+    use kairos_db::models::{BoardLevel, NewBoard};
+
+    const MEMBER_SCRATCH_DB: &str = "kairos_abac_member_test";
+
+    let admin_url = admin_database_url();
+    let mut admin_conn = PgConnection::establish(&admin_url).unwrap_or_else(|e| {
+        panic!(
+            "cannot connect to compose postgres at {admin_url}: {e} \
+             (is the stack up? `angreal services up`)"
+        )
+    });
+    sql_query(format!(
+        "DROP DATABASE IF EXISTS {MEMBER_SCRATCH_DB} WITH (FORCE)"
+    ))
+    .execute(&mut admin_conn)
+    .expect("dropping scratch database");
+    sql_query(format!("CREATE DATABASE {MEMBER_SCRATCH_DB}"))
+        .execute(&mut admin_conn)
+        .expect("creating scratch database");
+
+    let scratch_url = with_database(&admin_url, MEMBER_SCRATCH_DB);
+    let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
+
+    run_public_migrations(&mut conn).expect("running public migrations");
+    provision_tenant(&mut conn, "memberco", "Memberco").expect("provisioning memberco");
+    sql_query("SET search_path TO org_memberco, public")
+        .execute(&mut conn)
+        .expect("pinning search_path");
+
+    let org_id: Uuid = schema::organizations::table
+        .filter(schema::organizations::slug.eq("memberco"))
+        .select(schema::organizations::id)
+        .first(&mut conn)
+        .expect("provisioned org row");
+    let author = insert_user(&mut conn, "dex|author", "author@memberco.test", "Author");
+    let member = insert_user(&mut conn, "dex|member", "member@memberco.test", "Member");
+    let outsider = insert_user(&mut conn, "dex|outsider", "out@memberco.test", "Outsider");
+    for user_id in [author, member, outsider] {
+        diesel::insert_into(schema::organization_members::table)
+            .values(NewOrganizationMember {
+                organization_id: org_id,
+                user_id,
+                role: OrgRole::Member,
+            })
+            .execute(&mut conn)
+            .expect("inserting org member");
+    }
+
+    let initiatives = board_id_by_slug(&mut conn, "initiatives");
+    let strategy = board_id_by_slug(&mut conn, "strategy");
+    let new_board = |conn: &mut PgConnection, slug: &str, level: BoardLevel| -> Uuid {
+        diesel::insert_into(schema::boards::table)
+            .values(NewBoard {
+                name: slug.into(),
+                slug: slug.into(),
+                board_level: level,
+                team_id: None,
+                code_prefix: format!("B{}", &Uuid::new_v4().simple().to_string()[..8])
+                    .to_uppercase(),
+            })
+            .returning(schema::boards::id)
+            .get_result(conn)
+            .expect("inserting board")
+    };
+    let delivery = new_board(&mut conn, "member-delivery", BoardLevel::Delivery);
+    let adr_board = new_board(&mut conn, "member-adrs", BoardLevel::Adr);
+
+    let check = |conn: &mut PgConnection, board, user, required: &str| {
+        abac::check_capability(conn, board, user, required).expect("check_capability")
+    };
+    let granted = |conn: &mut PgConnection, board, user, required: &str| {
+        abac::check_granted_capability(conn, board, user, required).expect("check")
+    };
+
+    // An initiative that the member did not create.
+    let discovery = first_column(&mut conn, initiatives);
+    let initiative: Uuid = diesel::insert_into(schema::initiatives::table)
+        .values(NewInitiative {
+            short_code: "I-0001".into(),
+            title: "Shared".into(),
+            content: "".into(),
+            board_id: initiatives,
+            column_id: discovery,
+            complexity: None,
+            is_bucket: false,
+            bucket_type: None,
+            created_by: author,
+            updated_by: author,
+        })
+        .returning(schema::initiatives::id)
+        .get_result(&mut conn)
+        .expect("inserting initiative");
+
+    // Before any grant: the member is not a member.
+    assert!(!check(
+        &mut conn,
+        initiatives,
+        member,
+        rules::MANAGE_INITIATIVES
+    ));
+    assert!(!check(
+        &mut conn,
+        initiatives,
+        member,
+        rules::TRANSITION_ITEMS
+    ));
+
+    // Only `configure_boards` on the initiative board: a member of it.
+    abac::grant_capability(
+        &mut conn,
+        initiatives,
+        member,
+        rules::CONFIGURE_BOARDS,
+        author,
+    )
+    .expect("granting configure_boards");
+    assert!(check(
+        &mut conn,
+        initiatives,
+        member,
+        rules::MANAGE_INITIATIVES
+    ));
+    assert!(check(
+        &mut conn,
+        initiatives,
+        member,
+        rules::TRANSITION_ITEMS
+    ));
+    assert!(check(
+        &mut conn,
+        initiatives,
+        member,
+        rules::CONFIGURE_BOARDS
+    ));
+    for not_implied in [
+        rules::ADMINISTER_MEMBERS,
+        rules::MANAGE_STRATEGIES,
+        rules::MANAGE_TASKS,
+        rules::MANAGE_DOCUMENTS,
+        rules::MANAGE_ADRS,
+    ] {
+        assert!(
+            !check(&mut conn, initiatives, member, not_implied),
+            "membership must not give {not_implied:?}"
+        );
+    }
+    // The archive check reads grants only.
+    assert!(!granted(
+        &mut conn,
+        initiatives,
+        member,
+        rules::MANAGE_INITIATIVES
+    ));
+    assert!(!granted(
+        &mut conn,
+        initiatives,
+        member,
+        rules::TRANSITION_ITEMS
+    ));
+    // Through the edit rule: an edit passes, an archive does not.
+    let (edit, board) = abac::edit_facts(
+        &mut conn,
+        "memberco",
+        member,
+        initiative,
+        rules::MANAGE_INITIATIVES,
+        EditUse::Edit,
+    )
+    .expect("edit facts");
+    assert_eq!(board, Some(initiatives));
+    assert!(rules::may_edit_item(edit));
+    let (archive, _) = abac::edit_facts(
+        &mut conn,
+        "memberco",
+        member,
+        initiative,
+        rules::MANAGE_INITIATIVES,
+        EditUse::Archive,
+    )
+    .expect("archive facts");
+    assert!(!rules::may_edit_item(archive));
+    // The archive cascade reads grants only too.
+    let facts = abac::edit_facts_of_items(&mut conn, "memberco", member, &[initiative])
+        .expect("facts of items");
+    assert!(!rules::may_edit_item(facts[&initiative].facts));
+    // A grant of `manage_initiatives` gives the archive.
+    abac::grant_capability(
+        &mut conn,
+        initiatives,
+        member,
+        rules::MANAGE_INITIATIVES,
+        author,
+    )
+    .expect("granting manage_initiatives");
+    assert!(granted(
+        &mut conn,
+        initiatives,
+        member,
+        rules::MANAGE_INITIATIVES
+    ));
+    abac::revoke_capability(
+        &mut conn,
+        initiatives,
+        member,
+        rules::MANAGE_INITIATIVES,
+        author,
+    )
+    .expect("revoking manage_initiatives");
+
+    // A non-member is refused, on the same board.
+    assert!(!check(
+        &mut conn,
+        initiatives,
+        outsider,
+        rules::MANAGE_INITIATIVES
+    ));
+    assert!(!check(
+        &mut conn,
+        initiatives,
+        outsider,
+        rules::TRANSITION_ITEMS
+    ));
+
+    // Membership is per board: nothing on the strategy board yet.
+    assert!(!check(
+        &mut conn,
+        strategy,
+        member,
+        rules::MANAGE_STRATEGIES
+    ));
+    assert!(!check(&mut conn, strategy, member, rules::TRANSITION_ITEMS));
+    abac::grant_capability(
+        &mut conn,
+        strategy,
+        member,
+        rules::ADMINISTER_MEMBERS,
+        author,
+    )
+    .expect("granting administer_members");
+    assert!(check(&mut conn, strategy, member, rules::MANAGE_STRATEGIES));
+    assert!(check(&mut conn, strategy, member, rules::TRANSITION_ITEMS));
+    assert!(!check(
+        &mut conn,
+        strategy,
+        member,
+        rules::MANAGE_INITIATIVES
+    ));
+    assert!(!check(&mut conn, strategy, member, rules::CONFIGURE_BOARDS));
+
+    // Delivery and ADR boards are unchanged: a grant is not membership there.
+    for (board, manage) in [
+        (delivery, rules::MANAGE_TASKS),
+        (adr_board, rules::MANAGE_ADRS),
+    ] {
+        abac::grant_capability(&mut conn, board, member, rules::CONFIGURE_BOARDS, author)
+            .expect("granting configure_boards");
+        assert!(!check(&mut conn, board, member, manage));
+        assert!(!check(&mut conn, board, member, rules::TRANSITION_ITEMS));
+    }
+
+    // The revoke of the last grant on the board removes the rights.
+    abac::revoke_capability(
+        &mut conn,
+        initiatives,
+        member,
+        rules::CONFIGURE_BOARDS,
+        author,
+    )
+    .expect("revoking configure_boards");
+    assert!(!check(
+        &mut conn,
+        initiatives,
+        member,
+        rules::MANAGE_INITIATIVES
+    ));
+    assert!(!check(
+        &mut conn,
+        initiatives,
+        member,
+        rules::TRANSITION_ITEMS
+    ));
+    let (edit, _) = abac::edit_facts(
+        &mut conn,
+        "memberco",
+        member,
+        initiative,
+        rules::MANAGE_INITIATIVES,
+        EditUse::Edit,
+    )
+    .expect("edit facts");
+    assert!(!rules::may_edit_item(edit));
+
+    drop(conn);
+    sql_query(format!(
+        "DROP DATABASE IF EXISTS {MEMBER_SCRATCH_DB} WITH (FORCE)"
     ))
     .execute(&mut admin_conn)
     .expect("dropping scratch database after test");

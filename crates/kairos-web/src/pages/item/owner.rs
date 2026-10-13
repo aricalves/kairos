@@ -436,6 +436,7 @@ mod tests {
                 .map(|(board, grant)| WhoamiBoardCapabilities {
                     board_slug: board.to_string(),
                     grants: vec![grant.to_string()],
+                    implied: Vec::new(),
                 })
                 .collect(),
             implicit: Vec::new(),

@@ -51,6 +51,7 @@ use diesel::prelude::*;
 use diesel::sql_query;
 use diesel::sql_types::{Text, Uuid as SqlUuid};
 use kairos_client::types as dto;
+use kairos_core::abac::EditUse;
 use kairos_core::board::TransitionError;
 use kairos_core::short_code::ItemType;
 use kairos_db::code_rename::RenameError;
@@ -309,10 +310,11 @@ fn missing_edit(
     user_id: Uuid,
     item_id: Uuid,
     item_type: ItemType,
+    edit_use: EditUse,
 ) -> Result<Option<MissingEdit>, ApiError> {
     let capability = meta::manage_capability(item_type);
-    let (facts, board_id) =
-        abac::edit_facts(conn, slug, user_id, item_id, capability).map_err(map_abac_error)?;
+    let (facts, board_id) = abac::edit_facts(conn, slug, user_id, item_id, capability, edit_use)
+        .map_err(map_abac_error)?;
     Ok(if kairos_core::abac::may_edit_item(facts) {
         None
     } else {
@@ -334,7 +336,10 @@ pub(crate) fn missing_item_edit(
     item_id: Uuid,
     item_type: ItemType,
 ) -> Result<Option<Option<Uuid>>, ApiError> {
-    Ok(missing_edit(conn, slug, user_id, item_id, item_type)?.map(|missing| missing.board_id))
+    Ok(
+        missing_edit(conn, slug, user_id, item_id, item_type, EditUse::Edit)?
+            .map(|missing| missing.board_id),
+    )
 }
 
 /// The `manage_<type>` capability of an item type, the capability of the
@@ -397,7 +402,34 @@ pub fn require_item_edit(
     item_id: Uuid,
     item_type: ItemType,
 ) -> Result<(), ApiError> {
-    match missing_edit(conn, slug, user_id, item_id, item_type)? {
+    require_item_edit_for(conn, slug, user_id, item_id, item_type, EditUse::Edit)
+}
+
+/// THE EDIT RULE for an archive or a restore (KAIROS-T-0410, KAIROS-A-0025
+/// decision 8). The rule of [`require_item_edit`], with one difference:
+/// membership of a strategy or initiative board does not count. A member
+/// of the board edits and moves each item on it, and archives or restores
+/// only with a grant of `manage_<type>`, or as the creator of the item, or
+/// as an admin. The refusal is the same 403.
+pub fn require_item_archive(
+    conn: &mut PgConnection,
+    slug: &str,
+    user_id: Uuid,
+    item_id: Uuid,
+    item_type: ItemType,
+) -> Result<(), ApiError> {
+    require_item_edit_for(conn, slug, user_id, item_id, item_type, EditUse::Archive)
+}
+
+fn require_item_edit_for(
+    conn: &mut PgConnection,
+    slug: &str,
+    user_id: Uuid,
+    item_id: Uuid,
+    item_type: ItemType,
+    edit_use: EditUse,
+) -> Result<(), ApiError> {
+    match missing_edit(conn, slug, user_id, item_id, item_type, edit_use)? {
         None => note_claim(conn, user_id, (item_id, item_type)),
         Some(missing) => Err(ApiError::capability_required(
             missing.capability,
@@ -475,8 +507,8 @@ pub fn require_edge_write(
     (source_id, source_type): EdgeEnd,
     (target_id, target_type): EdgeEnd,
 ) -> Result<(), ApiError> {
-    let source = missing_edit(conn, slug, user_id, source_id, source_type)?;
-    let target = missing_edit(conn, slug, user_id, target_id, target_type)?;
+    let source = missing_edit(conn, slug, user_id, source_id, source_type, EditUse::Edit)?;
+    let target = missing_edit(conn, slug, user_id, target_id, target_type, EditUse::Edit)?;
     if kairos_core::abac::may_write_edge(source.is_none(), target.is_none()) {
         note_claim(conn, user_id, (source_id, source_type))?;
         return note_claim(conn, user_id, (target_id, target_type));
@@ -568,7 +600,7 @@ pub fn require_edge_remove(
         return require_edge_write(conn, slug, user_id, relationship, source, target);
     }
 
-    let missing = missing_edit(conn, slug, user_id, document_id, target_type)?;
+    let missing = missing_edit(conn, slug, user_id, document_id, target_type, EditUse::Edit)?;
     if kairos_core::abac::may_unlink_document_parent(missing.is_none()) {
         return Ok(());
     }

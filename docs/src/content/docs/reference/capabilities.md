@@ -113,7 +113,7 @@ cannot carry them; grant and revoke refuse them. `whoami` reports them under
 |---|---|
 | `file_backlog` | Every member of the tenant holds it on every live **delivery** board. It permits a request to any team: a **task** in the entry column of its delivery board, in the support lane. The server consults it only when the caller does not hold `manage_tasks` on the board. The work class of a request is `support`. The server refuses a request that sends the work class `planned`. The server refuses a request that names a column that is not the entry column. The repository is optional. It is not part of the condition. The capability permits the create only. The person who sends a request created it, so the [edit rule](#the-edit-rule) lets that person edit it and archive it. No rule lets that person move it. |
 
-Two further implications are computed the same way — by the authorisation
+These implications are computed the same way — by the authorisation
 check rather than by a stored row:
 
 - **An organization admin passes every check**, on every board, with zero
@@ -129,6 +129,25 @@ check rather than by a stored row:
   member of a different team cannot. The ADR board of the organization has no
   team, so `manage_adrs` on it needs a grant. The MCP tools `whoami` and
   `my_boards` show the capabilities that each team board gives.
+- **On a strategy or initiative board, a grant makes a person a member.** A
+  person with one or more grants on the board is a member of it. A member
+  holds these capabilities on the board with no further grant:
+
+  | Board level | Capabilities of a member |
+  |---|---|
+  | `strategy` | `manage_strategies`, `transition_items` |
+  | `initiative` | `manage_initiatives`, `transition_items` |
+
+  Thus a member can edit and move each item on the board. A grant of
+  `configure_boards` only is sufficient.
+
+  Archive and restore still need a grant of `manage_<type>`.
+  `configure_boards` and `administer_members` still need their own grants.
+  Delivery and ADR boards do not have this rule. When you revoke the last
+  grant of a person on the board, the person is not a member.
+
+  The REST `whoami` shows the capabilities under `implied`, for each board in
+  `capabilities`. The MCP tools `whoami` and `my_boards` show them too.
 
 ## `manage_structure`
 
@@ -221,6 +240,10 @@ different board, its creator can continue to edit it.
 | `impacts` link of a document or of an ADR | `POST /api/{type}/{short_code}/impacts`, `DELETE /api/{type}/{short_code}/impacts/{repository}` | `link_items`, `unlink_items` |
 | Archive | `DELETE /api/{type}/{short_code}` | `delete_item` |
 | Restore | `POST /api/{type}/{short_code}/restore` | `restore_item` |
+
+For an archive and a restore, condition 2 needs a grant. Membership of a
+strategy or initiative board is not sufficient. See
+[Computed capabilities](#computed-capabilities).
 
 ### An archive applies the rule to each descendant
 

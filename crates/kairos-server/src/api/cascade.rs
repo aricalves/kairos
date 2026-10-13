@@ -32,7 +32,7 @@ use kairos_core::short_code::ItemType;
 use uuid::Uuid;
 
 use super::meta::resolve_family_item;
-use super::{map_item_error, require_item_edit};
+use super::{map_item_error, require_item_archive};
 use crate::api::Liveness;
 use crate::app::AppState;
 use crate::error::ApiError;
@@ -49,8 +49,10 @@ pub fn router() -> Router<AppState> {
 /// Archive an item for a principal (COLLIERY-T-0234): the ONE archive of
 /// the server.
 ///
-/// 1. The edit rule for the NAMED item ([`require_item_edit`]). A caller
-///    who may not edit it gets the 403, and nothing is archived.
+/// 1. The edit rule for the NAMED item, for an archive
+///    ([`require_item_archive`]: membership of a strategy or initiative
+///    board does not count, KAIROS-T-0410). A caller who may not archive
+///    it gets the 403, and nothing is archived.
 /// 2. The archive, with the edit rule for EACH descendant
 ///    ([`items::soft_delete_item_as`]).
 ///
@@ -68,7 +70,7 @@ pub(crate) fn archive_item(
     item_id: Uuid,
     item_type: ItemType,
 ) -> Result<items::SoftDeleteOutcome, ApiError> {
-    require_item_edit(conn, slug, user_id, item_id, item_type)?;
+    require_item_archive(conn, slug, user_id, item_id, item_type)?;
     let principal = items::Principal {
         org_slug: slug,
         user_id,
