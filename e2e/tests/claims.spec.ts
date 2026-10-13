@@ -61,7 +61,7 @@ test('a task is claimed, handed off, released, cancelled and deleted', async ({
     const move = page.locator('.kairos-item__move');
     await move.locator('select').first().selectOption({ label: 'Active' });
     await move.getByRole('button', { name: 'Move', exact: true }).click();
-    await expect(page.getByText('Moved to Active.')).toBeVisible();
+    await expect(page.locator('.cl-toast', { hasText: 'Moved to Active.' })).toBeVisible();
     await expect(claim).toContainText('alice has the claim since');
     expect((await readTask(GUI, token, code)).claim?.display_name).toBe('alice');
   });
@@ -69,14 +69,14 @@ test('a task is claimed, handed off, released, cancelled and deleted', async ({
   await test.step('Hand off gives the claim to bob', async () => {
     await claim.locator('select').selectOption({ label: 'bob (bob@kairos.test)' });
     await claim.getByRole('button', { name: 'Hand off', exact: true }).click();
-    await expect(page.getByText('Kairos gave the claim to bob.')).toBeVisible();
+    await expect(page.locator('.cl-toast', { hasText: 'Kairos gave the claim to bob.' })).toBeVisible();
     await expect(claim).toContainText('bob has the claim since');
     expect((await readTask(GUI, token, code)).claim?.display_name).toBe('bob');
   });
 
   await test.step('Release ends the claim', async () => {
     await claim.getByRole('button', { name: 'Release', exact: true }).click();
-    await expect(page.getByText('Kairos released the claim.')).toBeVisible();
+    await expect(page.locator('.cl-toast', { hasText: 'Kairos released the claim.' })).toBeVisible();
     await expect(claim).toContainText('No claim.');
     expect((await readTask(GUI, token, code)).claim ?? null).toBeNull();
   });

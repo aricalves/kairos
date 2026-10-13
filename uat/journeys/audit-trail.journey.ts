@@ -133,7 +133,9 @@ journey(
       await modal.getByRole('button', { name: 'Roll back', exact: true }).click();
       // The text of the notice is Simplified Technical English
       // (COLLIERY-T-0265).
-      const notice = page.getByText(/Kairos copied version v\d+ to the new version v\d+/);
+      const notice = page.locator('.cl-toast', {
+        hasText: /Kairos copied version v\d+ to the new version v\d+/,
+      });
       await expect(notice).toBeVisible({ timeout: 15_000 });
       const text = await notice.innerText();
       const newVersion = Number(text.match(/new version v(\d+)/)?.[1] ?? '0');

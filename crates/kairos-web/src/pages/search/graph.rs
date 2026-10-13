@@ -704,7 +704,7 @@ fn ManagePanel(
                     />
                     <Select
                         label="Relationship"
-                        options=RELATIONSHIPS.iter().map(|r| r.to_string()).collect()
+                        options={RELATIONSHIPS.iter().map(|r| r.to_string()).collect::<Vec<_>>()}
                         value=rel_kind
                     />
                     {move || view! {

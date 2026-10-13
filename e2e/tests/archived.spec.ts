@@ -161,7 +161,7 @@ test('an archived item reads, its history reads, and it can be restored', async 
     await page.goto(`/items/${task.short_code}`);
     await page.getByRole('button', { name: 'Restore' }).click();
     await expect(
-      page.getByText(`${task.short_code} is back on its board.`),
+      page.locator('.cl-toast', { hasText: `${task.short_code} is back on its board.` }),
     ).toBeVisible();
     await expect(page.locator('[data-testid="archived-banner"]')).toHaveCount(0);
     await expect(
