@@ -64,7 +64,7 @@ pub use duplicates::{
 pub use llama::{LlamaModelFile, LlamaSummarizer, MAX_NEW_TOKENS};
 pub use query::{
     CallEdge, Callees, Counts, External, FileInfo, Lookup, ModuleInfo, NoSymbolCallee, PathStep,
-    SearchHit, SearchMode, SearchResult, SymbolInfo,
+    SearchHit, SearchMode, SearchResult, SymbolInfo, SymbolSource,
 };
 pub use rules::{Decision, Origin, RuleSet};
 pub use rust_analyzer::BuildOptions;
@@ -762,6 +762,32 @@ struct FileContent {
     content_hash: String,
 }
 
+/// The hash that the index keeps for the bytes of a file that it read: the
+/// sha256, in hex.
+pub(crate) fn content_hash(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// The bytes of the file at `path` that the index reads: the first
+/// [`READ_LIMIT`] bytes. `None` when the file is not there.
+pub(crate) fn read_indexed_bytes(path: &Path) -> Result<Option<Vec<u8>>, IndexError> {
+    let io = |source| IndexError::Io {
+        path: path.to_path_buf(),
+        source,
+    };
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(io(e)),
+    };
+    let mut bytes = Vec::new();
+    file.take(READ_LIMIT).read_to_end(&mut bytes).map_err(io)?;
+    Ok(Some(bytes))
+}
+
 fn read_file(path: &Path) -> Result<FileContent, IndexError> {
     let io = |source| IndexError::Io {
         path: path.to_path_buf(),
@@ -775,10 +801,7 @@ fn read_file(path: &Path) -> Result<FileContent, IndexError> {
         .read_to_end(&mut bytes)
         .map_err(io)?;
     let complete = (bytes.len() as u64) == size;
-    let content_hash = Sha256::digest(&bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    let content_hash = content_hash(&bytes);
     let (text, utf8) = match String::from_utf8(bytes) {
         Ok(text) => (text, true),
         Err(e) => (String::from_utf8_lossy(e.as_bytes()).into_owned(), false),

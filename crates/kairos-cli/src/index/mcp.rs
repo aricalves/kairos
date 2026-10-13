@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use kairos_embed::EmbeddingProvider;
 use kairos_index::{
     CallEdge, DEFAULT_MIN_LINES, DuplicateKind, DuplicateOptions, Index, IndexError, Lookup,
-    SearchMode, SymbolInfo, UpdateOptions,
+    SearchMode, SymbolInfo, SymbolSource, UpdateOptions,
 };
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
@@ -39,6 +39,8 @@ use super::query::{QuerySource, ROUTE_TIMEOUT, RouteFailure};
 const DEFAULT_LIMIT: usize = 10;
 /// The most results of one `code_search`.
 const MAX_LIMIT: usize = 50;
+/// The most bytes of source text that `symbol` gives (KAIROS-T-0420).
+const SOURCE_LIMIT: usize = 16 * 1024;
 /// The groups of `duplicates` when the call gives no `limit`.
 pub(super) const DEFAULT_GROUPS: usize = 20;
 /// The most groups of one `duplicates`.
@@ -111,6 +113,9 @@ pub struct SymbolParams {
     /// smallest symbol that holds it. Give it when more than one symbol of
     /// one file has the name.
     pub line: Option<u32>,
+    /// Also give the source text of the symbol, from the file in the
+    /// checkout, at most 16384 bytes. Default false.
+    pub source: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -467,6 +472,50 @@ fn ambiguous(symbol: &str, all: &[SymbolInfo], args: SymbolArguments) -> ToolErr
     }
 }
 
+/// The source part of the result of `symbol` (KAIROS-T-0420): a line that
+/// says what the text is, then the text in a code fence.
+fn source_text(s: &SymbolInfo, source: Option<SymbolSource>) -> String {
+    let Some(source) = source else {
+        return format!(
+            "\nSource: none. The file {} is not in the checkout now.",
+            s.file
+        );
+    };
+    let mut out = format!(
+        "\nSource: lines {}-{}, {}.",
+        s.start_line,
+        s.end_line,
+        plural(source.bytes, "byte", "bytes")
+    );
+    if source.changed {
+        out.push_str(
+            " Warning: the file changed after the last index update. The source can be \
+             different from the symbol. Run `kairos index update`.",
+        );
+    }
+    if source.cut {
+        let next = s.start_line as usize + source.text.matches('\n').count();
+        out.push_str(&format!(
+            " The text is cut at the limit of {SOURCE_LIMIT} bytes: it has {} of {}. \
+             Read {} from line {next} for the rest.",
+            source.text.len(),
+            source.bytes,
+            s.file
+        ));
+    }
+    // A fence that is longer than each run of backticks in the text.
+    let longest = source
+        .text
+        .split(|c| c != '`')
+        .map(str::len)
+        .max()
+        .unwrap_or(0);
+    let fence = "`".repeat(longest.max(2) + 1);
+    let text = source.text.trim_end_matches('\n');
+    out.push_str(&format!("\n{fence}{}\n{text}\n{fence}", s.language));
+    out
+}
+
 /// `Stack::pop (src/stack.rs:20)`.
 fn described(s: &SymbolInfo) -> String {
     format!("{} ({})", s.qualified(), s.place())
@@ -660,7 +709,7 @@ impl CodeTools {
     }
 
     #[tool(
-        description = "One symbol of this checkout: its kind, file, lines, signature and summary. `symbol` is a name, `Type::name` or `Type.name`. When a type and its impl blocks have the name, the result is the type. If more than one symbol has the name, the error lists them: give `file`, `line`, or a candidate from the list as `symbol`, to choose one."
+        description = "One symbol of this checkout: its kind, file, lines, signature and summary. `symbol` is a name, `Type::name` or `Type.name`. When a type and its impl blocks have the name, the result is the type. If more than one symbol has the name, the error lists them: give `file`, `line`, or a candidate from the list as `symbol`, to choose one. Give `source: true` to also get the source text of the symbol from the checkout. The text is at most 16384 bytes: the result says when it is cut. If the file changed after the last index update, the result says that the source can be different."
     )]
     async fn symbol(
         &self,
@@ -693,6 +742,10 @@ impl CodeTools {
             }
             if s.is_test {
                 out.push_str("\nThis is test code.");
+            }
+            if params.source.unwrap_or(false) {
+                let root = self.root().ok_or(ToolError::NoCheckout)?;
+                out.push_str(&source_text(&s, index.source(&root, &s, SOURCE_LIMIT)?));
             }
             Ok(out)
         })())
@@ -1039,6 +1092,39 @@ mod tests {
             is_test: false,
             summary: None,
         }
+    }
+
+    /// KAIROS-T-0420: the source part of `symbol`.
+    #[test]
+    fn the_source_text_says_when_it_is_cut_or_changed() {
+        let s = sym("src/a.rs", 10);
+        assert_eq!(
+            source_text(&s, None),
+            "\nSource: none. The file src/a.rs is not in the checkout now."
+        );
+        let whole = SymbolSource {
+            text: "fn f() {}".into(),
+            bytes: 9,
+            cut: false,
+            changed: false,
+        };
+        assert_eq!(
+            source_text(&s, Some(whole)),
+            "\nSource: lines 10-15, 9 bytes.\n```rust\nfn f() {}\n```"
+        );
+        let cut = SymbolSource {
+            text: "/// ```\nfn f() {\n".into(),
+            bytes: 20000,
+            cut: true,
+            changed: true,
+        };
+        assert_eq!(
+            source_text(&s, Some(cut)),
+            "\nSource: lines 10-15, 20000 bytes. Warning: the file changed after the last \
+             index update. The source can be different from the symbol. Run `kairos index \
+             update`. The text is cut at the limit of 16384 bytes: it has 17 of 20000. Read \
+             src/a.rs from line 12 for the rest.\n````rust\n/// ```\nfn f() {\n````"
+        );
     }
 
     #[test]

@@ -693,6 +693,10 @@ fn refused(world: &mut CliWorld) {
     if result.text.contains("\"symbol\"") {
         assert!(result.text.contains("\"line\""), "{}", result.text);
     }
+    // `symbol` lists `source` too (KAIROS-T-0420).
+    if result.text.contains("\"symbol\"") && !result.text.contains("\"possible\"") {
+        assert!(result.text.contains("\"source\""), "{}", result.text);
+    }
 }
 
 // KAIROS-T-0417: the choice of one symbol.
@@ -759,6 +763,51 @@ fn candidates_given_back(world: &mut CliWorld) {
     let text = world.text();
     assert!(
         text.starts_with("Checksum (implementation, rust)\nFile: src/checksum.rs:10-"),
+        "{text}"
+    );
+}
+
+// KAIROS-T-0420: the source of a symbol.
+
+#[when(expr = "an agent calls symbol for {string} in {string} with source")]
+fn symbol_with_source(world: &mut CliWorld, name: String, file: String) {
+    world.call(
+        "symbol",
+        json!({"symbol": name, "file": file, "source": true}),
+    );
+}
+
+#[then("the result has the source of the struct, from the checkout")]
+fn the_source_of_the_struct(world: &mut CliWorld) {
+    let text = world.text();
+    assert!(
+        text.ends_with(
+            "\nSource: lines 6-8, 37 bytes.\n```rust\npub struct Checksum {\n    sum: u32,\n}\n```"
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("Warning:"), "{text}");
+}
+
+#[when(expr = "the file {string} changes and the agent calls symbol with source again")]
+fn the_file_changes(world: &mut CliWorld, file: String) {
+    let path = world.root().join(&file);
+    let old = fs::read_to_string(&path).expect("read the file");
+    fs::write(&path, format!("// A new first line.\n{old}")).expect("write the file");
+    world.call(
+        "symbol",
+        json!({"symbol": "Checksum", "file": file, "source": true}),
+    );
+}
+
+#[then("the result says that the source can be different from the symbol")]
+fn the_source_can_differ(world: &mut CliWorld) {
+    let text = world.text();
+    assert!(
+        text.contains(
+            "Source: lines 6-8, 37 bytes. Warning: the file changed after the last index \
+             update. The source can be different from the symbol. Run `kairos index update`."
+        ),
         "{text}"
     );
 }

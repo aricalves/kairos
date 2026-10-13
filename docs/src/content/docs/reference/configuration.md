@@ -861,6 +861,20 @@ is `file` when the candidates are in different files, and `line` when they
 are in one file. `path` has the arguments `from_file`, `from_line`, `to_file` and
 `to_line`.
 
+### The code tools: the source of a symbol
+
+Give `source: true` to the tool `symbol` to get the source text of the
+symbol. The tool reads the text from the file in the checkout. It uses the
+bytes of the symbol that the index has.
+
+- The text is 16384 bytes or less. If the symbol is longer, the tool cuts
+  the text at the end of a line. The result gives the length of the symbol
+  and the line where you can read the rest of the file.
+- If the file changed after the last index update, the result has a
+  warning: the source can be different from the symbol. Run
+  `kairos index update` to update the index.
+- If the file is not in the checkout, the result has no source.
+
 ## Helm chart values
 
 `deploy/helm/kairos/values.yaml`. Most values under `config` become entries in a

@@ -952,9 +952,103 @@ pub(crate) fn choose(found: Vec<SymbolInfo>, line: Option<u32>) -> Lookup {
     }
 }
 
+/// The source text of a symbol, from the file in the checkout
+/// (KAIROS-T-0420).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SymbolSource {
+    /// The text of the symbol, cut at the limit. A cut keeps whole lines
+    /// when it can.
+    pub text: String,
+    /// The length of the symbol in bytes, as the index has it.
+    pub bytes: usize,
+    /// True when `text` has fewer bytes than the symbol.
+    pub cut: bool,
+    /// True when the file is not the file that the index read: the text
+    /// can be different from the symbol.
+    pub changed: bool,
+}
+
+impl Index {
+    /// The source text of `symbol`: its byte range in its file under `root`,
+    /// at most `limit` bytes. `None` when the file is not in the checkout.
+    /// The hash of the file is compared with the hash that the index keeps,
+    /// so a file that changed after the index is marked.
+    pub fn source(
+        &self,
+        root: &std::path::Path,
+        symbol: &SymbolInfo,
+        limit: usize,
+    ) -> Result<Option<SymbolSource>, IndexError> {
+        let (start, end, hash): (i64, i64, String) = self.conn.query_row(
+            "SELECT s.start_byte, s.end_byte, f.content_hash
+             FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.id = ?1",
+            params![symbol.id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        let Some(file) = crate::read_indexed_bytes(&root.join(&symbol.file))? else {
+            return Ok(None);
+        };
+        let changed = crate::content_hash(&file) != hash;
+        let bytes = (end - start).max(0) as usize;
+        let start = (start.max(0) as usize).min(file.len());
+        let end = (end.max(0) as usize).clamp(start, file.len());
+        let mut range = &file[start..end];
+        let cut = range.len() > limit;
+        if cut {
+            range = &range[..limit];
+            // Whole lines: stop after the last line end, when there is one.
+            if let Some(last) = range.iter().rposition(|b| *b == b'\n') {
+                range = &range[..=last];
+            }
+        }
+        Ok(Some(SymbolSource {
+            text: String::from_utf8_lossy(range).into_owned(),
+            bytes,
+            cut,
+            changed,
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// KAIROS-T-0420: the source of a symbol, cut at the limit, and marked
+    /// when the file changed after the index.
+    #[test]
+    fn the_source_of_a_symbol_comes_from_the_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        let text = "pub fn f() -> u32 {\n    1\n}\n\npub fn g() {}\n";
+        std::fs::write(repo.join("src/lib.rs"), text).unwrap();
+        let db = dir.path().join("index.sqlite");
+        crate::build_structure(&repo, &db).unwrap();
+        let index = Index::open(&db).unwrap();
+        let Lookup::Found(f) = index.lookup("f", None, None).unwrap() else {
+            panic!("no f");
+        };
+
+        let all = index.source(&repo, &f, 1000).unwrap().unwrap();
+        assert_eq!(all.text, "pub fn f() -> u32 {\n    1\n}");
+        assert_eq!(all.bytes, all.text.len());
+        assert!(!all.cut && !all.changed);
+
+        // A cut keeps whole lines.
+        let cut = index.source(&repo, &f, 24).unwrap().unwrap();
+        assert_eq!(cut.text, "pub fn f() -> u32 {\n");
+        assert!(cut.cut);
+        assert_eq!(cut.bytes, all.bytes);
+
+        std::fs::write(repo.join("src/lib.rs"), format!("// new\n{text}")).unwrap();
+        let changed = index.source(&repo, &f, 1000).unwrap().unwrap();
+        assert!(changed.changed);
+        assert_ne!(changed.text, all.text);
+
+        std::fs::remove_file(repo.join("src/lib.rs")).unwrap();
+        assert_eq!(index.source(&repo, &f, 1000).unwrap(), None);
+    }
 
     #[test]
     fn words_cut_identifiers() {

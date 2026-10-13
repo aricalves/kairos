@@ -47,6 +47,14 @@ Feature: The CLI and the code tools
     Then the error lists the 2 structs and tells the agent to give the file
     And each candidate in the list, given back as the symbol, gives that symbol
 
+  # KAIROS-T-0420: the source of a symbol.
+  Scenario: An agent gets the source of a symbol
+    Given an index of the polyglot fixture
+    When an agent calls symbol for "Checksum" in "src/checksum.rs" with source
+    Then the result has the source of the struct, from the checkout
+    When the file "src/checksum.rs" changes and the agent calls symbol with source again
+    Then the result says that the source can be different from the symbol
+
   Scenario: module_map replaces the Metis index
     Given an index of the polyglot fixture
     When an agent calls module_map
