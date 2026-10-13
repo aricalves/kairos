@@ -118,6 +118,10 @@ query. The test words are "test", "tested", "spec", "fixture", "mock",
 code.
 For example, "how is parsing tested" gives the tests first.
 
+A type and its `impl` blocks give one result: the type, with the best rank
+of the group. Each method of an `impl` block is a different result. An
+`impl` block of a type that is not in the index is a result too.
+
 So with `--vector-provider remote`, the search uses vectors when the CLI
 can connect to Kairos. A CLI with no local vector model (the release build
 for Intel macOS) uses Kairos too. The text of the query goes to Kairos,

@@ -766,6 +766,11 @@ impl Index {
     ///
     /// Test code ranks below each other symbol, in each mode, unless the
     /// query is about tests ([`about_tests`], KAIROS-T-0422).
+    ///
+    /// A type and its impl blocks give one result: the type, with the best
+    /// score of the group ([`impl_owners`], KAIROS-T-0424). The methods
+    /// of the impl blocks stay results of their own. `limit` counts these
+    /// results.
     pub fn search(
         &self,
         query: &str,
@@ -840,6 +845,17 @@ impl Index {
             }
         }
 
+        // A type and its impl blocks are one result (KAIROS-T-0424): the
+        // place of the type, the best score of the group. An impl block
+        // with no type in the index stays a result of its own.
+        let owners = impl_owners(&docs.iter().map(|(s, _)| s).collect::<Vec<_>>());
+        let mut folded: HashMap<usize, f64> = HashMap::new();
+        for (doc, score) in fused {
+            let at = owners.get(&doc).copied().unwrap_or(doc);
+            let best = folded.entry(at).or_insert(score);
+            *best = best.max(score);
+        }
+
         // Test code ranks below each other symbol (COLLIERY-T-1857,
         // KAIROS-T-0422): the names of test functions and the summaries of
         // tests ("Tests that a policy document is parsed") often have the
@@ -848,7 +864,7 @@ impl Index {
         // tests ranks all the code by its score, so the search finds a test
         // by what it checks (KAIROS-T-0421).
         let tests_last = !about_tests(query);
-        let mut order: Vec<(usize, f64)> = fused.into_iter().collect();
+        let mut order: Vec<(usize, f64)> = folded.into_iter().collect();
         order.sort_by(|a, b| {
             let (test_a, test_b) = if tests_last {
                 (docs[a.0].0.is_test, docs[b.0].0.is_test)
@@ -968,6 +984,55 @@ fn shortest_chains(
         found.push(candidates.remove(best));
     }
     found
+}
+
+/// The kinds of a type that an impl block folds into (KAIROS-T-0424).
+const TYPE_KINDS: &[&str] = &["struct", "enum", "trait", "type_alias"];
+
+/// The type of each impl block of `symbols`, as positions: impl block →
+/// type (KAIROS-T-0424). A Rust `impl` block has the name of its type
+/// (`impl Shape for Square` is `Square`). The type has the same name, the
+/// same container and the same language:
+///
+/// 1. The one type in the file of the impl block.
+/// 2. Else the one type in the index: an impl block can be in a different
+///    file from its type.
+///
+/// With no type (an impl of a type from a different crate) or more than one
+/// (two types of one name in different files, and none in the file of the
+/// impl block), the impl block has no entry.
+pub(crate) fn impl_owners(symbols: &[&SymbolInfo]) -> HashMap<usize, usize> {
+    fn key(s: &SymbolInfo) -> (&str, Option<&str>, &str) {
+        (&s.name, s.container.as_deref(), &s.language)
+    }
+    let mut types: HashMap<(&str, Option<&str>, &str), Vec<usize>> = HashMap::new();
+    for (i, s) in symbols.iter().enumerate() {
+        if TYPE_KINDS.contains(&s.kind.as_str()) {
+            types.entry(key(s)).or_default().push(i);
+        }
+    }
+    let mut owners = HashMap::new();
+    for (i, s) in symbols.iter().enumerate() {
+        if s.kind != "implementation" {
+            continue;
+        }
+        let Some(all) = types.get(&key(s)) else {
+            continue;
+        };
+        let here: Vec<usize> = all
+            .iter()
+            .copied()
+            .filter(|&t| symbols[t].file == s.file)
+            .collect();
+        let owner = match (here.as_slice(), all.as_slice()) {
+            ([t], _) | ([], [t]) => Some(*t),
+            _ => None,
+        };
+        if let Some(t) = owner {
+            owners.insert(i, t);
+        }
+    }
+    owners
 }
 
 /// The documents with a score above 0, best first. Equal scores keep the
@@ -1198,6 +1263,71 @@ mod tests {
             Lookup::Ambiguous(all) => assert_eq!(all.len(), 2),
             other => panic!("not ambiguous: {other:?}"),
         }
+    }
+
+    /// `sym` with a name and a container.
+    fn named(id: i64, file: &str, name: &str, container: Option<&str>, kind: &str) -> SymbolInfo {
+        SymbolInfo {
+            name: name.into(),
+            container: container.map(Into::into),
+            ..sym(id, file, kind, (1, 1))
+        }
+    }
+
+    fn owners_of(all: &[SymbolInfo]) -> Vec<(i64, i64)> {
+        let refs: Vec<&SymbolInfo> = all.iter().collect();
+        let mut out: Vec<(i64, i64)> = impl_owners(&refs)
+            .into_iter()
+            .map(|(i, t)| (all[i].id, all[t].id))
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// KAIROS-T-0424: the impl blocks of a type fold into it.
+    #[test]
+    fn impl_blocks_fold_into_their_type() {
+        assert_eq!(owners_of(&struct_and_impls()), [(2, 1), (3, 1)]);
+    }
+
+    #[test]
+    fn two_types_of_one_name_keep_their_own_impl_blocks() {
+        let all = vec![
+            named(1, "src/checksum.rs", "Checksum", None, "struct"),
+            named(2, "src/checksum.rs", "Checksum", None, "implementation"),
+            named(3, "src/legacy.rs", "Checksum", None, "struct"),
+            named(4, "src/legacy.rs", "Checksum", None, "implementation"),
+            // An impl block in a third file: two types, none in its file.
+            named(5, "src/other.rs", "Checksum", None, "implementation"),
+        ];
+        assert_eq!(owners_of(&all), [(2, 1), (4, 3)]);
+    }
+
+    #[test]
+    fn an_impl_block_in_a_different_file_folds_into_the_one_type() {
+        let all = vec![
+            named(1, "src/a.rs", "Policy", None, "struct"),
+            named(2, "src/b.rs", "Policy", None, "implementation"),
+        ];
+        assert_eq!(owners_of(&all), [(2, 1)]);
+    }
+
+    #[test]
+    fn an_impl_block_with_no_type_and_a_method_do_not_fold() {
+        let all = vec![
+            named(1, "src/a.rs", "Policy", None, "struct"),
+            // `impl Display for String`: a type from a different crate.
+            named(2, "src/a.rs", "String", None, "implementation"),
+            // A method has the type as its container, not as its name.
+            named(3, "src/a.rs", "load", Some("Policy"), "method"),
+            // A type and an impl block in two different modules of one file.
+            named(4, "src/a.rs", "Inner", Some("one"), "struct"),
+            named(5, "src/a.rs", "Inner", Some("two"), "implementation"),
+            // A function of the name of a type is not a type.
+            named(6, "src/a.rs", "make", None, "function"),
+            named(7, "src/a.rs", "make", None, "implementation"),
+        ];
+        assert!(owners_of(&all).is_empty(), "{:?}", owners_of(&all));
     }
 
     #[test]

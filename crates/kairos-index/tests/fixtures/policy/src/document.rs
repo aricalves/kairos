@@ -8,6 +8,13 @@ pub struct PolicyDocument {
     pub rules: Vec<String>,
 }
 
+impl PolicyDocument {
+    /// The count of the rules of the document.
+    pub fn rule_count(&self) -> usize {
+        self.rules.len()
+    }
+}
+
 /// Why a policy document is refused.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PolicyError {

@@ -62,3 +62,26 @@ Feature: The search of the code
       | an_empty_policy_document_is_refused  | Tests that parsing an empty policy document returns the Empty error.                                         |
     When I search the code for "how is parsing tested"
     Then the first 3 results are test code
+
+  # KAIROS-T-0424: a type and its impl blocks have one name. They give one
+  # result, at the place of the type, with the best score of the group. The
+  # impl block of PolicyDocument gets the summary of the type here (the fake
+  # summarizer gives the summaries by name), so the two match the query in
+  # the same way. A method of the impl block stays a result of its own.
+  Scenario: code_search gives one result for a type and its impl blocks
+    Given a summarized index of the policy fixture, with these summaries:
+      | name           | summary                                                        |
+      | PolicyDocument | Represents a policy document with a name and a list of rules.  |
+      | rule_count     | Returns the number of rules in a policy document.              |
+    When I search the code for "what is a policy document and its rules"
+    Then the results named PolicyDocument are at "src/document.rs:6"
+    And PolicyDocument::rule_count is a result of its own
+    And no result is an impl block
+
+  # Two types of one name in two files keep their own impl blocks.
+  Scenario: Two types of one name give two results
+    Given an index of the polyglot fixture with no summaries
+    When I search the code for "checksum value"
+    Then the results named Checksum are at "src/checksum.rs:6, src/legacy.rs:4"
+    And Checksum::value is a result of its own
+    And no result is an impl block

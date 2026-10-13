@@ -3860,6 +3860,47 @@ fn is_test_code(world: &mut IndexWorld, name: String) {
     assert!(symbol.is_test, "{symbol:?}");
 }
 
+/// KAIROS-T-0424: the places of the results with the name `name`.
+#[then(expr = "the results named {word} are at {string}")]
+fn results_named_are_at(world: &mut IndexWorld, name: String, places: String) {
+    let order = search_order(world);
+    let hits = &world.search.as_ref().expect("no search ran").hits;
+    let got: Vec<String> = hits
+        .iter()
+        .filter(|h| h.symbol.name == name)
+        .map(|h| h.symbol.place())
+        .collect();
+    let want: Vec<&str> = places.split(", ").collect();
+    assert_eq!(got.len(), want.len(), "{order:#?}");
+    for place in want {
+        assert!(
+            got.iter().any(|g| g == place),
+            "{place} is not a result: {order:#?}"
+        );
+    }
+}
+
+#[then(expr = "{word} is a result of its own")]
+fn a_result_of_its_own(world: &mut IndexWorld, qualified: String) {
+    let order = search_order(world);
+    let hits = &world.search.as_ref().expect("no search ran").hits;
+    assert!(
+        hits.iter()
+            .any(|h| h.symbol.qualified() == qualified && h.symbol.kind != "implementation"),
+        "{qualified} is not a result: {order:#?}"
+    );
+}
+
+#[then("no result is an impl block")]
+fn no_impl_block(world: &mut IndexWorld) {
+    let order = search_order(world);
+    let hits = &world.search.as_ref().expect("no search ran").hits;
+    assert!(
+        hits.iter().all(|h| h.symbol.kind != "implementation"),
+        "an impl block is a result: {order:#?}"
+    );
+}
+
 #[then("the first result is test code")]
 fn the_first_is_test_code(world: &mut IndexWorld) {
     the_first_are_test_code(world, 1);

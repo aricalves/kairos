@@ -1322,6 +1322,69 @@ mod tests {
         check(query::SearchMode::SummaryText);
     }
 
+    /// KAIROS-T-0424: a type and its impl blocks give one result, at the
+    /// place of the type; a method stays a result of its own, and the limit
+    /// counts the results, not the impl blocks.
+    #[test]
+    fn a_type_and_its_impl_blocks_give_one_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(
+            repo.join("src/lib.rs"),
+            "pub struct Policy {\n    pub name: String,\n}\n\n\
+             impl Policy {\n    pub fn policy_name(&self) -> &str {\n        &self.name\n    }\n}\n\n\
+             impl Default for Policy {\n    fn default() -> Self {\n        Policy { name: String::new() }\n    }\n}\n\n\
+             pub fn load_policy() -> Policy {\n    Policy::default()\n}\n",
+        )
+        .unwrap();
+        let db = dir.path().join("index.sqlite");
+        let found = |query: &str, limit: usize| -> Vec<(String, String, String)> {
+            Index::open(&db)
+                .unwrap()
+                .search(query, None, limit)
+                .unwrap()
+                .hits
+                .into_iter()
+                .map(|h| {
+                    (
+                        h.symbol.qualified(),
+                        h.symbol.kind.clone(),
+                        h.symbol.place(),
+                    )
+                })
+                .collect()
+        };
+        let check = || {
+            let hits = found("policy", 10);
+            let policy: Vec<_> = hits.iter().filter(|h| h.0 == "Policy").collect();
+            assert_eq!(policy.len(), 1, "{hits:#?}");
+            assert_eq!(policy[0].1, "struct", "{hits:#?}");
+            assert_eq!(policy[0].2, "src/lib.rs:1", "{hits:#?}");
+            assert!(hits.iter().all(|h| h.1 != "implementation"), "{hits:#?}");
+            assert!(
+                hits.iter().any(|h| h.0 == "Policy::policy_name"),
+                "{hits:#?}"
+            );
+            assert!(hits.iter().any(|h| h.0 == "Policy::default"), "{hits:#?}");
+            assert!(hits.iter().any(|h| h.0 == "load_policy"), "{hits:#?}");
+            // 4 results of 6 symbols: the 2 impl blocks take no place of
+            // the limit.
+            assert_eq!(hits.len(), 4, "{hits:#?}");
+            assert_eq!(found("policy", 3), hits[..3]);
+        };
+
+        build_structure(&repo, &db).unwrap();
+        check();
+
+        let embedder = kairos_embed::DeterministicProvider::default();
+        let mut fake = FakeSummarizer::default();
+        update(&repo, &db, &mut fake, &embedder, &UpdateOptions::default()).unwrap();
+        // The fake summaries do not say "policy": the text of the names
+        // finds the same results.
+        check();
+    }
+
     /// COLLIERY-T-1854: with no model, each key that the pool has is linked,
     /// and each other key is counted as left.
     #[test]
