@@ -189,5 +189,24 @@ class NotificationsInTheSkills(unittest.TestCase):
                 self.assertIn("`mark_events_read`", text)
 
 
+class BootstrapWritesNoRepositoryConnection(unittest.TestCase):
+    """The MCP connection belongs to the user: the plugin server or a
+    user-scope entry. A project `.mcp.json` only when the user asks."""
+
+    def setUp(self):
+        self.text = read(os.path.join(SKILLS, "meta", "bootstrap", "SKILL.md"))
+
+    def test_the_oauth_path_adds_a_user_scope_entry(self):
+        self.assertIn("claude mcp add --scope user", self.text)
+        self.assertNotRegex(self.text, r"claude mcp add --transport")
+
+    def test_a_project_entry_is_only_on_request(self):
+        self.assertNotIn("propose the project `.mcp.json`", self.text)
+        self.assertIn("Only when the user asks for this repository only", self.text)
+
+    def test_the_plugin_ships_no_project_template(self):
+        self.assertFalse(os.path.exists(os.path.join(PLUGIN, ".mcp.json")))
+
+
 if __name__ == "__main__":
     unittest.main()
