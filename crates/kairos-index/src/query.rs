@@ -234,6 +234,10 @@ pub struct FileInfo {
     pub symbols: usize,
     /// Test code (KAIROS-T-0352). It is summarized too (KAIROS-T-0421).
     pub is_test: bool,
+    /// The file has no symbol of a summarized kind (KAIROS-T-0425): only
+    /// declarations, such as `mod` and `use` lines. Its summary, if it has
+    /// one, comes from these and from its doc comment.
+    pub declarations_only: bool,
 }
 
 /// The counts of an index.
@@ -709,17 +713,28 @@ impl Index {
     /// The folders of the parsed files, with their summaries, by path: the
     /// source files and the test files (KAIROS-T-0352), each with its
     /// summary (KAIROS-T-0421). `under` keeps the folders whose path starts
-    /// with it.
+    /// with it. A file with no symbol of a summarized kind is marked
+    /// `declarations_only` (KAIROS-T-0425).
     pub fn module_map(&self, under: Option<&str>) -> Result<Vec<ModuleInfo>, IndexError> {
-        let mut stmt = self.conn.prepare(
+        let kinds = SUMMARIZED_KINDS
+            .iter()
+            .map(|k| format!("'{k}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut stmt = self.conn.prepare(&format!(
             "SELECT f.path, m.summary, (SELECT count(*) FROM symbols s WHERE s.file_id = f.id),
-                    f.decision = 'test'
+                    f.decision = 'test',
+                    NOT EXISTS (SELECT 1 FROM symbols s
+                                WHERE s.file_id = f.id AND s.kind IN ({kinds}))
              FROM files f LEFT JOIN summaries m ON m.key = f.summary_key
              WHERE f.decision IN ('source', 'test') AND f.language IS NOT NULL
-             ORDER BY f.path",
-        )?;
-        let files: Vec<(String, Option<String>, i64, bool)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+             ORDER BY f.path"
+        ))?;
+        type Row = (String, Option<String>, i64, bool, bool);
+        let files: Vec<Row> = stmt
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?
             .collect::<Result<_, _>>()?;
         let mut stmt = self.conn.prepare(
             "SELECT d.path, m.summary FROM modules d JOIN summaries m ON m.key = d.summary_key",
@@ -728,7 +743,7 @@ impl Index {
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<Result<_, _>>()?;
         let mut modules: BTreeMap<String, Vec<FileInfo>> = BTreeMap::new();
-        for (path, summary, symbols, is_test) in files {
+        for (path, summary, symbols, is_test, declarations_only) in files {
             let folder = match path.rsplit_once('/') {
                 Some((folder, _)) => folder.to_string(),
                 None => ".".to_string(),
@@ -741,6 +756,7 @@ impl Index {
                 summary,
                 symbols: symbols as usize,
                 is_test,
+                declarations_only,
             });
         }
         Ok(modules

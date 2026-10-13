@@ -17,8 +17,8 @@ use std::sync::{Arc, Mutex};
 
 use kairos_embed::EmbeddingProvider;
 use kairos_index::{
-    CallEdge, Coverage, DEFAULT_MIN_LINES, DuplicateKind, DuplicateOptions, Index, IndexError,
-    Lookup, Reference, SearchMode, SymbolInfo, SymbolSource, UpdateOptions,
+    CallEdge, Coverage, DEFAULT_MIN_LINES, DuplicateKind, DuplicateOptions, FileInfo, Index,
+    IndexError, Lookup, Reference, SearchMode, SymbolInfo, SymbolSource, UpdateOptions,
 };
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
@@ -1164,23 +1164,32 @@ impl CodeTools {
                 out.push_str(&format!("\n\n## {}\n", m.path));
                 out.push_str(m.summary.as_deref().unwrap_or("No summary."));
                 for f in &m.files {
-                    match &f.summary {
-                        Some(summary) => out.push_str(&format!(
-                            "\n- {}{}: {summary}",
-                            f.path,
-                            if f.is_test { " (test code)" } else { "" }
-                        )),
-                        None => out.push_str(&format!(
-                            "\n- {} ({}{})",
-                            f.path,
-                            if f.is_test { "test code, " } else { "" },
-                            plural(f.symbols, "symbol", "symbols")
-                        )),
-                    }
+                    out.push_str("\n- ");
+                    out.push_str(&map_file_line(f));
                 }
             }
             Ok(out)
         })())
+    }
+}
+
+/// The line of one file in the module map, with no `- `: the path and the
+/// summary. A file with no summary shows its symbol count, or "declarations
+/// only" when it has no symbol to summarize (KAIROS-T-0425).
+fn map_file_line(f: &FileInfo) -> String {
+    let test = if f.is_test { "test code, " } else { "" };
+    match &f.summary {
+        Some(summary) => format!(
+            "{}{}: {summary}",
+            f.path,
+            if f.is_test { " (test code)" } else { "" }
+        ),
+        None if f.declarations_only => format!("{} ({test}declarations only)", f.path),
+        None => format!(
+            "{} ({test}{})",
+            f.path,
+            plural(f.symbols, "symbol", "symbols")
+        ),
     }
 }
 
@@ -1249,6 +1258,34 @@ mod tests {
             is_test: false,
             summary: None,
         }
+    }
+
+    /// KAIROS-T-0425: a file with no symbol to summarize and no summary.
+    #[test]
+    fn a_file_of_declarations_with_no_summary_says_so() {
+        let file = |summary: Option<&str>, declarations_only, is_test| FileInfo {
+            path: "src/lib.rs".into(),
+            summary: summary.map(str::to_string),
+            symbols: 3,
+            is_test,
+            declarations_only,
+        };
+        assert_eq!(
+            map_file_line(&file(None, true, false)),
+            "src/lib.rs (declarations only)"
+        );
+        assert_eq!(
+            map_file_line(&file(None, true, true)),
+            "src/lib.rs (test code, declarations only)"
+        );
+        assert_eq!(
+            map_file_line(&file(None, false, false)),
+            "src/lib.rs (3 symbols)"
+        );
+        assert_eq!(
+            map_file_line(&file(Some("Declares the modules."), true, false)),
+            "src/lib.rs: Declares the modules."
+        );
     }
 
     /// KAIROS-T-0420: the source part of `symbol`.

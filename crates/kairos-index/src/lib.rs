@@ -72,9 +72,9 @@ pub use rules::{Decision, Origin, RuleSet};
 pub use rust_analyzer::BuildOptions;
 pub use schema::SCHEMA_VERSION;
 pub use summary::{
-    FakeSummarizer, Level, LevelCount, MODEL_FILE_NAME, SUMMARIZED_KINDS, SYSTEM_PROMPT,
-    SummarizeOptions, Summarizer, SummaryCall, SummaryReport, SummaryRequest, link, model_path,
-    summarize, vector_model_name,
+    DECLARATIONS_KIND, FakeSummarizer, Level, LevelCount, MODEL_FILE_NAME, SUMMARIZED_KINDS,
+    SYSTEM_PROMPT, SummarizeOptions, Summarizer, SummaryCall, SummaryReport, SummaryRequest,
+    declaration_lines, link, model_path, summarize, vector_model_name,
 };
 
 /// The index of a checkout, from its root (COLLIERY-T-1852). A build does not

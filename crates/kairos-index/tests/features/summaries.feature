@@ -36,6 +36,18 @@ Feature: Summaries
     When I summarize the index
     Then the input to each file summary is the summaries of its symbols, not the code of the file
 
+  # KAIROS-T-0425 (Dylan, 2026-10-13): a file of declarations, such as a
+  # lib.rs of mod and use lines, gets a summary from these lines and its //!
+  # comment. A file with none of these gets no summary, and the module map
+  # says "declarations only".
+  Scenario: A file of declarations gets a summary from its declarations and its doc comment
+    Given the policy fixture and the fake summarizer
+    When I summarize the index
+    Then the input to the summary of src/lib.rs is its //! comment and its mod and use lines
+    And src/macros.rs has no summary, and the module map says that it has declarations only
+    When I summarize the index
+    Then the summary of src/lib.rs comes from the pool
+
   Scenario: A change in a callee does not change the key of its caller
     Given a summarized index
     When the body of a function changes and its signature stays the same

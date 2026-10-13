@@ -1657,6 +1657,89 @@ fn the_fixture_and_the_fake(world: &mut IndexWorld) {
     world.root = fixture_root();
 }
 
+#[given("the policy fixture and the fake summarizer")]
+fn the_policy_fixture_and_the_fake(world: &mut IndexWorld) {
+    world.root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/policy");
+}
+
+/// The file summary requests of the last summary run for `path`.
+fn file_requests<'a>(world: &'a IndexWorld, path: &str) -> Vec<&'a SummaryRequest> {
+    world
+        .requests
+        .iter()
+        .filter(|r| r.level == Level::File && r.path == path)
+        .collect()
+}
+
+/// The module map entry of `path`.
+fn map_file(world: &IndexWorld, path: &str) -> kairos_index::FileInfo {
+    world
+        .index()
+        .module_map(None)
+        .expect("read the module map")
+        .into_iter()
+        .flat_map(|m| m.files)
+        .find(|f| f.path == path)
+        .unwrap_or_else(|| panic!("{path} is not in the module map"))
+}
+
+#[then("the input to the summary of src/lib.rs is its //! comment and its mod and use lines")]
+fn lib_summary_from_declarations(world: &mut IndexWorld) {
+    let requests = file_requests(world, "src/lib.rs");
+    assert_eq!(requests.len(), 1, "{:#?}", world.requests);
+    let request = requests[0];
+    assert_eq!(request.kind, kairos_index::DECLARATIONS_KIND);
+    assert!(request.children.is_empty(), "{request:?}");
+    assert_eq!(
+        request.code.as_deref(),
+        Some(
+            "//! Policy documents.\n\nmod document;\nmod macros;\n\
+             pub use document::{MAX_RULES, PolicyDocument, PolicyError, parse_document, validate};"
+        )
+    );
+    let file = map_file(world, "src/lib.rs");
+    assert!(
+        file.declarations_only && file.summary.is_some(),
+        "the module map: {file:?}"
+    );
+    // The folder summary has the summary of lib.rs.
+    let folder = world
+        .requests
+        .iter()
+        .find(|r| r.level == Level::Module && r.path == "src")
+        .expect("a summary of the folder src");
+    assert!(
+        folder
+            .children
+            .iter()
+            .any(|l| l.starts_with("- `lib.rs`: ")),
+        "{:#?}",
+        folder.children
+    );
+}
+
+#[then("src/macros.rs has no summary, and the module map says that it has declarations only")]
+fn macros_has_no_summary(world: &mut IndexWorld) {
+    assert!(file_requests(world, "src/macros.rs").is_empty());
+    let file = map_file(world, "src/macros.rs");
+    assert!(
+        file.declarations_only && file.summary.is_none(),
+        "the module map: {file:?}"
+    );
+}
+
+#[then("the summary of src/lib.rs comes from the pool")]
+fn lib_summary_reused(world: &mut IndexWorld) {
+    assert!(
+        file_requests(world, "src/lib.rs").is_empty(),
+        "{:#?}",
+        world.requests
+    );
+    let report = world.summary_report.as_ref().expect("no summary run");
+    assert!(report.calls.is_empty(), "{:#?}", report.calls);
+    assert!(map_file(world, "src/lib.rs").summary.is_some());
+}
+
 #[given(expr = "the polyglot fixture and a fake summarizer that takes {int} requests at once")]
 fn the_fixture_and_a_concurrent_fake(world: &mut IndexWorld, concurrency: usize) {
     world.root = fixture_root();

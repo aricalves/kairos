@@ -17,7 +17,10 @@ For a repository on a hosted provider, each request to the provider has:
 - the code of one changed function or type, with its signature (test code
   too),
 - the signatures of the functions it calls,
-- for a file or a folder, the summaries of its parts.
+- for a file or a folder, the summaries of its parts,
+- for a file with no functions or types of its own (for example a `lib.rs`
+  of `mod` and `use` lines), its doc comment and its `mod`, `use`, import
+  and export lines.
 
 Nothing else leaves the host. The whole repository stays. The key of the
 organization stays. The work of a repository on the embedded model stays.
