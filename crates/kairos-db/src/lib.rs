@@ -42,6 +42,7 @@ pub mod scim;
 pub mod search;
 pub mod seed;
 pub mod service_accounts;
+pub mod site_content;
 pub mod sites;
 pub mod task_cancellations;
 pub mod task_claims;

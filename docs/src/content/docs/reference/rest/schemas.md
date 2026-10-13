@@ -2200,6 +2200,7 @@ A team (`/api/teams`). Every team owns a delivery board (KAIROS-A-0002/T-0010: c
 | `delivery_board_id` | `string`, nullable | no | The team's delivery board (UUID); created with the team. |
 | `id` | `string` | yes | Team id (UUID). |
 | `name` | `string` | yes |  |
+| `site_enabled` | `boolean` | no | The docs site of the team is on (KAIROS-T-0404). |
 | `slug` | `string` | yes |  |
 | `team_type` | `string` | yes | `stream_aligned|platform|enabling|complicated_subsystem`. |
 | `updated_at` | `string` | yes | RFC 3339. |
@@ -2526,6 +2527,7 @@ Body of `PATCH /api/teams/{id}`.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `name` | `string`, nullable | no |  |
+| `site_enabled` | `boolean`, nullable | no | The docs site of the team (KAIROS-T-0404): on by default. Off, its rendered pages are not served. |
 | `slug` | `string`, nullable | no |  |
 | `team_type` | `string`, nullable | no |  |
 

@@ -82,6 +82,7 @@ pub fn team_to_dto(team: Team, delivery_board_id: Option<uuid::Uuid>) -> dto::Te
         slug: team.slug,
         team_type: team.team_type.to_string(),
         delivery_board_id: delivery_board_id.map(|id| id.to_string()),
+        site_enabled: team.site_enabled,
         created_at: timestamp(team.created_at),
         updated_at: timestamp(team.updated_at),
     }

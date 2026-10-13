@@ -644,6 +644,7 @@ diesel::table! {
         deleted_at -> Nullable<Timestamptz>,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
+        site_enabled -> Bool,
     }
 }
 
