@@ -80,13 +80,17 @@ pub struct SitePage {
     pub superseded_by: Option<String>,
 }
 
-/// A repository of a team. KAIROS-T-0407 adds the link to its site.
+/// A repository of a team, with the base path of its live site.
 #[derive(Debug, Clone, PartialEq, Eq, QueryableByName)]
 pub struct SiteRepository {
     #[diesel(sql_type = SqlUuid)]
     pub id: Uuid,
     #[diesel(sql_type = Text)]
     pub slug: String,
+    /// Where its uploaded site is served (KAIROS-T-0407): the base path of
+    /// its live publish, when its site is on and published.
+    #[diesel(sql_type = Nullable<Text>)]
+    pub site_base_path: Option<String>,
 }
 
 /// Where a published document or ADR has its page.
@@ -183,13 +187,16 @@ pub fn org_adrs(conn: &mut PgConnection) -> Result<Vec<SiteItem>, DieselError> {
     .load(conn)
 }
 
-/// The live repositories of a team, by slug.
+/// The live repositories of a team, by slug, with the base path of their
+/// live site.
 pub fn team_repositories(
     conn: &mut PgConnection,
     team_id: Uuid,
 ) -> Result<Vec<SiteRepository>, DieselError> {
     diesel::sql_query(
-        "SELECT r.id, r.slug FROM repositories r \
+        "SELECT r.id, r.slug, \
+           CASE WHEN r.site_enabled THEN p.base_path END AS site_base_path \
+         FROM repositories r LEFT JOIN site_publishes p ON p.id = r.site_publish_id \
          WHERE r.team_id = $1 AND r.deleted_at IS NULL ORDER BY r.slug",
     )
     .bind::<SqlUuid, _>(team_id)
