@@ -2,7 +2,7 @@
 title: "Webhook deliveries"
 ---
 
-This page describes Kairos 0.11.2.
+This page describes Kairos 0.12.0.
 
 Kairos sends a signed HTTP request to a webhook target when an event occurs
 (KAIROS-T-0384). A target is a URL on one board. A board manager makes the
