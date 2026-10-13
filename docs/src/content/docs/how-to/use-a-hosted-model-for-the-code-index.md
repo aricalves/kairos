@@ -3,6 +3,8 @@ title: "Use a hosted model for the code index summaries"
 ---
 
 Kairos writes a summary of each function and file of an indexed repository.
+The test functions and the test files get a summary too. Thus a repository
+with much test code sends more requests to the provider.
 By default a model embedded in the server writes them, on the CPU of the
 host. An organization can send this work to a hosted provider instead:
 Ollama Cloud, or AWS Bedrock. This page tells an operator and an
@@ -12,7 +14,8 @@ organization admin how.
 
 For a repository on a hosted provider, each request to the provider has:
 
-- the code of one changed function or type, with its signature,
+- the code of one changed function or type, with its signature (test code
+  too),
 - the signatures of the functions it calls,
 - for a file or a folder, the summaries of its parts.
 

@@ -13,7 +13,7 @@ Feature: Extract the structure of a repository
     Then the vendored file, the generated file and the fixture file have no symbols
     And the decision for each of them is recorded with its rule
 
-  Scenario: Test code is in the structure but is not summarized
+  Scenario: Test code is in the structure and is marked as test code
     Given the polyglot fixture repository
     When I build the structure
     Then the symbols of the test file are in the index

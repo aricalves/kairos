@@ -15,6 +15,13 @@ Feature: The CLI and the code tools
     When an agent calls code_search with a description of a Rust function
     Then that function is in the first 3 results
 
+  # KAIROS-T-0421: test code has a summary, so the search finds a test by
+  # what it checks. The result marks it as test code.
+  Scenario: An agent finds a test by what it checks
+    Given an index of the polyglot fixture
+    When an agent calls code_search with what a test checks
+    Then the first result is that test, marked as test code, with its summary
+
   Scenario: callers shows only certain edges by default
     Given an index where a Python function has 1 certain caller and 1 possible caller
     When an agent calls callers for that function

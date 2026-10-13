@@ -26,7 +26,8 @@ const DEFAULT_RULES: &str = include_str!("default-rules.toml");
 pub enum Decision {
     /// Hand-written code: parsed, and summarized later.
     Source,
-    /// Test code: parsed for the structure, never summarized.
+    /// Test code: parsed for the structure and summarized as source, with a
+    /// test mark (KAIROS-T-0421).
     Test,
     Vendored,
     Generated,

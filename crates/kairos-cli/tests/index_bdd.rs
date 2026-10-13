@@ -14,7 +14,7 @@
 #[path = "index_bdd/base.rs"]
 mod base;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -94,7 +94,16 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
         "enqueue_all",
         "Puts each number of a slice on a new queue and returns the queue.",
     ),
+    // KAIROS-T-0421: test code gets a summary too.
+    (
+        "python/tests/test_report.py",
+        "test_render_joins_rows",
+        "Checks that a report puts each row on its own line.",
+    ),
 ];
+
+/// A search for what a test checks, with no word of its name.
+const TEST_QUERY: &str = "puts each row on its own line";
 
 /// The description that the agent searches with: the words of the summary
 /// of `Stack::pop`, written as a question.
@@ -458,6 +467,11 @@ fn search_for_pop(world: &mut CliWorld) {
     world.call("code_search", json!({"query": POP_QUERY}));
 }
 
+#[when("an agent calls code_search with what a test checks")]
+fn search_for_a_test(world: &mut CliWorld) {
+    world.call("code_search", json!({"query": TEST_QUERY}));
+}
+
 #[when("an agent calls callers for that function")]
 fn callers_of_load(world: &mut CliWorld) {
     world.call(
@@ -563,6 +577,17 @@ fn pop_in_top_three(world: &mut CliWorld) {
             .iter()
             .any(|l| l.contains("Stack::pop") && l.contains("src/stack.rs")),
         "Stack::pop is not in the first 3 results:\n{text}"
+    );
+}
+
+#[then("the first result is that test, marked as test code, with its summary")]
+fn the_test_first(world: &mut CliWorld) {
+    let text = world.text();
+    let first = numbered(text).into_iter().next().expect("no result");
+    assert!(
+        first.contains("test_render_joins_rows (python/tests/test_report.py:")
+            && first.contains(", function, test code: Checks that a report puts each row"),
+        "the test is not the first result:\n{text}"
     );
 }
 
@@ -781,6 +806,14 @@ fn each_module(world: &mut CliWorld) {
     let index = world.index();
     let modules = index.modules().expect("modules");
     assert!(modules.len() >= 3, "{modules:?}");
+    let tests: BTreeSet<String> = index
+        .files()
+        .expect("files")
+        .into_iter()
+        .filter(|f| f.decision == "test")
+        .map(|f| f.path)
+        .collect();
+    let mut summarized_tests = 0;
     let mut files_of: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     for (path, key) in index.file_summary_keys().expect("file keys") {
         let Some(key) = key else { continue };
@@ -817,13 +850,20 @@ fn each_module(world: &mut CliWorld) {
             "{module} has no summary line:\n{text}"
         );
         for (file, file_summary) in files_of.get(module).into_iter().flatten() {
-            let line = format!("- {file}: {file_summary}");
+            // A test file has a summary too, and the mark (KAIROS-T-0421).
+            let line = if tests.contains(file) {
+                summarized_tests += 1;
+                format!("- {file} (test code): {file_summary}")
+            } else {
+                format!("- {file}: {file_summary}")
+            };
             assert!(
                 section.contains(&line.as_str()),
                 "{module} does not list {file}:\n{text}"
             );
         }
     }
+    assert!(summarized_tests > 0, "no test file has a summary:\n{text}");
 }
 
 #[tokio::main]

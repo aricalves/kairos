@@ -643,17 +643,16 @@ impl CodeTools {
             for (i, hit) in found.hits.iter().enumerate() {
                 let s = &hit.symbol;
                 out.push_str(&format!("\n{}. {}, {}", i + 1, described(s), s.kind));
+                if s.is_test {
+                    out.push_str(", test code");
+                }
                 match (&s.summary, &s.signature) {
                     (Some(summary), _) => out.push_str(&format!(": {summary}")),
                     (None, Some(signature)) => out.push_str(&format!(": `{signature}`")),
                     (None, None) => {}
                 }
                 if s.summary.is_none() && found.mode != SearchMode::Names {
-                    out.push_str(if s.is_test {
-                        " (test code: no summary, found by its name and path)"
-                    } else {
-                        " (no summary yet: found by its name and path)"
-                    });
+                    out.push_str(" (no summary yet: found by its name and path)");
                 }
             }
             Ok(out)
@@ -690,7 +689,6 @@ impl CodeTools {
             }
             match &s.summary {
                 Some(summary) => out.push_str(&format!("\nSummary: {summary}")),
-                None if s.is_test => out.push_str("\nSummary: none. Test code gets no summary."),
                 None => out.push_str("\nSummary: none."),
             }
             if s.is_test {
@@ -932,7 +930,7 @@ impl CodeTools {
     }
 
     #[tool(
-        description = "The map of this checkout: each folder of source files, with its summary and its files, each file with its summary. Use it in place of .metis/code-index.md. `under` keeps the folders under one path."
+        description = "The map of this checkout: each folder of source and test files, with its summary and its files, each file with its summary. Use it in place of .metis/code-index.md. `under` keeps the folders under one path."
     )]
     async fn module_map(
         &self,
@@ -958,7 +956,11 @@ impl CodeTools {
                 out.push_str(m.summary.as_deref().unwrap_or("No summary."));
                 for f in &m.files {
                     match &f.summary {
-                        Some(summary) => out.push_str(&format!("\n- {}: {summary}", f.path)),
+                        Some(summary) => out.push_str(&format!(
+                            "\n- {}{}: {summary}",
+                            f.path,
+                            if f.is_test { " (test code)" } else { "" }
+                        )),
                         None => out.push_str(&format!(
                             "\n- {} ({}{})",
                             f.path,

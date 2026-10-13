@@ -4,7 +4,7 @@
 //! - **A symbol summary** comes from the code of the symbol and the signatures
 //!   of the functions that it calls (its `certain` edges). It does not use
 //!   their summaries: if it did, one change would change the input of each
-//!   caller above it. Test symbols get no summary.
+//!   caller above it. Test symbols get a summary too (KAIROS-T-0421).
 //! - **A file summary** comes from the summaries of its symbols, and **a
 //!   module summary** from the summaries of the files in its folder. Neither
 //!   reads code: the benchmark showed that file summaries from code cost as
@@ -35,7 +35,8 @@ use crate::{IndexError, schema};
 /// The symbol kinds that get a summary: functions, types, `impl` blocks and
 /// constants (KAIROS-T-0349). A `mod x;` line or a field gets none. The input
 /// of an `impl` block is its header and the declarations of its functions,
-/// not their bodies: see [`impl_text`].
+/// not their bodies: see [`impl_text`]. Test code gets a summary as source
+/// does (KAIROS-T-0421).
 pub const SUMMARIZED_KINDS: &[&str] = &[
     "function",
     "method",
@@ -341,12 +342,11 @@ struct Sym {
     start_byte: usize,
     end_byte: usize,
     tree_hash: String,
-    is_test: bool,
 }
 
 impl Sym {
     fn summarized(&self) -> bool {
-        !self.is_test && SUMMARIZED_KINDS.contains(&self.kind.as_str())
+        SUMMARIZED_KINDS.contains(&self.kind.as_str())
     }
 
     /// The name with its container, as a child line shows it.
@@ -576,7 +576,7 @@ fn run(
     let mut file_keys: BTreeMap<String, Option<String>> = BTreeMap::new();
     for f in files
         .iter()
-        .filter(|f| f.decision == "source" && in_scope(&f.path))
+        .filter(|f| matches!(f.decision.as_str(), "source" | "test") && in_scope(&f.path))
     {
         let Some(children) = by_file.get(&f.id) else {
             continue;
@@ -1022,7 +1022,7 @@ fn read_files(conn: &Connection) -> Result<Vec<FileRow>, IndexError> {
 fn read_symbols(conn: &Connection) -> Result<Vec<Sym>, IndexError> {
     let mut stmt = conn.prepare(
         "SELECT s.id, s.file_id, s.name, s.container, s.kind, s.language, s.start_byte,
-                s.end_byte, s.tree_hash, s.is_test
+                s.end_byte, s.tree_hash
          FROM symbols s JOIN files f ON f.id = s.file_id
          ORDER BY f.path, s.start_byte, s.end_byte DESC, s.kind, s.name",
     )?;
@@ -1037,7 +1037,6 @@ fn read_symbols(conn: &Connection) -> Result<Vec<Sym>, IndexError> {
             start_byte: r.get::<_, i64>(6)? as usize,
             end_byte: r.get::<_, i64>(7)? as usize,
             tree_hash: r.get(8)?,
-            is_test: r.get(9)?,
         })
     })?;
     Ok(rows.collect::<Result<_, _>>()?)

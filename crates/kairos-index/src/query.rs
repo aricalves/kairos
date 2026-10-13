@@ -161,7 +161,7 @@ pub struct FileInfo {
     pub path: String,
     pub summary: Option<String>,
     pub symbols: usize,
-    /// Test code: parsed, never summarized (KAIROS-T-0352).
+    /// Test code (KAIROS-T-0352). It is summarized too (KAIROS-T-0421).
     pub is_test: bool,
 }
 
@@ -182,7 +182,8 @@ pub struct Counts {
     pub symbol_summaries: usize,
     pub file_summaries: usize,
     pub module_summaries: usize,
-    /// The symbols that can get a summary: functions and types, not test code.
+    /// The symbols that can get a summary: functions and types, test code
+    /// too (KAIROS-T-0421).
     pub summarizable: usize,
     /// All the summaries in the pool, also those of code that is gone.
     pub pool: usize,
@@ -281,7 +282,7 @@ impl Index {
             )?,
             summarizable: count(&format!(
                 "SELECT count(*) FROM symbols s JOIN files f ON f.id = s.file_id
-                 WHERE s.is_test = 0 AND f.decision = 'source' AND s.kind IN ({kinds})"
+                 WHERE f.decision IN ('source', 'test') AND s.kind IN ({kinds})"
             ))?,
             pool: count("SELECT count(*) FROM summaries")?,
             vector_model: self.vector_model()?,
@@ -551,8 +552,9 @@ impl Index {
     }
 
     /// The folders of the parsed files, with their summaries, by path: the
-    /// source files and the test files, which have no summary
-    /// (KAIROS-T-0352). `under` keeps the folders whose path starts with it.
+    /// source files and the test files (KAIROS-T-0352), each with its
+    /// summary (KAIROS-T-0421). `under` keeps the folders whose path starts
+    /// with it.
     pub fn module_map(&self, under: Option<&str>) -> Result<Vec<ModuleInfo>, IndexError> {
         let mut stmt = self.conn.prepare(
             "SELECT f.path, m.summary, (SELECT count(*) FROM symbols s WHERE s.file_id = f.id),
@@ -601,8 +603,8 @@ impl Index {
     /// The text rank is BM25 on the name, the container, the signature and
     /// the summary. The vector rank is the cosine of the vector of the query
     /// against each summary vector; it needs `embedder` to have the model of
-    /// the pool. A symbol with no summary (test code, or code that waits for
-    /// its summary) is ranked by its name, its signature and its path
+    /// the pool. A symbol with no summary (code that waits for its summary)
+    /// is ranked by its name, its signature and its path
     /// (KAIROS-T-0352); with no summary in the index, each symbol is.
     pub fn search(
         &self,
@@ -675,8 +677,8 @@ impl Index {
             for (rank, (doc, _)) in ranked(&cosines).into_iter().enumerate() {
                 *fused.entry(doc).or_default() += 1.0 / (RRF_K + rank as f64 + 1.0);
             }
-            // A symbol with no vector (no summary: test code, or code that
-            // waits for its summary) is in the text rank only. Its text rank
+            // A symbol with no vector (no summary: code that waits for its
+            // summary) is in the text rank only. Its text rank
             // counts for the vector rank too, so a good name match is not
             // below each symbol that is in both ranks (KAIROS-T-0352).
             for (rank, (doc, _)) in text_ranks.iter().enumerate() {
@@ -688,8 +690,8 @@ impl Index {
 
         // With no summaries, test code ranks below each other symbol
         // (COLLIERY-T-1857): the names of test functions often have the
-        // words of the query. With summaries, a test symbol (which has none)
-        // ranks by its own score, so the search can find it (KAIROS-T-0352).
+        // words of the query. With summaries, a test symbol ranks by its own
+        // score, so the search can find it (KAIROS-T-0352, KAIROS-T-0421).
         let tests_last = mode == SearchMode::Names;
         let mut order: Vec<(usize, f64)> = fused.into_iter().collect();
         order.sort_by(|a, b| {

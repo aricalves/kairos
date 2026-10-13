@@ -10,9 +10,10 @@ Feature: The search of the code
     Then the results have test functions and functions that are not test code
     And each result that is not test code ranks above each test function
 
-  # KAIROS-T-0352: in a summarized index, test code has no summary, but the
-  # search still finds it by its name, its signature and its path.
-  Scenario: code_search finds test code in a summarized index
-    Given a summarized index of the polyglot fixture
-    When I search the code for "render joins rows"
-    Then the results have the test function test_render_joins_rows, with no summary
+  # KAIROS-T-0421: test code has a summary, so the search finds a test by
+  # what it checks, not only by its name. The result still marks it as test
+  # code.
+  Scenario: code_search finds a test by what it checks
+    Given a summarized index of the polyglot fixture, where the summary of test_render_joins_rows is "It checks that a report puts each row on its own line."
+    When I search the code for "puts each row on its own line"
+    Then the first result is the test function test_render_joins_rows, with its summary

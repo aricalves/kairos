@@ -1442,9 +1442,10 @@ fn the_build_stops_for_the_std_source(world: &mut IndexWorld) {
 
 // --- Summaries ------------------------------------------------------------------
 
-/// The symbols that get a summary: not test code, and of a summarized kind.
+/// The symbols that get a summary: those of a summarized kind, test code
+/// too (KAIROS-T-0421).
 fn summarized(s: &SymbolRecord) -> bool {
-    !s.is_test && SUMMARIZED_KINDS.contains(&s.kind.as_str())
+    SUMMARIZED_KINDS.contains(&s.kind.as_str())
 }
 
 #[then(
@@ -1857,11 +1858,12 @@ fn change_a_body(world: &mut IndexWorld) {
     world.summarize_with_fake();
 }
 
-#[then("each symbol that is not test code has a summary and a vector")]
+#[then("each symbol of a summarized kind has a summary and a vector")]
 fn each_symbol_has_a_summary(world: &mut IndexWorld) {
     let index = world.index();
     let symbols = world.symbols();
     let mut count = 0;
+    let mut tests = 0;
     for s in symbols.iter().filter(|s| summarized(s)) {
         let key = s
             .summary_key
@@ -1878,11 +1880,13 @@ fn each_symbol_has_a_summary(world: &mut IndexWorld) {
             .unwrap_or_else(|| panic!("{} in {} has no vector", s.name, s.file));
         assert_eq!(vector.len(), 384, "{s:?}: the vector width");
         count += 1;
+        tests += usize::from(s.is_test);
     }
     assert!(count >= 20, "only {count} symbols have a summary");
+    assert!(tests > 0, "no test symbol has a summary");
 
-    // The other kinds (a `mod x;` line, an impl block, a constant) get none.
-    for s in symbols.iter().filter(|s| !s.is_test && !summarized(s)) {
+    // The other kinds (a `mod x;` line, a field) get none.
+    for s in symbols.iter().filter(|s| !summarized(s)) {
         assert!(
             s.summary_key.is_none()
                 && !world.requests.iter().any(|r| r.level == Level::Symbol
@@ -1918,27 +1922,63 @@ fn each_symbol_has_a_summary(world: &mut IndexWorld) {
     }
 }
 
-#[then("no test symbol has a summary")]
-fn no_test_summary(world: &mut IndexWorld) {
-    let tests: Vec<_> = world.symbols().into_iter().filter(|s| s.is_test).collect();
+#[then(
+    "each test symbol and each test file has a summary, and the test symbols are marked as test code"
+)]
+fn test_code_has_summaries(world: &mut IndexWorld) {
+    let index = world.index();
+    let tests: Vec<_> = world
+        .symbols()
+        .into_iter()
+        .filter(|s| s.is_test && summarized(s))
+        .collect();
     assert!(!tests.is_empty(), "the fixture has no test symbols");
     for s in &tests {
         assert!(
-            !world
+            world
                 .requests
                 .iter()
                 .any(|r| r.level == Level::Symbol && r.path == s.file && r.name == s.name),
-            "the summarizer got the test symbol {} in {}",
+            "the summarizer did not get the test symbol {} in {}",
             s.name,
             s.file
         );
         assert!(
-            s.summary_key.is_none(),
-            "the test symbol {} in {} has a summary",
+            s.summary_key.is_some(),
+            "the test symbol {} in {} has no summary",
             s.name,
             s.file
         );
     }
+    let test_file = expected_file("test");
+    let keys: std::collections::BTreeMap<_, _> = index
+        .file_summary_keys()
+        .expect("read the files")
+        .into_iter()
+        .collect();
+    assert!(
+        matches!(keys.get(&test_file.path), Some(Some(_))),
+        "the test file {} has no summary",
+        test_file.path
+    );
+    let map = index.module_map(None).expect("read the module map");
+    let file = map
+        .iter()
+        .flat_map(|m| &m.files)
+        .find(|f| f.path == test_file.path)
+        .expect("the test file is in the module map");
+    assert!(
+        file.is_test && file.summary.is_some(),
+        "the module map: {file:?}"
+    );
+}
+
+#[then("the count of summarizable symbols has the test symbols")]
+fn summarizable_has_tests(world: &mut IndexWorld) {
+    let counts = world.index().counts().expect("read the counts");
+    let want = world.symbols().iter().filter(|s| summarized(s)).count();
+    assert_eq!(counts.summarizable, want, "the summarizable symbols");
+    assert_eq!(counts.symbol_summaries, want, "the symbol summaries");
 }
 
 #[then("the 2 symbols have the same key")]
@@ -2270,6 +2310,19 @@ fn change_one_rust_body(world: &mut IndexWorld) {
     world.update(false);
 }
 
+/// The body change of the test scenario (KAIROS-T-0421): a test function
+/// checks one more thing.
+const TEST_BEFORE: &str = "    assert Report([\"a\", \"b\"]).render() == \"a\\nb\"\n";
+const TEST_AFTER: &str = "    assert Report([\"a\", \"b\"]).render() == \"a\\nb\"\n    assert Report([]).render() == \"\"\n";
+
+#[when("I change the body of one Python test function and update the index")]
+fn change_one_test_body(world: &mut IndexWorld) {
+    let path = "python/tests/test_report.py";
+    edit(&world.root, path, TEST_BEFORE, TEST_AFTER);
+    world.changed = Some((path.into(), "test_render_joins_rows".into(), String::new()));
+    world.update(false);
+}
+
 #[when("I change a Rust function and update the index with no options")]
 fn change_rust_no_options(world: &mut IndexWorld) {
     change_one_rust_body(world);
@@ -2314,12 +2367,11 @@ fn other_summaries_stay(world: &mut IndexWorld) {
         .to_string();
     let mut compared = 0;
     for s in after.symbols.iter().filter(|s| summarized(s)) {
-        if (s.file.as_str(), s.name.as_str(), s.container.as_deref())
-            == (
-                changed.0.as_str(),
-                changed.1.as_str(),
-                Some(changed.2.as_str()),
-            )
+        if (
+            s.file.as_str(),
+            s.name.as_str(),
+            s.container.as_deref().unwrap_or(""),
+        ) == (changed.0.as_str(), changed.1.as_str(), changed.2.as_str())
         {
             continue;
         }
@@ -3659,7 +3711,49 @@ fn tests_rank_lower(world: &mut IndexWorld) {
     );
 }
 
-#[then(expr = "the results have the test function {word}, with no summary")]
+/// A fake summarizer that gives one symbol a fixed summary
+/// (KAIROS-T-0421).
+struct OneSummary {
+    name: String,
+    text: String,
+    fake: FakeSummarizer,
+}
+
+impl Summarizer for OneSummary {
+    fn model(&self) -> String {
+        self.fake.model()
+    }
+
+    fn summarize(&mut self, request: &SummaryRequest) -> Result<String, String> {
+        if request.level == Level::Symbol && request.name == self.name {
+            return Ok(self.text.clone());
+        }
+        self.fake.summarize(request)
+    }
+}
+
+#[given(
+    expr = "a summarized index of the polyglot fixture, where the summary of {word} is {string}"
+)]
+fn a_summarized_index_with_one_summary(world: &mut IndexWorld, name: String, text: String) {
+    world.root = fixture_root();
+    world.build();
+    let db = world.indexes.last().expect("no index was built").clone();
+    summarize(
+        &world.root,
+        &db,
+        &mut OneSummary {
+            name,
+            text,
+            fake: FakeSummarizer::default(),
+        },
+        &DeterministicProvider::default(),
+        &SummarizeOptions::default(),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+}
+
+#[then(expr = "the first result is the test function {word}, with its summary")]
 fn a_test_function_is_found(world: &mut IndexWorld, name: String) {
     let found = world.search.as_ref().expect("no search ran");
     assert_ne!(
@@ -3667,12 +3761,10 @@ fn a_test_function_is_found(world: &mut IndexWorld, name: String) {
         kairos_index::SearchMode::Names,
         "the index has summaries"
     );
+    let first = found.hits.first().expect("no result");
     assert!(
-        found
-            .hits
-            .iter()
-            .any(|h| h.symbol.name == name && h.symbol.is_test && h.symbol.summary.is_none()),
-        "{name} is not in the results: {:#?}",
+        first.symbol.name == name && first.symbol.is_test && first.symbol.summary.is_some(),
+        "{name} is not the first result: {:#?}",
         found.hits
     );
 }

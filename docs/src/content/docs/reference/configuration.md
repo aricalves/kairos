@@ -405,7 +405,9 @@ share the builds, and each build runs one time. There are 3 types of build:
 - **A first build.** At the same interval, the sweep adds a job for each
   repository that has no index. The job makes a full index of the head of
   the default branch. The index has the structure, the SCIP edges and the
-  summaries.
+  summaries. The test code gets summaries too, so the search finds a test
+  by what it checks. The test code adds to the number of summaries of a
+  build.
   A first build of a large repository can take some hours on a CPU.
 
 A repository has one build job at a time. A server does not add a second
