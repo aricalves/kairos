@@ -693,10 +693,17 @@ pub struct Team {
     pub team_type: String,
     /// The team's delivery board (UUID); created with the team.
     pub delivery_board_id: Option<String>,
+    /// The docs site of the team is on (KAIROS-T-0404).
+    #[serde(default = "site_on")]
+    pub site_enabled: bool,
     /// RFC 3339.
     pub created_at: String,
     /// RFC 3339.
     pub updated_at: String,
+}
+
+fn site_on() -> bool {
+    true
 }
 
 /// Body of `POST /api/teams`. Creating a team also creates its delivery
@@ -727,6 +734,10 @@ pub struct UpdateTeamRequest {
     pub slug: Option<String>,
     #[serde(default)]
     pub team_type: Option<String>,
+    /// The docs site of the team (KAIROS-T-0404): on by default. Off, its
+    /// rendered pages are not served.
+    #[serde(default)]
+    pub site_enabled: Option<bool>,
 }
 
 /// A team member (`GET /api/teams/{id}/members` element).

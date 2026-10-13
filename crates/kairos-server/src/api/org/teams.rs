@@ -495,9 +495,14 @@ pub(crate) async fn update_team(
     ApiJson(body): ApiJson<dto::UpdateTeamRequest>,
 ) -> Result<Json<dto::Team>, ApiError> {
     let team_id = parse_uuid(&id, "id")?;
-    if body.name.is_none() && body.slug.is_none() && body.team_type.is_none() {
+    if body.name.is_none()
+        && body.slug.is_none()
+        && body.team_type.is_none()
+        && body.site_enabled.is_none()
+    {
         return Err(ApiError::validation(
-            "The request has no field to change. Send one or more of name, slug and team_type.",
+            "The request has no field to change. Send one or more of name, slug, team_type \
+             and site_enabled.",
         ));
     }
     let team_type = body
@@ -529,9 +534,16 @@ pub(crate) async fn update_team(
                 name: body.name.clone().filter(|name| *name != team.name),
                 slug: body.slug.clone().filter(|new| *new != team.slug),
                 team_type: team_type.filter(|kind| *kind != team.team_type),
+                site_enabled: body
+                    .site_enabled
+                    .filter(|enabled| *enabled != team.site_enabled),
                 ..Default::default()
             };
-            if changes.name.is_none() && changes.slug.is_none() && changes.team_type.is_none() {
+            if changes.name.is_none()
+                && changes.slug.is_none()
+                && changes.team_type.is_none()
+                && changes.site_enabled.is_none()
+            {
                 let board = delivery_board_of(conn, team_id)?;
                 return Ok(team_to_dto(team, board));
             }

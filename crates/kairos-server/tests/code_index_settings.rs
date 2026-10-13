@@ -52,19 +52,20 @@ fn user_id(conn: &mut PgConnection, email: &str) -> Uuid {
 
 fn ollama(secret: Option<&str>) -> PutCodeIndexSettings {
     PutCodeIndexSettings {
-        summary: PutSummaryProvider {
+        summary: Some(PutSummaryProvider {
             provider: "ollama-cloud".into(),
             base_url: Some("https://ollama.com/v1".into()),
             model: Some("gemma4:31b".into()),
             region: None,
             secret: secret.map(Secret::new),
-        },
-        vectors: PutVectorProvider {
+        }),
+        vectors: Some(PutVectorProvider {
             provider: "embedded".into(),
             ..Default::default()
-        },
+        }),
         concurrency: Some(8),
         default_summaries: None,
+        version: None,
     }
 }
 
@@ -168,21 +169,21 @@ async fn the_provider_settings_of_a_tenant() {
 
     // 2. Refusals that name the field.
     let mut no_url = ollama(None);
-    no_url.summary.base_url = None;
+    no_url.summary.as_mut().unwrap().base_url = None;
     let err = svc
         .put_code_index_settings(&no_url)
         .await
         .expect_err("no URL");
     assert_eq!(field_of(&err).as_deref(), Some("summary.base_url"), "{err}");
     let mut no_model = ollama(None);
-    no_model.summary.model = None;
+    no_model.summary.as_mut().unwrap().model = None;
     let err = svc
         .put_code_index_settings(&no_model)
         .await
         .expect_err("no model");
     assert_eq!(field_of(&err).as_deref(), Some("summary.model"), "{err}");
     let mut unknown = ollama(None);
-    unknown.summary.provider = "openai".into();
+    unknown.summary.as_mut().unwrap().provider = "openai".into();
     let err = svc
         .put_code_index_settings(&unknown)
         .await
@@ -196,16 +197,17 @@ async fn the_provider_settings_of_a_tenant() {
         .expect_err("concurrency 0");
     assert_eq!(field_of(&err).as_deref(), Some("concurrency"), "{err}");
     let mut bedrock = ollama(None);
-    bedrock.summary.provider = "bedrock".into();
-    bedrock.summary.base_url = None;
-    bedrock.summary.model = Some("anthropic.claude-3-5-haiku-20241022-v1:0".into());
+    bedrock.summary.as_mut().unwrap().provider = "bedrock".into();
+    bedrock.summary.as_mut().unwrap().base_url = None;
+    bedrock.summary.as_mut().unwrap().model =
+        Some("anthropic.claude-3-5-haiku-20241022-v1:0".into());
     let err = svc
         .put_code_index_settings(&bedrock)
         .await
         .expect_err("no region");
     assert_eq!(field_of(&err).as_deref(), Some("summary.region"), "{err}");
-    bedrock.summary.region = Some("us-east-1".into());
-    bedrock.summary.secret = Some(Secret::new("AKIA-only"));
+    bedrock.summary.as_mut().unwrap().region = Some("us-east-1".into());
+    bedrock.summary.as_mut().unwrap().secret = Some(Secret::new("AKIA-only"));
     let err = svc
         .put_code_index_settings(&bedrock)
         .await
@@ -241,9 +243,9 @@ async fn the_provider_settings_of_a_tenant() {
         .expect_err("ollama-cloud with no key");
     assert_eq!(field_of(&err).as_deref(), Some("summary.secret"), "{err}");
     let mut back = ollama(Some(""));
-    back.summary.provider = "embedded".into();
-    back.summary.base_url = None;
-    back.summary.model = None;
+    back.summary.as_mut().unwrap().provider = "embedded".into();
+    back.summary.as_mut().unwrap().base_url = None;
+    back.summary.as_mut().unwrap().model = None;
     let removed = svc
         .put_code_index_settings(&back)
         .await
@@ -339,4 +341,198 @@ async fn the_provider_settings_of_a_tenant() {
         .put_code_index_settings(&ollama(None))
         .await
         .expect("a write that keeps the stored secret needs no key");
+}
+
+/// KAIROS-T-0415: the settings cannot be overwritten by mistake.
+///
+/// 1. Each write adds 1 to the version, and the read names who wrote.
+/// 2. A write with an older version is refused (409) with the current
+///    settings, and nothing changes.
+/// 3. A write of one section leaves the other sections as stored, and a
+///    write that does not give the concurrency keeps it.
+/// 4. A change of the provider with no new secret: a hosted summary
+///    provider is refused (its secret is needed); the vectors lose the old
+///    secret.
+/// 5. The read lists the repositories that use the hosted summarizer.
+#[tokio::test]
+async fn the_settings_have_a_version_and_a_write_of_one_section() {
+    const DB: &str = "kairos_code_index_settings_t0415_test";
+    let _admin_conn = recreate_scratch_db(DB);
+    let scratch_url = with_database(&common::admin_database_url(), DB);
+    let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
+    run_public_migrations(&mut conn).expect("running public migrations");
+    provision_tenant(&mut conn, "acme", "Acme Inc").expect("provisioning acme");
+    let org_id: Uuid = organizations::table
+        .filter(organizations::slug.eq("acme"))
+        .select(organizations::id)
+        .first(&mut conn)
+        .expect("acme org row");
+    let http = reqwest::Client::new();
+    let svc_token = user_token(&http, "svc").await;
+    let pool = TenantPool::new(&scratch_url, 4).await.expect("pool");
+    let auth = Arc::new(
+        Authenticator::discover(ISSUER, AUDIENCE)
+            .await
+            .expect("OIDC discovery against live Dex"),
+    );
+    let mut config = base_config(&scratch_url);
+    config.secrets_key = Some(SecretsKey::from_bytes([9u8; 32]));
+    let server = spawn_server(app::router(app::state_with(config, pool, auth))).await;
+    let svc = server.client(&svc_token, "acme");
+    let _ = svc.whoami().await;
+    let svc_id = user_id(&mut conn, "svc@kairos.test");
+    diesel::insert_into(organization_members::table)
+        .values(NewOrganizationMember {
+            organization_id: org_id,
+            user_id: svc_id,
+            role: OrgRole::Admin,
+        })
+        .execute(&mut conn)
+        .expect("granting membership");
+
+    // 1. The version and the name.
+    let defaults = svc.code_index_settings().await.expect("defaults");
+    assert_eq!(defaults.version, 0);
+    let mut first = ollama(Some(KEY));
+    first.version = Some(0);
+    let set = svc
+        .put_code_index_settings(&first)
+        .await
+        .expect("first write");
+    assert_eq!(set.version, 1);
+    assert!(set.updated_by_name.is_some(), "{set:?}");
+    assert!(set.summary.secret.set_by_name.is_some(), "{set:?}");
+
+    // 2. A write based on the defaults (version 0) is now stale.
+    let mut stale = ollama(None);
+    stale.summary.as_mut().unwrap().model = Some("other-model".into());
+    stale.version = Some(0);
+    let err = svc
+        .put_code_index_settings(&stale)
+        .await
+        .expect_err("a stale write");
+    match &err {
+        Error::Conflict {
+            message, current, ..
+        } => {
+            assert!(message.contains("changed after you read them"), "{message}");
+            assert_eq!(current["version"], 1, "{current}");
+            assert_eq!(current["summary"]["model"], "gemma4:31b");
+        }
+        other => panic!("{other}"),
+    }
+    let now = svc.code_index_settings().await.expect("read");
+    assert_eq!(
+        now.summary.model.as_deref(),
+        Some("gemma4:31b"),
+        "nothing changed"
+    );
+    assert_eq!(now.version, 1);
+
+    // 3. A write of the builder only: the summaries and the vectors stay.
+    let builder_only = PutCodeIndexSettings {
+        concurrency: Some(12),
+        version: Some(1),
+        ..Default::default()
+    };
+    let set = svc
+        .put_code_index_settings(&builder_only)
+        .await
+        .expect("the builder only");
+    assert_eq!(set.version, 2);
+    assert_eq!(set.concurrency, 12);
+    assert_eq!(set.summary.provider, "ollama-cloud");
+    assert_eq!(set.summary.model.as_deref(), Some("gemma4:31b"));
+    assert!(set.summary.secret.set, "the secret stays");
+    //    A write with no concurrency keeps it.
+    let vectors_only = PutCodeIndexSettings {
+        vectors: Some(PutVectorProvider {
+            provider: "remote".into(),
+            base_url: Some("http://ollama:11434/v1".into()),
+            model: Some("nomic-embed-text".into()),
+            secret: Some(Secret::new("vector-key")),
+        }),
+        version: Some(2),
+        ..Default::default()
+    };
+    let set = svc
+        .put_code_index_settings(&vectors_only)
+        .await
+        .expect("the vectors only");
+    assert_eq!(set.concurrency, 12, "not reset to 4");
+    assert_eq!(set.summary.model.as_deref(), Some("gemma4:31b"));
+    assert!(set.vectors.secret.set);
+
+    // 4. A change of provider with no new secret.
+    let to_bedrock = PutCodeIndexSettings {
+        summary: Some(PutSummaryProvider {
+            provider: "bedrock".into(),
+            region: Some("us-east-1".into()),
+            model: Some("anthropic.claude-3-5-haiku-20241022-v1:0".into()),
+            ..Default::default()
+        }),
+        version: Some(3),
+        ..Default::default()
+    };
+    let err = svc
+        .put_code_index_settings(&to_bedrock)
+        .await
+        .expect_err("bedrock needs its own secret");
+    assert_eq!(field_of(&err).as_deref(), Some("summary.secret"), "{err}");
+    let back_to_embedded = PutCodeIndexSettings {
+        vectors: Some(PutVectorProvider {
+            provider: "embedded".into(),
+            ..Default::default()
+        }),
+        version: Some(3),
+        ..Default::default()
+    };
+    let set = svc
+        .put_code_index_settings(&back_to_embedded)
+        .await
+        .expect("vectors back to embedded");
+    assert!(!set.vectors.secret.set, "the key of the old provider goes");
+    assert!(set.summary.secret.set, "the other section keeps its secret");
+
+    // 5. The repositories that use the hosted summarizer.
+    let team = svc
+        .create_team(&kairos_client::types_org::CreateTeamRequest {
+            name: "Platform".into(),
+            slug: "platform".into(),
+            code_prefix: "PLAT".into(),
+            team_type: None,
+        })
+        .await
+        .expect("team");
+    let _ = team;
+    for (slug, summaries) in [("hosted-one", "hosted"), ("local-one", "embedded")] {
+        let created = svc
+            .create_repository(
+                &kairos_client::types_repositories::CreateRepositoryRequest {
+                    slug: Some(slug.into()),
+                    forge: "other".into(),
+                    repo_full_name: slug.into(),
+                    repo_url: format!("https://example.com/{slug}"),
+                    default_branch: None,
+                    team: "platform".into(),
+                    description: None,
+                },
+            )
+            .await
+            .expect("repository");
+        let _ = created;
+        svc.update_repository(
+            slug,
+            &kairos_client::types_repositories::UpdateRepositoryRequest {
+                code_index_summaries: kairos_client::types_repositories::CodeIndexSummaries::parse(
+                    summaries,
+                ),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("summaries");
+    }
+    let read = svc.code_index_settings().await.expect("read");
+    assert_eq!(read.hosted_repositories, vec!["hosted-one".to_string()]);
 }

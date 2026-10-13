@@ -2030,19 +2030,20 @@ async fn a_stalled_build_trips_the_breaker_until_a_request() {
 /// The settings of the tenant: Ollama Cloud at the fake endpoint.
 fn hosted_settings(base_url: &str, key: &str, concurrency: i32) -> PutCodeIndexSettings {
     PutCodeIndexSettings {
-        summary: PutSummaryProvider {
+        summary: Some(PutSummaryProvider {
             provider: "ollama-cloud".into(),
             base_url: Some(base_url.into()),
             model: Some("fake-model".into()),
             region: None,
             secret: Some(Secret::new(key)),
-        },
-        vectors: PutVectorProvider {
+        }),
+        vectors: Some(PutVectorProvider {
             provider: "embedded".into(),
             ..Default::default()
-        },
+        }),
         concurrency: Some(concurrency),
         default_summaries: None,
+        version: None,
     }
 }
 
@@ -2266,19 +2267,20 @@ async fn an_embedded_repository_on_a_server_with_no_model_gets_a_failed_run() {
 /// the endpoint override of the tests).
 fn bedrock_settings(base_url: &str, credentials: &str) -> PutCodeIndexSettings {
     PutCodeIndexSettings {
-        summary: PutSummaryProvider {
+        summary: Some(PutSummaryProvider {
             provider: "bedrock".into(),
             base_url: None,
             model: Some("anthropic.claude-3-5-haiku-20241022-v1:0".into()),
             region: Some(base_url.into()),
             secret: Some(Secret::new(credentials)),
-        },
-        vectors: PutVectorProvider {
+        }),
+        vectors: Some(PutVectorProvider {
             provider: "embedded".into(),
             ..Default::default()
-        },
+        }),
         concurrency: Some(3),
         default_summaries: None,
+        version: None,
     }
 }
 

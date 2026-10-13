@@ -156,6 +156,9 @@ pub struct SecretStatus {
     /// RFC 3339.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub set_at: Option<String>,
+    /// The display name of `set_by` (KAIROS-T-0415).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set_by_name: Option<String>,
 }
 
 /// Where the summaries of the code index are made.
@@ -208,6 +211,18 @@ pub struct CodeIndexSettings {
     pub updated_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
+    /// The display name of `updated_by` (KAIROS-T-0415).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_by_name: Option<String>,
+    /// The version of the settings: 0 for the defaults, then 1 more at each
+    /// write (KAIROS-T-0415). Send it back with a write.
+    #[serde(default)]
+    pub version: i32,
+    /// The repositories whose summaries the hosted provider makes now: set
+    /// to `hosted`, or following the organization when the default is
+    /// `hosted` (KAIROS-T-0415). By slug.
+    #[serde(default)]
+    pub hosted_repositories: Vec<String>,
 }
 
 /// The summaries part of `PUT /api/org/code-index-settings`. `secret`
@@ -248,9 +263,13 @@ pub struct PutVectorProvider {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PutCodeIndexSettings {
-    pub summary: PutSummaryProvider,
-    pub vectors: PutVectorProvider,
-    /// 1 to 32; 4 when not given.
+    /// The summaries. Not given: they stay as stored (KAIROS-T-0415).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<PutSummaryProvider>,
+    /// The vectors. Not given: they stay as stored (KAIROS-T-0415).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vectors: Option<PutVectorProvider>,
+    /// 1 to 32. Not given: the value stays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concurrency: Option<i32>,
     /// `embedded` or `hosted`: the summarizer of each repository that
@@ -258,6 +277,11 @@ pub struct PutCodeIndexSettings {
     /// stays. `hosted` needs a hosted summary provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_summaries: Option<crate::types_repositories::CodeIndexSummaries>,
+    /// The version that the write is based on (KAIROS-T-0415). When it is
+    /// not the stored version, the write is refused (409) and nothing
+    /// changes. The web app and the CLI always send it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<i32>,
 }
 
 /// Body of `POST /api/code-index/query-vector` (KAIROS-T-0360): the text of

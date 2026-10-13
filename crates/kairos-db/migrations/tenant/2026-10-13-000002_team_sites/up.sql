@@ -1,0 +1,11 @@
+-- KAIROS-T-0404 (COLLIERY-I-0619, KAIROS-D-0013): each team has a docs
+-- site that Kairos renders from its documents, ADRs and team pages. It is on
+-- by default; a team can turn it off.
+--
+-- WHAT THIS DOES TO THE DATA OF A TENANT
+--
+-- 1 new column on teams: each team gets site_enabled true. No row is
+-- deleted.
+--
+-- Re-runnable: the column is added once.
+ALTER TABLE teams ADD COLUMN IF NOT EXISTS site_enabled BOOLEAN NOT NULL DEFAULT true;

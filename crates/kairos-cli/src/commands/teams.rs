@@ -252,6 +252,8 @@ impl TeamsCommand {
                             name,
                             slug,
                             team_type,
+                            // The site switch has its own command (KAIROS-T-0408).
+                            site_enabled: None,
                         },
                     )
                     .await?;

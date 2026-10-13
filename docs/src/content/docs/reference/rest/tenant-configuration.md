@@ -197,6 +197,7 @@ Request body (required): `application/json`, [`PutCodeIndexSettings`](../schemas
 |---|---|---|
 | `200` | [`CodeIndexSettings`](../schemas/#codeindexsettings) | The settings as Kairos keeps them now |
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Not an organization admin |
+| `409` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The version is not the stored version: the settings changed after the read; details.current has them |
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | An unknown provider or field, a value that a provider needs and the body does not give, or a value that is not correct |
 | `501` | [`ErrorEnvelope`](../schemas/#errorenvelope) | A secret was sent, and this deployment has no KAIROS_SECRETS_KEY |
 

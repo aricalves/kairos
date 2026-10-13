@@ -614,19 +614,20 @@ async fn the_repository_is_hosted(world: &mut CliWorld) {
     let client = base(world).kairos().client();
     client
         .put_code_index_settings(&kairos_client::types_code_index::PutCodeIndexSettings {
-            summary: kairos_client::types_code_index::PutSummaryProvider {
+            summary: Some(kairos_client::types_code_index::PutSummaryProvider {
                 provider: "ollama-cloud".into(),
                 base_url: Some("https://ollama.invalid/v1".into()),
                 model: Some("gemma4:31b".into()),
                 region: None,
                 secret: Some(kairos_client::types_auth::Secret::new("a-key-t0343")),
-            },
-            vectors: kairos_client::types_code_index::PutVectorProvider {
+            }),
+            vectors: Some(kairos_client::types_code_index::PutVectorProvider {
                 provider: "embedded".into(),
                 ..Default::default()
-            },
+            }),
             concurrency: None,
             default_summaries: None,
+            version: None,
         })
         .await
         .expect("the hosted provider of the organization");
