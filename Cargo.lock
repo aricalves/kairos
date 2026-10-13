@@ -2652,6 +2652,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "chrono",
+ "colliery-io-aurora",
  "diesel",
  "diesel-async",
  "flate2",
@@ -2664,6 +2665,8 @@ dependencies = [
  "kairos-db",
  "kairos-embed",
  "kairos-index",
+ "kairos-markdown",
+ "maud",
  "mime_guess",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -3127,6 +3130,28 @@ checksum = "3f607c237553f086e7043417a51df26b2eb899d3caff94e6a67592ff992fedc7"
 dependencies = [
  "autocfg",
  "rawpointer",
+]
+
+[[package]]
+name = "maud"
+version = "0.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8156733e27020ea5c684db5beac5d1d611e1272ab17901a49466294b84fc217e"
+dependencies = [
+ "itoa",
+ "maud_macros",
+]
+
+[[package]]
+name = "maud_macros"
+version = "0.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7261b00f3952f617899bc012e3dbd56e4f0110a038175929fa5d18e5a19913ca"
+dependencies = [
+ "proc-macro2",
+ "proc-macro2-diagnostics",
+ "quote",
+ "syn 2.0.118",
 ]
 
 [[package]]

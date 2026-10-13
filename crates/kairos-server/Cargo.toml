@@ -69,6 +69,12 @@ kairos-index = { path = "../kairos-index" }
 # The work folders of the builder, and the tree of a commit from
 # `git archive`.
 tempfile = "3.14.0"
+# The rendered docs sites (KAIROS-T-0404): HTML templates checked at compile
+# time (maud, MIT/Apache-2.0), the shared markdown renderer, and the Aurora
+# tokens for their colours (no Leptos without the `components` feature).
+maud = "0.27"
+kairos-markdown = { workspace = true }
+aurora-dark = { workspace = true }
 tar = "0.4"
 
 [features]

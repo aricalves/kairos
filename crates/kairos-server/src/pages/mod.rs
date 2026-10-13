@@ -36,6 +36,7 @@ use crate::middleware::{auth, tenant};
 
 mod assets;
 mod rendered;
+mod views;
 
 /// The names that cannot be the slug of a team, or of a team page at the top
 /// of the tree, because the sites use them as path segments.

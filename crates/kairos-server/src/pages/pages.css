@@ -1,0 +1,45 @@
+/* The layout of the rendered docs sites (KAIROS-T-0404). The colours are
+   the Aurora tokens (light and dark follow prefers-color-scheme); the
+   markdown rules come from the app (kairos-web/app.css). */
+body.kp {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.kp a { color: var(--ice-fg); text-decoration: none; }
+.kp a:hover { text-decoration: underline; }
+.kp-header {
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  padding: 0.6rem 1.2rem;
+}
+.kp-crumbs { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; color: var(--muted); }
+.kp-crumbs__sep { color: var(--faint); }
+.kp-body { display: flex; gap: 2rem; max-width: 72rem; margin: 0 auto; padding: 1.2rem; }
+.kp-side { flex: 0 0 16rem; font-size: 0.9rem; }
+.kp-side h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 1.2rem 0 0.4rem; }
+.kp-side__home { font-weight: 600; font-size: 1rem; }
+.kp-side__org { margin-top: 1.5rem; }
+.kp-main { flex: 1 1 auto; min-width: 0; }
+.kp-main h1 { margin-top: 0; color: var(--fg-bright); }
+.kp-section { margin: 1.5rem 0; }
+.kp-section h2 { font-size: 1.1rem; border-bottom: 1px solid var(--border-soft); padding-bottom: 0.3rem; }
+.kp-list { list-style: none; padding: 0; margin: 0.3rem 0; }
+.kp-list li { padding: 0.15rem 0; }
+.kp-tree .kp-tree { padding-left: 1rem; }
+.kp-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; color: var(--muted); }
+.kp-badge {
+  display: inline-block; font-size: 0.75rem; padding: 0 0.4rem; border-radius: 0.6rem;
+  border: 1px solid var(--border-control); color: var(--muted);
+}
+.kp-badge--old { color: var(--gold-fg); border-color: var(--gold); }
+.kp-date { color: var(--faint); font-size: 0.8rem; }
+.kp-empty { color: var(--faint); }
+.kp-meta { color: var(--muted); font-size: 0.9rem; }
+.kp-note { border-left: 3px solid var(--gold); padding: 0.4rem 0.8rem; background: var(--inset); }
+.kp-article { background: var(--panel); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1.2rem 1.6rem; }
+@media (max-width: 48rem) {
+  .kp-body { flex-direction: column-reverse; }
+  .kp-side { flex-basis: auto; }
+}

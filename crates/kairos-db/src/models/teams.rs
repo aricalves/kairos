@@ -28,6 +28,8 @@ pub struct Team {
     pub deleted_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// The docs site of the team is on (KAIROS-T-0404).
+    pub site_enabled: bool,
 }
 
 /// Insert for [`Team`].
@@ -47,6 +49,7 @@ pub struct TeamChangeset {
     pub name: Option<String>,
     pub slug: Option<String>,
     pub team_type: Option<TeamType>,
+    pub site_enabled: Option<bool>,
     pub deleted_at: Option<Option<DateTime<Utc>>>,
     pub updated_at: Option<DateTime<Utc>>,
 }
