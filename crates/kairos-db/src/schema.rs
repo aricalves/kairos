@@ -157,6 +157,7 @@ diesel::table! {
         updated_by -> Uuid,
         updated_at -> Timestamptz,
         default_summaries -> Text,
+        version -> Int4,
     }
 }
 

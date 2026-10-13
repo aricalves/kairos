@@ -186,18 +186,19 @@ async fn kairos_makes_the_vector_of_a_query() {
     // 3. The remote provider of the organization, with its sealed key.
     let endpoint = common::embed_http::serve(KEY, 8).await;
     svc.put_code_index_settings(&PutCodeIndexSettings {
-        summary: PutSummaryProvider {
+        summary: Some(PutSummaryProvider {
             provider: "embedded".into(),
             ..Default::default()
-        },
-        vectors: PutVectorProvider {
+        }),
+        vectors: Some(PutVectorProvider {
             provider: "remote".into(),
             base_url: Some(endpoint.base_url.clone()),
             model: Some("fake-embed".into()),
             secret: Some(Secret::new(KEY)),
-        },
+        }),
         concurrency: None,
         default_summaries: None,
+        version: None,
     })
     .await
     .expect("the admin sets the remote provider");

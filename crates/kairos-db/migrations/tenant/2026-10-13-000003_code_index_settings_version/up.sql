@@ -1,0 +1,11 @@
+-- KAIROS-T-0415: the code index settings get a version. A write names the
+-- version it read, and a write with an older version is refused, so a
+-- write cannot put back the values of an older read.
+--
+-- WHAT THIS DOES TO THE DATA OF A TENANT
+--
+-- 1 new column on code_index_settings: the row (if there is one) gets
+-- version 1. No row is deleted.
+--
+-- Re-runnable: the column is added once.
+ALTER TABLE code_index_settings ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1;

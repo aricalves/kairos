@@ -398,10 +398,13 @@ The answer to `GET /api/org/code-index-settings`.
 |---|---|---|---|
 | `concurrency` | `integer` | yes | The requests that a hosted summarizer sends at a time, 1 to 32. |
 | `default_summaries` | [`CodeIndexSummaries`](#codeindexsummaries) | no | Where the summaries of a repository that follows the organization are made: `embedded` or `hosted` (KAIROS-T-0358). |
+| `hosted_repositories` | array of `string` | no | The repositories whose summaries the hosted provider makes now: set to `hosted`, or following the organization when the default is `hosted` (KAIROS-T-0415). By slug. |
 | `summary` | [`SummaryProviderSettings`](#summaryprovidersettings) | yes |  |
 | `updated_at` | `string`, nullable | no |  |
 | `updated_by` | `string`, nullable | no | None when the tenant has no settings row (the defaults). |
+| `updated_by_name` | `string`, nullable | no | The display name of `updated_by` (KAIROS-T-0415). |
 | `vectors` | [`VectorProviderSettings`](#vectorprovidersettings) | yes |  |
+| `version` | `integer` | no | The version of the settings: 0 for the defaults, then 1 more at each write (KAIROS-T-0415). Send it back with a write. |
 
 ## CodeIndexSummaries
 
@@ -1556,10 +1559,11 @@ Body of `PUT /api/org/code-index-settings` (an organization admin).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `concurrency` | `integer`, nullable | no | 1 to 32; 4 when not given. |
+| `concurrency` | `integer`, nullable | no | 1 to 32. Not given: the value stays. |
 | `default_summaries` | [`CodeIndexSummaries`](#codeindexsummaries), nullable | no |  |
-| `summary` | [`PutSummaryProvider`](#putsummaryprovider) | yes |  |
-| `vectors` | [`PutVectorProvider`](#putvectorprovider) | yes |  |
+| `summary` | [`PutSummaryProvider`](#putsummaryprovider), nullable | no |  |
+| `vectors` | [`PutVectorProvider`](#putvectorprovider), nullable | no |  |
+| `version` | `integer`, nullable | no | The version that the write is based on (KAIROS-T-0415). When it is not the stored version, the write is refused (409) and nothing changes. The web app and the CLI always send it. |
 
 The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
 
@@ -1948,6 +1952,7 @@ Whether a secret is set, and by whom. The secret itself never leaves the server.
 | `set` | `boolean` | yes |  |
 | `set_at` | `string`, nullable | no | RFC 3339. |
 | `set_by` | `string`, nullable | no |  |
+| `set_by_name` | `string`, nullable | no | The display name of `set_by` (KAIROS-T-0415). |
 
 ## ServiceAccountListResponse
 

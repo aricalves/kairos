@@ -58,6 +58,8 @@ pub struct Settings {
     /// `embedded` or `hosted`: the summarizer of a repository that follows
     /// the organization (KAIROS-T-0358). See [`DEFAULT_SUMMARIES_VALUES`].
     pub default_summaries: String,
+    /// Each write adds 1 (KAIROS-T-0415). A write names the version it read.
+    pub version: i32,
 }
 
 /// The values of [`Settings::default_summaries`]. The column has a CHECK
@@ -89,6 +91,7 @@ impl Settings {
             concurrency: DEFAULT_CONCURRENCY,
             updated_by,
             default_summaries: "embedded".to_string(),
+            version: 0,
             updated_at: Utc::now(),
         }
     }
@@ -234,6 +237,7 @@ pub fn save(conn: &mut PgConnection, update: Update) -> QueryResult<Settings> {
             updated_by: update.updated_by,
             updated_at: now,
             default_summaries: update.default_summaries,
+            version: current.as_ref().map_or(1, |c| c.version + 1),
         };
         diesel::insert_into(code_index_settings::table)
             .values(&row)

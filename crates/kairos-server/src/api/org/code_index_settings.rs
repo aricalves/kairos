@@ -4,7 +4,12 @@
 //! - `GET`: the settings, with each secret as a status (set, by whom,
 //!   when) and never the secret. Open tenant-wide: a member reads which
 //!   provider the summaries of a repository go to.
-//! - `PUT`: the full settings, by an organization admin. A secret that the
+//! - `PUT`: the settings, by an organization admin. A section that the body
+//!   does not give (`summary`, `vectors`, `concurrency`,
+//!   `default_summaries`) stays as stored; `version` (when given) must be
+//!   the stored version, else 409 with the current settings
+//!   (KAIROS-T-0415). A change of a provider with no new secret removes the
+//!   stored secret of that section: it was the secret of the old provider. A secret that the
 //!   body does not name keeps the stored secret; an empty secret removes
 //!   it; a value replaces it, sealed with `KAIROS_SECRETS_KEY`
 //!   ([`crate::secrets`]). A provider that needs a value refuses the call
@@ -51,33 +56,72 @@ pub fn settings_aad(tenant: &str, field: &str) -> Vec<u8> {
 fn status_of(
     set_by: Option<Uuid>,
     set_at: Option<chrono::DateTime<chrono::Utc>>,
+    names: &std::collections::HashMap<Uuid, String>,
 ) -> dto::SecretStatus {
     dto::SecretStatus {
         set: set_by.is_some(),
         set_by: set_by.map(|u| u.to_string()),
         set_at: set_at.map(|t| t.to_rfc3339()),
+        set_by_name: set_by.and_then(|u| names.get(&u).cloned()),
     }
 }
 
-/// The DTO of a row, or of the defaults when the tenant has no row.
-pub(crate) fn dto_of(row: Option<Settings>) -> dto::CodeIndexSettings {
+/// The display names of `ids`.
+fn names_of(
+    conn: &mut PgConnection,
+    ids: &[Uuid],
+) -> Result<std::collections::HashMap<Uuid, String>, ApiError> {
+    use diesel::prelude::*;
+    use kairos_db::schema::users;
+    let rows: Vec<(Uuid, String)> = users::table
+        .filter(users::id.eq_any(ids))
+        .select((users::id, users::display_name))
+        .load(conn)
+        .map_err(ApiError::internal)?;
+    Ok(rows.into_iter().collect())
+}
+
+/// The DTO of a row, or of the defaults when the tenant has no row, with
+/// the names of the people and the repositories that use the hosted
+/// summarizer (KAIROS-T-0415).
+pub(crate) fn dto_of(
+    conn: &mut PgConnection,
+    row: Option<Settings>,
+) -> Result<dto::CodeIndexSettings, ApiError> {
     let (row, stored) = match row {
         Some(row) => (row, true),
         None => (Settings::embedded(Uuid::nil()), false),
     };
-    dto::CodeIndexSettings {
+    let people: Vec<Uuid> = [
+        stored.then_some(row.updated_by),
+        row.summary_secret_set_by,
+        row.vector_secret_set_by,
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let names = names_of(conn, &people)?;
+    let repositories =
+        kairos_db::repositories::list(conn, None).map_err(super::repositories::map_error)?;
+    let mut hosted_repositories: Vec<String> = repositories
+        .into_iter()
+        .filter(|repo| crate::code_index::hosted_summaries(repo, &row))
+        .map(|repo| repo.slug)
+        .collect();
+    hosted_repositories.sort();
+    Ok(dto::CodeIndexSettings {
         summary: dto::SummaryProviderSettings {
             provider: row.summary_provider,
             base_url: row.summary_base_url,
             model: row.summary_model,
             region: row.summary_region,
-            secret: status_of(row.summary_secret_set_by, row.summary_secret_set_at),
+            secret: status_of(row.summary_secret_set_by, row.summary_secret_set_at, &names),
         },
         vectors: dto::VectorProviderSettings {
             provider: row.vector_provider,
             base_url: row.vector_base_url,
             model: row.vector_model,
-            secret: status_of(row.vector_secret_set_by, row.vector_secret_set_at),
+            secret: status_of(row.vector_secret_set_by, row.vector_secret_set_at, &names),
         },
         concurrency: row.concurrency,
         default_summaries: kairos_client::types_repositories::CodeIndexSummaries::parse(
@@ -86,7 +130,12 @@ pub(crate) fn dto_of(row: Option<Settings>) -> dto::CodeIndexSettings {
         .unwrap_or_default(),
         updated_by: stored.then(|| row.updated_by.to_string()),
         updated_at: stored.then(|| row.updated_at.to_rfc3339()),
-    }
+        updated_by_name: stored
+            .then(|| names.get(&row.updated_by).cloned())
+            .flatten(),
+        version: row.version,
+        hosted_repositories,
+    })
 }
 
 /// The provider settings of the code index of the tenant. The secrets are
@@ -106,10 +155,11 @@ pub(crate) async fn get_settings(
     let row = state
         .blocking
         .run(&tenant.slug, |conn| {
-            settings::load(conn).map_err(ApiError::internal)
+            let row = settings::load(conn).map_err(ApiError::internal)?;
+            dto_of(conn, row)
         })
         .await?;
-    Ok(Json(dto_of(row)))
+    Ok(Json(row))
 }
 
 /// A field that a provider needs and the body does not give, as a refusal.
@@ -216,7 +266,40 @@ pub(crate) fn write_settings(
     body: dto::PutCodeIndexSettings,
 ) -> Result<Settings, ApiError> {
     let current = settings::load(conn).map_err(ApiError::internal)?;
-    let summary = body.summary;
+    // KAIROS-T-0415: a write based on an older read changes nothing.
+    let stored_version = current.as_ref().map_or(0, |c| c.version);
+    if let Some(version) = body.version
+        && version != stored_version
+    {
+        let who = current.as_ref().map(|c| c.updated_by);
+        let current_dto = dto_of(conn, current.clone())?;
+        let name = current_dto
+            .updated_by_name
+            .clone()
+            .or_else(|| who.map(|u| u.to_string()))
+            .unwrap_or_else(|| "a person".to_string());
+        let at = current_dto.updated_at.clone().unwrap_or_default();
+        return Err(ApiError::conflict(format!(
+            "The settings changed after you read them: {name} changed them at {at}. \
+             The request has the version {version}, and the current version is \
+             {stored_version}. Read the settings again, and make the change on the current \
+             values."
+        ))
+        .with_details(json!({ "current": current_dto })));
+    }
+    let stored = current
+        .clone()
+        .unwrap_or_else(|| Settings::embedded(Uuid::nil()));
+    // A section that the body does not give stays as stored.
+    let summary_given = body.summary.is_some();
+    let summary = body.summary.unwrap_or_else(|| dto::PutSummaryProvider {
+        provider: stored.summary_provider.clone(),
+        base_url: stored.summary_base_url.clone(),
+        model: stored.summary_model.clone(),
+        region: stored.summary_region.clone(),
+        secret: None,
+    });
+    let summary_provider_changed = summary_given && summary.provider != stored.summary_provider;
     if !SUMMARY_PROVIDERS.contains(&summary.provider.as_str()) {
         return Err(ApiError::validation(format!(
             "{:?} is not a provider of the summaries. The providers are: {}.",
@@ -225,7 +308,14 @@ pub(crate) fn write_settings(
         ))
         .with_details(json!({ "field": "summary.provider" })));
     }
-    let vectors = body.vectors;
+    let vectors_given = body.vectors.is_some();
+    let vectors = body.vectors.unwrap_or_else(|| dto::PutVectorProvider {
+        provider: stored.vector_provider.clone(),
+        base_url: stored.vector_base_url.clone(),
+        model: stored.vector_model.clone(),
+        secret: None,
+    });
+    let vector_provider_changed = vectors_given && vectors.provider != stored.vector_provider;
     if !VECTOR_PROVIDERS.contains(&vectors.provider.as_str()) {
         return Err(ApiError::validation(format!(
             "{:?} is not a provider of the vectors. The providers are: {}.",
@@ -234,7 +324,12 @@ pub(crate) fn write_settings(
         ))
         .with_details(json!({ "field": "vectors.provider" })));
     }
-    let concurrency = body.concurrency.unwrap_or(DEFAULT_CONCURRENCY);
+    // Not given: the value stays (it was the default 4 before KAIROS-T-0415).
+    let concurrency = body.concurrency.unwrap_or(if current.is_some() {
+        stored.concurrency
+    } else {
+        DEFAULT_CONCURRENCY
+    });
     if !CONCURRENCY_RANGE.contains(&concurrency) {
         return Err(ApiError::validation(format!(
             "The concurrency {concurrency} is not in the range {} to {}.",
@@ -324,9 +419,8 @@ pub(crate) fn write_settings(
         "summary.secret",
         summary.secret.as_ref(),
         summary_needs_secret,
-        current
-            .as_ref()
-            .is_some_and(|c| c.summary_secret_set_by.is_some()),
+        // KAIROS-T-0415: the stored secret is of the old provider.
+        !summary_provider_changed && stored.summary_secret_set_by.is_some(),
         &summary.provider,
         if summary.provider == "bedrock" {
             "Send the AWS credentials as <access key id>:<secret access key>."
@@ -334,6 +428,10 @@ pub(crate) fn write_settings(
             "Send the API key of the endpoint."
         },
     )?;
+    let summary_secret = match summary_secret {
+        SecretChange::Keep if summary_provider_changed => SecretChange::Remove,
+        other => other,
+    };
 
     // The vectors.
     let (vector_base_url, vector_model) = match vectors.provider.as_str() {
@@ -365,12 +463,14 @@ pub(crate) fn write_settings(
         "vectors.secret",
         vectors.secret.as_ref(),
         false,
-        current
-            .as_ref()
-            .is_some_and(|c| c.vector_secret_set_by.is_some()),
+        !vector_provider_changed && stored.vector_secret_set_by.is_some(),
         &vectors.provider,
         "",
     )?;
+    let vector_secret = match vector_secret {
+        SecretChange::Keep if vector_provider_changed => SecretChange::Remove,
+        other => other,
+    };
 
     settings::save(
         conn,
@@ -402,6 +502,7 @@ pub(crate) fn write_settings(
     responses(
         (status = 200, description = "The settings as Kairos keeps them now", body = dto::CodeIndexSettings),
         (status = 403, description = "Not an organization admin", body = kairos_client::types::ErrorEnvelope),
+        (status = 409, description = "The version is not the stored version: the settings changed after the read; details.current has them", body = kairos_client::types::ErrorEnvelope),
         (status = 422, description = "An unknown provider or field, a value that a provider needs and the body does not give, or a value that is not correct", body = kairos_client::types::ErrorEnvelope),
         (status = 501, description = "A secret was sent, and this deployment has no KAIROS_SECRETS_KEY", body = kairos_client::types::ErrorEnvelope),
     ),
@@ -419,10 +520,11 @@ pub(crate) async fn put_settings(
     let row = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            write_settings(conn, &tenant_slug, user, &key, body)
+            let row = write_settings(conn, &tenant_slug, user, &key, body)?;
+            dto_of(conn, Some(row))
         })
         .await?;
-    Ok(Json(dto_of(Some(row))))
+    Ok(Json(row))
 }
 
 #[cfg(test)]
