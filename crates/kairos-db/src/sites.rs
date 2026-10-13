@@ -195,6 +195,86 @@ pub fn history(
     Ok((rows, total))
 }
 
+/// The live publish served at `base_path`: the live publish of a repository
+/// with its site on, built for that base path (KAIROS-T-0407).
+pub fn live_at(
+    conn: &mut PgConnection,
+    base_path: &str,
+) -> Result<Option<SitePublish>, DieselError> {
+    site_publishes::table
+        .inner_join(
+            repositories::table.on(repositories::site_publish_id.eq(site_publishes::id.nullable())),
+        )
+        .filter(site_publishes::base_path.eq(base_path))
+        .filter(repositories::site_enabled.eq(true))
+        .filter(repositories::deleted_at.is_null())
+        .select(SitePublish::as_select())
+        .first(conn)
+        .optional()
+}
+
+/// The live publish of the repository that `team`/`repository` names now,
+/// with its site on, whatever base path it was built for.
+pub fn live_of(
+    conn: &mut PgConnection,
+    team: &str,
+    repository: &str,
+) -> Result<Option<SitePublish>, DieselError> {
+    use crate::schema::teams;
+    site_publishes::table
+        .inner_join(
+            repositories::table.on(repositories::site_publish_id.eq(site_publishes::id.nullable())),
+        )
+        .inner_join(teams::table.on(teams::id.eq(repositories::team_id)))
+        .filter(teams::slug.eq(team))
+        .filter(teams::deleted_at.is_null())
+        .filter(repositories::slug.eq(repository))
+        .filter(repositories::site_enabled.eq(true))
+        .filter(repositories::deleted_at.is_null())
+        .select(SitePublish::as_select())
+        .first(conn)
+        .optional()
+}
+
+/// A base path that a repository's site had before it was published again
+/// under a new one: the base path of its live publish now.
+pub fn moved_to(
+    conn: &mut PgConnection,
+    old_base_path: &str,
+) -> Result<Option<String>, DieselError> {
+    #[derive(QueryableByName)]
+    struct Row {
+        #[diesel(sql_type = diesel::sql_types::Text)]
+        base_path: String,
+    }
+    let row: Option<Row> = diesel::sql_query(
+        "SELECT live.base_path FROM site_publishes old \
+         JOIN repositories r ON r.id = old.repository_id \
+         JOIN site_publishes live ON live.id = r.site_publish_id \
+         WHERE old.base_path = $1 AND live.base_path <> $1 \
+           AND r.site_enabled AND r.deleted_at IS NULL \
+         ORDER BY old.published_at DESC LIMIT 1",
+    )
+    .bind::<diesel::sql_types::Text, _>(old_base_path)
+    .get_result(conn)
+    .optional()?;
+    Ok(row.map(|r| r.base_path))
+}
+
+/// The file `path` of a publish, from its manifest.
+pub fn file(
+    conn: &mut PgConnection,
+    publish_id: Uuid,
+    path: &str,
+) -> Result<Option<SiteFile>, DieselError> {
+    site_files::table
+        .filter(site_files::publish_id.eq(publish_id))
+        .filter(site_files::path.eq(path))
+        .select(SiteFile::as_select())
+        .first(conn)
+        .optional()
+}
+
 /// The tenant slug of the connection: its `search_path` is `org_{slug}`.
 pub fn tenant_slug(conn: &mut PgConnection) -> Result<String, DieselError> {
     #[derive(QueryableByName)]
