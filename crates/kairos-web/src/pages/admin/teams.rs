@@ -144,7 +144,7 @@ pub fn AdminTeamsPage() -> impl IntoView {
                         <TextInput label="Prefix" value=code_prefix placeholder="e.g. PAY"
                                 error=refusal_for(refused, "code_prefix")/>
                         <Select label="Type"
-                            options=TEAM_TYPES.iter().map(|t| t.to_string()).collect()
+                            options={TEAM_TYPES.iter().map(|t| t.to_string()).collect::<Vec<_>>()}
                             value=team_type/>
                     </Group>
                     <Text dimmed=true size="xs" attr:data-testid="slug-rule">{SLUG_HINT}</Text>
@@ -252,7 +252,7 @@ fn TeamRow(
                         <TextInput label="Slug" value=edit_slug
                                 error=refusal_for(refused, "slug")/>
                         <Select label="Type"
-                            options=TEAM_TYPES.iter().map(|t| t.to_string()).collect()
+                            options={TEAM_TYPES.iter().map(|t| t.to_string()).collect::<Vec<_>>()}
                             value=edit_type/>
                         <Button size="xs" on_click=Callback::new(on_save)>"Save"</Button>
                     </Group>

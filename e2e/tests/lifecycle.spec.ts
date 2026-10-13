@@ -72,7 +72,7 @@ test('document lifecycle: badge, free transitions, scoped picker', async ({
     });
     await lifecycle.locator('select').selectOption({ label: 'published' });
     await lifecycle.getByRole('button', { name: 'Set', exact: true }).click();
-    await expect(page.getByText('Lifecycle set to published.')).toBeVisible();
+    await expect(page.locator('.cl-toast', { hasText: 'Lifecycle set to published.' })).toBeVisible();
     await expect(page.locator('.kairos-lifecycle-badge')).toContainText(
       'lifecycle: published',
       { timeout: 15_000 },

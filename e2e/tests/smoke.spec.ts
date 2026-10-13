@@ -232,7 +232,7 @@ test('GUI smoke: login → boards → create → move → live WS → edit/409 �
     // --- a successful edit + save ---
     await contentArea.fill(`Edited by smoke ${Date.now()}`);
     await editor.getByRole('button', { name: 'Save' }).click();
-    await expect(page.getByText(/Saved — the item is now at v/)).toBeVisible();
+    await expect(page.locator('.cl-toast', { hasText: /Saved — the item is now at v/ })).toBeVisible();
 
     // The page refetched; wait for the editor to settle on the saved version.
     const token = await mintToken({ server: GUI });
@@ -293,7 +293,7 @@ test('GUI smoke: login → boards → create → move → live WS → edit/409 �
     });
     await moveField.locator('select').selectOption({ label: 'Active' });
     await boardPanel.getByRole('button', { name: 'Move', exact: true }).click();
-    await expect(page.getByText('Moved to Active.')).toBeVisible();
+    await expect(page.locator('.cl-toast', { hasText: 'Moved to Active.' })).toBeVisible();
     // The refetch lands: placement now shows Active.
     await expect(boardPanel.locator('.cl-pill', { hasText: 'Active' })).toBeVisible({
       timeout: 15_000,

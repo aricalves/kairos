@@ -92,7 +92,7 @@ Two dev-stack facts worth knowing (both are deployment config, not code):
 
 ## 2. Design system: Aurora, tokens only
 
-Aurora (it was "Aurora Dark"; crates.io: `colliery-io-aurora` 0.4, the
+Aurora (it was "Aurora Dark"; crates.io: `colliery-io-aurora` 0.6, the
 workspace key is still `aurora-dark`, so the code imports `aurora_dark`)
 is the design system. The stylesheet is a linked file: the trunk
 `pre_build` hook (`Trunk.toml`) runs `crates/kairos-web-css`, which calls
@@ -107,7 +107,10 @@ sets `data-theme="light"` or `"dark"` on `<html>` and stores the choice
 in the browser (`aurora-theme`); "System" removes it. `index.html` has
 Aurora's `THEME_INIT_SCRIPT` in the `<head>`, before the stylesheet, so
 the first paint has the stored theme (a unit test in `app.rs` compares it
-with the crate constant). `e2e/tests/theme.spec.ts` checks the toggle,
+with the crate constant). Aurora 0.5 added a third theme, hyper, as an opt in.
+Kairos does not offer it: that needs `write_hyper_css` in
+`kairos-web-css`, a link to `hyper.css` in `index.html`, and `hyper=true`
+on the `ThemeToggle`. `e2e/tests/theme.spec.ts` checks the toggle,
 the reload, and the main pages in the two themes.
 
 **The token rule.** No raw color literals anywhere in this crate — not

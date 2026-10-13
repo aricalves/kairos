@@ -11,7 +11,9 @@ Connect the current repo to a Kairos deployment so every other kairos skill (and
 
 ## 1. Gather the deployment
 
-On a re-run, recover what is already known before asking: the `kairos` entry in the repo's `.mcp.json` (URL, `X-Tenant` or `Authorization` header) and the frontmatter of `.claude/kairos.local.md`. Ask the user only for what is missing or being changed (or take it from the arguments):
+**The MCP connection belongs to the user, not to the repository.** The default is the server of the plugin (agent-key path) or a user-scope entry (OAuth path). Write a project `.mcp.json`, or run `claude mcp add` with the `local` or `project` scope, only when the user asks for a connection in this repository only, for example for a second deployment. Do not write one to fix a connection that does not answer: find the cause (step 1, at the end).
+
+On a re-run, recover what is already known before asking: `KAIROS_URL`, the `kairos` entries of `claude mcp list`, and the frontmatter of `.claude/kairos.local.md`. Ask the user only for what is missing or being changed (or take it from the arguments):
 
 - **Deployment URL** — e.g. `https://acme.kairos.example` or `http://localhost:41080`. Strip any trailing slash. The MCP endpoint is `<deployment-url>/mcp`.
 - **Tenant slug (optional, dev setups only)** — production deployments resolve the tenant from the URL's subdomain, so most users skip this. When the URL has no tenant subdomain (localhost, IP, plain host), ask for the tenant slug; it is sent as an `X-Tenant` header on every request.
@@ -44,16 +46,27 @@ On a re-run, a `kairos` entry with an `Authorization` header shows the agent-key
 - The user did not approve the project server. Tell the user to approve `kairos` in `/mcp`.
 - `KAIROS_MCP_KEY` is not set in the session. Tell the user to set it and start a new session.
 - The plugin server shows "Missing environment variables: KAIROS_URL". Tell the user to set `KAIROS_URL` to the deployment URL, with no `/mcp` and no trailing slash, and start a new session.
-- The plugin server and a project `kairos` entry both connect. Each tool is there 2 times. Tell the user to keep one: remove the project entry, or unset `KAIROS_URL`.
+- The plugin server and a project `kairos` entry both connect. Each tool is there 2 times. Tell the user to remove the project entry, unless they asked for this repository only.
+- The repository has a `kairos` entry in `.mcp.json`, or `claude mcp list` shows one in the `local` scope, and the user did not ask for it. It is from an earlier bootstrap. Offer to remove it, and use the plugin server or a user-scope entry.
 - A `kairos` entry with no `Authorization` header in the user or local scope (`claude mcp list`) overrides the project entry. It is from an earlier OAuth attempt. Tell the user to remove it with `claude mcp remove kairos -s user` (or `-s local`).
 
 ## 2. Write the MCP config
 
 This step is for the OAuth path. On the agent-key path, [AGENT-KEY.md](AGENT-KEY.md) writes the config.
 
-Two equivalent paths — propose the project `.mcp.json` (shareable and reviewable); use `claude mcp add` instead if the user prefers per-user config:
+Add a `kairos` entry in the **user** scope. It connects in each repository of the user, and it writes no file in the repository. Give the user this command:
 
-**Project `.mcp.json`** (create or update the `kairos` server entry in the repo root; preserve other servers):
+```
+claude mcp add --scope user --transport http kairos https://acme.kairos.example/mcp
+```
+
+With a dev tenant slug, append: `--header "X-Tenant: <slug>"`. Always send `--scope user`: with no scope, `claude mcp add` writes the `local` scope, which is this repository only.
+
+The plugin server has an `Authorization` header, which turns off the OAuth flow. On this path, `KAIROS_URL` stays unset, and the user can disable the plugin server in `/mcp`.
+
+On a re-run, change the URL or the headers of the existing user-scope entry (`claude mcp remove kairos -s user`, then add it again). Do not add a second server.
+
+**Only when the user asks for this repository only** (for example, a second deployment): create or update the `kairos` entry in the project `.mcp.json` of the repository root, and preserve other servers. Then ask the user: commit the file, or add `.mcp.json` to `.gitignore`.
 
 ```json
 {
@@ -67,16 +80,6 @@ Two equivalent paths — propose the project `.mcp.json` (shareable and reviewab
 ```
 
 With a dev tenant slug, add: `"headers": { "X-Tenant": "<slug>" }`.
-
-**Or `claude mcp add`** (per-user, no file in the repo):
-
-```
-claude mcp add --transport http kairos https://acme.kairos.example/mcp
-```
-
-With a dev tenant slug, append: `--header "X-Tenant: <slug>"`.
-
-On re-run, update the existing `kairos` entry's URL/headers rather than adding a new server.
 
 ## 3. Connect and discover
 
