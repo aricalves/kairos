@@ -14,6 +14,7 @@
 pub(crate) mod api;
 pub(crate) mod code_index;
 pub(crate) mod documents;
+pub(crate) mod site;
 
 use api::Repository;
 
@@ -88,6 +89,7 @@ mod tests {
             code_index_summaries: "embedded".to_string(),
             code_index_summaries_resolved: "embedded".to_string(),
             code_index_breaker: Default::default(),
+            site: Default::default(),
         }
     }
 

@@ -148,6 +148,7 @@ fn Shell() -> impl IntoView {
                         <NavLink href="/activity" label="Activity"/>
                         <NavLink href="/agent-keys" label="Agent keys"/>
                         <pages::admin::AdminNavLink/>
+                        <DocsSitesNavLink whoami/>
                         <MyTeamsNav whoami/>
                     </SideNav>
                 }.into_any())
@@ -274,6 +275,32 @@ fn RedirectToIssuer() -> impl IntoView {
                 }
             }}
         </CenterScreen>
+    }
+}
+
+/// The path of the docs sites of the organization of the person
+/// (KAIROS-T-0408), `/pages/<org>/`, once whoami has answered.
+pub(crate) fn docs_sites_path() -> Option<String> {
+    let whoami = use_context::<LocalResource<Result<api::Whoami, ApiError>>>()?;
+    whoami
+        .get()
+        .and_then(|result| result.ok())
+        .map(|me| format!("/pages/{}/", me.organization.slug))
+}
+
+/// The nav link to the docs sites of the organization (KAIROS-T-0408). The
+/// server renders them: a full page load, not a route of the app.
+#[component]
+fn DocsSitesNavLink(whoami: LocalResource<Result<api::Whoami, ApiError>>) -> impl IntoView {
+    move || {
+        whoami.get().and_then(|result| result.ok()).map(|me| {
+            let href = format!("/pages/{}/", me.organization.slug);
+            view! {
+                <SideNavLink href=href active=Signal::derive(|| false) attr:rel="external">
+                    "Docs sites"
+                </SideNavLink>
+            }
+        })
     }
 }
 

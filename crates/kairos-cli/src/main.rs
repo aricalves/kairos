@@ -56,6 +56,7 @@ use commands::grants::GrantsCommand;
 use commands::keys::KeysCommand;
 use commands::members::MembersCommand;
 use commands::orgs::OrgsCommand;
+use commands::pages::PagesCommand;
 use commands::repos::ReposCommand;
 use commands::search::SearchArgs;
 use commands::service_accounts::ServiceAccountsCommand;
@@ -171,6 +172,10 @@ enum Command {
     /// Repositories: the codebases that tasks link to (COLLIERY-A-0023)
     #[command(subcommand)]
     Repos(ReposCommand),
+    /// The published site of a repository: publish a built site, print its
+    /// base path, unpublish it, turn it on or off
+    #[command(subcommand)]
+    Pages(PagesCommand),
     /// Delivery streams and their teams
     #[command(subcommand)]
     Streams(StreamsCommand),
@@ -235,6 +240,7 @@ async fn run(command: Command) -> Result<(), CliError> {
         Command::Teams(command) => command.run().await,
         Command::Grants(command) => command.run().await,
         Command::Repos(command) => command.run().await,
+        Command::Pages(command) => command.run().await,
         Command::Streams(command) => command.run().await,
         Command::Members(command) => command.run().await,
         Command::ServiceAccounts(command) => command.run().await,
@@ -759,6 +765,39 @@ mod tests {
 
     /// KAIROS-T-0318: `repos update --code-index-build` takes on and off
     /// only, and the error names the refused value.
+    /// KAIROS-T-0408: `kairos pages` and its subcommands parse; `--repo` is
+    /// required.
+    #[test]
+    fn pages_commands_parse() {
+        for args in [
+            vec!["kairos", "pages", "publish", "dist", "--repo", "payments"],
+            vec!["kairos", "pages", "base-path", "--repo", "payments"],
+            vec![
+                "kairos",
+                "pages",
+                "unpublish",
+                "--repo",
+                "payments",
+                "--confirm",
+            ],
+            vec!["kairos", "pages", "on", "--repo", "payments"],
+            vec!["kairos", "pages", "off", "--repo", "payments", "--json"],
+        ] {
+            let cli = Cli::try_parse_from(&args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
+            assert!(matches!(cli.command, Command::Pages(_)), "{args:?}");
+        }
+        for args in [
+            vec!["kairos", "pages", "publish", "dist"],
+            vec!["kairos", "pages", "base-path"],
+            vec!["kairos", "pages", "publish", "--repo", "payments"],
+        ] {
+            assert!(
+                Cli::try_parse_from(&args).is_err(),
+                "{args:?} must be refused"
+            );
+        }
+    }
+
     #[test]
     fn repos_update_takes_on_or_off_for_the_code_index_builder() {
         for value in ["on", "off"] {

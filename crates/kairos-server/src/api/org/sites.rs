@@ -70,9 +70,21 @@ pub fn router() -> Router<AppState> {
 #[schema(value_type = String, format = Binary)]
 pub struct SiteArchive(#[allow(dead_code)] Vec<u8>);
 
+/// [`SitePublish`] → the wire, with the display name of its principal.
+pub(crate) fn publish_dto_named(
+    p: &SitePublish,
+    names: &std::collections::HashMap<Uuid, String>,
+) -> dto::SitePublish {
+    dto::SitePublish {
+        principal_name: names.get(&p.principal_id).cloned(),
+        ..publish_dto(p)
+    }
+}
+
 /// [`SitePublish`] → the wire.
 pub(crate) fn publish_dto(p: &SitePublish) -> dto::SitePublish {
     dto::SitePublish {
+        principal_name: None,
         publish_id: p.id.to_string(),
         repository_slug: p.repository_slug.clone(),
         base_path: p.base_path.clone(),
@@ -390,7 +402,8 @@ pub(crate) async fn publish_site(
                     .map_err(ApiError::internal)?
                     .remove(&key.repository_id)
                     .ok_or_else(|| ApiError::internal("the new publish is not live"))?;
-                Ok(publish_dto(&live))
+                let names = sites::names(conn, &[live.principal_id]).map_err(ApiError::internal)?;
+                Ok(publish_dto_named(&live, &names))
             })
         })
         .await;
@@ -489,8 +502,10 @@ pub(crate) async fn list_site_publishes(
             let repo = repositories::resolve(conn, &slug).map_err(map_error)?;
             let (rows, total) =
                 sites::history(conn, repo.id, limit, offset).map_err(ApiError::internal)?;
+            let ids: Vec<Uuid> = rows.iter().map(|p| p.principal_id).collect();
+            let names = sites::names(conn, &ids).map_err(ApiError::internal)?;
             Ok(ListEnvelope {
-                items: rows.iter().map(publish_dto).collect(),
+                items: rows.iter().map(|p| publish_dto_named(p, &names)).collect(),
                 total,
                 limit,
                 offset,

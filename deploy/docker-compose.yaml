@@ -133,8 +133,18 @@ services:
       # COLLIERY-T-3105: encrypts the read token of each repository. Keep it
       # with the database password; a lost key means every token is set again.
       KAIROS_SECRETS_KEY: ${KAIROS_SECRETS_KEY:-}
+      # KAIROS-T-0409: the store of the sites that repositories publish
+      # (KAIROS-D-0012). `disk` keeps them in the volume below; set `s3` and
+      # the KAIROS_PAGES_S3_* variables for a bucket instead.
+      KAIROS_PAGES_STORE: ${KAIROS_PAGES_STORE:-disk}
+      KAIROS_PAGES_DIR: /var/lib/kairos/pages
+      KAIROS_PAGES_S3_BUCKET: ${KAIROS_PAGES_S3_BUCKET:-}
+      KAIROS_PAGES_S3_PREFIX: ${KAIROS_PAGES_S3_PREFIX:-}
+      KAIROS_PAGES_S3_ENDPOINT: ${KAIROS_PAGES_S3_ENDPOINT:-}
+      KAIROS_PAGES_S3_REGION: ${KAIROS_PAGES_S3_REGION:-}
     volumes:
       - code_index:/var/lib/kairos/code-index
+      - kairos_pages:/var/lib/kairos/pages
     # The image applies pending migrations on boot (KAIROS-T-0007) before it
     # binds, so no separate migrate step is required. Liveness is the image's
     # own HEALTHCHECK against /healthz.
@@ -331,3 +341,6 @@ volumes:
   # Clones and tools of the code index builder. It can be made again, so it
   # needs no backup.
   code_index:
+  # KAIROS-T-0409: the published repository sites. CI can publish them again,
+  # so they need no backup.
+  kairos_pages:

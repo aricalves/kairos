@@ -34,6 +34,12 @@ rpassword = "7.5.4"
 kairos-index = { path = "../kairos-index" }
 kairos-embed = { path = "../kairos-embed", default-features = false }
 rmcp = { workspace = true, features = ["server", "transport-io"] }
+# `kairos pages publish` (KAIROS-T-0408): the .tar.gz of a built site and
+# its MD5 for Content-MD5.
+tar = "0.4"
+flate2 = "1"
+md-5 = "0.10"
+base64 = "0.22"
 
 [features]
 default = ["vectors"]

@@ -210,7 +210,9 @@ pub(super) fn team_landing(paths: &Paths, site: &TeamSite) -> Markup {
             @let adrs = site.impacting(&site.adrs, repo.id);
             section.kp-section {
                 h2 { "Repository " span.kp-code { (repo.slug) } }
-                // KAIROS-T-0407 adds the link to the uploaded site here.
+                @if let Some(base) = &repo.site_base_path {
+                    p { a.kp-site-link href=(base) { "Open the site of " (repo.slug) } }
+                }
                 @if docs.is_empty() && adrs.is_empty() {
                     p.kp-empty { "No document or decision is about this repository." }
                 } @else {

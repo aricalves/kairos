@@ -139,6 +139,8 @@ const LOCAL_ONLY: Shape = Shape {
 struct Deployment {
     base_url: String,
     scratch_db: String,
+    /// The site store of the deployment (KAIROS-T-0408).
+    _pages: tempfile::TempDir,
 }
 
 impl Deployment {
@@ -179,6 +181,7 @@ impl Deployment {
         drop(conn);
 
         let pool = TenantPool::new(&scratch_url, 4).await.expect("pool");
+        let pages = tempfile::tempdir().expect("site store dir");
         let auth = Arc::new(if shape.issuer {
             Authenticator::with_static_keys(ISSUER, AUDIENCE, [])
         } else {
@@ -225,7 +228,12 @@ impl Deployment {
             jobs: Default::default(),
             webhooks: Default::default(),
             writeback: Default::default(),
-            pages: Default::default(),
+            pages: kairos_server::site_store::PagesSettings {
+                store: Some(kairos_server::site_store::StoreConfig::Disk {
+                    dir: pages.path().join("pages"),
+                }),
+                ..Default::default()
+            },
             bootstrap_admin: None,
             bootstrap_password: None,
             bootstrap_password_hash: None,
@@ -241,6 +249,7 @@ impl Deployment {
         Self {
             base_url,
             scratch_db: scratch_db.to_string(),
+            _pages: pages,
         }
     }
 
@@ -1051,5 +1060,164 @@ sys.stdout.write("\nSENT=%s EXIT=%d\n" % (sent, os.waitstatus_to_exitcode(status
         cache["deployments"][&deployment.base_url]["kind"],
         "local_session"
     );
+    deployment.teardown();
+}
+
+/// KAIROS-T-0408: `kairos pages` against a live server. The person logs in,
+/// turns the site of a repository on, reads its base path, publishes a
+/// folder and a .tar.gz, reads the site, and unpublishes it.
+#[tokio::test]
+async fn pages_publish_a_folder_and_a_tar_gz() {
+    let deployment = Deployment::boot("kairos_cli_t0408_pages_test", LOCAL_ONLY).await;
+    let base_url = deployment.base_url.clone();
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let config_dir = ConfigDir(scratch.path().join("kairos"));
+    let logged_in = login(config_dir.path(), &base_url, EMAIL, PASSWORD).await;
+    assert_eq!(logged_in.code, 0, "{}", logged_in.all());
+    let cache = read_cache(config_dir.path());
+    let bearer = cache["deployments"][&base_url]["access_token"]
+        .as_str()
+        .expect("bearer")
+        .to_string();
+
+    // A team and a repository, through the API.
+    let http = reqwest::Client::new();
+    for (path, body) in [
+        (
+            "/api/teams",
+            serde_json::json!({"name": "Platform", "slug": "platform", "code_prefix": "PLAT"}),
+        ),
+        (
+            "/api/repositories",
+            serde_json::json!({"slug": "payments", "forge": "other", "repo_full_name": "payments",
+                               "repo_url": "https://example.com/payments", "team": "platform"}),
+        ),
+    ] {
+        let response = http
+            .post(format!("{base_url}{path}"))
+            .bearer_auth(&bearer)
+            .header("x-tenant", TENANT)
+            .json(&body)
+            .send()
+            .await
+            .expect("request");
+        assert!(
+            response.status().is_success(),
+            "{path}: {}",
+            response.status()
+        );
+    }
+
+    let on = run_cli(
+        config_dir.path(),
+        &["pages", "on", "--repo", "payments"],
+        None,
+    )
+    .await;
+    assert_eq!(on.code, 0, "{}", on.all());
+    assert!(
+        on.stdout.contains("The site of payments is on."),
+        "{}",
+        on.stdout
+    );
+
+    let base = run_cli(
+        config_dir.path(),
+        &["pages", "base-path", "--repo", "payments"],
+        None,
+    )
+    .await;
+    assert_eq!(base.code, 0, "{}", base.all());
+    assert_eq!(base.stdout.trim(), "/pages/acme/platform/repos/payments/");
+
+    // A folder.
+    let site = scratch.path().join("dist");
+    std::fs::create_dir_all(site.join("guide")).expect("dist");
+    std::fs::write(site.join("index.html"), "<h1>Folder</h1>").expect("index");
+    std::fs::write(site.join("guide/index.html"), "<h1>Guide</h1>").expect("guide");
+    let published = run_cli(
+        config_dir.path(),
+        &[
+            "pages",
+            "publish",
+            site.to_str().unwrap(),
+            "--repo",
+            "payments",
+        ],
+        None,
+    )
+    .await;
+    assert_eq!(published.code, 0, "{}", published.all());
+    assert!(
+        published
+            .stdout
+            .contains("Published the site of payments at /pages/acme/platform/repos/payments/"),
+        "{}",
+        published.stdout
+    );
+    let page = http
+        .get(format!(
+            "{base_url}/pages/acme/platform/repos/payments/guide/"
+        ))
+        .header("host", "kairos.test")
+        .send()
+        .await
+        .expect("site");
+    assert_eq!(page.text().await.expect("text"), "<h1>Guide</h1>");
+
+    // A .tar.gz, with --json.
+    let archive = scratch.path().join("site.tar.gz");
+    std::fs::remove_file(site.join("guide/index.html")).expect("rm");
+    std::fs::remove_dir(site.join("guide")).expect("rmdir");
+    std::fs::write(site.join("index.html"), "<h1>Archive</h1>").expect("index");
+    {
+        let file = std::fs::File::create(&archive).expect("archive");
+        let gz = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
+        let mut tar = tar::Builder::new(gz);
+        tar.append_dir_all(".", &site).expect("tar");
+        tar.into_inner().expect("tar").finish().expect("gz");
+    }
+    let published = run_cli(
+        config_dir.path(),
+        &[
+            "pages",
+            "publish",
+            archive.to_str().unwrap(),
+            "--repo",
+            "payments",
+            "--json",
+        ],
+        None,
+    )
+    .await;
+    assert_eq!(published.code, 0, "{}", published.all());
+    let answer: serde_json::Value = serde_json::from_str(&published.stdout).expect("json");
+    assert_eq!(answer["state"], "live");
+    assert_eq!(answer["files"], 1);
+
+    // Unpublish needs --confirm.
+    let refused = run_cli(
+        config_dir.path(),
+        &["pages", "unpublish", "--repo", "payments"],
+        None,
+    )
+    .await;
+    assert_ne!(refused.code, 0);
+    assert!(refused.all().contains("--confirm"), "{}", refused.all());
+    let gone = run_cli(
+        config_dir.path(),
+        &["pages", "unpublish", "--repo", "payments", "--confirm"],
+        None,
+    )
+    .await;
+    assert_eq!(gone.code, 0, "{}", gone.all());
+    let page = http
+        .get(format!("{base_url}/pages/acme/platform/repos/payments/"))
+        .header("host", "kairos.test")
+        .send()
+        .await
+        .expect("site");
+    assert_eq!(page.status().as_u16(), 404);
+
     deployment.teardown();
 }

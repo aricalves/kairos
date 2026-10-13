@@ -81,6 +81,9 @@ const CODE_INDEX_SUMMARIES_HINT: &str = "Code index summaries: organization, emb
                                          organization has no hosted provider.";
 
 /// The setting `code_index_build` (KAIROS-T-0318).
+/// The hint of the site switch (KAIROS-T-0408).
+const SITE_HINT: &str = "Site: on lets CI publish the built site of the repository (kairos pages publish), and Kairos serves it to anyone. Off, Kairos does not serve it, and a publish is refused.";
+
 const CODE_INDEX_BUILD_HINT: &str = "Code index builder: on or off. With off, Kairos makes no \
                                      index of the repository. Use off for a template or a \
                                      static site.";
@@ -340,6 +343,7 @@ fn RepositoryRow(
     let code_index_breaker_summary = repo.code_index_breaker.summary();
     let edit_code_index_summaries = RwSignal::new(repo.code_index_summaries.clone());
     let code_index_summaries_summary = repo.code_index_summaries_summary();
+    let edit_site = RwSignal::new(if repo.site.enabled { "on" } else { "off" }.to_string());
     let team_slugs = StoredValue::new(
         team_options
             .into_iter()
@@ -383,6 +387,7 @@ fn RepositoryRow(
             edit_code_index_build.get_untracked(),
             edit_code_index_summaries.get_untracked(),
         );
+        let site_on = edit_site.get_untracked() == "on";
         // The editor stays open: a refusal shows next to its field
         // (COLLIERY-T-0267). A success reads the list again, and the new
         // row has a closed editor.
@@ -405,6 +410,7 @@ fn RepositoryRow(
                         description: Some(&d),
                         code_index_build: Some(&c),
                         code_index_summaries: Some(&cs),
+                        site_enabled: Some(site_on),
                     },
                 )
                 .await
@@ -622,6 +628,8 @@ fn RepositoryRow(
                             options=vec!["on".to_string(), "off".to_string()]/>
                         <Select label="Code index summaries" value=edit_code_index_summaries
                             options=vec!["organization".to_string(), "embedded".to_string(), "hosted".to_string()]/>
+                        <Select label="Site" value=edit_site
+                            options=vec!["on".to_string(), "off".to_string()]/>
                         <Button size="xs" on_click=Callback::new(on_save)>"Save"</Button>
                     </Group>
                     <Text dimmed=true size="xs">{URL_HINT}</Text>
@@ -629,6 +637,7 @@ fn RepositoryRow(
                     <Text dimmed=true size="xs">{REPOSITORY_SLUG_HINT}</Text>
                     <Text dimmed=true size="xs">{CODE_INDEX_BUILD_HINT}</Text>
                     <Text dimmed=true size="xs">{CODE_INDEX_SUMMARIES_HINT}</Text>
+                    <Text dimmed=true size="xs">{SITE_HINT}</Text>
                     <Text dimmed=true size="xs" attr:style="color: var(--gold)">
                         "A new owning team does not change the tasks. Each task stays on its board and keeps its link."
                     </Text>

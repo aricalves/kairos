@@ -27,6 +27,14 @@ pub struct Team {
     pub slug: String,
     pub team_type: String,
     pub delivery_board_id: Option<String>,
+    /// The docs site of the team is on (KAIROS-T-0408). An older server does
+    /// not send it: the site is on by default.
+    #[serde(default = "site_on")]
+    pub site_enabled: bool,
+}
+
+fn site_on() -> bool {
+    true
 }
 
 /// mirror of: `kairos_client::types_org::TeamMember` (partial).

@@ -461,6 +461,8 @@ pub(crate) fn render(
     // KAIROS-T-0406: the live publish of each site, and the tenant of the
     // base path.
     let live_sites = kairos_db::sites::live(conn, &ids).map_err(ApiError::internal)?;
+    let publishers: Vec<Uuid> = live_sites.values().map(|p| p.principal_id).collect();
+    let publisher_names = kairos_db::sites::names(conn, &publishers).map_err(ApiError::internal)?;
     let tenant = kairos_db::sites::tenant_slug(conn).map_err(ApiError::internal)?;
 
     rows.into_iter()
@@ -471,7 +473,9 @@ pub(crate) fn render(
             let (open_tasks, has_webhook) = counts.get(&repo.id).copied().unwrap_or((0, false));
             let hosted = crate::code_index::hosted_summaries(&repo, &code_index_settings);
             let base_path = kairos_db::sites::base_path(&tenant, &team.slug, &repo.slug);
-            let published = live_sites.get(&repo.id).map(super::sites::publish_dto);
+            let published = live_sites
+                .get(&repo.id)
+                .map(|p| super::sites::publish_dto_named(p, &publisher_names));
             let site = kairos_client::types_sites::RepositorySite {
                 enabled: repo.site_enabled,
                 needs_republish: published.as_ref().is_some_and(|p| p.base_path != base_path),

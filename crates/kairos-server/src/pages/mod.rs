@@ -36,6 +36,7 @@ use crate::middleware::{auth, tenant};
 
 mod assets;
 mod rendered;
+mod sites;
 mod views;
 
 /// The names that cannot be the slug of a team, or of a team page at the top
@@ -119,11 +120,10 @@ fn rendered_router(state: &AppState) -> Router {
         .with_state(state.clone())
 }
 
-/// The uploaded repository sites: no credential is read. KAIROS-T-0407
-/// serves them; until then each path is a 404.
+/// The uploaded repository sites: no credential is read (KAIROS-T-0407).
 fn sites_router(state: &AppState) -> Router {
     Router::new()
-        .route("/pages/{tenant}/{*rest}", get(not_found))
+        .route("/pages/{tenant}/{*rest}", get(sites::serve))
         .route_layer(axum_middleware::from_fn_with_state(
             state.clone(),
             path_tenant,

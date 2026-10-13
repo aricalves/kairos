@@ -2934,6 +2934,7 @@ mod tests {
             slug: slug.to_string(),
             team_type: "platform".to_string(),
             delivery_board_id: None,
+            site_enabled: true,
         }
     }
 
