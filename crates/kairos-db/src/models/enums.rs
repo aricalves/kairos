@@ -253,8 +253,8 @@ text_enum! {
     /// no CHECK constraint (the set is documented in the S-0004 DDL comment),
     /// so this enum is the enforcement point. `board_config` extends the
     /// documented set for board configuration changes (column add/rename/
-    /// remove/reorder, transition add/remove — KAIROS-T-0010; A-0004 itself
-    /// already extends the set with `retention_sweep`). `update` is the
+    /// remove/reorder, transition add/remove — KAIROS-T-0010). `retention_sweep`
+    /// is the A-0004 extension the retention sweeper writes. `update` is the
     /// action of a change to a team, a delivery stream, a membership or a
     /// user (COLLIERY-T-0265). Before that ticket, such a change had the
     /// action `create`.
@@ -281,6 +281,7 @@ text_enum! {
         Purge => "purge",
         Publish => "publish",
         Unpublish => "unpublish",
+        RetentionSweep => "retention_sweep",
     }
 }
 
@@ -426,6 +427,7 @@ mod tests {
                 "purge",
                 "publish",
                 "unpublish",
+                "retention_sweep",
             ]
         );
     }
