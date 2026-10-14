@@ -14,6 +14,43 @@ argument.
 This page describes Kairos 0.12.0. Argument names, types and defaults are those
 of the JSON schema the server sends in `tools/list`.
 
+## Profiles
+
+`tools/list` gives one profile of the tools (KAIROS-T-0454). The tool text
+goes into each agent session, and most sessions do not administer the
+organization.
+
+| URL | Profile | Tools |
+|---|---|---|
+| `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory, claims, notifications, the scales and templates: 36 tools. |
+| `/mcp?profile=admin` | admin | Teams, boards, columns and transitions, grants, metadata definitions and templates, dispatch rules and agent triage, team pages, org read tokens, delete and rebuild of repositories, board flow, purge: the other 31 tools. |
+| `/mcp?profile=all` | all | Each tool. |
+
+You can call each tool under each profile: the profile changes the list,
+not the rights. Kairos refuses an unknown profile, and the refusal names it.
+
+The work tools:
+
+- items: `whoami`, `my_boards`, `board_items`, `search`, `get_item`,
+  `get_history`, `related_work`, `create_item`, `edit_item`, `update_item`,
+  `transition_item`, `move_item`, `append_note`, `set_metadata`;
+- links and fields: `link_items`, `unlink_items`, `propose_edge`,
+  `set_repository`, `set_work_class`, `set_team`, `clear_team`;
+- the end of an item: `cancel_item`, `delete_item`, `restore_item`,
+  `archive_completed`;
+- repositories: `list_repositories`, `get_repository`, `add_repository`,
+  `update_repository`;
+- claims and notifications: `claim_item`, `hand_off_item`, `release_item`,
+  `get_events`, `mark_events_read`;
+- scales and templates: `list_metadata_definitions`, `list_templates`.
+
+To administer from Claude Code, add a second server with the admin profile:
+
+```sh
+claude mcp add --scope user --transport http kairos-admin \
+  "$KAIROS_URL/mcp?profile=admin" --header "Authorization: Bearer $KAIROS_MCP_KEY"
+```
+
 ## Conventions
 
 These hold for every tool.

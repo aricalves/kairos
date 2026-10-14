@@ -6,8 +6,8 @@ use axum::http::request::Parts;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ContentBlock, Implementation, ServerCapabilities,
-    ServerInfo,
+    CallToolRequestParams, CallToolResult, ContentBlock, Implementation, ListToolsResult,
+    PaginatedRequestParams, ServerCapabilities, ServerInfo,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, tool_handler};
@@ -70,6 +70,22 @@ impl KairosMcp {
 // error, in the form of each other tool error (`super::arguments`).
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for KairosMcp {
+    // KAIROS-T-0454: the profile of the URL chooses the list; each tool can
+    // still be called.
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, ErrorData> {
+        let profile = super::profiles::Profile::of(context.extensions.get::<Parts>())
+            .map_err(|message| ErrorData::invalid_params(message, None))?;
+        Ok(ListToolsResult {
+            tools: profile.filter(self.tool_router.list_all()),
+            meta: None,
+            next_cursor: None,
+        })
+    }
+
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
@@ -157,7 +173,10 @@ impl ServerHandler for KairosMcp {
                  them; writes require board capabilities and edits use optimistic \
                  versioning. Repositories: `list_repositories` and `get_repository` \
                  read the directory, `add_repository` and `update_repository` write \
-                 it, and `set_repository` links a task to one.",
+                 it, and `set_repository` links a task to one. This list is the work \
+                 profile: the administration tools (teams, boards, grants, metadata, \
+                 dispatch, team pages) are at /mcp?profile=admin, and each tool is at \
+                 /mcp?profile=all.",
             )
     }
 }

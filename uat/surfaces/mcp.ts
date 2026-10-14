@@ -46,7 +46,7 @@ export class McpSession {
   ) {}
 
   private async post(body: unknown): Promise<{ status: number; session: string | null; text: string }> {
-    const res = await fetch(`${this.server}/mcp`, {
+    const res = await fetch(`${this.server}/mcp?profile=all`, {
       method: 'POST',
       headers: {
         authorization: `Bearer ${this.token}`,
