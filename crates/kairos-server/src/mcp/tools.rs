@@ -247,10 +247,8 @@ pub struct BoardItemsParams {
     /// Restrict the TASKS to those that link to this repository (slug
     /// or UUID). Your repo's queue on a multi-repo team board.
     pub repository: Option<String>,
-    /// Include archived (put-away) cards, each marked `[archived]`.
-    /// Default false — the board as it stands. Ask for this when the
-    /// question is historical ("what was in Done last quarter?"), never
-    /// to decide what to work on next.
+    /// Include archived cards, marked `[archived]` (default false). For
+    /// history, not to pick work.
     pub include_deleted: Option<bool>,
     /// The number of items in the result (default 200, maximum 1000).
     pub limit: Option<i64>,
@@ -263,9 +261,8 @@ pub struct BoardItemsParams {
     /// Restrict the STRATEGIES and the INITIATIVES to those with no team.
     /// Not with `team`.
     pub no_team: Option<bool>,
-    /// Show more on each card (default false: the compact list): the date
-    /// of the last change and each metadata value of the card, e.g.
-    /// `{updated 2026-10-08; priority: high}`.
+    /// Add the last change and the metadata of each card, e.g.
+    /// `{updated 2026-10-08; priority: high}` (default false).
     pub details: Option<bool>,
 }
 
@@ -436,16 +433,12 @@ pub struct CreateItemParams {
     pub item_type: String,
     /// The item's title.
     pub title: String,
-    /// Target board, by slug or UUID. Optional when the tenant has exactly
-    /// one board of the matching level (strategy/initiative/adr boards,
-    /// or the single delivery board for tasks). For a document it is the
-    /// OWNER board, and it is required: a live board of each level, with
-    /// no default. The code of the document gets the prefix of that board.
-    /// The document is not a card of the board.
+    /// Target board, by slug or UUID; optional when only one board of the
+    /// level exists. For a document: the OWNER board, required, and its
+    /// prefix gives the document's code.
     pub board: Option<String>,
-    /// Parent item's short code: creates the `parent` edge. For a document
-    /// or an ADR, creates the `supports` edge. A document must have
-    /// `board` also: the parent gives it no owner.
+    /// Parent item's short code: the `parent` edge (for a document or an
+    /// ADR, the `supports` edge).
     pub parent: Option<String>,
     /// Template (id or name) — documents only (KAIROS-A-0003).
     pub template: Option<String>,
@@ -453,29 +446,21 @@ pub struct CreateItemParams {
     pub content: Option<String>,
     /// Tasks only: task | bug | tech_debt | support (default task).
     pub task_type: Option<String>,
-    /// Tasks only: the repository the task links to (slug or UUID). It
-    /// says where the code is. It can be any live repository, of any team.
-    /// It does not choose the board: `board` does (COLLIERY-A-0023). It is
-    /// optional, also for a request to a different team.
+    /// Tasks only: the repository the task links to (slug or UUID), of any
+    /// team. It does not choose the board.
     pub repository: Option<String>,
-    /// Tasks only: the lane, planned | support (KAIROS-T-0077). On a board
-    /// that you manage, the default is support for a support-type task,
-    /// else planned. On every other board the task is a request: the work
-    /// class is support, and planned is refused (COLLIERY-A-0023).
+    /// Tasks only: the lane, planned | support. Default: support for a
+    /// support task, else planned; a request is always support.
     pub work_class: Option<String>,
-    /// Tasks only: the team that sends the task, by slug or UUID
-    /// (KAIROS-T-0426). When it is not the team of the board, the task is a
-    /// request whoever sends it, also a manager or an org admin: entry
-    /// column, support lane, and planned is refused. An agent in a board
-    /// session sends its own team.
+    /// Tasks only: the team that sends the task (slug or UUID). Not the
+    /// board's team: the task is a request, whoever sends it.
     pub from_team: Option<String>,
     /// Strategies only: the strategy's hypothesis.
     pub hypothesis: Option<String>,
     /// Initiatives only: t-shirt complexity xs | s | m | l | xl.
     pub complexity: Option<String>,
-    /// Initiatives only: makes this a BUCKET rather than a dated initiative
-    /// (KAIROS-A-0002) — tech_debt | bug | ad_hoc. `is_bucket` is derived from
-    /// it. Omit for an ordinary initiative.
+    /// Initiatives only: tech_debt | bug | ad_hoc makes a bucket, not a
+    /// dated initiative.
     pub bucket_type: Option<String>,
     /// ADRs only: who makes/made the decision.
     pub decision_maker: Option<String>,
@@ -631,19 +616,13 @@ pub struct AddRepositoryParams {
     pub slug: Option<String>,
     /// github | gitlab | other.
     pub forge: String,
-    /// The name of the repository on the forge, as the forge sends it in
-    /// a webhook. github: 2 parts ("owner/repo"). gitlab: 2 or more parts
-    /// ("group/subgroup/project"). other: 1 or more parts. It has no
-    /// space, and it does not end with ".git".
+    /// The name on the forge: "owner/repo" (github), "group/.../project"
+    /// (gitlab); no space, no ".git".
     pub repo_full_name: String,
-    /// The URL of the repository for a browser: an absolute http or https
-    /// URL (e.g. "https://github.com/acme/payments-api"). It has no user
-    /// name and no password, because each member can read it.
+    /// The URL for a browser: absolute http or https, no credentials.
     pub repo_url: String,
-    /// The default branch: a branch name that git accepts. With it, the
-    /// branch is set by hand, and the code index builder indexes it. Omit
-    /// it, and the builder follows the default branch of the forge, read at
-    /// each fetch ("main" until the first fetch).
+    /// The default branch, set by hand. Omit it to follow the forge's
+    /// default branch.
     pub default_branch: Option<String>,
     /// The ONE owner team (slug or UUID).
     pub team: String,
@@ -674,9 +653,8 @@ pub struct UpdateRepositoryParams {
     /// The new URL of the repository for a browser: an absolute http or
     /// https URL, with no user name and no password.
     pub repo_url: Option<String>,
-    /// The code index builder of the server for the repository: "on" or
-    /// "off" (KAIROS-T-0398). "off" cancels the build jobs that wait, and
-    /// the builder adds no new job. A build that runs now goes on.
+    /// The code index builder for the repository: "on" or "off" ("off"
+    /// cancels the waiting builds).
     pub code_index_build: Option<String>,
     /// The new slug (KAIROS-T-0443). Each checkout keeps the slug in
     /// `.claude/kairos.local.md`: a new slug breaks that reference.
@@ -1340,7 +1318,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Directory of repositories in this organization (KAIROS-A-0019): for each, its slug, forge and full name, the ONE owning team, the delivery board of that team, the open task count, and whether webhooks are connected. The open task count includes linked tasks on all boards. The owner does not choose the board of a task. Call to find a repository to link a task to, or to find who owns a repo. Optional `team` (slug or UUID) narrows to one team's repositories. The result has 50 repositories at most by default: optional `limit` (maximum 200) and `offset` give a different part of the directory. When the result is not the full directory, its first line says so and gives the `offset` of the next part."
+        description = "The repositories of the organization: slug, forge and full name, the owner team and its delivery board, the open task count, and whether webhooks are connected. Use it to find the repository to link a task to, or who owns one. Optional `team` (slug or UUID). At most 50 by default (`limit` up to 200, `offset`); a partial result says so and gives the next `offset`."
     )]
     pub async fn list_repositories(
         &self,
@@ -1409,7 +1387,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "One repository in full: owner team, the delivery board of that team, the open task count on all boards, default branch, the team's `description` of how to work in it (READ THIS before working in or filing against an unfamiliar repo), the documents and the ADRs that impact the repository (its vision, its architecture, the decisions about it: read them with `get_item` before you plan work in the repository), and its in-flight branches and pull requests with the work items they belong to. The line `read token` says whether the builder of the code index has a token for the repository, who set it and the last check; no tool gives or sets the token. The line `write-back` says whether Kairos writes a comment and the commit status `kairos` on the GitHub pull requests that link to an item (on with a write token, else off), and the last write. The line `code index build` says whether the code index builder of the server works on the repository (on or off; `update_repository` sets it). The line `code index breaker` says whether the breaker of the builder is tripped, when, and why: a build job that stopped its server (for example, it ran out of memory) or stalled trips it, and the builder then starts no build of the repository. `rebuild_code_index` resets it. `repository` is a slug or UUID. `include_deleted: true` adds the archived documents and ADRs, each marked [archived]."
+        description = "One repository: owner team and its delivery board, open task count, default branch and where it comes from, the team's `description` of how to work in it (read it before working in an unfamiliar repository), the documents and ADRs that impact it (read them with `get_item` before planning), its open branches and pull requests with their items, and the lines read token, write-back, code index build and code index breaker (a tripped breaker stops builds until `rebuild_code_index`). `repository` is a slug or UUID; `include_deleted: true` adds archived documents and ADRs."
     )]
     pub async fn get_repository(
         &self,
@@ -1542,7 +1520,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "List boards in this organization grouped by level (strategy/initiative/delivery/adr), with column names and per-column item counts for my delivery boards. Each ADR board names its team, or the organization. Each board of a team of mine shows the capabilities that the team gives me with no grant: on the ADR board of the team, this includes manage_adrs. Each strategy or initiative board on which I have a grant shows the capabilities that membership gives me with no grant: manage_strategies or manage_initiatives, and transition_items. Optional `level` filter."
+        description = "The boards of the organization by level (strategy, initiative, delivery, ADR), with the columns and item counts of your delivery boards, the team of each ADR board, and the capabilities that your teams or your board memberships give you with no grant. Optional `level`."
     )]
     pub async fn my_boards(
         &self,
@@ -1671,7 +1649,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "List the items on a board grouped by column: short code, type, and title. `board` is a slug or UUID; optional `column` (name or UUID) restricts to one column; optional `repository` (slug or UUID) narrows the tasks to one repository — pass the repository you are checked out in to see your queue. Live cards only unless `include_deleted` is true, which adds the archived ones back in the column they were put away in, each marked [archived]. A card with open dependencies is tagged [blocked by N] and [blocks N]. A task with a claim is tagged [claimed by NAME]: the person who works on it, and \"(agent)\" when the agent of the person made the claim. A strategy or an initiative with an owner is tagged [owner: NAME]. A strategy or an initiative with teams is tagged [teams: a, b]: the teams of the boards of its tasks (two levels down for a strategy), plus the teams set on it by hand (`set_team`). Optional `team` (slug or UUID) restricts the strategies and the initiatives to those of one team, and `no_team: true` to those with no team. Only open `blocks` edges are counted: an edge with either end in a done column, or with an archived item at the other end, is not. The result has 200 items at most by default: optional `limit` (maximum 1000) and `offset` give a different part of the board. When the result is not the full board, its first lines say so and give the `offset` of the next part. Call the tool again with that `offset` until you have each part. Optional `details: true` adds to each card the date of its last change and its metadata values (for example the priority): `{updated 2026-10-08; priority: high}`. Use it to pick or triage work without `get_item` for each card. A column with a WIP limit shows the live count against the limit, [WIP 2/3], and [WIP 4/3, over the limit] when it holds more. A move into a column over its limit is allowed: the answer of the move has a warning line."
+        description = "The items of a board by column: short code, type, title and tags ([blocked by N], [claimed by NAME], [owner: NAME], [teams: a, b], [WIP 2/3]). `board` is a slug or UUID. Optional: `column` (name or UUID); `repository` (slug or UUID) for the tasks of one repository, your queue; `team` or `no_team: true` for strategies and initiatives; `include_deleted` adds archived cards, marked [archived]; `details: true` adds the last change and the metadata of each card. At most 200 items by default (`limit` up to 1000, `offset`); a partial result says so and gives the next `offset`."
     )]
     pub async fn board_items(
         &self,
@@ -1882,7 +1860,7 @@ impl KairosMcp {
 
     // KAIROS-T-0372: the flow metrics of a board.
     #[tool(
-        description = "The flow metrics of a board for a range of days (UTC): cycle time (from the first entry into a start column to the last entry into a done column, in days: count, mean, median, 85th percentile, and each item), throughput per week (done items, and cancelled tasks apart), the age of each item in progress (not done, with a start), and the cumulative flow (the live items of each column at the end of each day). A start column is a column with claims (Active), or the column named Active when the board has none. `board` is a slug or UUID. Optional `from` and `to` are dates YYYY-MM-DD: the default is the 90 days to today; a range has 366 days at most. The cumulative flow shows the last 14 days; the REST route GET /api/boards/{id}/flow gives each day."
+        description = "Flow metrics of a board for a range of days (UTC): cycle time (count, mean, median, 85th percentile, and each item), throughput per week (done, and cancelled apart), the age of each item in progress, and the cumulative flow of the last 14 days. `board` is a slug or UUID; optional `from` and `to` (YYYY-MM-DD; default the last 90 days; 366 days at most)."
     )]
     pub async fn board_flow(
         &self,
@@ -1904,7 +1882,7 @@ impl KairosMcp {
 
     // KAIROS-T-0385: the agent dispatch rules of a board.
     #[tool(
-        description = "The agent dispatch rules of a board: for each rule, when it fires (a task enters a column, or a task is unblocked), the filter (task type, metadata value, repository) and the webhook target; then the webhook targets (on or off, with the failed tries in a row); then the 20 newest deliveries of the log (status, tries, response code, error). When a task enters the column of a rule (or its last open blocker closes, for an `unblocked` rule) and matches its filter, Kairos sends one signed delivery to the target. A person who belongs to the board reads them. `board` is a slug or UUID."
+        description = "The dispatch rules of a board (when each fires, its filter and target), its webhook targets (on or off, failed tries in a row), the 20 newest deliveries (status, tries, response code, error), and who decides intake triage. A person who belongs to the board can read them. `board` is a slug or UUID."
     )]
     pub async fn list_dispatch_rules(
         &self,
@@ -1943,7 +1921,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Make an agent dispatch rule on a board: when a task enters `column` and matches the filter, Kairos sends one signed delivery (event task.entered_column: code, title, task type, link, board, column, repository, actor) to a webhook target. With `trigger: unblocked`, the rule fires when the last open blocker of a task that matches is done, archived or cancelled (event task.unblocked, with `blocker`: the code of the blocker that closed); `column` is then optional: the column the task must be in. A task with two blockers fires once, when the second closes. Send `target_id` (a target of the board), or `url` (and optional `target_name`) to make a new target: then the answer has its secret, shown this one time; keep it in the receiver to check X-Kairos-Signature. Optional filter: `task_type` (task | bug | tech_debt | support), `metadata_slug` with `metadata_value`, `repository` (slug or UUID); each part that is set must match. Requires configure_boards on the board."
+        description = "Make a dispatch rule on a board: when a task that matches the filter enters `column` (event task.entered_column), or with `trigger: unblocked` when its last open blocker closes (event task.unblocked; `column` optional), Kairos sends one signed delivery to a webhook target. Send `target_id`, or `url` (and `target_name`) to make a target: the answer shows its secret once, for the receiver to check X-Kairos-Signature. Optional filter, each part must match: `task_type`, `metadata_slug` with `metadata_value`, `repository`. Needs configure_boards."
     )]
     pub async fn create_dispatch_rule(
         &self,
@@ -2023,7 +2001,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Set who decides the triage of intake on a board (KAIROS-T-0428). Intake is a task in the support lane. With `agents_decide: false` (the default) an agent (an agent key or a service account) that moves such a task into the planned lane or into another column is refused with AGENT_TRIAGE_OFF: it writes its proposal (planned backlog or work now, and why) with append_note and leaves the task for a person. With `agents_decide: true` the agent's move works, and the activity log names it. A person's triage works either way. `board` is a slug or UUID. Requires configure_boards on the board. list_dispatch_rules shows the setting."
+        description = "Set who decides the triage of intake (a task in the support lane) on a board. `agents_decide: false` (the default): an agent (agent key or service account) that moves intake into the planned lane or another column is refused with AGENT_TRIAGE_OFF and writes its proposal with `append_note`. `true`: the agent's move works and the activity log names it. A person's triage always works. Needs configure_boards; `list_dispatch_rules` shows it."
     )]
     pub async fn set_agent_triage(
         &self,
@@ -2163,7 +2141,7 @@ impl KairosMcp {
     // agent knows the scales (the values of `priority`, in order) and the
     // slugs that `set_metadata` and `search` take.
     #[tool(
-        description = "List the metadata definitions of the organization: slug, name, type, the values of an enum in their order (the scale, for example the priorities from the first to the last), and the entity types that each definition applies to (all types when none is named). Optional `entity_type` gives only the definitions of that type. Use the slugs in `set_metadata`, and in `search` (`filter.metadata`, `filter.metadata_missing`)."
+        description = "The metadata definitions of the organization: slug, name, type, the values of an enum in their order (the scale), and the entity types it applies to. Optional `entity_type`. Use the slugs in `set_metadata` and in `search`."
     )]
     pub async fn list_metadata_definitions(
         &self,
@@ -2282,7 +2260,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Full detail of one item by short code: type, board/column, version, full markdown content, metadata values, and relationships (parent chain, children, blockers, supporting docs). A blocker or blocked item in a done column is marked [done]: that edge is resolved, not open. A document shows its owner board: the board that gives the right to edit it. A document and an ADR show the repositories that they impact. An initiative and a strategy show their teams: from tasks (the boards of their tasks, two levels down for a strategy) and set by hand (`set_team`). An `impacts` link says what the item is about, and it gives no right. A retired short code finds the item, and the answer names the current code. A task in Active shows its claim: the person who works on it, and since when. A strategy and an initiative show their owner (or none): the one person who answers for the item. A cancelled task shows the mark, who cancelled it, and the reason."
+        description = "One item by short code: type, board and column, version, markdown content, metadata, relationships (parent chain, children, blockers and blocked, supporting documents; a done end is marked [done]), and as it applies: the claim of a task in Active, the owner and teams of a strategy or initiative, the owner board and impacted repositories of a document or ADR, the cancel mark of a task. A retired code finds the item and names the current code."
     )]
     pub async fn get_item(
         &self,
@@ -2530,7 +2508,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Propose a `parent` or `blocks` edge between two items for a HUMAN to confirm. You cannot create the edge yourself and cannot confirm your own proposal — that is deliberate: a wrong parent edge re-parents work onto a board that then reports the wrong thing, and nobody re-reads an edge once it exists. Propose when related_work shows something you believe is a real dependency. Say why in your own words; it is shown to whoever decides. The person who confirms must be able to edit one of the two items."
+        description = "Propose a `parent` or `blocks` edge between two items for a person to confirm; you cannot create or confirm it yourself. Use it when `related_work` shows a real dependency, and say why: the reason is shown to who decides. The person who confirms must be able to edit one of the two items."
     )]
     pub async fn propose_edge(
         &self,
@@ -2605,7 +2583,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Unified search: full-text `q`, structured `filter` (types, board, column, team, repository, task_type, metadata, dates), and graph `traverse` compose freely (at least one required). `filter.board` and `filter.team` take a slug or a UUID. `filter.updated_before` and `filter.updated_after` compare the time of the last change: \"untouched for 90 days\" is `updated_before` = now minus 90 days. `filter.metadata_missing` gives the items with no value for each named definition: \"bugs without a priority\" is `{entity_type: [task], task_type: [bug], metadata_missing: [priority]}`. `filter.repository` gives the items of a repository: the tasks that link to it, and the documents and the ADRs that impact it. `traverse` follows the edges between items, so `impacts` is not a relationship of `traverse`. Compact results grouped by type; use get_item for full content."
+        description = "Search items: full-text `q`, a structured `filter` (types, board, column, team, repository, task_type, metadata, metadata_missing, updated_before, updated_after) and a graph `traverse`, in any mix; at least one. Board and team take a slug or UUID. \"Untouched for 90 days\" is `updated_before` = now minus 90 days; \"bugs without a priority\" is `{entity_type: [task], task_type: [bug], metadata_missing: [priority]}`. `filter.repository` gives the tasks linked to it and the documents and ADRs that impact it. Compact results by type; `get_item` gives the content."
     )]
     pub async fn search(
         &self,
@@ -2668,7 +2646,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Create a work item: strategy | initiative | task | document | adr. Boards resolve by slug/UUID (defaulted when unambiguous); `parent` (short code) creates the parent edge; for a document or an ADR it creates the supports edge, from a strategy, initiative or task. A refused create writes nothing. You create the item, so you can link it to the parent. Tasks: `board` chooses the board, and the task gets the team of that board. `repository` (slug/UUID) is an optional link to any live repository; it does not choose the board. Any member can send a request to any team: name the delivery board of that team in `board`. The request goes to the entry column, in the support lane. On a board that you do not manage, `work_class: planned` is refused. `from_team` (slug or UUID) names the team that sends a task: when it is not the team of the board, the task is a request whoever sends it (a manager or an org admin too), so an agent in a board session sends its own team. Initiatives: `bucket_type` makes it a bucket rather than a dated initiative. There is deliberately no `column` argument — every item is created in its board's entry column, and `transition_item` is the only way work moves, so placing an item directly would bypass the board's transition graph. Documents: `board` is required. It is the owner board of the document: you need `manage_documents` on it, it gives the right to edit the document, and the code of the document gets the prefix of that board. A call with no `board` is refused, and the refusal names `board`; there is no default board, and `parent` does not give one. The document is not a card of the board. A document that is about a repository as a whole (its vision, its architecture) names the board of the team and impacts the repository: create it with `board`, then call `link_items` with the relationship `impacts`. ADRs: `board` is the ADR board. A team can have an ADR board for its delivery ADRs, with the prefix of the team: `my_boards` names the team of each ADR board. Returns the new short code."
+        description = "Create a work item: strategy, initiative, task, document or ADR. There is no `column` argument: the item goes to the entry column of its board, and only `transition_item` moves it. `board` is a slug or UUID; it defaults when only one board of the level exists. `parent` (short code) makes the parent edge; for a document or an ADR, the supports edge. Tasks: the board decides the team; `repository` is an optional link and chooses no board. On a board you do not manage the task is a request (support lane; `work_class: planned` refused). `from_team` names the sending team: when it is not the board's team the task is a request whoever sends it, so an agent in a board session sends its own team. Initiatives: `bucket_type` makes a bucket. Documents: `board` is required: the owner board, which needs `manage_documents` and gives the right to edit; to say a document is about a repository, `link_items` with `impacts` after. ADRs: `board` is an ADR board. Returns the new short code."
     )]
     pub async fn create_item(
         &self,
@@ -2817,7 +2795,7 @@ impl KairosMcp {
 
     // KAIROS-T-0382: the notifications of the person of the key.
     #[tool(
-        description = "Your notifications (the events of a person): a claim handed off to you, a blocker of your claimed task that is done or archived, a task that you created that someone cancelled, a mention of your user name (`@name`), and a P0 bug on the board of your team. Gives each unread notification first (newest first, 100 at most), then the 20 newest read ones, each with its id. While you have unread notifications, each answer of the other tools ends with the 5 newest. Mark them read with `mark_events_read` when you have acted on them. A service account has no notifications."
+        description = "Your notifications: a claim handed to you, a blocker of your claimed task closed, a task you created cancelled, a mention (`@name`), a P0 bug on your team's board. Unread first (newest first, 100 at most), then the 20 newest read ones, each with its id. While some are unread, each other tool's answer ends with the 5 newest. Mark them read with `mark_events_read`."
     )]
     pub async fn get_events(
         &self,
@@ -2876,7 +2854,7 @@ impl KairosMcp {
     // of a move: the capability on the board that the item leaves and on
     // the board that it goes to, and nothing for the creator.
     #[tool(
-        description = "Move a TASK to another delivery board, or a DOCUMENT to another owner board. `to_board` is a board slug or UUID. A task: what you do when work belongs to a different team, instead of recreating it there. It lands in that board's entry column and follows its team. Needs `manage_tasks` on both the task's current board and the target. The creator of the task gets no right to move it. The task keeps its repository; the move does not look at it. A document: `to_board` is the new owner board, of each level. The owner board gives the right to edit the document. The document is not a card, and it gets no column. Needs `manage_documents` on both the board that owns the document now and the target. The creator of the document gets no right to move it. Each document has an owner board, so a document needs `to_board`: the owner board cannot be removed. The links of the document do not change. Rename: with `rename: true` the item also gets the next code of the target board (for example COLLIERY-T-0100 becomes SKADI-T-0001). The old code is retired and is never issued again, and get_item with it finds the item. Each reference to the old code in the text of the items changes to the new code, one time; a code in a URL or a path does not change. Without `rename`, the item keeps its code. To move an item between COLUMNS of its own board, use `transition_item`."
+        description = "Move a TASK to another team's delivery board, or a DOCUMENT to another owner board (`to_board`: slug or UUID), instead of recreating it. A task lands in the target's entry column and gets its team; it keeps its repository. Needs `manage_tasks` (a document: `manage_documents`) on both boards; creating the item gives no right. `rename: true` gives the item the next code of the target board; the old code is retired, still finds the item, and is replaced once in the text of items. Between columns of one board, use `transition_item`."
     )]
     pub async fn move_item(
         &self,
@@ -2978,7 +2956,7 @@ impl KairosMcp {
     // tool replaces content under a version check. A link is not content: it
     // writes no new version, and it must not fail on a stale one.
     #[tool(
-        description = "Set or clear the repository of a TASK. This tool links a task to a repository of the directory. It does not add a repository to the directory (`add_repository`) and it does not change a repository (`update_repository`). The repository is a link: it says where the code is. It does not change the board or the team of the task. `repository` is a slug or UUID of any live repository, of any team. To clear the link, omit `repository`, or send null or an empty string. The tool applies to tasks only. You can set it on a task that you created, or with `manage_tasks` on its board."
+        description = "Set or clear the repository of a TASK: a link that says where the code is; it changes neither the board nor the team. `repository` is a slug or UUID of any live repository; omit it, or send null or \"\", to clear. You can set it on a task you created, or with `manage_tasks` on its board."
     )]
     pub async fn set_repository(
         &self,
@@ -3078,7 +3056,7 @@ impl KairosMcp {
     // `POST` and `DELETE /api/{entity_type}/{short_code}/teams`: the two
     // call one function (`crate::api::meta::item_teams`).
     #[tool(
-        description = "Set a team on an INITIATIVE or a STRATEGY by hand, for example before it is divided into tasks. An item gets its teams from its tasks (the team of the board of each task, two levels down for a strategy); a team set by hand is added to those, and it stays when tasks come. `team` is a slug or UUID of a live team. `get_item` shows the teams. A team gives no right on the item. You can set it on an item that you created, or with `manage_<type>` on its board. The tool refuses a task, a document and an ADR."
+        description = "Set a team by hand on an INITIATIVE or STRATEGY (for example before it has tasks); it adds to the teams that come from its tasks. `team` is a slug or UUID. A team gives no right. You can set it on an item you created, or with `manage_<type>` on its board. A task, document or ADR is refused."
     )]
     pub async fn set_team(
         &self,
@@ -3142,7 +3120,7 @@ impl KairosMcp {
     // `POST /api/repositories`: the two call one function
     // (`crate::api::org::repositories::add`).
     #[tool(
-        description = "Add a repository to the directory of the organization. This tool does not link a task to a repository: `set_repository` does that. A repository can be in the directory only one time, so call `list_repositories` first. `forge` is github, gitlab or other. `repo_full_name` is the name on the forge, as the forge sends it in a webhook: 2 parts for github (owner/repo), 2 or more for gitlab (group/subgroup/project), 1 or more for other. It does not end with .git. `repo_url` is the URL for a browser: an absolute http or https URL, with no user name and no password in it. No value can be empty or have a space. `team` (slug or UUID) is the ONE owner team. Optional: `slug` (the default is made from the full name: acme/payments-api gives acme-payments-api), `default_branch` (a branch name that git accepts; with it, the branch is set by hand; with no value, the code index builder follows the default branch of the forge), and `description`. The description tells an agent how to work in the repository: the task runner, the tests, the rules for a branch. You must be a member of the owner team, or an organization admin. `update_repository` changes its slug and its owner team; `delete_repository` removes it."
+        description = "Add a repository to the directory (once: call `list_repositories` first). `forge`: github, gitlab or other. `repo_full_name`: the name on the forge (owner/repo for github; group/…/project for gitlab), no .git. `repo_url`: absolute http or https, no credentials. `team` (slug or UUID): the one owner team. Optional: `slug` (default from the full name: acme/payments-api gives acme-payments-api), `default_branch` (set by hand; with none the code index follows the forge), `description` (how to work in it: task runner, tests, branch rules). Needs membership of the owner team, or the org admin role. `set_repository` links a task; `update_repository` changes the slug and the owner team; `delete_repository` removes it."
     )]
     pub async fn add_repository(
         &self,
@@ -3192,7 +3170,7 @@ impl KairosMcp {
     // COLLIERY-T-0267 the tool made the comparison, and the REST route
     // always wrote.
     #[tool(
-        description = "Change a repository of the directory: its `description` (how to work in the repository), its `default_branch`, its `default_branch_source`, its `repo_url`, its `code_index_build`, its `slug` and its owner `team` (slug or UUID; you need the right on the old team and on the new team). Send one or more of them. `default_branch` is a branch name that git accepts. A `default_branch` is set by hand: the code index builder indexes it, whatever the default branch of the forge is. `default_branch_source` `forge` clears the branch set by hand: the builder follows the default branch of the forge again. Do not send the two together with `forge`. `get_repository` shows the branch and where it comes from. `repo_url` is an absolute http or https URL, with no user name and no password in it. The two cannot be empty or have a space. `code_index_build` is `on` or `off`: the code index builder of the server for the repository. Set it to `off` to stop the builds of the repository: Kairos cancels the build jobs that wait, and the builder adds no new job. Kairos does not stop a build that runs now, but the build gets no further try. `get_repository` shows the value, and the REST API sets it too (PATCH /api/repositories/{slug} with `code_index_build`). A value that the repository has already changes nothing. `repository` is a slug or UUID. `description` replaces the full text, so read the text with `get_repository` first. This tool does not link a task to a repository: `set_repository` does that. You must be a member of the owner team, or an organization admin. A new slug breaks the reference in `.claude/kairos.local.md` of each checkout: run /kairos:bootstrap there again. `delete_repository` removes a repository."
+        description = "Change a repository of the directory: `description` (how to work in it; replaces the full text, so read it with `get_repository` first), `default_branch` (set by hand; the code index builder indexes it), `default_branch_source: forge` (follow the forge's default branch again; not with `default_branch`), `repo_url` (absolute http or https, no credentials), `code_index_build` (`on` or `off`; off cancels waiting builds), `slug` (breaks `.claude/kairos.local.md` in each checkout: run /kairos:bootstrap there), and the owner `team` (you need the right on both teams). Send one or more; a value it has already changes nothing. `repository` is a slug or UUID. Needs membership of the owner team, or the org admin role. `set_repository` links a task; `delete_repository` removes a repository."
     )]
     pub async fn update_repository(
         &self,
@@ -3310,7 +3288,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Ask Kairos to build the code index of a repository again: a full index of the head of the default branch, made by the builder of the server, which replaces the index of that commit. Use it when the index of a repository is missing, old or wrong. The build also resets the breaker of the builder for the repository (the line `code index breaker` of `get_repository`): a build that stopped its server trips it, and the builder then starts no build until a person asks. `repository` is a slug or UUID. The answer names the run; the runs of a repository are on the GUI page of the repository, with the CLI (`kairos repos builds`) or with the REST API (GET /api/repositories/{slug}/code-indexes/builds). Refused while a run of the repository is active (CODE_INDEX_BUILD_RUNNING), when the repository has the builder off (CODE_INDEX_BUILD_OFF: set code_index_build to on first), and when the deployment has no builder (CODE_INDEX_BUILDER_OFF). You must be a member of the owner team, or an organization admin."
+        description = "Ask for a full build of the code index of a repository (the head of its default branch), when the index is missing, old or wrong. It also resets a tripped code index breaker. `repository` is a slug or UUID; the answer names the run. Refused: CODE_INDEX_BUILD_RUNNING (a run is active), CODE_INDEX_BUILD_OFF (set `code_index_build` on first), CODE_INDEX_BUILDER_OFF (no builder on this deployment). Needs membership of the owner team, or the org admin role."
     )]
     pub async fn rebuild_code_index(
         &self,
@@ -3444,7 +3422,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Take a STRATEGY or an INITIATIVE that has no owner: you become its owner. The owner is the one person who answers for the item (KAIROS-A-0025). You must be a person and a member of the board of the item (a grant on the board), or an organization admin. An item with an owner is refused, with the name of the owner: the owner can hand it off or release it, or an organization admin can change it. The owner stays in each column, Completed too, and gives no right beyond those of a member of the board. A task has no owner: a task gets a claim when a person moves it to Active."
+        description = "Become the owner of a STRATEGY or INITIATIVE that has none: the one person who answers for it. You must be a person and a member of its board (a grant), or an org admin. An item with an owner is refused with the owner's name. The owner gives no extra right. A task has no owner: moving it to Active gives a claim."
     )]
     pub async fn claim_item(
         &self,
@@ -3473,7 +3451,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Give the claim of a TASK in Active, or the owner of a STRATEGY or an INITIATIVE, to a different person. `to` is a user id, an email or a user name of a person of the organization; a service account cannot have a claim or be an owner. A task: the claim says who works on the task, and the task stays in Active. You can hand off a claim that you have, or any claim with `transition_items` on the board of the task. A strategy or an initiative: the owner can hand it off, and an organization admin can set the owner of each item, also of an item with no owner. Nobody else. The new owner must be a member of the board of the item (a grant on the board); a different person is refused with NOT_BOARD_MEMBER. The new owner gets a notification. The answer shows the new claim or owner."
+        description = "Give the claim of a TASK in Active, or the owner of a STRATEGY or INITIATIVE, to another person (`to`: user id, email or user name; not a service account). A task stays in Active; you can hand off your own claim, or any claim with `transition_items` on its board. A strategy or initiative: the owner hands it off, or an org admin sets it; the new owner must be a member of its board (else NOT_BOARD_MEMBER). The person gets a notification."
     )]
     pub async fn hand_off_item(
         &self,
@@ -3516,7 +3494,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "End the claim on a TASK in Active, or remove the owner of a STRATEGY or an INITIATIVE. A task: the task stays in Active, free for anyone; the next person who moves the task to Active gets the claim. A claim also ends when the task leaves Active. You can release a claim that you have, or any claim with `transition_items` on the board of the task. A strategy or an initiative: the owner can release it, and an organization admin can remove each owner. Nobody else. The item then has no owner, and a member of its board can claim it (`claim_item`)."
+        description = "End the claim on a TASK in Active (it stays in Active, free for the next person who moves it there), or remove the owner of a STRATEGY or INITIATIVE. A task: your own claim, or any with `transition_items` on its board. A strategy or initiative: the owner, or an org admin."
     )]
     pub async fn release_item(
         &self,
@@ -3565,7 +3543,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Create a relationship edge between two items (by short code): parent | supports | informs | supersedes | blocks. Type rules and cycle prevention are enforced. You can link two items when you can edit one of them. You can edit an item that you created, or with `manage_<type>` on its board. The rule is the same for each relationship type. The relationship `impacts` goes from a document or an ADR to a REPOSITORY: `source` is the short code, and `target` is the slug or the UUID of a live repository, of each team. It says what the item is about. It gives no right on the item and no right on the repository. You must be able to edit the document or the ADR, and you need no right on the repository. A task does not impact a repository: `set_repository` links a task."
+        description = "Create an edge between two items by short code: parent, supports, informs, supersedes or blocks (type rules and cycles are checked). You need to be able to edit one of the two: you created it, or you hold `manage_<type>` on its board. `impacts` goes from a document or an ADR (`source`) to a repository (`target`: slug or UUID): it says what the item is about and gives no right. A task links to a repository with `set_repository`."
     )]
     pub async fn link_items(
         &self,
@@ -3753,7 +3731,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Archive an item by short code (the name says delete, but the item is not deleted). An archived item is hidden from boards and default searches, and it is read-only. `restore_item` brings it back. Requires confirm=true because the archive CASCADES to descendants via parent edges; the response lists each item that the cascade archived. You can archive an item that you created, or with `manage_<type>` on its board. The cascade takes only the descendants that you can edit. It stops at a descendant that you cannot edit, and takes nothing below it. The response names each item that stays, and why. To delete a task for good, use `purge_task`."
+        description = "Archive an item by short code (it is not deleted): hidden from boards and default search, read-only, and `restore_item` brings it back. Needs `confirm: true`: the archive cascades to the descendants that you can edit, and the answer lists what was archived and what stayed, and why. You can archive an item you created, or with `manage_<type>` on its board. `purge_task` deletes a task for good."
     )]
     pub async fn delete_item(
         &self,
@@ -3796,7 +3774,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Put an archived item back on its board by short code. Restores ONLY the named item: a cascade archive was an act on a subtree, so archived descendants stay archived and are listed in the response for you to restore separately. Refused (RESTORE_BLOCKED) when the item's board, column, owning team or repository has since been removed — the response names what is missing, and the item must be moved somewhere that still exists. You can restore an item that you created, or with `manage_<type>` on its board."
+        description = "Put an archived item back on its board by short code. Only that item: archived descendants stay archived and are listed for you to restore. Refused with RESTORE_BLOCKED when its board, column, team or repository is gone (the answer names it). You can restore an item you created, or with `manage_<type>` on its board."
     )]
     pub async fn restore_item(
         &self,
@@ -3851,7 +3829,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Cancel a TASK that the team will not do, with a reason. The task moves to the done column of its board and gets the mark \"cancelled\" with the reason. `get_item` and the board show the mark. The transition rules of the board do not apply: you can cancel a task from each column that is not done. A cancel ends the claim of the task. A move of the task out of the done column removes the mark; the history keeps the reason. Needs `transition_items` on the board of the task, the capability of a move. An empty reason is refused, and so is a task in a done column (TASK_DONE)."
+        description = "Cancel a TASK the team will not do, with a `reason`: it moves to the done column with the mark \"cancelled\", from any column (the transition rules do not apply), and its claim ends. Moving it out of done removes the mark. Needs `transition_items` on its board. An empty reason, or a task already done (TASK_DONE), is refused."
     )]
     pub async fn cancel_item(
         &self,
@@ -3885,7 +3863,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Delete a TASK for good. YOU CANNOT UNDO THIS: no restore brings the task back. Use `delete_item` to archive a task, which a restore can undo. The task can be live or archived. The purge removes the task, its history, its metadata, its edges, its forge links and its claim; the items at the other end of the edges stay. The activity log keeps a row with the code and the title. Requires confirm=true, and `manage_tasks` on the board of the task (board managers and organization admins only). Send the current code: a retired code is not followed."
+        description = "Delete a TASK for good, with its history, metadata, edges, forge links and claim. You cannot undo it; `delete_item` archives instead. The activity log keeps the code and title. Needs `confirm: true` and `manage_tasks` on its board. Send the current code (a retired code is not followed)."
     )]
     pub async fn purge_task(
         &self,
@@ -3957,7 +3935,7 @@ impl KairosMcp {
     // REST route, so the gate and the refusals are those of REST: an
     // organization admin, or a grant of `manage_structure` at the scope.
     #[tool(
-        description = "Create a team with its delivery board (slug {slug}-delivery), as POST /api/teams does. `code_prefix` is the short-code prefix of the boards of the team (e.g. OPS gives OPS-T-0001 and OPS-A-0001): a capital letter, then 1 to 9 capital letters or digits; it does not change later. Optional: `team_type` (stream_aligned, platform, enabling, complicated_subsystem; the default is stream_aligned), `adr_board` (true also makes the ADR board of the team, slug {slug}-adrs, in the same transaction; the default is false). The new boards have no members: use `add_team_member` (a team member can work the boards of the team) and `grant_capability`. Requires the organization admin role or `manage_structure` on the organization. A grant of manage_structure on one board does not create a team."
+        description = "Create a team and its delivery board ({slug}-delivery). `code_prefix`: a capital letter then 1 to 9 capitals or digits (OPS gives OPS-T-0001); it never changes. Optional: `team_type` (stream_aligned by default, platform, enabling, complicated_subsystem), `adr_board: true` to also make its ADR board ({slug}-adrs). The boards have no members: use `add_team_member` and `grant_capability`. Needs the org admin role or `manage_structure` on the organization."
     )]
     pub async fn create_team(
         &self,
@@ -4009,7 +3987,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Create one board, as POST /api/boards does: an ADR board (board_level adr; with `team`, the ADR board of that team, which takes the prefix of the team), a strategy or an initiative board (no team), or a delivery board (a team with no delivery board). `slug` must match ^[a-z][a-z0-9_-]{1,62}$. `code_prefix` is the short-code prefix: a capital letter, then 1 to 9 capital letters or digits; it does not change later. The board gets the default columns and transitions of its level. Requires the organization admin role or `manage_structure` on the organization. A grant of manage_structure on one board does not create a board."
+        description = "Create a board: an ADR board (`board_level: adr`; with `team`, that team's ADR board, with its prefix), a strategy or initiative board, or the delivery board of a team that has none. `slug` matches ^[a-z][a-z0-9_-]{1,62}$; `code_prefix` is a capital letter then 1 to 9 capitals or digits, fixed. It gets the default columns and transitions of its level. Needs the org admin role or `manage_structure` on the organization."
     )]
     pub async fn create_board(
         &self,
@@ -4082,7 +4060,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Grant a capability to a member of the organization. A board capability (manage_tasks, manage_documents, manage_adrs, manage_initiatives, manage_strategies, transition_items, configure_boards, administer_members, pages, or a glob: *, manage_*, configure_*, transition_*) needs `board` (slug or UUID), and requires `administer_members` on that board, or `manage_structure` on that board or on the organization. The capability manage_structure is the structure of the organization: with no `board`, at the organization (teams, team members, boards, the configuration, members and grants of each board, repositories); with `board`, that board only (its columns, transitions, members and grants). Only an organization admin grants manage_structure. `user` is a user id, an email, a user name, or the name of a service account."
+        description = "Grant a capability to a member (`user`: user id, email, user name or service account name). A board capability (manage_tasks, manage_documents, manage_adrs, manage_initiatives, manage_strategies, transition_items, configure_boards, administer_members, pages, or a glob such as manage_*) needs `board` and `administer_members` there, or `manage_structure`. `manage_structure` (only an org admin grants it): with no `board`, the structure of the organization; with `board`, that board's columns, transitions, members and grants."
     )]
     pub async fn grant_capability(
         &self,
@@ -4217,7 +4195,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Set the board capabilities of a person on a board, as PATCH and DELETE /api/boards/{id}/members/{user_id} do. `capabilities` is the full set: it replaces the set the person has. An empty list revokes each capability. A person with no capability on the board gets the set (as grant_capability). The capabilities are those of grant_capability, without manage_structure. `board` is a slug or UUID. `user` is a user id, an email, a user name, or the name of a service account. Requires `administer_members` on the board, or `manage_structure` on the board or on the organization."
+        description = "Set a person's capabilities on a board: `capabilities` is the full set and replaces theirs; an empty list revokes each one; a person with none gets the set. The capabilities are those of `grant_capability`, without manage_structure. `board` is a slug or UUID; `user` is a user id, email, user name or service account name. Needs `administer_members` on the board, or `manage_structure`."
     )]
     pub async fn set_board_capabilities(
         &self,
