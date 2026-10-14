@@ -499,6 +499,18 @@ impl AppConfig {
             }
         };
 
+        // KAIROS-T-0466: a worker with no folder would start, report ready
+        // and build nothing.
+        let code_index_dir = get("KAIROS_CODE_INDEX_DIR").map(std::path::PathBuf::from);
+        if role == ServerRole::Worker && code_index_dir.is_none() {
+            return Err(ConfigError::Invalid {
+                var: "KAIROS_CODE_INDEX_DIR",
+                message: "a server with KAIROS_ROLE=worker needs KAIROS_CODE_INDEX_DIR, the \
+                          folder of its clones and tools"
+                    .to_string(),
+            });
+        }
+
         let api_bearer = match get("KAIROS_API_BEARER").as_deref() {
             None | Some("access_token") => ApiBearer::AccessToken,
             Some("id_token") => ApiBearer::IdToken,
@@ -699,7 +711,7 @@ impl AppConfig {
             embed_refresh_secs: get("KAIROS_EMBED_REFRESH_SECS")
                 .and_then(|v| v.trim().parse().ok())
                 .unwrap_or(10),
-            code_index_dir: get("KAIROS_CODE_INDEX_DIR").map(std::path::PathBuf::from),
+            code_index_dir,
             role,
             code_index_poll_secs: parse_num(&get, "KAIROS_CODE_INDEX_POLL_SECS", 300)?,
             code_index_threads,
@@ -1026,6 +1038,29 @@ mod tests {
     }
 
     #[test]
+    fn a_worker_needs_the_code_index_dir() {
+        // KAIROS-T-0466: a worker with no folder builds nothing.
+        let mut vars = MINIMAL.to_vec();
+        vars.push(("KAIROS_ROLE", "worker"));
+        let err = AppConfig::from_lookup(lookup(&vars)).expect_err("refused");
+        assert!(
+            err.to_string().contains("KAIROS_CODE_INDEX_DIR")
+                && err.to_string().contains("KAIROS_ROLE=worker"),
+            "{err}"
+        );
+        vars.push(("KAIROS_CODE_INDEX_DIR", "/var/lib/kairos/code-index"));
+        let config = AppConfig::from_lookup(lookup(&vars)).expect("a worker with a folder");
+        assert_eq!(config.role, ServerRole::Worker);
+        // The other roles start without it: an api server queues the builds
+        // for a worker, and a server of each role builds nothing then.
+        for role in ["api", "all"] {
+            let mut vars = MINIMAL.to_vec();
+            vars.push(("KAIROS_ROLE", role));
+            AppConfig::from_lookup(lookup(&vars)).expect("no folder, no worker");
+        }
+    }
+
+    #[test]
     fn kairos_code_index_threads_refuses_0_and_text() {
         for value in ["0", "four", "-2"] {
             let mut vars = MINIMAL.to_vec();
@@ -1248,6 +1283,8 @@ mod tests {
         ] {
             let mut vars = MINIMAL.to_vec();
             vars.push(("KAIROS_ROLE", value));
+            // A worker needs its folder (KAIROS-T-0466).
+            vars.push(("KAIROS_CODE_INDEX_DIR", "/var/lib/kairos/code-index"));
             let config = AppConfig::from_lookup(lookup(&vars)).expect("valid config");
             assert_eq!(config.role, role);
             assert_eq!(config.role.as_str(), value);

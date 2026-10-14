@@ -332,6 +332,17 @@ pub(crate) fn no_builder() -> ApiError {
     )
 }
 
+/// The id of the server that takes a rebuild request, for the `running`
+/// row. A server that builds (KAIROS_ROLE all) needs its builder; a server
+/// with KAIROS_ROLE=api queues the build for a worker, and needs none
+/// (KAIROS-T-0466). The id is that of the job worker, which each role has.
+pub(crate) fn rebuild_instance(state: &AppState) -> Result<Uuid, ApiError> {
+    if state.config.role.builds() && state.code_index.is_none() {
+        return Err(no_builder());
+    }
+    Ok(state.jobs.instance())
+}
+
 /// Ask the builder for a full build of the code index of a repository
 /// (KAIROS-T-0332). The body is empty. The answer is 202 with the run.
 /// The request resets the breaker of the code index builder of the
@@ -362,10 +373,9 @@ pub(crate) async fn rebuild_code_index(
             "This route takes no body. Send the POST with no content.",
         ));
     }
-    let service = state.code_index.clone().ok_or_else(no_builder)?;
+    let instance = rebuild_instance(&state)?;
     let user = auth.user_id;
     let tenant_slug = tenant.slug.clone();
-    let instance = service.instance();
     let max_tries = state.config.jobs.max_tries;
     let (_repo, run) = state
         .blocking

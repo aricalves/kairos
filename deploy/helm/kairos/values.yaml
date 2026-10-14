@@ -170,8 +170,16 @@ worker:
     limits:
       cpu: "4"
       memory: 8Gi
+  # -- KAIROS_CODE_INDEX_DIR of the worker pods: the folder of the clones
+  # and the tools of the builder, an emptyDir of the pod. A pod that starts
+  # again downloads the tools (about 2.7 GB) again; for a folder that
+  # stays, mount a volume at this path with `extraVolumes` and
+  # `extraVolumeMounts` (the emptyDir then goes unused).
+  codeIndexDir: /var/lib/kairos/code-index
+  # -- Size limit of that emptyDir (e.g. 20Gi); null is no limit.
+  codeIndexSizeLimit: null
   # -- Extra environment of the worker pods only, after `extraEnv` (e.g.
-  # KAIROS_CODE_INDEX_DIR, KAIROS_CODE_INDEX_THREADS).
+  # KAIROS_CODE_INDEX_THREADS).
   extraEnv: []
   # -- Extra volumes of the worker pods (e.g. a PVC for
   # KAIROS_CODE_INDEX_DIR: its clones and about 2.7 GB of tools).

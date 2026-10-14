@@ -291,6 +291,40 @@ async fn api_serves(router: &Router, token: &str) {
 }
 
 // ===========================================================================
+// 0. A rebuild request on an `api` server queues the build (KAIROS-T-0466)
+// ===========================================================================
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rebuild_request_on_an_api_server_queues_the_build() {
+    let work = tempfile::tempdir().unwrap();
+    let (_db, url, repo) = world("kairos_server_roles_t0466_rebuild", work.path());
+
+    // Given a server with the role api and no builder of its own (no
+    // KAIROS_CODE_INDEX_DIR, as the api pods of the chart)
+    let api = state(&url, ServerRole::Api).await;
+    assert!(api.code_index.is_none());
+    let router = app::router(api.clone());
+    let token = login(&router).await;
+
+    // When a person asks for a build
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/api/repositories/{repo}/code-indexes/rebuild"))
+        .header("authorization", format!("Bearer {token}"))
+        .header("x-tenant", TENANT)
+        .body(Body::empty())
+        .expect("request");
+    let (status, body) = send(&router, request).await;
+
+    // Then the run starts and the build waits in the queue for a worker
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["trigger"], "request", "{body}");
+    let jobs = build_jobs(&url);
+    assert_eq!(jobs.len(), 1, "{jobs:?}");
+    assert_eq!(jobs[0].state, "queued", "{jobs:?}");
+    assert_eq!(jobs[0].leased_by, None);
+}
+
+// ===========================================================================
 // 1. An `api` server takes no build; a `worker` takes it
 // ===========================================================================
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

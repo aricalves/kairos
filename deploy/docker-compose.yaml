@@ -181,6 +181,9 @@ services:
     environment:
       <<: *kairos_env
       KAIROS_ROLE: worker
+      # The worker needs its folder (KAIROS-T-0466): the volume below, unless
+      # .env names another.
+      KAIROS_CODE_INDEX_DIR: ${KAIROS_CODE_INDEX_DIR:-/var/lib/kairos/code-index}
     mem_limit: 8g
     mem_reservation: 2g
     cpus: 4
