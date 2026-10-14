@@ -919,6 +919,16 @@ async fn scim_provisioning_against_live_stack() {
         activity_count(&mut conn, "team_membership", "%team:platform member:%"),
         1
     );
+    // KAIROS-T-0459: the team has its charter, as a team of POST /api/teams.
+    let charters = sql_query(
+        "SELECT count(*) FROM org_acme.team_pages p JOIN org_acme.teams t ON t.id = p.team_id \
+         WHERE t.slug = 'platform' AND p.parent_id IS NULL AND p.slug = 'charter' \
+           AND p.is_protected AND p.deleted_at IS NULL",
+    )
+    .get_result::<CountRow>(&mut conn)
+    .expect("charter query")
+    .count;
+    assert_eq!(charters, 1, "a SCIM team is born with its charter");
 
     // Naming contract enforced; duplicates rejected.
     let (status, body) = scim(
