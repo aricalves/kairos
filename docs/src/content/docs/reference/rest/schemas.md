@@ -427,6 +427,7 @@ The answer to `GET /api/repositories/{slug}/code-indexes/builds`.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `builder` | `string`, nullable | no | Set when no code index builder runs for the deployment (KAIROS-T-0394): the server has the role `api`, and no server with the role `worker` ran the new-commits sweep lately. The text says what to do. |
 | `items` | array of [`CodeIndexBuild`](#codeindexbuild) | yes | The runs, newest first. |
 | `limit` | `integer` | yes | The limit that the answer used. |
 | `total` | `integer` | yes | The runs of the repository, with those not in `items`. |

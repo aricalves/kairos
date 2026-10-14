@@ -78,6 +78,9 @@ pub struct CodeIndexBuild {
 pub struct CodeIndexBuildList {
     pub items: Vec<CodeIndexBuild>,
     pub total: i64,
+    /// Set when no code index builder runs (KAIROS-T-0394).
+    #[serde(default)]
+    pub builder: Option<String>,
 }
 
 /// What the panel shows: the 2 reads.
@@ -308,8 +311,12 @@ pub fn CodeIndexPanel(
                         let count = state.indexes.len();
                         let runs = state.builds.items.clone();
                         let indexes = state.indexes.clone();
+                        let builder = state.builds.builder.clone();
                         view! {
                             <Stack gap="xs">
+                                {builder.map(|note| view! {
+                                    <Text size="xs" attr:data-testid="code-index-no-builder">{note}</Text>
+                                })}
                                 {match newest {
                                     None => view! {
                                         <Text size="xs" dimmed=true attr:data-testid="code-index-newest">
@@ -408,6 +415,15 @@ mod tests {
     }
 
     #[test]
+    fn the_note_of_no_builder_decodes() {
+        let list: CodeIndexBuildList = serde_json::from_str(
+            r#"{"items":[],"total":0,"limit":5,"builder":"No code index builder runs."}"#,
+        )
+        .expect("the list decodes");
+        assert_eq!(list.builder.as_deref(), Some("No code index builder runs."));
+    }
+
+    #[test]
     fn the_mirrors_decode_the_wire_shape() {
         let list: CodeIndexBuildList = serde_json::from_str(
             r#"{"items":[{"id":"r1","commit":"0123456789abcdef0123456789abcdef01234567",
@@ -420,6 +436,7 @@ mod tests {
         )
         .expect("the list decodes");
         assert_eq!(list.total, 2);
+        assert_eq!(list.builder, None);
         assert_eq!(list.items[1].commit, None);
         assert_eq!(list.items[1].finished_at, None);
         let index: CodeIndex = serde_json::from_str(

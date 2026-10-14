@@ -51,6 +51,74 @@ impl ApiBearer {
     }
 }
 
+/// `KAIROS_ROLE` (KAIROS-T-0394, KAIROS-A-0027): the work of this server.
+///
+/// A build of the code index can run out of memory (GitHub #34). With the
+/// builds in a server of their own, such a build ends that server only, and
+/// the API keeps serving.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ServerRole {
+    /// The API and each job, the code index builds too (the default, for a
+    /// small install).
+    #[default]
+    All,
+    /// The API and each job except the code index builds and the
+    /// new-commits sweep.
+    Api,
+    /// Only the code index builds and the new-commits sweep. Its HTTP
+    /// listener has `/healthz`, `/readyz`, `/version` and `/metrics`, and no
+    /// API.
+    Worker,
+}
+
+impl ServerRole {
+    /// The value of `KAIROS_ROLE`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ServerRole::All => "all",
+            ServerRole::Api => "api",
+            ServerRole::Worker => "worker",
+        }
+    }
+
+    /// True: this server serves the API, the MCP endpoint and the GUI.
+    pub fn serves_api(self) -> bool {
+        self != ServerRole::Worker
+    }
+
+    /// True: this server runs the code index builds and the new-commits
+    /// sweep.
+    pub fn builds(self) -> bool {
+        self != ServerRole::Api
+    }
+
+    /// True: this server takes the jobs of `kind`. A build kind goes to a
+    /// server that builds; the periodic passes go to each server, and each
+    /// server runs only its passes ([`Self::runs_pass`]); each other kind
+    /// goes to a server that serves the API.
+    pub fn takes(self, kind: &str) -> bool {
+        use crate::jobs::kinds;
+        if kind == kinds::PERIODIC {
+            return true;
+        }
+        if kind == kinds::EMBEDDED_BUILD || kind == kinds::HOSTED_BUILD {
+            return self.builds();
+        }
+        self.serves_api()
+    }
+
+    /// True: this server runs the periodic pass `pass`. The new-commits
+    /// sweep runs where the builds run; each other pass runs where the API
+    /// runs.
+    pub fn runs_pass(self, pass: &str) -> bool {
+        if pass == crate::periodic::CODE_INDEX_SWEEP {
+            self.builds()
+        } else {
+            self.serves_api()
+        }
+    }
+}
+
 /// A configuration error worth failing startup over. The message always
 /// names the offending variable (A-0013).
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -146,6 +214,9 @@ pub struct AppConfig {
     /// work folders of the builder. Unset: no clone, so no nearest-commit
     /// answer and no builder. The indexes themselves are in Postgres.
     pub code_index_dir: Option<std::path::PathBuf>,
+    /// `KAIROS_ROLE` (KAIROS-T-0394): `all` (the default), `api` or
+    /// `worker`. See [`ServerRole`].
+    pub role: ServerRole,
     /// `KAIROS_CODE_INDEX_POLL_SECS` — how often the builder fetches each
     /// indexed repository and updates the index of a new commit of its
     /// default branch (COLLIERY-T-1853). Default 300; `0` turns the builder
@@ -416,6 +487,18 @@ impl AppConfig {
             }
         };
 
+        let role = match get("KAIROS_ROLE").as_deref().map(str::trim) {
+            None | Some("all") => ServerRole::All,
+            Some("api") => ServerRole::Api,
+            Some("worker") => ServerRole::Worker,
+            Some(other) => {
+                return Err(ConfigError::Invalid {
+                    var: "KAIROS_ROLE",
+                    message: format!("{other:?} is not one of: all, api, worker"),
+                });
+            }
+        };
+
         let api_bearer = match get("KAIROS_API_BEARER").as_deref() {
             None | Some("access_token") => ApiBearer::AccessToken,
             Some("id_token") => ApiBearer::IdToken,
@@ -617,6 +700,7 @@ impl AppConfig {
                 .and_then(|v| v.trim().parse().ok())
                 .unwrap_or(10),
             code_index_dir: get("KAIROS_CODE_INDEX_DIR").map(std::path::PathBuf::from),
+            role,
             code_index_poll_secs: parse_num(&get, "KAIROS_CODE_INDEX_POLL_SECS", 300)?,
             code_index_threads,
             code_index_min_rebuild_secs: parse_num(&get, "KAIROS_CODE_INDEX_MIN_REBUILD_SECS", 0)?,
@@ -1150,6 +1234,65 @@ mod tests {
         vars.push(("KAIROS_SINGLE_TENANT", "  "));
         let config = AppConfig::from_lookup(lookup(&vars)).expect("valid config");
         assert_eq!(config.single_tenant, None);
+    }
+
+    #[test]
+    fn the_role_is_all_by_default_and_an_unknown_role_is_refused() {
+        // KAIROS-T-0394: no KAIROS_ROLE is the server of a small install.
+        let config = AppConfig::from_lookup(lookup(MINIMAL)).expect("valid config");
+        assert_eq!(config.role, ServerRole::All);
+        for (value, role) in [
+            ("all", ServerRole::All),
+            ("api", ServerRole::Api),
+            ("worker", ServerRole::Worker),
+        ] {
+            let mut vars = MINIMAL.to_vec();
+            vars.push(("KAIROS_ROLE", value));
+            let config = AppConfig::from_lookup(lookup(&vars)).expect("valid config");
+            assert_eq!(config.role, role);
+            assert_eq!(config.role.as_str(), value);
+        }
+        for bad in ["API", "builder", "api,worker"] {
+            let mut vars = MINIMAL.to_vec();
+            vars.push(("KAIROS_ROLE", bad));
+            let err = AppConfig::from_lookup(lookup(&vars)).unwrap_err();
+            assert!(
+                err.to_string().starts_with("KAIROS_ROLE is invalid")
+                    && err.to_string().contains("all, api, worker"),
+                "{bad:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn each_role_takes_its_kinds_of_job_and_runs_its_passes() {
+        use crate::jobs::kinds;
+        let builds = [kinds::EMBEDDED_BUILD, kinds::HOSTED_BUILD];
+        let api_work = [
+            kinds::EMBEDDING_BATCH,
+            kinds::WEBHOOK_DELIVERY,
+            kinds::GITHUB_WRITEBACK,
+            "site_cleanup",
+        ];
+        for kind in builds {
+            assert!(ServerRole::All.takes(kind), "{kind}");
+            assert!(!ServerRole::Api.takes(kind), "{kind}");
+            assert!(ServerRole::Worker.takes(kind), "{kind}");
+        }
+        for kind in api_work {
+            assert!(ServerRole::All.takes(kind), "{kind}");
+            assert!(ServerRole::Api.takes(kind), "{kind}");
+            assert!(!ServerRole::Worker.takes(kind), "{kind}");
+        }
+        for role in [ServerRole::All, ServerRole::Api, ServerRole::Worker] {
+            assert!(role.takes(kinds::PERIODIC), "{role:?}");
+        }
+        let sweep = crate::periodic::CODE_INDEX_SWEEP;
+        let retention = crate::periodic::RETENTION;
+        assert!(ServerRole::All.runs_pass(sweep) && ServerRole::All.runs_pass(retention));
+        assert!(!ServerRole::Api.runs_pass(sweep) && ServerRole::Api.runs_pass(retention));
+        assert!(ServerRole::Worker.runs_pass(sweep) && !ServerRole::Worker.runs_pass(retention));
+        assert!(ServerRole::Api.serves_api() && !ServerRole::Worker.serves_api());
     }
 
     #[test]
