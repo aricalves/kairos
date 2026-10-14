@@ -864,6 +864,88 @@ pub struct UpdateTeamParams {
     pub site_enabled: Option<bool>,
 }
 
+/// Parameters for `team_pages` (KAIROS-T-0434).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct TeamPagesParams {
+    /// The team, by slug or UUID.
+    pub team: String,
+    /// One page or folder to read in full: its path of slugs from the root
+    /// (e.g. "documentation/how-to-guides/deploy") or its UUID. Omit it to
+    /// get the tree.
+    pub page: Option<String>,
+}
+
+/// Parameters for `create_team_page` (KAIROS-T-0434).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct CreateTeamPageParams {
+    /// The team, by slug or UUID.
+    pub team: String,
+    /// page | folder. A folder holds folders and pages; a page holds nothing.
+    pub kind: String,
+    /// The title.
+    pub title: String,
+    /// The slug, unique among its siblings. The default comes from the title.
+    pub slug: Option<String>,
+    /// The folder to create it in: a path of slugs or a UUID. Omit it for
+    /// the root.
+    pub parent: Option<String>,
+    /// The markdown content of a page. A folder has none.
+    pub content: Option<String>,
+    /// The position among its siblings. The default is after the last one.
+    pub position: Option<i32>,
+}
+
+/// Parameters for `edit_team_page` (KAIROS-T-0434).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct EditTeamPageParams {
+    /// The team, by slug or UUID.
+    pub team: String,
+    /// The page: a path of slugs (e.g. "charter") or a UUID.
+    pub page: String,
+    /// The new markdown content (the whole page).
+    pub content: String,
+    /// The version that you read. A newer version refuses the edit.
+    pub version: i32,
+    /// A new title.
+    pub title: Option<String>,
+}
+
+/// Parameters for `move_team_page` (KAIROS-T-0434).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct MoveTeamPageParams {
+    /// The team, by slug or UUID.
+    pub team: String,
+    /// The page or folder: a path of slugs or a UUID.
+    pub page: String,
+    /// The folder to move it to: a path of slugs or a UUID.
+    pub parent: Option<String>,
+    /// true moves it to the root. Not with `parent`.
+    pub to_root: Option<bool>,
+    /// A new slug.
+    pub slug: Option<String>,
+    /// A new position among its siblings.
+    pub position: Option<i32>,
+}
+
+/// Parameters for `delete_team_page` (KAIROS-T-0434).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct DeleteTeamPageParams {
+    /// The team, by slug or UUID.
+    pub team: String,
+    /// The page or the empty folder: a path of slugs or a UUID.
+    pub page: String,
+}
+
 /// Parameters for `remove_team_member` (KAIROS-T-0443).
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -4344,6 +4426,336 @@ impl KairosMcp {
         })
         .await
     }
+
+    // KAIROS-T-0434: the team page tools. Each calls the function of its
+    // REST route, so the gate (a team member or an organization admin) and
+    // the refusals are those of REST.
+    #[tool(
+        description = "Read the team page of a team: its tree of folders and pages, with the charter first. With `page` (a path of slugs such as \"documentation/runbooks\", or a UUID), read one page or folder in full: its content and its version. `team` is a slug or UUID. Every member of the organization can read."
+    )]
+    pub async fn team_pages(
+        &self,
+        Parameters(params): Parameters<TeamPagesParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (_, tenant) = Self::caller(&context)?;
+        self.run_tool(&tenant, move |conn| {
+            let team = team_by_ref(conn, &params.team)?;
+            let pages = crate::api::org::team_pages::list_as(conn, team.id)?;
+            match params.page {
+                None => Ok(render_page_tree(&team.slug, &pages)),
+                Some(reference) => {
+                    let page = page_by_ref(&pages, &reference)?;
+                    Ok(format!(
+                        "# {} — {}\n- kind: {}{}\n- path: {}\n- id: {}\n- version: {}\n\n{}",
+                        team.slug,
+                        page.title,
+                        page.kind,
+                        if page.is_protected {
+                            " (the charter)"
+                        } else {
+                            ""
+                        },
+                        page_path(&pages, page),
+                        page.id,
+                        page.version,
+                        page.content
+                    ))
+                }
+            }
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Create a page or a folder in the team page of a team, as POST /api/teams/{id}/pages does. `kind` is page or folder: a folder holds folders and pages, a page holds nothing. `parent` is the folder (a path of slugs or a UUID); omit it for the root. `slug` comes from the title when you omit it. `content` is the markdown of a page. Requires membership of the team, or the organization admin role."
+    )]
+    pub async fn create_team_page(
+        &self,
+        Parameters(params): Parameters<CreateTeamPageParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let gate = tenant.clone();
+        self.run_tool(&tenant, move |conn| {
+            let team = team_by_ref(conn, &params.team)?;
+            let pages = crate::api::org::team_pages::list_as(conn, team.id)?;
+            let parent_id = match &params.parent {
+                Some(reference) => Some(page_by_ref(&pages, reference)?.id.clone()),
+                None => None,
+            };
+            let position = params.position.unwrap_or_else(|| {
+                pages
+                    .iter()
+                    .filter(|p| p.parent_id == parent_id)
+                    .map(|p| p.position + 1)
+                    .max()
+                    .unwrap_or(0)
+            });
+            let slug = match params.slug {
+                Some(slug) => slug,
+                None => slug_from_title(&params.title),
+            };
+            let created = crate::api::org::team_pages::create_as(
+                conn,
+                &gate,
+                user,
+                team.id,
+                &kairos_client::types_team_pages::CreateTeamPageRequest {
+                    parent_id,
+                    kind: params.kind,
+                    slug,
+                    title: params.title,
+                    content: params.content.unwrap_or_default(),
+                    position,
+                },
+            )?;
+            let mut all = pages;
+            all.push(created.clone());
+            Ok(format!(
+                "Created the {} {} ({}) in the team page of {}: path {}, version {}.",
+                created.kind,
+                created.title,
+                created.id,
+                team.slug,
+                page_path(&all, &created),
+                created.version
+            ))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Edit the content of a page of a team, as PATCH /api/teams/{id}/pages/{page_id} does with content and version. `page` is a path of slugs (\"charter\" is the charter) or a UUID. `content` replaces the whole page. `version` is the version that you read with team_pages: a newer version refuses the edit with CONFLICT and the current page. `title` changes the title too. Requires membership of the team, or the organization admin role."
+    )]
+    pub async fn edit_team_page(
+        &self,
+        Parameters(params): Parameters<EditTeamPageParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let gate = tenant.clone();
+        self.run_tool(&tenant, move |conn| {
+            let team = team_by_ref(conn, &params.team)?;
+            let pages = crate::api::org::team_pages::list_as(conn, team.id)?;
+            let page_id = parse_page_id(page_by_ref(&pages, &params.page)?)?;
+            let updated = crate::api::org::team_pages::update_as(
+                conn,
+                &gate,
+                user,
+                team.id,
+                page_id,
+                &kairos_client::types_team_pages::UpdateTeamPageRequest {
+                    title: params.title,
+                    content: Some(params.content),
+                    version: Some(params.version),
+                    ..Default::default()
+                },
+            )?;
+            Ok(format!(
+                "Edited {} ({}) in the team page of {}: version {}.",
+                updated.title, updated.id, team.slug, updated.version
+            ))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Move, reorder or rename a page or a folder of a team, as PATCH /api/teams/{id}/pages/{page_id} does with slug, parent_id, move_to_root and position. `page` is a path of slugs or a UUID. `parent` is the new folder (a path of slugs or a UUID); `to_root: true` moves it to the root. `slug` renames it. `position` reorders it among its siblings. The charter cannot be moved or renamed. Requires membership of the team, or the organization admin role."
+    )]
+    pub async fn move_team_page(
+        &self,
+        Parameters(params): Parameters<MoveTeamPageParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let gate = tenant.clone();
+        self.run_tool(&tenant, move |conn| {
+            if params.parent.is_some() && params.to_root == Some(true) {
+                return Err(ApiError::validation(
+                    "The call has parent and to_root. Send one of them.",
+                ));
+            }
+            let team = team_by_ref(conn, &params.team)?;
+            let pages = crate::api::org::team_pages::list_as(conn, team.id)?;
+            let page_id = parse_page_id(page_by_ref(&pages, &params.page)?)?;
+            let parent_id = match &params.parent {
+                Some(reference) => Some(page_by_ref(&pages, reference)?.id.clone()),
+                None => None,
+            };
+            let updated = crate::api::org::team_pages::update_as(
+                conn,
+                &gate,
+                user,
+                team.id,
+                page_id,
+                &kairos_client::types_team_pages::UpdateTeamPageRequest {
+                    slug: params.slug,
+                    parent_id,
+                    move_to_root: params.to_root.unwrap_or(false),
+                    position: params.position,
+                    ..Default::default()
+                },
+            )?;
+            let all = crate::api::org::team_pages::list_as(conn, team.id)?;
+            Ok(format!(
+                "Moved {} ({}) in the team page of {}: path {}, position {}.",
+                updated.title,
+                updated.id,
+                team.slug,
+                page_path(&all, &updated),
+                updated.position
+            ))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Archive a page or an empty folder of a team, as DELETE /api/teams/{id}/pages/{page_id} does. `page` is a path of slugs or a UUID. A folder that holds pages or folders is refused, and so is the charter. Requires membership of the team, or the organization admin role."
+    )]
+    pub async fn delete_team_page(
+        &self,
+        Parameters(params): Parameters<DeleteTeamPageParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let gate = tenant.clone();
+        self.run_tool(&tenant, move |conn| {
+            let team = team_by_ref(conn, &params.team)?;
+            let pages = crate::api::org::team_pages::list_as(conn, team.id)?;
+            let page = page_by_ref(&pages, &params.page)?;
+            let path = page_path(&pages, page);
+            let page_id = parse_page_id(page)?;
+            let archived =
+                crate::api::org::team_pages::delete_as(conn, &gate, user, team.id, page_id)?;
+            Ok(format!(
+                "Archived the {} {} ({}) of the team page of {}: path {path}.",
+                archived.kind, archived.title, archived.id, team.slug
+            ))
+        })
+        .await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Team page helpers (KAIROS-T-0434)
+// ---------------------------------------------------------------------------
+
+/// The path of slugs of a page, from the root ("documentation/runbooks").
+fn page_path(
+    pages: &[kairos_client::types_team_pages::TeamPage],
+    page: &kairos_client::types_team_pages::TeamPage,
+) -> String {
+    let mut slugs = vec![page.slug.clone()];
+    let mut parent = page.parent_id.clone();
+    // The depth bound guards against a malformed cycle.
+    for _ in 0..64 {
+        let Some(id) = parent else { break };
+        let Some(up) = pages.iter().find(|p| p.id == id) else {
+            break;
+        };
+        slugs.push(up.slug.clone());
+        parent = up.parent_id.clone();
+    }
+    slugs.reverse();
+    slugs.join("/")
+}
+
+/// A page of the tree by its UUID or its path of slugs from the root.
+fn page_by_ref<'a>(
+    pages: &'a [kairos_client::types_team_pages::TeamPage],
+    reference: &str,
+) -> Result<&'a kairos_client::types_team_pages::TeamPage, ApiError> {
+    if let Some(page) = pages.iter().find(|p| p.id == reference) {
+        return Ok(page);
+    }
+    let mut parent: Option<String> = None;
+    let mut found = None;
+    for slug in reference.trim_matches('/').split('/') {
+        let next = pages
+            .iter()
+            .find(|p| p.parent_id == parent && p.slug == slug);
+        let Some(next) = next else {
+            found = None;
+            break;
+        };
+        parent = Some(next.id.clone());
+        found = Some(next);
+    }
+    found.ok_or_else(|| {
+        ApiError::validation(format!(
+            "The team page has no page {reference:?}. Send a path of slugs from the root, \
+             or the id of a page. The path of the charter is \"charter\". team_pages gives \
+             the tree."
+        ))
+    })
+}
+
+fn parse_page_id(page: &kairos_client::types_team_pages::TeamPage) -> Result<Uuid, ApiError> {
+    Uuid::parse_str(&page.id).map_err(ApiError::internal)
+}
+
+/// The tree, one line for each node, indented by depth, siblings in
+/// position order, the charter first.
+fn render_page_tree(team: &str, pages: &[kairos_client::types_team_pages::TeamPage]) -> String {
+    fn walk(
+        pages: &[kairos_client::types_team_pages::TeamPage],
+        parent: Option<&String>,
+        depth: usize,
+        out: &mut String,
+    ) {
+        let mut level: Vec<_> = pages
+            .iter()
+            .filter(|p| p.parent_id.as_ref() == parent)
+            .collect();
+        level.sort_by(|a, b| {
+            b.is_protected
+                .cmp(&a.is_protected)
+                .then(a.position.cmp(&b.position))
+                .then(a.title.cmp(&b.title))
+        });
+        for page in level {
+            let marker = if page.is_protected {
+                " [charter]"
+            } else if page.kind == "folder" {
+                " [folder]"
+            } else {
+                ""
+            };
+            out.push_str(&format!(
+                "{}- {} — {}{marker} (v{}, {})\n",
+                "  ".repeat(depth),
+                page.slug,
+                page.title,
+                page.version,
+                page.id
+            ));
+            if page.kind == "folder" && depth < 64 {
+                walk(pages, Some(&page.id), depth + 1, out);
+            }
+        }
+    }
+    let mut out = format!("# Team page of {team} ({} nodes)\n", pages.len());
+    walk(pages, None, 0, &mut out);
+    out
+}
+
+/// A slug from a title: lower case, each run of other characters one
+/// hyphen ("How-to Guides" gives "how-to-guides").
+fn slug_from_title(title: &str) -> String {
+    let mut slug = String::new();
+    for c in title.chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c.to_ascii_lowercase());
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    slug.trim_end_matches('-').to_string()
 }
 
 // ---------------------------------------------------------------------------

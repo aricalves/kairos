@@ -535,6 +535,132 @@ async fn an_admin_agent_sets_up_a_team_with_manage_structure() {
             json!({"team": "home-ops", "user": "board-agent"}),
         )
         .await;
+
+    // --- KAIROS-T-0434: the team page over MCP ------------------------------------
+    // Reads are open: the tree of a new team is its charter.
+    let text = org_mcp.ok("team_pages", json!({"team": "home-ops"})).await;
+    assert!(text.contains("charter — Team Charter [charter]"), "{text}");
+    // manage_structure gives no right on a team page: membership does.
+    let text = org_mcp
+        .err(
+            "create_team_page",
+            json!({"team": "home-ops", "kind": "folder", "title": "Runbooks"}),
+        )
+        .await;
+    assert!(text.contains("member of the team"), "{text}");
+    // board-agent is a member of home-ops now.
+    let text = board_mcp
+        .ok(
+            "create_team_page",
+            json!({"team": "home-ops", "kind": "folder", "title": "Ops Guides"}),
+        )
+        .await;
+    assert!(
+        text.contains("path ops-guides"),
+        "the slug from the title: {text}"
+    );
+    let text = board_mcp
+        .ok(
+            "create_team_page",
+            json!({
+                "team": "home-ops", "kind": "page", "title": "Restart the worker",
+                "parent": "ops-guides", "content": "# Restart",
+            }),
+        )
+        .await;
+    assert!(
+        text.contains("path ops-guides/restart-the-worker"),
+        "{text}"
+    );
+    let text = board_mcp
+        .ok(
+            "team_pages",
+            json!({"team": "home-ops", "page": "ops-guides/restart-the-worker"}),
+        )
+        .await;
+    assert!(
+        text.contains("- version: 1") && text.contains("# Restart"),
+        "{text}"
+    );
+    let text = board_mcp
+        .ok(
+            "edit_team_page",
+            json!({
+                "team": "home-ops", "page": "ops-guides/restart-the-worker",
+                "content": "# Restart\n\n1. Drain.", "version": 1,
+            }),
+        )
+        .await;
+    assert!(text.contains("version 2"), "{text}");
+    // A stale version is refused, with the current page.
+    let text = board_mcp
+        .err(
+            "edit_team_page",
+            json!({
+                "team": "home-ops", "page": "ops-guides/restart-the-worker",
+                "content": "lost", "version": 1,
+            }),
+        )
+        .await;
+    assert!(text.starts_with("CONFLICT"), "{text}");
+    // The charter: edited, never moved or archived.
+    let text = board_mcp
+        .ok(
+            "edit_team_page",
+            json!({
+                "team": "home-ops", "page": "charter", "title": "Home ops charter",
+                "content": "# Home ops\n\n## Mission\n\nKeep the house running.", "version": 1,
+            }),
+        )
+        .await;
+    assert!(text.contains("Home ops charter"), "{text}");
+    board_mcp
+        .err(
+            "move_team_page",
+            json!({"team": "home-ops", "page": "charter", "parent": "ops-guides"}),
+        )
+        .await;
+    board_mcp
+        .err(
+            "delete_team_page",
+            json!({"team": "home-ops", "page": "charter"}),
+        )
+        .await;
+    // Move to the root, then archive; a folder with a page in it is refused.
+    let text = board_mcp
+        .err(
+            "delete_team_page",
+            json!({"team": "home-ops", "page": "ops-guides"}),
+        )
+        .await;
+    assert!(
+        text.starts_with("VALIDATION") || text.contains("FOLDER_NOT_EMPTY"),
+        "{text}"
+    );
+    let text = board_mcp
+        .ok(
+            "move_team_page",
+            json!({"team": "home-ops", "page": "ops-guides/restart-the-worker", "to_root": true}),
+        )
+        .await;
+    assert!(text.contains("path restart-the-worker"), "{text}");
+    board_mcp
+        .ok(
+            "delete_team_page",
+            json!({"team": "home-ops", "page": "ops-guides"}),
+        )
+        .await;
+    let text = board_mcp
+        .ok("team_pages", json!({"team": "home-ops"}))
+        .await;
+    assert!(
+        text.contains("restart-the-worker") && !text.contains("ops-guides"),
+        "{text}"
+    );
+    let text = board_mcp
+        .err("team_pages", json!({"team": "home-ops", "page": "nowhere"}))
+        .await;
+    assert!(text.contains("has no page \"nowhere\""), "{text}");
     let text = org_mcp
         .ok(
             "grant_capability",

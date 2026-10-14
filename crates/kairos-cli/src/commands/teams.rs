@@ -72,6 +72,9 @@ pub enum TeamsCommand {
     /// Team membership
     #[command(subcommand)]
     Members(TeamMembersCommand),
+    /// The team page: the charter and the tree of folders and pages
+    #[command(subcommand)]
+    Pages(crate::commands::team_pages::TeamPagesCommand),
     /// Show the teams of an initiative or a strategy: the teams of the
     /// boards of its tasks (two levels down for a strategy), and the teams
     /// set on it by hand
@@ -282,6 +285,7 @@ impl TeamsCommand {
                 Ok(())
             }
             Self::Members(command) => command.run().await,
+            Self::Pages(command) => command.run().await,
             Self::Of { short_code, common } => {
                 let kind = family_of(&short_code)?;
                 let client = client(&common)?;

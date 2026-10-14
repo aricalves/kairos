@@ -925,6 +925,37 @@ kairos teams members remove <TEAM_ID> --user <USER> [OPTIONS]
 | `<TEAM_ID>` | UUID | required | The team. |
 | `--user <USER>` | string | required on `add` and `remove` | A user id, an email, a user name, or the name of a service account. `kairos members list` gives them. |
 
+### `kairos teams pages`
+
+```
+kairos teams pages list   <TEAM> [OPTIONS]
+kairos teams pages show   <TEAM> <PAGE> [OPTIONS]
+kairos teams pages create <TEAM> --kind <KIND> --title <TITLE> [--slug <SLUG>] [--parent <PAGE>] [--content <TEXT> | --content-file <FILE>] [--position <N>] [OPTIONS]
+kairos teams pages edit   <TEAM> <PAGE> [--title <TITLE>] [--content <TEXT> | --content-file <FILE>] [--version <N>] [OPTIONS]
+kairos teams pages move   <TEAM> <PAGE> [--parent <PAGE> | --root] [--slug <SLUG>] [--position <N>] [OPTIONS]
+kairos teams pages delete <TEAM> <PAGE> --confirm [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<TEAM>` | slug or UUID | required | The team. |
+| `<PAGE>` | path or UUID | required | A path of slugs from the root, for example `documentation/runbooks`. `charter` is the charter. |
+| `--kind <KIND>` | `page` or `folder` | required on `create` | A folder holds folders and pages. A page holds nothing. |
+| `--slug <SLUG>` | string | from the title | Unique among the siblings. |
+| `--parent <PAGE>` | path or UUID | the root | The folder. |
+| `--content-file <FILE>` | path | — | Reads the content from a file. `-` reads standard input. |
+| `--version <N>` | integer | the current version | The version that the edit is based on. A stale version gives `409 CONFLICT`. |
+| `--root` | flag | off | Moves the node to the root. |
+| `--confirm` | flag | off | Required to archive. |
+
+The team page has the charter of the team and the folders and pages that the
+team makes. Every member of the organization can read it. To write, you must be
+a member of the team or an organization admin.
+
+`list` shows the tree, the charter first. `edit` replaces the whole content.
+`delete` archives a page or an empty folder. You cannot move or archive the
+charter.
+
 ### `kairos teams of`
 
 ```
