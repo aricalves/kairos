@@ -76,7 +76,7 @@ codes, `key: value` lines, compact listings. It is not JSON to deserialize.
 `tools/list` returns exactly sixty-seven tools, frozen by name and shape. Each one's
 arguments, defaults and refusals are in [MCP tools](../../reference/mcp-tools/).
 
-`/mcp` lists the work profile (36 tools). For the administration tools, add
+`/mcp` lists the work profile (37 tools). For the administration tools, add
 `?profile=admin` to the URL, or `?profile=all` for each tool. See
 [Profiles](../../reference/mcp-tools/#profiles).
 

@@ -175,7 +175,7 @@ impl ServerHandler for KairosMcp {
                  read the directory, `add_repository` and `update_repository` write \
                  it, and `set_repository` links a task to one. This list is the work \
                  profile: the administration tools (teams, boards, grants, metadata, \
-                 dispatch, team pages) are at /mcp?profile=admin, and each tool is at \
+                 dispatch, team page writes) are at /mcp?profile=admin, and each tool is at \
                  /mcp?profile=all.",
             )
     }
