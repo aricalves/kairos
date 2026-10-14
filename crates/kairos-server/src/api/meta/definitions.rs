@@ -442,33 +442,41 @@ pub(crate) async fn create_definition(
     ApiJson(body): ApiJson<dto::CreateMetadataDefinitionRequest>,
 ) -> Result<(StatusCode, Json<dto::MetadataDefinition>), ApiError> {
     require_org_admin(&tenant)?;
+    let created = state
+        .blocking
+        .run(&tenant.slug, move |conn| create_definition_in(conn, &body))
+        .await?;
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+/// The ONE implementation of `POST /api/metadata-definitions`
+/// and of the MCP tool `save_metadata_definition` (KAIROS-T-0443).
+/// The caller checks that the person is an organization admin.
+pub(crate) fn create_definition_in(
+    conn: &mut PgConnection,
+    body: &dto::CreateMetadataDefinitionRequest,
+) -> Result<dto::MetadataDefinition, ApiError> {
     let field_type = parse_enum(&body.field_type, "field_type", FieldType::ALL)?;
     check_option_rules(field_type, &body.enum_options)?;
     check_entity_types(&body.entity_types)?;
-    let created = state
-        .blocking
-        .run(&tenant.slug, move |conn| {
-            use kairos_db::schema::metadata_definitions as definitions;
-            let created = conn
-                .transaction::<MetadataDefinition, DieselError, _>(|conn| {
-                    let created: MetadataDefinition = diesel::insert_into(definitions::table)
-                        .values(NewMetadataDefinition {
-                            name: body.name.clone(),
-                            slug: body.slug.clone(),
-                            field_type,
-                            is_system_default: false,
-                        })
-                        .returning(MetadataDefinition::as_returning())
-                        .get_result(conn)?;
-                    replace_options(conn, created.id, &body.enum_options)?;
-                    replace_scopes(conn, created.id, &body.entity_types)?;
-                    Ok(created)
+    use kairos_db::schema::metadata_definitions as definitions;
+    let created = conn
+        .transaction::<MetadataDefinition, DieselError, _>(|conn| {
+            let created: MetadataDefinition = diesel::insert_into(definitions::table)
+                .values(NewMetadataDefinition {
+                    name: body.name.clone(),
+                    slug: body.slug.clone(),
+                    field_type,
+                    is_system_default: false,
                 })
-                .map_err(map_write_error)?;
-            hydrate(conn, created)
+                .returning(MetadataDefinition::as_returning())
+                .get_result(conn)?;
+            replace_options(conn, created.id, &body.enum_options)?;
+            replace_scopes(conn, created.id, &body.entity_types)?;
+            Ok(created)
         })
-        .await?;
-    Ok((StatusCode::CREATED, Json(created)))
+        .map_err(map_write_error)?;
+    hydrate(conn, created)
 }
 
 /// Get one definition with its enum options (open tenant-wide).
@@ -527,6 +535,25 @@ pub(crate) async fn update_definition(
 ) -> Result<Json<dto::MetadataDefinition>, ApiError> {
     require_org_admin(&tenant)?;
     let id = parse_uuid(&id, "definition id")?;
+    let user = auth.user_id;
+    let updated = state
+        .blocking
+        .run(&tenant.slug, move |conn| {
+            update_definition_in(conn, user, id, &body)
+        })
+        .await?;
+    Ok(Json(updated))
+}
+
+/// The ONE implementation of `PATCH /api/metadata-definitions/{id}`
+/// and of the MCP tool `save_metadata_definition` (KAIROS-T-0443).
+/// The caller checks that the person is an organization admin.
+pub(crate) fn update_definition_in(
+    conn: &mut PgConnection,
+    user: Uuid,
+    id: Uuid,
+    body: &dto::UpdateMetadataDefinitionRequest,
+) -> Result<dto::MetadataDefinition, ApiError> {
     if body.name.is_none()
         && body.slug.is_none()
         && body.enum_options.is_none()
@@ -537,81 +564,74 @@ pub(crate) async fn update_definition(
              and entity_types.",
         ));
     }
-    let user = auth.user_id;
     if let Some(entity_types) = &body.entity_types {
         check_entity_types(entity_types)?;
     }
-    let updated = state
-        .blocking
-        .run(&tenant.slug, move |conn| {
-            use kairos_db::schema::metadata_definitions as definitions;
-            let existing = load(conn, id)?;
-            if let Some(options) = &body.enum_options {
-                if existing.field_type != FieldType::Enum {
-                    return Err(ApiError::validation(format!(
-                        "The request has enum_options, and the field_type is {}. Only a \
-                         definition of the type enum has enum_options.",
-                        existing.field_type
-                    )));
-                }
-                check_option_rules(FieldType::Enum, options)?;
+    use kairos_db::schema::metadata_definitions as definitions;
+    let existing = load(conn, id)?;
+    if let Some(options) = &body.enum_options {
+        if existing.field_type != FieldType::Enum {
+            return Err(ApiError::validation(format!(
+                "The request has enum_options, and the field_type is {}. Only a \
+                 definition of the type enum has enum_options.",
+                existing.field_type
+            )));
+        }
+        check_option_rules(FieldType::Enum, options)?;
+    }
+    // KAIROS-T-0268: only a value that is different from the stored
+    // value goes to the write. The options are a list in sequence;
+    // the entity types are a set.
+    let options = match body.enum_options.clone() {
+        Some(options) if options == enum_option_values(conn, id)? => None,
+        options => options,
+    };
+    let entity_types = match body.entity_types.clone() {
+        Some(sent) => {
+            let mut sorted = sent.clone();
+            sorted.sort_by_key(|t| ENTITY_TYPES.iter().position(|v| v == t));
+            (sorted != scopes_of(conn, id)?).then_some(sent)
+        }
+        None => None,
+    };
+    let changes = MetadataDefinitionChangeset {
+        name: body.name.clone().filter(|name| *name != existing.name),
+        slug: body.slug.clone().filter(|slug| *slug != existing.slug),
+        field_type: None,
+        is_system_default: None,
+        updated_at: Some(chrono::Utc::now()),
+    };
+    if changes.name.is_none()
+        && changes.slug.is_none()
+        && options.is_none()
+        && entity_types.is_none()
+    {
+        return hydrate(conn, existing);
+    }
+    let updated = conn
+        .transaction::<MetadataDefinition, DieselError, _>(|conn| {
+            let updated: MetadataDefinition =
+                diesel::update(definitions::table.filter(definitions::id.eq(id)))
+                    .set(changes)
+                    .returning(MetadataDefinition::as_returning())
+                    .get_result(conn)?;
+            if let Some(options) = &options {
+                replace_options(conn, id, options)?;
             }
-            // KAIROS-T-0268: only a value that is different from the stored
-            // value goes to the write. The options are a list in sequence;
-            // the entity types are a set.
-            let options = match body.enum_options.clone() {
-                Some(options) if options == enum_option_values(conn, id)? => None,
-                options => options,
-            };
-            let entity_types = match body.entity_types.clone() {
-                Some(sent) => {
-                    let mut sorted = sent.clone();
-                    sorted.sort_by_key(|t| ENTITY_TYPES.iter().position(|v| v == t));
-                    (sorted != scopes_of(conn, id)?).then_some(sent)
-                }
-                None => None,
-            };
-            let changes = MetadataDefinitionChangeset {
-                name: body.name.clone().filter(|name| *name != existing.name),
-                slug: body.slug.clone().filter(|slug| *slug != existing.slug),
-                field_type: None,
-                is_system_default: None,
-                updated_at: Some(chrono::Utc::now()),
-            };
-            if changes.name.is_none()
-                && changes.slug.is_none()
-                && options.is_none()
-                && entity_types.is_none()
-            {
-                return hydrate(conn, existing);
+            if let Some(entity_types) = &entity_types {
+                replace_scopes(conn, id, entity_types)?;
             }
-            let updated = conn
-                .transaction::<MetadataDefinition, DieselError, _>(|conn| {
-                    let updated: MetadataDefinition =
-                        diesel::update(definitions::table.filter(definitions::id.eq(id)))
-                            .set(changes)
-                            .returning(MetadataDefinition::as_returning())
-                            .get_result(conn)?;
-                    if let Some(options) = &options {
-                        replace_options(conn, id, options)?;
-                    }
-                    if let Some(entity_types) = &entity_types {
-                        replace_scopes(conn, id, entity_types)?;
-                    }
-                    super::log_meta_activity(
-                        conn,
-                        user,
-                        "metadata_definition",
-                        id,
-                        format!("metadata_definition_settings:{}", updated.slug),
-                    )?;
-                    Ok(updated)
-                })
-                .map_err(map_write_error)?;
-            hydrate(conn, updated)
+            super::log_meta_activity(
+                conn,
+                user,
+                "metadata_definition",
+                id,
+                format!("metadata_definition_settings:{}", updated.slug),
+            )?;
+            Ok(updated)
         })
-        .await?;
-    Ok(Json(updated))
+        .map_err(map_write_error)?;
+    hydrate(conn, updated)
 }
 
 /// Delete a definition (org admin only). Refused with 409
@@ -639,76 +659,83 @@ pub(crate) async fn delete_definition(
     let id = parse_uuid(&id, "definition id")?;
     let deleted = state
         .blocking
-        .run(&tenant.slug, move |conn| {
-            use kairos_db::schema::{item_metadata, metadata_definitions, template_metadata};
-            let definition = load(conn, id)?;
-            let item_values: i64 = item_metadata::table
-                .filter(item_metadata::metadata_definition_id.eq(id))
-                .count()
-                .get_result(conn)
-                .map_err(ApiError::internal)?;
-            let template_fields: i64 = template_metadata::table
-                .filter(template_metadata::metadata_definition_id.eq(id))
-                .count()
-                .get_result(conn)
-                .map_err(ApiError::internal)?;
-            if item_values + template_fields > 0 {
-                let carriers = carrying_items(conn, id, NAMED_BLOCKER_LIMIT)?;
-                let templates = carrying_templates(conn, id, NAMED_BLOCKER_LIMIT)?;
-                let has_archived = carriers.iter().any(|carrier| carrier.archived);
-                let mut blockers: Vec<String> = Vec::new();
-                if item_values > 0 {
-                    let labels: Vec<String> =
-                        carriers.iter().map(|carrier| carrier.label()).collect();
-                    blockers.push(format!(
-                        "These items have a value: {}",
-                        blocker_list(&labels, item_values)
-                    ));
-                }
-                if template_fields > 0 {
-                    blockers.push(format!(
-                        "These templates have the field: {}",
-                        blocker_list(&templates, template_fields)
-                    ));
-                }
-                return Err(ApiError::new(
-                    StatusCode::CONFLICT,
-                    "DEFINITION_IN_USE",
-                    format!(
-                        "The metadata definition {:?} is in use. The number of item \
-                         values is {item_values}, and the number of template fields is \
-                         {template_fields}. {}. Remove each value and each field. Then \
-                         delete the definition.{}",
-                        definition.slug,
-                        blockers.join(". "),
-                        if has_archived {
-                            " You can read an archived item by its short code. Restore \
-                             the item, and then remove its value."
-                        } else {
-                            ""
-                        }
-                    ),
-                )
-                .with_details(json!({
-                    "item_values": item_values,
-                    "template_fields": template_fields,
-                    "items": carriers
-                        .iter()
-                        .map(|carrier| json!({
-                            "short_code": carrier.short_code,
-                            "archived": carrier.archived,
-                        }))
-                        .collect::<Vec<_>>(),
-                    "templates": templates,
-                })));
-            }
-            diesel::delete(metadata_definitions::table.filter(metadata_definitions::id.eq(id)))
-                .execute(conn)
-                .map_err(ApiError::internal)?;
-            Ok(dto::DeletedResponse { id: id.to_string() })
-        })
+        .run(&tenant.slug, move |conn| delete_definition_in(conn, id))
         .await?;
     Ok(Json(deleted))
+}
+
+/// The ONE implementation of `DELETE /api/metadata-definitions/{id}`
+/// and of the MCP tool `delete_metadata_definition` (KAIROS-T-0443).
+/// The caller checks that the person is an organization admin.
+pub(crate) fn delete_definition_in(
+    conn: &mut PgConnection,
+    id: Uuid,
+) -> Result<dto::DeletedResponse, ApiError> {
+    use kairos_db::schema::{item_metadata, metadata_definitions, template_metadata};
+    let definition = load(conn, id)?;
+    let item_values: i64 = item_metadata::table
+        .filter(item_metadata::metadata_definition_id.eq(id))
+        .count()
+        .get_result(conn)
+        .map_err(ApiError::internal)?;
+    let template_fields: i64 = template_metadata::table
+        .filter(template_metadata::metadata_definition_id.eq(id))
+        .count()
+        .get_result(conn)
+        .map_err(ApiError::internal)?;
+    if item_values + template_fields > 0 {
+        let carriers = carrying_items(conn, id, NAMED_BLOCKER_LIMIT)?;
+        let templates = carrying_templates(conn, id, NAMED_BLOCKER_LIMIT)?;
+        let has_archived = carriers.iter().any(|carrier| carrier.archived);
+        let mut blockers: Vec<String> = Vec::new();
+        if item_values > 0 {
+            let labels: Vec<String> = carriers.iter().map(|carrier| carrier.label()).collect();
+            blockers.push(format!(
+                "These items have a value: {}",
+                blocker_list(&labels, item_values)
+            ));
+        }
+        if template_fields > 0 {
+            blockers.push(format!(
+                "These templates have the field: {}",
+                blocker_list(&templates, template_fields)
+            ));
+        }
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "DEFINITION_IN_USE",
+            format!(
+                "The metadata definition {:?} is in use. The number of item \
+                 values is {item_values}, and the number of template fields is \
+                 {template_fields}. {}. Remove each value and each field. Then \
+                 delete the definition.{}",
+                definition.slug,
+                blockers.join(". "),
+                if has_archived {
+                    " You can read an archived item by its short code. Restore \
+                     the item, and then remove its value."
+                } else {
+                    ""
+                }
+            ),
+        )
+        .with_details(json!({
+            "item_values": item_values,
+            "template_fields": template_fields,
+            "items": carriers
+                .iter()
+                .map(|carrier| json!({
+                    "short_code": carrier.short_code,
+                    "archived": carrier.archived,
+                }))
+                .collect::<Vec<_>>(),
+            "templates": templates,
+        })));
+    }
+    diesel::delete(metadata_definitions::table.filter(metadata_definitions::id.eq(id)))
+        .execute(conn)
+        .map_err(ApiError::internal)?;
+    Ok(dto::DeletedResponse { id: id.to_string() })
 }
 
 #[cfg(test)]

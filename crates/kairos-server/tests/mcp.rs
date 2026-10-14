@@ -85,8 +85,8 @@ const TENANT: &str = "acme";
 
 /// How many tools `tools/list` returns, and the word the reference pages
 /// use for that number (COLLIERY-T-0220, COLLIERY-T-0266).
-const TOOL_COUNT: usize = 46;
-const TOOL_COUNT_WORD: &str = "forty-six";
+const TOOL_COUNT: usize = 58;
+const TOOL_COUNT_WORD: &str = "fifty-eight";
 
 /// Every request carries a real `Host` header and the tenant resolves from
 /// its subdomain against the configured base domain — the S-0006 REQ-1.2
@@ -627,8 +627,8 @@ async fn mcp_endpoint_against_live_stack() {
         // set_repository.
         "set_work_class",
         // COLLIERY-T-0266: an agent adds a repository to the directory, and
-        // changes its description, its default branch and its URL. No tool
-        // deletes a repository, and no tool changes its owner or its slug.
+        // changes its description, its default branch and its URL.
+        // KAIROS-T-0443: update_repository changes the owner and the slug too.
         "add_repository",
         "update_repository",
         // KAIROS-T-0321: set and clear a team of an initiative or a strategy
@@ -671,6 +671,19 @@ async fn mcp_endpoint_against_live_stack() {
         "list_dispatch_rules",
         "create_dispatch_rule",
         "delete_dispatch_rule",
+        // KAIROS-T-0443: team and board administration, as REST.
+        "update_team",
+        "remove_team_member",
+        "set_board_capabilities",
+        "add_column",
+        "update_column",
+        "remove_column",
+        "set_transition",
+        "delete_repository",
+        "save_metadata_definition",
+        "delete_metadata_definition",
+        "save_template",
+        "delete_template",
     ];
     expected.sort_unstable();
     assert_eq!(names, expected, "tools/list is exactly the S-0006 surface");
@@ -717,6 +730,7 @@ async fn mcp_endpoint_against_live_stack() {
             "forty-one",
             "forty-four",
             "forty-five",
+            "forty-six",
         ] {
             assert!(
                 !reference.contains(stale),
@@ -2732,7 +2746,7 @@ async fn repository_tools_against_live_stack() {
             "team"
         ]
     );
-    // No `slug` and no `team`: the tool changes neither.
+    // KAIROS-T-0443: `slug` and `team` change the slug and the owner team.
     assert_eq!(
         arguments_of("update_repository"),
         [
@@ -2740,36 +2754,35 @@ async fn repository_tools_against_live_stack() {
             "default_branch",
             "description",
             "repo_url",
-            "repository"
+            "repository",
+            "slug",
+            "team"
         ]
     );
     for name in ["add_repository", "update_repository"] {
         let tool = tool(name);
         assert_eq!(tool["inputSchema"]["additionalProperties"], false, "{name}");
         let description = tool["description"].as_str().expect("description");
-        // The description says what no tool does, who does it, and where.
+        // KAIROS-T-0443: the description names the tools that change the
+        // slug and the owner team, and the tool that removes a repository.
         for needed in [
-            "o tool deletes a repository",
             "owner team",
             "slug",
-            "A person does these",
-            "Admin, Repositories",
-            "`kairos repos update`",
-            "`kairos repos delete`",
-            "/api/repositories/{slug}",
+            "`delete_repository`",
             "`set_repository`",
         ] {
             assert!(description.contains(needed), "{name} lacks {needed:?}");
         }
     }
-    // No tool deletes a repository.
-    for t in &tools {
-        let name = t["name"].as_str().expect("name");
-        assert!(
-            !(name.contains("repositor") && (name.contains("delete") || name.contains("remove"))),
-            "{name}"
-        );
-    }
+    // KAIROS-T-0443: one tool removes a repository: delete_repository.
+    let removers: Vec<&str> = tools
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .filter(|name| {
+            name.contains("repositor") && (name.contains("delete") || name.contains("remove"))
+        })
+        .collect();
+    assert_eq!(removers, ["delete_repository"]);
     assert_eq!(repository_count(&mut conn), 0);
 
     // --- add_repository: a member of the owner team --------------------------
@@ -3244,7 +3257,7 @@ async fn repository_tools_against_live_stack() {
         assert_eq!(
             text,
             "VALIDATION: The call has nothing to change. Send one or more of these \
-             arguments: description, default_branch, repo_url, code_index_build."
+             arguments: description, default_branch, repo_url, code_index_build, slug, team."
         );
     }
     // The values that the repository has: a success that writes nothing.
@@ -3263,23 +3276,22 @@ async fn repository_tools_against_live_stack() {
         text,
         "No change to repository acme-fidius: it has these values already."
     );
-    // The slug and the owner team: the tool does not know the arguments.
-    for (argument, value) in [("slug", "fidius"), ("team", "web")] {
-        let text = alice_session
-            .call_err(
-                "update_repository",
-                json!({"repository": "acme-fidius", "description": "x", argument: value}),
-            )
-            .await;
-        assert!(
-            text.starts_with(&format!(
-                "VALIDATION: The call has the argument {argument:?}. This tool does not \
-                 accept that argument. The arguments of this tool are: repository, \
-                 description, default_branch, repo_url, code_index_build."
-            )),
-            "{text}"
-        );
-    }
+    // An unknown argument is refused and named. KAIROS-T-0443: `slug` and
+    // `team` are arguments now (tests/admin_tools.rs uses them).
+    let text = alice_session
+        .call_err(
+            "update_repository",
+            json!({"repository": "acme-fidius", "description": "x", "owner": "web"}),
+        )
+        .await;
+    assert!(
+        text.starts_with(
+            "VALIDATION: The call has the argument \"owner\". This tool does not \
+             accept that argument. The arguments of this tool are: repository, \
+             description, default_branch, repo_url, code_index_build, slug, team."
+        ),
+        "{text}"
+    );
     let text = alice_session
         .call_err("update_repository", json!({"description": "x"}))
         .await;
