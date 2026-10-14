@@ -21,9 +21,9 @@ use kairos_db::{provision_tenant, run_public_migrations};
 const DEFAULT_DATABASE_URL: &str = "postgres://kairos:kairos@localhost:41432/kairos";
 const SCRATCH_DB: &str = "kairos_repository_branch_source_t0430_test";
 const UP_SQL: &str =
-    include_str!("../migrations/tenant/2026-10-14-000100_repository_branch_source/up.sql");
+    include_str!("../migrations/tenant/2026-10-14-000150_repository_branch_source/up.sql");
 const DOWN_SQL: &str =
-    include_str!("../migrations/tenant/2026-10-14-000100_repository_branch_source/down.sql");
+    include_str!("../migrations/tenant/2026-10-14-000150_repository_branch_source/down.sql");
 
 fn admin_database_url() -> String {
     std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
