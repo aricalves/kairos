@@ -173,10 +173,11 @@ impl ServerHandler for KairosMcp {
                  them; writes require board capabilities and edits use optimistic \
                  versioning. Repositories: `list_repositories` and `get_repository` \
                  read the directory, `add_repository` and `update_repository` write \
-                 it, and `set_repository` links a task to one. This list is the work \
-                 profile: the administration tools (teams, boards, grants, metadata, \
-                 dispatch, team page writes) are at /mcp?profile=admin, and each tool is at \
-                 /mcp?profile=all.",
+                 it, and `set_repository` links a task to one. `/mcp` lists the work \
+                 profile; `/mcp?profile=admin` the administration tools (teams, boards, \
+                 grants, metadata, dispatch, team page writes, org read tokens, purge, \
+                 board flow); `/mcp?profile=all` each tool. Every tool is callable under \
+                 every profile.",
             )
     }
 }

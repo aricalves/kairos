@@ -71,6 +71,18 @@ VERSION_SITES = [
         rf'^appVersion: "{SEMVER}"$',
         "the Kairos release the chart deploys; image.tag defaults to it",
     ),
+    # The plugin that Claude Code installs from the GitHub marketplace
+    # (KAIROS-T-0464): 0.12.0 bumped these two by hand.
+    (
+        ".claude-plugin/plugin.json",
+        rf'^  "version": "{SEMVER}",$',
+        "the plugin manifest version",
+    ),
+    (
+        ".claude-plugin/marketplace.json",
+        rf'^      "version": "{SEMVER}"$',
+        "the marketplace entry version of the plugin",
+    ),
     (
         "README.md",
         rf"releases/download/v{SEMVER}/kairos-{SEMVER}-",
@@ -163,6 +175,11 @@ VERSION_SITES = [
         "docs/src/content/docs/reference/webhooks.md",
         rf"This page describes Kairos {SEMVER}\.",
         "the webhooks reference's stated version",
+    ),
+    (
+        "docs/src/content/docs/how-to/receive-dispatch-in-a-session.md",
+        rf"This page describes Kairos {SEMVER} and",
+        "the dispatch-in-a-session how-to's stated version",
     ),
     # Illustrative image tags. Not wrong when stale, but a reader can copy them,
     # and an example pointing two releases back makes the docs look abandoned.

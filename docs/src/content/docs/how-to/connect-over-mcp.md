@@ -73,8 +73,9 @@ Tool output is **text**, in `result.content[]` entries of type `text` — short
 codes, `key: value` lines, compact listings. It is not JSON to deserialize.
 `whoami` returning your principal is the check that the whole chain works.
 
-`tools/list` returns exactly sixty-seven tools, frozen by name and shape. Each one's
-arguments, defaults and refusals are in [MCP tools](../../reference/mcp-tools/).
+`tools/list` returns one profile of the sixty-seven tools, frozen by name and
+shape; every tool is callable under every profile. Each one's arguments,
+defaults and refusals are in [MCP tools](../../reference/mcp-tools/).
 
 `/mcp` lists the work profile (37 tools). For the administration tools, add
 `?profile=admin` to the URL, or `?profile=all` for each tool. See

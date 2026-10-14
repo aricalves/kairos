@@ -94,6 +94,11 @@ For Claude Code, put the key in the `env` section of the user settings,
 See [Give an agent your key](../give-an-agent-your-key/) for the MCP
 configuration.
 
+The four tools below are in the admin profile of the MCP server. The URL of
+the server is `<deployment>/mcp?profile=admin`, not `/mcp`
+([Profiles](../../reference/mcp-tools/#profiles)). The plugin's own server
+lists the work profile, which has none of them.
+
 ## 5. Let the agent work
 
 The agent uses four MCP tools:

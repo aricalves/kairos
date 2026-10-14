@@ -559,9 +559,10 @@ async fn mcp_endpoint_against_live_stack() {
          work them; writes require board capabilities and edits use optimistic versioning. \
          Repositories: `list_repositories` and `get_repository` read the directory, \
          `add_repository` and `update_repository` write it, and `set_repository` links a \
-         task to one. This list is the work profile: the administration tools (teams, \
-         boards, grants, metadata, dispatch, team page writes) are at /mcp?profile=admin, and \
-         each tool is at /mcp?profile=all."
+         task to one. `/mcp` lists the work profile; `/mcp?profile=admin` the \
+         administration tools (teams, boards, grants, metadata, dispatch, team page writes, \
+         org read tokens, purge, board flow); `/mcp?profile=all` each tool. Every tool is \
+         callable under every profile."
     );
 
     // --- KAIROS-T-0392: stateless — no handshake, a stale session id -------
@@ -789,6 +790,13 @@ async fn mcp_endpoint_against_live_stack() {
             "the default is the work profile"
         );
         assert_eq!(names_of(&list_at("/mcp?profile=work").await), work);
+        // KAIROS-T-0465: an empty value is the default, and case does not
+        // matter.
+        assert_eq!(names_of(&list_at("/mcp?profile=").await), work);
+        assert_eq!(
+            names_of(&list_at("/mcp?profile=Admin").await),
+            names_of(&list_at("/mcp?profile=admin").await)
+        );
         let admin = names_of(&list_at("/mcp?profile=admin").await);
         assert!(admin.iter().all(|name| !work.contains(name)), "{admin:?}");
         assert_eq!(
@@ -812,7 +820,8 @@ async fn mcp_endpoint_against_live_stack() {
             Some(&alice_token),
             None,
             Some(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-                        "params": {"name": "list_templates", "arguments": {}}})),
+                        "params": {"name": "board_flow",
+                                   "arguments": {"board": "platform-delivery"}}})),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");

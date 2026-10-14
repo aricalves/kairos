@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use kairos_client::types_team_pages::{CreateTeamPageRequest, TeamPage, UpdateTeamPageRequest};
 
+use super::teams::team_id;
 use crate::commands::entities::require_confirm;
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
@@ -121,18 +122,10 @@ pub enum TeamPagesCommand {
     },
 }
 
-/// The UUID of a team from its slug or its UUID.
-async fn team_id(client: &kairos_client::KairosClient, team: &str) -> Result<String, CliError> {
-    if looks_like_uuid(team) {
-        return Ok(team.to_string());
-    }
-    Ok(client.get_team_by_slug(team).await?.id)
-}
-
 /// Whether a reference has the shape of a UUID (8-4-4-4-12 hex digits). A
 /// team slug never does: a slug starts with a letter and has no 36-character
 /// form of this shape in practice.
-fn looks_like_uuid(reference: &str) -> bool {
+pub(crate) fn looks_like_uuid(reference: &str) -> bool {
     reference.len() == 36
         && reference.char_indices().all(|(i, c)| match i {
             8 | 13 | 18 | 23 => c == '-',
@@ -383,6 +376,12 @@ impl TeamPagesCommand {
                 position,
                 common,
             } => {
+                if parent.is_none() && !root && slug.is_none() && position.is_none() {
+                    return Err(CliError::Failure(
+                        "The command has no change. Use --parent, --root, --slug or --position."
+                            .to_string(),
+                    ));
+                }
                 let client = client(&common)?;
                 let team_id = team_id(&client, &team).await?;
                 let pages = client.list_team_pages(&team_id).await?;
@@ -419,7 +418,7 @@ impl TeamPagesCommand {
                 confirm,
                 common,
             } => {
-                require_confirm(confirm, "archive the page")?;
+                require_confirm(confirm, &format!("the page {page}"))?;
                 let client = client(&common)?;
                 let team_id = team_id(&client, &team).await?;
                 let pages = client.list_team_pages(&team_id).await?;

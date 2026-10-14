@@ -296,7 +296,7 @@ pub struct LaneArgs {
     /// The task's short code (e.g. ACME-T-0001)
     pub short_code: String,
     /// The lane: planned or support
-    #[arg(value_name = "LANE")]
+    #[arg(value_name = "LANE", value_parser = ["planned", "support"])]
     pub work_class: String,
     #[command(flatten)]
     pub common: Common,

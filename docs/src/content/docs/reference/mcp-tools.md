@@ -845,7 +845,7 @@ both fields were already *readable* through `get_item`. They are accepted now.
 Refuses: `VALIDATION` for an unknown `item_type`; for a `task_type`,
 `work_class`, `complexity` or `bucket_type` outside its vocabulary; for a `decision_date` that is not `YYYY-MM-DD`; for a type-specific
 argument passed with the wrong `item_type`, naming the type it belongs to; for a
-document with no `board` and no `parent`, or whose parent is not a strategy, initiative or
+document with no `board`, or whose parent is not a strategy, initiative or
 task; for a document with `repository`; for a `parent` relationship that the type rules do not allow, with the
 rule in the message; for a `parent` that does not name a live item; for an unknown template,
 and for a template *name* that matches more than one template, which asks for
@@ -1603,7 +1603,7 @@ short code; `FORBIDDEN` without `manage_tasks`.
 
 ## The structure of the organization
 
-These four tools change the teams, the boards and the grants of the
+These tools change the teams, the boards and the grants of the
 organization. An organization admin can use each tool. A principal with the
 capability [`manage_structure`](../capabilities/#manage_structure) can use them
 too, at the scope of the grant:
@@ -1636,13 +1636,13 @@ transaction. That board is the board of `POST /api/boards` with `board_level`
 | `team_type` | string | no | `stream_aligned` | `stream_aligned`, `platform`, `enabling` or `complicated_subsystem`. |
 | `adr_board` | boolean | no | `false` | `true` also makes the ADR board of the team. |
 
-The new boards have no members. Use `add_team_member` and `grant_capability`.
+The new board has no members. Use `add_team_member` and `grant_capability`.
 
 The result is two lines:
 
 ```text
 Created team home-ops (Home operations, stream_aligned). Delivery board: home-ops-delivery (prefix OPS).
-The boards have no members. Use add_team_member and grant_capability.
+The board has no members. Use add_team_member and grant_capability.
 ```
 
 With `adr_board` `true`, the first line ends with `ADR board: home-ops-adrs.`

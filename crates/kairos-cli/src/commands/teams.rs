@@ -5,6 +5,7 @@ use kairos_client::types_org::{
     AddTeamMemberRequest, CreateTeamRequest, ItemTeam, Team, TeamMember, UpdateTeamRequest,
 };
 
+use super::team_pages::looks_like_uuid;
 use crate::commands::entities::{ListArgs, require_confirm};
 use crate::commands::repos::family_of;
 use crate::context::{Common, client, print_json};
@@ -18,8 +19,8 @@ pub enum TeamsCommand {
     List(ListArgs),
     /// Show one team
     Get {
-        /// Team id (UUID)
-        team_id: String,
+        /// Team slug or UUID
+        team: String,
         #[command(flatten)]
         common: Common,
     },
@@ -45,8 +46,8 @@ pub enum TeamsCommand {
     },
     /// Update a team's name, slug, and/or type
     Update {
-        /// Team id (UUID)
-        team_id: String,
+        /// Team slug or UUID
+        team: String,
         /// New name
         #[arg(long)]
         name: Option<String>,
@@ -61,8 +62,8 @@ pub enum TeamsCommand {
     },
     /// Soft-delete a team (requires --confirm)
     Delete {
-        /// Team id (UUID)
-        team_id: String,
+        /// Team slug or UUID
+        team: String,
         /// Actually delete
         #[arg(long)]
         confirm: bool,
@@ -121,15 +122,15 @@ fn team_source(team: &ItemTeam) -> &'static str {
 pub enum TeamMembersCommand {
     /// List a team's members
     List {
-        /// Team id (UUID)
-        team_id: String,
+        /// Team slug or UUID
+        team: String,
         #[command(flatten)]
         common: Common,
     },
     /// Add a user to a team
     Add {
-        /// Team id (UUID)
-        team_id: String,
+        /// Team slug or UUID
+        team: String,
         /// The user: a user id, an email, a user name or the name of a
         /// service account (see `kairos members list`)
         #[arg(long, value_name = "USER")]
@@ -139,8 +140,8 @@ pub enum TeamMembersCommand {
     },
     /// Remove a user from a team
     Remove {
-        /// Team id (UUID)
-        team_id: String,
+        /// Team slug or UUID
+        team: String,
         /// The user: a user id, an email or a user name
         #[arg(long, value_name = "USER")]
         user: String,
@@ -199,8 +200,9 @@ impl TeamsCommand {
                 );
                 Ok(())
             }
-            Self::Get { team_id, common } => {
+            Self::Get { team, common } => {
                 let client = client(&common)?;
+                let team_id = team_id(&client, &team).await?;
                 let team = client.get_team(&team_id).await?;
                 if common.json {
                     return print_json(&team);
@@ -228,16 +230,13 @@ impl TeamsCommand {
                     return print_json(&team);
                 }
                 println!(
-                    "Kairos made the team {} ({}, id {}). The delivery board is {}.",
-                    team.name,
-                    team.slug,
-                    team.id,
-                    team.delivery_board_id.as_deref().unwrap_or("-")
+                    "Kairos made the team {} ({}, id {}). The delivery board is {}-delivery.",
+                    team.name, team.slug, team.id, team.slug
                 );
                 Ok(())
             }
             Self::Update {
-                team_id,
+                team,
                 name,
                 slug,
                 team_type,
@@ -249,6 +248,7 @@ impl TeamsCommand {
                     ));
                 }
                 let client = client(&common)?;
+                let team_id = team_id(&client, &team).await?;
                 let team = client
                     .update_team(
                         &team_id,
@@ -271,12 +271,13 @@ impl TeamsCommand {
                 Ok(())
             }
             Self::Delete {
-                team_id,
+                team,
                 confirm,
                 common,
             } => {
-                require_confirm(confirm, &format!("the team {team_id}"))?;
+                require_confirm(confirm, &format!("the team {team}"))?;
                 let client = client(&common)?;
+                let team_id = team_id(&client, &team).await?;
                 let response = client.delete_team(&team_id).await?;
                 if common.json {
                     return print_json(&response);
@@ -349,8 +350,9 @@ impl TeamsCommand {
 impl TeamMembersCommand {
     pub async fn run(self) -> Result<(), CliError> {
         match self {
-            Self::List { team_id, common } => {
+            Self::List { team, common } => {
                 let client = client(&common)?;
+                let team_id = team_id(&client, &team).await?;
                 let members = client.list_team_members(&team_id).await?;
                 if common.json {
                     return print_json(&members);
@@ -362,12 +364,9 @@ impl TeamMembersCommand {
                 }
                 Ok(())
             }
-            Self::Add {
-                team_id,
-                user,
-                common,
-            } => {
+            Self::Add { team, user, common } => {
                 let client = client(&common)?;
+                let team_id = team_id(&client, &team).await?;
                 let member = client
                     .add_team_member(&team_id, &AddTeamMemberRequest { user_id: user })
                     .await?;
@@ -375,24 +374,32 @@ impl TeamMembersCommand {
                     return print_json(&member);
                 }
                 println!(
-                    "Kairos added {} ({}) to the team {team_id}.",
+                    "Kairos added {} ({}) to the team {team}.",
                     member.display_name, member.email
                 );
                 Ok(())
             }
-            Self::Remove {
-                team_id,
-                user,
-                common,
-            } => {
+            Self::Remove { team, user, common } => {
                 let client = client(&common)?;
+                let team_id = team_id(&client, &team).await?;
                 let response = client.remove_team_member(&team_id, &user).await?;
                 if common.json {
                     return print_json(&response);
                 }
-                println!("Kairos removed the user {user} from the team {team_id}.");
+                println!("Kairos removed the user {user} from the team {team}.");
                 Ok(())
             }
         }
     }
+}
+
+/// The UUID of a team from its slug or its UUID.
+pub(crate) async fn team_id(
+    client: &kairos_client::KairosClient,
+    team: &str,
+) -> Result<String, CliError> {
+    if looks_like_uuid(team) {
+        return Ok(team.to_string());
+    }
+    Ok(client.get_team_by_slug(team).await?.id)
 }

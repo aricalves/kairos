@@ -38,7 +38,7 @@ pub enum ColumnsCommand {
         common: Common,
     },
     /// Change a column (needs configure_boards): its name, position, done
-    /// flag, claims flag or WIP limit
+    /// flag or claims flag. `kairos boards wip-limit` sets the WIP limit
     Update {
         /// Board slug or id (UUID)
         #[arg(value_name = "BOARD")]
@@ -210,6 +210,12 @@ impl ColumnsCommand {
                 claims,
                 common,
             } => {
+                if name.is_none() && position.is_none() && done.is_none() && claims.is_none() {
+                    return Err(CliError::Failure(
+                        "The command has no change. Use --name, --position, --done or --claims."
+                            .to_string(),
+                    ));
+                }
                 let client = client(&common)?;
                 let detail = board(&client, &b).await?;
                 let target = find_column(&detail, &column)?;

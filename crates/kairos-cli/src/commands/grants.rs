@@ -8,6 +8,7 @@ use kairos_client::types_org::{
     AddBoardMemberRequest, CreateStructureGrantRequest, ReplaceCapabilitiesRequest, StructureGrant,
 };
 
+use crate::commands::entities::require_confirm;
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
 use crate::table::Table;
@@ -47,11 +48,11 @@ pub enum GrantsCommand {
     #[command(name = "board-set")]
     BoardSet {
         /// The board, by slug or id (UUID)
-        #[arg(value_name = "BOARD")]
+        #[arg(long)]
         board: String,
         /// The member: a user id, an email, a user name or the name of a
         /// service account
-        #[arg(value_name = "USER")]
+        #[arg(long)]
         user: String,
         /// A board capability; repeat it. The list replaces the set
         #[arg(long = "capability", value_name = "CAPABILITY", required = true)]
@@ -64,12 +65,15 @@ pub enum GrantsCommand {
     #[command(name = "board-revoke")]
     BoardRevoke {
         /// The board, by slug or id (UUID)
-        #[arg(value_name = "BOARD")]
+        #[arg(long)]
         board: String,
         /// The member: a user id, an email, a user name or the name of a
         /// service account
-        #[arg(value_name = "USER")]
+        #[arg(long)]
         user: String,
+        /// Revoke them
+        #[arg(long)]
+        confirm: bool,
         #[command(flatten)]
         common: Common,
     },
@@ -197,8 +201,13 @@ impl GrantsCommand {
             Self::BoardRevoke {
                 board,
                 user,
+                confirm,
                 common,
             } => {
+                require_confirm(
+                    confirm,
+                    &format!("the board capabilities of {user} on {board}"),
+                )?;
                 let client = client(&common)?;
                 let board_id = client.get_board(&board).await?.board.id;
                 let revoked = client.remove_board_member(&board_id, &user).await?;
