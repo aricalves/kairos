@@ -206,7 +206,7 @@ A board (`/api/boards` list element).
 | `id` | `string` | yes | Board id (UUID). |
 | `name` | `string` | yes |  |
 | `slug` | `string` | yes |  |
-| `team_id` | `string`, nullable | no | Owning team (UUID). A delivery board has one (COLLIERY-T-0230). An ADR board can have one: the ADR board of the team (COLLIERY-T-3102). A board of the organization has none: its team is the list of its members. |
+| `team_id` | `string`, nullable | no | Owning team (UUID). A delivery board has one (COLLIERY-T-0230). An ADR board can have one: the ADR board of the team (COLLIERY-T-3102). A strategy or initiative board has one too (KAIROS-T-0440): the one in the create, or its own team. The ADR board of the organization has none. |
 | `updated_at` | `string` | yes | RFC 3339. |
 
 ## BoardColumn

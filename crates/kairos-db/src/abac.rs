@@ -120,6 +120,9 @@ struct BoolRow {
 /// ([`kairos_core::abac::team_implies_on_adr_board`], bound as `$5`, tested
 /// against `boards.board_level`): it adds `manage_adrs` (COLLIERY-T-3108).
 /// The organization ADR board has no team, so the arm never matches there.
+/// On a strategy or initiative board, the team (KAIROS-T-0440) gives what
+/// board membership gives there (`$6`, `$7` below), with the same exception
+/// for an archive and a restore.
 ///
 /// Third arm (KAIROS-T-0410, KAIROS-A-0025 decision 1): on a board of the
 /// level `strategy` or `initiative`, a principal who holds ANY grant on the
@@ -177,7 +180,9 @@ fn check_capability_with(
                 JOIN team_members tm ON tm.team_id = b.team_id
                 WHERE b.id = $1
                   AND tm.user_id = $2
-                  AND ($4 OR ($5 AND b.board_level = 'adr'))
+                  AND ($4 OR ($5 AND b.board_level = 'adr')
+                       OR ($6 AND b.board_level = 'strategy')
+                       OR ($7 AND b.board_level = 'initiative'))
             )
             OR EXISTS (
                 SELECT 1

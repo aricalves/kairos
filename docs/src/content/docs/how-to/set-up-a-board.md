@@ -16,8 +16,9 @@ them reachable, and give them the fields they fill in.
   returns 422 `TEAM_HAS_DELIVERY_BOARD`, and the response names the board that
   the team has. You cannot delete the only delivery board of a team, and you
   cannot change the team of a board.
-- A strategy or initiative board has no team. Do not send `team_id` for these
-  boards.
+- A strategy or initiative board has a team. Send `team_id` to use a team. With
+  no `team_id`, Kairos makes an empty team for the board, with the slug
+  `<level>-<board slug>` and a charter. An administrator adds people to it.
 - An ADR board can have a team. A team ADR board holds the delivery ADRs of
   the team. Send `team_id`, and send the prefix of the team (the prefix of its
   delivery board) as `code_prefix`. A different prefix returns 422

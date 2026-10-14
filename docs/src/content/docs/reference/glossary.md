@@ -161,11 +161,11 @@ Every board has a team. The rule has two forms.
 - An ADR board can have a team: the ADR board of the team, for the delivery
   ADRs of the team. It has the prefix of the team. A team has only one ADR
   board. When the team is deleted, its ADR board is deleted too.
-- A board of the organization has the level `strategy` or `initiative`, or it
-  is an ADR board with no team. It has no delivery team and no `team_id`. Its team is the list of the members
-  of the board. A person joins that team when an administrator adds the person
-  to the board.
-  Kairos refuses to create a strategy or initiative board with a `team_id`.
+- A strategy or initiative board has a team (KAIROS-T-0440): the team in the
+  create request, or its own empty team, `<level>-<board slug>`. The members of
+  that team can edit and move the items of the board. Each person with a grant
+  on the board can do the same. An ADR board with no team is the ADR board of
+  the organization.
 
 Documents sit on no board at all. A document has an owner, and the owner is a
 board: see [owner board](#owner-board).

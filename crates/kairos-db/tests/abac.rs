@@ -1255,6 +1255,60 @@ fn board_membership_gives_edit_and_move_on_strategy_and_initiative_boards() {
     .expect("edit facts");
     assert!(!rules::may_edit_item(edit));
 
+    // KAIROS-T-0440 (KAIROS-A-0026): the board has its own team. A member of
+    // that team gets what board membership gives, with no grant: the edit
+    // and the move, not configuration, not archive, and nothing on the
+    // strategy board, which has a team of its own.
+    let team: Option<Uuid> = schema::boards::table
+        .find(initiatives)
+        .select(schema::boards::team_id)
+        .first(&mut conn)
+        .expect("the board");
+    let team = team.expect("an initiative board has a team");
+    diesel::insert_into(schema::team_members::table)
+        .values(kairos_db::models::teams::NewTeamMember {
+            team_id: team,
+            user_id: outsider,
+        })
+        .execute(&mut conn)
+        .expect("the outsider joins the team of the board");
+    assert!(check(
+        &mut conn,
+        initiatives,
+        outsider,
+        rules::MANAGE_INITIATIVES
+    ));
+    assert!(check(
+        &mut conn,
+        initiatives,
+        outsider,
+        rules::TRANSITION_ITEMS
+    ));
+    assert!(!check(
+        &mut conn,
+        initiatives,
+        outsider,
+        rules::CONFIGURE_BOARDS
+    ));
+    assert!(!check(
+        &mut conn,
+        initiatives,
+        outsider,
+        rules::ADMINISTER_MEMBERS
+    ));
+    assert!(!granted(
+        &mut conn,
+        initiatives,
+        outsider,
+        rules::MANAGE_INITIATIVES
+    ));
+    assert!(!check(
+        &mut conn,
+        strategy,
+        outsider,
+        rules::MANAGE_STRATEGIES
+    ));
+
     drop(conn);
     sql_query(format!(
         "DROP DATABASE IF EXISTS {MEMBER_SCRATCH_DB} WITH (FORCE)"

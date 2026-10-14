@@ -1673,7 +1673,7 @@ columns and transitions of its level.
 | `slug` | string | yes | — | The slug of the board. It must match `^[a-z][a-z0-9_-]{1,62}$`. |
 | `board_level` | string | yes | — | `strategy`, `initiative`, `delivery` or `adr`. |
 | `code_prefix` | string | yes | — | The short-code prefix of the board. It must match `^[A-Z][A-Z0-9]{1,9}$`. The ADR board of a team takes the prefix of the team. |
-| `team` | string | no | none | The owner team. Slug or UUID. A delivery board must have a team, and the team must have no delivery board. A strategy or an initiative board must not have a team. An ADR board with a team is the ADR board of that team. |
+| `team` | string | no | none | The owner team. Slug or UUID. A delivery board must have a team, and the team must have no delivery board. A strategy or an initiative board with no team gets its own empty team, `<level>-<slug>`. An ADR board with a team is the ADR board of that team. |
 
 Requires the organization admin role or `manage_structure` on the
 organization. A grant on one board does not create a board.

@@ -93,15 +93,6 @@ pub enum BoardError {
         board_name: String,
         board_slug: String,
     },
-    /// `create_board`: a strategy or initiative board was sent with a team
-    /// (COLLIERY-T-0242). The team of such a board is the list of its
-    /// members, so it has no `team_id`. A delivery board and an ADR board
-    /// can have a team (COLLIERY-T-3102).
-    #[error(
-        "Only a delivery board or an ADR board has a team. Do not send team_id for a board of \
-         level {0}."
-    )]
-    OrganizationBoardHasNoTeam(BoardLevel),
     /// `create_board`: the team has a live ADR board (COLLIERY-T-3102). A
     /// team has at most one ADR board. Carries the board that the team has.
     #[error(
@@ -301,6 +292,67 @@ fn column_name(columns: &[rules::Column], id: Uuid) -> Result<String, BoardError
 ///
 /// Each function that counts the delivery boards of a team takes this lock
 /// first. Two of them cannot then count at the same time and each write.
+/// The slug of the team of a strategy or initiative board:
+/// `<level>-<board slug>` (KAIROS-T-0440), cut to the 63 characters of a
+/// slug, with `-2`, `-3`, … when a live team has it.
+pub fn board_team_slug(
+    conn: &mut PgConnection,
+    level: BoardLevel,
+    board_slug: &str,
+) -> Result<String, DieselError> {
+    use crate::schema::teams::dsl;
+    let base: String = format!("{level}-{board_slug}").chars().take(60).collect();
+    let base = base.trim_end_matches('-').to_string();
+    let mut candidate = base.clone();
+    for n in 2.. {
+        let taken: Option<Uuid> = dsl::teams
+            .filter(dsl::slug.eq(&candidate))
+            .filter(dsl::deleted_at.is_null())
+            .select(dsl::id)
+            .first(conn)
+            .optional()?;
+        if taken.is_none() {
+            break;
+        }
+        candidate = format!("{base}-{n}");
+    }
+    Ok(candidate)
+}
+
+/// Make the empty team of a new strategy or initiative board, with its
+/// charter (KAIROS-T-0440). It has the name of the board.
+fn create_board_team(
+    conn: &mut PgConnection,
+    level: BoardLevel,
+    board_name: &str,
+    board_slug: &str,
+    actor: Option<Uuid>,
+) -> Result<Uuid, BoardError> {
+    use crate::models::teams::{NewTeam, Team};
+    let slug = board_team_slug(conn, level, board_slug)?;
+    let team: Team = diesel::insert_into(crate::schema::teams::table)
+        .values(NewTeam {
+            name: board_name.to_string(),
+            slug: slug.clone(),
+            team_type: crate::models::enums::TeamType::StreamAligned,
+        })
+        .returning(Team::as_returning())
+        .get_result(conn)?;
+    let actor_id = actor.unwrap_or_else(Uuid::nil);
+    crate::team_pages::seed_team_charter(conn, team.id, actor_id)?;
+    if let Some(actor_id) = actor {
+        log_activity(
+            conn,
+            actor_id,
+            ActivityAction::Create,
+            Some(team.id),
+            "team",
+            format!("team:{slug} for board:{board_slug} level:{level}"),
+        )?;
+    }
+    Ok(team.id)
+}
+
 fn lock_team(conn: &mut PgConnection, team_id: Uuid) -> Result<Option<String>, DieselError> {
     use crate::schema::teams::dsl;
     // The row of a deleted team is locked too: a lock is about the row,
@@ -743,8 +795,9 @@ fn seeded_claims_column(level: BoardLevel, name: &str) -> bool {
 /// - A delivery board for a team that has a LIVE delivery board is refused
 ///   with [`BoardError::TeamHasDeliveryBoard`], which names that board. A
 ///   deleted board does not count: it is not a board of the team any more.
-/// - A strategy or initiative board with a `team_id` is refused with
-///   [`BoardError::OrganizationBoardHasNoTeam`].
+/// - A strategy or initiative board has a team (KAIROS-T-0440,
+///   KAIROS-A-0026): the one in the request, or its own empty team
+///   `<level>-<slug>`, made with the board, with its charter.
 ///
 /// # A team has at most one ADR board (COLLIERY-T-3102)
 ///
@@ -798,9 +851,6 @@ pub fn create_board(
     if level == BoardLevel::Delivery && team_id.is_none() {
         return Err(BoardError::DeliveryBoardNeedsTeam);
     }
-    if !matches!(level, BoardLevel::Delivery | BoardLevel::Adr) && team_id.is_some() {
-        return Err(BoardError::OrganizationBoardHasNoTeam(level));
-    }
     if let CodePrefix::Given(prefix) = code_prefix
         && !short_code::is_valid_prefix(prefix)
     {
@@ -813,6 +863,16 @@ pub fn create_board(
 
         // COLLIERY-T-0255: two live boards cannot have the same slug.
         check_board_slug(conn, slug, None)?;
+
+        // KAIROS-T-0440 (KAIROS-A-0026): a strategy or initiative board has a
+        // team. With no team in the request, the board gets its own empty
+        // team, `<level>-<slug>`, with its charter; an admin adds people.
+        let team_id = match (level, team_id) {
+            (BoardLevel::Strategy | BoardLevel::Initiative, None) => {
+                Some(create_board_team(conn, level, name, slug, actor)?)
+            }
+            (_, team_id) => team_id,
+        };
 
         // The prefix of the team, for a team ADR board (COLLIERY-T-3102).
         let mut team_prefix: Option<String> = None;
@@ -831,6 +891,7 @@ pub fn create_board(
                     }
                     team_prefix = delivery.map(|board| board.code_prefix);
                 }
+                BoardLevel::Strategy | BoardLevel::Initiative => {}
                 _ => {
                     if let Some(board) = delivery {
                         return Err(BoardError::TeamHasDeliveryBoard {

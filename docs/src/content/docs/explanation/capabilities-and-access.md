@@ -120,7 +120,9 @@ of it — there is no read grant to count, because reading is open. A member
 holds `manage_strategies` (on a strategy board) or `manage_initiatives` (on an
 initiative board), and `transition_items`, with no further grant. So one grant
 per person, once, is enough for the person to work the shared initiative
-board: `configure_boards` alone would do.
+board: `configure_boards` alone would do. Each strategy and initiative board
+also has a team (KAIROS-T-0440), and a member of that team gets the same with
+no grant: joining the team is the other way in.
 
 The reason is who works at these levels. A team may shape an initiative
 together, but people, not teams, answer for strategies and initiatives

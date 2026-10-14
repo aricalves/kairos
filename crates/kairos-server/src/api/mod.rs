@@ -963,7 +963,6 @@ pub fn map_board_error(e: BoardError) -> ApiError {
         // T-0242), and no transition or move endpoint creates a board.
         | BoardError::DeliveryBoardNeedsTeam
         | BoardError::TeamHasDeliveryBoard { .. }
-        | BoardError::OrganizationBoardHasNoTeam(_)
         // The create of an ADR board for a team (COLLIERY-T-3102).
         | BoardError::TeamHasAdrBoard { .. }
         | BoardError::TeamAdrBoardPrefix { .. }

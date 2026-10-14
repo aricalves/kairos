@@ -28,8 +28,9 @@ pub struct Board {
     pub board_level: String,
     /// Owning team (UUID). A delivery board has one (COLLIERY-T-0230). An
     /// ADR board can have one: the ADR board of the team (COLLIERY-T-3102).
-    /// A board of the organization has none: its team is the list of its
-    /// members.
+    /// A strategy or initiative board has one too (KAIROS-T-0440): the one
+    /// in the create, or its own team. The ADR board of the organization has
+    /// none.
     pub team_id: Option<String>,
     /// The short-code prefix of the board (COLLIERY-T-3099): an item on
     /// the board gets a code `{code_prefix}-{type letter}-{number}`. It is

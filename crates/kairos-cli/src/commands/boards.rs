@@ -29,7 +29,8 @@ pub enum BoardsCommand {
         #[arg(long)]
         level: String,
         /// The owner team, by slug or id (UUID). A delivery board needs one. An
-        /// ADR board with a team is the ADR board of that team
+        /// ADR board with a team is the ADR board of that team. A strategy or
+        /// initiative board with no team gets its own empty team
         #[arg(long)]
         team: Option<String>,
         /// The short-code prefix of the board, for example OPS (a capital
