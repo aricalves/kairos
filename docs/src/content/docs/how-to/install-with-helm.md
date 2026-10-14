@@ -177,6 +177,20 @@ log has the error. Repair the
 schema and run `kubectl exec deploy/kairos -- kairos-server migrate-tenants`;
 the organization serves again within 30 seconds.
 
+### From 0.12 to 0.13
+
+Three changes of 0.13 show after the upgrade. They apply to Compose too.
+
+- The migration `team_scaffold_removed` deletes the seed folders of a team
+  that nobody edited. It has no down.
+- The code index has a new schema. Every repository gets a full build after
+  the upgrade, one at a time. Until the build of a repository ends,
+  `kairos index update` on that repository fails with a schema-version error:
+  run `kairos index --full`, or wait.
+- Every repository follows the default branch of its forge now. The next
+  fetch replaces a branch that a person set by hand in 0.12. Set it again
+  with `kairos repos update <slug> --default-branch <branch>`.
+
 ## Trying it out without a database
 
 `helm install` with nothing but the two OIDC values works, because the chart
