@@ -3,6 +3,8 @@ title: "Use a hosted model for the code index summaries"
 ---
 
 Kairos writes a summary of each function and file of an indexed repository.
+The test functions and the test files get a summary too. Thus a repository
+with much test code sends more requests to the provider.
 By default a model embedded in the server writes them, on the CPU of the
 host. An organization can send this work to a hosted provider instead:
 Ollama Cloud, or AWS Bedrock. This page tells an operator and an
@@ -12,9 +14,13 @@ organization admin how.
 
 For a repository on a hosted provider, each request to the provider has:
 
-- the code of one changed function or type, with its signature,
+- the code of one changed function or type, with its signature (test code
+  too),
 - the signatures of the functions it calls,
-- for a file or a folder, the summaries of its parts.
+- for a file or a folder, the summaries of its parts,
+- for a file with no functions or types of its own (for example a `lib.rs`
+  of `mod` and `use` lines), its doc comment and its `mod`, `use`, import
+  and export lines.
 
 Nothing else leaves the host. The whole repository stays. The key of the
 organization stays. The work of a repository on the embedded model stays.
@@ -100,6 +106,24 @@ has:
    /api/code-index/query-vector`), with a time limit of 5 seconds.
 3. No vector. The search then uses the text of the summaries, and its first
    line tells why.
+
+The search also finds the words of the query in the names, the signatures
+and the summaries. It puts the two ranks together. A word of a name counts
+more than a word of a summary. The search cuts each identifier into its
+words: `parseDocument` and `parse_document` give "parse" and "document".
+It finds the stem of each word: "parsed" finds "parse". The index keeps
+these words in an SQLite FTS5 table with the Porter stemmer.
+
+Test code ranks below the other code. A Rust file in a `tests/` folder is
+test code too, with its helpers. To find tests, put a test word in the
+query. The test words are "test", "tested", "spec", "fixture", "mock",
+"stub", "assert" and their plurals. Then the test code ranks with the other
+code.
+For example, "how is parsing tested" gives the tests first.
+
+A type and its `impl` blocks give one result: the type, with the best rank
+of the group. Each method of an `impl` block is a different result. An
+`impl` block of a type that is not in the index is a result too.
 
 So with `--vector-provider remote`, the search uses vectors when the CLI
 can connect to Kairos. A CLI with no local vector model (the release build

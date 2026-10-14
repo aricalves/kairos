@@ -17,8 +17,8 @@ use std::sync::{Arc, Mutex};
 
 use kairos_embed::EmbeddingProvider;
 use kairos_index::{
-    CallEdge, DEFAULT_MIN_LINES, DuplicateKind, DuplicateOptions, Index, IndexError, Lookup,
-    SearchMode, SymbolInfo, UpdateOptions,
+    CallEdge, Coverage, DEFAULT_MIN_LINES, DuplicateKind, DuplicateOptions, FileInfo, Index,
+    IndexError, Lookup, Reference, SearchMode, SymbolInfo, SymbolSource, UpdateOptions,
 };
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
@@ -32,13 +32,19 @@ use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt, tool, tool_handler,
 use serde::Deserialize;
 
 use super::arguments::{Parameters, tool_error_of};
-use super::error::{IndexCommandError, ToolError};
+use super::error::{Choose, IndexCommandError, Place, SymbolArguments, ToolError};
 use super::query::{QuerySource, ROUTE_TIMEOUT, RouteFailure};
 
 /// The results of `code_search` when the call gives no `limit`.
 const DEFAULT_LIMIT: usize = 10;
 /// The most results of one `code_search`.
 const MAX_LIMIT: usize = 50;
+/// The most bytes of source text that `symbol` gives (KAIROS-T-0420).
+const SOURCE_LIMIT: usize = 16 * 1024;
+/// The uses of `references` when the call gives no `limit` (KAIROS-T-0419).
+pub(super) const DEFAULT_USES: usize = 100;
+/// The most uses of one `references`.
+pub(super) const MAX_USES: usize = 1000;
 /// The groups of `duplicates` when the call gives no `limit`.
 pub(super) const DEFAULT_GROUPS: usize = 20;
 /// The most groups of one `duplicates`.
@@ -101,21 +107,34 @@ pub struct SearchParams {
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 pub struct SymbolParams {
-    /// A name, `Type::name` (Rust) or `Type.name`.
+    /// A name, `Type::name` (Rust) or `Type.name`. A candidate from the list
+    /// of an AMBIGUOUS error, `name (file:line)`, is also correct.
     pub symbol: String,
     /// The file of the symbol, from the root of the checkout, or the end of
     /// its path. Give it when more than one symbol has the name.
     pub file: Option<String>,
+    /// A line of the symbol: the symbol that starts on it, or else the
+    /// smallest symbol that holds it. Give it when more than one symbol of
+    /// one file has the name.
+    pub line: Option<u32>,
+    /// Also give the source text of the symbol, from the file in the
+    /// checkout, at most 16384 bytes. Default false.
+    pub source: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 pub struct EdgeParams {
-    /// A name, `Type::name` (Rust) or `Type.name`.
+    /// A name, `Type::name` (Rust) or `Type.name`. A candidate from the list
+    /// of an AMBIGUOUS error, `name (file:line)`, is also correct.
     pub symbol: String,
     /// The file of the symbol, when more than one symbol has the name.
     pub file: Option<String>,
+    /// A line of the symbol, when more than one symbol of one file has the
+    /// name: the symbol that starts on it, or else the smallest symbol that
+    /// holds it.
+    pub line: Option<u32>,
     /// Also give the possible calls: calls by a name that more than one
     /// function has. Default false.
     pub possible: Option<bool>,
@@ -124,15 +143,39 @@ pub struct EdgeParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
+pub struct ReferencesParams {
+    /// A name, `Type::name` (Rust) or `Type.name`. A candidate from the list
+    /// of an AMBIGUOUS error, `name (file:line)`, is also correct.
+    pub symbol: String,
+    /// The file of the symbol, when more than one symbol has the name.
+    pub file: Option<String>,
+    /// A line of the symbol, when more than one symbol of one file has the
+    /// name: the symbol that starts on it, or else the smallest symbol that
+    /// holds it.
+    pub line: Option<u32>,
+    /// Also give the possible calls: calls by a name that more than one
+    /// function has. Default false.
+    pub possible: Option<bool>,
+    /// The most uses to give, from 1 to 1000. Default 100.
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 pub struct PathParams {
-    /// The symbol where the chain starts.
+    /// The symbol where the chain starts, as `symbol` of the tool `symbol`.
     pub from: String,
-    /// The symbol where the chain stops.
+    /// The symbol where the chain stops, as `symbol` of the tool `symbol`.
     pub to: String,
     /// The file of `from`, when more than one symbol has the name.
     pub from_file: Option<String>,
     /// The file of `to`, when more than one symbol has the name.
     pub to_file: Option<String>,
+    /// A line of `from`, when more than one symbol of one file has the name.
+    pub from_line: Option<u32>,
+    /// A line of `to`, when more than one symbol of one file has the name.
+    pub to_line: Option<u32>,
 }
 
 /// A kind of repeated code, as an argument.
@@ -403,20 +446,99 @@ impl CodeTools {
     }
 }
 
-/// Find the symbol, or the error that says why not.
-fn find(index: &Index, symbol: &str, file: Option<&str>) -> Result<SymbolInfo, ToolError> {
-    match index.lookup(symbol, file)? {
+/// The arguments that choose a symbol in `symbol`, `callers`, `callees`
+/// and `references`.
+pub(super) const SYMBOL: SymbolArguments = SymbolArguments {
+    symbol: "symbol",
+    file: "file",
+    line: "line",
+};
+/// The arguments of `path` for `from`.
+const FROM: SymbolArguments = SymbolArguments {
+    symbol: "from",
+    file: "from_file",
+    line: "from_line",
+};
+/// The arguments of `path` for `to`.
+const TO: SymbolArguments = SymbolArguments {
+    symbol: "to",
+    file: "to_file",
+    line: "to_line",
+};
+
+/// Find the symbol, or the error that says why not. Each tool that takes a
+/// symbol finds it here (KAIROS-T-0417).
+pub(super) fn find(
+    index: &Index,
+    symbol: &str,
+    file: Option<&str>,
+    line: Option<u32>,
+    args: SymbolArguments,
+) -> Result<SymbolInfo, ToolError> {
+    match index.lookup(symbol, file, line)? {
         Lookup::Found(found) => Ok(found),
-        Lookup::Missing => Err(ToolError::NoSymbol(match file {
-            Some(file) => format!("{symbol}\" in \"{file}"),
-            None => symbol.to_string(),
-        })),
-        Lookup::Ambiguous(all) => Err(ToolError::Ambiguous {
-            name: symbol.to_string(),
-            count: all.len(),
-            candidates: all.iter().take(20).map(described).collect(),
+        Lookup::Missing => Err(ToolError::NoSymbol {
+            name: symbol.trim().to_string(),
+            place: Place::of(file, line),
         }),
+        Lookup::Ambiguous(all) => Err(ambiguous(symbol, &all, args)),
     }
+}
+
+/// The error for more than one symbol: the candidates, and the argument
+/// that chooses one of them.
+fn ambiguous(symbol: &str, all: &[SymbolInfo], args: SymbolArguments) -> ToolError {
+    let files: std::collections::HashSet<&str> = all.iter().map(|s| s.file.as_str()).collect();
+    ToolError::Ambiguous {
+        name: symbol.trim().to_string(),
+        count: all.len(),
+        candidates: all.iter().take(20).map(described).collect(),
+        choose: Choose::of(files.len(), all.len(), args),
+    }
+}
+
+/// The source part of the result of `symbol` (KAIROS-T-0420): a line that
+/// says what the text is, then the text in a code fence.
+fn source_text(s: &SymbolInfo, source: Option<SymbolSource>) -> String {
+    let Some(source) = source else {
+        return format!(
+            "\nSource: none. The file {} is not in the checkout now.",
+            s.file
+        );
+    };
+    let mut out = format!(
+        "\nSource: lines {}-{}, {}.",
+        s.start_line,
+        s.end_line,
+        plural(source.bytes, "byte", "bytes")
+    );
+    if source.changed {
+        out.push_str(
+            " Warning: the file changed after the last index update. The source can be \
+             different from the symbol. Run `kairos index update`.",
+        );
+    }
+    if source.cut {
+        let next = s.start_line as usize + source.text.matches('\n').count();
+        out.push_str(&format!(
+            " The text is cut at the limit of {SOURCE_LIMIT} bytes: it has {} of {}. \
+             Read {} from line {next} for the rest.",
+            source.text.len(),
+            source.bytes,
+            s.file
+        ));
+    }
+    // A fence that is longer than each run of backticks in the text.
+    let longest = source
+        .text
+        .split(|c| c != '`')
+        .map(str::len)
+        .max()
+        .unwrap_or(0);
+    let fence = "`".repeat(longest.max(2) + 1);
+    let text = source.text.trim_end_matches('\n');
+    out.push_str(&format!("\n{fence}{}\n{text}\n{fence}", s.language));
+    out
 }
 
 /// `Stack::pop (src/stack.rs:20)`.
@@ -456,6 +578,108 @@ fn marks(edge: &CallEdge) -> String {
         out.push_str(", by name until the next SCIP run");
     }
     out
+}
+
+/// The marks of a use after its kind (KAIROS-T-0419): how the index knows
+/// a call that SCIP did not give.
+fn use_marks(r: &Reference) -> String {
+    let mut out = String::new();
+    if r.origin != "scip" {
+        out.push_str(", by name");
+    }
+    if r.class == "possible" {
+        out.push_str(&format!(
+            ", possible: 1 of {} functions with this name",
+            r.candidates
+        ));
+    }
+    if r.origin == "macro-text" {
+        out.push_str(", in the text of a macro");
+    }
+    if r.scip_pending {
+        out.push_str(", until the next SCIP run");
+    }
+    out
+}
+
+/// The text of `references`, for the MCP tool and for `kairos index
+/// references` (KAIROS-T-0419): the count of the uses by kind, what the
+/// index has for the language, then the uses by file.
+pub(super) fn references_text(
+    index: &Index,
+    s: &SymbolInfo,
+    possible: bool,
+    limit: usize,
+) -> Result<String, IndexError> {
+    let found = index.references(s.id, possible)?;
+    let uses = &found.uses;
+    let files: std::collections::BTreeSet<&str> = uses.iter().map(|u| u.file.as_str()).collect();
+    let mut out = format!("{} of {}", plural(uses.len(), "use", "uses"), described(s));
+    if uses.is_empty() {
+        out.push('.');
+    } else {
+        let kinds: Vec<String> = ["call", "type", "field", "import", "other"]
+            .iter()
+            .filter_map(|kind| {
+                let n = uses.iter().filter(|u| u.kind == *kind).count();
+                (n > 0).then(|| format!("{n} {kind}"))
+            })
+            .collect();
+        out.push_str(&format!(
+            " in {}: {}.",
+            plural(files.len(), "file", "files"),
+            kinds.join(", ")
+        ));
+    }
+    match found.coverage {
+        Coverage::Full => {}
+        Coverage::Pending(n) => out.push_str(&format!(
+            " {} after the last SCIP run: in them, the result has the calls only. Run \
+             `kairos index update --rust-edges` to get all the uses.",
+            plural(n, "Rust file changed", "Rust files changed")
+        )),
+        Coverage::CallsOnly if s.language == "rust" => out.push_str(
+            " The index has no SCIP data for the Rust files, so the result has the calls only. \
+             A build in a Cargo workspace runs SCIP.",
+        ),
+        Coverage::CallsOnly => out.push_str(&format!(
+            " For {} code, the index has the calls only: the uses as a type, a field or an \
+             import are not in the result.",
+            s.language
+        )),
+    }
+    if uses.len() > limit {
+        out.push_str(&format!(
+            " Only the first {limit} are shown. Give a larger `limit`, up to {MAX_USES}."
+        ));
+    }
+    let mut file = "";
+    for u in uses.iter().take(limit) {
+        if u.file != file {
+            file = &u.file;
+            out.push_str(&format!("\n{file}:"));
+        }
+        let place = match &u.enclosing {
+            Some(e) => format!("in {}", e.qualified()),
+            None => "at the top of the file".to_string(),
+        };
+        out.push_str(&format!(
+            "\n- line {}: {}, {place}{}",
+            u.line,
+            u.kind,
+            use_marks(u)
+        ));
+    }
+    if !possible {
+        let all = index.references(s.id, true)?.uses.len();
+        if all > uses.len() {
+            out.push_str(&format!(
+                "\n{} not shown. Set `possible` to true to see them.",
+                plural(all - uses.len(), "possible call is", "possible calls are")
+            ));
+        }
+    }
+    Ok(out)
 }
 
 /// The text of `duplicates`, for the MCP tool and for `kairos index
@@ -537,7 +761,7 @@ impl CodeTools {
     }
 
     #[tool(
-        description = "Search the code of this checkout by what it does. Give a description in plain words. The result is the best functions and types, with their files, lines and summaries. If the index has no summaries, the search reads the names, the signatures and the paths, and the result says so."
+        description = "Search the code of this checkout by what it does. Give a description in plain words. The result is the best functions and types, with their files, lines and summaries. If the index has no summaries, the search reads the names, the signatures and the paths, and the result says so. Test code ranks below the other code. To find tests, put a word such as \"test\" or \"tested\" in the description."
     )]
     async fn code_search(
         &self,
@@ -595,17 +819,16 @@ impl CodeTools {
             for (i, hit) in found.hits.iter().enumerate() {
                 let s = &hit.symbol;
                 out.push_str(&format!("\n{}. {}, {}", i + 1, described(s), s.kind));
+                if s.is_test {
+                    out.push_str(", test code");
+                }
                 match (&s.summary, &s.signature) {
                     (Some(summary), _) => out.push_str(&format!(": {summary}")),
                     (None, Some(signature)) => out.push_str(&format!(": `{signature}`")),
                     (None, None) => {}
                 }
                 if s.summary.is_none() && found.mode != SearchMode::Names {
-                    out.push_str(if s.is_test {
-                        " (test code: no summary, found by its name and path)"
-                    } else {
-                        " (no summary yet: found by its name and path)"
-                    });
+                    out.push_str(" (no summary yet: found by its name and path)");
                 }
             }
             Ok(out)
@@ -613,7 +836,7 @@ impl CodeTools {
     }
 
     #[tool(
-        description = "One symbol of this checkout: its kind, file, lines, signature and summary. `symbol` is a name, `Type::name` or `Type.name`. If more than one symbol has the name, the error lists them: give `file` to choose one."
+        description = "One symbol of this checkout: its kind, file, lines, signature and summary. `symbol` is a name, `Type::name` or `Type.name`. When a type and its impl blocks have the name, the result is the type. If more than one symbol has the name, the error lists them: give `file`, `line`, or a candidate from the list as `symbol`, to choose one. Give `source: true` to also get the source text of the symbol from the checkout. The text is at most 16384 bytes: the result says when it is cut. If the file changed after the last index update, the result says that the source can be different."
     )]
     async fn symbol(
         &self,
@@ -621,7 +844,13 @@ impl CodeTools {
     ) -> Result<CallToolResult, ErrorData> {
         result((|| {
             let index = self.open()?;
-            let s = find(&index, &params.symbol, params.file.as_deref())?;
+            let s = find(
+                &index,
+                &params.symbol,
+                params.file.as_deref(),
+                params.line,
+                SYMBOL,
+            )?;
             let mut out = format!(
                 "{} ({}, {})\nFile: {}:{}-{}",
                 s.qualified(),
@@ -636,18 +865,21 @@ impl CodeTools {
             }
             match &s.summary {
                 Some(summary) => out.push_str(&format!("\nSummary: {summary}")),
-                None if s.is_test => out.push_str("\nSummary: none. Test code gets no summary."),
                 None => out.push_str("\nSummary: none."),
             }
             if s.is_test {
                 out.push_str("\nThis is test code.");
+            }
+            if params.source.unwrap_or(false) {
+                let root = self.root().ok_or(ToolError::NoCheckout)?;
+                out.push_str(&source_text(&s, index.source(&root, &s, SOURCE_LIMIT)?));
             }
             Ok(out)
         })())
     }
 
     #[tool(
-        description = "The functions that call a symbol of this checkout. The result has the certain calls only, unless `possible` is true. A possible call is a call by a name that more than one function has: the result marks it. A call marked \"by name until the next SCIP run\" is in changed Rust code."
+        description = "The functions that call a symbol of this checkout. Give the symbol as for the tool `symbol`, with `file` and `line` when more than one symbol has the name. The result has the certain calls only, unless `possible` is true. A possible call is a call by a name that more than one function has: the result marks it. A call marked \"by name until the next SCIP run\" is in changed Rust code. For each use of the symbol, not only the calls, use `references`."
     )]
     async fn callers(
         &self,
@@ -655,7 +887,13 @@ impl CodeTools {
     ) -> Result<CallToolResult, ErrorData> {
         result((|| {
             let index = self.open()?;
-            let s = find(&index, &params.symbol, params.file.as_deref())?;
+            let s = find(
+                &index,
+                &params.symbol,
+                params.file.as_deref(),
+                params.line,
+                SYMBOL,
+            )?;
             let all = index.callers(s.id, true)?;
             let possible = params.possible.unwrap_or(false);
             let (shown, hidden): (Vec<&CallEdge>, Vec<&CallEdge>) =
@@ -691,7 +929,7 @@ impl CodeTools {
     }
 
     #[tool(
-        description = "The functions of this checkout that a symbol calls, and the names outside the checkout that it calls. The result has the certain calls only, unless `possible` is true. A possible call has one line for each function with that name, and the result marks it."
+        description = "The functions of this checkout that a symbol calls, and the names outside the checkout that it calls. Give the symbol as for the tool `symbol`, with `file` and `line` when more than one symbol has the name. The result has the certain calls only, unless `possible` is true. A possible call has one line for each function with that name, and the result marks it."
     )]
     async fn callees(
         &self,
@@ -699,7 +937,13 @@ impl CodeTools {
     ) -> Result<CallToolResult, ErrorData> {
         result((|| {
             let index = self.open()?;
-            let s = find(&index, &params.symbol, params.file.as_deref())?;
+            let s = find(
+                &index,
+                &params.symbol,
+                params.file.as_deref(),
+                params.line,
+                SYMBOL,
+            )?;
             let possible = params.possible.unwrap_or(false);
             let kairos_index::Callees {
                 edges,
@@ -773,7 +1017,36 @@ impl CodeTools {
     }
 
     #[tool(
-        description = "How one symbol of this checkout reaches another: the 3 shortest chains of certain calls from `from` to `to`, shortest first, each with other steps. Each chain has one call on each line, in order. Possible calls are not followed."
+        description = "Each use of a symbol of this checkout, not only the calls: in Rust, each use as a type, a field (a field of a type is a use of the type), an import, a call or other (a constant, a module), from the SCIP data of rust-analyzer. Each use has its file, its line, its kind and the symbol that holds it, by file. For Python, TypeScript, JavaScript and Go, the index has the calls only, and the result says so. Give the symbol as for the tool `symbol`, with `file` and `line` when more than one symbol has the name. Possible calls (by a name that more than one function has) are not shown, unless `possible` is true. `limit`: the most uses to give, from 1 to 1000, default 100."
+    )]
+    async fn references(
+        &self,
+        Parameters(params): Parameters<ReferencesParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        result((|| {
+            let limit = params.limit.unwrap_or(DEFAULT_USES);
+            if !(1..=MAX_USES).contains(&limit) {
+                return Err(ToolError::Limit(MAX_USES));
+            }
+            let index = self.open()?;
+            let s = find(
+                &index,
+                &params.symbol,
+                params.file.as_deref(),
+                params.line,
+                SYMBOL,
+            )?;
+            Ok(references_text(
+                &index,
+                &s,
+                params.possible.unwrap_or(false),
+                limit,
+            )?)
+        })())
+    }
+
+    #[tool(
+        description = "How one symbol of this checkout reaches another: the 3 shortest chains of certain calls from `from` to `to`, shortest first, each with other steps. Give `from` and `to` as `symbol` of the tool `symbol`, with `from_file`, `from_line`, `to_file` and `to_line` when more than one symbol has a name. Each chain has one call on each line, in order. Possible calls are not followed."
     )]
     async fn path(
         &self,
@@ -781,8 +1054,20 @@ impl CodeTools {
     ) -> Result<CallToolResult, ErrorData> {
         result((|| {
             let index = self.open()?;
-            let from = find(&index, &params.from, params.from_file.as_deref())?;
-            let to = find(&index, &params.to, params.to_file.as_deref())?;
+            let from = find(
+                &index,
+                &params.from,
+                params.from_file.as_deref(),
+                params.from_line,
+                FROM,
+            )?;
+            let to = find(
+                &index,
+                &params.to,
+                params.to_file.as_deref(),
+                params.to_line,
+                TO,
+            )?;
             let chains = index.paths(from.id, to.id, MAX_CHAINS)?;
             if chains.is_empty() {
                 return Ok(format!(
@@ -854,7 +1139,7 @@ impl CodeTools {
     }
 
     #[tool(
-        description = "The map of this checkout: each folder of source files, with its summary and its files, each file with its summary. Use it in place of .metis/code-index.md. `under` keeps the folders under one path."
+        description = "The map of this checkout: each folder of source and test files, with its summary and its files, each file with its summary. Use it in place of .metis/code-index.md. `under` keeps the folders under one path."
     )]
     async fn module_map(
         &self,
@@ -879,19 +1164,32 @@ impl CodeTools {
                 out.push_str(&format!("\n\n## {}\n", m.path));
                 out.push_str(m.summary.as_deref().unwrap_or("No summary."));
                 for f in &m.files {
-                    match &f.summary {
-                        Some(summary) => out.push_str(&format!("\n- {}: {summary}", f.path)),
-                        None => out.push_str(&format!(
-                            "\n- {} ({}{})",
-                            f.path,
-                            if f.is_test { "test code, " } else { "" },
-                            plural(f.symbols, "symbol", "symbols")
-                        )),
-                    }
+                    out.push_str("\n- ");
+                    out.push_str(&map_file_line(f));
                 }
             }
             Ok(out)
         })())
+    }
+}
+
+/// The line of one file in the module map, with no `- `: the path and the
+/// summary. A file with no summary shows its symbol count, or "declarations
+/// only" when it has no symbol to summarize (KAIROS-T-0425).
+fn map_file_line(f: &FileInfo) -> String {
+    let test = if f.is_test { "test code, " } else { "" };
+    match &f.summary {
+        Some(summary) => format!(
+            "{}{}: {summary}",
+            f.path,
+            if f.is_test { " (test code)" } else { "" }
+        ),
+        None if f.declarations_only => format!("{} ({test}declarations only)", f.path),
+        None => format!(
+            "{} ({test}{})",
+            f.path,
+            plural(f.symbols, "symbol", "symbols")
+        ),
     }
 }
 
@@ -921,6 +1219,7 @@ impl ServerHandler for CodeTools {
                 "{} Use these tools before you read files: \
                  `module_map` for the map, `code_search` to find code by what it does, \
                  `symbol` for one symbol, `callers` and `callees` for the call graph, \
+                 `references` for each use of a symbol (types, fields, imports and calls), \
                  `path` for how one symbol reaches another, and `duplicates` for repeated \
                  code. `fetch_index` opens a checkout: it takes the nearest index of the \
                  repository from Kairos. Run `kairos index update` after you change code.",
@@ -939,4 +1238,142 @@ const MAX_CHAINS: usize = 3;
 
 fn display(path: &Path) -> String {
     path.display().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sym(file: &str, line: u32) -> SymbolInfo {
+        SymbolInfo {
+            id: i64::from(line),
+            file: file.into(),
+            name: "ContentHash".into(),
+            container: None,
+            kind: "implementation".into(),
+            language: "rust".into(),
+            start_line: line,
+            end_line: line + 5,
+            signature: None,
+            is_test: false,
+            summary: None,
+        }
+    }
+
+    /// KAIROS-T-0425: a file with no symbol to summarize and no summary.
+    #[test]
+    fn a_file_of_declarations_with_no_summary_says_so() {
+        let file = |summary: Option<&str>, declarations_only, is_test| FileInfo {
+            path: "src/lib.rs".into(),
+            summary: summary.map(str::to_string),
+            symbols: 3,
+            is_test,
+            declarations_only,
+        };
+        assert_eq!(
+            map_file_line(&file(None, true, false)),
+            "src/lib.rs (declarations only)"
+        );
+        assert_eq!(
+            map_file_line(&file(None, true, true)),
+            "src/lib.rs (test code, declarations only)"
+        );
+        assert_eq!(
+            map_file_line(&file(None, false, false)),
+            "src/lib.rs (3 symbols)"
+        );
+        assert_eq!(
+            map_file_line(&file(Some("Declares the modules."), true, false)),
+            "src/lib.rs: Declares the modules."
+        );
+    }
+
+    /// KAIROS-T-0420: the source part of `symbol`.
+    #[test]
+    fn the_source_text_says_when_it_is_cut_or_changed() {
+        let s = sym("src/a.rs", 10);
+        assert_eq!(
+            source_text(&s, None),
+            "\nSource: none. The file src/a.rs is not in the checkout now."
+        );
+        let whole = SymbolSource {
+            text: "fn f() {}".into(),
+            bytes: 9,
+            cut: false,
+            changed: false,
+        };
+        assert_eq!(
+            source_text(&s, Some(whole)),
+            "\nSource: lines 10-15, 9 bytes.\n```rust\nfn f() {}\n```"
+        );
+        let cut = SymbolSource {
+            text: "/// ```\nfn f() {\n".into(),
+            bytes: 20000,
+            cut: true,
+            changed: true,
+        };
+        assert_eq!(
+            source_text(&s, Some(cut)),
+            "\nSource: lines 10-15, 20000 bytes. Warning: the file changed after the last \
+             index update. The source can be different from the symbol. Run `kairos index \
+             update`. The text is cut at the limit of 16384 bytes: it has 17 of 20000. Read \
+             src/a.rs from line 12 for the rest.\n````rust\n/// ```\nfn f() {\n````"
+        );
+    }
+
+    #[test]
+    fn candidates_in_one_file_ask_for_the_line() {
+        let all = [sym("src/document.rs", 126), sym("src/document.rs", 168)];
+        assert_eq!(
+            ambiguous("ContentHash", &all, SYMBOL).text(),
+            "AMBIGUOUS: 2 symbols have the name \"ContentHash\". They are in one file. \
+             Give the argument `line` to choose one. Or give a candidate from the list as \
+             `symbol`.\ndetails: {\"candidates\":[\"ContentHash (src/document.rs:126)\",\
+             \"ContentHash (src/document.rs:168)\"]}"
+        );
+    }
+
+    #[test]
+    fn candidates_in_different_files_ask_for_the_file() {
+        let all = [sym("src/a.rs", 1), sym("src/b.rs", 1)];
+        assert_eq!(
+            ambiguous("ContentHash", &all, FROM).to_string(),
+            "2 symbols have the name \"ContentHash\". Give the argument `from_file` to choose \
+             one. Or give a candidate from the list as `from`."
+        );
+        let all = [sym("src/a.rs", 1), sym("src/a.rs", 9), sym("src/b.rs", 1)];
+        assert_eq!(
+            ambiguous("ContentHash", &all, TO).to_string(),
+            "3 symbols have the name \"ContentHash\". Give the arguments `to_file` and \
+             `to_line` to choose one. Or give a candidate from the list as `to`."
+        );
+    }
+
+    #[test]
+    fn the_not_found_text_quotes_the_name_and_the_file() {
+        let text = |file, line| {
+            ToolError::NoSymbol {
+                name: "ContentHash".into(),
+                place: Place::of(file, line),
+            }
+            .text()
+        };
+        assert_eq!(
+            text(None, None),
+            "NOT_FOUND: No symbol has the name \"ContentHash\"."
+        );
+        assert_eq!(
+            text(Some("src/document.rs"), None),
+            "NOT_FOUND: No symbol has the name \"ContentHash\" in the file \"src/document.rs\"."
+        );
+        assert_eq!(
+            text(Some("src/document.rs"), Some(12)),
+            "NOT_FOUND: No symbol has the name \"ContentHash\" in the file \"src/document.rs\" \
+             at line 12."
+        );
+        assert_eq!(
+            text(None, Some(12)),
+            "NOT_FOUND: No symbol has the name \"ContentHash\" at line 12."
+        );
+    }
 }

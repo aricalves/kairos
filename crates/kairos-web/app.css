@@ -169,6 +169,11 @@
   border-left: 3px solid var(--ice);
 }
 
+/* KAIROS-T-0416: an owner lane (group-by-owner view). */
+.kairos-board__lane--owner {
+  border-left: 3px solid var(--ok);
+}
+
 /* KAIROS-T-0109: the repository lens — Aurora chips above the lanes. */
 .kairos-board__lens {
   margin-bottom: var(--space-sm);

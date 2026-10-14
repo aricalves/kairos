@@ -90,6 +90,9 @@ struct DragData {
     /// The card's current lane — `Some` for tasks, `None` for kinds that
     /// carry no lane (and therefore cannot lane-move).
     work_class: Option<String>,
+    /// The user id of the owner of the card (KAIROS-T-0416): an owner
+    /// lane accepts only the drops of its own cards.
+    owner: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +147,25 @@ fn drop_effect(drag: &DragData, column_id: &str, lane: Option<&str>) -> Option<D
             set_work_class: lane.map(str::to_string),
         }),
     }
+}
+
+/// [`drop_effect`] in a lane of a grouped board. The owner grouping is
+/// read-only (KAIROS-T-0416): a drop into the lane of a different owner
+/// does nothing. In the lane of the card, a drop in a different column
+/// transitions as before. The repository grouping keeps its rule
+/// (KAIROS-T-0109). Pure, host-tested.
+fn grouped_drop_effect(
+    drag: &DragData,
+    column_id: &str,
+    lane: Option<&str>,
+    group: &GroupLane,
+) -> Option<DropEffect> {
+    if let GroupLane::Owner(owner) = group
+        && drag.owner != *owner
+    {
+        return None;
+    }
+    drop_effect(drag, column_id, lane)
 }
 
 // ---------------------------------------------------------------------------
@@ -943,6 +965,9 @@ struct CardModel {
     repository: Option<String>,
     /// The person who has the task in Active (KAIROS-T-0359) — tasks only.
     claim: Option<data::TaskClaim>,
+    /// The owner of the card (KAIROS-T-0416): the person with the claim of
+    /// a task, or the owner of a strategy or an initiative.
+    owner: Option<CardOwner>,
     /// The slugs of the teams of a strategy or an initiative, by slug
     /// (KAIROS-T-0322): from its tasks and set by hand. Empty for the
     /// other kinds and for an item with no team.
@@ -953,6 +978,29 @@ struct CardModel {
     /// (KAIROS-T-0091).
     blocks: Option<data::BlocksCounts>,
     key: String,
+}
+
+/// The owner of a card (KAIROS-T-0416).
+#[derive(Clone, Debug, PartialEq)]
+struct CardOwner {
+    user_id: String,
+    display_name: String,
+}
+
+impl CardOwner {
+    fn of_claim(claim: &data::TaskClaim) -> Self {
+        CardOwner {
+            user_id: claim.user_id.clone(),
+            display_name: claim.display_name.clone(),
+        }
+    }
+
+    fn of_owner(owner: &data::ItemOwner) -> Self {
+        CardOwner {
+            user_id: owner.user_id.clone(),
+            display_name: owner.display_name.clone(),
+        }
+    }
 }
 
 /// The text of the chip of a cancelled task (KAIROS-T-0362).
@@ -999,7 +1047,8 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                 meta: Vec<(String, &'static str)>,
                 work_class: Option<String>,
                 repository: Option<String>,
-                claim: Option<data::TaskClaim>| {
+                claim: Option<data::TaskClaim>,
+                owner: Option<CardOwner>| {
         let progress = progress_of(short_code);
         let blocks = blocks_of(short_code);
         let teams = teams_of(short_code);
@@ -1008,11 +1057,12 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
             short_code: short_code.to_string(),
             title: title.to_string(),
             key: format!(
-                "{short_code}|{title}|{meta:?}|{work_class:?}|{repository:?}|{claim:?}|{teams:?}|{progress:?}|{blocks:?}"
+                "{short_code}|{title}|{meta:?}|{work_class:?}|{repository:?}|{claim:?}|{owner:?}|{teams:?}|{progress:?}|{blocks:?}"
             ),
             work_class,
             repository,
             claim,
+            owner,
             teams,
             progress,
             blocks,
@@ -1047,6 +1097,7 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                     None,
                     None,
                     None,
+                    item.owner.as_ref().map(CardOwner::of_owner),
                 )
             }));
             cards.extend(group.initiatives.iter().map(|item| {
@@ -1070,6 +1121,7 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                     None,
                     None,
                     None,
+                    item.owner.as_ref().map(CardOwner::of_owner),
                 )
             }));
             cards.extend(group.tasks.iter().map(|item| {
@@ -1091,6 +1143,7 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                     Some(item.work_class.clone()),
                     item.repository.as_ref().map(|r| r.slug.clone()),
                     item.claim.clone(),
+                    item.claim.as_ref().map(CardOwner::of_claim),
                 )
             }));
             cards.extend(group.adrs.iter().map(|item| {
@@ -1104,6 +1157,7 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                     &item.short_code,
                     &item.title,
                     meta,
+                    None,
                     None,
                     None,
                     None,
@@ -1305,6 +1359,15 @@ pub fn BoardPage() -> impl IntoView {
     })
     .into();
 
+    // KAIROS-T-0416: the user id of the reader. Their owner lane is first.
+    let me: Signal<Option<String>> = Memo::new(move |_| {
+        whoami
+            .and_then(|resource| resource.get())
+            .and_then(|result| result.ok())
+            .map(|me| me.user.id)
+    })
+    .into();
+
     view! {
         {move || match board.get() {
             // A load error renders above the (stale) board rather than
@@ -1318,7 +1381,7 @@ pub fn BoardPage() -> impl IntoView {
             _ => None,
         }}
         {move || board_key.get().map(|_| view! {
-            <BoardBody model powers mode on_changed on_error/>
+            <BoardBody model powers mode me on_changed on_error/>
         })}
     }
 }
@@ -1342,6 +1405,8 @@ fn BoardBody(
     /// Which create button the board shows, if any (COLLIERY-T-0232,
     /// [`create_mode`]).
     mode: Signal<Option<CreateMode>>,
+    /// The user id of the reader, when `whoami` resolved (KAIROS-T-0416).
+    me: Signal<Option<String>>,
     on_changed: Callback<()>,
     on_error: Callback<ApiError>,
 ) -> impl IntoView {
@@ -1465,7 +1530,25 @@ fn BoardBody(
             set_repo_query.set((!selected.is_empty()).then(|| selected.join(",")));
         }
     });
-    let group_by_repo = Memo::new(move |_| by_repo_query.get().is_some_and(|v| v == "1"));
+    // KAIROS-T-0416: `?by_owner=1` groups the cards by owner. One
+    // grouping at a time: the toggle of one turns the other off.
+    let (by_owner_query, set_by_owner_query) =
+        query_signal_with_options::<String>("by_owner", lens_nav());
+    let owner_offered = owner_grouping_offered(&board.board_level);
+    let board_level = StoredValue::new(board.board_level.clone());
+    let grouping = Memo::new(move |_| {
+        let by_repo = by_repo_query.get();
+        let by_owner = by_owner_query.get();
+        board_level.with_value(|level| grouping_of(by_repo.as_deref(), by_owner.as_deref(), level))
+    });
+    // A URL with both: the owner grouping wins, and `by_repo` goes.
+    Effect::new(move |_| {
+        if grouping.get() == Grouping::Owner && by_repo_query.get().is_some() {
+            set_by_repo_query.set(None);
+        }
+    });
+    let group_by_repo = Memo::new(move |_| grouping.get() == Grouping::Repository);
+    let group_by_owner = Memo::new(move |_| grouping.get() == Grouping::Owner);
     // The lens row renders whenever the board has repositories OR a lens
     // query param is set (so a stale/odd URL always has a visible "clear");
     // the group-by toggle renders when grouping is meaningful (>1 repo) OR
@@ -1556,6 +1639,13 @@ fn BoardBody(
             }
             columns
         })
+    });
+
+    // KAIROS-T-0416: the owner lanes follow the cards, so a refetch after
+    // a change of a claim or an owner moves the cards and the lanes.
+    let owner_lane_list = Memo::new(move |_| {
+        let me = me.get();
+        columns.with(|columns| owner_lanes(columns, me.as_deref()))
     });
 
     let create_label = StoredValue::new(
@@ -1724,7 +1814,11 @@ fn BoardBody(
                             label="Group by repository"
                             active=group_by_repo
                             on_click=Callback::new(move |_| {
-                                set_by_repo_query.set((!group_by_repo.get_untracked()).then(|| "1".to_string()))
+                                let on = !group_by_repo.get_untracked();
+                                if on {
+                                    set_by_owner_query.set(None);
+                                }
+                                set_by_repo_query.set(on.then(|| "1".to_string()))
                             })
                             attr:data-testid="group-by-repo"
                         />
@@ -1739,6 +1833,26 @@ fn BoardBody(
                             "Clear"
                         </Button>
                     })}
+                </Group>
+            </div>
+        })}
+        // KAIROS-T-0416: the owner grouping, on each level but ADR.
+        {owner_offered.then(|| view! {
+            <div class="kairos-board__lens" data-testid="owner-lens">
+                <Group gap="xs" wrap=true>
+                    <Text dimmed=true size="xs">"Lanes"</Text>
+                    <Chip
+                        label="Group by owner"
+                        active=group_by_owner
+                        on_click=Callback::new(move |_| {
+                            let on = !group_by_owner.get_untracked();
+                            if on {
+                                set_by_repo_query.set(None);
+                            }
+                            set_by_owner_query.set(on.then(|| "1".to_string()))
+                        })
+                        attr:data-testid="group-by-owner"
+                    />
                 </Group>
             </div>
         })}
@@ -1809,9 +1923,22 @@ fn BoardBody(
             // columns at their readable floor (app.css).
             let lanes_style =
                 move || format!("--kairos-columns: {}", columns.with(Vec::len).max(1));
+            let owner_view = move || view! {
+                <For
+                    each=move || owner_lane_list.get()
+                    key=|lane: &OwnerLane| lane.clone()
+                    children=move |lane: OwnerLane| {
+                        view! {
+                            <OwnerLaneSection lane columns drag powers on_changed on_error/>
+                        }
+                    }
+                />
+            };
             let lanes_view = if is_delivery {
                 view! {
-                    {move || if group_by_repo.get() {
+                    {move || if group_by_owner.get() {
+                        owner_view().into_any()
+                    } else if group_by_repo.get() {
                         view! {
                             <For
                                 each=move || lanes.get()
@@ -1835,8 +1962,15 @@ fn BoardBody(
                 }
                 .into_any()
             } else {
-                view! { <LaneColumns lane=None repo=RepoLane::Any columns drag powers on_changed on_error/> }
-                    .into_any()
+                view! {
+                    {move || if group_by_owner.get() {
+                        owner_view().into_any()
+                    } else {
+                        view! { <LaneColumns lane=None group=GroupLane::Any columns drag powers on_changed on_error/> }
+                            .into_any()
+                    }}
+                }
+                .into_any()
             };
             view! {
                 <div class="kairos-board__lanes" style=lanes_style>{lanes_view}</div>
@@ -1977,28 +2111,32 @@ fn LaneSection(
                     <Text dimmed=true size="xs">{caption}</Text>
                 </Group>
             </header>
-            <LaneColumns lane=Some(lane) repo=RepoLane::Any columns drag powers on_changed on_error/>
+            <LaneColumns lane=Some(lane) group=GroupLane::Any columns drag powers on_changed on_error/>
         </section>
     }
 }
 
-/// Which repository a lane shows (KAIROS-T-0109).
-#[derive(Clone, PartialEq)]
-enum RepoLane {
+/// Which cards a lane shows: by repository (KAIROS-T-0109) or by owner
+/// (KAIROS-T-0416).
+#[derive(Clone, Debug, PartialEq)]
+enum GroupLane {
     /// Every card.
     Any,
     /// Tasks bound to this slug.
     Slug(String),
     /// Tasks with no repository (and non-task cards).
     Unbound,
+    /// The cards of this owner (a user id), or with no owner (`None`).
+    Owner(Option<String>),
 }
 
-impl RepoLane {
+impl GroupLane {
     fn admits(&self, card: &CardModel) -> bool {
         match self {
-            RepoLane::Any => true,
-            RepoLane::Slug(slug) => card.repository.as_deref() == Some(slug.as_str()),
-            RepoLane::Unbound => card.repository.is_none(),
+            GroupLane::Any => true,
+            GroupLane::Slug(slug) => card.repository.as_deref() == Some(slug.as_str()),
+            GroupLane::Unbound => card.repository.is_none(),
+            GroupLane::Owner(owner) => owner_key(card) == owner.as_deref(),
         }
     }
 }
@@ -2095,6 +2233,144 @@ fn repo_lanes(selected: &[String], known: &[String]) -> Vec<LaneKey> {
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// Owner grouping (KAIROS-T-0416) — pure, host-tested
+// ---------------------------------------------------------------------------
+
+/// How the board groups its cards into lanes. One grouping at a time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Grouping {
+    /// The lanes of the board level: Support and Planned on a delivery
+    /// board, one row on the other levels.
+    Level,
+    /// One lane for each repository (`?by_repo=1`, delivery boards).
+    Repository,
+    /// One lane for each owner (`?by_owner=1`, each level but ADR).
+    Owner,
+}
+
+/// The grouping from the two query values and the board level. When the
+/// URL has both, the owner grouping wins (the GUI then removes
+/// `by_repo`).
+fn grouping_of(by_repo: Option<&str>, by_owner: Option<&str>, board_level: &str) -> Grouping {
+    if by_owner == Some("1") && owner_grouping_offered(board_level) {
+        Grouping::Owner
+    } else if by_repo == Some("1") && board_level == "delivery" {
+        Grouping::Repository
+    } else {
+        Grouping::Level
+    }
+}
+
+/// The owner grouping is on the delivery, initiative and strategy
+/// boards. An ADR has no owner.
+fn owner_grouping_offered(board_level: &str) -> bool {
+    board_level != "adr"
+}
+
+/// The user id of the owner of a card, if any.
+fn owner_key(card: &CardModel) -> Option<&str> {
+    card.owner.as_ref().map(|owner| owner.user_id.as_str())
+}
+
+/// One owner lane: the person (`user_id` `None` for "No owner") and the
+/// label of the lane.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct OwnerLane {
+    user_id: Option<String>,
+    label: String,
+    /// The lane of the person who reads the board.
+    mine: bool,
+}
+
+/// The label of the lane of the cards with no owner.
+const NO_OWNER: &str = "No owner";
+
+/// The owner lanes of the cards: the reader (`me`, a user id) first, then
+/// the other owners by display name, then "No owner". A person has a lane
+/// when the person owns a card on the board.
+fn owner_lanes(columns: &[ColumnModel], me: Option<&str>) -> Vec<OwnerLane> {
+    let mut owners: Vec<&CardOwner> = Vec::new();
+    for owner in columns
+        .iter()
+        .flat_map(|column| column.cards.iter())
+        .filter_map(|card| card.owner.as_ref())
+    {
+        if !owners.iter().any(|o| o.user_id == owner.user_id) {
+            owners.push(owner);
+        }
+    }
+    let mut lanes: Vec<OwnerLane> = owners
+        .into_iter()
+        .map(|owner| OwnerLane {
+            mine: me == Some(owner.user_id.as_str()),
+            user_id: Some(owner.user_id.clone()),
+            label: owner.display_name.clone(),
+        })
+        .collect();
+    lanes.sort_by(|a, b| {
+        b.mine
+            .cmp(&a.mine)
+            .then_with(|| a.label.to_lowercase().cmp(&b.label.to_lowercase()))
+            .then_with(|| a.user_id.cmp(&b.user_id))
+    });
+    lanes.push(OwnerLane {
+        user_id: None,
+        label: NO_OWNER.to_string(),
+        mine: false,
+    });
+    lanes
+}
+
+/// One owner lane (KAIROS-T-0416): the columns narrowed to the cards of
+/// one owner. Read-only: a drop from the lane of a different owner does
+/// nothing; a drop in a different column transitions as before.
+#[component]
+fn OwnerLaneSection(
+    lane: OwnerLane,
+    columns: Memo<Vec<ColumnModel>>,
+    drag: RwSignal<Option<DragData>>,
+    powers: Signal<BoardPowers>,
+    on_changed: Callback<()>,
+    on_error: Callback<ApiError>,
+) -> impl IntoView {
+    let group = GroupLane::Owner(lane.user_id.clone());
+    let count_group = group.clone();
+    let count = Memo::new(move |_| {
+        columns.with(|columns| {
+            columns
+                .iter()
+                .flat_map(|column| column.cards.iter())
+                .filter(|card| count_group.admits(card))
+                .count()
+        })
+    });
+    let attr = lane.user_id.clone().unwrap_or_default();
+    let name = lane.label.clone();
+    let color = if lane.user_id.is_some() {
+        token::OK
+    } else {
+        token::MUTED
+    };
+    view! {
+        <section
+            class="kairos-board__lane kairos-board__lane--owner"
+            class:kairos-board__lane--empty=move || count.get() == 0
+            data-owner-lane=attr
+            data-owner-name=name
+            data-owner-mine=lane.mine.to_string()
+        >
+            <header class="kairos-board__lane-head">
+                <Group gap="xs">
+                    <Pill color=color>{lane.label}</Pill>
+                    <Text dimmed=true size="xs">{move || count.get().to_string()}</Text>
+                </Group>
+            </header>
+            <LaneColumns lane=None group columns drag powers on_changed on_error/>
+        </section>
+    }
+}
+
 /// One repository lane on a delivery board (KAIROS-T-0109): the columns
 /// narrowed to tasks bound to `repo` (`None` = the unbound remainder).
 /// Drops here transition only — no lane axis to re-lane into.
@@ -2108,8 +2384,8 @@ fn RepoLaneSection(
     on_error: Callback<ApiError>,
 ) -> impl IntoView {
     let lane = match &repo {
-        Some(slug) => RepoLane::Slug(slug.clone()),
-        None => RepoLane::Unbound,
+        Some(slug) => GroupLane::Slug(slug.clone()),
+        None => GroupLane::Unbound,
     };
     let count_lane = lane.clone();
     let count = Memo::new(move |_| {
@@ -2135,7 +2411,7 @@ fn RepoLaneSection(
                     <Text dimmed=true size="xs">{move || count.get().to_string()}</Text>
                 </Group>
             </header>
-            <LaneColumns lane=None repo=lane columns drag powers on_changed on_error/>
+            <LaneColumns lane=None group=lane columns drag powers on_changed on_error/>
         </section>
     }
 }
@@ -2147,8 +2423,9 @@ fn RepoLaneSection(
 #[component]
 fn LaneColumns(
     lane: Option<&'static str>,
-    /// Repository narrowing for the group-by-repo view (KAIROS-T-0109).
-    repo: RepoLane,
+    /// Repository narrowing for the group-by-repo view (KAIROS-T-0109),
+    /// or owner narrowing for the group-by-owner view (KAIROS-T-0416).
+    group: GroupLane,
     columns: Memo<Vec<ColumnModel>>,
     drag: RwSignal<Option<DragData>>,
     powers: Signal<BoardPowers>,
@@ -2156,7 +2433,7 @@ fn LaneColumns(
     on_error: Callback<ApiError>,
 ) -> impl IntoView {
     let auth = use_auth();
-    let repo = StoredValue::new(repo);
+    let group = StoredValue::new(group);
     view! {
         <div class="kairos-board">
             <For
@@ -2176,7 +2453,7 @@ fn LaneColumns(
                                 .map(|c| {
                                     c.cards
                                         .iter()
-                                        .filter(|card| repo.with_value(|r| r.admits(card)))
+                                        .filter(|card| group.with_value(|g| g.admits(card)))
                                         .filter(|card| match lane {
                                             None => true,
                                             Some(lane) => {
@@ -2201,7 +2478,7 @@ fn LaneColumns(
                             class:kairos-board__column--droppable=move || {
                                 drag.with(|d| {
                                     d.as_ref()
-                                        .is_some_and(|d| drop_effect(d, &class_id, lane).is_some())
+                                        .is_some_and(|d| group.with_value(|g| grouped_drop_effect(d, &class_id, lane, g)).is_some())
                                 })
                             }
                             on:dragover=move |ev: web_sys::DragEvent| {
@@ -2210,7 +2487,7 @@ fn LaneColumns(
                                 // actually do something legal.
                                 let legal = drag.with_untracked(|d| {
                                     d.as_ref()
-                                        .is_some_and(|d| drop_effect(d, &over_id, lane).is_some())
+                                        .is_some_and(|d| group.with_value(|g| grouped_drop_effect(d, &over_id, lane, g)).is_some())
                                 });
                                 if legal {
                                     ev.prevent_default();
@@ -2220,7 +2497,9 @@ fn LaneColumns(
                                 ev.prevent_default();
                                 let Some(data) = drag.get_untracked() else { return };
                                 drag.set(None);
-                                let Some(effect) = drop_effect(&data, &drop_id, lane) else {
+                                let Some(effect) =
+                                    group.with_value(|g| grouped_drop_effect(&data, &drop_id, lane, g))
+                                else {
                                     return;
                                 };
                                 run_drop(auth, data.kind, data.short_code, effect, on_changed, on_error);
@@ -2263,12 +2542,13 @@ fn LaneColumns(
                                     children=move |card: CardModel| {
                                         let CardModel {
                                             kind, short_code, title, meta, work_class,
-                                            repository, claim, teams, progress, blocks, key: _,
+                                            repository, claim, owner, teams, progress, blocks, key: _,
                                         } = card;
+                                        let owner = owner.map(|owner| owner.user_id);
                                         view! {
                                             <ItemCard
                                                 kind short_code title meta work_class repository
-                                                claim teams progress blocks
+                                                claim owner teams progress blocks
                                                 targets=targets_for_cards.get_value()
                                                 source_column=column_for_cards.get_value()
                                                 drag powers
@@ -2326,6 +2606,9 @@ fn ItemCard(
     /// The person who has the task in Active (KAIROS-T-0359) — a chip
     /// with the name of the person.
     claim: Option<data::TaskClaim>,
+    /// The user id of the owner of the card (KAIROS-T-0416), carried into
+    /// the drag so an owner lane can refuse a drop.
+    owner: Option<String>,
     /// The teams of a strategy or an initiative (KAIROS-T-0322) — one pill
     /// each; none for an item with no team.
     teams: Vec<String>,
@@ -2384,6 +2667,7 @@ fn ItemCard(
                     targets: target_ids.clone(),
                     source_column: source_column.clone(),
                     work_class: drag_work_class.clone(),
+                    owner: owner.clone(),
                 }));
             }
             on:dragend=move |_| drag.set(None)
@@ -2901,6 +3185,7 @@ mod tests {
     #[test]
     fn the_claim_chip_names_the_person() {
         let claim = data::TaskClaim {
+            user_id: "u-alice".to_string(),
             display_name: "Alice".to_string(),
             agent: true,
             claimed_at: "2026-10-09T10:00:00Z".to_string(),
@@ -3788,6 +4073,7 @@ mod tests {
             targets: targets.iter().map(|s| s.to_string()).collect(),
             source_column: "c-src".into(),
             work_class: work_class.map(str::to_string),
+            owner: None,
         };
         // Same column, same lane: no-op.
         assert_eq!(
@@ -3836,11 +4122,183 @@ mod tests {
             work_class: None,
             repository: repository.map(str::to_string),
             claim: None,
+            owner: None,
             teams: Vec::new(),
             progress: None,
             blocks: None,
             key: String::new(),
         }
+    }
+
+    fn owned(kind: EntityKind, owner: Option<(&str, &str)>) -> CardModel {
+        CardModel {
+            owner: owner.map(|(user_id, display_name)| CardOwner {
+                user_id: user_id.into(),
+                display_name: display_name.into(),
+            }),
+            ..card(kind, None)
+        }
+    }
+
+    fn column_of(cards: Vec<CardModel>) -> ColumnModel {
+        ColumnModel {
+            id: "c".into(),
+            name: "c".into(),
+            wip: None,
+            targets: Vec::new(),
+            cards,
+            key: String::new(),
+        }
+    }
+
+    /// KAIROS-T-0416: the reader first, then the other owners by name,
+    /// then "No owner". One lane for each person, whatever the number of
+    /// cards.
+    #[test]
+    fn owner_lanes_put_the_reader_first_then_names_then_no_owner() {
+        let columns = vec![
+            column_of(vec![
+                owned(EntityKind::Task, Some(("u-sam", "Sam"))),
+                owned(EntityKind::Task, None),
+                owned(EntityKind::Task, Some(("u-robin", "Robin"))),
+            ]),
+            column_of(vec![
+                owned(EntityKind::Task, Some(("u-jamie", "jamie"))),
+                owned(EntityKind::Task, Some(("u-sam", "Sam"))),
+            ]),
+        ];
+        let order = |me: Option<&str>| -> Vec<(Option<String>, String, bool)> {
+            owner_lanes(&columns, me)
+                .into_iter()
+                .map(|lane| (lane.user_id, lane.label, lane.mine))
+                .collect()
+        };
+        assert_eq!(
+            order(Some("u-sam")),
+            vec![
+                (Some("u-sam".into()), "Sam".into(), true),
+                (Some("u-jamie".into()), "jamie".into(), false),
+                (Some("u-robin".into()), "Robin".into(), false),
+                (None, "No owner".into(), false),
+            ]
+        );
+        // A reader with no card: no lane of their own; names in order.
+        let names: Vec<String> = owner_lanes(&columns, Some("u-other"))
+            .into_iter()
+            .map(|lane| lane.label)
+            .collect();
+        assert_eq!(names, vec!["jamie", "Robin", "Sam", "No owner"]);
+        // A board with no owner: only "No owner".
+        assert_eq!(
+            owner_lanes(&[column_of(vec![card(EntityKind::Task, None)])], None),
+            vec![OwnerLane {
+                user_id: None,
+                label: "No owner".into(),
+                mine: false,
+            }]
+        );
+    }
+
+    /// KAIROS-T-0416: an owner lane admits the cards of its owner; "No
+    /// owner" admits the rest (an ADR included).
+    #[test]
+    fn owner_lane_admits_by_owner() {
+        let sam = owned(EntityKind::Initiative, Some(("u-sam", "Sam")));
+        let free = owned(EntityKind::Task, None);
+        let lane = GroupLane::Owner(Some("u-sam".into()));
+        assert!(lane.admits(&sam));
+        assert!(!lane.admits(&free));
+        assert!(GroupLane::Owner(None).admits(&free));
+        assert!(GroupLane::Owner(None).admits(&card(EntityKind::Adr, None)));
+        assert!(!GroupLane::Owner(None).admits(&sam));
+    }
+
+    /// KAIROS-T-0416: a task moves to the lane of the person who claims
+    /// it: the owner comes from the claim of a task, and from the owner of
+    /// a strategy or an initiative.
+    #[test]
+    fn the_owner_comes_from_the_claim_or_the_owner() {
+        let claim = data::TaskClaim {
+            user_id: "u-robin".into(),
+            display_name: "Robin".into(),
+            agent: true,
+            claimed_at: String::new(),
+        };
+        assert_eq!(
+            CardOwner::of_claim(&claim),
+            CardOwner {
+                user_id: "u-robin".into(),
+                display_name: "Robin".into()
+            }
+        );
+        let owner = data::ItemOwner {
+            user_id: "u-sam".into(),
+            display_name: "Sam".into(),
+        };
+        assert_eq!(CardOwner::of_owner(&owner).user_id, "u-sam");
+    }
+
+    /// KAIROS-T-0416: one grouping at a time; the owner grouping is on
+    /// each level but ADR, the repository grouping on delivery only.
+    #[test]
+    fn the_grouping_comes_from_the_query_and_the_level() {
+        assert_eq!(grouping_of(None, None, "delivery"), Grouping::Level);
+        assert_eq!(
+            grouping_of(Some("1"), None, "delivery"),
+            Grouping::Repository
+        );
+        assert_eq!(grouping_of(None, Some("1"), "delivery"), Grouping::Owner);
+        assert_eq!(
+            grouping_of(Some("1"), Some("1"), "delivery"),
+            Grouping::Owner
+        );
+        assert_eq!(grouping_of(None, Some("1"), "initiative"), Grouping::Owner);
+        assert_eq!(grouping_of(None, Some("1"), "strategy"), Grouping::Owner);
+        assert_eq!(grouping_of(None, Some("1"), "adr"), Grouping::Level);
+        assert_eq!(grouping_of(Some("1"), None, "strategy"), Grouping::Level);
+        assert_eq!(grouping_of(None, Some("0"), "delivery"), Grouping::Level);
+    }
+
+    /// KAIROS-T-0416: a drop into the lane of a different owner does
+    /// nothing; in the lane of the card, a drop in a different column
+    /// transitions. The repository lanes keep their rule.
+    #[test]
+    fn an_owner_lane_refuses_the_cards_of_other_owners() {
+        let drag = |owner: Option<&str>| DragData {
+            kind: EntityKind::Task,
+            short_code: "T-1".into(),
+            targets: vec!["c-2".into()],
+            source_column: "c-src".into(),
+            work_class: Some("planned".into()),
+            owner: owner.map(str::to_string),
+        };
+        let sam = GroupLane::Owner(Some("u-sam".into()));
+        let nobody = GroupLane::Owner(None);
+        // The lane of the card: a move to another column transitions.
+        let effect = grouped_drop_effect(&drag(Some("u-sam")), "c-2", None, &sam).expect("legal");
+        assert_eq!(effect.transition_to.as_deref(), Some("c-2"));
+        assert_eq!(effect.set_work_class, None);
+        let effect = grouped_drop_effect(&drag(None), "c-2", None, &nobody).expect("legal");
+        assert_eq!(effect.transition_to.as_deref(), Some("c-2"));
+        // The same column of the lane: nothing.
+        assert_eq!(
+            grouped_drop_effect(&drag(Some("u-sam")), "c-src", None, &sam),
+            None
+        );
+        // Another owner lane: nothing, in each column.
+        assert_eq!(grouped_drop_effect(&drag(None), "c-2", None, &sam), None);
+        assert_eq!(
+            grouped_drop_effect(&drag(Some("u-sam")), "c-2", None, &nobody),
+            None
+        );
+        assert_eq!(
+            grouped_drop_effect(&drag(Some("u-robin")), "c-src", None, &sam),
+            None
+        );
+        // Repository lanes: as before (a column move transitions).
+        assert!(
+            grouped_drop_effect(&drag(None), "c-2", None, &GroupLane::Slug("x".into())).is_some()
+        );
     }
 
     fn with_teams(kind: EntityKind, teams: &[&str]) -> CardModel {
@@ -3938,18 +4396,18 @@ mod tests {
         let unbound = card(EntityKind::Task, None);
         let adr = card(EntityKind::Adr, None);
 
-        let lane = RepoLane::Slug("payments-api".into());
+        let lane = GroupLane::Slug("payments-api".into());
         assert!(lane.admits(&bound));
         assert!(!lane.admits(&other));
         assert!(!lane.admits(&unbound));
         assert!(!lane.admits(&adr));
 
-        assert!(!RepoLane::Unbound.admits(&bound));
-        assert!(RepoLane::Unbound.admits(&unbound));
-        assert!(RepoLane::Unbound.admits(&adr));
+        assert!(!GroupLane::Unbound.admits(&bound));
+        assert!(GroupLane::Unbound.admits(&unbound));
+        assert!(GroupLane::Unbound.admits(&adr));
 
-        assert!(RepoLane::Any.admits(&bound));
-        assert!(RepoLane::Any.admits(&adr));
+        assert!(GroupLane::Any.admits(&bound));
+        assert!(GroupLane::Any.admits(&adr));
     }
 
     /// KAIROS-T-0109: the lens retain filter narrows TASKS only — an

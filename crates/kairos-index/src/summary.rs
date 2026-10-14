@@ -4,17 +4,22 @@
 //! - **A symbol summary** comes from the code of the symbol and the signatures
 //!   of the functions that it calls (its `certain` edges). It does not use
 //!   their summaries: if it did, one change would change the input of each
-//!   caller above it. Test symbols get no summary.
+//!   caller above it. Test symbols get a summary too (KAIROS-T-0421).
 //! - **A file summary** comes from the summaries of its symbols, and **a
 //!   module summary** from the summaries of the files in its folder. Neither
 //!   reads code: the benchmark showed that file summaries from code cost as
 //!   much as all the symbol summaries.
+//! - **A file of declarations** has no symbol that gets a summary: for
+//!   example a `lib.rs` of `mod` and `pub use` lines. Its summary comes from
+//!   its doc comment and its declarations ([`declaration_lines`],
+//!   KAIROS-T-0425). A file with none of these gets no summary.
 //! - **The key** of a symbol summary is the hash of the tree hash of the
 //!   symbol and of the signatures of its callees (COLLIERY-T-1851). So a
 //!   changed signature gives new summaries to the direct callers only, and a
 //!   changed body to none. The key of a file summary is the hash of its path
-//!   and of the list of child summaries; the key of a module summary is the
-//!   hash of that list. A key that is in the pool is not summarized again.
+//!   and of the list of child summaries (or of its declaration lines); the
+//!   key of a module summary is the hash of that list. A key that is in
+//!   the pool is not summarized again.
 //! - **The vectors** come from an [`EmbeddingProvider`]: in Kairos, the local
 //!   `bge-small-en-v1.5`, the same model and space as the Kairos items.
 //!
@@ -35,7 +40,8 @@ use crate::{IndexError, schema};
 /// The symbol kinds that get a summary: functions, types, `impl` blocks and
 /// constants (KAIROS-T-0349). A `mod x;` line or a field gets none. The input
 /// of an `impl` block is its header and the declarations of its functions,
-/// not their bodies: see [`impl_text`].
+/// not their bodies: see [`impl_text`]. Test code gets a summary as source
+/// does (KAIROS-T-0421).
 pub const SUMMARIZED_KINDS: &[&str] = &[
     "function",
     "method",
@@ -80,6 +86,13 @@ pub fn model_path() -> Option<PathBuf> {
 /// The most callee signatures that go into one symbol prompt.
 const MAX_CALLEES: usize = 24;
 
+/// The kind of a file request whose input is the declarations of the file
+/// (KAIROS-T-0425), not the summaries of its symbols.
+pub const DECLARATIONS_KIND: &str = "declarations";
+
+/// The most lines of declarations that go into one file prompt.
+const MAX_DECLARATION_LINES: usize = 200;
+
 /// How many summaries go to the embedding provider at once.
 const EMBED_BATCH: usize = 64;
 
@@ -109,13 +122,14 @@ pub struct SummaryRequest {
     pub key: String,
     /// The language of a symbol or a file. A module has none.
     pub language: Option<String>,
-    /// The symbol kind, `file` or `module`.
+    /// The symbol kind, `file`, [`DECLARATIONS_KIND`] or `module`.
     pub kind: String,
     /// The symbol name, the file path or the folder path.
     pub name: String,
     /// The file of a symbol or a file, the folder of a module.
     pub path: String,
-    /// The code of a symbol. A file or a module has none.
+    /// The code of a symbol, or the declaration lines of a file of
+    /// declarations. Another file or a module has none.
     pub code: Option<String>,
     /// The signatures of the functions that a symbol calls.
     pub callees: Vec<String>,
@@ -174,6 +188,16 @@ impl SummaryRequest {
                 }
                 prompt
             }
+            // A file of declarations (KAIROS-T-0425).
+            Level::File if self.kind == DECLARATIONS_KIND => format!(
+                "Summarize the {language} source file `{}` in 1 to 3 sentences, from its \
+                 doc comment and its declarations below: the modules that it declares and \
+                 the names that it imports or exports. The file has no functions or types \
+                 of its own. Say what the file is for and what it gives to other code. \
+                 Do not list each name. Output only the summary.\n\n\
+                 ```{language}\n{code}\n```",
+                self.path
+            ),
             Level::File => format!(
                 "Summarize the {language} source file `{}` in 1 to 3 sentences, from the \
                  summaries of its parts below. Say what the file is for and what it gives to \
@@ -341,12 +365,11 @@ struct Sym {
     start_byte: usize,
     end_byte: usize,
     tree_hash: String,
-    is_test: bool,
 }
 
 impl Sym {
     fn summarized(&self) -> bool {
-        !self.is_test && SUMMARIZED_KINDS.contains(&self.kind.as_str())
+        SUMMARIZED_KINDS.contains(&self.kind.as_str())
     }
 
     /// The name with its container, as a child line shows it.
@@ -568,7 +591,8 @@ fn run(
         flush(&conn, *summarizer, &mut pending, &mut report)?;
     }
 
-    // 2. The files, from the summaries of their symbols.
+    // 2. The files, from the summaries of their symbols. A file with no
+    // symbol of a summarized kind, from its declarations (KAIROS-T-0425).
     let mut by_file: BTreeMap<i64, Vec<&Sym>> = BTreeMap::new();
     for s in symbols.iter().filter(|s| s.summarized()) {
         by_file.entry(s.file_id).or_default().push(s);
@@ -576,39 +600,61 @@ fn run(
     let mut file_keys: BTreeMap<String, Option<String>> = BTreeMap::new();
     for f in files
         .iter()
-        .filter(|f| f.decision == "source" && in_scope(&f.path))
+        .filter(|f| matches!(f.decision.as_str(), "source" | "test") && in_scope(&f.path))
     {
-        let Some(children) = by_file.get(&f.id) else {
-            continue;
-        };
-        let mut lines = Vec::with_capacity(children.len());
-        for s in children {
-            let Some(key) = symbol_keys.get(&s.id) else {
-                break;
-            };
-            match summary_of(&conn, key)? {
-                Some(text) => lines.push(format!("- `{}` ({}): {text}", s.qualified(), s.kind)),
-                None => break,
-            }
-        }
-        if lines.len() < children.len() {
-            report.files.left += 1;
-            file_keys.insert(f.path.clone(), None);
-            continue;
-        }
         let language = f.language.clone().unwrap_or_default();
-        let key = children_key(&key_model, Level::File, &language, &f.path, &lines);
-        let request = SummaryRequest {
-            level: Level::File,
-            key: key.clone(),
-            language: Some(language),
-            kind: "file".into(),
-            name: f.path.clone(),
-            path: f.path.clone(),
-            code: None,
-            callees: Vec::new(),
-            children: lines,
+        let request = match by_file.get(&f.id) {
+            Some(children) => {
+                let mut lines = Vec::with_capacity(children.len());
+                for s in children {
+                    let Some(key) = symbol_keys.get(&s.id) else {
+                        break;
+                    };
+                    match summary_of(&conn, key)? {
+                        Some(text) => {
+                            lines.push(format!("- `{}` ({}): {text}", s.qualified(), s.kind))
+                        }
+                        None => break,
+                    }
+                }
+                if lines.len() < children.len() {
+                    report.files.left += 1;
+                    file_keys.insert(f.path.clone(), None);
+                    continue;
+                }
+                SummaryRequest {
+                    level: Level::File,
+                    key: children_key(&key_model, Level::File, &language, &f.path, &lines),
+                    language: Some(language),
+                    kind: "file".into(),
+                    name: f.path.clone(),
+                    path: f.path.clone(),
+                    code: None,
+                    callees: Vec::new(),
+                    children: lines,
+                }
+            }
+            None => {
+                // The key has the kind first, so it is never the key of a
+                // file of symbols.
+                let Some(text) = declaration_lines(&texts.whole(f.id)?, &language) else {
+                    continue;
+                };
+                let key_lines = [DECLARATIONS_KIND.to_string(), text.clone()];
+                SummaryRequest {
+                    level: Level::File,
+                    key: children_key(&key_model, Level::File, &language, &f.path, &key_lines),
+                    language: Some(language),
+                    kind: DECLARATIONS_KIND.into(),
+                    name: f.path.clone(),
+                    path: f.path.clone(),
+                    code: Some(text),
+                    callees: Vec::new(),
+                    children: Vec::new(),
+                }
+            }
         };
+        let key = request.key.clone();
         if in_pool(&conn, &key)? || pending.iter().any(|(r, _)| r.key == key) {
             report.files.reused += 1;
         } else if let Some((summarizer, _)) = model.as_mut() {
@@ -619,7 +665,12 @@ fn run(
             report.files.summarized += 1;
         } else {
             report.files.left += 1;
-            file_keys.insert(f.path.clone(), None);
+            // A file of declarations with no summary in the pool does not
+            // hold back the summary of its folder: a pool from before
+            // KAIROS-T-0425 has the folder summary without the file.
+            if request.kind != DECLARATIONS_KIND {
+                file_keys.insert(f.path.clone(), None);
+            }
             continue;
         }
         file_keys.insert(f.path.clone(), Some(key));
@@ -717,6 +768,9 @@ fn run(
             for (path, key) in &module_keys {
                 set_module.execute(params![path, key])?;
             }
+            // The summaries of the symbols are in the text rank now
+            // (KAIROS-T-0423).
+            crate::text::refresh(&tx)?;
         }
         tx.commit()?;
     }
@@ -999,6 +1053,8 @@ pub(crate) fn copy_pool(from: &Connection, to: &mut Connection) -> Result<(), In
                 row.get::<_, String>(4)?,
             ])?;
         }
+        // A symbol of `to` can be linked to a summary that it did not have.
+        crate::text::refresh(&tx)?;
     }
     tx.commit()?;
     Ok(())
@@ -1022,7 +1078,7 @@ fn read_files(conn: &Connection) -> Result<Vec<FileRow>, IndexError> {
 fn read_symbols(conn: &Connection) -> Result<Vec<Sym>, IndexError> {
     let mut stmt = conn.prepare(
         "SELECT s.id, s.file_id, s.name, s.container, s.kind, s.language, s.start_byte,
-                s.end_byte, s.tree_hash, s.is_test
+                s.end_byte, s.tree_hash
          FROM symbols s JOIN files f ON f.id = s.file_id
          ORDER BY f.path, s.start_byte, s.end_byte DESC, s.kind, s.name",
     )?;
@@ -1037,7 +1093,6 @@ fn read_symbols(conn: &Connection) -> Result<Vec<Sym>, IndexError> {
             start_byte: r.get::<_, i64>(6)? as usize,
             end_byte: r.get::<_, i64>(7)? as usize,
             tree_hash: r.get(8)?,
-            is_test: r.get(9)?,
         })
     })?;
     Ok(rows.collect::<Result<_, _>>()?)
@@ -1097,6 +1152,246 @@ impl<'a> FileTexts<'a> {
         let text = &self.texts[&file_id];
         Ok(text.get(start..end).unwrap_or_default().to_string())
     }
+
+    /// The whole text of a file.
+    fn whole(&mut self, file_id: i64) -> Result<String, IndexError> {
+        self.slice(file_id, 0, 0)?;
+        Ok(self.texts[&file_id].clone())
+    }
+}
+
+/// The input of the summary of a file of declarations (KAIROS-T-0425): its
+/// doc comment, then its declarations, as lines of the file. None when the
+/// file has neither, or when the language is not one of these:
+///
+/// - Rust: the `//!` and `/*! */` comments; the `mod x;`, `use` and
+///   `extern crate` items, with any visibility.
+/// - Python: the module docstring; the `import` and `from` lines and
+///   `__all__` at the top level.
+/// - TypeScript and JavaScript: the comment at the start of the file; the
+///   `import` and `export` statements and the `require` lines at the top
+///   level.
+/// - Go: the package comment; the `import` declarations. The `package` line
+///   comes first when the file has one of these.
+///
+/// At most [`MAX_DECLARATION_LINES`] lines are kept.
+pub fn declaration_lines(text: &str, language: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let (doc, declarations) = match language {
+        "rust" => rust_declarations(&lines),
+        "python" => python_declarations(&lines),
+        "typescript" | "tsx" | "javascript" => script_declarations(&lines),
+        "go" => go_declarations(&lines),
+        _ => return None,
+    };
+    if doc.is_empty() && declarations.is_empty() {
+        return None;
+    }
+    let mut out = doc;
+    if !out.is_empty() && !declarations.is_empty() {
+        out.push(String::new());
+    }
+    out.extend(declarations);
+    out.truncate(MAX_DECLARATION_LINES);
+    Some(out.join("\n"))
+}
+
+/// The lines of the statement that starts at line `start`: up to the end of
+/// the line where its brackets close (and, for Python, with no `\` at the
+/// end). Also the index of the next line.
+fn statement(lines: &[&str], start: usize) -> (Vec<String>, usize) {
+    let mut depth = 0i32;
+    let mut out = Vec::new();
+    let mut i = start;
+    while i < lines.len() {
+        let line = lines[i].trim_end();
+        for c in line.chars() {
+            match c {
+                '{' | '(' | '[' => depth += 1,
+                '}' | ')' | ']' => depth -= 1,
+                _ => {}
+            }
+        }
+        out.push(line.to_string());
+        i += 1;
+        if depth <= 0 && !line.ends_with('\\') {
+            break;
+        }
+    }
+    (out, i)
+}
+
+/// A Rust item with no visibility: `pub`, `pub(crate)` and `pub(in x)` go.
+fn rust_item(line: &str) -> &str {
+    let Some(rest) = line.strip_prefix("pub") else {
+        return line;
+    };
+    let rest = match rest.strip_prefix('(') {
+        Some(inner) => inner.split_once(')').map_or(inner, |(_, after)| after),
+        None if rest.starts_with(char::is_whitespace) => rest,
+        None => return line,
+    };
+    rest.trim_start()
+}
+
+fn rust_declarations(lines: &[&str]) -> (Vec<String>, Vec<String>) {
+    let (mut doc, mut declarations) = (Vec::new(), Vec::new());
+    let mut in_doc_block = false;
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i].trim();
+        if in_doc_block || line.starts_with("/*!") {
+            doc.push(line.to_string());
+            in_doc_block = !line.contains("*/");
+            i += 1;
+            continue;
+        }
+        if line.starts_with("//!") {
+            doc.push(line.to_string());
+            i += 1;
+            continue;
+        }
+        let item = rust_item(line);
+        if ["mod ", "use ", "extern crate "]
+            .iter()
+            .any(|p| item.starts_with(p))
+        {
+            // A `mod x { ... }` with a body is skipped whole.
+            let (lines_of, next) = statement(lines, i);
+            if lines_of.last().is_some_and(|l| l.ends_with(';')) {
+                declarations.extend(lines_of);
+            }
+            i = next;
+            continue;
+        }
+        i += 1;
+    }
+    (doc, declarations)
+}
+
+fn python_declarations(lines: &[&str]) -> (Vec<String>, Vec<String>) {
+    let (mut doc, mut declarations) = (Vec::new(), Vec::new());
+    let mut i = 0;
+    while i < lines.len() && (lines[i].trim().is_empty() || lines[i].trim().starts_with('#')) {
+        i += 1;
+    }
+    if let Some(first) = lines.get(i) {
+        let text = first.trim();
+        let body = text.trim_start_matches(['r', 'R', 'u', 'U', 'b', 'B']);
+        if let Some(quote) = ["\"\"\"", "'''"].into_iter().find(|q| body.starts_with(q)) {
+            doc.push(text.to_string());
+            i += 1;
+            if !body[3..].contains(quote) {
+                while i < lines.len() {
+                    doc.push(lines[i].trim_end().to_string());
+                    i += 1;
+                    if lines[i - 1].contains(quote) {
+                        break;
+                    }
+                }
+            }
+        } else if body.starts_with(['"', '\'']) {
+            doc.push(text.to_string());
+            i += 1;
+        }
+    }
+    while i < lines.len() {
+        let line = lines[i];
+        if ["import ", "from ", "__all__"]
+            .iter()
+            .any(|p| line.starts_with(p))
+        {
+            let (lines_of, next) = statement(lines, i);
+            declarations.extend(lines_of);
+            i = next;
+            continue;
+        }
+        i += 1;
+    }
+    (doc, declarations)
+}
+
+fn script_declarations(lines: &[&str]) -> (Vec<String>, Vec<String>) {
+    let (mut doc, mut declarations) = (Vec::new(), Vec::new());
+    let mut i = 0;
+    while i < lines.len() && (lines[i].trim().is_empty() || lines[i].starts_with("#!")) {
+        i += 1;
+    }
+    if lines
+        .get(i)
+        .is_some_and(|l| l.trim_start().starts_with("/*"))
+    {
+        while i < lines.len() {
+            doc.push(lines[i].trim_end().to_string());
+            i += 1;
+            if lines[i - 1].contains("*/") {
+                break;
+            }
+        }
+    } else {
+        while i < lines.len() && lines[i].trim_start().starts_with("//") {
+            doc.push(lines[i].trim_end().to_string());
+            i += 1;
+        }
+    }
+    while i < lines.len() {
+        let line = lines[i];
+        let module = ["import ", "import{", "export ", "export{", "export*"]
+            .iter()
+            .any(|p| line.starts_with(p));
+        let require = ["const ", "let ", "var "]
+            .iter()
+            .any(|p| line.starts_with(p))
+            && line.contains("require(");
+        if module || require || line.starts_with("module.exports") || line.starts_with("exports.") {
+            let (lines_of, next) = statement(lines, i);
+            declarations.extend(lines_of);
+            i = next;
+            continue;
+        }
+        i += 1;
+    }
+    (doc, declarations)
+}
+
+fn go_declarations(lines: &[&str]) -> (Vec<String>, Vec<String>) {
+    let (mut doc, mut declarations) = (Vec::new(), Vec::new());
+    let Some(package) = lines.iter().position(|l| l.starts_with("package ")) else {
+        return (doc, declarations);
+    };
+    // The package comment: the comment just above the package line.
+    let mut start = package;
+    if package > 0 && lines[package - 1].trim_end().ends_with("*/") {
+        while start > 0 {
+            start -= 1;
+            if lines[start].trim_start().starts_with("/*") {
+                break;
+            }
+        }
+    } else {
+        while start > 0 && lines[start - 1].trim_start().starts_with("//") {
+            start -= 1;
+        }
+    }
+    doc.extend(
+        lines[start..package]
+            .iter()
+            .map(|l| l.trim_end().to_string()),
+    );
+    let mut i = package + 1;
+    while i < lines.len() {
+        if lines[i].starts_with("import ") || lines[i].starts_with("import(") {
+            let (lines_of, next) = statement(lines, i);
+            declarations.extend(lines_of);
+            i = next;
+            continue;
+        }
+        i += 1;
+    }
+    if !doc.is_empty() || !declarations.is_empty() {
+        declarations.insert(0, lines[package].trim_end().to_string());
+    }
+    (doc, declarations)
 }
 
 /// The signature of a function from its code: the text before its body, on
@@ -1429,6 +1724,221 @@ mod tests {
             matches!(&err, IndexError::Changed(path) if path == "src/lib.rs"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn a_rust_file_of_declarations_gives_its_doc_and_its_mod_and_use_lines() {
+        let text = "//! Policy documents.\n\
+                    \n\
+                    #[cfg(test)]\n\
+                    mod tests {\n    use super::*;\n}\n\
+                    mod document;\n\
+                    pub(crate) mod rules;\n\
+                    pub use document::{\n    PolicyDocument,\n    parse_document,\n};\n\
+                    extern crate alloc;\n\
+                    // A plain comment.\n\
+                    macro_rules! m { () => {} }\n";
+        assert_eq!(
+            declaration_lines(text, "rust").as_deref(),
+            Some(
+                "//! Policy documents.\n\
+                 \n\
+                 mod document;\n\
+                 pub(crate) mod rules;\n\
+                 pub use document::{\n    PolicyDocument,\n    parse_document,\n};\n\
+                 extern crate alloc;"
+            )
+        );
+        assert_eq!(
+            declaration_lines("// A plain comment.\nmacro_rules! m { () => {} }\n", "rust"),
+            None
+        );
+        assert_eq!(declaration_lines("", "rust"), None);
+        assert_eq!(declaration_lines("mod a;\n", "sql"), None);
+    }
+
+    #[test]
+    fn a_python_file_gives_its_docstring_and_its_imports() {
+        let text = "#!/usr/bin/env python3\n\
+                    \"\"\"The polyglot package.\n\nIt loads data.\n\"\"\"\n\
+                    from .stats import (\n    mean,\n    median,\n)\n\
+                    import os\n\
+                    __all__ = [\"mean\"]\n\
+                    def later():\n    import sys\n";
+        assert_eq!(
+            declaration_lines(text, "python").as_deref(),
+            Some(
+                "\"\"\"The polyglot package.\n\nIt loads data.\n\"\"\"\n\
+                 \n\
+                 from .stats import (\n    mean,\n    median,\n)\n\
+                 import os\n\
+                 __all__ = [\"mean\"]"
+            )
+        );
+        assert_eq!(
+            declaration_lines("'''One line.'''\n", "python").as_deref(),
+            Some("'''One line.'''")
+        );
+        assert_eq!(declaration_lines("# a comment\n\n", "python"), None);
+    }
+
+    #[test]
+    fn a_script_file_gives_its_first_comment_and_its_imports_and_exports() {
+        let text = "/**\n * The web part.\n */\n\
+                    import { cents } from \"./cents\";\n\
+                    export {\n  total,\n} from \"./totals\";\n\
+                    export * from \"./format\";\n\
+                    const fs = require(\"fs\");\n\
+                    module.exports = { cents };\n";
+        assert_eq!(
+            declaration_lines(text, "typescript").as_deref(),
+            Some(
+                "/**\n * The web part.\n */\n\
+                 \n\
+                 import { cents } from \"./cents\";\n\
+                 export {\n  total,\n} from \"./totals\";\n\
+                 export * from \"./format\";\n\
+                 const fs = require(\"fs\");\n\
+                 module.exports = { cents };"
+            )
+        );
+        assert_eq!(
+            declaration_lines("// Barrel.\nexport * from './a'\n", "javascript").as_deref(),
+            Some("// Barrel.\n\nexport * from './a'")
+        );
+    }
+
+    #[test]
+    fn a_go_file_gives_its_package_comment_and_its_imports() {
+        let text = "// Package greet says hello.\n\
+                    package greet\n\
+                    \n\
+                    import (\n\t\"fmt\"\n\t\"strings\"\n)\n";
+        assert_eq!(
+            declaration_lines(text, "go").as_deref(),
+            Some(
+                "// Package greet says hello.\n\
+                 \n\
+                 package greet\n\
+                 import (\n\t\"fmt\"\n\t\"strings\"\n)"
+            )
+        );
+        assert_eq!(declaration_lines("package greet\n", "go"), None);
+    }
+
+    #[test]
+    fn a_file_of_declarations_has_its_own_prompt() {
+        let mut r = request(Level::File);
+        r.kind = DECLARATIONS_KIND.into();
+        r.children = Vec::new();
+        r.code = Some("mod document;".into());
+        let prompt = r.prompt();
+        assert!(
+            prompt.starts_with(
+                "Summarize the rust source file `src/lib.rs` in 1 to 3 sentences, from its \
+                 doc comment and its declarations below"
+            ),
+            "{prompt}"
+        );
+        assert!(prompt.ends_with("```rust\nmod document;\n```"), "{prompt}");
+        // A runtime with a small context gives a shortened text.
+        assert!(
+            r.prompt_with_code("mod a;")
+                .ends_with("```rust\nmod a;\n```")
+        );
+    }
+
+    /// KAIROS-T-0425: a lib.rs of declarations gets a file summary, and the
+    /// next run reuses it from the pool.
+    #[test]
+    fn a_file_of_declarations_is_summarized_and_reused() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        fs::create_dir_all(repo.join("src")).unwrap();
+        fs::write(
+            repo.join("src/lib.rs"),
+            "//! Numbers.\n\nmod one;\n\npub use one::one;\n",
+        )
+        .unwrap();
+        fs::write(repo.join("src/one.rs"), "pub fn one() -> u32 { 1 }\n").unwrap();
+        fs::write(repo.join("src/empty.rs"), "// Nothing here.\n").unwrap();
+        let db = dir.path().join("index.sqlite");
+        crate::build_structure(&repo, &db).unwrap();
+        let embed = kairos_embed::DeterministicProvider::default();
+        let mut fake = FakeSummarizer::default();
+        let options = SummarizeOptions::default();
+        let report = summarize(&repo, &db, &mut fake, &embed, &options).unwrap();
+        assert_eq!(report.files.summarized, 2, "lib.rs and one.rs");
+        let lib: Vec<_> = fake
+            .requests
+            .iter()
+            .filter(|r| r.level == Level::File && r.path == "src/lib.rs")
+            .collect();
+        assert_eq!(lib.len(), 1);
+        assert_eq!(lib[0].kind, DECLARATIONS_KIND);
+        assert_eq!(
+            lib[0].code.as_deref(),
+            Some("//! Numbers.\n\nmod one;\npub use one::one;")
+        );
+        assert!(
+            !fake
+                .requests
+                .iter()
+                .any(|r| r.level == Level::File && r.path == "src/empty.rs")
+        );
+        // The folder summary has the summary of lib.rs.
+        let module = fake
+            .requests
+            .iter()
+            .find(|r| r.level == Level::Module)
+            .unwrap();
+        assert!(module.children.iter().any(|l| l.starts_with("- `lib.rs`")));
+
+        let report = summarize(&repo, &db, &mut fake, &embed, &options).unwrap();
+        assert_eq!(report.files.reused, 2);
+        assert!(report.calls.is_empty());
+
+        let index = crate::Index::open(&db).unwrap();
+        let map = index.module_map(None).unwrap();
+        let files: Vec<_> = map.iter().flat_map(|m| &m.files).collect();
+        let lib = files.iter().find(|f| f.path == "src/lib.rs").unwrap();
+        assert!(lib.declarations_only && lib.summary.is_some(), "{lib:?}");
+        let empty = files.iter().find(|f| f.path == "src/empty.rs").unwrap();
+        assert!(
+            empty.declarations_only && empty.summary.is_none(),
+            "{empty:?}"
+        );
+        let one = files.iter().find(|f| f.path == "src/one.rs").unwrap();
+        assert!(!one.declarations_only, "{one:?}");
+    }
+
+    /// A link run with no summary of a file of declarations in the pool (a
+    /// pool from before KAIROS-T-0425) still links the folder summary.
+    #[test]
+    fn a_file_of_declarations_with_no_summary_does_not_hold_back_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        fs::create_dir_all(repo.join("src")).unwrap();
+        fs::write(repo.join("src/one.rs"), "pub fn one() -> u32 { 1 }\n").unwrap();
+        let db = dir.path().join("index.sqlite");
+        crate::build_structure(&repo, &db).unwrap();
+        let embed = kairos_embed::DeterministicProvider::default();
+        let options = SummarizeOptions::default();
+        summarize(&repo, &db, &mut FakeSummarizer::default(), &embed, &options).unwrap();
+
+        fs::write(repo.join("src/lib.rs"), "mod one;\n").unwrap();
+        crate::build_structure(&repo, &db).unwrap();
+        let report = link(&repo, &db, &options).unwrap();
+        assert_eq!(
+            report.files,
+            LevelCount {
+                summarized: 0,
+                reused: 1,
+                left: 1
+            }
+        );
+        assert_eq!(report.modules.reused, 1);
+        assert_eq!(report.modules.left, 0);
     }
 
     #[test]

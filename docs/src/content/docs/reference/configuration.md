@@ -405,7 +405,9 @@ share the builds, and each build runs one time. There are 3 types of build:
 - **A first build.** At the same interval, the sweep adds a job for each
   repository that has no index. The job makes a full index of the head of
   the default branch. The index has the structure, the SCIP edges and the
-  summaries.
+  summaries. The test code gets summaries too, so the search finds a test
+  by what it checks. The test code adds to the number of summaries of a
+  build.
   A first build of a large repository can take some hours on a CPU.
 
 A repository has one build job at a time. A server does not add a second
@@ -846,6 +848,67 @@ and the default branch. If more files than the limit changed since that
 commit, the CLI builds nothing. It tells you to rebase on the default branch,
 or to run `kairos index --full`. It also gives the time of a full build. If
 the CLI cannot reach Kairos, it updates the local index and says so.
+
+### The code tools: choose one symbol
+
+The tools `symbol`, `callers`, `callees`, `references` and `path` of `kairos index mcp`
+find a symbol by its name: `name`, `Type::name` or `Type.name`. When more
+than one symbol has the name, the tool uses these steps:
+
+1. `file` keeps the symbols of that file. The value is a path from the root
+   of the checkout, or the end of the path.
+2. `line` keeps the symbol that starts on that line. If no symbol starts on
+   it, `line` keeps the smallest symbol that holds the line.
+3. A Rust `impl` block has the name of its type. When the name matches a
+   type and its `impl` blocks, the tool uses the type. To get an `impl`
+   block, give its `line`.
+4. When only one of the symbols is a function or a type, the tool uses it.
+
+If more than one symbol is left, the tool gives the error `AMBIGUOUS`. The
+error lists the candidates as `name (file:line)`. Give a candidate as the
+symbol to choose it. The error also tells you which argument to give. It
+is `file` when the candidates are in different files, and `line` when they
+are in one file. `path` has the arguments `from_file`, `from_line`, `to_file` and
+`to_line`.
+
+### The code tools: the source of a symbol
+
+Give `source: true` to the tool `symbol` to get the source text of the
+symbol. The tool reads the text from the file in the checkout. It uses the
+bytes of the symbol that the index has.
+
+- The text is 16384 bytes or less. If the symbol is longer, the tool cuts
+  the text at the end of a line. The result gives the length of the symbol
+  and the line where you can read the rest of the file.
+- If the file changed after the last index update, the result has a
+  warning: the source can be different from the symbol. Run
+  `kairos index update` to update the index.
+- If the file is not in the checkout, the result has no source.
+
+### The code tools: the uses of a symbol
+
+The tool `references` gives each use of a symbol, not only the calls.
+`kairos index references <symbol>` gives the same text. The tool chooses the
+symbol as `symbol` does.
+
+- For Rust, the uses come from the SCIP data of rust-analyzer. Each use has
+  its file, its line, its kind and the symbol that holds it. The kinds are
+  `call`, `type`, `field`, `import` and `other` (a constant, a module or an
+  enum variant). A use of a field of a struct is a use of the struct, with
+  the kind `field`. The definition and `Self` are not uses.
+- For Python, TypeScript, JavaScript and Go, the index has the calls only.
+  The result says so.
+- `kairos index update` with no `--rust-edges` keeps the uses of each Rust
+  file that did not change. A changed Rust file has its calls only until
+  the next SCIP run. The result gives the count of these files. Run
+  `kairos index update --rust-edges` to get all the uses again.
+- The result shows the possible calls only when `possible` is true. A
+  possible call is a call by a name that more than one function has.
+- `limit` is the most uses to show, from 1 to 1000. The default is 100.
+
+The uses are part of the index since schema version 7. Kairos refuses an
+index of an earlier version. Run `kairos index --full`, or take a new base
+index from Kairos.
 
 ## Helm chart values
 

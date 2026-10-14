@@ -75,6 +75,9 @@ pub fn split(db: &Path) -> Result<Split, IndexError> {
     // base pool that a checkout took (KAIROS-T-0355).
     conn.execute("DROP TABLE IF EXISTS parse_cache", [])?;
     conn.execute("DELETE FROM pool_meta WHERE name = ?1", [TAKEN_BASE_POOL])?;
+    // The structure keeps the words of its names, not of its summaries
+    // (KAIROS-T-0423): `assemble` adds them again with the pool.
+    crate::text::refresh(&conn)?;
     conn.execute_batch("VACUUM")?;
     drop(conn);
 
@@ -124,6 +127,7 @@ pub fn assemble(
                 row.model
             ])?;
         }
+        crate::text::refresh(&tx)?;
     }
     tx.commit()?;
     Ok(())
@@ -159,6 +163,7 @@ pub fn add_pool(db: &Path, pool: impl IntoIterator<Item = PoolRow>) -> Result<us
                 row.model
             ])?;
         }
+        crate::text::refresh(&tx)?;
     }
     tx.commit()?;
     Ok(added)
@@ -345,6 +350,56 @@ mod tests {
              INSERT INTO pool_meta (name, value) VALUES ('vector_model', 'det/m/1');",
         )
         .unwrap();
+    }
+
+    /// KAIROS-T-0423: the text table of the search follows the pool. A
+    /// structure in the store has the words of its names only; an index
+    /// that gets pool rows gets the words of their summaries.
+    #[test]
+    fn the_text_of_the_search_follows_the_pool() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("in.db");
+        index_with_pool(&db);
+        Connection::open(&db)
+            .unwrap()
+            .execute(
+                "UPDATE summaries SET summary = 'Parses a policy.' WHERE key = 'sym-key'",
+                [],
+            )
+            .unwrap();
+        let rank = |path: &Path, query: &str| -> Vec<i64> {
+            let conn = Connection::open(path).unwrap();
+            crate::text::rank(&conn, query)
+                .unwrap()
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect()
+        };
+        let split = split(&db).unwrap();
+
+        // With no pool: the name and the path, not the summary.
+        let bare = dir.path().join("bare.db");
+        assemble(&split.structure_gz, [], &bare).unwrap();
+        assert!(rank(&bare, "parsed").is_empty());
+        assert_eq!(rank(&bare, "py"), [1]);
+
+        // assemble with the pool.
+        let full = dir.path().join("full.db");
+        assemble(&split.structure_gz, split.pool.clone(), &full).unwrap();
+        assert_eq!(rank(&full, "parsed policies"), [1]);
+        assert!(rank(&full, "py").is_empty());
+
+        // add_pool.
+        let added = dir.path().join("added.db");
+        assemble(&split.structure_gz, [], &added).unwrap();
+        add_pool(&added, split.pool.clone()).unwrap();
+        assert_eq!(rank(&added, "parsed"), [1]);
+
+        // copy_pool.
+        let copied = dir.path().join("copied.db");
+        assemble(&split.structure_gz, [], &copied).unwrap();
+        copy_pool(&full, &copied).unwrap();
+        assert_eq!(rank(&copied, "parsed"), [1]);
     }
 
     #[test]

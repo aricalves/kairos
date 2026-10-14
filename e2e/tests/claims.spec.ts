@@ -3,11 +3,13 @@
 //
 //   1. a move to Active on the item page gives alice the claim;
 //   2. Hand off gives the claim to bob;
-//   3. Release ends the claim (alice is an organization admin, so she can
-//      move the task, and so she can release a claim that bob has);
-//   4. Cancel with a reason puts the cancel mark on the task;
-//   5. Delete for good (a board manager) removes the task;
-//   6. the Agent keys page makes a key, rotates it and revokes it.
+//   3. the board grouped by owner (KAIROS-T-0416) puts the task in the
+//      lane of the person with the claim, and follows a hand-off back to
+//      alice live;
+//   4. Release ends the claim;
+//   5. Cancel with a reason puts the cancel mark on the task;
+//   6. Delete for good (a board manager) removes the task;
+//   7. the Agent keys page makes a key, rotates it and revokes it.
 //
 // The task is new for each run (a timestamped title), so a retry starts
 // clean.
@@ -74,7 +76,44 @@ test('a task is claimed, handed off, released, cancelled and deleted', async ({
     expect((await readTask(GUI, token, code)).claim?.display_name).toBe('bob');
   });
 
+  await test.step('the board grouped by owner puts the task in the lane of its claim', async () => {
+    // KAIROS-T-0416: one grouping at a time — the owner toggle turns the
+    // repository grouping off.
+    await page.goto('/boards/platform-delivery?by_repo=1');
+    await page.locator('[data-testid="group-by-owner"]').click();
+    await expect(page).toHaveURL(/by_owner=1/);
+    await expect(page).not.toHaveURL(/by_repo/);
+    const lanes = page.locator('.kairos-board__lane--owner');
+    const card = (name: string) =>
+      page.locator(`.kairos-board__lane--owner[data-owner-name="${name}"] .kairos-card`, {
+        hasText: code,
+      });
+    await expect(card('bob')).toHaveCount(1);
+    await expect(lanes.last()).toHaveAttribute('data-owner-name', 'No owner');
+    // A hand-off back to alice: the live update moves the card, and the
+    // lane of the reader (alice) is first.
+    const res = await fetch(`${GUI}/api/tasks/${code}/hand-off`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ to: 'alice@kairos.test' }),
+    });
+    expect(res.ok).toBeTruthy();
+    await expect(card('alice')).toHaveCount(1);
+    await expect(card('bob')).toHaveCount(0);
+    await expect(lanes.first()).toHaveAttribute('data-owner-mine', 'true');
+    await expect(lanes.first()).toHaveAttribute('data-owner-name', 'alice');
+    // The repository toggle turns the owner grouping off.
+    const byRepo = page.locator('[data-testid="group-by-repo"]');
+    if (await byRepo.count()) {
+      await byRepo.click();
+      await expect(page).toHaveURL(/by_repo=1/);
+      await expect(page).not.toHaveURL(/by_owner/);
+    }
+    await page.goto(`/items/${code}`);
+  });
+
   await test.step('Release ends the claim', async () => {
+    await expect(claim).toContainText('alice has the claim since');
     await claim.getByRole('button', { name: 'Release', exact: true }).click();
     await expect(page.locator('.cl-toast', { hasText: 'Kairos released the claim.' })).toBeVisible();
     await expect(claim).toContainText('No claim.');

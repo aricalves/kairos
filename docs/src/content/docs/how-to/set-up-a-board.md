@@ -118,6 +118,20 @@ There is nothing to configure for the Planned and Support lanes: work class is
 a property of the task, not of the board
 ([`work_class` in the CLI](../../reference/cli/#kairos-search)).
 
+## Group the cards by owner
+
+On a delivery, initiative or strategy board, select **Group by owner**, or add
+`?by_owner=1` to the URL. The board shows one lane for each person:
+
+- On a delivery board, the owner of a task is the person who has its claim in
+  Active. All other cards are in the lane **No owner**.
+- On an initiative or strategy board, the owner is the owner of the item.
+
+Your lane is first, then the lanes of the other people by name, then
+**No owner**. The board shows one grouping at a time. **Group by owner** turns
+off **Group by repository** (`?by_repo=1`), and the reverse. You cannot change the owner when you move a card
+to a different lane. You can move a card to a different column in its lane.
+
 ## Set a WIP limit on a column
 
 A WIP limit is the most live items that a column should hold. For example, set 1

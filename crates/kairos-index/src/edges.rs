@@ -122,7 +122,7 @@ pub struct SymKey {
 }
 
 /// The keys of the symbols of one file, in the order of the file.
-fn sym_keys<'a>(
+pub(crate) fn sym_keys<'a>(
     file: &str,
     symbols: impl Iterator<Item = (Option<&'a str>, &'a str, &'a str)>,
 ) -> Vec<SymKey> {
@@ -147,6 +147,8 @@ fn sym_keys<'a>(
 #[derive(Debug, Default)]
 pub struct BaseIndex {
     files: HashMap<String, BaseFile>,
+    /// The SCIP references of its Rust files (KAIROS-T-0419).
+    pub(crate) refs: crate::refs::BaseRefs,
 }
 
 #[derive(Debug, Default)]
@@ -309,7 +311,8 @@ impl BaseIndex {
                 }
             }
         }
-        Ok(BaseIndex { files })
+        let refs = crate::refs::read_base(conn, &keys)?;
+        Ok(BaseIndex { files, refs })
     }
 }
 
@@ -348,7 +351,7 @@ fn same_code(b: &BaseSym, s: &Sym, file: &ParsedFile<'_>, line_starts: &[usize])
 }
 
 /// A character of a Rust name.
-fn is_name_char(c: char) -> bool {
+pub(crate) fn is_name_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
@@ -610,7 +613,7 @@ impl<'a> Names<'a> {
 }
 
 /// The byte offset of a SCIP position (line and column from 0).
-fn byte_offset(
+pub(crate) fn byte_offset(
     line_starts: &[usize],
     text: &str,
     line: i32,
@@ -642,14 +645,14 @@ fn byte_offset(
     (start + offset <= text.len()).then_some(start + offset)
 }
 
-fn line_starts(text: &str) -> Vec<usize> {
+pub(crate) fn line_starts(text: &str) -> Vec<usize> {
     std::iter::once(0)
         .chain(text.match_indices('\n').map(|(i, _)| i + 1))
         .collect()
 }
 
 /// Where a SCIP reference goes.
-enum Target {
+pub(crate) enum Target {
     /// A definition in a parsed file: the file and the byte.
     Indexed(usize, usize),
     /// std, a dependency, or a file that the index does not parse.
@@ -661,7 +664,7 @@ enum Target {
 /// The definition that a reference from `file` goes to. A symbol with more
 /// than one definition (the same path in 2 crates of one package) goes to
 /// the one in the crate of the reference, else to the one in the library.
-fn choose(
+pub(crate) fn choose(
     defs: &[(Option<usize>, usize)],
     file: &str,
     files: &[ParsedFile<'_>],
@@ -1243,6 +1246,7 @@ mod tests {
         };
         BaseIndex {
             files: HashMap::from([("src/lib.rs".to_string(), file)]),
+            refs: Default::default(),
         }
     }
 
@@ -1444,6 +1448,7 @@ mod tests {
         };
         BaseIndex {
             files: HashMap::from([("src/lib.rs".to_string(), file)]),
+            refs: Default::default(),
         }
     }
 
