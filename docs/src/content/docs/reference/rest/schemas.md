@@ -513,12 +513,13 @@ The server refuses a body with a field that is not in this table ([Errors](../..
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `column` | `string` | yes | The name or the id of a column of the board. |
+| `column` | `string`, nullable | no | The name or the id of a column of the board. Required for `entered_column`; for `unblocked`, the column the task must be in. |
 | `metadata_slug` | `string`, nullable | no | Only tasks with this metadata: the slug of a definition. Send it with `metadata_value`. |
 | `metadata_value` | `string`, nullable | no | The value of `metadata_slug` that matches. |
 | `repository` | `string`, nullable | no | Only tasks of this repository: its slug or its id. |
 | `target_id` | `string` | yes | The id of a webhook target of the board. |
 | `task_type` | `string`, nullable | no | Only tasks of this type: `task|bug|tech_debt|support`. |
+| `trigger` | `string`, nullable | no | `entered_column` (the default) or `unblocked`. |
 
 The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
 
@@ -867,13 +868,13 @@ A delivery stream (`/api/delivery-streams`).
 
 ## DispatchRule
 
-A dispatch rule of a board. A task can enter `column` and match the filter. Then Kairos sends one signed delivery to the target.
+A dispatch rule of a board. With the trigger `entered_column`, the rule fires when a task that matches the filter enters `column`. With `unblocked` (KAIROS-T-0427), it fires when the last open blocker of a task that matches closes. Then the task must be in `column`, if the rule names one. Kairos sends one signed delivery to the target.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `board_id` | `string` | yes |  |
-| `column` | `string` | yes | The name of the column. |
-| `column_id` | `string` | yes |  |
+| `column` | `string`, nullable | no | The name of the column. |
+| `column_id` | `string`, nullable | no | `null`: an `unblocked` rule with no column. |
 | `created_at` | `string` | yes |  |
 | `created_by` | `string` | yes |  |
 | `id` | `string` | yes |  |
@@ -883,6 +884,7 @@ A dispatch rule of a board. A task can enter `column` and match the filter. Then
 | `target` | `string` | yes | The name of the target. |
 | `target_id` | `string` | yes |  |
 | `task_type` | `string`, nullable | no | `task|bug|tech_debt|support`; `null`: each type. |
+| `trigger` | `string` | yes | `entered_column` or `unblocked`. |
 
 ## Document
 
@@ -2700,7 +2702,7 @@ One delivery of the log, with its tries.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `created_at` | `string` | yes |  |
-| `event` | `string` | yes | `task.entered_column` or `ping`. |
+| `event` | `string` | yes | `task.entered_column`, `task.unblocked` or `ping`. |
 | `finished_at` | `string`, nullable | no |  |
 | `id` | `string` | yes | The id; the value of `X-Kairos-Delivery`. |
 | `last_error` | `string`, nullable | no |  |

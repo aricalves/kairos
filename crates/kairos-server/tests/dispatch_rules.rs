@@ -13,6 +13,10 @@
 //! 5. MCP: create_dispatch_rule (with a new target and its secret),
 //!    list_dispatch_rules, delete_dispatch_rule, and the refusal for a
 //!    person who cannot configure the board.
+//! 6. KAIROS-T-0427: an `unblocked` rule fires when the last open blocker
+//!    of a task closes (a cancel, an archive), once for a task with two
+//!    blockers, with the code of the blocker; its column and its filter
+//!    must match.
 //!
 //! Runs against the LIVE compose stack (`angreal services up`), with
 //! KAIROS_WEBHOOK_ALLOW_PRIVATE on (the receiver is on 127.0.0.1). Owns the
@@ -36,7 +40,7 @@ use kairos_client::types::CreateTaskRequest;
 use kairos_client::types_dispatch::{
     CreateDispatchRuleRequest, CreateWebhookTargetRequest, WebhookDeliveriesQuery,
 };
-use kairos_client::types_meta::UpdateMetadataRequest;
+use kairos_client::types_meta::{CreateRelationshipRequest, UpdateMetadataRequest};
 use kairos_client::types_org::{AddBoardMemberRequest, AddTeamMemberRequest, CreateTeamRequest};
 use kairos_client::{EntityKind, Error, KairosClient};
 use kairos_db::models::{NewOrganizationMember, OrgRole};
@@ -347,7 +351,7 @@ async fn a_task_that_enters_the_column_of_a_rule_fires_one_signed_delivery() {
     assert!(matches!(err, Error::Validation { .. }), "{err:?}");
 
     let rule = |column: &str, task_type: Option<&str>| CreateDispatchRuleRequest {
-        column: column.into(),
+        column: Some(column.into()),
         target_id: target.clone(),
         task_type: task_type.map(str::to_string),
         ..Default::default()
@@ -383,8 +387,8 @@ async fn a_task_that_enters_the_column_of_a_rule_fires_one_signed_delivery() {
         .await
         .expect("r1");
     assert_eq!(
-        (r1.column.as_str(), r1.task_type.as_deref()),
-        ("Active", Some("bug"))
+        (r1.column.as_deref(), r1.task_type.as_deref()),
+        (Some("Active"), Some("bug"))
     );
     let r2 = alice
         .create_dispatch_rule(
@@ -397,7 +401,8 @@ async fn a_task_that_enters_the_column_of_a_rule_fires_one_signed_delivery() {
         )
         .await
         .expect("r2");
-    assert_eq!(r2.column, "Todo");
+    assert_eq!(r2.column.as_deref(), Some("Todo"));
+    assert_eq!(r2.trigger, "entered_column");
     let r3 = alice
         .create_dispatch_rule(&slug, &rule("Completed", None))
         .await
@@ -419,7 +424,7 @@ async fn a_task_that_enters_the_column_of_a_rule_fires_one_signed_delivery() {
         .create_dispatch_rule(
             &api_board,
             &CreateDispatchRuleRequest {
-                column: api_entry.clone(),
+                column: Some(api_entry.clone()),
                 target_id: api_target.target.id.clone(),
                 ..Default::default()
             },
@@ -515,6 +520,7 @@ async fn a_task_that_enters_the_column_of_a_rule_fires_one_signed_delivery() {
     let data = &by_code[&bug][0]["data"];
     assert_eq!(data["title"], "Fix the login");
     assert_eq!(data["task_type"], "bug");
+    assert_eq!(data["work_class"], "planned", "KAIROS-T-0429: the lane");
     assert_eq!(data["link"], format!("https://kairos.test/items/{bug}"));
     assert_eq!(data["board"]["slug"], json!(slug));
     assert_eq!(data["column"]["name"], "Active");
@@ -653,6 +659,137 @@ async fn a_task_that_enters_the_column_of_a_rule_fires_one_signed_delivery() {
         alice.list_dispatch_rules(&slug).await.expect("rules").len(),
         2
     );
+
+    // --- 6. KAIROS-T-0427: unblocked -----------------------------------
+    let err = alice
+        .create_dispatch_rule(
+            &slug,
+            &CreateDispatchRuleRequest {
+                column: None,
+                ..rule("Todo", None)
+            },
+        )
+        .await
+        .expect_err("entered_column needs a column");
+    assert!(err.to_string().contains("column"), "{err}");
+    let err = alice
+        .create_dispatch_rule(
+            &slug,
+            &CreateDispatchRuleRequest {
+                trigger: Some("closed".into()),
+                ..rule("Todo", None)
+            },
+        )
+        .await
+        .expect_err("no such trigger");
+    assert!(err.to_string().contains("unblocked"), "{err}");
+    // U1: each task (type task) that is unblocked, in each column. U2: a
+    // bug in Todo that is unblocked.
+    let u1 = alice
+        .create_dispatch_rule(
+            &slug,
+            &CreateDispatchRuleRequest {
+                trigger: Some("unblocked".into()),
+                column: None,
+                ..rule("x", Some("task"))
+            },
+        )
+        .await
+        .expect("u1");
+    assert_eq!(
+        (u1.trigger.as_str(), u1.column.as_deref()),
+        ("unblocked", None)
+    );
+    let u2 = alice
+        .create_dispatch_rule(
+            &slug,
+            &CreateDispatchRuleRequest {
+                trigger: Some("unblocked".into()),
+                ..rule("Todo", Some("bug"))
+            },
+        )
+        .await
+        .expect("u2");
+    let blocks = |source: &str, target: &str| CreateRelationshipRequest {
+        source_short_code: source.into(),
+        target_short_code: target.into(),
+        relationship: "blocks".into(),
+    };
+    let first = new_task(&alice, &board, "First blocker", "task").await;
+    let second = new_task(&alice, &board, "Second blocker", "task").await;
+    let waiting = new_task(&alice, &board, "Waits for two", "task").await;
+    let bug_blocker = new_task(&alice, &board, "Bug blocker", "task").await;
+    let bug_in_todo = new_task(&alice, &board, "Bug in Todo", "bug").await;
+    let other_blocker = new_task(&alice, &board, "Other blocker", "task").await;
+    let bug_in_backlog = new_task(&alice, &board, "Bug in Backlog", "bug").await;
+    for (source, target) in [
+        (&first, &waiting),
+        (&second, &waiting),
+        (&bug_blocker, &bug_in_todo),
+        (&other_blocker, &bug_in_backlog),
+    ] {
+        alice
+            .create_relationship(&blocks(source, target))
+            .await
+            .expect("blocks");
+    }
+    alice
+        .transition_task(&bug_in_todo, &column["Todo"])
+        .await
+        .expect("to Todo");
+    let before = receiver.received().len();
+    // The first of two blockers closes: nothing.
+    alice
+        .cancel_task(&first, "Done elsewhere")
+        .await
+        .expect("cancel");
+    deliver(&worker, &scratch_url).await;
+    let unblocked = |from: usize| -> Vec<Value> {
+        receiver.received()[from..]
+            .iter()
+            .filter(|r| r.headers["x-kairos-event"] == "task.unblocked")
+            .map(|r| r.json())
+            .collect()
+    };
+    assert!(unblocked(before).is_empty(), "{:?}", unblocked(before));
+    // The second closes: one delivery, with its code.
+    alice
+        .cancel_task(&second, "Done elsewhere")
+        .await
+        .expect("cancel");
+    // An archived blocker unblocks the bug in Todo (U2).
+    alice.delete_task(&bug_blocker).await.expect("archive");
+    // The bug in Backlog: U2 wants Todo, U1 wants a task. Nothing.
+    alice
+        .cancel_task(&other_blocker, "Done elsewhere")
+        .await
+        .expect("cancel");
+    deliver(&worker, &scratch_url).await;
+    let mut got: Vec<(String, String, String)> = unblocked(before)
+        .iter()
+        .map(|body| {
+            (
+                body["data"]["code"].as_str().unwrap().to_string(),
+                body["data"]["blocker"].as_str().unwrap().to_string(),
+                body["data"]["rule_id"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    got.sort();
+    let mut want = vec![
+        (waiting.clone(), second.clone(), u1.id.clone()),
+        (bug_in_todo.clone(), bug_blocker.clone(), u2.id.clone()),
+    ];
+    want.sort();
+    assert_eq!(got, want);
+    let (text, error) = alice_mcp
+        .call(
+            "create_dispatch_rule",
+            json!({ "board": slug, "trigger": "unblocked", "target_id": target }),
+        )
+        .await;
+    assert!(!error, "{text}");
+    assert!(text.contains("a task that is unblocked"), "{text}");
 
     // A removed target takes its rules and its log.
     alice

@@ -102,6 +102,20 @@ The filter is optional. Each part that you set must match:
 - `--metadata`: a metadata value, for example `priority=high`.
 - `--repository`: the repository of the task.
 
+A rule can also fire when the last open blocker of a task closes. The
+blocker closes when it goes into a done column, or when a person cancels or
+archives it. The event is `task.unblocked`. Its `blocker` is the code of the
+blocker that closed. Use this trigger to start a wave when an upstream task
+is done:
+
+```sh
+kairos boards dispatch add-rule platform-delivery \
+  --trigger unblocked --column Todo --target 6f1a…
+# → Made the dispatch rule 4e7b…: each task in Todo that is unblocked goes to Agent runner.
+```
+
+Without `--column`, a task in each column that is not done matches.
+
 An agent can make the same rule with the MCP tool `create_dispatch_rule`. With
 `url` in place of `target_id`, the tool makes the target too, and its answer
 has the secret.
@@ -128,7 +142,10 @@ The GUI has the same targets, rules and log. Open **Admin**, then
 
 1. Put a name and the URL of the runner, and select **Add target**. Copy
    the secret that the page shows.
-2. Select the column, the target and a filter, and select **Add rule**.
+2. Select the trigger in **A task that**: **enters the column**, or the
+   trigger for the last blocker. Then select the column, the target and a
+   filter, and select **Add rule**. With the trigger for the last blocker,
+   the column can be **any column**.
 3. Read the **Delivery log**. Select **Refresh** to read it again.
 
 ## Related reading

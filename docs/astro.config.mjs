@@ -86,6 +86,7 @@ export default defineConfig({
 								page('how-to/connect-over-mcp', 'Connect over MCP'),
 								page('how-to/read-notifications-as-an-agent', 'Read notifications as an agent'),
 								page('how-to/dispatch-tasks-to-an-agent', 'Dispatch tasks to an agent runner'),
+								page('how-to/receive-dispatch-in-a-session', 'Receive dispatch in a Claude Code session'),
 								page('how-to/configure-retrieval', 'Configure semantic retrieval'),
 							],
 						},

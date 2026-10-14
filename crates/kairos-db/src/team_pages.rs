@@ -222,6 +222,10 @@ pub enum TeamPageError {
         current_title: String,
         current_content: String,
     },
+    /// A folder has no content (KAIROS-T-0441): a save may change its
+    /// title, not its content.
+    #[error("The node {0} is a folder. A folder has a title and no content.")]
+    FolderContent(Uuid),
     /// Content exceeds [`MAX_CONTENT_BYTES`].
     #[error("The content has {actual} bytes. The limit is {MAX_CONTENT_BYTES} bytes.")]
     ContentTooLarge { actual: usize },
@@ -366,6 +370,9 @@ pub fn update_page_content(
         use crate::schema::team_pages::dsl;
         check_size(new_content)?;
         let current = load_page(conn, team_id, page_id)?;
+        if current.kind == TeamPageKind::Folder && new_content != current.content {
+            return Err(TeamPageError::FolderContent(page_id));
+        }
         let title = new_title.unwrap_or(&current.title).to_string();
         if title == current.title && new_content == current.content {
             return Ok(current);

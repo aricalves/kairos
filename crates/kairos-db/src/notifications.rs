@@ -315,6 +315,13 @@ pub fn on_blockers_cleared(
     if blockers.is_empty() {
         return Ok(());
     }
+    // KAIROS-T-0427: the dispatch rules that fire on `unblocked`. A blocker
+    // that was done before its archive closed nothing now.
+    let closed: Vec<Uuid> = match how {
+        Cleared::Done => blockers.to_vec(),
+        Cleared::Archived => blockers_not_done(conn, blockers)?,
+    };
+    crate::dispatch::on_blockers_closed(conn, &closed, actor)?;
     let rows: Vec<ClearedRow> = sql_query(
         "SELECT c.user_id, t.id AS task_id, t.short_code AS task_code, \
                 b.short_code AS blocker_code \
@@ -357,6 +364,26 @@ pub fn on_blockers_cleared(
         )?;
     }
     Ok(())
+}
+
+/// The items of `ids` that are not in a done column.
+fn blockers_not_done(conn: &mut PgConnection, ids: &[Uuid]) -> Result<Vec<Uuid>, DieselError> {
+    #[derive(QueryableByName)]
+    struct Row {
+        #[diesel(sql_type = SqlUuid)]
+        id: Uuid,
+    }
+    let rows: Vec<Row> = sql_query(
+        "SELECT p.id FROM (SELECT id, column_id FROM strategies \
+                           UNION ALL SELECT id, column_id FROM initiatives \
+                           UNION ALL SELECT id, column_id FROM tasks \
+                           UNION ALL SELECT id, column_id FROM adrs) p \
+           JOIN board_columns c ON c.id = p.column_id \
+          WHERE p.id = ANY($1) AND NOT c.is_done",
+    )
+    .bind::<Array<SqlUuid>, _>(ids)
+    .load(conn)?;
+    Ok(rows.into_iter().map(|row| row.id).collect())
 }
 
 /// Whether the column is done. An unknown column is not.

@@ -159,8 +159,14 @@ pub struct ListDispatchRulesParams {
 pub struct CreateDispatchRuleParams {
     /// The board, by slug (e.g. "platform-delivery") or UUID.
     pub board: String,
-    /// The column, by name (e.g. "Todo") or UUID.
-    pub column: String,
+    /// When the rule fires: `entered_column` (default: a task enters
+    /// `column`) or `unblocked` (the last open blocker of a task is done,
+    /// archived or cancelled).
+    pub trigger: Option<String>,
+    /// The column, by name (e.g. "Todo") or UUID. Required for
+    /// `entered_column`; for `unblocked`, the column the task must be in
+    /// (none: each column that is not done).
+    pub column: Option<String>,
     /// The id of a webhook target of the board. Send it, or send `url`
     /// (and `target_name`) to make a new target.
     pub target_id: Option<String>,
@@ -1604,7 +1610,7 @@ impl KairosMcp {
 
     // KAIROS-T-0385: the agent dispatch rules of a board.
     #[tool(
-        description = "The agent dispatch rules of a board: for each rule, the column, the filter (task type, metadata value, repository) and the webhook target; then the webhook targets (on or off, with the failed tries in a row); then the 20 newest deliveries of the log (status, tries, response code, error). When a task enters the column of a rule and matches its filter, Kairos sends one signed delivery to the target. A person who belongs to the board reads them. `board` is a slug or UUID."
+        description = "The agent dispatch rules of a board: for each rule, when it fires (a task enters a column, or a task is unblocked), the filter (task type, metadata value, repository) and the webhook target; then the webhook targets (on or off, with the failed tries in a row); then the 20 newest deliveries of the log (status, tries, response code, error). When a task enters the column of a rule (or its last open blocker closes, for an `unblocked` rule) and matches its filter, Kairos sends one signed delivery to the target. A person who belongs to the board reads them. `board` is a slug or UUID."
     )]
     pub async fn list_dispatch_rules(
         &self,
@@ -1633,7 +1639,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Make an agent dispatch rule on a board: when a task enters `column` and matches the filter, Kairos sends one signed delivery (event task.entered_column: code, title, task type, link, board, column, repository, actor) to a webhook target. Send `target_id` (a target of the board), or `url` (and optional `target_name`) to make a new target: then the answer has its secret, shown this one time; keep it in the receiver to check X-Kairos-Signature. Optional filter: `task_type` (task | bug | tech_debt | support), `metadata_slug` with `metadata_value`, `repository` (slug or UUID); each part that is set must match. Requires configure_boards on the board."
+        description = "Make an agent dispatch rule on a board: when a task enters `column` and matches the filter, Kairos sends one signed delivery (event task.entered_column: code, title, task type, link, board, column, repository, actor) to a webhook target. With `trigger: unblocked`, the rule fires when the last open blocker of a task that matches is done, archived or cancelled (event task.unblocked, with `blocker`: the code of the blocker that closed); `column` is then optional: the column the task must be in. A task with two blockers fires once, when the second closes. Send `target_id` (a target of the board), or `url` (and optional `target_name`) to make a new target: then the answer has its secret, shown this one time; keep it in the receiver to check X-Kairos-Signature. Optional filter: `task_type` (task | bug | tech_debt | support), `metadata_slug` with `metadata_value`, `repository` (slug or UUID); each part that is set must match. Requires configure_boards on the board."
     )]
     pub async fn create_dispatch_rule(
         &self,
@@ -1681,6 +1687,7 @@ impl KairosMcp {
                     user,
                     &params.board,
                     &dto::CreateDispatchRuleRequest {
+                        trigger: params.trigger.clone(),
                         column: params.column.clone(),
                         target_id,
                         task_type: params.task_type.clone(),
@@ -1690,10 +1697,9 @@ impl KairosMcp {
                     },
                 )?;
                 let mut out = format!(
-                    "Made the dispatch rule {}: a task that enters {} {}goes to the target {} \
-                     ({}).",
+                    "Made the dispatch rule {}: {} {}goes to the target {} ({}).",
                     rule.id,
-                    rule.column,
+                    rule_when_text(&rule),
                     rule_filter_text(&rule),
                     rule.target,
                     rule.target_id
@@ -1731,8 +1737,10 @@ impl KairosMcp {
                 &params.rule_id,
             )?;
             Ok(format!(
-                "Removed the dispatch rule {} (column {}, target {}).",
-                rule.id, rule.column, rule.target
+                "Removed the dispatch rule {} ({}, target {}).",
+                rule.id,
+                rule_when_text(&rule),
+                rule.target
             ))
         })
         .await
@@ -4516,6 +4524,15 @@ fn card_details(updated_at: DateTime<Utc>, metadata: Option<&Vec<(String, String
 }
 
 /// The filter of a rule, for a sentence: `"and is a bug "`, or empty. Pure.
+/// When a rule fires (KAIROS-T-0427). Pure.
+fn rule_when_text(rule: &kairos_client::types_dispatch::DispatchRule) -> String {
+    match (rule.trigger.as_str(), rule.column.as_deref()) {
+        ("unblocked", Some(column)) => format!("a task in {column} that is unblocked"),
+        ("unblocked", None) => "a task that is unblocked".to_string(),
+        (_, column) => format!("a task that enters {}", column.unwrap_or("?")),
+    }
+}
+
 fn rule_filter_text(rule: &kairos_client::types_dispatch::DispatchRule) -> String {
     let mut parts = Vec::new();
     if let Some(t) = &rule.task_type {
@@ -4566,9 +4583,9 @@ fn dispatch_text(
     }
     for rule in rules {
         out.push_str(&format!(
-            "- {}: a task that enters {} {}-> {} ({})\n",
+            "- {}: {} {}-> {} ({})\n",
             rule.id,
-            rule.column,
+            rule_when_text(rule),
             rule_filter_text(rule),
             rule.target,
             rule.target_id
