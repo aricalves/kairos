@@ -270,10 +270,10 @@ fn seed_demo_fixture_lifecycle() {
             2,
         ),
         (
-            "team pages (2 scaffolds of 10 + platform's how-to page)",
+            "team pages (2 charters + platform's two folders and how-to page)",
             "SELECT COUNT(*) AS count FROM org_demo.team_pages \
              WHERE deleted_at IS NULL",
-            21,
+            5,
         ),
         (
             "charter content saves wrote history (baseline + v2, both teams)",

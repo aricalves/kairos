@@ -450,10 +450,10 @@ pub(crate) fn create(
             })),
             e => map_config_error(e),
         })?;
-        // KAIROS-T-0082: a team is never born bare — the page
-        // scaffold (charter, support processes, documentation
-        // tree) seeds in this same transaction.
-        kairos_db::team_pages::seed_team_scaffold(conn, team.id, user)
+        // KAIROS-T-0082, KAIROS-T-0436: a team is never born without its
+        // charter, which seeds in this same transaction. The rest of the
+        // tree is the team's to grow.
+        kairos_db::team_pages::seed_team_charter(conn, team.id, user)
             .map_err(ApiError::internal)?;
         log_team_activity(
             conn,
