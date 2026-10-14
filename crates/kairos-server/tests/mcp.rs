@@ -1074,7 +1074,7 @@ async fn mcp_endpoint_against_live_stack() {
     // and she can edit the items here. Until then `informs` was refused
     // with FORBIDDEN, because it needed the admin role, and the type rule
     // was never reached. The refusal of THIS edge is the type rule now:
-    // `informs` runs from a document or an ADR.
+    // `informs` runs from a document or an ADR, or from a task to a task.
     let text = session
         .call_err(
             "link_items",
