@@ -681,7 +681,7 @@ The board marks the column.
 ```
 kairos boards columns list   <BOARD> [OPTIONS]
 kairos boards columns add    <BOARD> <NAME> [--position <N>] [OPTIONS]
-kairos boards columns update <BOARD> <COLUMN> [--name <NAME>] [--position <N>] [--done <BOOL>] [--claims <BOOL>] [OPTIONS]
+kairos boards columns update <BOARD> <COLUMN> [--name <NAME>] [--position <N>] [--done <BOOL>] [--claims <BOOL>] [OPTIONS]   (one option at least)
 kairos boards columns remove <BOARD> <COLUMN> [OPTIONS]
 ```
 
@@ -869,12 +869,12 @@ kairos teams list [OPTIONS]
 ### `kairos teams get`
 
 ```
-kairos teams get <TEAM_ID> [OPTIONS]
+kairos teams get <TEAM> [OPTIONS]
 ```
 
 | Argument | Type | Default | Description |
 |---|---|---|---|
-| `<TEAM_ID>` | UUID | required | Team to show. |
+| `<TEAM>` | slug or UUID | required | Team to show. |
 
 ### `kairos teams create`
 
@@ -894,12 +894,12 @@ Creating a team also creates its delivery board.
 ### `kairos teams update`
 
 ```
-kairos teams update <TEAM_ID> [OPTIONS]
+kairos teams update <TEAM> [OPTIONS]
 ```
 
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
-| `<TEAM_ID>` | UUID | required | Team to update. |
+| `<TEAM>` | slug or UUID | required | Team to update. |
 | `--name <NAME>` | string | unchanged | New name. |
 | `--slug <SLUG>` | string | unchanged | New slug. |
 | `--type <TEAM_TYPE>` | `stream_aligned` \| `platform` \| `enabling` \| `complicated_subsystem` | unchanged | New type. |
@@ -907,12 +907,12 @@ kairos teams update <TEAM_ID> [OPTIONS]
 ### `kairos teams delete`
 
 ```
-kairos teams delete <TEAM_ID> --confirm [OPTIONS]
+kairos teams delete <TEAM> --confirm [OPTIONS]
 ```
 
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
-| `<TEAM_ID>` | UUID | required | Team to delete. |
+| `<TEAM>` | slug or UUID | required | Team to delete. |
 | `--confirm` | flag | off | Required for the deletion to happen. |
 
 A soft delete.
@@ -920,14 +920,14 @@ A soft delete.
 ### `kairos teams members`
 
 ```
-kairos teams members list   <TEAM_ID> [OPTIONS]
-kairos teams members add    <TEAM_ID> --user <USER> [OPTIONS]
-kairos teams members remove <TEAM_ID> --user <USER> [OPTIONS]
+kairos teams members list   <TEAM> [OPTIONS]
+kairos teams members add    <TEAM> --user <USER> [OPTIONS]
+kairos teams members remove <TEAM> --user <USER> [OPTIONS]
 ```
 
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
-| `<TEAM_ID>` | UUID | required | The team. |
+| `<TEAM>` | slug or UUID | required | The team. |
 | `--user <USER>` | string | required on `add` and `remove` | A user id, an email, a user name, or the name of a service account. `kairos members list` gives them. |
 
 ### `kairos teams pages`
@@ -1399,18 +1399,17 @@ Repositories are the codebases that tasks link to. See
 kairos grants list [OPTIONS]
 kairos grants add --user <USER> [--capability <CAPABILITY>] [--board <BOARD>] [OPTIONS]
 kairos grants remove <GRANT_ID> --confirm [OPTIONS]
-kairos grants board-set <BOARD> <USER> --capability <CAPABILITY>... [OPTIONS]
-kairos grants board-revoke <BOARD> <USER> [OPTIONS]
+kairos grants board-set --board <BOARD> --user <USER> --capability <CAPABILITY>... [OPTIONS]
+kairos grants board-revoke --board <BOARD> --user <USER> --confirm [OPTIONS]
 ```
 
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
-| `--user <USER>`, `<USER>` | string | required on `add`, `board-set` and `board-revoke` | A user id, an email, a user name, or the name of a service account. |
+| `--user <USER>` | string | required on `add`, `board-set` and `board-revoke` | A user id, an email, a user name, or the name of a service account. |
 | `--capability <CAPABILITY>` | string | `manage_structure` | `manage_structure`, or a board capability such as `manage_tasks` or `configure_boards`. |
-| `--board <BOARD>` | slug or UUID | none | For `manage_structure`: the one board of the grant. With no `--board`, the grant is on the organization. A board capability needs it. |
+| `--board <BOARD>` | slug or UUID | none on `add`; required on `board-set` and `board-revoke` | For `manage_structure`: the one board of the grant. With no `--board`, the grant is on the organization. A board capability needs it. |
 | `<GRANT_ID>` | UUID | required on `remove` | A grant of `manage_structure`, from `kairos grants list`. |
-| `--confirm` | flag | off | Required for the revoke to happen. |
-| `<BOARD>` | slug or UUID | required on `board-set` and `board-revoke` | The board. |
+| `--confirm` | flag | off | Required on `remove` and `board-revoke` for the revoke to happen. |
 
 `board-set` replaces the board capabilities of a member with the
 `--capability` values. Repeat `--capability` for each capability. The member
