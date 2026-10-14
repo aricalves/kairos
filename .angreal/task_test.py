@@ -732,6 +732,11 @@ def e2e(down=False):
             # put it back for 30 s.
             "KAIROS_WEBHOOK_ALLOW_PRIVATE": "true",
             "KAIROS_WEBHOOK_RETRY_BASE_SECS": "1",
+            # KAIROS-T-0453: this server shares the database, and so the job
+            # queue, with the GUI server. It runs the webhook deliveries of
+            # the GUI leg too, and signs them with the secret of the target,
+            # sealed with this key: the same key as the GUI server.
+            "KAIROS_SECRETS_KEY": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
         })
         server = subprocess.Popen(
             [str(SERVER_BIN), "serve"],
