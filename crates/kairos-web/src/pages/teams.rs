@@ -16,6 +16,7 @@
 //!   endpoint; stream counts are small at org scale).
 
 pub(crate) mod api;
+pub(crate) mod archive;
 pub(crate) mod doc;
 pub(crate) mod tree;
 

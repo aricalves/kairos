@@ -989,7 +989,7 @@ pub struct MoveTeamPageParams {
 pub struct DeleteTeamPageParams {
     /// The team, by slug or UUID.
     pub team: String,
-    /// The page or the empty folder: a path of slugs or a UUID.
+    /// The page or the folder: a path of slugs or a UUID.
     pub page: String,
 }
 
@@ -4808,7 +4808,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Archive a page or an empty folder of a team, as DELETE /api/teams/{id}/pages/{page_id} does. `page` is a path of slugs or a UUID. A folder that holds pages or folders is refused, and so is the charter. Requires membership of the team, or the organization admin role."
+        description = "Archive a page or a folder of a team, as DELETE /api/teams/{id}/pages/{page_id} does. A folder is archived with everything in it. `page` is a path of slugs or a UUID. The charter is refused. A person restores archived nodes on the team page or with POST /api/teams/{id}/pages/{page_id}/restore. Requires membership of the team, or the organization admin role."
     )]
     pub async fn delete_team_page(
         &self,

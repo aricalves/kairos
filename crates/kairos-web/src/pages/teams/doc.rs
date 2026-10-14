@@ -137,6 +137,7 @@ fn DocBody(
     // KAIROS-T-0438: `/teams/:slug/pages/` is the root of the tree.
     if segments.is_empty() {
         let team_href = format!("/teams/{}", team.slug);
+        let archive_team_id = team.id.clone();
         return view! {
             <PageHeader title="Pages" sub=format!("team · {}", team.slug)/>
             <Stack gap="md">
@@ -153,6 +154,7 @@ fn DocBody(
                         on_changed
                     />
                 </Panel>
+                <super::archive::ArchivePanel team_id=archive_team_id manage on_changed/>
             </Stack>
         }
         .into_any();
@@ -353,6 +355,7 @@ fn PageView(
                 </Panel>
             }.into_any()
         }}
+        <super::archive::HistoryPanel team_id=team.id.clone() page_id=node.id.clone()/>
         {(manage && !node.is_protected).then(|| view! {
             <StructurePanel team=team.clone() pages=pages.clone() node=node.clone() on_changed/>
         })}
@@ -364,12 +367,13 @@ fn PageView(
     }
 }
 
-/// Rename / move / delete for an unprotected node (KAIROS-T-0086). The
+/// Rename / move / archive for an unprotected node (KAIROS-T-0086,
+/// KAIROS-T-0439). The
 /// move select offers every folder EXCEPT the node and its descendants
 /// (a folder inside itself is a cycle — the server refuses it too) plus
 /// the tree root. Delete asks in an Aurora `ConfirmDialog`
-/// (COLLIERY-T-1836; it was a second click); folders with live children
-/// surface the server's FOLDER_NOT_EMPTY count.
+/// (COLLIERY-T-1836; it was a second click) and names the kind; a folder
+/// is archived with what is in it.
 #[component]
 fn StructurePanel(
     team: api::Team,
@@ -505,6 +509,24 @@ fn StructurePanel(
         parent_path.unwrap_or_else(|| format!("/teams/{team_slug}"))
     };
     let page_title = node.title.clone();
+    // KAIROS-T-0439: the dialog names the kind, and a folder takes what is in it.
+    let (dialog_title, dialog_message) = if node.kind == "folder" {
+        (
+            "Archive this folder?",
+            format!(
+                "Kairos archives the folder \"{page_title}\" and everything in it. You can \
+                 restore them from the archive of the team page."
+            ),
+        )
+    } else {
+        (
+            "Archive this page?",
+            format!(
+                "Kairos archives the page \"{page_title}\". You can restore it from the \
+                 archive of the team page."
+            ),
+        )
+    };
     let delete = move |_: ()| {
         if busy.get_untracked() {
             return;
@@ -527,7 +549,7 @@ fn StructurePanel(
     };
 
     view! {
-        <Panel title="Manage" caption="rename · slug · move · delete">
+        <Panel title="Manage" caption="rename · slug · move · archive">
             <Stack gap="sm">
                 {move || error.get().map(|message| view! {
                     <Alert title="Change failed" color=token::BAD>
@@ -558,19 +580,16 @@ fn StructurePanel(
                         disabled=busy
                         on_click=Callback::new(move |_| confirm_delete.set(true))
                     >
-                        "Delete"
+                        "Archive"
                     </Button>
                 </Group>
             </Stack>
         </Panel>
         <ConfirmDialog
             open=confirm_delete
-            title="Delete this page?"
-            message=format!(
-                "Kairos deletes the page \"{page_title}\". A folder that has pages in it \
-                 stays, and the server tells you why."
-            )
-            confirm_label="Delete"
+            title=dialog_title
+            message=dialog_message
+            confirm_label="Archive"
             busy=busy
             on_confirm=Callback::new(delete)
         />

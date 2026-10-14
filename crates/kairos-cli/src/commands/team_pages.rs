@@ -105,7 +105,8 @@ pub enum TeamPagesCommand {
         #[command(flatten)]
         common: Common,
     },
-    /// Archive a page or an empty folder (requires --confirm). The charter
+    /// Archive a page, or a folder with everything in it (requires
+    /// --confirm). The charter
     /// cannot be archived
     Delete {
         /// Team slug or UUID

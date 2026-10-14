@@ -1935,16 +1935,16 @@ Refuses: `VALIDATION` for a move into the node itself or into a folder in it.
 
 ### `delete_team_page`
 
-Archives a page or an empty folder, as `DELETE /api/teams/{id}/pages/{page_id}`
-does.
+Archives a page or a folder, as `DELETE /api/teams/{id}/pages/{page_id}` does.
+A folder is archived with everything in it. A person restores archived nodes on
+the team page.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `team` | string | yes | — | Slug or UUID. |
 | `page` | string | yes | — | A path or a UUID. |
 
-Refuses: `VALIDATION` for the charter and for a folder that holds a page or a
-folder. `FORBIDDEN` as for `create_team_page`.
+Refuses: `VALIDATION` for the charter. `FORBIDDEN` as for `create_team_page`.
 
 ## Your notifications
 

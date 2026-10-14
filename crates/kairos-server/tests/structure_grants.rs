@@ -626,17 +626,8 @@ async fn an_admin_agent_sets_up_a_team_with_manage_structure() {
             json!({"team": "home-ops", "page": "charter"}),
         )
         .await;
-    // Move to the root, then archive; a folder with a page in it is refused.
-    let text = board_mcp
-        .err(
-            "delete_team_page",
-            json!({"team": "home-ops", "page": "ops-guides"}),
-        )
-        .await;
-    assert!(
-        text.starts_with("VALIDATION") || text.contains("FOLDER_NOT_EMPTY"),
-        "{text}"
-    );
+    // Move the page to the root, then archive the folder (KAIROS-T-0439: a
+    // folder is archived with what is in it; here it is empty).
     let text = board_mcp
         .ok(
             "move_team_page",

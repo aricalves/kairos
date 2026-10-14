@@ -12,7 +12,7 @@ use diesel::result::Error as DieselError;
 use uuid::Uuid;
 
 use crate::models::enums::TeamPageKind;
-use crate::models::team_pages::{NewTeamPage, NewTeamPageHistory, TeamPage};
+use crate::models::team_pages::{NewTeamPage, NewTeamPageHistory, TeamPage, TeamPageHistory};
 
 /// The charter's templated skeleton (mirrors the `team_charter` system
 /// template's headings).
@@ -100,9 +100,9 @@ pub enum TeamPageError {
     /// The page is protected (the Charter): rename/move/delete refused.
     #[error("The page {0} is the Charter. You cannot change its slug, move it, or delete it.")]
     ProtectedPage(Uuid),
-    /// A folder with live children cannot be deleted.
-    #[error("The folder {folder} has live pages. The number of live pages is {children}.")]
-    FolderNotEmpty { folder: Uuid, children: i64 },
+    /// A restore of a page that is not archived (KAIROS-T-0439).
+    #[error("The team page {0} is not archived. You can restore only an archived page.")]
+    NotArchived(Uuid),
     /// KAIROS-A-0004-style optimistic-concurrency conflict on content.
     #[error(
         "The request has the version {expected_version} of the page {page_id}, and the \
@@ -382,40 +382,189 @@ pub fn rename_move_page(
     })
 }
 
-/// Soft-delete a page; folders must be empty of live children. Refused
-/// for protected pages.
+/// The live nodes inside `folder`, at any depth (not the folder itself).
+fn live_descendants(
+    conn: &mut PgConnection,
+    team_id: Uuid,
+    folder: Uuid,
+) -> Result<Vec<Uuid>, DieselError> {
+    use crate::schema::team_pages::dsl;
+    let mut found = Vec::new();
+    let mut frontier = vec![folder];
+    // The depth bound guards against a malformed cycle.
+    for _ in 0..64 {
+        if frontier.is_empty() {
+            break;
+        }
+        let next: Vec<Uuid> = dsl::team_pages
+            .filter(dsl::team_id.eq(team_id))
+            .filter(dsl::parent_id.eq_any(&frontier))
+            .filter(dsl::deleted_at.is_null())
+            .select(dsl::id)
+            .load(conn)?;
+        found.extend(next.iter().copied());
+        frontier = next;
+    }
+    Ok(found)
+}
+
+/// Archive a page, or a folder and everything inside it (KAIROS-T-0439):
+/// one `deleted_at` for the node and its live descendants, so a restore can
+/// bring back exactly what was archived with it. The charter is refused.
+/// Gives the number of nodes archived (1 for a page). One transaction.
 pub fn soft_delete_page(
     conn: &mut PgConnection,
     team_id: Uuid,
     page_id: Uuid,
     actor: Uuid,
-) -> Result<(), TeamPageError> {
+) -> Result<usize, TeamPageError> {
     conn.transaction::<_, TeamPageError, _>(|conn| {
         use crate::schema::team_pages::dsl;
         let current = load_page(conn, team_id, page_id)?;
         if current.is_protected {
             return Err(TeamPageError::ProtectedPage(page_id));
         }
-        let children: i64 = dsl::team_pages
-            .filter(dsl::parent_id.eq(page_id))
-            .filter(dsl::deleted_at.is_null())
-            .count()
-            .get_result(conn)?;
-        if children > 0 {
-            return Err(TeamPageError::FolderNotEmpty {
-                folder: page_id,
-                children,
-            });
+        let mut ids = vec![page_id];
+        if current.kind == TeamPageKind::Folder {
+            ids.extend(live_descendants(conn, team_id, page_id)?);
         }
-        diesel::update(dsl::team_pages.filter(dsl::id.eq(page_id)))
+        let at = chrono::Utc::now();
+        diesel::update(dsl::team_pages.filter(dsl::id.eq_any(&ids)))
             .set((
-                dsl::deleted_at.eq(diesel::dsl::now),
+                dsl::deleted_at.eq(at),
                 dsl::updated_by.eq(actor),
                 dsl::updated_at.eq(diesel::dsl::now),
             ))
             .execute(conn)?;
-        Ok(())
+        Ok(ids.len())
     })
+}
+
+/// The archived nodes of a team, newest archive first (KAIROS-T-0439).
+pub fn list_archived_pages(
+    conn: &mut PgConnection,
+    team_id: Uuid,
+) -> Result<Vec<TeamPage>, DieselError> {
+    use crate::schema::team_pages::dsl;
+    dsl::team_pages
+        .filter(dsl::team_id.eq(team_id))
+        .filter(dsl::deleted_at.is_not_null())
+        .order((dsl::deleted_at.desc(), dsl::title.asc()))
+        .select(TeamPage::as_select())
+        .load(conn)
+}
+
+/// Restore an archived node and what was archived with it (the nodes inside
+/// it with the same `deleted_at`). It goes back to its folder when that
+/// folder is live, or to the end of the root when the folder is gone. A live
+/// sibling with the same slug refuses the restore (`SlugConflict`). Gives the
+/// restored node. One transaction.
+pub fn restore_page(
+    conn: &mut PgConnection,
+    team_id: Uuid,
+    page_id: Uuid,
+    actor: Uuid,
+) -> Result<TeamPage, TeamPageError> {
+    conn.transaction::<_, TeamPageError, _>(|conn| {
+        use crate::schema::team_pages::dsl;
+        let current: TeamPage = dsl::team_pages
+            .filter(dsl::id.eq(page_id))
+            .filter(dsl::team_id.eq(team_id))
+            .select(TeamPage::as_select())
+            .first(conn)
+            .optional()?
+            .ok_or(TeamPageError::PageNotFound(page_id))?;
+        let Some(archived_at) = current.deleted_at else {
+            return Err(TeamPageError::NotArchived(page_id));
+        };
+        // The nodes archived with it: inside it, with the same timestamp.
+        let mut with_it = Vec::new();
+        let mut frontier = vec![page_id];
+        for _ in 0..64 {
+            if frontier.is_empty() {
+                break;
+            }
+            let next: Vec<Uuid> = dsl::team_pages
+                .filter(dsl::team_id.eq(team_id))
+                .filter(dsl::parent_id.eq_any(&frontier))
+                .filter(dsl::deleted_at.eq(archived_at))
+                .select(dsl::id)
+                .load(conn)?;
+            with_it.extend(next.iter().copied());
+            frontier = next;
+        }
+        // Its folder, when that folder is live; else the root.
+        let parent_live = match current.parent_id {
+            Some(parent) => dsl::team_pages
+                .filter(dsl::id.eq(parent))
+                .filter(dsl::deleted_at.is_null())
+                .select(dsl::id)
+                .first::<Uuid>(conn)
+                .optional()?
+                .is_some(),
+            None => true,
+        };
+        let (parent_id, position) = if parent_live {
+            (current.parent_id, current.position)
+        } else {
+            let last: Option<i32> = dsl::team_pages
+                .filter(dsl::team_id.eq(team_id))
+                .filter(dsl::parent_id.is_null())
+                .filter(dsl::deleted_at.is_null())
+                .select(diesel::dsl::max(dsl::position))
+                .first(conn)?;
+            (None, last.map_or(1, |p| p + 1))
+        };
+        let restored: TeamPage = diesel::update(dsl::team_pages.filter(dsl::id.eq(page_id)))
+            .set((
+                dsl::deleted_at.eq(None::<chrono::DateTime<chrono::Utc>>),
+                dsl::parent_id.eq(parent_id),
+                dsl::position.eq(position),
+                dsl::updated_by.eq(actor),
+                dsl::updated_at.eq(diesel::dsl::now),
+            ))
+            .returning(TeamPage::as_returning())
+            .get_result(conn)
+            .map_err(|e| match &e {
+                DieselError::DatabaseError(
+                    diesel::result::DatabaseErrorKind::UniqueViolation,
+                    _,
+                ) => TeamPageError::SlugConflict(current.slug.clone()),
+                _ => TeamPageError::Database(e),
+            })?;
+        if !with_it.is_empty() {
+            diesel::update(dsl::team_pages.filter(dsl::id.eq_any(&with_it)))
+                .set((
+                    dsl::deleted_at.eq(None::<chrono::DateTime<chrono::Utc>>),
+                    dsl::updated_by.eq(actor),
+                    dsl::updated_at.eq(diesel::dsl::now),
+                ))
+                .execute(conn)?;
+        }
+        Ok(restored)
+    })
+}
+
+/// The saved versions of a page, newest first (KAIROS-T-0439). An archived
+/// page has its history too.
+pub fn page_history(
+    conn: &mut PgConnection,
+    team_id: Uuid,
+    page_id: Uuid,
+) -> Result<Vec<TeamPageHistory>, TeamPageError> {
+    use crate::schema::{team_page_history as history, team_pages as pages};
+    let exists: Option<Uuid> = pages::table
+        .filter(pages::id.eq(page_id))
+        .filter(pages::team_id.eq(team_id))
+        .select(pages::id)
+        .first(conn)
+        .optional()?;
+    exists.ok_or(TeamPageError::PageNotFound(page_id))?;
+    Ok(history::table
+        .filter(history::page_id.eq(page_id))
+        .order(history::version.desc())
+        .select(TeamPageHistory::as_select())
+        .load(conn)?)
 }
 
 /// A team's announcements, pinned first then newest first.

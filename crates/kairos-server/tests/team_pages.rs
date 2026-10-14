@@ -451,15 +451,50 @@ async fn team_pages_endpoints_against_live_stack() {
     assert_eq!(err.code(), Some("PROTECTED_PAGE"), "{err}");
     let err = rejection(alice.delete_team_page(&team.id, &charter.id).await);
     assert_eq!(err.code(), Some("PROTECTED_PAGE"), "{err}");
-    // Folder with live children → 422 FOLDER_NOT_EMPTY naming the count.
-    let err = rejection(alice.delete_team_page(&team.id, &tutorials.id).await);
-    match &err {
-        Error::Other { code, message, .. } => {
-            assert_eq!(code, "FOLDER_NOT_EMPTY");
-            assert!(message.contains('2'), "count in message: {message}");
-        }
-        other => panic!("expected FOLDER_NOT_EMPTY, got {other}"),
-    }
+    // KAIROS-T-0439: archiving a folder archives everything in it, and a
+    // restore brings back what was archived with it.
+    alice
+        .delete_team_page(&team.id, &tutorials.id)
+        .await
+        .expect("archive the folder with its pages");
+    let live = svc.list_team_pages(&team.id).await.unwrap();
+    assert!(
+        live.iter()
+            .all(|p| p.id != tutorials.id && p.parent_id.as_deref() != Some(tutorials.id.as_str())),
+        "the folder and its pages left the tree: {live:?}"
+    );
+    let shelf = bob
+        .list_archived_team_pages(&team.id)
+        .await
+        .expect("the archive is open tenant-wide");
+    let folder_at = shelf
+        .iter()
+        .find(|a| a.page.id == tutorials.id)
+        .expect("the folder is in the archive")
+        .archived_at
+        .clone();
+    assert_eq!(
+        shelf.iter().filter(|a| a.archived_at == folder_at).count(),
+        3,
+        "the folder and its 2 pages, archived together: {shelf:?}"
+    );
+    let err = rejection(bob.restore_team_page(&team.id, &tutorials.id).await);
+    assert!(matches!(err, Error::Forbidden { .. }), "{err}");
+    let restored = alice
+        .restore_team_page(&team.id, &tutorials.id)
+        .await
+        .expect("restore the folder");
+    assert_eq!(restored.parent_id, tutorials.parent_id, "back in its place");
+    let live = svc.list_team_pages(&team.id).await.unwrap();
+    assert_eq!(
+        live.iter()
+            .filter(|p| p.parent_id.as_deref() == Some(tutorials.id.as_str()))
+            .count(),
+        2,
+        "its pages came back with it"
+    );
+    let err = rejection(alice.restore_team_page(&team.id, &tutorials.id).await);
+    assert_eq!(err.code(), Some("NOT_ARCHIVED"), "{err}");
     // Rename/move a normal page works; then empty the folder and delete it.
     let moved = alice
         .update_team_page(&team.id, &started.id, &structure_edit(None, None, true))
@@ -482,6 +517,26 @@ async fn team_pages_endpoints_against_live_stack() {
         .delete_team_page(&team.id, &tutorials.id)
         .await
         .expect("deleting the now-empty folder");
+    // A node whose folder is gone is restored to the root.
+    let back = alice
+        .restore_team_page(&team.id, &advanced_id)
+        .await
+        .expect("restore a page of an archived folder");
+    assert_eq!(back.parent_id, None, "its folder is archived, so the root");
+
+    // The history of a page: each saved version, newest first, with the name
+    // of the person who saved it (KAIROS-T-0439).
+    let history = bob
+        .team_page_history(&team.id, &charter.id)
+        .await
+        .expect("history is open tenant-wide");
+    assert!(!history.is_empty());
+    assert!(
+        history.windows(2).all(|w| w[0].version > w[1].version),
+        "newest first: {history:?}"
+    );
+    assert!(history.iter().all(|v| !v.edited_by_name.is_empty()));
+    assert_eq!(history.last().map(|v| v.version), Some(1));
 
     // =======================================================================
     // Announcements: append-only, pinned-first, author-or-admin delete
@@ -585,8 +640,13 @@ async fn team_pages_endpoints_against_live_stack() {
     );
     assert_eq!(
         by_type(&mut conn, "team_page", "delete"),
-        3,
-        "moved page + advanced + tutorials"
+        4,
+        "tutorials with its pages, then moved page + advanced + tutorials"
+    );
+    assert_eq!(
+        by_type(&mut conn, "team_page", "restore"),
+        2,
+        "tutorials, then advanced"
     );
     assert_eq!(by_type(&mut conn, "team_announcement", "create"), 3);
 

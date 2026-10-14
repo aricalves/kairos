@@ -183,6 +183,66 @@ fn team_page_scaffold() {
     assert_eq!(edited.title, "Platform charter");
     assert_eq!(edited.version, charter.version + 1);
 
+    // ---- archive and restore (KAIROS-T-0439) ---------------------------------
+    let shelf = create_page(
+        &mut conn,
+        team.id,
+        CreatePage {
+            parent_id: None,
+            kind: TeamPageKind::Folder,
+            slug: "shelf",
+            title: "Shelf",
+            content: "",
+            position: 2,
+        },
+        actor,
+    )
+    .expect("a folder");
+    let page_in = |conn: &mut PgConnection, slug: &str| {
+        create_page(
+            conn,
+            team.id,
+            CreatePage {
+                parent_id: Some(shelf.id),
+                kind: TeamPageKind::Page,
+                slug,
+                title: slug,
+                content: "x",
+                position: 0,
+            },
+            actor,
+        )
+        .expect("a page in the folder")
+    };
+    let early = page_in(&mut conn, "early");
+    let late = page_in(&mut conn, "late");
+    // `early` is archived on its own first; then the folder with `late`.
+    assert_eq!(
+        kairos_db::team_pages::soft_delete_page(&mut conn, team.id, early.id, actor).unwrap(),
+        1
+    );
+    assert_eq!(
+        kairos_db::team_pages::soft_delete_page(&mut conn, team.id, shelf.id, actor).unwrap(),
+        2,
+        "the folder and the one live page in it"
+    );
+    // A restore of the folder brings back what was archived with it, not
+    // `early`, which was archived before.
+    kairos_db::team_pages::restore_page(&mut conn, team.id, shelf.id, actor).unwrap();
+    let live: Vec<Uuid> = kairos_db::team_pages::list_pages(&mut conn, team.id)
+        .unwrap()
+        .into_iter()
+        .map(|p| p.id)
+        .collect();
+    assert!(live.contains(&shelf.id) && live.contains(&late.id));
+    assert!(!live.contains(&early.id));
+    // A live sibling took the slug: the restore is refused.
+    page_in(&mut conn, "early");
+    match kairos_db::team_pages::restore_page(&mut conn, team.id, early.id, actor) {
+        Err(TeamPageError::SlugConflict(slug)) => assert_eq!(slug, "early"),
+        other => panic!("a slug clash must refuse the restore, got {other:?}"),
+    }
+
     // ---- sibling-slug uniqueness, including NULL-parent roots -----------------
     let duplicate_root = diesel::insert_into(schema::team_pages::table)
         .values(NewTeamPage {
