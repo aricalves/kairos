@@ -258,6 +258,13 @@ impl MetadataCommand {
                 entity_types,
                 common,
             } => {
+                if name.is_none() && slug.is_none() && options.is_empty() && entity_types.is_empty()
+                {
+                    return Err(CliError::Failure(
+                        "The command has no change. Use --name, --slug, --option or --entity-type."
+                            .to_string(),
+                    ));
+                }
                 let client = client(&common)?;
                 let current = definition(&client, &reference).await?;
                 let changed = client
@@ -340,6 +347,12 @@ impl TemplatesCommand {
                 fields: raw,
                 common,
             } => {
+                if name.is_none() && slug.is_none() && content.is_none() && raw.is_empty() {
+                    return Err(CliError::Failure(
+                        "The command has no change. Use --name, --slug, --content or --field."
+                            .to_string(),
+                    ));
+                }
                 let client = client(&common)?;
                 let current = template(&client, &reference).await?;
                 let metadata = if raw.is_empty() {

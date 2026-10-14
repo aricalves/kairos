@@ -38,7 +38,7 @@ Collect:
 | Part | Read with |
 |---|---|
 | The team: name, slug, type | `whoami`, `my_boards` |
-| Members | `kairos teams members list <TEAM_ID>` (no MCP tool reads members) |
+| Members | `kairos teams members list <TEAM>` (slug or UUID; no MCP tool reads members) |
 | Delivery board: prefix, columns, entry column, WIP limits | `my_boards`; `kairos boards show <BOARD>` |
 | Transitions | `kairos boards transitions list <BOARD>` (no MCP tool reads them) |
 | ADR board | `my_boards` (`ADR board of the team <slug>`) |
