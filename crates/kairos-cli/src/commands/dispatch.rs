@@ -108,6 +108,23 @@ pub enum DispatchCommand {
         #[command(flatten)]
         common: Common,
     },
+    /// Show or set who decides the triage of intake (KAIROS-T-0428): with
+    /// --on an agent decides; with --off an agent proposes with a note and
+    /// a person decides. Setting needs configure_boards
+    #[command(name = "agent-triage")]
+    AgentTriage {
+        /// Board slug or id (UUID)
+        #[arg(value_name = "BOARD")]
+        board: String,
+        /// An agent decides
+        #[arg(long, conflicts_with = "off")]
+        on: bool,
+        /// An agent proposes, a person decides
+        #[arg(long)]
+        off: bool,
+        #[command(flatten)]
+        common: Common,
+    },
     /// Remove a dispatch rule (needs configure_boards). Its deliveries stay
     /// in the log
     #[command(name = "remove-rule")]
@@ -363,6 +380,31 @@ impl DispatchCommand {
                     filter_text(&rule),
                     when_text(&rule),
                     rule.target
+                );
+                Ok(())
+            }
+            Self::AgentTriage {
+                board,
+                on,
+                off,
+                common,
+            } => {
+                let client = client(&common)?;
+                let setting = if on || off {
+                    client.set_agent_triage(&board, on).await?
+                } else {
+                    client.get_agent_triage(&board).await?
+                };
+                if common.json {
+                    return print_json(&setting);
+                }
+                println!(
+                    "Triage of intake on {board}: {}.",
+                    if setting.agents_decide {
+                        "an agent decides"
+                    } else {
+                        "an agent proposes with a note, a person decides"
+                    }
                 );
                 Ok(())
             }

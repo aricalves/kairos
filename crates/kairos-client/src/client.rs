@@ -821,6 +821,27 @@ impl KairosClient {
             .await
     }
 
+    /// `GET /api/boards/{id}/agent-triage` (KAIROS-T-0428).
+    pub async fn get_agent_triage(
+        &self,
+        board: &str,
+    ) -> Result<crate::types_dispatch::AgentTriage, Error> {
+        self.get(&format!("/api/boards/{board}/agent-triage")).await
+    }
+
+    /// `PUT /api/boards/{id}/agent-triage` (KAIROS-T-0428).
+    pub async fn set_agent_triage(
+        &self,
+        board: &str,
+        agents_decide: bool,
+    ) -> Result<crate::types_dispatch::AgentTriage, Error> {
+        self.put_ok(
+            &format!("/api/boards/{board}/agent-triage"),
+            &crate::types_dispatch::SetAgentTriageRequest { agents_decide },
+        )
+        .await
+    }
+
     /// `POST /api/boards/{id}/dispatch-rules`.
     pub async fn create_dispatch_rule(
         &self,

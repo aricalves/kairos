@@ -162,3 +162,20 @@ pub struct WebhookDeliveriesQuery {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<i64>,
 }
+
+/// Who decides the triage of intake on a board (KAIROS-T-0428). Intake is a
+/// task in the support lane. Off (the default): an agent proposes with a
+/// note, and a person decides. On: an agent moves intake itself, and the
+/// activity log names the agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AgentTriage {
+    pub board_id: String,
+    pub agents_decide: bool,
+}
+
+/// `PUT /api/boards/{id}/agent-triage` body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetAgentTriageRequest {
+    pub agents_decide: bool,
+}
