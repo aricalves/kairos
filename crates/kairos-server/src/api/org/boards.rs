@@ -1349,14 +1349,28 @@ pub(crate) async fn add_column(
     let created = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            let board = load_board(conn, board_id)?;
-            require_capability(conn, &slug, Some(board.id), user, CONFIGURE)?;
-            let created = boards::add_column(conn, board_id, &body.name, body.position, user)
-                .map_err(map_config_error)?;
-            Ok(created.into_dto())
+            add_column_as(conn, &slug, user, board_id, &body.name, body.position)
         })
         .await?;
     Ok((StatusCode::CREATED, Json(created)))
+}
+
+/// Add a column as `user`: the ONE implementation of
+/// `POST /api/boards/{id}/columns` and of the MCP tool `add_column`
+/// (KAIROS-T-0443). The gate is `configure_boards` on the board.
+pub(crate) fn add_column_as(
+    conn: &mut PgConnection,
+    slug: &str,
+    user: Uuid,
+    board_id: Uuid,
+    name: &str,
+    position: i32,
+) -> Result<dto::BoardColumn, ApiError> {
+    let board = load_board(conn, board_id)?;
+    require_capability(conn, slug, Some(board.id), user, CONFIGURE)?;
+    let created =
+        boards::add_column(conn, board_id, name, position, user).map_err(map_config_error)?;
+    Ok(created.into_dto())
 }
 
 /// Rename and/or move a column (T-0010 rules; moving reorders the board's
@@ -1396,6 +1410,29 @@ pub(crate) async fn update_column(
 ) -> Result<Json<dto::BoardColumn>, ApiError> {
     let board_id = parse_uuid(&id, "id")?;
     let column_id = parse_uuid(&col_id, "col_id")?;
+    let user = auth.user_id;
+    let slug = tenant.slug.clone();
+    let updated = state
+        .blocking
+        .run(&tenant.slug, move |conn| {
+            update_column_as(conn, &slug, user, board_id, column_id, &body)
+        })
+        .await?;
+    Ok(Json(updated))
+}
+
+/// Change a column as `user`: the ONE implementation of
+/// `PATCH /api/boards/{id}/columns/{col_id}` and of the MCP tool
+/// `update_column` (KAIROS-T-0443). The gate is `configure_boards` on the
+/// board.
+pub(crate) fn update_column_as(
+    conn: &mut PgConnection,
+    slug: &str,
+    user: Uuid,
+    board_id: Uuid,
+    column_id: Uuid,
+    body: &dto::UpdateColumnRequest,
+) -> Result<dto::BoardColumn, ApiError> {
     if body.name.is_none()
         && body.position.is_none()
         && body.is_done.is_none()
@@ -1416,58 +1453,46 @@ pub(crate) async fn update_column(
         ))
         .with_details(serde_json::json!({ "field": "wip_limit" })));
     }
-    let user = auth.user_id;
-    let slug = tenant.slug.clone();
-    let updated = state
-        .blocking
-        .run(&tenant.slug, move |conn| {
-            let board = load_board(conn, board_id)?;
-            let column = load_column_of_board(conn, board_id, column_id)?;
-            require_capability(conn, &slug, Some(board.id), user, CONFIGURE)?;
-            if let Some(position) = body.position
-                && position < 0
-            {
-                return Err(ApiError::validation(format!(
-                    "The position {position} is not correct. A position is 0 or more."
-                )));
-            }
+    let board = load_board(conn, board_id)?;
+    let column = load_column_of_board(conn, board_id, column_id)?;
+    require_capability(conn, slug, Some(board.id), user, CONFIGURE)?;
+    if let Some(position) = body.position
+        && position < 0
+    {
+        return Err(ApiError::validation(format!(
+            "The position {position} is not correct. A position is 0 or more."
+        )));
+    }
 
-            // KAIROS-T-0268: only a value that is different from the value
-            // of the row goes to the write. When no value is different, the
-            // route writes nothing and makes no activity entry.
-            if let Some(name) = body.name.as_ref().filter(|name| **name != column.name) {
-                boards::rename_column(conn, column_id, name, user).map_err(map_config_error)?;
-            }
-            if let Some(is_done) = body.is_done.filter(|done| *done != column.is_done) {
-                boards::set_column_done(conn, column_id, is_done, user)
-                    .map_err(map_config_error)?;
-            }
-            // KAIROS-T-0359: the same path and capability as `is_done`.
-            if let Some(claims) = body.claims.filter(|claims| *claims != column.claims) {
-                boards::set_column_claims(conn, column_id, claims, user)
-                    .map_err(map_config_error)?;
-            }
-            // KAIROS-T-0371: the same path and capability as `claims`.
-            if let Some(limit) = body.wip_limit.filter(|limit| *limit != column.wip_limit) {
-                boards::set_column_wip_limit(conn, column_id, limit, user)
-                    .map_err(map_config_error)?;
-            }
-            if let Some(position) = body.position {
-                let columns = load_columns(conn, board_id)?;
-                let now_at = columns.iter().position(|c| c.id == column_id);
-                let mut order: Vec<Uuid> = columns.into_iter().map(|c| c.id).collect();
-                order.retain(|&c| c != column_id);
-                let index = (position as usize).min(order.len());
-                if now_at != Some(index) {
-                    order.insert(index, column_id);
-                    boards::reorder_columns(conn, board_id, &order, user)
-                        .map_err(map_config_error)?;
-                }
-            }
-            Ok(load_column_of_board(conn, board_id, column_id)?.into_dto())
-        })
-        .await?;
-    Ok(Json(updated))
+    // KAIROS-T-0268: only a value that is different from the value
+    // of the row goes to the write. When no value is different, the
+    // route writes nothing and makes no activity entry.
+    if let Some(name) = body.name.as_ref().filter(|name| **name != column.name) {
+        boards::rename_column(conn, column_id, name, user).map_err(map_config_error)?;
+    }
+    if let Some(is_done) = body.is_done.filter(|done| *done != column.is_done) {
+        boards::set_column_done(conn, column_id, is_done, user).map_err(map_config_error)?;
+    }
+    // KAIROS-T-0359: the same path and capability as `is_done`.
+    if let Some(claims) = body.claims.filter(|claims| *claims != column.claims) {
+        boards::set_column_claims(conn, column_id, claims, user).map_err(map_config_error)?;
+    }
+    // KAIROS-T-0371: the same path and capability as `claims`.
+    if let Some(limit) = body.wip_limit.filter(|limit| *limit != column.wip_limit) {
+        boards::set_column_wip_limit(conn, column_id, limit, user).map_err(map_config_error)?;
+    }
+    if let Some(position) = body.position {
+        let columns = load_columns(conn, board_id)?;
+        let now_at = columns.iter().position(|c| c.id == column_id);
+        let mut order: Vec<Uuid> = columns.into_iter().map(|c| c.id).collect();
+        order.retain(|&c| c != column_id);
+        let index = (position as usize).min(order.len());
+        if now_at != Some(index) {
+            order.insert(index, column_id);
+            boards::reorder_columns(conn, board_id, &order, user).map_err(map_config_error)?;
+        }
+    }
+    Ok(load_column_of_board(conn, board_id, column_id)?.into_dto())
 }
 
 /// Remove a column — a soft delete (KAIROS-T-0161). Only allowed when no
@@ -1502,17 +1527,30 @@ pub(crate) async fn remove_column(
     let outcome = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            let board = load_board(conn, board_id)?;
-            load_column_of_board(conn, board_id, column_id)?;
-            require_capability(conn, &slug, Some(board.id), user, CONFIGURE)?;
-            boards::remove_column(conn, column_id, user).map_err(map_config_error)?;
-            Ok(dto::OrgDeleteResponse {
-                id: column_id.to_string(),
-                deleted: true,
-            })
+            remove_column_as(conn, &slug, user, board_id, column_id)
         })
         .await?;
     Ok(Json(outcome))
+}
+
+/// Remove a column as `user`: the ONE implementation of
+/// `DELETE /api/boards/{id}/columns/{col_id}` and of the MCP tool
+/// `remove_column` (KAIROS-T-0443). The gate is `configure_boards`.
+pub(crate) fn remove_column_as(
+    conn: &mut PgConnection,
+    slug: &str,
+    user: Uuid,
+    board_id: Uuid,
+    column_id: Uuid,
+) -> Result<dto::OrgDeleteResponse, ApiError> {
+    let board = load_board(conn, board_id)?;
+    load_column_of_board(conn, board_id, column_id)?;
+    require_capability(conn, slug, Some(board.id), user, CONFIGURE)?;
+    boards::remove_column(conn, column_id, user).map_err(map_config_error)?;
+    Ok(dto::OrgDeleteResponse {
+        id: column_id.to_string(),
+        deleted: true,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1581,21 +1619,51 @@ pub(crate) async fn add_transition(
     let created = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            use kairos_db::schema::board_transitions::dsl;
-            let board = load_board(conn, board_id)?;
-            require_capability(conn, &slug, Some(board.id), user, CONFIGURE)?;
-            boards::add_transition(conn, board_id, from, to, user).map_err(map_config_error)?;
-            let created: BoardTransition = dsl::board_transitions
-                .filter(dsl::board_id.eq(board_id))
-                .filter(dsl::from_column_id.eq(from))
-                .filter(dsl::to_column_id.eq(to))
-                .select(BoardTransition::as_select())
-                .first(conn)
-                .map_err(ApiError::internal)?;
-            Ok(created.into_dto())
+            add_transition_as(conn, &slug, user, board_id, from, to)
         })
         .await?;
     Ok((StatusCode::CREATED, Json(created)))
+}
+
+/// Allow the move `from` -> `to` as `user`: the ONE implementation of
+/// `POST /api/boards/{id}/transitions` and of the MCP tool
+/// `set_transition` (KAIROS-T-0443). The gate is `configure_boards`.
+pub(crate) fn add_transition_as(
+    conn: &mut PgConnection,
+    slug: &str,
+    user: Uuid,
+    board_id: Uuid,
+    from: Uuid,
+    to: Uuid,
+) -> Result<dto::BoardTransition, ApiError> {
+    use kairos_db::schema::board_transitions::dsl;
+    let board = load_board(conn, board_id)?;
+    require_capability(conn, slug, Some(board.id), user, CONFIGURE)?;
+    boards::add_transition(conn, board_id, from, to, user).map_err(map_config_error)?;
+    let created: BoardTransition = dsl::board_transitions
+        .filter(dsl::board_id.eq(board_id))
+        .filter(dsl::from_column_id.eq(from))
+        .filter(dsl::to_column_id.eq(to))
+        .select(BoardTransition::as_select())
+        .first(conn)
+        .map_err(ApiError::internal)?;
+    Ok(created.into_dto())
+}
+
+/// Stop the move `from` -> `to` as `user`: the ONE write of
+/// `DELETE /api/boards/{id}/transitions/{transition_id}` and of the MCP
+/// tool `set_transition` (KAIROS-T-0443). The gate is `configure_boards`.
+pub(crate) fn remove_transition_as(
+    conn: &mut PgConnection,
+    slug: &str,
+    user: Uuid,
+    board_id: Uuid,
+    from: Uuid,
+    to: Uuid,
+) -> Result<(), ApiError> {
+    let board = load_board(conn, board_id)?;
+    require_capability(conn, slug, Some(board.id), user, CONFIGURE)?;
+    boards::remove_transition(conn, board_id, from, to, user).map_err(map_config_error)
 }
 
 /// Remove a transition edge by id. Requires `configure_boards`.
@@ -1641,8 +1709,14 @@ pub(crate) async fn remove_transition(
                     "The board {board_id} has no transition {transition_id}."
                 ))
             })?;
-            boards::remove_transition(conn, board_id, edge.from_column_id, edge.to_column_id, user)
-                .map_err(map_config_error)?;
+            remove_transition_as(
+                conn,
+                &slug,
+                user,
+                board_id,
+                edge.from_column_id,
+                edge.to_column_id,
+            )?;
             Ok(dto::OrgDeleteResponse {
                 id: transition_id.to_string(),
                 deleted: true,
@@ -1782,12 +1856,19 @@ pub(crate) async fn add_board_member(
     ApiJson(body): ApiJson<dto::AddBoardMemberRequest>,
 ) -> Result<(StatusCode, Json<dto::BoardMember>), ApiError> {
     let board_id = parse_uuid(&id, "id")?;
-    let target = parse_uuid(&body.user_id, "user_id")?;
     let user = auth.user_id;
     let slug = tenant.slug.clone();
     let member = state
         .blocking
         .run(&tenant.slug, move |conn| {
+            // KAIROS-T-0443: a UUID, an email or a user name.
+            let target = crate::api::org::structure_grants::resolve_member(
+                conn,
+                &slug,
+                &body.user_id,
+                "user_id",
+            )?
+            .id;
             grant_as(conn, &slug, user, board_id, target, &body.capabilities)
         })
         .await?;
@@ -1847,35 +1928,64 @@ pub(crate) async fn replace_capabilities(
     ApiJson(body): ApiJson<dto::ReplaceCapabilitiesRequest>,
 ) -> Result<Json<dto::BoardMember>, ApiError> {
     let board_id = parse_uuid(&id, "id")?;
-    let target = parse_uuid(&target, "user_id")?;
-    validate_capabilities(&body.capabilities)?;
     let user = auth.user_id;
     let slug = tenant.slug.clone();
     let member = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            let board = load_board(conn, board_id)?;
-            require_capability(conn, &slug, Some(board.id), user, ADMINISTER_MEMBERS)?;
-            let current = capabilities_of(conn, board_id, target)?;
-            if current.is_empty() {
-                return Err(ApiError::not_found(format!(
-                    "The user {target} is not a member of the board {board_id}."
-                )));
-            }
-            let desired: BTreeSet<&str> = body.capabilities.iter().map(String::as_str).collect();
-            let existing: BTreeSet<&str> = current.iter().map(String::as_str).collect();
-            for capability in existing.difference(&desired) {
-                abac::revoke_capability(conn, board_id, target, capability, user)
-                    .map_err(map_grant_error)?;
-            }
-            for capability in desired.difference(&existing) {
-                abac::grant_capability(conn, board_id, target, capability, user)
-                    .map_err(map_grant_error)?;
-            }
-            board_member_view(conn, board_id, target)
+            let target = member_ref(conn, &slug, &target)?;
+            replace_as(conn, &slug, user, board_id, target, &body.capabilities)
         })
         .await?;
     Ok(Json(member))
+}
+
+/// The user of a `{user_id}` path segment (KAIROS-T-0443): a UUID as it is
+/// (a person who left the organization keeps grants that can be revoked),
+/// else an email or a user name of a member of the organization.
+fn member_ref(conn: &mut PgConnection, slug: &str, reference: &str) -> Result<Uuid, ApiError> {
+    match Uuid::parse_str(reference.trim()) {
+        Ok(id) => Ok(id),
+        Err(_) => Ok(crate::api::org::structure_grants::resolve_member(
+            conn, slug, reference, "user_id",
+        )?
+        .id),
+    }
+}
+
+/// Replace the capabilities of `target` on the board as `user`: the ONE
+/// implementation of `PATCH /api/boards/{id}/members/{user_id}` and of the
+/// MCP tool `set_board_capabilities` (KAIROS-T-0443). The gate is
+/// `administer_members` on the board. A user with no capability on the
+/// board is a 404.
+pub(crate) fn replace_as(
+    conn: &mut PgConnection,
+    slug: &str,
+    user: Uuid,
+    board_id: Uuid,
+    target: Uuid,
+    capabilities: &[String],
+) -> Result<dto::BoardMember, ApiError> {
+    validate_capabilities(capabilities)?;
+    let board = load_board(conn, board_id)?;
+    require_capability(conn, slug, Some(board.id), user, ADMINISTER_MEMBERS)?;
+    let current = capabilities_of(conn, board_id, target)?;
+    if current.is_empty() {
+        return Err(ApiError::not_found(format!(
+            "The user {target} is not a member of the board {board_id}."
+        )));
+    }
+    let desired: BTreeSet<&str> = capabilities.iter().map(String::as_str).collect();
+    let existing: BTreeSet<&str> = current.iter().map(String::as_str).collect();
+    for capability in existing.difference(&desired) {
+        abac::revoke_capability(conn, board_id, target, capability, user)
+            .map_err(map_grant_error)?;
+    }
+    for capability in desired.difference(&existing) {
+        abac::grant_capability(conn, board_id, target, capability, user)
+            .map_err(map_grant_error)?;
+    }
+    board_member_view(conn, board_id, target)
 }
 
 /// Remove a member: revoke ALL their capabilities on the board (T-0011
@@ -1902,29 +2012,43 @@ pub(crate) async fn remove_board_member(
     Path((id, target)): Path<(String, String)>,
 ) -> Result<Json<dto::RemoveBoardMemberResponse>, ApiError> {
     let board_id = parse_uuid(&id, "id")?;
-    let target = parse_uuid(&target, "user_id")?;
     let user = auth.user_id;
     let slug = tenant.slug.clone();
     let outcome = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            let board = load_board(conn, board_id)?;
-            require_capability(conn, &slug, Some(board.id), user, ADMINISTER_MEMBERS)?;
-            let current = capabilities_of(conn, board_id, target)?;
-            if current.is_empty() {
-                return Err(ApiError::not_found(format!(
-                    "The user {target} is not a member of the board {board_id}."
-                )));
-            }
-            for capability in &current {
-                abac::revoke_capability(conn, board_id, target, capability, user)
-                    .map_err(map_grant_error)?;
-            }
-            Ok(dto::RemoveBoardMemberResponse {
-                user_id: target.to_string(),
-                revoked_capabilities: current,
-            })
+            let target = member_ref(conn, &slug, &target)?;
+            revoke_all_as(conn, &slug, user, board_id, target)
         })
         .await?;
     Ok(Json(outcome))
+}
+
+/// Revoke each capability of `target` on the board as `user`: the ONE
+/// implementation of `DELETE /api/boards/{id}/members/{user_id}` and of
+/// `set_board_capabilities` with no capability (KAIROS-T-0443). The gate is
+/// `administer_members` on the board.
+pub(crate) fn revoke_all_as(
+    conn: &mut PgConnection,
+    slug: &str,
+    user: Uuid,
+    board_id: Uuid,
+    target: Uuid,
+) -> Result<dto::RemoveBoardMemberResponse, ApiError> {
+    let board = load_board(conn, board_id)?;
+    require_capability(conn, slug, Some(board.id), user, ADMINISTER_MEMBERS)?;
+    let current = capabilities_of(conn, board_id, target)?;
+    if current.is_empty() {
+        return Err(ApiError::not_found(format!(
+            "The user {target} is not a member of the board {board_id}."
+        )));
+    }
+    for capability in &current {
+        abac::revoke_capability(conn, board_id, target, capability, user)
+            .map_err(map_grant_error)?;
+    }
+    Ok(dto::RemoveBoardMemberResponse {
+        user_id: target.to_string(),
+        revoked_capabilities: current,
+    })
 }

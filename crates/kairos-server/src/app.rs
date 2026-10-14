@@ -491,6 +491,11 @@ pub fn router(state: AppState) -> Router {
         // not a client of the API, and a refusal there makes a healthy server
         // look dead.
         .route("/healthz", get(|| async { "ok" }))
+        // KAIROS-T-0432: the version of the server and the download links
+        // of the CLI of that version, open, for `kairos self-update`.
+        // Outside /api like the probes: /api/config can fail on an
+        // unreachable issuer.
+        .route("/version", get(crate::version::version))
         // KAIROS-T-0049 (A-0013): readiness + Prometheus scrape, both
         // unauthenticated by convention and mounted OUTSIDE the auth stack
         // alongside /healthz. Non-/api, so outside the S-0005 surface (and

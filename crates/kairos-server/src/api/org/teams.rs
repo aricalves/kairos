@@ -30,6 +30,7 @@ use super::{
     check_team_slug, count_live_board_items, is_unique_violation, map_config_error,
     require_user_exists, run_in_transaction,
 };
+use crate::api::org::structure_grants::resolve_member;
 use crate::app::AppState;
 use crate::body::ApiJson;
 use crate::error::ApiError;
@@ -495,6 +496,27 @@ pub(crate) async fn update_team(
     ApiJson(body): ApiJson<dto::UpdateTeamRequest>,
 ) -> Result<Json<dto::Team>, ApiError> {
     let team_id = parse_uuid(&id, "id")?;
+    let user = auth.user_id;
+    let slug = tenant.slug.clone();
+    let team = state
+        .blocking
+        .run(&tenant.slug, move |conn| {
+            update_as(conn, &slug, user, team_id, &body)
+        })
+        .await?;
+    Ok(Json(team))
+}
+
+/// Change a team as `user`: the ONE implementation of
+/// `PATCH /api/teams/{id}` and of the MCP tool `update_team`
+/// (KAIROS-T-0443). The gate is [`require_structure`].
+pub(crate) fn update_as(
+    conn: &mut PgConnection,
+    slug: &str,
+    user: Uuid,
+    team_id: Uuid,
+    body: &dto::UpdateTeamRequest,
+) -> Result<dto::Team, ApiError> {
     if body.name.is_none()
         && body.slug.is_none()
         && body.team_type.is_none()
@@ -510,67 +532,59 @@ pub(crate) async fn update_team(
         .as_deref()
         .map(|v| parse_enum::<TeamType>(v, "team_type", TeamType::ALL))
         .transpose()?;
-    let user = auth.user_id;
-    let slug = tenant.slug.clone();
-    let team = state
-        .blocking
-        .run(&tenant.slug, move |conn| {
-            use kairos_db::schema::teams::dsl;
-            require_structure(conn, &slug, user)?;
-            let team = load_team(conn, team_id)?;
-            // COLLIERY-T-0260: the form of a slug that the caller sent. A
-            // team keeps a slug from before the rule, so a request that
-            // sends the slug that the team has is not a change.
-            if let Some(new_slug) = body.slug.as_deref()
-                && new_slug != team.slug
-            {
-                check_team_slug(new_slug)?;
+    use kairos_db::schema::teams::dsl;
+    require_structure(conn, slug, user)?;
+    let team = load_team(conn, team_id)?;
+    // COLLIERY-T-0260: the form of a slug that the caller sent. A
+    // team keeps a slug from before the rule, so a request that
+    // sends the slug that the team has is not a change.
+    if let Some(new_slug) = body.slug.as_deref()
+        && new_slug != team.slug
+    {
+        check_team_slug(new_slug)?;
+    }
+    // KAIROS-T-0268: only a value that is different from the value
+    // of the row goes to the write. When no value is different, the
+    // route writes nothing and makes no activity entry: the forms of
+    // the GUI send each field at each save.
+    let changes = TeamChangeset {
+        name: body.name.clone().filter(|name| *name != team.name),
+        slug: body.slug.clone().filter(|new| *new != team.slug),
+        team_type: team_type.filter(|kind| *kind != team.team_type),
+        site_enabled: body
+            .site_enabled
+            .filter(|enabled| *enabled != team.site_enabled),
+        ..Default::default()
+    };
+    if changes.name.is_none()
+        && changes.slug.is_none()
+        && changes.team_type.is_none()
+        && changes.site_enabled.is_none()
+    {
+        let board = delivery_board_of(conn, team_id)?;
+        return Ok(team_to_dto(team, board));
+    }
+    let updated: Team = diesel::update(dsl::teams.filter(dsl::id.eq(team_id)))
+        .set((changes, dsl::updated_at.eq(diesel::dsl::now)))
+        .returning(Team::as_returning())
+        .get_result(conn)
+        .map_err(|e| {
+            if is_unique_violation(&e) {
+                ApiError::conflict("A live team has that slug already.")
+            } else {
+                ApiError::internal(e)
             }
-            // KAIROS-T-0268: only a value that is different from the value
-            // of the row goes to the write. When no value is different, the
-            // route writes nothing and makes no activity entry: the forms of
-            // the GUI send each field at each save.
-            let changes = TeamChangeset {
-                name: body.name.clone().filter(|name| *name != team.name),
-                slug: body.slug.clone().filter(|new| *new != team.slug),
-                team_type: team_type.filter(|kind| *kind != team.team_type),
-                site_enabled: body
-                    .site_enabled
-                    .filter(|enabled| *enabled != team.site_enabled),
-                ..Default::default()
-            };
-            if changes.name.is_none()
-                && changes.slug.is_none()
-                && changes.team_type.is_none()
-                && changes.site_enabled.is_none()
-            {
-                let board = delivery_board_of(conn, team_id)?;
-                return Ok(team_to_dto(team, board));
-            }
-            let updated: Team = diesel::update(dsl::teams.filter(dsl::id.eq(team_id)))
-                .set((changes, dsl::updated_at.eq(diesel::dsl::now)))
-                .returning(Team::as_returning())
-                .get_result(conn)
-                .map_err(|e| {
-                    if is_unique_violation(&e) {
-                        ApiError::conflict("A live team has that slug already.")
-                    } else {
-                        ApiError::internal(e)
-                    }
-                })?;
-            log_team_activity(
-                conn,
-                user,
-                // COLLIERY-T-0265: a change is an update, not a create.
-                ActivityAction::Update,
-                team_id,
-                format!("team_settings:{}", updated.slug),
-            )?;
-            let board = delivery_board_of(conn, team_id)?;
-            Ok(team_to_dto(updated, board))
-        })
-        .await?;
-    Ok(Json(team))
+        })?;
+    log_team_activity(
+        conn,
+        user,
+        // COLLIERY-T-0265: a change is an update, not a create.
+        ActivityAction::Update,
+        team_id,
+        format!("team_settings:{}", updated.slug),
+    )?;
+    let board = delivery_board_of(conn, team_id)?;
+    Ok(team_to_dto(updated, board))
 }
 
 /// Soft-delete a team and its delivery board together. The board must be
@@ -796,12 +810,13 @@ pub(crate) async fn add_member(
     ApiJson(body): ApiJson<dto::AddTeamMemberRequest>,
 ) -> Result<(StatusCode, Json<dto::TeamMember>), ApiError> {
     let team_id = parse_uuid(&id, "id")?;
-    let target = parse_uuid(&body.user_id, "user_id")?;
     let user = auth.user_id;
     let slug = tenant.slug.clone();
     let member = state
         .blocking
         .run(&tenant.slug, move |conn| {
+            // KAIROS-T-0443: a UUID, an email or a user name.
+            let target = resolve_member(conn, &slug, &body.user_id, "user_id")?.id;
             add_member_as(conn, &slug, user, team_id, target)
         })
         .await?;
@@ -883,39 +898,59 @@ pub(crate) async fn remove_member(
     Path((id, target)): Path<(String, String)>,
 ) -> Result<Json<dto::OrgDeleteResponse>, ApiError> {
     let team_id = parse_uuid(&id, "id")?;
-    let target = parse_uuid(&target, "user_id")?;
     let user = auth.user_id;
     let slug = tenant.slug.clone();
     let outcome = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            use kairos_db::schema::team_members::dsl;
-            require_structure(conn, &slug, user)?;
-            load_team(conn, team_id)?;
-            let deleted = diesel::delete(
-                dsl::team_members
-                    .filter(dsl::team_id.eq(team_id))
-                    .filter(dsl::user_id.eq(target)),
-            )
-            .execute(conn)
-            .map_err(ApiError::internal)?;
-            if deleted == 0 {
-                return Err(ApiError::not_found(format!(
-                    "The user {target} is not a member of the team {team_id}."
-                )));
-            }
-            log_team_activity(
-                conn,
-                user,
-                ActivityAction::Delete,
-                team_id,
-                format!("team_member_remove:{target}"),
-            )?;
-            Ok(dto::OrgDeleteResponse {
-                id: target.to_string(),
-                deleted: true,
-            })
+            // KAIROS-T-0443: a UUID, an email or a user name. A UUID is
+            // taken as it is: a person who left the organization can still
+            // be taken off the team.
+            let target = match Uuid::parse_str(target.trim()) {
+                Ok(id) => id,
+                Err(_) => resolve_member(conn, &slug, &target, "user_id")?.id,
+            };
+            remove_member_as(conn, &slug, user, team_id, target)
         })
         .await?;
     Ok(Json(outcome))
+}
+
+/// Remove `target` from the team `team_id` as `user`: the ONE
+/// implementation of `DELETE /api/teams/{id}/members/{user_id}` and of the
+/// MCP tool `remove_team_member` (KAIROS-T-0443). The gate is
+/// [`require_structure`].
+pub(crate) fn remove_member_as(
+    conn: &mut PgConnection,
+    slug: &str,
+    user: Uuid,
+    team_id: Uuid,
+    target: Uuid,
+) -> Result<dto::OrgDeleteResponse, ApiError> {
+    use kairos_db::schema::team_members::dsl;
+    require_structure(conn, slug, user)?;
+    load_team(conn, team_id)?;
+    let deleted = diesel::delete(
+        dsl::team_members
+            .filter(dsl::team_id.eq(team_id))
+            .filter(dsl::user_id.eq(target)),
+    )
+    .execute(conn)
+    .map_err(ApiError::internal)?;
+    if deleted == 0 {
+        return Err(ApiError::not_found(format!(
+            "The user {target} is not a member of the team {team_id}."
+        )));
+    }
+    log_team_activity(
+        conn,
+        user,
+        ActivityAction::Delete,
+        team_id,
+        format!("team_member_remove:{target}"),
+    )?;
+    Ok(dto::OrgDeleteResponse {
+        id: target.to_string(),
+        deleted: true,
+    })
 }

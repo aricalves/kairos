@@ -51,15 +51,21 @@ pub struct CreatedWebhookTarget {
     pub secret: String,
 }
 
-/// A dispatch rule of a board. A task can enter `column` and match the
-/// filter. Then Kairos sends one signed delivery to the target.
+/// A dispatch rule of a board. With the trigger `entered_column`, the rule
+/// fires when a task that matches the filter enters `column`. With
+/// `unblocked` (KAIROS-T-0427), it fires when the last open blocker of a task
+/// that matches closes. Then the task must be in `column`, if the rule names
+/// one. Kairos sends one signed delivery to the target.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct DispatchRule {
     pub id: String,
     pub board_id: String,
-    pub column_id: String,
+    /// `entered_column` or `unblocked`.
+    pub trigger: String,
+    /// `null`: an `unblocked` rule with no column.
+    pub column_id: Option<String>,
     /// The name of the column.
-    pub column: String,
+    pub column: Option<String>,
     pub target_id: String,
     /// The name of the target.
     pub target: String,
@@ -80,8 +86,13 @@ pub struct DispatchRule {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateDispatchRuleRequest {
-    /// The name or the id of a column of the board.
-    pub column: String,
+    /// `entered_column` (the default) or `unblocked`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<String>,
+    /// The name or the id of a column of the board. Required for
+    /// `entered_column`; for `unblocked`, the column the task must be in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<String>,
     /// The id of a webhook target of the board.
     pub target_id: String,
     /// Only tasks of this type: `task|bug|tech_debt|support`.
@@ -120,7 +131,7 @@ pub struct WebhookDelivery {
     pub target_id: String,
     /// The rule that sent it; `null` for a test delivery.
     pub rule_id: Option<String>,
-    /// `task.entered_column` or `ping`.
+    /// `task.entered_column`, `task.unblocked` or `ping`.
     pub event: String,
     /// The code of the task now; `null` when there is no task.
     pub short_code: Option<String>,

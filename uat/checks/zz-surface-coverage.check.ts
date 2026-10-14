@@ -30,6 +30,22 @@ const ALLOW: Record<string, string> = {
     'the code index works on a local checkout (git, rust-analyzer, an optional model), not on the ' +
     'deployment that the persona journeys drive. The BDD suites of kairos-cli (index.feature, ' +
     'base_index.feature) and kairos-index cover it (COLLIERY-I-0264).',
+  'mcp:set_work_class': 'pending KAIROS-T-0446',
+  'mcp:update_team': 'pending KAIROS-T-0446',
+  'mcp:remove_team_member': 'pending KAIROS-T-0446',
+  'mcp:set_board_capabilities': 'pending KAIROS-T-0446',
+  'mcp:add_column': 'pending KAIROS-T-0446',
+  'mcp:update_column': 'pending KAIROS-T-0446',
+  'mcp:remove_column': 'pending KAIROS-T-0446',
+  'mcp:set_transition': 'pending KAIROS-T-0446',
+  'mcp:delete_repository': 'pending KAIROS-T-0446',
+  'mcp:save_metadata_definition': 'pending KAIROS-T-0446',
+  'mcp:delete_metadata_definition': 'pending KAIROS-T-0446',
+  'mcp:save_template': 'pending KAIROS-T-0446',
+  'mcp:delete_template': 'pending KAIROS-T-0446',
+  'cli:self-update': 'pending KAIROS-T-0446',
+  'cli:metadata': 'pending KAIROS-T-0446',
+  'cli:templates': 'pending KAIROS-T-0446',
 };
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 

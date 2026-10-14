@@ -303,28 +303,36 @@ pub(crate) async fn create_template(
     require_org_admin(&tenant)?;
     let created = state
         .blocking
-        .run(&tenant.slug, move |conn| {
-            use kairos_db::schema::templates;
-            let entries = resolve_entries(conn, &body.metadata)?;
-            let created = conn
-                .transaction::<Template, DieselError, _>(|conn| {
-                    let created: Template = diesel::insert_into(templates::table)
-                        .values(NewTemplate {
-                            name: body.name.clone(),
-                            slug: body.slug.clone(),
-                            content: body.content.clone(),
-                            is_system_default: false,
-                        })
-                        .returning(Template::as_returning())
-                        .get_result(conn)?;
-                    replace_associations(conn, created.id, &entries)?;
-                    Ok(created)
-                })
-                .map_err(map_write_error)?;
-            detail(conn, created)
-        })
+        .run(&tenant.slug, move |conn| create_template_in(conn, &body))
         .await?;
     Ok((StatusCode::CREATED, Json(created)))
+}
+
+/// The ONE implementation of `POST /api/templates`
+/// and of the MCP tool `save_template` (KAIROS-T-0443).
+/// The caller checks that the person is an organization admin.
+pub(crate) fn create_template_in(
+    conn: &mut PgConnection,
+    body: &dto::CreateTemplateRequest,
+) -> Result<dto::TemplateDetail, ApiError> {
+    use kairos_db::schema::templates;
+    let entries = resolve_entries(conn, &body.metadata)?;
+    let created = conn
+        .transaction::<Template, DieselError, _>(|conn| {
+            let created: Template = diesel::insert_into(templates::table)
+                .values(NewTemplate {
+                    name: body.name.clone(),
+                    slug: body.slug.clone(),
+                    content: body.content.clone(),
+                    is_system_default: false,
+                })
+                .returning(Template::as_returning())
+                .get_result(conn)?;
+            replace_associations(conn, created.id, &entries)?;
+            Ok(created)
+        })
+        .map_err(map_write_error)?;
+    detail(conn, created)
 }
 
 /// Update a template (org admin only): omitted fields are unchanged;
@@ -356,6 +364,25 @@ pub(crate) async fn update_template(
 ) -> Result<Json<dto::TemplateDetail>, ApiError> {
     require_org_admin(&tenant)?;
     let id = parse_uuid(&id, "template id")?;
+    let user = auth.user_id;
+    let updated = state
+        .blocking
+        .run(&tenant.slug, move |conn| {
+            update_template_in(conn, user, id, &body)
+        })
+        .await?;
+    Ok(Json(updated))
+}
+
+/// The ONE implementation of `PATCH /api/templates/{id}`
+/// and of the MCP tool `save_template` (KAIROS-T-0443).
+/// The caller checks that the person is an organization admin.
+pub(crate) fn update_template_in(
+    conn: &mut PgConnection,
+    user: Uuid,
+    id: Uuid,
+    body: &dto::UpdateTemplateRequest,
+) -> Result<dto::TemplateDetail, ApiError> {
     if body.name.is_none()
         && body.slug.is_none()
         && body.content.is_none()
@@ -366,62 +393,54 @@ pub(crate) async fn update_template(
              metadata.",
         ));
     }
-    let user = auth.user_id;
-    let updated = state
-        .blocking
-        .run(&tenant.slug, move |conn| {
-            use kairos_db::schema::templates;
-            let current = load(conn, id)?;
-            let entries = body
-                .metadata
-                .as_deref()
-                .map(|metadata| resolve_entries(conn, metadata))
-                .transpose()?;
-            // KAIROS-T-0268: only a value that is different from the stored
-            // value goes to the write. The list of the metadata is a change
-            // only when the set of the entries is different.
-            let entries = match entries {
-                Some(entries) if same_entries(&entries, &stored_entries(conn, id)?) => None,
-                entries => entries,
-            };
-            let changes = TemplateChangeset {
-                name: body.name.clone().filter(|name| *name != current.name),
-                slug: body.slug.clone().filter(|slug| *slug != current.slug),
-                content: body.content.clone().filter(|text| *text != current.content),
-                is_system_default: None,
-                updated_at: Some(chrono::Utc::now()),
-            };
-            if changes.name.is_none()
-                && changes.slug.is_none()
-                && changes.content.is_none()
-                && entries.is_none()
-            {
-                return detail(conn, current);
+    use kairos_db::schema::templates;
+    let current = load(conn, id)?;
+    let entries = body
+        .metadata
+        .as_deref()
+        .map(|metadata| resolve_entries(conn, metadata))
+        .transpose()?;
+    // KAIROS-T-0268: only a value that is different from the stored
+    // value goes to the write. The list of the metadata is a change
+    // only when the set of the entries is different.
+    let entries = match entries {
+        Some(entries) if same_entries(&entries, &stored_entries(conn, id)?) => None,
+        entries => entries,
+    };
+    let changes = TemplateChangeset {
+        name: body.name.clone().filter(|name| *name != current.name),
+        slug: body.slug.clone().filter(|slug| *slug != current.slug),
+        content: body.content.clone().filter(|text| *text != current.content),
+        is_system_default: None,
+        updated_at: Some(chrono::Utc::now()),
+    };
+    if changes.name.is_none()
+        && changes.slug.is_none()
+        && changes.content.is_none()
+        && entries.is_none()
+    {
+        return detail(conn, current);
+    }
+    let updated = conn
+        .transaction::<Template, DieselError, _>(|conn| {
+            let updated: Template = diesel::update(templates::table.filter(templates::id.eq(id)))
+                .set(changes)
+                .returning(Template::as_returning())
+                .get_result(conn)?;
+            if let Some(entries) = &entries {
+                replace_associations(conn, id, entries)?;
             }
-            let updated = conn
-                .transaction::<Template, DieselError, _>(|conn| {
-                    let updated: Template =
-                        diesel::update(templates::table.filter(templates::id.eq(id)))
-                            .set(changes)
-                            .returning(Template::as_returning())
-                            .get_result(conn)?;
-                    if let Some(entries) = &entries {
-                        replace_associations(conn, id, entries)?;
-                    }
-                    super::log_meta_activity(
-                        conn,
-                        user,
-                        "template",
-                        id,
-                        format!("template_settings:{}", updated.slug),
-                    )?;
-                    Ok(updated)
-                })
-                .map_err(map_write_error)?;
-            detail(conn, updated)
+            super::log_meta_activity(
+                conn,
+                user,
+                "template",
+                id,
+                format!("template_settings:{}", updated.slug),
+            )?;
+            Ok(updated)
         })
-        .await?;
-    Ok(Json(updated))
+        .map_err(map_write_error)?;
+    detail(conn, updated)
 }
 
 /// Delete a template (org admin only). Hard delete: associations cascade
@@ -447,14 +466,22 @@ pub(crate) async fn delete_template(
     let id = parse_uuid(&id, "template id")?;
     let deleted = state
         .blocking
-        .run(&tenant.slug, move |conn| {
-            use kairos_db::schema::templates;
-            load(conn, id)?;
-            diesel::delete(templates::table.filter(templates::id.eq(id)))
-                .execute(conn)
-                .map_err(ApiError::internal)?;
-            Ok(dto::DeletedResponse { id: id.to_string() })
-        })
+        .run(&tenant.slug, move |conn| delete_template_in(conn, id))
         .await?;
     Ok(Json(deleted))
+}
+
+/// The ONE implementation of `DELETE /api/templates/{id}`
+/// and of the MCP tool `delete_template` (KAIROS-T-0443).
+/// The caller checks that the person is an organization admin.
+pub(crate) fn delete_template_in(
+    conn: &mut PgConnection,
+    id: Uuid,
+) -> Result<dto::DeletedResponse, ApiError> {
+    use kairos_db::schema::templates;
+    load(conn, id)?;
+    diesel::delete(templates::table.filter(templates::id.eq(id)))
+        .execute(conn)
+        .map_err(ApiError::internal)?;
+    Ok(dto::DeletedResponse { id: id.to_string() })
 }

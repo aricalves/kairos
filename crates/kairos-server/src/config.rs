@@ -287,6 +287,11 @@ pub struct AppConfig {
     /// `KAIROS_GITHUB_API_URL` (KAIROS-T-0386): the REST API of GitHub for
     /// the write-back ([`crate::forge::writeback`]).
     pub writeback: crate::forge::writeback::WriteBackSettings,
+    /// `KAIROS_CLI_DOWNLOAD_URL` (KAIROS-T-0432): where the release
+    /// tarballs of the CLI are, for `GET /version`. `None` is the GitHub
+    /// releases of Kairos. A mirror has the same layout:
+    /// `<url>/download/v<version>/kairos-<version>-<target>.tar.gz`.
+    pub cli_download_url: Option<String>,
     /// `KAIROS_PAGES_*` (KAIROS-T-0405): the store of the uploaded
     /// repository sites ([`crate::site_store`]).
     pub pages: crate::site_store::PagesSettings,
@@ -645,6 +650,8 @@ impl AppConfig {
                     }),
                 ..Default::default()
             },
+            cli_download_url: get("KAIROS_CLI_DOWNLOAD_URL")
+                .map(|url| url.trim().trim_end_matches('/').to_string()),
             pages: crate::site_store::parse_settings(&get)?,
             bootstrap_admin,
             bootstrap_password,
