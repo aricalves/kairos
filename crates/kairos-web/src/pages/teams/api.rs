@@ -165,9 +165,11 @@ struct CreatePageBody<'a> {
     slug: &'a str,
     title: &'a str,
     content: &'a str,
+    position: i32,
 }
 
-/// `POST /api/teams/{id}/pages` (team member or org admin).
+/// `POST /api/teams/{id}/pages` (team member or org admin). `position` is
+/// its place among its siblings (KAIROS-T-0438: after the last one).
 pub async fn create_page(
     auth: Auth,
     team_id: &str,
@@ -175,6 +177,7 @@ pub async fn create_page(
     kind: &str,
     slug: &str,
     title: &str,
+    position: i32,
 ) -> Result<TeamPageNode, ApiError> {
     post_json(
         auth,
@@ -185,6 +188,7 @@ pub async fn create_page(
             slug,
             title,
             content: "",
+            position,
         },
     )
     .await

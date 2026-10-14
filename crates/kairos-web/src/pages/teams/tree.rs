@@ -70,6 +70,18 @@ pub(crate) fn siblings<'a>(
     list
 }
 
+/// The position of a new node in `parent`: after its last sibling (the
+/// root starts at 1, after the charter).
+pub(crate) fn next_position(pages: &[api::TeamPageNode], parent: Option<&str>) -> i32 {
+    let base = if parent.is_none() { 1 } else { 0 };
+    siblings(pages, parent)
+        .iter()
+        .map(|p| p.position + 1)
+        .max()
+        .unwrap_or(base)
+        .max(base)
+}
+
 /// Whether `candidate` is `node` or a node inside it.
 fn is_self_or_inside(pages: &[api::TeamPageNode], node: &str, candidate: &str) -> bool {
     let mut cursor = Some(candidate.to_string());
@@ -244,7 +256,10 @@ pub(crate) fn TeamTree(
                 })}
                 {(empty && !manage).then(|| view! { <Text dimmed=true size="sm">"No pages yet."</Text> })}
                 {render_level(ctx, None, String::new())}
-                {manage.then(|| view! { <InlineCreate team_id parent_id=None on_changed/> })}
+                {manage.then(|| {
+                    let position = ctx.pages.with_value(|pages| next_position(pages, None));
+                    view! { <InlineCreate team_id parent_id=None position on_changed/> }
+                })}
             </Stack>
         </div>
     }
@@ -325,6 +340,9 @@ fn render_level(ctx: TreeCtx, parent: Option<String>, path_prefix: String) -> An
             let into_check = into.clone();
             let team_id = ctx.team_id.get_value();
             let folder_id = node.id.clone();
+            let next = ctx
+                .pages
+                .with_value(|pages| next_position(pages, Some(&node.id)));
             rows.push(
                 view! {
                     <details class="kairos-doctree__folder">
@@ -360,6 +378,7 @@ fn render_level(ctx: TreeCtx, parent: Option<String>, path_prefix: String) -> An
                                 <InlineCreate
                                     team_id
                                     parent_id=Some(folder_id)
+                                    position=next
                                     on_changed=ctx.on_changed
                                 />
                             })}
@@ -394,6 +413,8 @@ fn render_level(ctx: TreeCtx, parent: Option<String>, path_prefix: String) -> An
 pub(crate) fn InlineCreate(
     team_id: String,
     parent_id: Option<String>,
+    /// Where the new node goes among its siblings (after the last one).
+    position: i32,
     on_changed: Callback<()>,
 ) -> impl IntoView {
     let auth = use_auth();
@@ -431,6 +452,7 @@ pub(crate) fn InlineCreate(
                 kind_value,
                 &slug_value,
                 &title_value,
+                position,
             )
             .await;
             busy.set(false);
@@ -596,6 +618,16 @@ mod tests {
             ),
             Some(vec![step("c", Some(None), 2), step("b", None, 3)])
         );
+    }
+
+    #[test]
+    fn a_new_node_goes_after_the_last_sibling() {
+        let pages = tree();
+        assert_eq!(next_position(&pages, None), 3);
+        assert_eq!(next_position(&pages, Some("a")), 3);
+        assert_eq!(next_position(&pages, Some("b")), 0);
+        // A team with the charter only: the root starts after it.
+        assert_eq!(next_position(&pages[..1], None), 1);
     }
 
     #[test]

@@ -266,6 +266,7 @@ fn FolderIndex(
 
     let create_team_id = team.id.clone();
     let create_parent_id = folder.id.clone();
+    let create_position = super::tree::next_position(&pages, Some(&folder.id));
     view! {
         <Panel title="Contents" caption="pages and folders inside">
             {if child_rows.is_empty() {
@@ -279,6 +280,7 @@ fn FolderIndex(
                 <super::tree::InlineCreate
                     team_id=create_team_id
                     parent_id=Some(create_parent_id)
+                    position=create_position
                     on_changed
                 />
             </Panel>
