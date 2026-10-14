@@ -735,7 +735,8 @@ async fn an_admin_agent_sets_up_a_team_with_manage_structure() {
     // The activity log names the service account.
     assert_eq!(
         activity_count(&mut conn, org_agent_uuid, "create", "team"),
-        4
+        // KAIROS-T-0440: the ops-strategy board made its own team too.
+        5
     );
     assert_eq!(
         activity_count(&mut conn, org_agent_uuid, "capability_grant", "board"),

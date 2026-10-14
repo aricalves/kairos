@@ -459,6 +459,24 @@ fn a_strategy_or_initiative_board_has_a_team() {
             pages.iter().any(|p| p.slug == "charter" && p.is_protected),
             "the team has its charter"
         );
+        // A document that the board owns is in the tree of its team
+        // (KAIROS-T-0437).
+        let doc = kairos_db::items::create_document(
+            conn,
+            kairos_db::items::CreateDocument {
+                board_id: board.id,
+                title: "Plan",
+                content: Some(""),
+                template_id: None,
+            },
+            alice,
+        )
+        .expect("a document of the board");
+        let items = kairos_db::team_pages::team_tree_items(conn, team_id).expect("tree items");
+        assert!(
+            items.iter().any(|i| i.short_code == doc.short_code),
+            "{level}: the document is in the tree of the board's team"
+        );
     }
     // The team did not use its one delivery board.
     assert_eq!(live_delivery_boards(conn, platform), 0);

@@ -119,7 +119,11 @@ fn team_page_scaffold() {
         )],
         "the charter, protected, at the top; no seeded folders"
     );
+    // The history of this team only: the strategy and initiative boards of
+    // the tenant have teams with charters too (KAIROS-T-0440).
     let history_count: i64 = schema::team_page_history::table
+        .inner_join(schema::team_pages::table)
+        .filter(schema::team_pages::team_id.eq(team.id))
         .count()
         .get_result(&mut conn)
         .expect("counting history");

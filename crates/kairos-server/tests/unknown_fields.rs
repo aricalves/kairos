@@ -697,9 +697,10 @@ async fn a_body_that_the_route_cannot_read_gets_the_envelope_against_live_stack(
     let answer = envelope(&text);
     assert_eq!(answer["error"]["details"]["field"], "remember", "{answer}");
 
-    // --- nothing of the above made a team
+    // --- nothing of the above made a team: the two teams are those of the
+    // strategy and the initiative board of the tenant (KAIROS-T-0440)
     let teams = stack.ok(Method::GET, "/api/teams", None).await;
-    assert_eq!(teams["total"], 0, "{teams}");
+    assert_eq!(teams["total"], 2, "{teams}");
 
     stack.shutdown();
 }

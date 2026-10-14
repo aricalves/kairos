@@ -289,9 +289,13 @@ async fn a_board_always_has_a_team_against_live_stack() {
     levels.sort_unstable();
     assert_eq!(levels, ["adr", "initiative", "strategy"]);
     for board in &organization {
+        // KAIROS-T-0440: the strategy and initiative boards have a team; the
+        // ADR board of the organization has none.
         assert_eq!(
-            board.team_id, None,
-            "a board of the organization has no row in teams"
+            board.team_id.is_some(),
+            board.board_level != "adr",
+            "{}: the team of the board",
+            board.board_level
         );
         // Any member of the tenant can read the list, not only an admin.
         let team = alice
@@ -379,6 +383,8 @@ fn the_book_gives_the_rule_in_both_forms() {
         "Every board has a team.",
         "Kairos refuses to create a delivery board with no team.",
         "A live delivery board cannot lose its team.",
+        // KAIROS-T-0440: strategy and initiative boards have a team.
+        "A strategy or initiative board has a team",
         "Its team is the list of the members of the board.",
     ] {
         assert!(board.contains(needed), "glossary, board: {needed:?}");
@@ -391,7 +397,8 @@ fn the_book_gives_the_rule_in_both_forms() {
     let team = one_line(section(&glossary, "team"));
     assert!(
         team.contains(
-            "The team of a board of the organization is the list of the members of that board."
+            "The team of the ADR board of the organization is the list of the members of that \
+             board."
         ),
         "glossary, team: {team}"
     );
@@ -402,6 +409,7 @@ fn the_book_gives_the_rule_in_both_forms() {
         "A board cannot have no team.",
         "Kairos refuses to create a delivery board with no team",
         "A live delivery board cannot lose its team",
+        "A strategy or initiative board has a team in the team directory too",
         "Its team is the list of the members of the board.",
         "Admission is about being added to the board",
     ] {

@@ -164,8 +164,9 @@ Every board has a team. The rule has two forms.
 - A strategy or initiative board has a team (KAIROS-T-0440): the team in the
   create request, or its own empty team, `<level>-<board slug>`. The members of
   that team can edit and move the items of the board. Each person with a grant
-  on the board can do the same. An ADR board with no team is the ADR board of
-  the organization.
+  on the board can do the same.
+- An ADR board with no team is the ADR board of the organization. Its team is
+  the list of the members of the board.
 
 Documents sit on no board at all. A document has an owner, and the owner is a
 board: see [owner board](#owner-board).
@@ -735,9 +736,10 @@ permissions or the board of a task.
 A team has a slug, and the page of the team is `/teams/{slug}`. A slug that a
 caller sends must agree with the rule of a [slug](#slug).
 
-Every board has a team. Only a delivery board and a team ADR board have a team
-of this kind. The team of a board of the organization is the list of the members of that board.
-That list is not a record in the team directory, and it has no team page.
+Every board has a team. A delivery board, a team ADR board, a strategy board and
+an initiative board have a team of this kind. The team of the ADR board of the
+organization is the list of the members of that board. That list is not a
+record in the team directory, and it has no team page.
 See [board](#board).
 
 See [Teams and boards](../../explanation/teams-and-boards/).

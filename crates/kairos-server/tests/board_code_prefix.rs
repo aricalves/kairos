@@ -207,7 +207,9 @@ async fn a_board_needs_a_valid_prefix_against_live_stack() {
         )
         .await;
     assert_names_code_prefix(status, &answer);
-    assert_eq!(count(&mut stack.conn, "teams"), 0, "no team is written");
+    // The two teams are those of the strategy and the initiative board of the
+    // tenant (KAIROS-T-0440).
+    assert_eq!(count(&mut stack.conn, "teams"), 2, "no team is written");
     assert_eq!(
         count(&mut stack.conn, "boards"),
         before,

@@ -154,7 +154,9 @@ fn a_delivery_board_always_has_a_team() {
             Some(alice),
         )
         .unwrap_or_else(|e| panic!("a {level} board with no team: {e}"));
-        assert_eq!(board.team_id, None);
+        // KAIROS-T-0440: a strategy or initiative board gets its own team;
+        // an ADR board with no team is the ADR board of the organization.
+        assert_eq!(board.team_id.is_some(), level != BoardLevel::Adr, "{level}");
     }
 
     drop(conn);
