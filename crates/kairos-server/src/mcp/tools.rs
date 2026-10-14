@@ -3956,7 +3956,7 @@ impl KairosMcp {
     // REST route, so the gate and the refusals are those of REST: an
     // organization admin, or a grant of `manage_structure` at the scope.
     #[tool(
-        description = "Create a team and its delivery board ({slug}-delivery). `code_prefix`: a capital letter then 1 to 9 capitals or digits (OPS gives OPS-T-0001); it never changes. Optional: `team_type` (stream_aligned by default, platform, enabling, complicated_subsystem), `adr_board: true` to also make its ADR board ({slug}-adrs). The boards have no members: use `add_team_member` and `grant_capability`. Needs the org admin role or `manage_structure` on the organization."
+        description = "Create a team and its delivery board ({slug}-delivery). `code_prefix`: a capital letter then 1 to 9 capitals or digits (OPS gives OPS-T-0001); it never changes. Optional: `team_type` (stream_aligned by default, platform, enabling, complicated_subsystem), `adr_board: true` to also make its ADR board ({slug}-adrs). The new board has no members: use `add_team_member` and `grant_capability`. Needs the org admin role or `manage_structure` on the organization."
     )]
     pub async fn create_team(
         &self,
@@ -3998,9 +3998,11 @@ impl KairosMcp {
                     )?;
                     out.push_str(&format!(" ADR board: {}.", adr.board.slug));
                 }
-                out.push_str(
-                    "\nThe boards have no members. Use add_team_member and grant_capability.",
-                );
+                out.push_str(if params.adr_board.unwrap_or(false) {
+                    "\nThe boards have no members. Use add_team_member and grant_capability."
+                } else {
+                    "\nThe board has no members. Use add_team_member and grant_capability."
+                });
                 Ok(out)
             })
         })

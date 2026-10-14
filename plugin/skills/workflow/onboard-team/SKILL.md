@@ -52,7 +52,7 @@ Then show the checklist. Mark each line **ok**, **missing** or **to check**. Exa
 Team platform — checklist
   ok       team, stream_aligned, 4 members
   ok       delivery board platform-delivery (PLAT), entry column Backlog
-  missing  ADR board
+  to check ADR board: none (does the team record its own decisions?)
   missing  repository payments-api has no owner team here
   missing  charter: still the empty skeleton
   to check dispatch: no rules (does the team use a board session?)
@@ -62,7 +62,7 @@ Ask the person which lines to work on, in which order.
 
 ## 2. The team and its members
 
-- **No team:** `create_team {name, slug, code_prefix}`. It makes the team and its delivery board (`{slug}-delivery`). Add `adr_board: true` when the team records its own decisions. The prefix does not change later, so agree it with the person first.
+- **No team:** `create_team {name, slug, code_prefix}`. It makes the team and its delivery board (`{slug}-delivery`); an ADR board is a question of step 3. The prefix does not change later, so agree it with the person first.
 - **A different name or type:** `update_team`.
 - **Members:** `add_team_member {team, user}` for each person. Membership gives `manage_tasks`, `manage_documents` and `transition_items` on the boards of the team, and the right to edit the team page. `remove_team_member` takes a person off.
 - **An agent of the team** (a service account or the agent key of a person) must also be a member to edit the team page. A board capability does not give that right.
