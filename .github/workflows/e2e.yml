@@ -75,4 +75,4 @@ jobs:
       # bundle, seeds, boots the servers, runs the API golden path, then the
       # Playwright GUI smoke leg. Exit code propagates.
       - name: angreal test e2e
-        run: angreal test e2e
+        run: angreal test e2e --down
