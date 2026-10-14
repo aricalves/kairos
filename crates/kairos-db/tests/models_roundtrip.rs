@@ -19,6 +19,9 @@
 //!   observed directly on the underlying connection. Pre-cursor to the
 //!   KAIROS-T-0016 adversarial suite.
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use chrono::NaiveDate;
 // NOTE: deliberately NOT `use diesel::prelude::*` — the sync `RunQueryDsl`
 // would make every `.load`/`.execute`/`.get_result` call ambiguous with
@@ -54,12 +57,13 @@ mod setup {
         let (base, _) = url
             .rsplit_once('/')
             .expect("DATABASE_URL must contain a database path segment");
-        format!("{base}/{db_name}")
+        format!("{base}/{}", crate::scratch::scratch_db_name(db_name))
     }
 
     /// Drop + recreate `db_name`, run public migrations, provision
     /// `tenants`. Returns the scratch database URL.
     pub fn scratch_database(db_name: &str, tenants: &[&str]) -> String {
+        let db_name = &crate::scratch::scratch_db_name(db_name);
         let admin_url = admin_database_url();
         let mut admin_conn = PgConnection::establish(&admin_url).unwrap_or_else(|e| {
             panic!(
@@ -85,6 +89,7 @@ mod setup {
     }
 
     pub fn drop_scratch_database(db_name: &str) {
+        let db_name = &crate::scratch::scratch_db_name(db_name);
         let mut admin_conn = PgConnection::establish(&admin_database_url())
             .expect("connecting for scratch teardown");
         sql_query(format!("DROP DATABASE IF EXISTS {db_name} WITH (FORCE)"))
@@ -144,8 +149,10 @@ async fn board_with_columns(
 
 #[tokio::test]
 async fn models_round_trip() {
-    const DB: &str = "kairos_models_roundtrip_test";
-    let url = scratch_database(DB, &["alpha"]);
+    static DB: crate::scratch::ScratchName =
+        crate::scratch::ScratchName::new("kairos_models_roundtrip_test");
+    let url = scratch_database(&DB, &["alpha"]);
+    let _scratch_guard = crate::scratch::ScratchGuard::new(&DB);
     let pool = TenantPool::new(&url, 4).await.expect("building pool");
 
     // ---- public tables (schema-qualified in schema.rs) --------------------
@@ -527,13 +534,15 @@ async fn models_round_trip() {
     drop(conn);
     drop(pconn);
     drop(pool);
-    drop_scratch_database(DB);
+    drop_scratch_database(&DB);
 }
 
 #[tokio::test]
 async fn pool_isolation_interleaved() {
-    const DB: &str = "kairos_pool_isolation_test";
-    let url = scratch_database(DB, &["alpha", "beta"]);
+    static DB: crate::scratch::ScratchName =
+        crate::scratch::ScratchName::new("kairos_pool_isolation_test");
+    let url = scratch_database(&DB, &["alpha", "beta"]);
+    let _scratch_guard = crate::scratch::ScratchGuard::new(&DB);
 
     // Deliberately small pool: 2 connections serving 2 tenants interleaved
     // guarantees each physical connection is reused across tenants.
@@ -668,5 +677,5 @@ async fn pool_isolation_interleaved() {
     assert!(alpha_ids.iter().all(|id| !beta_ids.contains(id)));
 
     drop(pool1);
-    drop_scratch_database(DB);
+    drop_scratch_database(&DB);
 }

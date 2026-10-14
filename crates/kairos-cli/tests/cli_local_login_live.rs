@@ -15,6 +15,9 @@
 //! terminal prompt through a pseudo-terminal; it needs `python3`, and it
 //! says so and does nothing when there is none.
 
+#[path = "../../kairos-db/tests/common/scratch.rs"]
+mod scratch;
+
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -54,7 +57,7 @@ fn admin_database_url() -> String {
 
 fn with_database(url: &str, db_name: &str) -> String {
     let (base, _) = url.rsplit_once('/').expect("database url has a path");
-    format!("{base}/{db_name}")
+    format!("{base}/{}", scratch::scratch_db_name(db_name))
 }
 
 /// What one run of the binary printed.
@@ -139,6 +142,7 @@ const LOCAL_ONLY: Shape = Shape {
 struct Deployment {
     base_url: String,
     scratch_db: String,
+    _scratch_guard: scratch::ScratchGuard,
     /// The site store of the deployment (KAIROS-T-0408).
     _pages: tempfile::TempDir,
 }
@@ -148,6 +152,7 @@ impl Deployment {
     /// [`PASSWORD`] as an organization admin, and the production router on an
     /// ephemeral port.
     async fn boot(scratch_db: &str, shape: Shape) -> Self {
+        let scratch_db = &scratch::scratch_db_name(scratch_db);
         let admin_url = admin_database_url();
         let mut admin = PgConnection::establish(&admin_url)
             .expect("connecting to compose postgres (is the stack up? `angreal services up`)");
@@ -250,6 +255,7 @@ impl Deployment {
         Self {
             base_url,
             scratch_db: scratch_db.to_string(),
+            _scratch_guard: scratch::ScratchGuard::new(scratch_db),
             _pages: pages,
         }
     }

@@ -508,6 +508,7 @@ async fn task_by(client: &KairosClient, board: &str, title: &str, repo: Option<&
             work_class: None,
             team_id: None,
             repository: repo.map(str::to_string),
+            from_team: None,
         })
         .await
         .unwrap_or_else(|e| panic!("creating task {title:?}: {e}"))
@@ -2442,7 +2443,7 @@ async fn a_document_names_its_board_and_impacts_a_repository_against_live_stack(
     // hand_off_item and release_item, and KAIROS-T-0362 added cancel_item
     // and purge_task, and KAIROS-T-0363 added archive_completed.
     // KAIROS-T-0385 added the 3 tools of the dispatch rules.
-    checks.same("H1: the number of tools", tools.len(), 58);
+    checks.same("H1: the number of tools", tools.len(), 61);
     let schema_of = |name: &str| -> Value {
         tools
             .iter()

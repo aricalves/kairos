@@ -231,6 +231,7 @@ pub async fn setup_world(
                 task_type: Some("task".to_string()),
                 work_class: None,
                 team_id: None,
+                from_team: None,
             })
             .await
             .map_err(|e| setup_err("collision task", e))?;

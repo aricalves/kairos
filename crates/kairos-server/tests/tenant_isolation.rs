@@ -94,6 +94,7 @@ async fn seed_tenant(admin: &KairosClient, prefix: &str) -> (String, String, Str
             task_type: None,
             work_class: None,
             team_id: None,
+            from_team: None,
         })
         .await
         .expect("creating the task");

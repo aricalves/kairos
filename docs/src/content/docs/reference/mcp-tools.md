@@ -3,8 +3,8 @@ title: "MCP tools"
 ---
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-fifty-eight tools. A drift gate in the test suite
-asserts that `tools/list` returns these fifty-eight and no others. The same
+sixty-one tools. A drift gate in the test suite
+asserts that `tools/list` returns these sixty-one and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -148,7 +148,11 @@ path.
 
 One repository in full. The output has these parts:
 
-- the slug, the forge, the full name, the URL and the default branch
+- the slug, the forge, the full name, the URL and the default branch. After
+  the branch, the line says where it comes from: `set by hand`, `set by hand;
+  the forge gives <branch>`, `from the forge`, or `from the forge; no fetch
+  yet`. The code index builder indexes this branch. See
+  [the branch that the builder indexes](../configuration/#the-branch-that-the-builder-indexes).
 - `owner team`: the single owning team
 - `owner's delivery board`: the delivery board of that team
 - `open tasks (all boards)`: the open task count
@@ -221,7 +225,7 @@ are those of `POST /api/repositories`.
 | `repo_url` | string | yes | — | The URL of the repository for a browser: `http` or `https`, with no user name and no password. |
 | `team` | string | yes | — | The one owner team. Slug or UUID. |
 | `slug` | string | no | made from `repo_full_name` | The slug of the repository in Kairos. `acme/payments-api` gives `acme-payments-api`. It must match `^[a-z0-9][a-z0-9-]{1,62}$`. |
-| `default_branch` | string | no | `main` | The default branch: a branch name that git accepts. |
+| `default_branch` | string | no | the default branch of the forge | The default branch: a branch name that git accepts. With a value, the branch is set by hand. With no value, the code index builder follows the default branch of the forge, and the value is `main` until the first fetch. |
 | `description` | string | no | empty | How to work in the repository. `get_repository` shows it to each agent. |
 
 The glossary gives the full rule of `repo_full_name`, `repo_url` and
@@ -255,23 +259,24 @@ details: {"field":"repo_full_name"}
 ### `update_repository`
 
 Changes the description, the default branch, the URL and the code index
-builder of a repository. The rule is that of `PATCH /api/repositories/{slug}`,
+builder of a repository. It also changes the source of the default branch. The rule is that of `PATCH /api/repositories/{slug}`,
 for the current owner team.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `repository` | string | yes | — | Slug or UUID. |
 | `description` | string | no | no change | The new text on how to work in the repository. It replaces the full text. An empty string removes the text. |
-| `default_branch` | string | no | no change | The new default branch: a branch name that git accepts. |
+| `default_branch` | string | no | no change | The new default branch: a branch name that git accepts. The branch is then set by hand: the code index builder indexes it, whatever the forge says. |
+| `default_branch_source` | string | no | no change | `forge` or `hand`. `forge` removes the branch set by hand: the builder follows the default branch of the forge again. `hand` keeps the current branch by hand. Do not send `forge` with `default_branch`. |
 | `repo_url` | string | no | no change | The new URL for a browser: `http` or `https`, with no user name and no password. |
 | `code_index_build` | string | no | no change | `on` or `off`: the builder of the code index of the server, for this repository. |
 | `slug` | string | no | no change | The new slug. |
 | `team` | string | no | no change | The new owner team. Slug or UUID. |
 
-The call must have one or more of `description`, `default_branch`, `repo_url`,
-`code_index_build`, `slug` and `team`. Each checkout keeps the slug in
-`.claude/kairos.local.md`, and a new slug breaks that reference: run
-`/kairos:bootstrap` in the checkout again.
+The call must have one or more of `description`, `default_branch`,
+`default_branch_source`, `repo_url`, `code_index_build`, `slug` and `team`.
+Each checkout keeps the slug in `.claude/kairos.local.md`, and a new slug
+breaks that reference: run `/kairos:bootstrap` in the checkout again.
 
 Requires membership of the owner team, or the organization admin role. A new
 `team` also requires membership of that team.
@@ -721,6 +726,7 @@ Creates a work item and returns its new short code.
 | `task_type` | string | no | `task` | Tasks only. `task`, `bug`, `tech_debt`, `support`. |
 | `repository` | string | no | — | Tasks only. Slug or UUID. An optional link that says where the code is. Any live repository, of any team. It does not choose the board. |
 | `work_class` | string | no | see below | Tasks only. `planned`, `support`. |
+| `from_team` | string | no | — | Tasks only. The team that sends the task. Slug or UUID. When it is not the team of the board, the task is a request: entry column, support lane, also for a manager of the board or an org admin. An agent in a board session sends its own team. |
 | `hypothesis` | string | no | — | Strategies only. |
 | `complexity` | string | no | — | Initiatives only. `xs`, `s`, `m`, `l`, `xl`. |
 | `bucket_type` | string | no | — | Initiatives only. `tech_debt`, `bug`, `ad_hoc`. Makes the initiative a bucket rather than a dated one; `is_bucket` is derived from it. |
@@ -1572,26 +1578,29 @@ principal of the call.
 
 ### `create_team`
 
-Creates a team, its delivery board and its ADR board, in one transaction.
-The team and the delivery board are those of `POST /api/teams`. The ADR board
-is that of `POST /api/boards` with `board_level` `adr` and the team.
+Creates a team and its delivery board, as `POST /api/teams` does. With
+`adr_board` `true`, it also creates the ADR board of the team, in the same
+transaction. That board is the board of `POST /api/boards` with `board_level`
+`adr` and the team.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `name` | string | yes | — | The name of the team. |
 | `slug` | string | yes | — | The slug of the team. It must match `^[a-z][a-z0-9_-]{1,62}$`. The delivery board gets the slug `{slug}-delivery`. The ADR board gets `{slug}-adrs`. |
-| `code_prefix` | string | yes | — | The short-code prefix of the two boards, for example `OPS`. It must match `^[A-Z][A-Z0-9]{1,9}$`. It does not change later. |
+| `code_prefix` | string | yes | — | The short-code prefix of the boards of the team, for example `OPS`. It must match `^[A-Z][A-Z0-9]{1,9}$`. It does not change later. |
 | `team_type` | string | no | `stream_aligned` | `stream_aligned`, `platform`, `enabling` or `complicated_subsystem`. |
-| `adr_board` | boolean | no | `true` | `false` makes no ADR board. |
+| `adr_board` | boolean | no | `false` | `true` also makes the ADR board of the team. |
 
 The new boards have no members. Use `add_team_member` and `grant_capability`.
 
 The result is two lines:
 
 ```text
-Created team home-ops (Home operations, stream_aligned). Delivery board: home-ops-delivery (prefix OPS). ADR board: home-ops-adrs.
+Created team home-ops (Home operations, stream_aligned). Delivery board: home-ops-delivery (prefix OPS).
 The boards have no members. Use add_team_member and grant_capability.
 ```
+
+With `adr_board` `true`, the first line ends with `ADR board: home-ops-adrs.`
 
 Requires the organization admin role or `manage_structure` on the
 organization.
@@ -2003,6 +2012,67 @@ Refuses: `FORBIDDEN` without `configure_boards`; `NOT_FOUND` for an unknown
 board or rule.
 
 REST: `DELETE /api/boards/{id}/dispatch-rules/{rule_id}`.
+
+## Read tokens of the organization
+
+The code index builder of the server fetches each repository with git
+(KAIROS-T-0431). An organization admin can keep one read token for each
+forge host, for example `github.com`. The builder uses the token of the host
+of a repository first. It uses the token of the repository only for a host
+that has no token of the organization.
+
+With no token, the fetch has no credential. The log of each fetch, and the
+note of a failed build, say which token the fetch used. They never show the
+token.
+
+Kairos encrypts each token with `KAIROS_SECRETS_KEY`. No tool and no route
+gives a token back. Each set, change and removal writes an activity row with
+the host.
+
+The host is the host of the URL of the repository, in lowercase. It has a
+port only when the port is not 443 (or 80 for `http`). Kairos changes
+`GitHub.com`, `https://github.com/` and `github.com:443` to `github.com`.
+
+### `list_org_read_tokens`
+
+Gives the hosts that have a token, and for each host who set the token and
+when. Only an organization admin. No arguments.
+
+Refuses: `FORBIDDEN` for a person who is not an organization admin.
+
+REST: `GET /api/org/read-tokens`.
+
+### `set_org_read_token`
+
+Sets the token of a host, or replaces it. Only an organization admin.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `host` | string | yes | — | The host only, for example `github.com`. |
+| `token` | string | yes | — | A token that can only read the code. |
+
+Refuses:
+
+- `FORBIDDEN` for a person who is not an organization admin;
+- `VALIDATION` for a host with a path, a user name or a scheme that is not
+  `http` or `https`, and for a token that is empty, too long or has a space;
+- `SECRETS_NOT_CONFIGURED` when the deployment has no `KAIROS_SECRETS_KEY`.
+
+REST: `PUT /api/org/read-tokens/{host}`.
+
+### `remove_org_read_token`
+
+Removes the token of a host. The next fetch of a repository on the host uses
+the token of the repository, or no token. Only an organization admin.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `host` | string | yes | — | The host only, for example `github.com`. |
+
+Refuses: `FORBIDDEN` for a person who is not an organization admin;
+`NOT_FOUND` for a host with no token.
+
+REST: `DELETE /api/org/read-tokens/{host}`.
 
 ## Related reading
 

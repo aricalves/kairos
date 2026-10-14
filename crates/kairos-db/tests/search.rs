@@ -27,6 +27,9 @@
 //! - pathological fan-out (200 tasks under one initiative) completes
 //!   within the stated budget with exactly one task-hydration query
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
@@ -69,7 +72,7 @@ fn seed_board_team(conn: &mut PgConnection, name: &str, slug: &str) -> Uuid {
 /// Same default as `.angreal/task_db.py`'s `DATABASE_URL`.
 const DEFAULT_DATABASE_URL: &str = "postgres://kairos:kairos@localhost:41432/kairos";
 
-const SCRATCH_DB: &str = "kairos_search_test";
+static SCRATCH_DB: scratch::ScratchName = scratch::ScratchName::new("kairos_search_test");
 
 fn admin_database_url() -> String {
     std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
@@ -80,7 +83,7 @@ fn with_database(url: &str, db_name: &str) -> String {
     let (base, _) = url
         .rsplit_once('/')
         .expect("DATABASE_URL must contain a database path segment");
-    format!("{base}/{db_name}")
+    format!("{base}/{}", scratch::scratch_db_name(db_name))
 }
 
 fn insert_user(conn: &mut PgConnection, external_id: &str, email: &str, name: &str) -> Uuid {
@@ -193,8 +196,9 @@ fn unified_search_pipeline() {
     sql_query(format!("CREATE DATABASE {SCRATCH_DB}"))
         .execute(&mut admin_conn)
         .expect("creating scratch database");
+    let _scratch_guard = scratch::ScratchGuard::new(&SCRATCH_DB);
 
-    let scratch_url = with_database(&admin_url, SCRATCH_DB);
+    let scratch_url = with_database(&admin_url, &SCRATCH_DB);
     let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
 
     run_public_migrations(&mut conn).expect("running public migrations");

@@ -15,6 +15,9 @@
 //! Against real Postgres from the compose stack (A-0012 tier 2), in its
 //! own scratch database.
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use diesel::connection::SimpleConnection;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
@@ -29,7 +32,8 @@ use kairos_db::task_claims::{self, ClaimError};
 use kairos_db::{boards, create_board, items, provision_tenant, run_public_migrations};
 
 const DEFAULT_DATABASE_URL: &str = "postgres://kairos:kairos@localhost:41432/kairos";
-const SCRATCH_DB: &str = "kairos_task_claims_t0359_test";
+static SCRATCH_DB: scratch::ScratchName =
+    scratch::ScratchName::new("kairos_task_claims_t0359_test");
 
 /// The migration under test, verbatim.
 const UP: &str = include_str!("../migrations/tenant/2026-10-09-000003_task_claims/up.sql");
@@ -43,7 +47,7 @@ fn with_database(url: &str, db_name: &str) -> String {
     let (base, _) = url
         .rsplit_once('/')
         .expect("DATABASE_URL must contain a database path segment");
-    format!("{base}/{db_name}")
+    format!("{base}/{}", scratch::scratch_db_name(db_name))
 }
 
 fn insert_user(conn: &mut PgConnection, external_id: &str, email: &str, name: &str) -> Uuid {
@@ -184,7 +188,8 @@ fn a_task_in_active_has_a_claim() {
     sql_query(format!("CREATE DATABASE {SCRATCH_DB}"))
         .execute(&mut admin_conn)
         .expect("creating scratch database");
-    let scratch_url = with_database(&admin_url, SCRATCH_DB);
+    let _scratch_guard = scratch::ScratchGuard::new(&SCRATCH_DB);
+    let scratch_url = with_database(&admin_url, &SCRATCH_DB);
     let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
     run_public_migrations(&mut conn).expect("running public migrations");
     provision_tenant(&mut conn, "acme", "Acme Inc").expect("provisioning acme");

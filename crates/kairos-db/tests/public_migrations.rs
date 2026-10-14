@@ -11,6 +11,9 @@
 //! (`kairos_public_migrations_test`) on the same server, so it never
 //! touches the dev `kairos` database or interferes with other tests.
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::result::{DatabaseErrorKind, Error as DieselError};
@@ -21,7 +24,8 @@ use kairos_db::run_public_migrations;
 /// Same default as `.angreal/task_db.py`'s `DATABASE_URL`.
 const DEFAULT_DATABASE_URL: &str = "postgres://kairos:kairos@localhost:41432/kairos";
 
-const SCRATCH_DB: &str = "kairos_public_migrations_test";
+static SCRATCH_DB: scratch::ScratchName =
+    scratch::ScratchName::new("kairos_public_migrations_test");
 
 /// The public-schema tables: the 8 defined by KAIROS-S-0004 plus the
 /// KAIROS-T-0078 system metadata scopes.
@@ -55,7 +59,7 @@ fn with_database(url: &str, db_name: &str) -> String {
     let (base, _) = url
         .rsplit_once('/')
         .expect("DATABASE_URL must contain a database path segment");
-    format!("{base}/{db_name}")
+    format!("{base}/{}", scratch::scratch_db_name(db_name))
 }
 
 #[derive(QueryableByName)]
@@ -111,8 +115,9 @@ fn public_migrations_from_empty_database() {
     sql_query(format!("CREATE DATABASE {SCRATCH_DB}"))
         .execute(&mut admin_conn)
         .expect("creating scratch database");
+    let _scratch_guard = scratch::ScratchGuard::new(&SCRATCH_DB);
 
-    let scratch_url = with_database(&admin_url, SCRATCH_DB);
+    let scratch_url = with_database(&admin_url, &SCRATCH_DB);
     let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
 
     // (a) From empty, the runner creates all 8 S-0004 public tables.

@@ -104,8 +104,8 @@ fn key() -> SecretsKey {
 /// The scratch database: the tenant, a board with tasks, the repositories
 /// (with their git repositories in `work`), and a webhook target of the
 /// board for `hook_url` with its deliveries. The URL of the database.
-fn world(work: &Path, hook_url: &str) -> String {
-    let _admin = common::recreate_scratch_db(DB);
+fn world(work: &Path, hook_url: &str) -> common::ScratchUrl {
+    let admin = common::recreate_scratch_db(DB);
     let url = common::with_database(&common::admin_database_url(), DB);
     let mut conn = conn(&url);
     run_public_migrations(&mut conn).expect("public migrations");
@@ -182,7 +182,7 @@ fn world(work: &Path, hook_url: &str) -> String {
         .expect("queue")
         .expect("a target");
     }
-    url
+    common::ScratchUrl::new(admin, url)
 }
 
 /// The fake summarizer, slowed down so that the builds of the 2 servers

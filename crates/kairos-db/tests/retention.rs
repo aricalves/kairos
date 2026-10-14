@@ -29,6 +29,9 @@
 //! - `run_retention_pass` (the periodic job of the server, KAIROS-T-0376)
 //!   removes the old rows and the expired sessions, and reports progress
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::path::PathBuf;
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
@@ -49,7 +52,7 @@ use kairos_db::{provision_tenant, run_public_migrations, schema};
 /// Same default as `.angreal/task_db.py`'s `DATABASE_URL`.
 const DEFAULT_DATABASE_URL: &str = "postgres://kairos:kairos@localhost:41432/kairos";
 
-const SCRATCH_DB: &str = "kairos_retention_test";
+static SCRATCH_DB: scratch::ScratchName = scratch::ScratchName::new("kairos_retention_test");
 
 fn admin_database_url() -> String {
     std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
@@ -60,7 +63,7 @@ fn with_database(url: &str, db_name: &str) -> String {
     let (base, _) = url
         .rsplit_once('/')
         .expect("DATABASE_URL must contain a database path segment");
-    format!("{base}/{db_name}")
+    format!("{base}/{}", scratch::scratch_db_name(db_name))
 }
 
 /// Pin the connection's `search_path` to a tenant schema (+ public).
@@ -225,8 +228,9 @@ fn retention_sweeper_lifecycle() {
     sql_query(format!("CREATE DATABASE {SCRATCH_DB}"))
         .execute(&mut admin_conn)
         .expect("creating scratch database");
+    let _scratch_guard = scratch::ScratchGuard::new(&SCRATCH_DB);
 
-    let scratch_url = with_database(&admin_url, SCRATCH_DB);
+    let scratch_url = with_database(&admin_url, &SCRATCH_DB);
     let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
 
     run_public_migrations(&mut conn).expect("running public migrations");
@@ -594,7 +598,7 @@ fn retention_pass_removes_old_rows_and_expired_sessions() {
     use kairos_db::local_auth::{NewLocalSession, create_session};
     use kairos_db::retention::run_retention_pass;
 
-    const PASS_DB: &str = "kairos_retention_pass_test";
+    static PASS_DB: scratch::ScratchName = scratch::ScratchName::new("kairos_retention_pass_test");
     let admin_url = admin_database_url();
     let mut admin_conn = PgConnection::establish(&admin_url).unwrap_or_else(|e| {
         panic!("cannot connect to compose postgres at {admin_url}: {e} (`angreal services up`)")
@@ -605,7 +609,8 @@ fn retention_pass_removes_old_rows_and_expired_sessions() {
     sql_query(format!("CREATE DATABASE {PASS_DB}"))
         .execute(&mut admin_conn)
         .expect("creating scratch database");
-    let url = with_database(&admin_url, PASS_DB);
+    let _scratch_guard = scratch::ScratchGuard::new(&PASS_DB);
+    let url = with_database(&admin_url, &PASS_DB);
     let mut conn = PgConnection::establish(&url).expect("connecting to scratch database");
     run_public_migrations(&mut conn).expect("running public migrations");
     provision_tenant(&mut conn, "acme", "Acme Inc").expect("provisioning acme");

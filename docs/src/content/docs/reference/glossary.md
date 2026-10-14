@@ -597,7 +597,7 @@ character.
 |---|---|---|
 | `repo_full_name` | The name on the forge, as the forge sends it in a webhook. The parts have `/` between them, and each part has text. The name does not end with `.git`. | 255 characters |
 | `repo_url` | An absolute `http` or `https` URL with a host. It has no user name and no password. | 2048 characters |
-| `default_branch` | A branch name that git accepts. The default is `main`. | 255 characters |
+| `default_branch` | A branch name that git accepts. With no value, the code index builder follows the default branch of the forge, and the value is `main` until the first fetch. | 255 characters |
 
 The number of parts of `repo_full_name` comes from the forge:
 

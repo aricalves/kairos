@@ -40,7 +40,15 @@ pub struct Repository {
     pub forge: String,
     pub repo_full_name: String,
     pub repo_url: String,
+    /// The branch that the code index builder indexes (KAIROS-T-0430).
     pub default_branch: String,
+    /// `forge` or `hand` (KAIROS-T-0430): where `default_branch` comes
+    /// from.
+    #[serde(default = "branch_from_forge")]
+    pub default_branch_source: String,
+    /// The default branch that the remote gave at the last fetch.
+    #[serde(default)]
+    pub forge_branch: Option<String>,
     #[serde(default)]
     pub description: String,
     pub team: RepositoryTeam,
@@ -138,6 +146,10 @@ fn code_index_summaries_embedded() -> String {
 
 /// The default of [`Repository::code_index_build`]: an older server does not
 /// send it, and the builder works on each repository.
+fn branch_from_forge() -> String {
+    "forge".to_string()
+}
+
 fn code_index_build_on() -> String {
     "on".to_string()
 }
@@ -161,6 +173,25 @@ impl Repository {
                  symbol leaves the host."
             }
             _ => "Summaries: the embedded model.",
+        }
+    }
+
+    /// The indexed branch and where it comes from (KAIROS-T-0430).
+    pub fn default_branch_summary(&self) -> String {
+        let branch = &self.default_branch;
+        match (
+            self.default_branch_source.as_str(),
+            self.forge_branch.as_deref(),
+        ) {
+            ("hand", Some(forge)) if forge != branch => {
+                format!("Indexed branch: {branch}, set by hand. The forge gives {forge}.")
+            }
+            ("hand", _) => format!("Indexed branch: {branch}, set by hand."),
+            (_, Some(_)) => format!("Indexed branch: {branch}, from the forge."),
+            (_, None) => format!(
+                "Indexed branch: {branch}. Kairos reads the default branch of the forge at \
+                 the next fetch."
+            ),
         }
     }
 

@@ -273,7 +273,7 @@ async fn enqueue_updates_with(
 ) -> Vec<BuildOutcome> {
     let max_tries = worker.settings().max_tries;
     let mut notes = Vec::new();
-    for (tenant, repo, newest) in update_order(blocking).await {
+    for (tenant, mut repo, newest) in update_order(blocking).await {
         if let Some(handle) = progress {
             handle.progress();
         }
@@ -290,7 +290,8 @@ async fn enqueue_updates_with(
             continue;
         }
         let mut commit = String::new();
-        if let Ok(Fetched { head, .. }) = fetch_head(blocking, service, &tenant, &repo, false).await
+        if let Ok(Fetched { head, .. }) =
+            fetch_head(blocking, service, &tenant, &mut repo, false).await
         {
             if service.failed_before(&(repo.id, head.clone())) {
                 notes.push(note_of(

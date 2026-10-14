@@ -3,7 +3,8 @@
 #
 # Each test binary uses its own scratch databases (each test of a binary
 # has its own name), so tests of different binaries can run at the same
-# time against one compose stack.
+# time against one compose stack. Each test process adds its own run value
+# to the names (`ktest_<run>_<name>`, KAIROS-T-0445).
 
 [profile.ci]
 fail-fast = false
@@ -11,3 +12,10 @@ fail-fast = false
 # stopped.
 slow-timeout = { period = "60s", terminate-after = 10 }
 failure-output = "immediate-final"
+
+# KAIROS-T-0449: a stopgap. A test of `jobs` passed and its process then
+# died with SIGSEGV at exit (worker connections still open). The tests now
+# shut their workers down; the retries stay until that is seen to hold.
+[[profile.ci.overrides]]
+filter = 'binary(jobs)'
+retries = 2

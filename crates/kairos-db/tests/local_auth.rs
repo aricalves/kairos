@@ -11,6 +11,9 @@
 //!
 //! Runs against the real compose Postgres (KAIROS-A-0012, never mocked).
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use chrono::{Duration, Utc};
 use diesel::prelude::*;
 use diesel::sql_query;
@@ -29,12 +32,13 @@ fn admin_url() -> String {
 
 fn with_database(url: &str, db: &str) -> String {
     let (base, _) = url.rsplit_once('/').expect("DATABASE_URL has a db segment");
-    format!("{base}/{db}")
+    format!("{base}/{}", scratch::scratch_db_name(db))
 }
 
 /// A scratch database with public migrations applied. No tenant needed: both
 /// tables under test are public, which is itself the KAIROS-T-0203 design point.
 fn setup(db: &str) -> PgConnection {
+    let db = &scratch::scratch_db_name(db);
     let admin = admin_url();
     let mut root = PgConnection::establish(&admin).expect("connect admin");
     let _ = sql_query(format!("DROP DATABASE IF EXISTS {db} WITH (FORCE)")).execute(&mut root);
@@ -47,6 +51,7 @@ fn setup(db: &str) -> PgConnection {
 }
 
 fn teardown(db: &str) {
+    let db = &scratch::scratch_db_name(db);
     let mut root = PgConnection::establish(&admin_url()).expect("connect admin for teardown");
     let _ = sql_query(format!("DROP DATABASE IF EXISTS {db} WITH (FORCE)")).execute(&mut root);
 }
@@ -81,6 +86,7 @@ fn mint(conn: &mut PgConnection, user_id: Uuid, hash: &str, ttl_days: i64) -> Uu
 fn a_session_round_trips_and_expiry_and_revocation_are_honored() {
     let db = "kairos_local_auth_sessions_test";
     let mut conn = setup(db);
+    let _scratch_guard = scratch::ScratchGuard::new(db);
     let user = make_user(&mut conn, "live@example.test");
 
     let live = mint(&mut conn, user.id, "hash-live", 14);
@@ -152,6 +158,7 @@ fn a_session_round_trips_and_expiry_and_revocation_are_honored() {
 fn changing_a_password_revokes_every_session() {
     let db = "kairos_local_auth_password_revokes_test";
     let mut conn = setup(db);
+    let _scratch_guard = scratch::ScratchGuard::new(db);
 
     let alice = make_user(&mut conn, "alice@example.test");
     let bob = make_user(&mut conn, "bob@example.test");
@@ -219,6 +226,7 @@ fn looking_a_user_up_does_not_filter_out_oidc_only_accounts() {
     // absence of the filter is asserted rather than assumed.
     let db = "kairos_local_auth_lookup_test";
     let mut conn = setup(db);
+    let _scratch_guard = scratch::ScratchGuard::new(db);
 
     make_user(&mut conn, "oidc-only@example.test");
     let found = local_auth::find_user_by_email(&mut conn, "oidc-only@example.test")
@@ -239,6 +247,7 @@ fn looking_a_user_up_does_not_filter_out_oidc_only_accounts() {
 fn deleting_a_user_takes_their_sessions_with_them() {
     let db = "kairos_local_auth_cascade_test";
     let mut conn = setup(db);
+    let _scratch_guard = scratch::ScratchGuard::new(db);
     let user = make_user(&mut conn, "leaver@example.test");
     mint(&mut conn, user.id, "leaver-session", 14);
 
@@ -261,6 +270,7 @@ fn deleting_a_user_takes_their_sessions_with_them() {
 fn expired_sessions_can_be_swept() {
     let db = "kairos_local_auth_sweep_test";
     let mut conn = setup(db);
+    let _scratch_guard = scratch::ScratchGuard::new(db);
     let user = make_user(&mut conn, "sweeper@example.test");
 
     local_auth::create_session(
@@ -295,6 +305,7 @@ fn adding_a_password_to_an_oidc_identity_does_not_fork_the_person() {
     // they logged in that day.
     let db = "kairos_local_auth_upsert_test";
     let mut conn = setup(db);
+    let _scratch_guard = scratch::ScratchGuard::new(db);
 
     let oidc = make_user(&mut conn, "both@example.test");
     assert_eq!(oidc.external_id, "oidc:both@example.test");
@@ -346,6 +357,7 @@ fn the_bootstrap_admin_is_single_use() {
     // therefore consumed only when the deployment has NO users, and inert after.
     let db = "kairos_local_auth_bootstrap_test";
     let mut conn = setup(db);
+    let _scratch_guard = scratch::ScratchGuard::new(db);
 
     let outcome = local_auth::bootstrap_admin_if_empty(
         &mut conn,

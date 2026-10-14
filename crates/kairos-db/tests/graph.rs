@@ -26,6 +26,9 @@
 //!   `blocks_summary` counts follow the terminal flag of the column at both
 //!   ends, and `relationships_for` lists the edge with the done end marked
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::sql_query;
@@ -60,7 +63,7 @@ fn seed_board_team(conn: &mut PgConnection, name: &str, slug: &str) -> Uuid {
 /// Same default as `.angreal/task_db.py`'s `DATABASE_URL`.
 const DEFAULT_DATABASE_URL: &str = "postgres://kairos:kairos@localhost:41432/kairos";
 
-const SCRATCH_DB: &str = "kairos_graph_test";
+static SCRATCH_DB: scratch::ScratchName = scratch::ScratchName::new("kairos_graph_test");
 
 fn admin_database_url() -> String {
     std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
@@ -71,7 +74,7 @@ fn with_database(url: &str, db_name: &str) -> String {
     let (base, _) = url
         .rsplit_once('/')
         .expect("DATABASE_URL must contain a database path segment");
-    format!("{base}/{db_name}")
+    format!("{base}/{}", scratch::scratch_db_name(db_name))
 }
 
 fn insert_user(conn: &mut PgConnection, external_id: &str, email: &str, name: &str) -> Uuid {
@@ -202,8 +205,9 @@ fn relationship_graph_service() {
     sql_query(format!("CREATE DATABASE {SCRATCH_DB}"))
         .execute(&mut admin_conn)
         .expect("creating scratch database");
+    let _scratch_guard = scratch::ScratchGuard::new(&SCRATCH_DB);
 
-    let scratch_url = with_database(&admin_url, SCRATCH_DB);
+    let scratch_url = with_database(&admin_url, &SCRATCH_DB);
     let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
 
     run_public_migrations(&mut conn).expect("running public migrations");
@@ -819,7 +823,7 @@ fn relationship_graph_service() {
 /// shape that forbids N+1).
 #[test]
 fn children_progress_rollups() {
-    const PROGRESS_DB: &str = "kairos_progress_test";
+    static PROGRESS_DB: scratch::ScratchName = scratch::ScratchName::new("kairos_progress_test");
     let admin_url = admin_database_url();
     let mut admin_conn = PgConnection::establish(&admin_url).unwrap_or_else(|e| {
         panic!(
@@ -835,7 +839,8 @@ fn children_progress_rollups() {
     sql_query(format!("CREATE DATABASE {PROGRESS_DB}"))
         .execute(&mut admin_conn)
         .expect("creating scratch database");
-    let scratch_url = with_database(&admin_url, PROGRESS_DB);
+    let _scratch_guard = scratch::ScratchGuard::new(&PROGRESS_DB);
+    let scratch_url = with_database(&admin_url, &PROGRESS_DB);
     let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
 
     run_public_migrations(&mut conn).expect("running public migrations");
@@ -1022,7 +1027,7 @@ fn children_progress_rollups() {
 /// away.
 #[test]
 fn focal_subgraph_contract() {
-    const SUBGRAPH_DB: &str = "kairos_subgraph_test";
+    static SUBGRAPH_DB: scratch::ScratchName = scratch::ScratchName::new("kairos_subgraph_test");
     let admin_url = admin_database_url();
     let mut admin_conn = PgConnection::establish(&admin_url).unwrap_or_else(|e| {
         panic!(
@@ -1038,7 +1043,8 @@ fn focal_subgraph_contract() {
     sql_query(format!("CREATE DATABASE {SUBGRAPH_DB}"))
         .execute(&mut admin_conn)
         .expect("creating scratch database");
-    let scratch_url = with_database(&admin_url, SUBGRAPH_DB);
+    let _scratch_guard = scratch::ScratchGuard::new(&SUBGRAPH_DB);
+    let scratch_url = with_database(&admin_url, &SUBGRAPH_DB);
     let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
 
     run_public_migrations(&mut conn).expect("running public migrations");
@@ -1309,7 +1315,8 @@ fn focal_subgraph_contract() {
 ///   about live work — ADR-20 rule 5).
 #[test]
 fn archived_children_are_listed_marked_but_never_counted() {
-    const NEIGHBOUR_DB: &str = "kairos_archived_neighbours_test";
+    static NEIGHBOUR_DB: scratch::ScratchName =
+        scratch::ScratchName::new("kairos_archived_neighbours_test");
     let admin_url = admin_database_url();
     let mut admin_conn = PgConnection::establish(&admin_url).unwrap_or_else(|e| {
         panic!(
@@ -1325,7 +1332,8 @@ fn archived_children_are_listed_marked_but_never_counted() {
     sql_query(format!("CREATE DATABASE {NEIGHBOUR_DB}"))
         .execute(&mut admin_conn)
         .expect("creating scratch database");
-    let scratch_url = with_database(&admin_url, NEIGHBOUR_DB);
+    let _scratch_guard = scratch::ScratchGuard::new(&NEIGHBOUR_DB);
+    let scratch_url = with_database(&admin_url, &NEIGHBOUR_DB);
     let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
 
     run_public_migrations(&mut conn).expect("running public migrations");
@@ -1507,7 +1515,7 @@ fn counts_of(conn: &mut PgConnection, ids: &[Uuid], id: Uuid) -> Option<(i64, i6
 /// item leaves the column or the board unmarks it.
 #[test]
 fn done_work_does_not_block_and_is_not_blocked() {
-    const DONE_DB: &str = "kairos_done_blocks_test";
+    static DONE_DB: scratch::ScratchName = scratch::ScratchName::new("kairos_done_blocks_test");
     let admin_url = admin_database_url();
     let mut admin_conn = PgConnection::establish(&admin_url).unwrap_or_else(|e| {
         panic!(
@@ -1521,7 +1529,8 @@ fn done_work_does_not_block_and_is_not_blocked() {
     sql_query(format!("CREATE DATABASE {DONE_DB}"))
         .execute(&mut admin_conn)
         .expect("creating scratch database");
-    let scratch_url = with_database(&admin_url, DONE_DB);
+    let _scratch_guard = scratch::ScratchGuard::new(&DONE_DB);
+    let scratch_url = with_database(&admin_url, &DONE_DB);
     let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
 
     run_public_migrations(&mut conn).expect("running public migrations");
@@ -1789,7 +1798,7 @@ fn done_work_does_not_block_and_is_not_blocked() {
 /// says why; archived documents are not listed.
 #[test]
 fn team_work_documents_owned_and_supported() {
-    const TEAM_DOCS_DB: &str = "kairos_team_docs_test";
+    static TEAM_DOCS_DB: scratch::ScratchName = scratch::ScratchName::new("kairos_team_docs_test");
     let admin_url = admin_database_url();
     let mut admin_conn = PgConnection::establish(&admin_url).unwrap_or_else(|e| {
         panic!(
@@ -1805,7 +1814,8 @@ fn team_work_documents_owned_and_supported() {
     sql_query(format!("CREATE DATABASE {TEAM_DOCS_DB}"))
         .execute(&mut admin_conn)
         .expect("creating scratch database");
-    let scratch_url = with_database(&admin_url, TEAM_DOCS_DB);
+    let _scratch_guard = scratch::ScratchGuard::new(&TEAM_DOCS_DB);
+    let scratch_url = with_database(&admin_url, &TEAM_DOCS_DB);
     let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
 
     run_public_migrations(&mut conn).expect("running public migrations");

@@ -1086,6 +1086,11 @@ pub struct TaskCreateArgs {
     /// repository, of any team. It does not choose the board
     #[arg(long, value_name = "REPOSITORY")]
     pub repo: Option<String>,
+    /// The team that sends the task (slug or UUID, KAIROS-T-0426). When it
+    /// is not the team of the board, the task is a request: entry column,
+    /// support lane, also for a manager of the board
+    #[arg(long = "from-team", value_name = "TEAM")]
+    pub from_team: Option<String>,
     #[command(flatten)]
     pub common: Common,
 }
@@ -1101,6 +1106,7 @@ impl TaskCreateArgs {
             task_type: self.task_type.clone(),
             work_class: self.work_class.clone(),
             team_id: self.team.clone(),
+            from_team: self.from_team.clone(),
         }
     }
 }

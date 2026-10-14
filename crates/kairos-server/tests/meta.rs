@@ -216,6 +216,7 @@ async fn meta_endpoints_against_live_stack() {
                 task_type: None,
                 work_class: None,
                 team_id: None,
+                from_team: None,
             })
             .await
             .expect("creating task");

@@ -270,6 +270,7 @@ async fn a_task_can_be_cancelled_and_purged() {
         work_class: None,
         team_id: None,
         repository: None,
+        from_team: None,
     };
 
     // =======================================================================

@@ -272,6 +272,7 @@ async fn archived_work_is_absent_from_every_default_listing() {
                 task_type: None,
                 work_class: None,
                 team_id: None,
+                from_team: None,
             })
             .await
             .expect("creating task");

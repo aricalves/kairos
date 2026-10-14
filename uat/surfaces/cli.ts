@@ -27,6 +27,19 @@ export class CliError extends Error {
   }
 }
 
+/**
+ * The environment of a persona's `kairos`. A key or a URL in the shell
+ * (`KAIROS_KEY`, `KAIROS_MCP_KEY`, `KAIROS_URL`) wins over the credential
+ * store, so an operator's agent key would send each command to their own
+ * deployment as them. The persona has only its credential store.
+ */
+export function cliEnv(configDir?: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1' };
+  for (const name of ['KAIROS_KEY', 'KAIROS_MCP_KEY', 'KAIROS_URL', 'KAIROS_AUTO_UPDATE']) delete env[name];
+  if (configDir) env.KAIROS_CONFIG_DIR = configDir;
+  return env;
+}
+
 export class Cli {
   private readonly configDir: string;
 
@@ -64,7 +77,7 @@ export class Cli {
     const ctx = runContext();
     try {
       const { stdout, stderr } = await execFileAsync(ctx.kairosBin, args, {
-        env: { ...process.env, KAIROS_CONFIG_DIR: this.configDir, NO_COLOR: '1' },
+        env: cliEnv(this.configDir),
         maxBuffer: 16 * 1024 * 1024,
       });
       return { code: 0, stdout, stderr };
@@ -85,7 +98,7 @@ export class Cli {
    */
   async nouns(): Promise<string[]> {
     const { stdout } = await execFileAsync(runContext().kairosBin, ['--help'], {
-      env: { ...process.env, NO_COLOR: '1' },
+      env: cliEnv(),
     });
     const block = stdout.split(/^Commands:$/m)[1] ?? '';
     const names = block

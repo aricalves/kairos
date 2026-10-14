@@ -297,6 +297,7 @@ Options specific to one noun:
 | `initiatives` | `--bucket-type <KIND>` | `tech_debt` \| `bug` \| `ad_hoc` | none | Marks the initiative as a bucket of this kind. |
 | `tasks` | `--type <TASK_TYPE>` | `task` \| `bug` \| `tech_debt` \| `support` | `task` | Task type. |
 | `tasks` | `--work-class <WORK_CLASS>` | `planned` \| `support` | `support` for support-type tasks, `planned` otherwise; always `support` on a board that the caller does not manage | Planned/Support lane. On a board that the caller does not manage, `planned` is refused with 403. |
+| `tasks` | `--from-team <TEAM>` | slug or UUID | none | The team that sends the task. When it is not the team of the board, the task is a request: entry column, support lane, also for a manager of the board. With it, `planned` and a column other than the entry column are refused with 422. |
 | `tasks` | `--team <TEAM_ID>` | UUID | none | Team. Without `--board`, the task goes to the delivery board of this team. With `--board`, it must be the team of that board. |
 | `tasks` | `--repo <REPOSITORY>` | slug or UUID | none | Repository the task links to. It can be any repository, of any team. It does not choose the board. |
 
@@ -1106,6 +1107,10 @@ Documents and ADRs that impact this repository:
 
 The section shows `(none)` when no item impacts the repository.
 
+The line `default branch:` gives the branch that the code index builder
+indexes. Then it gives where the branch comes from: `set by hand`, `from the
+forge`, or `from the forge; no fetch yet`.
+
 ### `kairos repos create`
 
 ```
@@ -1119,7 +1124,7 @@ kairos repos create --forge <FORGE> --name <FULL_NAME> --repo-url <URL> --team <
 | `--repo-url <URL>` | string | required | Browser URL of the repository: `http` or `https`. |
 | `--team <TEAM>` | slug or UUID | required | Owning team. |
 | `--slug <SLUG>` | string | derived from `--name` | Slug. |
-| `--default-branch <BRANCH>` | string | `main` | Default branch: a branch name that git accepts. |
+| `--default-branch <BRANCH>` | string | the default branch of the forge | Default branch: a branch name that git accepts. With it, the branch is set by hand. Without it, the code index builder follows the default branch of the forge. |
 | `--description <DESCRIPTION>` | string | none | Short "how to work here" blurb for agents. |
 
 Permitted to an organization admin or a member of the owning team.
@@ -1139,7 +1144,8 @@ kairos repos update <REPOSITORY> [OPTIONS]
 | `<REPOSITORY>` | slug or UUID | required | The repository. |
 | `--slug <SLUG>` | string | unchanged | New slug. |
 | `--repo-url <URL>` | string | unchanged | New browser URL. |
-| `--default-branch <BRANCH>` | string | unchanged | New default branch. |
+| `--default-branch <BRANCH>` | string | unchanged | New default branch. The branch is then set by hand: the code index builder indexes it, whatever the forge says. |
+| `--follow-forge` | flag | off | Remove the branch set by hand. The code index builder follows the default branch of the forge again. You cannot use it with `--default-branch`. |
 | `--team <TEAM>` | slug or UUID | unchanged | New owning team. Re-homes the repository. |
 | `--description <DESCRIPTION>` | string | unchanged | New description. |
 | `--code-index-build <ON\|OFF>` | `on` or `off` | unchanged | With `off`, the code index builder makes no index of the repository. Another value is refused. See [The base code index](../configuration/#stop-the-builder-for-one-repository). |

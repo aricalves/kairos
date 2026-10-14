@@ -828,6 +828,8 @@ pub struct RepositoryEdit<'a> {
     pub slug: Option<&'a str>,
     pub repo_url: Option<&'a str>,
     pub default_branch: Option<&'a str>,
+    /// `forge` clears the branch set by hand (KAIROS-T-0430).
+    pub default_branch_source: Option<&'a str>,
     pub team: Option<&'a str>,
     pub description: Option<&'a str>,
     /// `on` or `off` (KAIROS-T-0318).
@@ -851,6 +853,7 @@ pub async fn update_repository(
         ("slug", edit.slug),
         ("repo_url", edit.repo_url),
         ("default_branch", edit.default_branch),
+        ("default_branch_source", edit.default_branch_source),
         ("team", edit.team),
         ("description", edit.description),
         ("code_index_build", edit.code_index_build),

@@ -196,6 +196,34 @@ pub struct DeleteDispatchRuleParams {
     pub rule_id: String,
 }
 
+/// `list_org_read_tokens` (KAIROS-T-0431).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct ListOrgReadTokensParams {}
+
+/// `set_org_read_token` (KAIROS-T-0431).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct SetOrgReadTokenParams {
+    /// The forge host, for example "github.com" (a port only when it is not
+    /// 443).
+    pub host: String,
+    /// The read token. Kairos encrypts it; no tool gives it back.
+    #[schemars(with = "String")]
+    pub token: kairos_client::types_auth::Secret,
+}
+
+/// `remove_org_read_token` (KAIROS-T-0431).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct RemoveOrgReadTokenParams {
+    /// The forge host, for example "github.com".
+    pub host: String,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
@@ -423,6 +451,12 @@ pub struct CreateItemParams {
     /// else planned. On every other board the task is a request: the work
     /// class is support, and planned is refused (COLLIERY-A-0023).
     pub work_class: Option<String>,
+    /// Tasks only: the team that sends the task, by slug or UUID
+    /// (KAIROS-T-0426). When it is not the team of the board, the task is a
+    /// request whoever sends it, also a manager or an org admin: entry
+    /// column, support lane, and planned is refused. An agent in a board
+    /// session sends its own team.
+    pub from_team: Option<String>,
     /// Strategies only: the strategy's hypothesis.
     pub hypothesis: Option<String>,
     /// Initiatives only: t-shirt complexity xs | s | m | l | xl.
@@ -594,8 +628,10 @@ pub struct AddRepositoryParams {
     /// URL (e.g. "https://github.com/acme/payments-api"). It has no user
     /// name and no password, because each member can read it.
     pub repo_url: String,
-    /// The default branch: a branch name that git accepts. Omit it and
-    /// the default branch is "main".
+    /// The default branch: a branch name that git accepts. With it, the
+    /// branch is set by hand, and the code index builder indexes it. Omit
+    /// it, and the builder follows the default branch of the forge, read at
+    /// each fetch ("main" until the first fetch).
     pub default_branch: Option<String>,
     /// The ONE owner team (slug or UUID).
     pub team: String,
@@ -616,8 +652,13 @@ pub struct UpdateRepositoryParams {
     /// The new text on how to work in the repository. It replaces the
     /// full text. An empty string removes the text.
     pub description: Option<String>,
-    /// The new default branch: a branch name that git accepts.
+    /// The new default branch: a branch name that git accepts. It is set
+    /// by hand: the code index builder indexes it, whatever the forge says.
     pub default_branch: Option<String>,
+    /// "forge" clears the branch set by hand: the code index builder
+    /// follows the default branch of the forge again. "hand" keeps the
+    /// current branch by hand. Do not send "forge" with `default_branch`.
+    pub default_branch_source: Option<String>,
     /// The new URL of the repository for a browser: an absolute http or
     /// https URL, with no user name and no password.
     pub repo_url: Option<String>,
@@ -772,7 +813,7 @@ pub struct CreateTeamParams {
     pub name: String,
     /// The slug of the team (e.g. "home-ops"): it must match
     /// ^[a-z][a-z0-9_-]{1,62}$. The delivery board gets the slug
-    /// "{slug}-delivery", and the ADR board "{slug}-adrs".
+    /// "{slug}-delivery", and the ADR board (with `adr_board`) "{slug}-adrs".
     pub slug: String,
     /// The short-code prefix of the boards of the team (e.g. "OPS"): a
     /// capital letter, then 1 to 9 capital letters or digits. It does not
@@ -781,7 +822,9 @@ pub struct CreateTeamParams {
     /// stream_aligned | platform | enabling | complicated_subsystem. The
     /// default is stream_aligned.
     pub team_type: Option<String>,
-    /// Also make the ADR board of the team. The default is true.
+    /// Also make the ADR board of the team. The default is false: the
+    /// team gets its delivery board only, as with REST and the CLI
+    /// (KAIROS-T-0448).
     pub adr_board: Option<bool>,
 }
 
@@ -1306,12 +1349,14 @@ impl KairosMcp {
                 graph::repository_link_rollup(conn, repo_id, &["open", "draft"], 50)
                     .map_err(ApiError::internal)?;
             let mut out = format!(
-                "# Repository {} — {} {}\n- url: {}\n- default branch: {}\n- owner team: {} ({})\n- owner's delivery board: {}\n- open tasks (all boards): {}\n- webhooks: {}\n- read token: {}\n- write-back: {}\n- code index build: {}\n- code index breaker: {}\n- code index summaries: {}\n",
+                "# Repository {} — {} {}\n- url: {}\n- default branch: {} ({})\n- owner team: {} ({})\n- owner's delivery board: {}\n- open tasks (all boards): {}\n- webhooks: {}\n- read token: {}\n- write-back: {}\n- code index build: {}\n- code index breaker: {}\n- code index summaries: {}\n",
                 rendered.slug,
                 rendered.forge,
                 rendered.repo_full_name,
                 rendered.repo_url,
                 rendered.default_branch,
+                // KAIROS-T-0430: where the indexed branch comes from.
+                rendered.default_branch_summary(),
                 rendered.team.slug,
                 rendered.team.name,
                 delivery_board,
@@ -1901,6 +1946,84 @@ impl KairosMcp {
         .await
     }
 
+    // KAIROS-T-0431: the read token of the organization for each forge host.
+    #[tool(
+        description = "The read tokens of the organization for the code index builder: for each forge host (for example github.com), who set the token and when. Never the token. The builder uses the token of the host of a repository before the token of the repository. Only an organization admin."
+    )]
+    pub async fn list_org_read_tokens(
+        &self,
+        Parameters(ListOrgReadTokensParams {}): Parameters<ListOrgReadTokensParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (_, tenant) = Self::caller(&context)?;
+        if let Err(e) = crate::api::meta::require_org_admin(&tenant) {
+            return Ok(tool_error(e));
+        }
+        self.run_tool(&tenant, |conn| {
+            Ok(org_read_tokens_text(
+                &crate::api::org::org_read_tokens::list(conn)?,
+            ))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Set or replace the read token of the organization for a forge host. The code index builder then fetches each repository on that host with this token, before the token of the repository. `host` is the host only (github.com, or git.example.org:8443); `token` is a read-only token. Kairos encrypts it with KAIROS_SECRETS_KEY, and no tool gives it back. Only an organization admin."
+    )]
+    pub async fn set_org_read_token(
+        &self,
+        Parameters(params): Parameters<SetOrgReadTokenParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        if let Err(e) = crate::api::meta::require_org_admin(&tenant) {
+            return Ok(tool_error(e));
+        }
+        let (user, slug) = (auth.user_id, tenant.slug.clone());
+        let key = crate::api::org::repository_credentials::secrets_key(&self.state);
+        self.run_tool(&tenant, move |conn| {
+            let status = crate::api::org::org_read_tokens::set(
+                conn,
+                &slug,
+                user,
+                key,
+                &params.host,
+                &params.token,
+            )?;
+            Ok(format!(
+                "Set the read token of the organization for {}. The builder uses it for each \
+                 repository on this host.",
+                status.host
+            ))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Remove the read token of the organization for a forge host. The next fetch of a repository on the host uses the token of the repository, or no token. `host` is the host only (github.com). Only an organization admin."
+    )]
+    pub async fn remove_org_read_token(
+        &self,
+        Parameters(params): Parameters<RemoveOrgReadTokenParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        if let Err(e) = crate::api::meta::require_org_admin(&tenant) {
+            return Ok(tool_error(e));
+        }
+        let user = auth.user_id;
+        self.run_tool(&tenant, move |conn| {
+            let left = crate::api::org::org_read_tokens::remove(conn, user, &params.host)?;
+            Ok(format!(
+                "Removed the read token of the organization for {}.\n{}",
+                kairos_core::repositories::normalize_host(&params.host)
+                    .unwrap_or_else(|_| params.host.clone()),
+                org_read_tokens_text(&left)
+            ))
+        })
+        .await
+    }
+
     // KAIROS-T-0368: the metadata definitions and the templates, so that an
     // agent knows the scales (the values of `priority`, in order) and the
     // slugs that `set_metadata` and `search` take.
@@ -2410,7 +2533,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Create a work item: strategy | initiative | task | document | adr. Boards resolve by slug/UUID (defaulted when unambiguous); `parent` (short code) creates the parent edge; for a document or an ADR it creates the supports edge, from a strategy, initiative or task. A refused create writes nothing. You create the item, so you can link it to the parent. Tasks: `board` chooses the board, and the task gets the team of that board. `repository` (slug/UUID) is an optional link to any live repository; it does not choose the board. Any member can send a request to any team: name the delivery board of that team in `board`. The request goes to the entry column, in the support lane. On a board that you do not manage, `work_class: planned` is refused. Initiatives: `bucket_type` makes it a bucket rather than a dated initiative. There is deliberately no `column` argument — every item is created in its board's entry column, and `transition_item` is the only way work moves, so placing an item directly would bypass the board's transition graph. Documents: `board` is required. It is the owner board of the document: you need `manage_documents` on it, it gives the right to edit the document, and the code of the document gets the prefix of that board. A call with no `board` is refused, and the refusal names `board`; there is no default board, and `parent` does not give one. The document is not a card of the board. A document that is about a repository as a whole (its vision, its architecture) names the board of the team and impacts the repository: create it with `board`, then call `link_items` with the relationship `impacts`. ADRs: `board` is the ADR board. A team can have an ADR board for its delivery ADRs, with the prefix of the team: `my_boards` names the team of each ADR board. Returns the new short code."
+        description = "Create a work item: strategy | initiative | task | document | adr. Boards resolve by slug/UUID (defaulted when unambiguous); `parent` (short code) creates the parent edge; for a document or an ADR it creates the supports edge, from a strategy, initiative or task. A refused create writes nothing. You create the item, so you can link it to the parent. Tasks: `board` chooses the board, and the task gets the team of that board. `repository` (slug/UUID) is an optional link to any live repository; it does not choose the board. Any member can send a request to any team: name the delivery board of that team in `board`. The request goes to the entry column, in the support lane. On a board that you do not manage, `work_class: planned` is refused. `from_team` (slug or UUID) names the team that sends a task: when it is not the team of the board, the task is a request whoever sends it (a manager or an org admin too), so an agent in a board session sends its own team. Initiatives: `bucket_type` makes it a bucket rather than a dated initiative. There is deliberately no `column` argument — every item is created in its board's entry column, and `transition_item` is the only way work moves, so placing an item directly would bypass the board's transition graph. Documents: `board` is required. It is the owner board of the document: you need `manage_documents` on it, it gives the right to edit the document, and the code of the document gets the prefix of that board. A call with no `board` is refused, and the refusal names `board`; there is no default board, and `parent` does not give one. The document is not a card of the board. A document that is about a repository as a whole (its vision, its architecture) names the board of the team and impacts the repository: create it with `board`, then call `link_items` with the relationship `impacts`. ADRs: `board` is the ADR board. A team can have an ADR board for its delivery ADRs, with the prefix of the team: `my_boards` names the team of each ADR board. Returns the new short code."
     )]
     pub async fn create_item(
         &self,
@@ -2885,7 +3008,7 @@ impl KairosMcp {
     // `POST /api/repositories`: the two call one function
     // (`crate::api::org::repositories::add`).
     #[tool(
-        description = "Add a repository to the directory of the organization. This tool does not link a task to a repository: `set_repository` does that. A repository can be in the directory only one time, so call `list_repositories` first. `forge` is github, gitlab or other. `repo_full_name` is the name on the forge, as the forge sends it in a webhook: 2 parts for github (owner/repo), 2 or more for gitlab (group/subgroup/project), 1 or more for other. It does not end with .git. `repo_url` is the URL for a browser: an absolute http or https URL, with no user name and no password in it. No value can be empty or have a space. `team` (slug or UUID) is the ONE owner team. Optional: `slug` (the default is made from the full name: acme/payments-api gives acme-payments-api), `default_branch` (a branch name that git accepts; the default is main), and `description`. The description tells an agent how to work in the repository: the task runner, the tests, the rules for a branch. You must be a member of the owner team, or an organization admin. `update_repository` changes its slug and its owner team; `delete_repository` removes it."
+        description = "Add a repository to the directory of the organization. This tool does not link a task to a repository: `set_repository` does that. A repository can be in the directory only one time, so call `list_repositories` first. `forge` is github, gitlab or other. `repo_full_name` is the name on the forge, as the forge sends it in a webhook: 2 parts for github (owner/repo), 2 or more for gitlab (group/subgroup/project), 1 or more for other. It does not end with .git. `repo_url` is the URL for a browser: an absolute http or https URL, with no user name and no password in it. No value can be empty or have a space. `team` (slug or UUID) is the ONE owner team. Optional: `slug` (the default is made from the full name: acme/payments-api gives acme-payments-api), `default_branch` (a branch name that git accepts; with it, the branch is set by hand; with no value, the code index builder follows the default branch of the forge), and `description`. The description tells an agent how to work in the repository: the task runner, the tests, the rules for a branch. You must be a member of the owner team, or an organization admin. `update_repository` changes its slug and its owner team; `delete_repository` removes it."
     )]
     pub async fn add_repository(
         &self,
@@ -2935,7 +3058,7 @@ impl KairosMcp {
     // COLLIERY-T-0267 the tool made the comparison, and the REST route
     // always wrote.
     #[tool(
-        description = "Change a repository of the directory: its `description` (how to work in the repository), its `default_branch`, its `repo_url`, its `code_index_build`, its `slug` and its owner `team` (slug or UUID; you need the right on the old team and on the new team). Send one or more of them. `default_branch` is a branch name that git accepts. `repo_url` is an absolute http or https URL, with no user name and no password in it. The two cannot be empty or have a space. `code_index_build` is `on` or `off`: the code index builder of the server for the repository. Set it to `off` to stop the builds of the repository: Kairos cancels the build jobs that wait, and the builder adds no new job. Kairos does not stop a build that runs now, but the build gets no further try. `get_repository` shows the value, and the REST API sets it too (PATCH /api/repositories/{slug} with `code_index_build`). A value that the repository has already changes nothing. `repository` is a slug or UUID. `description` replaces the full text, so read the text with `get_repository` first. This tool does not link a task to a repository: `set_repository` does that. You must be a member of the owner team, or an organization admin. A new slug breaks the reference in `.claude/kairos.local.md` of each checkout: run /kairos:bootstrap there again. `delete_repository` removes a repository."
+        description = "Change a repository of the directory: its `description` (how to work in the repository), its `default_branch`, its `default_branch_source`, its `repo_url`, its `code_index_build`, its `slug` and its owner `team` (slug or UUID; you need the right on the old team and on the new team). Send one or more of them. `default_branch` is a branch name that git accepts. A `default_branch` is set by hand: the code index builder indexes it, whatever the default branch of the forge is. `default_branch_source` `forge` clears the branch set by hand: the builder follows the default branch of the forge again. Do not send the two together with `forge`. `get_repository` shows the branch and where it comes from. `repo_url` is an absolute http or https URL, with no user name and no password in it. The two cannot be empty or have a space. `code_index_build` is `on` or `off`: the code index builder of the server for the repository. Set it to `off` to stop the builds of the repository: Kairos cancels the build jobs that wait, and the builder adds no new job. Kairos does not stop a build that runs now, but the build gets no further try. `get_repository` shows the value, and the REST API sets it too (PATCH /api/repositories/{slug} with `code_index_build`). A value that the repository has already changes nothing. `repository` is a slug or UUID. `description` replaces the full text, so read the text with `get_repository` first. This tool does not link a task to a repository: `set_repository` does that. You must be a member of the owner team, or an organization admin. A new slug breaks the reference in `.claude/kairos.local.md` of each checkout: run /kairos:bootstrap there again. `delete_repository` removes a repository."
     )]
     pub async fn update_repository(
         &self,
@@ -2950,6 +3073,7 @@ impl KairosMcp {
             // the same for each caller and each repository.
             if params.description.is_none()
                 && params.default_branch.is_none()
+                && params.default_branch_source.is_none()
                 && params.repo_url.is_none()
                 && params.code_index_build.is_none()
                 && params.slug.is_none()
@@ -2957,9 +3081,26 @@ impl KairosMcp {
             {
                 return Err(ApiError::validation(
                     "The call has nothing to change. Send one or more of these arguments: \
-                     description, default_branch, repo_url, code_index_build, slug, team.",
+                     description, default_branch, default_branch_source, repo_url, \
+                     code_index_build, slug, team.",
                 ));
             }
+            // KAIROS-T-0430: refuse an unknown value, and name it.
+            let default_branch_source = params
+                .default_branch_source
+                .as_deref()
+                .map(|value| {
+                    kairos_client::types_repositories::DefaultBranchSource::parse(value).ok_or_else(
+                        || {
+                            ApiError::validation(format!(
+                                "The argument default_branch_source has the value {value:?}. \
+                                 Send \"forge\" or \"hand\"."
+                            ))
+                            .with_details(json!({ "argument": "default_branch_source" }))
+                        },
+                    )
+                })
+                .transpose()?;
             // KAIROS-T-0398: refuse an unknown value, and name it.
             let code_index_build = params
                 .code_index_build
@@ -2986,6 +3127,7 @@ impl KairosMcp {
                 kairos_client::types_repositories::UpdateRepositoryRequest {
                     description: params.description,
                     default_branch: params.default_branch,
+                    default_branch_source,
                     repo_url: params.repo_url,
                     code_index_build,
                     slug: params.slug,
@@ -3004,6 +3146,7 @@ impl KairosMcp {
             let changed: Vec<&str> = [
                 "description",
                 "default_branch",
+                "default_branch_source",
                 "repo_url",
                 "code_index_build",
                 "slug",
@@ -3673,7 +3816,7 @@ impl KairosMcp {
     // REST route, so the gate and the refusals are those of REST: an
     // organization admin, or a grant of `manage_structure` at the scope.
     #[tool(
-        description = "Create a team with its delivery board (slug {slug}-delivery) and its ADR board (slug {slug}-adrs), as POST /api/teams does, in one transaction. `code_prefix` is the short-code prefix of the two boards (e.g. OPS gives OPS-T-0001 and OPS-A-0001): a capital letter, then 1 to 9 capital letters or digits; it does not change later. Optional: `team_type` (stream_aligned, platform, enabling, complicated_subsystem; the default is stream_aligned), `adr_board` (false makes no ADR board). The new boards have no members: use `add_team_member` (a team member can work the boards of the team) and `grant_capability`. Requires the organization admin role or `manage_structure` on the organization. A grant of manage_structure on one board does not create a team."
+        description = "Create a team with its delivery board (slug {slug}-delivery), as POST /api/teams does. `code_prefix` is the short-code prefix of the boards of the team (e.g. OPS gives OPS-T-0001 and OPS-A-0001): a capital letter, then 1 to 9 capital letters or digits; it does not change later. Optional: `team_type` (stream_aligned, platform, enabling, complicated_subsystem; the default is stream_aligned), `adr_board` (true also makes the ADR board of the team, slug {slug}-adrs, in the same transaction; the default is false). The new boards have no members: use `add_team_member` (a team member can work the boards of the team) and `grant_capability`. Requires the organization admin role or `manage_structure` on the organization. A grant of manage_structure on one board does not create a team."
     )]
     pub async fn create_team(
         &self,
@@ -3700,7 +3843,7 @@ impl KairosMcp {
                     "Created team {} ({}, {}). Delivery board: {}-delivery (prefix {}).",
                     team.slug, team.name, team.team_type, team.slug, params.code_prefix
                 );
-                if params.adr_board.unwrap_or(true) {
+                if params.adr_board.unwrap_or(false) {
                     let adr = crate::api::org::boards::create(
                         conn,
                         &slug,
@@ -5121,6 +5264,25 @@ fn rule_filter_text(rule: &kairos_client::types_dispatch::DispatchRule) -> Strin
     }
 }
 
+/// The text of `list_org_read_tokens` (KAIROS-T-0431). Pure. It has no
+/// token: the status has none.
+fn org_read_tokens_text(tokens: &[kairos_client::types_code_index::OrgReadToken]) -> String {
+    if tokens.is_empty() {
+        return "Read tokens of the organization: none. The builder uses the token of each \
+                repository, or no token."
+            .to_string();
+    }
+    let mut out = String::from("Read tokens of the organization, by host:\n");
+    for token in tokens {
+        let by = token.set_by_name.as_deref().unwrap_or(&token.set_by);
+        out.push_str(&format!(
+            "- {}: set by {by} at {}\n",
+            token.host, token.set_at
+        ));
+    }
+    out
+}
+
 /// The text of `list_dispatch_rules` (KAIROS-T-0385). Pure.
 fn dispatch_text(
     board: &str,
@@ -6074,12 +6236,20 @@ fn create_item_impl(
             &route,
             None,
             requested_work_class,
+            params.from_team.as_deref(),
         )?;
         // The SAME function as POST /api/tasks chooses the stored work
         // class, so the two cannot disagree about what a request is.
         let work_class = access.work_class(requested_work_class, task_type);
         (board, Some(route), Some((task_type, work_class)))
     } else {
+        // KAIROS-T-0426: `from_team` says who sends a task.
+        if params.from_team.is_some() {
+            return Err(ApiError::validation(format!(
+                "The argument from_team is for a task. A {item_type} has no sending team."
+            ))
+            .with_details(json!({ "argument": "from_team" })));
+        }
         let board = match params.board.as_deref() {
             Some(reference) => board_by_ref(conn, reference)?,
             None => default_board_for(conn, level_of(item_type))?,

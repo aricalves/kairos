@@ -160,6 +160,7 @@ async fn run_op(
                 task_type: Some("task".to_string()),
                 work_class: None,
                 team_id: None,
+                from_team: None,
             };
             if let Some(task) = record_call(
                 recorder,

@@ -192,9 +192,14 @@ pub fn fetch(path: &Path, remote: &str, token: Option<&GitToken>) -> Result<(), 
     Ok(())
 }
 
-/// Whether git can read `remote` with `token`: `git ls-remote --heads`, in
-/// a temporary folder. The access check of a token (COLLIERY-T-3105).
-pub fn ls_remote(remote: &str, token: Option<&GitToken>) -> Result<(), GitError> {
+/// Run `git ls-remote <flags> <remote> <patterns>` in a temporary folder,
+/// with `token` when it is given.
+fn ls_remote_with(
+    remote: &str,
+    flags: &[&str],
+    patterns: &[&str],
+    token: Option<&GitToken>,
+) -> Result<Output, GitError> {
     let dir = tempfile::Builder::new()
         .prefix("kairos-ls-remote-")
         .tempdir()
@@ -202,20 +207,46 @@ pub fn ls_remote(remote: &str, token: Option<&GitToken>) -> Result<(), GitError>
             path: std::env::temp_dir(),
             source,
         })?;
-    checked_with(
-        dir.path(),
-        &[
-            "-c",
-            "http.lowSpeedLimit=1000",
-            "-c",
-            "http.lowSpeedTime=60",
-            "ls-remote",
-            "--heads",
-            remote,
-        ],
-        token,
-    )?;
+    let mut args = vec![
+        "-c",
+        "http.lowSpeedLimit=1000",
+        "-c",
+        "http.lowSpeedTime=60",
+        "ls-remote",
+    ];
+    args.extend_from_slice(flags);
+    args.push(remote);
+    args.extend_from_slice(patterns);
+    checked_with(dir.path(), &args, token)
+}
+
+/// Whether git can read `remote` with `token`: `git ls-remote --heads`, in
+/// a temporary folder. The access check of a token (COLLIERY-T-3105).
+pub fn ls_remote(remote: &str, token: Option<&GitToken>) -> Result<(), GitError> {
+    ls_remote_with(remote, &["--heads"], &[], token)?;
     Ok(())
+}
+
+/// The default branch of `remote` (KAIROS-T-0430): the branch that its
+/// `HEAD` names, from `git ls-remote --symref <remote> HEAD`, with `token`
+/// when it is given. `None` when the remote gives no `HEAD` that names a
+/// branch (for example, a `HEAD` that names a branch that does not exist).
+pub fn remote_head(remote: &str, token: Option<&GitToken>) -> Result<Option<String>, GitError> {
+    let output = ls_remote_with(remote, &["--symref"], &["HEAD"], token)?;
+    Ok(head_branch(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// The branch in the output of `git ls-remote --symref <remote> HEAD`: the
+/// line `ref: refs/heads/<branch>\tHEAD`.
+fn head_branch(listing: &str) -> Option<String> {
+    listing.lines().find_map(|line| {
+        let (target, name) = line.strip_prefix("ref: ")?.split_once('\t')?;
+        (name.trim() == "HEAD")
+            .then(|| target.strip_prefix("refs/heads/"))
+            .flatten()
+            .filter(|branch| !branch.is_empty())
+            .map(str::to_string)
+    })
 }
 
 /// Whether the clone has the commit `commit`.
@@ -273,6 +304,62 @@ pub fn checkout_tree(path: &Path, commit: &str, to: &Path) -> Result<(), GitErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_head_branch_is_read_from_the_symref_line() {
+        let listing = "ref: refs/heads/development\tHEAD\n\
+                       0123456789abcdef0123456789abcdef01234567\tHEAD\n";
+        assert_eq!(head_branch(listing).as_deref(), Some("development"));
+        assert_eq!(
+            head_branch("ref: refs/heads/release/2.x\tHEAD\n").as_deref(),
+            Some("release/2.x")
+        );
+        // No symref line: the remote gives no default branch.
+        assert_eq!(
+            head_branch("0123456789abcdef0123456789abcdef01234567\tHEAD\n"),
+            None
+        );
+        assert_eq!(head_branch(""), None);
+        // A HEAD that names no branch.
+        assert_eq!(head_branch("ref: refs/tags/v1\tHEAD\n"), None);
+    }
+
+    #[test]
+    fn the_head_branch_of_a_bare_repository_follows_its_head() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("work");
+        let bare = dir.path().join("bare.git");
+        std::fs::create_dir_all(&work).unwrap();
+        let git = |dir: &Path, args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@kairos.test")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@kairos.test")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "git {args:?}: {output:?}");
+        };
+        git(&work, &["init", "-q", "-b", "main"]);
+        std::fs::write(work.join("a.txt"), "a").unwrap();
+        git(&work, &["add", "-A"]);
+        git(&work, &["commit", "-q", "-m", "A"]);
+        git(&work, &["branch", "development"]);
+        git(dir.path(), &["clone", "-q", "--bare", "work", "bare.git"]);
+        let remote = bare.display().to_string();
+        assert_eq!(remote_head(&remote, None).unwrap().as_deref(), Some("main"));
+        git(&bare, &["symbolic-ref", "HEAD", "refs/heads/development"]);
+        assert_eq!(
+            remote_head(&remote, None).unwrap().as_deref(),
+            Some("development")
+        );
+        // A HEAD that names a branch that does not exist gives no branch.
+        git(&bare, &["symbolic-ref", "HEAD", "refs/heads/gone"]);
+        assert_eq!(remote_head(&remote, None).unwrap(), None);
+    }
 
     #[test]
     fn scrub_removes_each_occurrence_of_the_token() {

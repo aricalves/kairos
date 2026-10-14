@@ -424,6 +424,11 @@ pub struct CreateTaskRequest {
     /// route does not know (COLLIERY-T-0259).
     #[serde(default)]
     pub repository: Option<String>,
+    /// The team that sends the task, by slug or UUID (KAIROS-T-0426). When
+    /// it is not the team of the board, the task is a request whoever
+    /// sends it: entry column, support lane. Omit it for today's rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_team: Option<String>,
 }
 
 /// Body of `POST /api/tasks/{short_code}/work-class` (KAIROS-T-0077): move

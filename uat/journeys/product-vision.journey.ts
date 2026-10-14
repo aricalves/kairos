@@ -31,6 +31,13 @@ const OTHER_REPO = process.env.UAT_WEB_REPO ?? 'portal-web';
 const OWNER_BOARD = process.env.UAT_PLATFORM_BOARD ?? 'platform-delivery';
 const OTHER_BOARD = process.env.UAT_WEB_BOARD ?? 'web-delivery';
 
+/**
+ * The reply of a tool without the notification footer that MCP adds when
+ * the caller has unread events. Other journeys of the run (a blocker
+ * cleared on bob's board) decide whether that footer is there.
+ */
+const firstLine = (text: string) => text.split('\n')[0];
+
 journey(
   'product-vision',
   'A team writes the vision of its product',
@@ -127,7 +134,7 @@ journey(
         target: OTHER_REPO,
         relationship: 'impacts',
       });
-      expect(linked).toBe(`Linked ${vision} -[impacts]-> repository ${OTHER_REPO}.`);
+      expect(firstLine(linked)).toBe(`Linked ${vision} -[impacts]-> repository ${OTHER_REPO}.`);
       const again = await mcp.refused('link_items', {
         source: vision,
         target: OTHER_REPO,
@@ -230,9 +237,9 @@ journey(
     await step(alice, 'gives the vision back to the team that owns the product', async () => {
       const mcp = await alice.mcp();
       const moved = await mcp.call('move_item', { short_code: vision, to_board: OWNER_BOARD });
-      expect(moved).toBe(`Moved ${vision}: owner board ${OTHER_BOARD} -> ${OWNER_BOARD}.`);
+      expect(firstLine(moved)).toBe(`Moved ${vision}: owner board ${OTHER_BOARD} -> ${OWNER_BOARD}.`);
       const again = await mcp.call('move_item', { short_code: vision, to_board: OWNER_BOARD });
-      expect(again).toBe(`No change to ${vision}: its owner board is ${OWNER_BOARD} already.`);
+      expect(firstLine(again)).toBe(`No change to ${vision}: its owner board is ${OWNER_BOARD} already.`);
       return { document: vision, owner_board: OWNER_BOARD };
     });
   },

@@ -54,6 +54,14 @@ pub struct Repository {
     pub site_enabled: bool,
     /// The live publish of the site (`site_publishes`), or `None`.
     pub site_publish_id: Option<uuid::Uuid>,
+    /// Where `default_branch` comes from (KAIROS-T-0430): `forge` (the
+    /// builder reads the default branch of the remote on each fetch and
+    /// writes it to `default_branch`) or `hand` (a person set it, and it
+    /// wins). See [`DEFAULT_BRANCH_SOURCE_VALUES`].
+    pub default_branch_source: String,
+    /// The default branch that the remote gave at the last fetch, or `None`
+    /// (KAIROS-T-0430).
+    pub forge_branch: Option<String>,
 }
 
 /// The values of [`Repository::code_index_build`]. The column has a CHECK
@@ -64,7 +72,17 @@ pub const CODE_INDEX_BUILD_VALUES: [&str; 2] = ["on", "off"];
 /// CHECK with the same values.
 pub const CODE_INDEX_SUMMARIES_VALUES: [&str; 3] = ["embedded", "hosted", "organization"];
 
+/// The values of [`Repository::default_branch_source`]. The column has a
+/// CHECK with the same values.
+pub const DEFAULT_BRANCH_SOURCE_VALUES: [&str; 2] = ["forge", "hand"];
+
 impl Repository {
+    /// Whether the builder follows the default branch of the forge
+    /// (KAIROS-T-0430): no person set the branch by hand.
+    pub fn follows_forge(&self) -> bool {
+        self.default_branch_source == "forge"
+    }
+
     /// Whether the code index builder works on this repository
     /// (KAIROS-T-0318).
     pub fn code_index_build_on(&self) -> bool {
@@ -114,6 +132,8 @@ pub struct RepositoryChangeset {
     pub code_index_summaries: Option<String>,
     /// The site switch (KAIROS-T-0406).
     pub site_enabled: Option<bool>,
+    /// `forge` or `hand` (KAIROS-T-0430).
+    pub default_branch_source: Option<String>,
     pub updated_by: Option<Uuid>,
     pub updated_at: Option<DateTime<Utc>>,
 }
