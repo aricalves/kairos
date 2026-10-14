@@ -553,13 +553,12 @@ pub(crate) async fn set_work_class(
     ApiJson(body): ApiJson<dto::SetWorkClassRequest>,
 ) -> Result<Json<dto::Task>, ApiError> {
     let work_class = parse_enum(&body.work_class, "work_class", WorkClass::ALL)?;
-    let user = auth.user_id;
     let slug = tenant.slug.clone();
     let updated = state
         .blocking
         .run(&tenant.slug, move |conn| {
             let task = load(conn, &short_code, Liveness::LiveOnly)?;
-            let updated = change_task_lane(conn, &slug, task.id, task.board_id, work_class, user)?;
+            let updated = change_task_lane(conn, &slug, &auth, task.id, task.board_id, work_class)?;
             embed(conn, updated.into_dto())
         })
         .await?;
@@ -572,15 +571,20 @@ pub(crate) async fn set_work_class(
 pub(crate) fn change_task_lane(
     conn: &mut PgConnection,
     slug: &str,
+    auth: &AuthContext,
     task_id: Uuid,
     board_id: Uuid,
     work_class: WorkClass,
-    user: Uuid,
 ) -> Result<Task, ApiError> {
+    let user = auth.user_id;
     // NOT an edit (COLLIERY-T-0228): creation grants no right here.
     // The creator of an item needs this capability as all others do,
     // because a team controls its own plan (COLLIERY-T-0218).
     require_capability(conn, slug, Some(board_id), user, "transition_items")?;
+    // KAIROS-T-0428: an agent's move of intake into the planned lane.
+    if let Some(triage) = crate::agent_triage::lane_move(work_class) {
+        crate::agent_triage::check(conn, auth, task_id, triage)?;
+    }
     crate::claims::note(conn, task_id, user)?;
     items::set_task_work_class(conn, task_id, work_class, user).map_err(map_item_error)
 }
@@ -754,6 +758,13 @@ pub(crate) async fn transition_task(
             // The creator of an item needs this capability as all others do,
             // because a team controls its own plan (COLLIERY-T-0218).
             require_capability(conn, &slug, Some(task.board_id), user, "transition_items")?;
+            // KAIROS-T-0428: an agent's triage of intake.
+            crate::agent_triage::check(
+                conn,
+                &auth,
+                task.id,
+                crate::agent_triage::TriageMove::Column(to_column_id),
+            )?;
             crate::claims::note(conn, task.id, user)?;
             boards::transition_task(conn, task.id, to_column_id, user).map_err(map_board_error)?;
             // KAIROS-T-0371: a move into a column over its WIP limit.

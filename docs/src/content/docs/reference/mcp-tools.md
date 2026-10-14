@@ -3,8 +3,8 @@ title: "MCP tools"
 ---
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-sixty-one tools. A drift gate in the test suite
-asserts that `tools/list` returns these sixty-one and no others. The same
+sixty-two tools. A drift gate in the test suite
+asserts that `tools/list` returns these sixty-two and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -1941,6 +1941,29 @@ The rule can name a column: the task must be in it. With no column, a task
 in each column that is not done matches. A task with two blockers fires once,
 when the second closes. A blocker that opens again blocks the task again, so
 its next close fires again.
+
+### `set_agent_triage`
+
+Sets who decides the triage of intake on a board (KAIROS-T-0428). Intake is a
+task in the support lane. Triage moves it into the planned lane, or into
+another column.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `board` | string | yes | — | Slug or UUID. |
+| `agents_decide` | boolean | yes | — | `true`: an agent decides. `false`: an agent proposes, and a person decides. |
+
+An agent is a caller with an agent key, or a service account. With the
+setting off (the default), Kairos refuses an agent's triage move with
+`AGENT_TRIAGE_OFF`. The agent then writes its proposal with `append_note`:
+planned backlog or work now, and why. A person moves the task.
+
+With the setting on, the agent's move works, and the activity log gets a line
+`agent_triage:` for it. A person's triage works in each case.
+`list_dispatch_rules` shows the setting.
+
+Requires `configure_boards` on the board. REST:
+`GET` and `PUT /api/boards/{id}/agent-triage`.
 
 ### `list_dispatch_rules`
 

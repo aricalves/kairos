@@ -91,6 +91,15 @@ An Architecture Decision Record, as returned by `/api/adrs`. Board placement is 
 | `updated_by` | `string` | yes | Last editor user id (UUID). |
 | `version` | `integer` | yes | Optimistic-concurrency version (KAIROS-A-0004). |
 
+## AgentTriage
+
+Who decides the triage of intake on a board (KAIROS-T-0428). Intake is a task in the support lane. Off (the default): an agent proposes with a note, and a person decides. On: an agent moves intake itself, and the activity log names the agent.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `agents_decide` | `boolean` | yes |  |
+| `board_id` | `string` | yes |  |
+
 ## ApiKeyCreatedResponse
 
 `POST /api/service-accounts/{id}/keys` response — the ONLY place the secret appears.
@@ -2069,6 +2078,16 @@ One session, for the audit listing. Never the token or its hash.
 | `id` | `string` | yes |  |
 | `last_used_at` | `string`, nullable | no | `null` until the session is first used. |
 | `revoked_at` | `string`, nullable | no | `null` while the session is live. |
+
+## SetAgentTriageRequest
+
+`PUT /api/boards/{id}/agent-triage` body.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `agents_decide` | `boolean` | yes |  |
+
+The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
 
 ## SetCodeSequenceRequest
 

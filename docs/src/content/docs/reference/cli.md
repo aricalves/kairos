@@ -724,6 +724,7 @@ kairos boards dispatch enable-target <BOARD> <TARGET> [OPTIONS]
 kairos boards dispatch test-target <BOARD> <TARGET> [OPTIONS]
 kairos boards dispatch add-rule <BOARD> [--trigger entered_column|unblocked] [--column <COLUMN>] --target <TARGET> [--task-type <TYPE>] [--metadata <SLUG=VALUE>] [--repository <REPO>] [OPTIONS]
 kairos boards dispatch remove-rule <BOARD> <RULE> [OPTIONS]
+kairos boards dispatch agent-triage <BOARD> [--on | --off] [OPTIONS]
 kairos boards dispatch log <BOARD> [--target <TARGET>] [--rule <RULE>] [--limit <N>] [OPTIONS]
 ```
 
@@ -741,6 +742,7 @@ Kairos sends one signed delivery to the target. See
 | `test-target` | `configure_boards` | Sends the event `ping` to a target. |
 | `add-rule` | `configure_boards` | Makes a rule. |
 | `remove-rule` | `configure_boards` | Removes a rule. Its deliveries stay in the log. |
+| `agent-triage` | a place on the board; `configure_boards` with `--on` or `--off` | Shows or sets who decides the triage of intake. `--on`: an agent decides. `--off`: an agent proposes with a note, and a person decides. |
 | `log` | a place on the board | Shows the newest deliveries, with the status, the tries and the response code. |
 
 A place on the board is a grant on the board, a place in its team, or the

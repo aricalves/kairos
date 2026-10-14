@@ -185,6 +185,18 @@ pub struct CreateDispatchRuleParams {
     pub repository: Option<String>,
 }
 
+/// `set_agent_triage` (KAIROS-T-0428).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct SetAgentTriageParams {
+    /// The board, by slug (e.g. "platform-delivery") or UUID.
+    pub board: String,
+    /// True: an agent decides the triage of intake. False: an agent
+    /// proposes it with a note and a person decides.
+    pub agents_decide: bool,
+}
+
 /// `delete_dispatch_rule` (KAIROS-T-0385).
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -1833,7 +1845,17 @@ impl KairosMcp {
                     ..Default::default()
                 },
             )?;
-            Ok(dispatch_text(&params.board, &rules, &targets, &log))
+            let triage = d::agent_triage_as(conn, &slug, user, &params.board)?;
+            let mut text = dispatch_text(&params.board, &rules, &targets, &log);
+            text.push_str(&format!(
+                "Triage of intake (KAIROS-T-0428): {}.\n",
+                if triage.agents_decide {
+                    "an agent decides"
+                } else {
+                    "an agent proposes with a note, a person decides"
+                }
+            ));
+            Ok(text)
         })
         .await
     }
@@ -1914,6 +1936,37 @@ impl KairosMcp {
                 }
                 Ok(out)
             })
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Set who decides the triage of intake on a board (KAIROS-T-0428). Intake is a task in the support lane. With `agents_decide: false` (the default) an agent (an agent key or a service account) that moves such a task into the planned lane or into another column is refused with AGENT_TRIAGE_OFF: it writes its proposal (planned backlog or work now, and why) with append_note and leaves the task for a person. With `agents_decide: true` the agent's move works, and the activity log names it. A person's triage works either way. `board` is a slug or UUID. Requires configure_boards on the board. list_dispatch_rules shows the setting."
+    )]
+    pub async fn set_agent_triage(
+        &self,
+        Parameters(params): Parameters<SetAgentTriageParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let (user, slug) = (auth.user_id, tenant.slug.clone());
+        self.run_tool(&tenant, move |conn| {
+            let setting = crate::api::org::dispatch::set_agent_triage_as(
+                conn,
+                &slug,
+                user,
+                &params.board,
+                params.agents_decide,
+            )?;
+            Ok(format!(
+                "Triage of intake on {}: {}.",
+                params.board,
+                if setting.agents_decide {
+                    "an agent decides"
+                } else {
+                    "an agent proposes with a note, a person decides"
+                }
+            ))
         })
         .await
     }
@@ -2906,7 +2959,6 @@ impl KairosMcp {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let (auth, tenant) = Self::caller(&context)?;
-        let user = auth.user_id;
         let slug = tenant.slug.clone();
         self.run_tool(&tenant, move |conn| {
             let work_class = parse_enum(&params.work_class, "work_class", WorkClass::ALL)?;
@@ -2921,7 +2973,7 @@ impl KairosMcp {
                 return Err(ApiError::internal("a task has a board and a lane"));
             };
             let updated = crate::api::tasks::change_task_lane(
-                conn, &slug, item.id, board_id, work_class, user,
+                conn, &slug, &auth, item.id, board_id, work_class,
             )?;
             Ok(if before == updated.work_class {
                 format!(
@@ -3258,6 +3310,13 @@ impl KairosMcp {
             let columns = board_columns(conn, board_id)?;
             let to_column_id = resolve_column(&columns, &params.to_column)?;
             if item.item_type == ItemType::Task {
+                // KAIROS-T-0428: an agent's triage of intake.
+                crate::agent_triage::check(
+                    conn,
+                    &auth,
+                    item.id,
+                    crate::agent_triage::TriageMove::Column(to_column_id),
+                )?;
                 crate::claims::note(conn, item.id, user)?;
             }
 
