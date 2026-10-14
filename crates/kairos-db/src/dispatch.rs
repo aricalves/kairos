@@ -211,6 +211,8 @@ struct TaskFacts {
     title: String,
     #[diesel(sql_type = Text)]
     task_type: String,
+    #[diesel(sql_type = Text)]
+    work_class: String,
     #[diesel(sql_type = SqlUuid)]
     board_id: Uuid,
     #[diesel(sql_type = Text)]
@@ -284,7 +286,7 @@ fn queue(
         return Ok(Vec::new());
     }
     let facts: TaskFacts = sql_query(
-        "SELECT t.short_code, t.title, t.task_type, b.id AS board_id, b.slug AS board_slug, \
+        "SELECT t.short_code, t.title, t.task_type, t.work_class::text AS work_class, b.id AS board_id, b.slug AS board_slug, \
                 b.name AS board_name, c.name AS column_name, p.slug AS repository_slug, \
                 p.repo_full_name AS repository_full_name, p.forge AS repository_forge, \
                 p.repo_url AS repository_url, \
@@ -319,6 +321,8 @@ fn queue(
             "code": facts.short_code,
             "title": facts.title,
             "task_type": facts.task_type,
+            // KAIROS-T-0429: the lane, so a runner can triage support work.
+            "work_class": facts.work_class,
             // The server makes the link absolute with KAIROS_PUBLIC_URL.
             "link": format!("/items/{}", facts.short_code),
             "board": {
