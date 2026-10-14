@@ -1636,13 +1636,13 @@ transaction. That board is the board of `POST /api/boards` with `board_level`
 | `team_type` | string | no | `stream_aligned` | `stream_aligned`, `platform`, `enabling` or `complicated_subsystem`. |
 | `adr_board` | boolean | no | `false` | `true` also makes the ADR board of the team. |
 
-The new boards have no members. Use `add_team_member` and `grant_capability`.
+The new board has no members. Use `add_team_member` and `grant_capability`.
 
 The result is two lines:
 
 ```text
 Created team home-ops (Home operations, stream_aligned). Delivery board: home-ops-delivery (prefix OPS).
-The boards have no members. Use add_team_member and grant_capability.
+The board has no members. Use add_team_member and grant_capability.
 ```
 
 With `adr_board` `true`, the first line ends with `ADR board: home-ops-adrs.`
