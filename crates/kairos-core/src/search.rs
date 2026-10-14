@@ -336,7 +336,7 @@ pub enum SearchRelationship {
     Parent,
     /// `'supports'` (workflow item → document/ADR).
     Supports,
-    /// `'informs'` (document/ADR → workflow item).
+    /// `'informs'` (document/ADR → workflow item, or task → task).
     Informs,
     /// `'supersedes'` (ADR → ADR).
     Supersedes,

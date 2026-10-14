@@ -15,6 +15,7 @@
 //! | `parent` | initiative | task |
 //! | `supports` | strategy/initiative/task (the SUPPORTED item) | document/adr |
 //! | `informs` | document/adr | strategy/initiative/task |
+//! | `informs` | task | task |
 //! | `supersedes` | adr | adr |
 //! | `blocks` | strategy/initiative/task | strategy/initiative/task |
 //!
@@ -24,12 +25,14 @@
 //! workflow item as SOURCE and the supporting document/ADR as TARGET
 //! (S-0004: "target supports source — document supports initiative"), the
 //! same orientation `kairos-db::abac::resolve_authorization_board` reads.
-//! `informs` is restricted in v1 to document/adr → workflow item: A-0001's
-//! "company vision informs the strategy board" names a BOARD as the
-//! target, but boards are not in the shared UUID item space the
-//! relationship table spans, so board-level references are out of scope
-//! here (recorded in KAIROS-T-0013). `blocks` allows same-type and
-//! cross-type dependencies between workflow items.
+//! `informs` runs from a document/adr to a workflow item, or from a task to
+//! a task: a research spike or a review informs the implementation that
+//! follows (KAIROS-T-0444). A-0001's "company vision informs the strategy
+//! board" names a BOARD as the target, but boards are not in the shared
+//! UUID item space the relationship table spans, so board-level references
+//! are out of scope here (recorded in KAIROS-T-0013). `informs` is not
+//! cycle-checked: it is context, not an order of work. `blocks` allows
+//! same-type and cross-type dependencies between workflow items.
 
 use uuid::Uuid;
 
@@ -44,7 +47,8 @@ pub enum Relationship {
     Parent,
     /// Attachment: target (document/adr) supports source (workflow item).
     Supports,
-    /// Reference: source (document/adr) informs target (workflow item).
+    /// Reference: source (document/adr) informs target (workflow item), or
+    /// a task informs a task.
     Informs,
     /// ADR replacement chain: source supersedes target.
     Supersedes,
@@ -116,7 +120,7 @@ fn rule_text(relationship: Relationship) -> &'static str {
             "A supports edge goes from a strategy, an initiative or a task to a document or an adr."
         }
         Relationship::Informs => {
-            "An informs edge goes from a document or an adr to a strategy, an initiative or a task."
+            "An informs edge goes from a document or an adr to a strategy, an initiative or a task, or from a task to a task."
         }
         Relationship::Supersedes => "A supersedes edge goes from an adr to an adr.",
         Relationship::Blocks => {
@@ -151,7 +155,10 @@ pub fn check_link(
             (Strategy, Initiative) | (Initiative, Task)
         ),
         Relationship::Supports => is_workflow(source_type) && matches!(target_type, Document | Adr),
-        Relationship::Informs => matches!(source_type, Document | Adr) && is_workflow(target_type),
+        Relationship::Informs => {
+            (matches!(source_type, Document | Adr) && is_workflow(target_type))
+                || matches!((source_type, target_type), (Task, Task))
+        }
         Relationship::Supersedes => matches!((source_type, target_type), (Adr, Adr)),
         Relationship::Blocks => is_workflow(source_type) && is_workflow(target_type),
     };
@@ -218,7 +225,10 @@ mod tests {
                 (source, target) == (Strategy, Initiative) || (source, target) == (Initiative, Task)
             }
             Relationship::Supports => workflow.contains(&source) && attachment.contains(&target),
-            Relationship::Informs => attachment.contains(&source) && workflow.contains(&target),
+            Relationship::Informs => {
+                (attachment.contains(&source) && workflow.contains(&target))
+                    || (source, target) == (Task, Task)
+            }
             Relationship::Supersedes => (source, target) == (Adr, Adr),
             Relationship::Blocks => workflow.contains(&source) && workflow.contains(&target),
         }
@@ -274,11 +284,18 @@ mod tests {
         assert!(check_link(Relationship::Parent, Task, Initiative).is_err());
         // supports is stored workflow-item -> document, not the reverse.
         assert!(check_link(Relationship::Supports, Document, Initiative).is_err());
-        // informs is document/adr -> workflow item only (v1 restriction).
+        // informs is document/adr -> workflow item, or task -> task: a
+        // research spike informs the implementation (KAIROS-T-0444).
         assert!(check_link(Relationship::Informs, Document, Strategy).is_ok());
         assert!(check_link(Relationship::Informs, Adr, Task).is_ok());
+        assert!(check_link(Relationship::Informs, Task, Task).is_ok());
         assert!(check_link(Relationship::Informs, Strategy, Document).is_err());
         assert!(check_link(Relationship::Informs, Document, Document).is_err());
+        // Only task -> task among workflow items.
+        assert!(check_link(Relationship::Informs, Initiative, Task).is_err());
+        assert!(check_link(Relationship::Informs, Task, Initiative).is_err());
+        assert!(check_link(Relationship::Informs, Strategy, Strategy).is_err());
+        assert!(check_link(Relationship::Informs, Task, Adr).is_err());
         // supersedes is ADR-only, both ends.
         assert!(check_link(Relationship::Supersedes, Adr, Document).is_err());
         assert!(check_link(Relationship::Supersedes, Strategy, Strategy).is_err());
@@ -294,6 +311,16 @@ mod tests {
         assert!(
             message.contains("supersedes") && message.contains("from an adr to an adr"),
             "message restates the allowed shape: {message}"
+        );
+    }
+
+    #[test]
+    fn informs_rule_names_the_task_pair() {
+        let err = check_link(Relationship::Informs, Initiative, Task).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("from a task to a task"),
+            "message names the task pair: {message}"
         );
     }
 
