@@ -138,3 +138,36 @@ pub struct CreateTeamAnnouncementRequest {
     #[serde(default)]
     pub pinned: bool,
 }
+
+/// One archived node of a team (KAIROS-T-0439): `GET
+/// /api/teams/{id}/archived-pages`. Restore it with `POST
+/// /api/teams/{id}/pages/{page_id}/restore`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ArchivedTeamPage {
+    /// The node as it was archived (its parent may be gone).
+    #[serde(flatten)]
+    pub page: TeamPage,
+    /// RFC 3339. Nodes archived together (a folder and its contents) have
+    /// the same value.
+    pub archived_at: String,
+}
+
+/// One saved version of a page (KAIROS-T-0439): `GET
+/// /api/teams/{id}/pages/{page_id}/history`, newest first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct TeamPageVersion {
+    pub version: i32,
+    pub title: String,
+    pub content: String,
+    /// The user id (UUID) of the person who saved it.
+    pub edited_by: String,
+    /// The display name of that person.
+    pub edited_by_name: String,
+    /// RFC 3339.
+    pub edited_at: String,
+    /// The agent key (UUID) of the request that saved it, when an agent saved
+    /// it with the agent key of the person: show "Alice (agent)". Null
+    /// otherwise.
+    #[serde(default)]
+    pub agent_key_id: Option<String>,
+}

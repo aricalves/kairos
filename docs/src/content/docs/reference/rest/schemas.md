@@ -181,6 +181,10 @@ Response of `POST /api/boards/{id}/archive-completed` (KAIROS-T-0363): the tasks
 | `count` | `integer` | yes | How many tasks the call archived. |
 | `short_codes` | array of `string` | yes | The short codes of the archived tasks, sorted. |
 
+## ArchivedTeamPage
+
+One archived node of a team (KAIROS-T-0439): `GET /api/teams/{id}/archived-pages`. Restore it with `POST /api/teams/{id}/pages/{page_id}/restore`.
+
 ## BlocksCounts
 
 Dependency counts behind a board card's blocked-by/blocks badges (KAIROS-T-0091).
@@ -2377,6 +2381,20 @@ One node of a team's page tree, as returned by `GET /api/teams/{id}/pages` (a FL
 | `title` | `string` | yes |  |
 | `updated_at` | `string` | yes | RFC 3339. |
 | `version` | `integer` | yes | Optimistic-concurrency version (content edits only). |
+
+## TeamPageVersion
+
+One saved version of a page (KAIROS-T-0439): `GET /api/teams/{id}/pages/{page_id}/history`, newest first.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `agent_key_id` | `string`, nullable | no | The agent key (UUID) of the request that saved it, when an agent saved it with the agent key of the person: show "Alice (agent)". Null otherwise. |
+| `content` | `string` | yes |  |
+| `edited_at` | `string` | yes | RFC 3339. |
+| `edited_by` | `string` | yes | The user id (UUID) of the person who saved it. |
+| `edited_by_name` | `string` | yes | The display name of that person. |
+| `title` | `string` | yes |  |
+| `version` | `integer` | yes |  |
 
 ## TeamWorkDocument
 

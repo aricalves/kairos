@@ -35,6 +35,12 @@ pub fn router() -> Router<AppState> {
             "/api/teams/{id}/pages/{page_id}",
             get(get_page).patch(update_page).delete(delete_page),
         )
+        .route("/api/teams/{id}/archived-pages", get(list_archived))
+        .route(
+            "/api/teams/{id}/pages/{page_id}/restore",
+            axum::routing::post(restore_page),
+        )
+        .route("/api/teams/{id}/pages/{page_id}/history", get(page_history))
         .route(
             "/api/teams/{id}/announcements",
             get(list_announcements).post(create_announcement),
@@ -140,13 +146,10 @@ fn map_page_error(e: TeamPageError) -> ApiError {
                  delete it."
             ),
         ),
-        TeamPageError::FolderNotEmpty { folder, children } => ApiError::new(
+        TeamPageError::NotArchived(id) => ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
-            "FOLDER_NOT_EMPTY",
-            format!(
-                "The folder {folder} has live pages. The number of live pages is \
-                 {children}. Move or delete each page. Then delete the folder."
-            ),
+            "NOT_ARCHIVED",
+            format!("The team page {id} is not archived. You can restore only an archived page."),
         ),
         TeamPageError::VersionConflict {
             expected_version,
@@ -462,7 +465,7 @@ pub(crate) fn update_as(
     Ok(page_dto(updated))
 }
 
-/// Soft-delete a page (folders must be empty; the Charter never).
+/// Archive a page, or a folder with everything in it (the Charter never).
 #[utoipa::path(
     delete,
     path = "/api/teams/{id}/pages/{page_id}",
@@ -475,7 +478,7 @@ pub(crate) fn update_as(
         (status = 200, description = "Deleted", body = kairos_client::types_org::OrgDeleteResponse),
         (status = 403, description = "Not a team member", body = kairos_client::types::ErrorEnvelope),
         (status = 404, description = "Unknown team or page", body = kairos_client::types::ErrorEnvelope),
-        (status = 422, description = "Protected page or non-empty folder", body = kairos_client::types::ErrorEnvelope),
+        (status = 422, description = "Protected page", body = kairos_client::types::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn delete_page(
@@ -500,7 +503,7 @@ pub(crate) async fn delete_page(
     }))
 }
 
-/// Archive (soft-delete) a page or an empty folder, as the REST route does.
+/// Archive a page, or a folder with everything in it, as the REST route does.
 /// Gives the page as it was. MCP calls this too (KAIROS-T-0434).
 pub(crate) fn delete_as(
     conn: &mut PgConnection,
@@ -512,16 +515,186 @@ pub(crate) fn delete_as(
     require_team(conn, team_id)?;
     require_team_member_or_admin(conn, tenant, team_id, user)?;
     let doomed = team_pages::load_page(conn, team_id, page_id).map_err(map_page_error)?;
-    team_pages::soft_delete_page(conn, team_id, page_id, user).map_err(map_page_error)?;
+    let archived =
+        team_pages::soft_delete_page(conn, team_id, page_id, user).map_err(map_page_error)?;
     log_page_activity(
         conn,
         user,
         kairos_db::models::enums::ActivityAction::Delete,
         "team_page",
         page_id,
-        format!("team:{team_id} slug:{}", doomed.slug),
+        format!("team:{team_id} slug:{} archived:{archived}", doomed.slug),
     )?;
     Ok(page_dto(doomed))
+}
+
+/// The archived nodes of a team, newest archive first (open tenant-wide,
+/// KAIROS-T-0439).
+#[utoipa::path(
+    get,
+    path = "/api/teams/{id}/archived-pages",
+    tag = "team-pages",
+    params(("id" = String, Path, description = "Team id (UUID)")),
+    responses(
+        (status = 200, description = "The archived nodes", body = Vec<dto::ArchivedTeamPage>),
+        (status = 404, description = "Unknown team", body = kairos_client::types::ErrorEnvelope),
+    ),
+)]
+pub(crate) async fn list_archived(
+    State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<dto::ArchivedTeamPage>>, ApiError> {
+    let team_id = parse_uuid(&id, "id")?;
+    let rows = state
+        .blocking
+        .run(&tenant.slug, move |conn| list_archived_as(conn, team_id))
+        .await?;
+    Ok(Json(rows))
+}
+
+/// The archived nodes of a team, as the REST route gives them.
+pub(crate) fn list_archived_as(
+    conn: &mut PgConnection,
+    team_id: Uuid,
+) -> Result<Vec<dto::ArchivedTeamPage>, ApiError> {
+    require_team(conn, team_id)?;
+    let rows = team_pages::list_archived_pages(conn, team_id).map_err(ApiError::internal)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let archived_at = row.deleted_at.map(|at| at.to_rfc3339()).unwrap_or_default();
+            dto::ArchivedTeamPage {
+                page: page_dto(row),
+                archived_at,
+            }
+        })
+        .collect())
+}
+
+/// Restore an archived node and what was archived with it (team member or
+/// organization admin, KAIROS-T-0439).
+#[utoipa::path(
+    post,
+    path = "/api/teams/{id}/pages/{page_id}/restore",
+    tag = "team-pages",
+    params(
+        ("id" = String, Path, description = "Team id (UUID)"),
+        ("page_id" = String, Path, description = "Page id (UUID)"),
+    ),
+    responses(
+        (status = 200, description = "Restored", body = dto::TeamPage),
+        (status = 403, description = "Not a team member", body = kairos_client::types::ErrorEnvelope),
+        (status = 404, description = "Unknown team or page", body = kairos_client::types::ErrorEnvelope),
+        (status = 422, description = "Not archived, or a live sibling has the slug", body = kairos_client::types::ErrorEnvelope),
+    ),
+)]
+pub(crate) async fn restore_page(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Extension(tenant): Extension<TenantContext>,
+    Path((id, page_id)): Path<(String, String)>,
+) -> Result<Json<dto::TeamPage>, ApiError> {
+    let team_id = parse_uuid(&id, "id")?;
+    let page_id = parse_uuid(&page_id, "page_id")?;
+    let slug = tenant.slug.clone();
+    let user = auth.user_id;
+    let restored = state
+        .blocking
+        .run(&slug, move |conn| {
+            restore_as(conn, &tenant, user, team_id, page_id)
+        })
+        .await?;
+    Ok(Json(restored))
+}
+
+/// Restore a node, as the REST route does: the gate, the write and the
+/// activity row.
+pub(crate) fn restore_as(
+    conn: &mut PgConnection,
+    tenant: &TenantContext,
+    user: Uuid,
+    team_id: Uuid,
+    page_id: Uuid,
+) -> Result<dto::TeamPage, ApiError> {
+    require_team(conn, team_id)?;
+    require_team_member_or_admin(conn, tenant, team_id, user)?;
+    let restored =
+        team_pages::restore_page(conn, team_id, page_id, user).map_err(map_page_error)?;
+    log_page_activity(
+        conn,
+        user,
+        kairos_db::models::enums::ActivityAction::Restore,
+        "team_page",
+        page_id,
+        format!("team:{team_id} slug:{}", restored.slug),
+    )?;
+    Ok(page_dto(restored))
+}
+
+/// The saved versions of a page, newest first (open tenant-wide,
+/// KAIROS-T-0439).
+#[utoipa::path(
+    get,
+    path = "/api/teams/{id}/pages/{page_id}/history",
+    tag = "team-pages",
+    params(
+        ("id" = String, Path, description = "Team id (UUID)"),
+        ("page_id" = String, Path, description = "Page id (UUID)"),
+    ),
+    responses(
+        (status = 200, description = "The versions, newest first", body = Vec<dto::TeamPageVersion>),
+        (status = 404, description = "Unknown team or page", body = kairos_client::types::ErrorEnvelope),
+    ),
+)]
+pub(crate) async fn page_history(
+    State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Path((id, page_id)): Path<(String, String)>,
+) -> Result<Json<Vec<dto::TeamPageVersion>>, ApiError> {
+    let team_id = parse_uuid(&id, "id")?;
+    let page_id = parse_uuid(&page_id, "page_id")?;
+    let rows = state
+        .blocking
+        .run(&tenant.slug, move |conn| history_as(conn, team_id, page_id))
+        .await?;
+    Ok(Json(rows))
+}
+
+/// The saved versions of a page, with the name of each editor.
+pub(crate) fn history_as(
+    conn: &mut PgConnection,
+    team_id: Uuid,
+    page_id: Uuid,
+) -> Result<Vec<dto::TeamPageVersion>, ApiError> {
+    require_team(conn, team_id)?;
+    let rows = team_pages::page_history(conn, team_id, page_id).map_err(map_page_error)?;
+    let ids: Vec<Uuid> = rows.iter().map(|row| row.edited_by).collect();
+    let names: std::collections::HashMap<Uuid, String> = {
+        use kairos_db::schema::users::dsl;
+        dsl::users
+            .filter(dsl::id.eq_any(&ids))
+            .select((dsl::id, dsl::display_name))
+            .load::<(Uuid, String)>(conn)
+            .map_err(ApiError::internal)?
+            .into_iter()
+            .collect()
+    };
+    Ok(rows
+        .into_iter()
+        .map(|row| dto::TeamPageVersion {
+            version: row.version,
+            title: row.title,
+            content: row.content,
+            edited_by: row.edited_by.to_string(),
+            edited_by_name: names
+                .get(&row.edited_by)
+                .cloned()
+                .unwrap_or_else(|| row.edited_by.to_string()),
+            edited_at: row.edited_at.to_rfc3339(),
+            agent_key_id: row.agent_key_id.map(|key| key.to_string()),
+        })
+        .collect())
 }
 
 /// The team's announcements, pinned first then newest (open tenant-wide).

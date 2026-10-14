@@ -2166,6 +2166,34 @@ impl KairosClient {
             .await
     }
 
+    /// `GET /api/teams/{id}/archived-pages` — the archived nodes, newest
+    /// archive first (KAIROS-T-0439).
+    pub async fn list_archived_team_pages(
+        &self,
+        team_id: &str,
+    ) -> Result<Vec<crate::types_team_pages::ArchivedTeamPage>, Error> {
+        self.get(&format!("/api/teams/{team_id}/archived-pages"))
+            .await
+    }
+
+    /// `POST /api/teams/{id}/pages/{page_id}/restore` — restore a node and
+    /// what was archived with it (team member or org admin).
+    pub async fn restore_team_page(&self, team_id: &str, page_id: &str) -> Result<TeamPage, Error> {
+        self.post_empty(&format!("/api/teams/{team_id}/pages/{page_id}/restore"))
+            .await
+    }
+
+    /// `GET /api/teams/{id}/pages/{page_id}/history` — the saved versions,
+    /// newest first.
+    pub async fn team_page_history(
+        &self,
+        team_id: &str,
+        page_id: &str,
+    ) -> Result<Vec<crate::types_team_pages::TeamPageVersion>, Error> {
+        self.get(&format!("/api/teams/{team_id}/pages/{page_id}/history"))
+            .await
+    }
+
     /// `GET /api/teams/{id}/announcements` — pinned first, newest first.
     /// `GET /api/teams/{id}/work-documents` — live documents supporting
     /// the team's tasks or items on its delivery board (KAIROS-T-0084).

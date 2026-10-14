@@ -273,6 +273,62 @@ pub async fn place_page(
     .await
 }
 
+/// mirror of: `kairos_client::types_team_pages::ArchivedTeamPage`
+/// (partial, KAIROS-T-0439).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct ArchivedPage {
+    pub id: String,
+    pub parent_id: Option<String>,
+    pub kind: String,
+    pub slug: String,
+    pub title: String,
+    pub archived_at: String,
+}
+
+/// `GET /api/teams/{id}/archived-pages` — newest archive first.
+pub async fn archived_pages(auth: Auth, team_id: &str) -> Result<Vec<ArchivedPage>, ApiError> {
+    get_json(auth, &format!("/api/teams/{team_id}/archived-pages")).await
+}
+
+/// `POST /api/teams/{id}/pages/{page_id}/restore` — the node and what was
+/// archived with it.
+pub async fn restore_page(
+    auth: Auth,
+    team_id: &str,
+    page_id: &str,
+) -> Result<TeamPageNode, ApiError> {
+    crate::api::post_empty(
+        auth,
+        &format!("/api/teams/{team_id}/pages/{page_id}/restore"),
+    )
+    .await
+}
+
+/// mirror of: `kairos_client::types_team_pages::TeamPageVersion`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct PageVersion {
+    pub version: i32,
+    pub title: String,
+    pub content: String,
+    pub edited_by_name: String,
+    pub edited_at: String,
+    #[serde(default)]
+    pub agent_key_id: Option<String>,
+}
+
+/// `GET /api/teams/{id}/pages/{page_id}/history` — newest first.
+pub async fn page_history(
+    auth: Auth,
+    team_id: &str,
+    page_id: &str,
+) -> Result<Vec<PageVersion>, ApiError> {
+    get_json(
+        auth,
+        &format!("/api/teams/{team_id}/pages/{page_id}/history"),
+    )
+    .await
+}
+
 /// `DELETE /api/teams/{id}/pages/{page_id}` (soft; folders must be
 /// empty — the server 422 carries the live-children count).
 pub async fn delete_page(auth: Auth, team_id: &str, page_id: &str) -> Result<(), ApiError> {

@@ -955,7 +955,7 @@ team makes. Every member of the organization can read it. To write, you must be
 a member of the team or an organization admin.
 
 `list` shows the tree, the charter first. `edit` replaces the whole content.
-`delete` archives a page or an empty folder. You cannot move or archive the
+`delete` archives a page, or a folder with everything in it. You cannot move or archive the
 charter.
 
 ### `kairos teams of`

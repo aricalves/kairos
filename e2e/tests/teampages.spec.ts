@@ -146,6 +146,34 @@ test('team pages: landing layout → announcements → page edit + 409 merge →
     await page.goto('/teams/platform/pages/');
     await expect(panel(page, 'Pages')).toBeVisible();
     await expect(page.getByText('Page not found')).toHaveCount(0);
+  });
+
+  // KAIROS-T-0439: the history of a page names who saved each version.
+  await test.step('member reads the history of a page', async () => {
+    await page.goto('/teams/platform/pages/documentation/how-to-guides/deploy-kairos');
+    const history = panel(page, 'History');
+    await history.getByRole('button', { name: 'Show history', exact: true }).click();
+    // The seed saved it once; the edits of this spec come later.
+    await expect(history.getByText(/^v1 · /)).toBeVisible();
+  });
+
+  // KAIROS-T-0439: a folder is archived with what is in it, and comes back
+  // with it.
+  await test.step('member archives a folder and restores it from the archive', async () => {
+    await page.goto('/teams/platform/pages/documentation/incidents');
+    await panel(page, 'Manage').getByRole('button', { name: 'Archive', exact: true }).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByText('Archive this folder?')).toBeVisible();
+    await dialog.getByRole('button', { name: 'Archive', exact: true }).click();
+    await page.waitForURL(/\/teams\/platform\/pages\/documentation$/);
+
+    await page.goto('/teams/platform/pages/');
+    const archived = panel(page, 'Archived');
+    await expect(archived.getByText('Incidents', { exact: true })).toBeVisible();
+    await archived.getByRole('button', { name: 'Restore', exact: true }).first().click();
+    await expect(archived.getByText('Nothing is archived.')).toBeVisible();
+    await page.goto('/teams/platform/pages/documentation/incidents');
+    await expect(page.getByText('Page not found')).toHaveCount(0);
     await page.goto('/teams/platform');
   });
 

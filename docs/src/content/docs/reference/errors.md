@@ -286,7 +286,7 @@ refusal is `VALIDATION` with `details.field` = `board` (MCP:
 | `DEFINITION_IN_USE` | **409** | The metadata definition is still referenced | `item_values`, `template_fields` (the true counts) and `items`, `templates` (which ones). Each `items` entry is `{short_code, archived}` — an archived carrier is marked, and still blocks. `items` is **capped at 20**, so a definition stamped on thousands of items names twenty of them and counts the rest |
 | `SLUG_CONFLICT` | 422 | The slug is taken | — |
 | `PROTECTED_PAGE` | 422 | The team page is protected and cannot be removed | — |
-| `FOLDER_NOT_EMPTY` | 422 | The team-page folder still has children | — |
+| `NOT_ARCHIVED` | 422 | A restore of a team page that is not archived | — |
 | `LAST_ADMIN` | 422 | The change would leave the organization with no admin | — |
 | `CONFIRMATION_REQUIRED` | 422 | A destructive call needs an explicit confirmation flag | — |
 
