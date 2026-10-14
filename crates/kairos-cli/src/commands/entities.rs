@@ -290,6 +290,18 @@ pub struct CancelArgs {
     pub common: Common,
 }
 
+/// Arguments of `kairos tasks lane` (KAIROS-T-0433).
+#[derive(Args, Debug)]
+pub struct LaneArgs {
+    /// The task's short code (e.g. ACME-T-0001)
+    pub short_code: String,
+    /// The lane: planned or support
+    #[arg(value_name = "LANE")]
+    pub work_class: String,
+    #[command(flatten)]
+    pub common: Common,
+}
+
 /// Arguments of `kairos tasks purge` (KAIROS-T-0362).
 #[derive(Args, Debug)]
 pub struct PurgeArgs {
@@ -339,6 +351,26 @@ pub fn emit_cancelled(common: &Common, task: &Task) -> Result<(), CliError> {
             task.short_code, mark.reason
         ),
         None => println!("Kairos cancelled {}.", task.short_code),
+    }
+    Ok(())
+}
+
+/// `tasks lane` output (KAIROS-T-0433). `before` is the lane before the
+/// call: a call that changes nothing is a normal 200.
+pub fn emit_lane(common: &Common, before: &str, task: &Task) -> Result<(), CliError> {
+    if common.json {
+        return print_json(task);
+    }
+    if before == task.work_class {
+        println!(
+            "{} is already in the {} lane: nothing changed.",
+            task.short_code, task.work_class
+        );
+    } else {
+        println!(
+            "Moved {} to the {} lane (was {}).",
+            task.short_code, task.work_class, before
+        );
     }
     Ok(())
 }
@@ -1177,6 +1209,7 @@ macro_rules! entity_family_cli {
         $(, owner_move($owner_variant:ident) = $owner_fn:ident)?
         $(, claims($hand_variant:ident = $hand_fn:ident, $release_variant:ident = $release_fn:ident))?
         $(, task_end($cancel_variant:ident = $cancel_fn:ident, $purge_variant:ident = $purge_fn:ident))?
+        $(, lane($lane_variant:ident = $lane_fn:ident))?
     ) => {
         #[doc = concat!("Operations on ", $noun, "s.")]
         #[derive(clap::Subcommand, Debug)]
@@ -1230,6 +1263,11 @@ macro_rules! entity_family_cli {
                                       " for good (requires --confirm; you cannot undo it; ",
                                       "board managers only)"))]
             $purge_variant(PurgeArgs),
+            )?
+            $(
+            #[command(about = concat!("Change the lane of a ", $noun,
+                                      ": planned or support (needs transition_items)"))]
+            $lane_variant(LaneArgs),
             )?
             #[command(about = concat!("Archive a ", $noun,
                                       " and its children (requires --confirm; ",
@@ -1343,6 +1381,14 @@ macro_rules! entity_family_cli {
                         emit_purged(&args.common, &response)
                     }
                     )?
+                    $(
+                    Self::$lane_variant(args) => {
+                        let client = client(&args.common)?;
+                        let before = client.$get(&args.short_code).await?.work_class;
+                        let task = client.$lane_fn(&args.short_code, &args.work_class).await?;
+                        emit_lane(&args.common, &before, &task)
+                    }
+                    )?
                     Self::Archive(args) => {
                         require_archive_confirm(args.confirm, &args.short_code)?;
                         let client = client(&args.common)?;
@@ -1405,7 +1451,8 @@ entity_family_cli!(
     transition(Transition) = transition_task,
     board_move(Move) = move_task_with,
     claims(HandOff = hand_off_task, Release = release_task),
-    task_end(Cancel = cancel_task, Purge = purge_task)
+    task_end(Cancel = cancel_task, Purge = purge_task),
+    lane(Lane = set_task_work_class)
 );
 
 entity_family_cli!(
