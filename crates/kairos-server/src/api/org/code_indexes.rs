@@ -660,14 +660,17 @@ pub(crate) async fn nearest_code_index(
             .await?
     };
     let repo_id = repo.id;
-    // The read token of the repository, when it has one (COLLIERY-T-3105).
+    // The token of the fetch (KAIROS-T-0431): the read token of the
+    // organization for the host, else the token of the repository.
     let token = {
         let key = service.secrets_key().cloned();
         let tenant_slug = tenant.slug.clone();
+        let row = repo.clone();
         state
             .blocking
             .run(&tenant.slug, move |conn| {
-                crate::credentials::read_token(conn, &tenant_slug, repo_id, key.as_ref())
+                crate::credentials::fetch_token(conn, &tenant_slug, &row, key.as_ref())
+                    .map(|(token, _)| token)
                     .map_err(crate::credentials::token_refusal)
             })
             .await?

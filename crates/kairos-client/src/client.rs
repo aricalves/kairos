@@ -1877,6 +1877,41 @@ impl KairosClient {
         self.put_ok("/api/org/code-index-settings", body).await
     }
 
+    /// `GET /api/org/read-tokens` — the read tokens of the organization,
+    /// one for each forge host (KAIROS-T-0431, an organization admin). The
+    /// host, who set it and when; never the token.
+    pub async fn org_read_tokens(
+        &self,
+    ) -> Result<Vec<crate::types_code_index::OrgReadToken>, Error> {
+        self.get("/api/org/read-tokens").await
+    }
+
+    /// `PUT /api/org/read-tokens/{host}` — set or replace the read token of
+    /// the organization for `host` (KAIROS-T-0431, an organization admin).
+    pub async fn set_org_read_token(
+        &self,
+        host: &str,
+        token: &crate::types_auth::Secret,
+    ) -> Result<crate::types_code_index::OrgReadToken, Error> {
+        self.put_ok(
+            &format!("/api/org/read-tokens/{host}"),
+            &crate::types_code_index::SetOrgReadTokenRequest {
+                token: token.clone(),
+            },
+        )
+        .await
+    }
+
+    /// `DELETE /api/org/read-tokens/{host}` — remove the read token of the
+    /// organization for `host` (KAIROS-T-0431, an organization admin). The
+    /// answer is the list that stays.
+    pub async fn remove_org_read_token(
+        &self,
+        host: &str,
+    ) -> Result<Vec<crate::types_code_index::OrgReadToken>, Error> {
+        self.delete(&format!("/api/org/read-tokens/{host}")).await
+    }
+
     /// `POST /api/code-index/query-vector` — the vector of the text of a
     /// code search, made by the model `model` of the vectors of an index
     /// (KAIROS-T-0360). The CLI asks for it when it has no local model of

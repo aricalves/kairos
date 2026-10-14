@@ -219,6 +219,13 @@ pub fn credential_aad(tenant: &str, repository_id: Uuid) -> Vec<u8> {
     format!("kairos/repository-credential/v1\0{tenant}\0{repository_id}").into_bytes()
 }
 
+/// The associated data of the read token of the organization for a forge
+/// host (KAIROS-T-0431): the tenant and the host. It is not the data of a
+/// repository token, so one ciphertext does not open as the other.
+pub fn org_read_token_aad(tenant: &str, host: &str) -> Vec<u8> {
+    format!("kairos/org-read-token/v1\0{tenant}\0{host}").into_bytes()
+}
+
 /// The associated data of the write token of a repository (KAIROS-T-0386):
 /// the tenant and the repository. It is not the data of the read token, so
 /// one ciphertext does not open as the other.
@@ -271,6 +278,31 @@ mod tests {
         let other_repo = credential_aad("acme", Uuid::new_v4());
         let other_tenant = credential_aad("globex", repo);
         for aad in [other_repo, other_tenant] {
+            assert_eq!(
+                k.open(&aad, &sealed.key_id, &sealed.nonce, &sealed.ciphertext),
+                Err(OpenError::Corrupt)
+            );
+        }
+    }
+
+    #[test]
+    fn an_org_read_token_opens_only_for_its_tenant_and_host() {
+        let k = key(7);
+        let sealed = k.seal(&org_read_token_aad("acme", "github.com"), b"tok");
+        assert!(
+            k.open(
+                &org_read_token_aad("acme", "github.com"),
+                &sealed.key_id,
+                &sealed.nonce,
+                &sealed.ciphertext
+            )
+            .is_ok()
+        );
+        for aad in [
+            org_read_token_aad("acme", "gitlab.com"),
+            org_read_token_aad("globex", "github.com"),
+            credential_aad("acme", Uuid::nil()),
+        ] {
             assert_eq!(
                 k.open(&aad, &sealed.key_id, &sealed.nonce, &sealed.ciphertext),
                 Err(OpenError::Corrupt)

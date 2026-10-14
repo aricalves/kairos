@@ -86,7 +86,9 @@ pub enum ReposCommand {
         /// Slug (defaults to one derived from --name)
         #[arg(long)]
         slug: Option<String>,
-        /// Default branch: a branch name that git accepts (defaults to main)
+        /// Default branch: a branch name that git accepts. With it, the
+        /// branch is set by hand. Without it, the code index builder
+        /// follows the default branch of the forge
         #[arg(long = "default-branch", value_name = "BRANCH")]
         default_branch: Option<String>,
         /// Short "how to work here" blurb for agents
@@ -105,9 +107,19 @@ pub enum ReposCommand {
         /// name and no password
         #[arg(long = "repo-url", value_name = "URL")]
         repo_url: Option<String>,
-        /// New default branch: a branch name that git accepts
-        #[arg(long = "default-branch", value_name = "BRANCH")]
+        /// New default branch: a branch name that git accepts. The branch
+        /// is then set by hand: the code index builder indexes it, whatever
+        /// the forge says
+        #[arg(
+            long = "default-branch",
+            value_name = "BRANCH",
+            conflicts_with = "follow_forge"
+        )]
         default_branch: Option<String>,
+        /// Clear the branch set by hand: the code index builder follows the
+        /// default branch of the forge again
+        #[arg(long = "follow-forge")]
+        follow_forge: bool,
         /// New owning team (slug or UUID)
         #[arg(long, value_name = "TEAM")]
         team: Option<String>,
@@ -492,7 +504,11 @@ impl ReposCommand {
                     repo_table(std::slice::from_ref(&detail.repository)).render()
                 );
                 println!("url:            {}", detail.repository.repo_url);
-                println!("default branch: {}", detail.repository.default_branch);
+                println!(
+                    "default branch: {} ({})",
+                    detail.repository.default_branch,
+                    detail.repository.default_branch_summary()
+                );
                 println!(
                     "webhook:        {}",
                     detail.connection_id.as_deref().unwrap_or("not connected")
@@ -579,6 +595,7 @@ impl ReposCommand {
                 slug,
                 repo_url,
                 default_branch,
+                follow_forge,
                 team,
                 description,
                 code_index_build,
@@ -588,6 +605,7 @@ impl ReposCommand {
                 if slug.is_none()
                     && repo_url.is_none()
                     && default_branch.is_none()
+                    && !follow_forge
                     && team.is_none()
                     && description.is_none()
                     && code_index_build.is_none()
@@ -595,7 +613,8 @@ impl ReposCommand {
                 {
                     return Err(CliError::Failure(
                         "The command has no change. Use --slug, --repo-url, --default-branch, \
-                         --team, --description, --code-index-build or --code-index-summaries."
+                         --follow-forge, --team, --description, --code-index-build or \
+                         --code-index-summaries."
                             .to_string(),
                     ));
                 }
@@ -618,6 +637,9 @@ impl ReposCommand {
                             slug,
                             repo_url,
                             default_branch,
+                            default_branch_source: follow_forge.then_some(
+                                kairos_client::types_repositories::DefaultBranchSource::Forge,
+                            ),
                             team,
                             description,
                             code_index_build,

@@ -88,8 +88,30 @@ const CODE_INDEX_BUILD_HINT: &str = "Code index builder: on or off. With off, Ka
                                      index of the repository. Use off for a template or a \
                                      static site.";
 
-/// The rule of the default branch.
-const BRANCH_HINT: &str = "Default branch: a branch name that git accepts, with no space.";
+/// The rule of the default branch (KAIROS-T-0430).
+const BRANCH_HINT: &str = "Default branch: forge or hand. With forge, Kairos reads the default \
+                           branch of the forge at each fetch and indexes it. With hand, Kairos \
+                           indexes the branch that you write, whatever the forge says. The \
+                           branch is a name that git accepts, with no space.";
+
+/// What the form sends for the branch (KAIROS-T-0430): the
+/// `default_branch` and the `default_branch_source` of the PATCH. A branch
+/// sets the branch by hand. `forge` clears a branch set by hand. A form
+/// that does not change the branch sends nothing, so a save does not set
+/// by hand a branch that follows the forge.
+fn branch_edit<'a>(
+    source: &str,
+    branch: &'a str,
+    current_source: &str,
+    current_branch: &str,
+) -> (Option<&'a str>, Option<&'static str>) {
+    match source {
+        "forge" if current_source == "hand" => (None, Some("forge")),
+        "forge" => (None, None),
+        _ if current_source == "hand" && branch == current_branch => (None, None),
+        _ => (Some(branch), None),
+    }
+}
 
 /// The fields that have a refusal next to them. The slug is one of them
 /// since COLLIERY-T-0265.
@@ -336,6 +358,13 @@ fn RepositoryRow(
     let edit_slug = RwSignal::new(repo.slug.clone());
     let edit_url = RwSignal::new(repo.repo_url.clone());
     let edit_branch = RwSignal::new(repo.default_branch.clone());
+    // KAIROS-T-0430: forge or hand, and the values that the row has now.
+    let edit_branch_source = RwSignal::new(repo.default_branch_source.clone());
+    let current_branch = StoredValue::new((
+        repo.default_branch_source.clone(),
+        repo.default_branch.clone(),
+    ));
+    let default_branch_summary = repo.default_branch_summary();
     let edit_team = RwSignal::new(repo.team.slug.clone());
     let edit_description = RwSignal::new(repo.description.clone());
     let edit_code_index_build = RwSignal::new(repo.code_index_build.clone());
@@ -388,6 +417,8 @@ fn RepositoryRow(
             edit_code_index_summaries.get_untracked(),
         );
         let site_on = edit_site.get_untracked() == "on";
+        let source = edit_branch_source.get_untracked();
+        let (current_source, current_branch) = current_branch.get_value();
         // The editor stays open: a refusal shows next to its field
         // (COLLIERY-T-0267). A success reads the list again, and the new
         // row has a closed editor.
@@ -399,13 +430,16 @@ fn RepositoryRow(
             &FORM_FIELDS,
             format!("Kairos changed the repository \"{s}\"."),
             async move {
+                let (default_branch, default_branch_source) =
+                    branch_edit(&source, &b, &current_source, &current_branch);
                 api::update_repository(
                     auth,
                     &reference,
                     api::RepositoryEdit {
                         slug: Some(&s),
                         repo_url: Some(&u),
-                        default_branch: Some(&b),
+                        default_branch,
+                        default_branch_source,
                         team: Some(&t),
                         description: Some(&d),
                         code_index_build: Some(&c),
@@ -598,6 +632,9 @@ fn RepositoryRow(
                     {write_back_summary}
                 </Text>
             })}
+            <Text dimmed=true size="xs" attr:data-testid="default-branch-status">
+                {default_branch_summary}
+            </Text>
             <Text dimmed=true size="xs" attr:data-testid="code-index-build-status">
                 {code_index_build_summary}
             </Text>
@@ -618,8 +655,12 @@ fn RepositoryRow(
                                 error=refusal_for(refused, "slug")/>
                         <TextInput label="URL" value=edit_url
                                 error=refusal_for(refused, "repo_url")/>
-                        <TextInput label="Default branch" value=edit_branch
-                                error=refusal_for(refused, "default_branch")/>
+                        <Select label="Default branch from" value=edit_branch_source
+                            options=vec!["forge".to_string(), "hand".to_string()]/>
+                        <Show when=move || edit_branch_source.get() == "hand">
+                            <TextInput label="Default branch" value=edit_branch
+                                    error=refusal_for(refused, "default_branch")/>
+                        </Show>
                         <Select label="Owner team" value=edit_team options=team_slugs.get_value()/>
                     </Group>
                     <Group align="end" gap="sm" wrap=true>
@@ -702,5 +743,30 @@ mod tests {
         assert_eq!(super::form_team("", &slugs), "kairos");
         assert_eq!(super::form_team("skadi", &slugs), "skadi");
         assert_eq!(super::form_team("", &[]), "");
+    }
+
+    /// KAIROS-T-0430: a save sends a branch only when the branch is set by
+    /// hand and changes; forge clears a branch set by hand.
+    #[test]
+    fn the_form_sends_the_branch_only_when_it_changes() {
+        use super::branch_edit;
+        // A repository that follows the forge, saved as it is.
+        assert_eq!(branch_edit("forge", "main", "forge", "main"), (None, None));
+        // Set by hand: the branch goes, also with the value of the row.
+        assert_eq!(
+            branch_edit("hand", "main", "forge", "main"),
+            (Some("main"), None)
+        );
+        assert_eq!(
+            branch_edit("hand", "release", "hand", "main"),
+            (Some("release"), None)
+        );
+        // A branch set by hand, saved as it is.
+        assert_eq!(branch_edit("hand", "main", "hand", "main"), (None, None));
+        // Back to the forge.
+        assert_eq!(
+            branch_edit("forge", "main", "hand", "main"),
+            (None, Some("forge"))
+        );
     }
 }

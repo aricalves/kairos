@@ -31,6 +31,7 @@ pub mod dispatch;
 pub mod flow;
 pub mod forge;
 pub mod members;
+pub mod org_read_tokens;
 pub mod repositories;
 pub mod repository_credentials;
 pub mod repository_write_tokens;
@@ -68,6 +69,8 @@ pub fn router() -> Router<AppState> {
         .merge(code_index_settings::router())
         .merge(code_index_query::router())
         .merge(repository_credentials::router())
+        // KAIROS-T-0431: the read token of the organization for each host.
+        .merge(org_read_tokens::router())
         .merge(repository_write_tokens::router())
         .merge(teams::router())
         .merge(team_pages::router())

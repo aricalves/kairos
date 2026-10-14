@@ -55,7 +55,7 @@ pub fn router() -> Router<AppState> {
 }
 
 /// The key of the deployment, or the 501 that names the setting.
-fn secrets_key(state: &AppState) -> Result<SecretsKey, ApiError> {
+pub(crate) fn secrets_key(state: &AppState) -> Result<SecretsKey, ApiError> {
     state.config.secrets_key.clone().ok_or_else(|| {
         ApiError::new(
             StatusCode::NOT_IMPLEMENTED,

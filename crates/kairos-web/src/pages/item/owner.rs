@@ -509,6 +509,8 @@ mod tests {
             repo_full_name: format!("acme/{slug}"),
             repo_url: format!("https://github.com/acme/{slug}"),
             default_branch: "main".to_string(),
+            default_branch_source: "forge".to_string(),
+            forge_branch: None,
             description: String::new(),
             team: RepositoryTeam {
                 id: "t-platform".to_string(),
