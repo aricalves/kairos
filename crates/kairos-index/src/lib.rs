@@ -31,6 +31,7 @@ pub mod hosted;
 #[cfg(feature = "llama")]
 mod llama;
 mod parse_cache;
+mod refs;
 
 /// How long a connection to an index waits for the lock of another
 /// process (a build, an update, a fetch) before it fails: several agents
@@ -44,6 +45,7 @@ mod scip;
 mod sql;
 pub mod store;
 mod summary;
+mod text;
 mod tokens;
 pub mod tools;
 
@@ -63,16 +65,16 @@ pub use duplicates::{
 #[cfg(feature = "llama")]
 pub use llama::{LlamaModelFile, LlamaSummarizer, MAX_NEW_TOKENS};
 pub use query::{
-    CallEdge, Callees, Counts, External, FileInfo, Lookup, ModuleInfo, NoSymbolCallee, PathStep,
-    SearchHit, SearchMode, SearchResult, SymbolInfo,
+    CallEdge, Callees, Counts, Coverage, External, FileInfo, Lookup, ModuleInfo, NoSymbolCallee,
+    PathStep, Reference, References, SearchHit, SearchMode, SearchResult, SymbolInfo, SymbolSource,
 };
 pub use rules::{Decision, Origin, RuleSet};
 pub use rust_analyzer::BuildOptions;
 pub use schema::SCHEMA_VERSION;
 pub use summary::{
-    FakeSummarizer, Level, LevelCount, MODEL_FILE_NAME, SUMMARIZED_KINDS, SYSTEM_PROMPT,
-    SummarizeOptions, Summarizer, SummaryCall, SummaryReport, SummaryRequest, link, model_path,
-    summarize, vector_model_name,
+    DECLARATIONS_KIND, FakeSummarizer, Level, LevelCount, MODEL_FILE_NAME, SUMMARIZED_KINDS,
+    SYSTEM_PROMPT, SummarizeOptions, Summarizer, SummaryCall, SummaryReport, SummaryRequest,
+    declaration_lines, link, model_path, summarize, vector_model_name,
 };
 
 /// The index of a checkout, from its root (COLLIERY-T-1852). A build does not
@@ -99,6 +101,9 @@ pub struct BuildReport {
     pub scip: Option<ScipRun>,
     /// The token vectors of the functions (COLLIERY-T-1857).
     pub token_vectors: TokenVectorStats,
+    /// The uses of symbols that SCIP gave, or that the base kept
+    /// (KAIROS-T-0419).
+    pub refs: usize,
 }
 
 /// The token vectors of a build: made from the code, or reused from the
@@ -482,6 +487,7 @@ fn build(
         edges: EdgeStats::default(),
         scip: None,
         token_vectors: TokenVectorStats::default(),
+        refs: 0,
     };
     let cache = match parse {
         Parse::Changed => parse_cache::Reader::open(db)?,
@@ -577,6 +583,7 @@ fn build(
     let tx = conn.transaction()?;
     tx.execute_batch(
         "DELETE FROM edge_candidates; DELETE FROM edges; DELETE FROM scip_covered;
+         DELETE FROM refs; DELETE FROM refs_files;
          DELETE FROM symbols; DELETE FROM files; DELETE FROM modules;",
     )?;
     {
@@ -593,6 +600,7 @@ fn build(
 
         let mut parsed = Vec::new();
         let mut file_ids = Vec::new();
+        let mut hashes = Vec::new();
         for p in &prepared {
             insert_file.execute(params![
                 p.rel,
@@ -658,9 +666,18 @@ fn build(
                 macro_ranges: &found.macro_ranges,
             });
             file_ids.push(file_id);
+            hashes.push(p.file.content_hash.as_str());
         }
 
         let resolved = edges::resolve(&parsed, rust);
+        // The uses of each symbol (KAIROS-T-0419).
+        let source = match (&scip_index, &mode) {
+            (Some((index, crates)), _) => refs::Source::Scip(index, crates),
+            (None, Mode::Keep(bases)) => refs::Source::Base { bases, workspace },
+            _ => refs::Source::Nothing,
+        };
+        let uses = refs::resolve(&parsed, &hashes, source);
+        report.refs = uses.refs.len();
         report.edges = resolved.stats;
         let new_edges = resolved.edges;
         let mut insert_covered =
@@ -695,7 +712,27 @@ fn build(
                 insert_candidate.execute(params![edge_id, c])?;
             }
         }
+        let mut insert_refs_file =
+            tx.prepare("INSERT INTO refs_files (file_id, pending) VALUES (?1, ?2)")?;
+        for (file, pending) in &uses.files {
+            insert_refs_file.execute(params![file_ids[*file], pending])?;
+        }
+        let mut insert_ref = tx.prepare(
+            "INSERT INTO refs (file_id, target_id, enclosing_id, line, col, use_kind)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?;
+        for r in &uses.refs {
+            insert_ref.execute(params![
+                file_ids[r.file],
+                r.target_id,
+                r.enclosing_id,
+                r.line as i64,
+                r.col as i64,
+                r.kind,
+            ])?;
+        }
     }
+    text::refresh(&tx)?;
     parse_cache::write(&tx, &used_keys, &fresh)?;
     tx.commit()?;
     Ok(report)
@@ -762,6 +799,32 @@ struct FileContent {
     content_hash: String,
 }
 
+/// The hash that the index keeps for the bytes of a file that it read: the
+/// sha256, in hex.
+pub(crate) fn content_hash(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// The bytes of the file at `path` that the index reads: the first
+/// [`READ_LIMIT`] bytes. `None` when the file is not there.
+pub(crate) fn read_indexed_bytes(path: &Path) -> Result<Option<Vec<u8>>, IndexError> {
+    let io = |source| IndexError::Io {
+        path: path.to_path_buf(),
+        source,
+    };
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(io(e)),
+    };
+    let mut bytes = Vec::new();
+    file.take(READ_LIMIT).read_to_end(&mut bytes).map_err(io)?;
+    Ok(Some(bytes))
+}
+
 fn read_file(path: &Path) -> Result<FileContent, IndexError> {
     let io = |source| IndexError::Io {
         path: path.to_path_buf(),
@@ -775,10 +838,7 @@ fn read_file(path: &Path) -> Result<FileContent, IndexError> {
         .read_to_end(&mut bytes)
         .map_err(io)?;
     let complete = (bytes.len() as u64) == size;
-    let content_hash = Sha256::digest(&bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    let content_hash = content_hash(&bytes);
     let (text, utf8) = match String::from_utf8(bytes) {
         Ok(text) => (text, true),
         Err(e) => (String::from_utf8_lossy(e.as_bytes()).into_owned(), false),
@@ -1176,6 +1236,153 @@ mod tests {
         std::fs::remove_file(repo.join("b.py")).unwrap();
         std::fs::write(repo.join("d.py"), "def d():\n    return 4\n").unwrap();
         assert_eq!(changed_files(&repo, &db).unwrap(), ["a.py", "b.py", "d.py"]);
+    }
+
+    /// KAIROS-T-0423: a build and a summary run keep the text table of the
+    /// search in step with the symbols and their summaries.
+    #[test]
+    fn an_update_keeps_the_text_of_the_search_in_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("a.py"), "def parse_policy():\n    return 1\n").unwrap();
+        let db = dir.path().join("index.sqlite");
+        let names = |query: &str| -> Vec<String> {
+            Index::open(&db)
+                .unwrap()
+                .search(query, None, 10)
+                .unwrap()
+                .hits
+                .into_iter()
+                .map(|h| h.symbol.name)
+                .collect()
+        };
+
+        build_structure(&repo, &db).unwrap();
+        assert_eq!(names("parsed policies"), ["parse_policy"]);
+        assert!(names("summary").is_empty());
+
+        // The fake summary is "A symbol summary, <digest>.".
+        let embedder = kairos_embed::DeterministicProvider::default();
+        let mut fake = FakeSummarizer::default();
+        update(&repo, &db, &mut fake, &embedder, &UpdateOptions::default()).unwrap();
+        assert_eq!(names("summary"), ["parse_policy"]);
+
+        // A changed tree: the old symbol goes, the new one is found.
+        std::fs::write(repo.join("a.py"), "def validate_policy():\n    return 1\n").unwrap();
+        update(&repo, &db, &mut fake, &embedder, &UpdateOptions::default()).unwrap();
+        assert!(names("parsed").is_empty());
+        assert_eq!(names("validated"), ["validate_policy"]);
+    }
+
+    /// KAIROS-T-0422: test code ranks below the other code, with and
+    /// without summaries, unless the query is about tests. A Rust helper in
+    /// tests/ is test code.
+    #[test]
+    fn test_code_ranks_below_unless_the_query_is_about_tests() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::create_dir_all(repo.join("tests")).unwrap();
+        std::fs::write(repo.join("src/lib.rs"), "pub fn load_policy() {}\n").unwrap();
+        std::fs::write(
+            repo.join("tests/policy.rs"),
+            "fn load_policy_policy_sample() {}\n\n#[test]\nfn load_policy_policy_works() {}\n",
+        )
+        .unwrap();
+        let db = dir.path().join("index.sqlite");
+        let found = |query: &str| -> (query::SearchMode, Vec<(String, bool)>) {
+            let result = Index::open(&db).unwrap().search(query, None, 10).unwrap();
+            let hits = result
+                .hits
+                .into_iter()
+                .map(|h| (h.symbol.name, h.symbol.is_test))
+                .collect();
+            (result.mode, hits)
+        };
+        let check = |mode: query::SearchMode| {
+            // The names of the tests have "policy" two times, so their text
+            // rank is above the source.
+            let (got, hits) = found("load policy");
+            assert_eq!(got, mode);
+            assert_eq!(hits.len(), 3, "{hits:?}");
+            assert_eq!(hits[0], ("load_policy".to_string(), false), "{hits:?}");
+            assert!(hits[1].1 && hits[2].1, "{hits:?}");
+            let (_, hits) = found("how is load policy tested");
+            assert!(hits[0].1, "{hits:?}");
+            assert_eq!(hits[2], ("load_policy".to_string(), false), "{hits:?}");
+        };
+
+        build_structure(&repo, &db).unwrap();
+        check(query::SearchMode::Names);
+
+        let embedder = kairos_embed::DeterministicProvider::default();
+        let mut fake = FakeSummarizer::default();
+        update(&repo, &db, &mut fake, &embedder, &UpdateOptions::default()).unwrap();
+        check(query::SearchMode::SummaryText);
+    }
+
+    /// KAIROS-T-0424: a type and its impl blocks give one result, at the
+    /// place of the type; a method stays a result of its own, and the limit
+    /// counts the results, not the impl blocks.
+    #[test]
+    fn a_type_and_its_impl_blocks_give_one_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(
+            repo.join("src/lib.rs"),
+            "pub struct Policy {\n    pub name: String,\n}\n\n\
+             impl Policy {\n    pub fn policy_name(&self) -> &str {\n        &self.name\n    }\n}\n\n\
+             impl Default for Policy {\n    fn default() -> Self {\n        Policy { name: String::new() }\n    }\n}\n\n\
+             pub fn load_policy() -> Policy {\n    Policy::default()\n}\n",
+        )
+        .unwrap();
+        let db = dir.path().join("index.sqlite");
+        let found = |query: &str, limit: usize| -> Vec<(String, String, String)> {
+            Index::open(&db)
+                .unwrap()
+                .search(query, None, limit)
+                .unwrap()
+                .hits
+                .into_iter()
+                .map(|h| {
+                    (
+                        h.symbol.qualified(),
+                        h.symbol.kind.clone(),
+                        h.symbol.place(),
+                    )
+                })
+                .collect()
+        };
+        let check = || {
+            let hits = found("policy", 10);
+            let policy: Vec<_> = hits.iter().filter(|h| h.0 == "Policy").collect();
+            assert_eq!(policy.len(), 1, "{hits:#?}");
+            assert_eq!(policy[0].1, "struct", "{hits:#?}");
+            assert_eq!(policy[0].2, "src/lib.rs:1", "{hits:#?}");
+            assert!(hits.iter().all(|h| h.1 != "implementation"), "{hits:#?}");
+            assert!(
+                hits.iter().any(|h| h.0 == "Policy::policy_name"),
+                "{hits:#?}"
+            );
+            assert!(hits.iter().any(|h| h.0 == "Policy::default"), "{hits:#?}");
+            assert!(hits.iter().any(|h| h.0 == "load_policy"), "{hits:#?}");
+            // 4 results of 6 symbols: the 2 impl blocks take no place of
+            // the limit.
+            assert_eq!(hits.len(), 4, "{hits:#?}");
+            assert_eq!(found("policy", 3), hits[..3]);
+        };
+
+        build_structure(&repo, &db).unwrap();
+        check();
+
+        let embedder = kairos_embed::DeterministicProvider::default();
+        let mut fake = FakeSummarizer::default();
+        update(&repo, &db, &mut fake, &embedder, &UpdateOptions::default()).unwrap();
+        // The fake summaries do not say "policy": the text of the names
+        // finds the same results.
+        check();
     }
 
     /// COLLIERY-T-1854: with no model, each key that the pool has is linked,

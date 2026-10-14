@@ -6,11 +6,14 @@
 # feature. Otherwise cucumber shows it as skipped, with the reason.
 Feature: Summaries
 
-  Scenario: Each symbol that is not a test gets one summary
+  # KAIROS-T-0421 (Dylan, 2026-10-13): test code gets a summary too. It
+  # keeps its test mark.
+  Scenario: Each symbol gets one summary, test code too
     Given the polyglot fixture and the fake summarizer
     When I summarize the index
-    Then each symbol that is not test code has a summary and a vector
-    And no test symbol has a summary
+    Then each symbol of a summarized kind has a summary and a vector
+    And each test symbol and each test file has a summary, and the test symbols are marked as test code
+    And the count of summarizable symbols has the test symbols
 
   # KAIROS-T-0349: an impl block and a constant get a summary too. The input
   # of an impl block is its header and the declarations of its functions,
@@ -33,6 +36,18 @@ Feature: Summaries
     When I summarize the index
     Then the input to each file summary is the summaries of its symbols, not the code of the file
 
+  # KAIROS-T-0425 (Dylan, 2026-10-13): a file of declarations, such as a
+  # lib.rs of mod and use lines, gets a summary from these lines and its //!
+  # comment. A file with none of these gets no summary, and the module map
+  # says "declarations only".
+  Scenario: A file of declarations gets a summary from its declarations and its doc comment
+    Given the policy fixture and the fake summarizer
+    When I summarize the index
+    Then the input to the summary of src/lib.rs is its //! comment and its mod and use lines
+    And src/macros.rs has no summary, and the module map says that it has declarations only
+    When I summarize the index
+    Then the summary of src/lib.rs comes from the pool
+
   Scenario: A change in a callee does not change the key of its caller
     Given a summarized index
     When the body of a function changes and its signature stays the same
@@ -45,7 +60,7 @@ Feature: Summaries
   Scenario: The requests go to the summarizer in batches of its concurrency
     Given the polyglot fixture and a fake summarizer that takes 4 requests at once
     When I summarize the index
-    Then each symbol that is not test code has a summary and a vector
+    Then each symbol of a summarized kind has a summary and a vector
     And the summarizer got batches of at most 4 requests, and one batch of 4
 
   # KAIROS-T-0338: the model is part of each key, so a change of model

@@ -72,6 +72,9 @@ pub struct Strategy {
 /// mirror of: `kairos_client::types::ItemOwner` (partial).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct ItemOwner {
+    /// The person (UUID). The board groups the cards by it (KAIROS-T-0416).
+    #[serde(default)]
+    pub user_id: String,
     pub display_name: String,
 }
 
@@ -131,6 +134,9 @@ pub struct TaskCancellation {
 /// mirror of: `kairos_client::types::TaskClaim` (partial — card fields).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct TaskClaim {
+    /// The person (UUID). The board groups the cards by it (KAIROS-T-0416).
+    #[serde(default)]
+    pub user_id: String,
     pub display_name: String,
     /// True when the agent of the person made the claim.
     #[serde(default)]

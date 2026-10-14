@@ -39,6 +39,10 @@ pub enum IndexCommandError {
     Index(#[from] kairos_index::IndexError),
     #[error("The MCP server stopped: {0}.")]
     Server(String),
+    /// The symbol of a command is not found, or is not one symbol: the
+    /// error of the code tools (KAIROS-T-0419).
+    #[error(transparent)]
+    Symbol(Box<ToolError>),
 }
 
 impl From<IndexCommandError> for CliError {
@@ -70,13 +74,14 @@ pub enum ToolError {
     Download { commit: String, why: String },
     #[error(transparent)]
     Command(#[from] IndexCommandError),
-    #[error("No symbol has the name {0:?}.")]
-    NoSymbol(String),
-    #[error("{count} symbols have the name {name:?}. Give the argument `file` to choose one.")]
+    #[error("No symbol has the name {name:?}{place}.")]
+    NoSymbol { name: String, place: Place },
+    #[error("{count} symbols have the name {name:?}. {choose}")]
     Ambiguous {
         name: String,
         count: usize,
         candidates: Vec<String>,
+        choose: Choose,
     },
     #[error(
         "The call has the argument {argument:?}. This tool does not accept that argument. {known}"
@@ -100,6 +105,90 @@ pub enum ToolError {
     Index(#[from] kairos_index::IndexError),
 }
 
+/// Where the agent looked for a symbol that is not there: the end of the
+/// text of [`ToolError::NoSymbol`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum Place {
+    Anywhere,
+    File(String),
+    Line(u32),
+    FileAndLine(String, u32),
+}
+
+impl Place {
+    pub fn of(file: Option<&str>, line: Option<u32>) -> Place {
+        match (file, line) {
+            (None, None) => Place::Anywhere,
+            (Some(file), None) => Place::File(file.to_string()),
+            (None, Some(line)) => Place::Line(line),
+            (Some(file), Some(line)) => Place::FileAndLine(file.to_string(), line),
+        }
+    }
+}
+
+impl std::fmt::Display for Place {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Place::Anywhere => Ok(()),
+            Place::File(file) => write!(f, " in the file {file:?}"),
+            Place::Line(line) => write!(f, " at line {line}"),
+            Place::FileAndLine(file, line) => write!(f, " in the file {file:?} at line {line}"),
+        }
+    }
+}
+
+/// The advice of [`ToolError::Ambiguous`] (KAIROS-T-0417): `file` when the
+/// candidates are in different files, `line` when they are in one file.
+/// The fields are the names of the arguments of the tool (`path` has
+/// `from_file` and `from_line`).
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum Choose {
+    #[error(
+        "Give the argument `{file}` to choose one. Or give a candidate from the list as `{symbol}`."
+    )]
+    File {
+        symbol: &'static str,
+        file: &'static str,
+    },
+    #[error(
+        "They are in one file. Give the argument `{line}` to choose one. Or give a candidate from the list as `{symbol}`."
+    )]
+    Line {
+        symbol: &'static str,
+        line: &'static str,
+    },
+    #[error(
+        "Give the arguments `{file}` and `{line}` to choose one. Or give a candidate from the list as `{symbol}`."
+    )]
+    FileAndLine {
+        symbol: &'static str,
+        file: &'static str,
+        line: &'static str,
+    },
+}
+
+/// The names of the arguments that choose one symbol in a tool.
+#[derive(Debug, Clone, Copy)]
+pub struct SymbolArguments {
+    pub symbol: &'static str,
+    pub file: &'static str,
+    pub line: &'static str,
+}
+
+impl Choose {
+    /// The advice for candidates in `files` different files of `count`.
+    pub fn of(files: usize, count: usize, args: SymbolArguments) -> Choose {
+        let SymbolArguments { symbol, file, line } = args;
+        if files <= 1 {
+            Choose::Line { symbol, line }
+        } else if files == count {
+            Choose::File { symbol, file }
+        } else {
+            Choose::FileAndLine { symbol, file, line }
+        }
+    }
+}
+
 impl ToolError {
     /// The stable code of the error, as the Kairos server gives it.
     pub fn code(&self) -> &'static str {
@@ -110,7 +199,7 @@ impl ToolError {
             ToolError::NoBaseIndex { .. } => "NO_BASE_INDEX",
             ToolError::Download { .. } => "DOWNLOAD",
             ToolError::Command(_) => "INDEX",
-            ToolError::NoSymbol(_) => "NOT_FOUND",
+            ToolError::NoSymbol { .. } => "NOT_FOUND",
             ToolError::Ambiguous { .. } => "AMBIGUOUS",
             ToolError::UnknownArgument { .. }
             | ToolError::MissingArgument { .. }

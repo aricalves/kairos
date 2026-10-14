@@ -14,7 +14,7 @@
 #[path = "index_bdd/base.rs"]
 mod base;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -94,7 +94,17 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
         "enqueue_all",
         "Puts each number of a slice on a new queue and returns the queue.",
     ),
+    // KAIROS-T-0421: test code gets a summary too.
+    (
+        "python/tests/test_report.py",
+        "test_render_joins_rows",
+        "Checks that a report puts each row on its own line.",
+    ),
 ];
+
+/// A search for what a test checks, with no word of its name. It has the
+/// word "test", so test code ranks with the other code (KAIROS-T-0422).
+const TEST_QUERY: &str = "which test puts each row on its own line";
 
 /// The description that the agent searches with: the words of the summary
 /// of `Stack::pop`, written as a question.
@@ -256,6 +266,8 @@ struct CliWorld {
     agent: Option<Agent>,
     /// The result of the last tool call.
     result: Option<ToolResult>,
+    /// The texts of some calls of one step.
+    texts: Vec<String>,
     /// The scenarios of the base index.
     base: base::BaseWorld,
 }
@@ -419,6 +431,19 @@ fn an_index(world: &mut CliWorld) {
     world.build_index();
 }
 
+/// The deterministic vectors are a hash of the text: their rank is noise.
+/// A scenario that checks the text rank removes them (KAIROS-T-0423).
+#[given("an index of the polyglot fixture whose summaries have no vectors")]
+fn an_index_with_no_vectors(world: &mut CliWorld) {
+    an_index(world);
+    let conn = rusqlite::Connection::open(world.db()).expect("open the index");
+    conn.execute_batch(
+        "UPDATE summaries SET vector = NULL;
+         DELETE FROM pool_meta WHERE name = 'vector_model';",
+    )
+    .expect("remove the vectors");
+}
+
 #[given("the polyglot fixture, where main reaches target by 2 different routes")]
 fn an_index_with_two_routes(world: &mut CliWorld) {
     world.copy_fixture();
@@ -456,6 +481,11 @@ fn search_for_pop(world: &mut CliWorld) {
     world.call("code_search", json!({"query": POP_QUERY}));
 }
 
+#[when("an agent calls code_search with what a test checks")]
+fn search_for_a_test(world: &mut CliWorld) {
+    world.call("code_search", json!({"query": TEST_QUERY}));
+}
+
 #[when("an agent calls callers for that function")]
 fn callers_of_load(world: &mut CliWorld) {
     world.call(
@@ -485,6 +515,65 @@ fn path_from_main_to_target(world: &mut CliWorld) {
 #[when("an agent calls symbol with an argument that the tool does not have")]
 fn symbol_with_unknown_argument(world: &mut CliWorld) {
     world.call("symbol", json!({"symbol": "pop", "verbose": true}));
+}
+
+// KAIROS-T-0419: each use of a symbol.
+
+#[when(expr = "an agent calls references for {string} in {string}")]
+fn references_in_file(world: &mut CliWorld, name: String, file: String) {
+    world.call("references", json!({"symbol": name, "file": file}));
+}
+
+#[when("an agent calls references with an argument that the tool does not have")]
+fn references_with_unknown_argument(world: &mut CliWorld) {
+    world.call("references", json!({"symbol": "Queue", "verbose": true}));
+}
+
+#[then(
+    "the result has the uses of the type by file, each with its line, its kind and the symbol that holds it"
+)]
+fn uses_of_the_type(world: &mut CliWorld) {
+    let text = world.text();
+    let expected = "8 uses of Queue (src/queue.rs:4) in 2 files: 4 type, 3 field, 1 import.\n\
+         src/lib.rs:\n\
+         - line 8: import, at the top of the file\n\
+         - line 12: type, in enqueue_all\n\
+         - line 13: type, in enqueue_all\n\
+         src/queue.rs:\n\
+         - line 8: type, in Queue\n\
+         - line 10: type, in Queue::new\n\
+         - line 11: field, in Queue::new\n\
+         - line 16: field, in Queue::push\n\
+         - line 20: field, in Queue::len";
+    assert_eq!(text, expected);
+}
+
+#[then("the result has the 2 calls, and it says that it has the calls only for python code")]
+fn python_calls_only(world: &mut CliWorld) {
+    let text = world.text();
+    assert!(
+        text.starts_with(
+            "2 uses of Report (python/polyglot/report.py:9) in 2 files: 2 call. For python \
+             code, the index has the calls only:"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("python/polyglot/report.py:\n- line 19: call, in build_report, by name"),
+        "{text}"
+    );
+}
+
+#[then(expr = "{string} gives the same text")]
+fn the_cli_gives_the_same_text(world: &mut CliWorld, command: String) {
+    let args: Vec<&str> = command
+        .strip_prefix("kairos ")
+        .expect("a kairos command")
+        .split(' ')
+        .collect();
+    let root = world.root().to_path_buf();
+    let out = kairos(&args, &root);
+    assert_eq!(out.trim_end(), world.text().trim_end());
 }
 
 #[when("an agent calls duplicates")]
@@ -561,6 +650,17 @@ fn pop_in_top_three(world: &mut CliWorld) {
             .iter()
             .any(|l| l.contains("Stack::pop") && l.contains("src/stack.rs")),
         "Stack::pop is not in the first 3 results:\n{text}"
+    );
+}
+
+#[then("the first result is that test, marked as test code, with its summary")]
+fn the_test_first(world: &mut CliWorld) {
+    let text = world.text();
+    let first = numbered(text).into_iter().next().expect("no result");
+    assert!(
+        first.contains("test_render_joins_rows (python/tests/test_report.py:")
+            && first.contains(", function, test code: Checks that a report puts each row"),
+        "the test is not the first result:\n{text}"
     );
 }
 
@@ -661,6 +761,166 @@ fn refused(world: &mut CliWorld) {
         result.text
     );
     assert!(result.text.contains("\"verbose\""), "{}", result.text);
+    // A tool that takes `symbol` lists `line` too (KAIROS-T-0417).
+    // `duplicates` has neither.
+    if result.text.contains("\"symbol\"") {
+        assert!(result.text.contains("\"line\""), "{}", result.text);
+    }
+    // `symbol` lists `source` too (KAIROS-T-0420). `callers` and
+    // `references` list `possible` in its place.
+    if result.text.contains("\"symbol\"") && !result.text.contains("\"possible\"") {
+        assert!(result.text.contains("\"source\""), "{}", result.text);
+    }
+}
+
+// KAIROS-T-0417: the choice of one symbol.
+
+#[when(expr = "an agent calls symbol and callers for {string} in {string}")]
+fn symbol_and_callers_in_file(world: &mut CliWorld, name: String, file: String) {
+    world.call("symbol", json!({"symbol": name, "file": file}));
+    let symbol = world.text().to_string();
+    world.call("callers", json!({"symbol": name, "file": file}));
+    let callers = world.text().to_string();
+    world.texts = vec![symbol, callers];
+}
+
+#[then("the 2 results are about the struct")]
+fn about_the_struct(world: &mut CliWorld) {
+    let [symbol, callers] = world.texts.as_slice() else {
+        panic!("not 2 results: {:?}", world.texts);
+    };
+    assert!(
+        symbol.starts_with("Checksum (struct, rust)\nFile: src/checksum.rs:6-"),
+        "{symbol}"
+    );
+    assert!(
+        callers.contains(" of Checksum (src/checksum.rs:6):"),
+        "{callers}"
+    );
+}
+
+#[when(expr = "an agent calls symbol for {string} with no file")]
+fn symbol_with_no_file(world: &mut CliWorld, name: String) {
+    world.call("symbol", json!({"symbol": name}));
+}
+
+#[then("the error lists the 2 structs and tells the agent to give the file")]
+fn lists_the_structs(world: &mut CliWorld) {
+    let result = world.result();
+    assert!(result.is_error, "{}", result.text);
+    assert_eq!(
+        result.text,
+        "AMBIGUOUS: 2 symbols have the name \"Checksum\". Give the argument `file` to choose \
+         one. Or give a candidate from the list as `symbol`.\ndetails: {\"candidates\":\
+         [\"Checksum (src/checksum.rs:6)\",\"Checksum (src/legacy.rs:4)\"]}"
+    );
+}
+
+#[then("each candidate in the list, given back as the symbol, gives that symbol")]
+fn candidates_given_back(world: &mut CliWorld) {
+    for (candidate, file, line) in [
+        ("Checksum (src/checksum.rs:6)", "src/checksum.rs", 6),
+        ("Checksum (src/legacy.rs:4)", "src/legacy.rs", 4),
+    ] {
+        world.call("symbol", json!({ "symbol": candidate }));
+        let text = world.text();
+        assert!(
+            text.starts_with(&format!("Checksum (struct, rust)\nFile: {file}:{line}-")),
+            "{candidate}: {text}"
+        );
+    }
+    // The impl block, by its line.
+    world.call(
+        "symbol",
+        json!({"symbol": "Checksum", "file": "src/checksum.rs", "line": 10}),
+    );
+    let text = world.text();
+    assert!(
+        text.starts_with("Checksum (implementation, rust)\nFile: src/checksum.rs:10-"),
+        "{text}"
+    );
+}
+
+// KAIROS-T-0422: a helper in a Rust tests/ folder is test code.
+
+#[when(expr = "an agent calls symbol, code_search and module_map for {string} in {string}")]
+fn symbol_search_and_map(world: &mut CliWorld, name: String, file: String) {
+    world.call("symbol", json!({"symbol": name, "file": file}));
+    let symbol = world.text().to_string();
+    world.call("code_search", json!({"query": name, "limit": 50}));
+    let search = world.text().to_string();
+    world.call("module_map", json!({}));
+    let map = world.text().to_string();
+    world.texts = vec![symbol, search, map];
+}
+
+#[then("each of the 3 results marks tests/common/mod.rs and its helper as test code")]
+fn the_helper_is_test_code(world: &mut CliWorld) {
+    let [symbol, search, map] = world.texts.as_slice() else {
+        panic!("not 3 results: {:?}", world.texts);
+    };
+    assert!(
+        symbol.starts_with("helper (function, rust)\nFile: tests/common/mod.rs:")
+            && symbol.contains("\nThis is test code."),
+        "{symbol}"
+    );
+    assert!(
+        numbered(search)
+            .iter()
+            .any(|l| l.contains("helper (tests/common/mod.rs:")
+                && l.contains(", function, test code")),
+        "{search}"
+    );
+    assert!(
+        map.lines()
+            .any(|l| l.starts_with("- tests/common/mod.rs") && l.contains("test code")),
+        "{map}"
+    );
+}
+
+// KAIROS-T-0420: the source of a symbol.
+
+#[when(expr = "an agent calls symbol for {string} in {string} with source")]
+fn symbol_with_source(world: &mut CliWorld, name: String, file: String) {
+    world.call(
+        "symbol",
+        json!({"symbol": name, "file": file, "source": true}),
+    );
+}
+
+#[then("the result has the source of the struct, from the checkout")]
+fn the_source_of_the_struct(world: &mut CliWorld) {
+    let text = world.text();
+    assert!(
+        text.ends_with(
+            "\nSource: lines 6-8, 37 bytes.\n```rust\npub struct Checksum {\n    sum: u32,\n}\n```"
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("Warning:"), "{text}");
+}
+
+#[when(expr = "the file {string} changes and the agent calls symbol with source again")]
+fn the_file_changes(world: &mut CliWorld, file: String) {
+    let path = world.root().join(&file);
+    let old = fs::read_to_string(&path).expect("read the file");
+    fs::write(&path, format!("// A new first line.\n{old}")).expect("write the file");
+    world.call(
+        "symbol",
+        json!({"symbol": "Checksum", "file": file, "source": true}),
+    );
+}
+
+#[then("the result says that the source can be different from the symbol")]
+fn the_source_can_differ(world: &mut CliWorld) {
+    let text = world.text();
+    assert!(
+        text.contains(
+            "Source: lines 6-8, 37 bytes. Warning: the file changed after the last index \
+             update. The source can be different from the symbol. Run `kairos index update`."
+        ),
+        "{text}"
+    );
 }
 
 #[then("the result has the exact copy of checksum, with the files, the lines and a score")]
@@ -709,6 +969,14 @@ fn each_module(world: &mut CliWorld) {
     let index = world.index();
     let modules = index.modules().expect("modules");
     assert!(modules.len() >= 3, "{modules:?}");
+    let tests: BTreeSet<String> = index
+        .files()
+        .expect("files")
+        .into_iter()
+        .filter(|f| f.decision == "test")
+        .map(|f| f.path)
+        .collect();
+    let mut summarized_tests = 0;
     let mut files_of: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     for (path, key) in index.file_summary_keys().expect("file keys") {
         let Some(key) = key else { continue };
@@ -745,13 +1013,20 @@ fn each_module(world: &mut CliWorld) {
             "{module} has no summary line:\n{text}"
         );
         for (file, file_summary) in files_of.get(module).into_iter().flatten() {
-            let line = format!("- {file}: {file_summary}");
+            // A test file has a summary too, and the mark (KAIROS-T-0421).
+            let line = if tests.contains(file) {
+                summarized_tests += 1;
+                format!("- {file} (test code): {file_summary}")
+            } else {
+                format!("- {file}: {file_summary}")
+            };
             assert!(
                 section.contains(&line.as_str()),
                 "{module} does not list {file}:\n{text}"
             );
         }
     }
+    assert!(summarized_tests > 0, "no test file has a summary:\n{text}");
 }
 
 #[tokio::main]

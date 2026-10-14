@@ -73,6 +73,8 @@ tempfile = "3.14.0"
 # The scenarios of `kairos index` (COLLIERY-T-1852): cucumber, and the
 # deterministic vectors of the indexes that they build.
 cucumber = "0.23"
+# Two scenarios remove the vectors of an index (KAIROS-T-0423).
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 # The scenarios in tests/features/. cucumber has its own runner, not libtest.
 [[test]]

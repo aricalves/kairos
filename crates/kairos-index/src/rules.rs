@@ -26,7 +26,8 @@ const DEFAULT_RULES: &str = include_str!("default-rules.toml");
 pub enum Decision {
     /// Hand-written code: parsed, and summarized later.
     Source,
-    /// Test code: parsed for the structure, never summarized.
+    /// Test code: parsed for the structure and summarized as source, with a
+    /// test mark (KAIROS-T-0421).
     Test,
     Vendored,
     Generated,
@@ -426,6 +427,31 @@ mod tests {
         }
     }
 
+    // KAIROS-T-0422: a Rust file in a tests/ folder is test harness code;
+    // a helper of another language in a test folder stays source.
+
+    #[test]
+    fn a_rust_helper_in_a_tests_folder_is_test_code() {
+        for path in [
+            "tests/common/mod.rs",
+            "crates/kairos-index/tests/bdd.rs",
+            "crates/kairos-server/tests/common/mod.rs",
+        ] {
+            check(file(path), Decision::Test, "rust-test-crate");
+        }
+        check(file("e2e/helpers/auth.ts"), Decision::Source, "test-helper");
+        check(
+            file("python/tests/helpers.py"),
+            Decision::Source,
+            "test-helper",
+        );
+        check(
+            file("crates/kairos-index/tests/fixtures/policy/src/lib.rs"),
+            Decision::Fixture,
+            "fixture-dir",
+        );
+    }
+
     // A sample of the trial's other files.
 
     #[test]
@@ -435,7 +461,7 @@ mod tests {
             ("crates/kairos-core/src/slug.rs", Source),
             ("scripts/render-openapi.py", Source),
             ("crates/kairos-web/app.css", Source),
-            ("crates/kairos-server/tests/common/mod.rs", Source),
+            ("crates/kairos-server/tests/common/mod.rs", Test),
             ("e2e/tests/theme.spec.ts", Test),
             ("uat/fixtures/team.ts", Source),
             ("e2e/helpers/auth.ts", Source),

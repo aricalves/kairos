@@ -4,12 +4,17 @@
 //! - [`Index::search`]: a search of the summaries. A text rank and a vector
 //!   rank are fused by reciprocal rank, as the search of the Kairos items
 //!   does (`kairos-core::retrieval`): a cosine and a text score have no common
-//!   scale, but 2 ranks do. With no summaries, the search reads the names,
-//!   the signatures and the paths. Test code ranks below the other
-//!   symbols (COLLIERY-T-1857).
+//!   scale, but 2 ranks do. The text rank is the FTS5 table of `text`, with
+//!   the Porter stemmer and BM25 (KAIROS-T-0423). With no summaries, the
+//!   search reads the names, the signatures and the paths. Test code ranks
+//!   below the other symbols, unless the query is about tests
+//!   (COLLIERY-T-1857, KAIROS-T-0422).
 //! - [`Index::lookup`]: a symbol from the name that an agent gives.
 //! - [`Index::callers`] and [`Index::callees`]: `certain` edges, and the
 //!   `possible` ones on request.
+//! - [`Index::references`]: each use of a symbol: the SCIP uses of a Rust
+//!   symbol (a type, a field, an import, a call), and the calls by name of
+//!   the other languages (KAIROS-T-0419).
 //! - [`Index::paths`]: the 3 shortest chains of `certain` calls from one
 //!   symbol to another, with other steps (COLLIERY-T-2531).
 //! - [`Index::module_map`]: the folders of source files with their
@@ -27,19 +32,40 @@ use crate::{Index, IndexError, SUMMARIZED_KINDS};
 /// 60 is the value of the paper and of the Kairos item search.
 const RRF_K: f64 = 60.0;
 
-/// BM25 constants.
-const BM25_K1: f64 = 1.2;
-const BM25_B: f64 = 0.75;
-
 /// The most edges that a search for a path follows from one symbol.
 const MAX_PATH_DEPTH: usize = 16;
 
-/// Words that tell nothing about code.
-const STOP_WORDS: &[&str] = &[
-    "a", "an", "and", "are", "as", "at", "be", "by", "does", "for", "from", "how", "in", "is",
-    "it", "its", "of", "on", "or", "that", "the", "this", "to", "what", "when", "where", "which",
-    "who", "with",
+/// The words that make a query about tests (KAIROS-T-0422): with one of
+/// them, test code ranks with the other code; with none, it ranks below it.
+/// A word of the query is compared after [`crate::text::words`] cuts it, so
+/// `test_parse` has "test".
+const TEST_WORDS: &[&str] = &[
+    "test",
+    "tests",
+    "testing",
+    "tested",
+    "spec",
+    "specs",
+    "fixture",
+    "fixtures",
+    "mock",
+    "mocks",
+    "mocked",
+    "mocking",
+    "stub",
+    "stubs",
+    "assert",
+    "asserts",
+    "assertion",
+    "assertions",
 ];
+
+/// True when `query` is about tests: it has a word of [`TEST_WORDS`].
+pub(crate) fn about_tests(query: &str) -> bool {
+    crate::text::words(query)
+        .iter()
+        .any(|w| TEST_WORDS.contains(&w.as_str()))
+}
 
 /// One symbol, as the tools show it.
 #[derive(Debug, Clone, PartialEq)]
@@ -118,7 +144,52 @@ pub struct NoSymbolCallee {
     pub call_line: u32,
 }
 
-/// What `callees` gives.
+/// One use of a symbol, as `references` shows it (KAIROS-T-0419).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Reference {
+    /// The file and the place of the use. The column is from 1.
+    pub file: String,
+    pub line: u32,
+    pub col: u32,
+    /// `call`, `type`, `field`, `import` or `other`.
+    pub kind: String,
+    /// The smallest symbol that holds the use. `None` at the top of a file.
+    pub enclosing: Option<SymbolInfo>,
+    /// `scip` for a use that SCIP gave; else the origin of the call edge:
+    /// `name` or `macro-text`.
+    pub origin: String,
+    /// `certain`, or `possible` for a call by a name that more than one
+    /// function has.
+    pub class: String,
+    /// The count of the candidates of a `possible` call.
+    pub candidates: usize,
+    /// A call by name that waits for a SCIP run.
+    pub scip_pending: bool,
+}
+
+/// What the index has for the uses of a symbol (KAIROS-T-0419).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Coverage {
+    /// Each use that SCIP gives: Rust, after a SCIP run.
+    Full,
+    /// Rust, but this count of files changed after the last SCIP run: they
+    /// have their calls only.
+    Pending(usize),
+    /// The calls only: the language has no SCIP run, or the index has no
+    /// SCIP data.
+    CallsOnly,
+}
+
+/// What `references` gives.
+#[derive(Debug, Clone, PartialEq)]
+pub struct References {
+    pub target: SymbolInfo,
+    /// By file, line and column.
+    pub uses: Vec<Reference>,
+    pub coverage: Coverage,
+}
+
+/// What `callees` gives./// What `callees` gives.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Callees {
     /// The callees with a symbol.
@@ -161,8 +232,12 @@ pub struct FileInfo {
     pub path: String,
     pub summary: Option<String>,
     pub symbols: usize,
-    /// Test code: parsed, never summarized (KAIROS-T-0352).
+    /// Test code (KAIROS-T-0352). It is summarized too (KAIROS-T-0421).
     pub is_test: bool,
+    /// The file has no symbol of a summarized kind (KAIROS-T-0425): only
+    /// declarations, such as `mod` and `use` lines. Its summary, if it has
+    /// one, comes from these and from its doc comment.
+    pub declarations_only: bool,
 }
 
 /// The counts of an index.
@@ -182,7 +257,8 @@ pub struct Counts {
     pub symbol_summaries: usize,
     pub file_summaries: usize,
     pub module_summaries: usize,
-    /// The symbols that can get a summary: functions and types, not test code.
+    /// The symbols that can get a summary: functions and types, test code
+    /// too (KAIROS-T-0421).
     pub summarizable: usize,
     /// All the summaries in the pool, also those of code that is gone.
     pub pool: usize,
@@ -281,7 +357,7 @@ impl Index {
             )?,
             summarizable: count(&format!(
                 "SELECT count(*) FROM symbols s JOIN files f ON f.id = s.file_id
-                 WHERE s.is_test = 0 AND f.decision = 'source' AND s.kind IN ({kinds})"
+                 WHERE f.decision IN ('source', 'test') AND s.kind IN ({kinds})"
             ))?,
             pool: count("SELECT count(*) FROM summaries")?,
             vector_model: self.vector_model()?,
@@ -315,12 +391,23 @@ impl Index {
     }
 
     /// The symbol that `symbol` names: `name`, `Container::name` or
-    /// `Container.name`. `file` is a path from the root, or its end; it
-    /// chooses among symbols of the same name. When more than one symbol
-    /// matches and only one of them is a function or a type, that one is
-    /// found (a Rust struct and its `impl` block have the same name).
-    pub fn lookup(&self, symbol: &str, file: Option<&str>) -> Result<Lookup, IndexError> {
-        let symbol = symbol.trim();
+    /// `Container.name`, or a candidate as an ambiguity lists it,
+    /// `name (file:line)`. `file` is a path from the root, or its end; it
+    /// chooses among symbols of the same name. `line` chooses the symbol that
+    /// starts on that line, or else the smallest one that holds it. `choose`
+    /// makes the choice among the symbols that are left (KAIROS-T-0417).
+    pub fn lookup(
+        &self,
+        symbol: &str,
+        file: Option<&str>,
+        line: Option<u32>,
+    ) -> Result<Lookup, IndexError> {
+        let (symbol, file, line) = match candidate_parts(symbol) {
+            Some((name, at_file, at_line)) => {
+                (name, file.or(Some(at_file)), line.or(Some(at_line)))
+            }
+            None => (symbol.trim(), file, line),
+        };
         let (container, name) = match symbol.rfind("::").map(|at| (at, 2)).or_else(|| {
             symbol
                 .rfind('.')
@@ -351,21 +438,7 @@ impl Index {
                 None => true,
             })
             .collect();
-        Ok(match found.len() {
-            0 => Lookup::Missing,
-            1 => Lookup::Found(found.into_iter().next().expect("one")),
-            _ => {
-                let typed: Vec<&SymbolInfo> = found
-                    .iter()
-                    .filter(|s| SUMMARIZED_KINDS.contains(&s.kind.as_str()))
-                    .collect();
-                if typed.len() == 1 {
-                    Lookup::Found(typed[0].clone())
-                } else {
-                    Lookup::Ambiguous(found)
-                }
-            }
-        })
+        Ok(choose(found, line))
     }
 
     fn symbol_by_id(&self, id: i64) -> Result<SymbolInfo, IndexError> {
@@ -504,6 +577,90 @@ impl Index {
         })
     }
 
+    /// The uses of the symbol `id` (KAIROS-T-0419): the SCIP uses of
+    /// `refs`, and the calls of the edges that `refs` does not have (by
+    /// name, in the text of a macro, or in a Rust file that changed after the
+    /// SCIP run). With `possible`, also the `possible` calls that have it as
+    /// a candidate. By file, line and column.
+    pub fn references(&self, id: i64, possible: bool) -> Result<References, IndexError> {
+        let target = self.symbol_by_id(id)?;
+        let enclosing_columns = SYMBOL_COLUMNS.replace("f.path", "sf.path");
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT f.path, r.line, r.col, r.use_kind, {enclosing_columns}
+             FROM refs r JOIN files f ON f.id = r.file_id
+             LEFT JOIN symbols s ON s.id = r.enclosing_id
+             LEFT JOIN files sf ON sf.id = s.file_id
+             LEFT JOIN summaries m ON m.key = s.summary_key
+             WHERE r.target_id = ?1"
+        ))?;
+        let rows = stmt.query_map([id], |r| {
+            Ok(Reference {
+                file: r.get(0)?,
+                line: r.get(1)?,
+                col: r.get(2)?,
+                kind: r.get(3)?,
+                enclosing: match r.get::<_, Option<i64>>(4)? {
+                    Some(_) => Some(symbol_info(r, 4)?),
+                    None => None,
+                },
+                origin: "scip".to_string(),
+                class: "certain".to_string(),
+                candidates: 0,
+                scip_pending: false,
+            })
+        })?;
+        let mut uses: Vec<Reference> = rows.collect::<Result<_, _>>()?;
+
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {SYMBOL_COLUMNS}, e.class, e.origin, e.line, e.col, e.scip_pending,
+                    (SELECT count(*) FROM edge_candidates c WHERE c.edge_id = e.id)
+             FROM edges e JOIN symbols s ON s.id = e.caller_id
+             JOIN files f ON f.id = s.file_id LEFT JOIN summaries m ON m.key = s.summary_key
+             WHERE ((e.callee_id = ?1 AND e.class = 'certain')
+                OR (?2 AND e.class = 'possible'
+                    AND e.id IN (SELECT edge_id FROM edge_candidates WHERE symbol_id = ?1)))
+               AND NOT (e.origin = 'scip'
+                    AND s.file_id IN (SELECT file_id FROM refs_files WHERE pending = 0))"
+        ))?;
+        let rows = stmt.query_map(params![id, possible], |r| {
+            let caller = symbol_info(r, 0)?;
+            Ok(Reference {
+                file: caller.file.clone(),
+                line: r.get(13)?,
+                col: r.get(14)?,
+                kind: "call".to_string(),
+                enclosing: Some(caller),
+                class: r.get(11)?,
+                origin: r.get(12)?,
+                scip_pending: r.get(15)?,
+                candidates: r.get::<_, i64>(16)? as usize,
+            })
+        })?;
+        for row in rows {
+            uses.push(row?);
+        }
+        uses.sort_by(|a, b| (&a.file, a.line, a.col).cmp(&(&b.file, b.line, b.col)));
+
+        let count = |sql: &str| -> Result<usize, IndexError> {
+            Ok(self.conn.query_row(sql, [], |r| r.get::<_, i64>(0))? as usize)
+        };
+        let coverage = if target.language != "rust"
+            || count("SELECT count(*) FROM refs_files WHERE pending = 0")? == 0
+        {
+            Coverage::CallsOnly
+        } else {
+            match count("SELECT count(*) FROM refs_files WHERE pending = 1")? {
+                0 => Coverage::Full,
+                n => Coverage::Pending(n),
+            }
+        };
+        Ok(References {
+            target,
+            uses,
+            coverage,
+        })
+    }
+
     /// The shortest chains of `certain` calls from the symbol `from` to the
     /// symbol `to`, at most `max`, shortest first, each with other steps
     /// (COLLIERY-T-2531). Each chain has at most 16 calls. Empty if no chain
@@ -554,18 +711,30 @@ impl Index {
     }
 
     /// The folders of the parsed files, with their summaries, by path: the
-    /// source files and the test files, which have no summary
-    /// (KAIROS-T-0352). `under` keeps the folders whose path starts with it.
+    /// source files and the test files (KAIROS-T-0352), each with its
+    /// summary (KAIROS-T-0421). `under` keeps the folders whose path starts
+    /// with it. A file with no symbol of a summarized kind is marked
+    /// `declarations_only` (KAIROS-T-0425).
     pub fn module_map(&self, under: Option<&str>) -> Result<Vec<ModuleInfo>, IndexError> {
-        let mut stmt = self.conn.prepare(
+        let kinds = SUMMARIZED_KINDS
+            .iter()
+            .map(|k| format!("'{k}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut stmt = self.conn.prepare(&format!(
             "SELECT f.path, m.summary, (SELECT count(*) FROM symbols s WHERE s.file_id = f.id),
-                    f.decision = 'test'
+                    f.decision = 'test',
+                    NOT EXISTS (SELECT 1 FROM symbols s
+                                WHERE s.file_id = f.id AND s.kind IN ({kinds}))
              FROM files f LEFT JOIN summaries m ON m.key = f.summary_key
              WHERE f.decision IN ('source', 'test') AND f.language IS NOT NULL
-             ORDER BY f.path",
-        )?;
-        let files: Vec<(String, Option<String>, i64, bool)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+             ORDER BY f.path"
+        ))?;
+        type Row = (String, Option<String>, i64, bool, bool);
+        let files: Vec<Row> = stmt
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?
             .collect::<Result<_, _>>()?;
         let mut stmt = self.conn.prepare(
             "SELECT d.path, m.summary FROM modules d JOIN summaries m ON m.key = d.summary_key",
@@ -574,7 +743,7 @@ impl Index {
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<Result<_, _>>()?;
         let mut modules: BTreeMap<String, Vec<FileInfo>> = BTreeMap::new();
-        for (path, summary, symbols, is_test) in files {
+        for (path, summary, symbols, is_test, declarations_only) in files {
             let folder = match path.rsplit_once('/') {
                 Some((folder, _)) => folder.to_string(),
                 None => ".".to_string(),
@@ -587,6 +756,7 @@ impl Index {
                 summary,
                 symbols: symbols as usize,
                 is_test,
+                declarations_only,
             });
         }
         Ok(modules
@@ -601,12 +771,22 @@ impl Index {
 
     /// Search the summaries for `query`, at most `limit` symbols.
     ///
-    /// The text rank is BM25 on the name, the container, the signature and
-    /// the summary. The vector rank is the cosine of the vector of the query
-    /// against each summary vector; it needs `embedder` to have the model of
-    /// the pool. A symbol with no summary (test code, or code that waits for
-    /// its summary) is ranked by its name, its signature and its path
+    /// The text rank is the BM25 of the FTS5 table `symbol_text` on the
+    /// name with its container, the signature and the summary, with the
+    /// Porter stemmer; a word of the name counts more (KAIROS-T-0423). The
+    /// vector rank is the cosine of the vector of the query against each
+    /// summary vector; it needs `embedder` to have the model of
+    /// the pool. A symbol with no summary (code that waits for its summary)
+    /// is ranked by its name, its signature and its path
     /// (KAIROS-T-0352); with no summary in the index, each symbol is.
+    ///
+    /// Test code ranks below each other symbol, in each mode, unless the
+    /// query is about tests ([`about_tests`], KAIROS-T-0422).
+    ///
+    /// A type and its impl blocks give one result: the type, with the best
+    /// score of the group ([`impl_owners`], KAIROS-T-0424). The methods
+    /// of the impl blocks stay results of their own. `limit` counts these
+    /// results.
     pub fn search(
         &self,
         query: &str,
@@ -628,23 +808,15 @@ impl Index {
         let summarized = rows.iter().any(|(s, _)| s.summary.is_some());
         let docs = rows;
 
-        let texts: Vec<Vec<String>> = docs
+        let at: HashMap<i64, usize> = docs
             .iter()
-            .map(|(s, _)| {
-                let mut text = format!(
-                    "{} {} {}",
-                    s.qualified(),
-                    s.signature.as_deref().unwrap_or(""),
-                    s.summary.as_deref().unwrap_or("")
-                );
-                if s.summary.is_none() {
-                    text.push(' ');
-                    text.push_str(&s.file);
-                }
-                words(&text)
-            })
+            .enumerate()
+            .map(|(i, (s, _))| (s.id, i))
             .collect();
-        let text_scores = bm25(&words(query), &texts);
+        let text_scores: Vec<(usize, f64)> = crate::text::rank(&self.conn, query)?
+            .into_iter()
+            .filter_map(|(id, score)| Some((*at.get(&id)?, score)))
+            .collect();
         let mut fused: HashMap<usize, f64> = HashMap::new();
         let text_ranks = ranked(&text_scores);
         for (rank, (doc, _)) in text_ranks.iter().enumerate() {
@@ -678,8 +850,8 @@ impl Index {
             for (rank, (doc, _)) in ranked(&cosines).into_iter().enumerate() {
                 *fused.entry(doc).or_default() += 1.0 / (RRF_K + rank as f64 + 1.0);
             }
-            // A symbol with no vector (no summary: test code, or code that
-            // waits for its summary) is in the text rank only. Its text rank
+            // A symbol with no vector (no summary: code that waits for its
+            // summary) is in the text rank only. Its text rank
             // counts for the vector rank too, so a good name match is not
             // below each symbol that is in both ranks (KAIROS-T-0352).
             for (rank, (doc, _)) in text_ranks.iter().enumerate() {
@@ -689,12 +861,26 @@ impl Index {
             }
         }
 
-        // With no summaries, test code ranks below each other symbol
-        // (COLLIERY-T-1857): the names of test functions often have the
-        // words of the query. With summaries, a test symbol (which has none)
-        // ranks by its own score, so the search can find it (KAIROS-T-0352).
-        let tests_last = mode == SearchMode::Names;
-        let mut order: Vec<(usize, f64)> = fused.into_iter().collect();
+        // A type and its impl blocks are one result (KAIROS-T-0424): the
+        // place of the type, the best score of the group. An impl block
+        // with no type in the index stays a result of its own.
+        let owners = impl_owners(&docs.iter().map(|(s, _)| s).collect::<Vec<_>>());
+        let mut folded: HashMap<usize, f64> = HashMap::new();
+        for (doc, score) in fused {
+            let at = owners.get(&doc).copied().unwrap_or(doc);
+            let best = folded.entry(at).or_insert(score);
+            *best = best.max(score);
+        }
+
+        // Test code ranks below each other symbol (COLLIERY-T-1857,
+        // KAIROS-T-0422): the names of test functions and the summaries of
+        // tests ("Tests that a policy document is parsed") often have the
+        // words of the query. It is a tier, not a factor on the score, so it
+        // holds in each mode, with and without summaries. A query about
+        // tests ranks all the code by its score, so the search finds a test
+        // by what it checks (KAIROS-T-0421).
+        let tests_last = !about_tests(query);
+        let mut order: Vec<(usize, f64)> = folded.into_iter().collect();
         order.sort_by(|a, b| {
             let (test_a, test_b) = if tests_last {
                 (docs[a.0].0.is_test, docs[b.0].0.is_test)
@@ -816,6 +1002,55 @@ fn shortest_chains(
     found
 }
 
+/// The kinds of a type that an impl block folds into (KAIROS-T-0424).
+const TYPE_KINDS: &[&str] = &["struct", "enum", "trait", "type_alias"];
+
+/// The type of each impl block of `symbols`, as positions: impl block →
+/// type (KAIROS-T-0424). A Rust `impl` block has the name of its type
+/// (`impl Shape for Square` is `Square`). The type has the same name, the
+/// same container and the same language:
+///
+/// 1. The one type in the file of the impl block.
+/// 2. Else the one type in the index: an impl block can be in a different
+///    file from its type.
+///
+/// With no type (an impl of a type from a different crate) or more than one
+/// (two types of one name in different files, and none in the file of the
+/// impl block), the impl block has no entry.
+pub(crate) fn impl_owners(symbols: &[&SymbolInfo]) -> HashMap<usize, usize> {
+    fn key(s: &SymbolInfo) -> (&str, Option<&str>, &str) {
+        (&s.name, s.container.as_deref(), &s.language)
+    }
+    let mut types: HashMap<(&str, Option<&str>, &str), Vec<usize>> = HashMap::new();
+    for (i, s) in symbols.iter().enumerate() {
+        if TYPE_KINDS.contains(&s.kind.as_str()) {
+            types.entry(key(s)).or_default().push(i);
+        }
+    }
+    let mut owners = HashMap::new();
+    for (i, s) in symbols.iter().enumerate() {
+        if s.kind != "implementation" {
+            continue;
+        }
+        let Some(all) = types.get(&key(s)) else {
+            continue;
+        };
+        let here: Vec<usize> = all
+            .iter()
+            .copied()
+            .filter(|&t| symbols[t].file == s.file)
+            .collect();
+        let owner = match (here.as_slice(), all.as_slice()) {
+            ([t], _) | ([], [t]) => Some(*t),
+            _ => None,
+        };
+        if let Some(t) = owner {
+            owners.insert(i, t);
+        }
+    }
+    owners
+}
+
 /// The documents with a score above 0, best first. Equal scores keep the
 /// order of the documents.
 fn ranked(scores: &[(usize, f64)]) -> Vec<(usize, f64)> {
@@ -824,98 +1059,158 @@ fn ranked(scores: &[(usize, f64)]) -> Vec<(usize, f64)> {
     out
 }
 
-/// BM25 of `query` against each document, as (document, score).
-fn bm25(query: &[String], docs: &[Vec<String>]) -> Vec<(usize, f64)> {
-    if docs.is_empty() {
-        return Vec::new();
-    }
-    let n = docs.len() as f64;
-    let average = docs.iter().map(Vec::len).sum::<usize>() as f64 / n;
-    let terms: HashSet<&String> = query.iter().collect();
-    let mut frequency: HashMap<&String, f64> = HashMap::new();
-    for doc in docs {
-        let present: HashSet<&String> = doc.iter().filter(|w| terms.contains(w)).collect();
-        for term in present {
-            *frequency.entry(term).or_default() += 1.0;
-        }
-    }
-    docs.iter()
-        .enumerate()
-        .map(|(i, doc)| {
-            let length = doc.len() as f64;
-            let score = terms
-                .iter()
-                .map(|term| {
-                    let tf = doc.iter().filter(|w| w == term).count() as f64;
-                    if tf == 0.0 {
-                        return 0.0;
-                    }
-                    let df = frequency.get(term).copied().unwrap_or(0.0);
-                    let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
-                    idf * tf * (BM25_K1 + 1.0)
-                        / (tf + BM25_K1 * (1.0 - BM25_B + BM25_B * length / average.max(1.0)))
-                })
-                .sum();
-            (i, score)
-        })
-        .collect()
+/// `name (file:line)`, the text of a candidate of an ambiguity, as its
+/// parts. `None` for any other text.
+fn candidate_parts(text: &str) -> Option<(&str, &str, u32)> {
+    let inner = text.trim().strip_suffix(')')?;
+    let (name, place) = inner.rsplit_once(" (")?;
+    let (file, line) = place.rsplit_once(':')?;
+    let line = line.parse().ok()?;
+    let name = name.trim();
+    (!name.is_empty() && !file.is_empty()).then_some((name, file, line))
 }
 
-/// The words of a text for the text rank: lower case, with each identifier
-/// also cut at `_`, `::` and at a change to a capital (`enqueue_all` gives
-/// `enqueue_all`, `enqueue` and `all`). Stop words and single letters go.
-fn words(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for token in text.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
-        if token.is_empty() {
-            continue;
+/// The choice among the symbols that match a name (KAIROS-T-0417):
+///
+/// 1. With `line`, the symbols that start on that line, or else the
+///    smallest symbols that hold it.
+/// 2. A Rust `impl` block has the name of its type. When the name matches a
+///    type and impl blocks, the impl blocks are left out: the agent asks for
+///    the type, and `line` chooses an impl block.
+/// 3. When only one of the symbols left is a function or a type, that one.
+pub(crate) fn choose(found: Vec<SymbolInfo>, line: Option<u32>) -> Lookup {
+    let mut found = found;
+    if let Some(line) = line {
+        found.retain(|s| s.start_line <= line && line <= s.end_line);
+        if found.iter().any(|s| s.start_line == line) {
+            found.retain(|s| s.start_line == line);
+        } else if let Some(least) = found
+            .iter()
+            .map(|s| s.end_line.saturating_sub(s.start_line))
+            .min()
+        {
+            found.retain(|s| s.end_line.saturating_sub(s.start_line) == least);
         }
-        let mut parts = Vec::new();
-        let mut current = String::new();
-        let mut previous_lower = false;
-        for c in token.chars() {
-            if c == '_' {
-                parts.push(std::mem::take(&mut current));
-                previous_lower = false;
-                continue;
-            }
-            if c.is_uppercase() && previous_lower {
-                parts.push(std::mem::take(&mut current));
-            }
-            previous_lower = c.is_lowercase() || c.is_ascii_digit();
-            current.extend(c.to_lowercase());
-        }
-        parts.push(current);
-        let parts: Vec<String> = parts.into_iter().filter(|p| !p.is_empty()).collect();
-        let whole = token.to_lowercase();
-        if parts.len() > 1 {
-            out.push(whole);
-        }
-        out.extend(parts);
     }
-    out.retain(|w| w.chars().count() > 1 && !STOP_WORDS.contains(&w.as_str()));
-    out
+    if found.len() > 1
+        && found.iter().any(|s| s.kind == "implementation")
+        && found.iter().any(|s| s.kind != "implementation")
+    {
+        found.retain(|s| s.kind != "implementation");
+    }
+    match found.len() {
+        0 => Lookup::Missing,
+        1 => Lookup::Found(found.into_iter().next().expect("one")),
+        _ => {
+            let typed: Vec<&SymbolInfo> = found
+                .iter()
+                .filter(|s| SUMMARIZED_KINDS.contains(&s.kind.as_str()))
+                .collect();
+            if typed.len() == 1 {
+                Lookup::Found(typed[0].clone())
+            } else {
+                Lookup::Ambiguous(found)
+            }
+        }
+    }
+}
+
+/// The source text of a symbol, from the file in the checkout
+/// (KAIROS-T-0420).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SymbolSource {
+    /// The text of the symbol, cut at the limit. A cut keeps whole lines
+    /// when it can.
+    pub text: String,
+    /// The length of the symbol in bytes, as the index has it.
+    pub bytes: usize,
+    /// True when `text` has fewer bytes than the symbol.
+    pub cut: bool,
+    /// True when the file is not the file that the index read: the text
+    /// can be different from the symbol.
+    pub changed: bool,
+}
+
+impl Index {
+    /// The source text of `symbol`: its byte range in its file under `root`,
+    /// at most `limit` bytes. `None` when the file is not in the checkout.
+    /// The hash of the file is compared with the hash that the index keeps,
+    /// so a file that changed after the index is marked.
+    pub fn source(
+        &self,
+        root: &std::path::Path,
+        symbol: &SymbolInfo,
+        limit: usize,
+    ) -> Result<Option<SymbolSource>, IndexError> {
+        let (start, end, hash): (i64, i64, String) = self.conn.query_row(
+            "SELECT s.start_byte, s.end_byte, f.content_hash
+             FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.id = ?1",
+            params![symbol.id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        let Some(file) = crate::read_indexed_bytes(&root.join(&symbol.file))? else {
+            return Ok(None);
+        };
+        let changed = crate::content_hash(&file) != hash;
+        let bytes = (end - start).max(0) as usize;
+        let start = (start.max(0) as usize).min(file.len());
+        let end = (end.max(0) as usize).clamp(start, file.len());
+        let mut range = &file[start..end];
+        let cut = range.len() > limit;
+        if cut {
+            range = &range[..limit];
+            // Whole lines: stop after the last line end, when there is one.
+            if let Some(last) = range.iter().rposition(|b| *b == b'\n') {
+                range = &range[..=last];
+            }
+        }
+        Ok(Some(SymbolSource {
+            text: String::from_utf8_lossy(range).into_owned(),
+            bytes,
+            cut,
+            changed,
+        }))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// KAIROS-T-0420: the source of a symbol, cut at the limit, and marked
+    /// when the file changed after the index.
     #[test]
-    fn words_cut_identifiers() {
-        assert_eq!(
-            words("enqueue_all(items) -> Queue: the HttpClient"),
-            [
-                "enqueue_all",
-                "enqueue",
-                "all",
-                "items",
-                "queue",
-                "httpclient",
-                "http",
-                "client"
-            ]
-        );
+    fn the_source_of_a_symbol_comes_from_the_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        let text = "pub fn f() -> u32 {\n    1\n}\n\npub fn g() {}\n";
+        std::fs::write(repo.join("src/lib.rs"), text).unwrap();
+        let db = dir.path().join("index.sqlite");
+        crate::build_structure(&repo, &db).unwrap();
+        let index = Index::open(&db).unwrap();
+        let Lookup::Found(f) = index.lookup("f", None, None).unwrap() else {
+            panic!("no f");
+        };
+
+        let all = index.source(&repo, &f, 1000).unwrap().unwrap();
+        assert_eq!(all.text, "pub fn f() -> u32 {\n    1\n}");
+        assert_eq!(all.bytes, all.text.len());
+        assert!(!all.cut && !all.changed);
+
+        // A cut keeps whole lines.
+        let cut = index.source(&repo, &f, 24).unwrap().unwrap();
+        assert_eq!(cut.text, "pub fn f() -> u32 {\n");
+        assert!(cut.cut);
+        assert_eq!(cut.bytes, all.bytes);
+
+        std::fs::write(repo.join("src/lib.rs"), format!("// new\n{text}")).unwrap();
+        let changed = index.source(&repo, &f, 1000).unwrap().unwrap();
+        assert!(changed.changed);
+        assert_ne!(changed.text, all.text);
+
+        std::fs::remove_file(repo.join("src/lib.rs")).unwrap();
+        assert_eq!(index.source(&repo, &f, 1000).unwrap(), None);
     }
 
     #[test]
@@ -931,15 +1226,177 @@ mod tests {
         assert!(shortest_chains(&next, 5, 1, 3).is_empty());
     }
 
+    fn sym(id: i64, file: &str, kind: &str, lines: (u32, u32)) -> SymbolInfo {
+        SymbolInfo {
+            id,
+            file: file.into(),
+            name: "ContentHash".into(),
+            container: None,
+            kind: kind.into(),
+            language: "rust".into(),
+            start_line: lines.0,
+            end_line: lines.1,
+            signature: None,
+            is_test: false,
+            summary: None,
+        }
+    }
+
+    fn found_id(lookup: Lookup) -> i64 {
+        match lookup {
+            Lookup::Found(s) => s.id,
+            other => panic!("not one symbol: {other:?}"),
+        }
+    }
+
+    /// The struct and its 2 impl blocks in one file (KAIROS-T-0417).
+    fn struct_and_impls() -> Vec<SymbolInfo> {
+        vec![
+            sym(1, "src/document.rs", "struct", (121, 124)),
+            sym(2, "src/document.rs", "implementation", (126, 160)),
+            sym(3, "src/document.rs", "implementation", (168, 175)),
+        ]
+    }
+
     #[test]
-    fn bm25_ranks_the_document_with_the_rare_word_first() {
-        let docs: Vec<Vec<String>> = ["adds a number to the stack", "removes the newest number"]
-            .iter()
-            .map(|d| words(d))
+    fn a_type_is_chosen_over_its_impl_blocks() {
+        assert_eq!(found_id(choose(struct_and_impls(), None)), 1);
+    }
+
+    #[test]
+    fn a_line_chooses_one_symbol_of_a_file() {
+        assert_eq!(found_id(choose(struct_and_impls(), Some(126))), 2);
+        assert_eq!(found_id(choose(struct_and_impls(), Some(168))), 3);
+        // A line inside a symbol chooses the smallest symbol that holds it.
+        assert_eq!(found_id(choose(struct_and_impls(), Some(130))), 2);
+        assert_eq!(choose(struct_and_impls(), Some(165)), Lookup::Missing);
+    }
+
+    #[test]
+    fn impl_blocks_with_no_type_stay_ambiguous() {
+        let impls = struct_and_impls().split_off(1);
+        match choose(impls, None) {
+            Lookup::Ambiguous(all) => assert_eq!(all.len(), 2),
+            other => panic!("not ambiguous: {other:?}"),
+        }
+    }
+
+    /// `sym` with a name and a container.
+    fn named(id: i64, file: &str, name: &str, container: Option<&str>, kind: &str) -> SymbolInfo {
+        SymbolInfo {
+            name: name.into(),
+            container: container.map(Into::into),
+            ..sym(id, file, kind, (1, 1))
+        }
+    }
+
+    fn owners_of(all: &[SymbolInfo]) -> Vec<(i64, i64)> {
+        let refs: Vec<&SymbolInfo> = all.iter().collect();
+        let mut out: Vec<(i64, i64)> = impl_owners(&refs)
+            .into_iter()
+            .map(|(i, t)| (all[i].id, all[t].id))
             .collect();
-        let scores = bm25(&words("newest number"), &docs);
-        let order: Vec<usize> = ranked(&scores).into_iter().map(|(i, _)| i).collect();
-        assert_eq!(order, [1, 0]);
-        assert!(bm25(&words("queue"), &docs).iter().all(|(_, s)| *s == 0.0));
+        out.sort();
+        out
+    }
+
+    /// KAIROS-T-0424: the impl blocks of a type fold into it.
+    #[test]
+    fn impl_blocks_fold_into_their_type() {
+        assert_eq!(owners_of(&struct_and_impls()), [(2, 1), (3, 1)]);
+    }
+
+    #[test]
+    fn two_types_of_one_name_keep_their_own_impl_blocks() {
+        let all = vec![
+            named(1, "src/checksum.rs", "Checksum", None, "struct"),
+            named(2, "src/checksum.rs", "Checksum", None, "implementation"),
+            named(3, "src/legacy.rs", "Checksum", None, "struct"),
+            named(4, "src/legacy.rs", "Checksum", None, "implementation"),
+            // An impl block in a third file: two types, none in its file.
+            named(5, "src/other.rs", "Checksum", None, "implementation"),
+        ];
+        assert_eq!(owners_of(&all), [(2, 1), (4, 3)]);
+    }
+
+    #[test]
+    fn an_impl_block_in_a_different_file_folds_into_the_one_type() {
+        let all = vec![
+            named(1, "src/a.rs", "Policy", None, "struct"),
+            named(2, "src/b.rs", "Policy", None, "implementation"),
+        ];
+        assert_eq!(owners_of(&all), [(2, 1)]);
+    }
+
+    #[test]
+    fn an_impl_block_with_no_type_and_a_method_do_not_fold() {
+        let all = vec![
+            named(1, "src/a.rs", "Policy", None, "struct"),
+            // `impl Display for String`: a type from a different crate.
+            named(2, "src/a.rs", "String", None, "implementation"),
+            // A method has the type as its container, not as its name.
+            named(3, "src/a.rs", "load", Some("Policy"), "method"),
+            // A type and an impl block in two different modules of one file.
+            named(4, "src/a.rs", "Inner", Some("one"), "struct"),
+            named(5, "src/a.rs", "Inner", Some("two"), "implementation"),
+            // A function of the name of a type is not a type.
+            named(6, "src/a.rs", "make", None, "function"),
+            named(7, "src/a.rs", "make", None, "implementation"),
+        ];
+        assert!(owners_of(&all).is_empty(), "{:?}", owners_of(&all));
+    }
+
+    #[test]
+    fn two_types_of_one_name_stay_ambiguous() {
+        let all = vec![
+            sym(1, "src/a.rs", "struct", (1, 3)),
+            sym(2, "src/a.rs", "implementation", (5, 9)),
+            sym(3, "src/b.rs", "struct", (1, 3)),
+        ];
+        match choose(all, None) {
+            Lookup::Ambiguous(left) => {
+                assert_eq!(left.iter().map(|s| s.id).collect::<Vec<_>>(), [1, 3])
+            }
+            other => panic!("not ambiguous: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_query_with_a_test_word_is_about_tests() {
+        for query in [
+            "how is parsing tested",
+            "the tests of the parser",
+            "Testing the policy parser",
+            "which fixture has a sample policy",
+            "mock the clock",
+            "where do we assert the rules",
+            "test_parse_document",
+            "the spec of validate",
+        ] {
+            assert!(about_tests(query), "{query}");
+        }
+        for query in [
+            "how are policy documents defined, parsed and validated",
+            "latest contest results",
+            "attest the signature",
+            "",
+        ] {
+            assert!(!about_tests(query), "{query}");
+        }
+    }
+
+    #[test]
+    fn the_text_of_a_candidate_has_its_parts() {
+        assert_eq!(
+            candidate_parts("ContentHash (crates/a/src/document.rs:121)"),
+            Some(("ContentHash", "crates/a/src/document.rs", 121))
+        );
+        assert_eq!(
+            candidate_parts("Stack::pop (src/stack.rs:20)"),
+            Some(("Stack::pop", "src/stack.rs", 20))
+        );
+        assert_eq!(candidate_parts("ContentHash"), None);
+        assert_eq!(candidate_parts("f (x)"), None);
+        assert_eq!(candidate_parts(" (src/a.rs:1)"), None);
     }
 }

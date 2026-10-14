@@ -108,10 +108,19 @@ id = "test-name"
 decision = "test"
 file_name = ["test_*", "*_test.*", "*.spec.*", "*.test.*", "*.journey.*", "conftest.py"]
 
+# A Rust file in a `tests/` folder is part of an integration test crate:
+# its helpers (`tests/common/mod.rs`, BDD steps) are test harness code, so
+# they are test code and rank below the source in the search
+# (KAIROS-T-0422).
+[[rule]]
+id = "rust-test-crate"
+decision = "test"
+path = ["**/tests/**"]
+extension = ["rs"]
+
 # A file in a test folder whose name is not a test name is a helper of the
-# tests (`e2e/helpers/auth.ts`): source, so it gets summaries and the search
-# finds it (KAIROS-T-0352). The test functions in it (a Rust #[test]) are
-# still test code.
+# tests (`e2e/helpers/auth.ts`): source (KAIROS-T-0352). The test functions
+# in it are still test code.
 [[rule]]
 id = "test-helper"
 decision = "source"

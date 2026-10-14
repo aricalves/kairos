@@ -11,6 +11,14 @@ Feature: Updates and merges
     Then the summarizer ran for that function and for its file and module only
     And each other summary is the same as before
 
+  # KAIROS-T-0421: test code is summarized as source, so an update
+  # summarizes a changed test, and only that test.
+  Scenario: An update summarizes only the changed test function
+    Given a summarized index of the polyglot fixture
+    When I change the body of one Python test function and update the index
+    Then the summarizer ran for that function and for its file and module only
+    And each other summary is the same as before
+
   Scenario: A formatting change costs nothing
     Given a summarized index of the polyglot fixture
     When I reformat a Python file and update the index

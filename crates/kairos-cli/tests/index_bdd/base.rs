@@ -495,13 +495,13 @@ impl BaseWorld {
         self.run = Some(run);
     }
 
-    /// The summarizable symbols of the index, as `file:name`, split by
-    /// whether they have a summary.
+    /// The summarizable symbols of the index, test code too (KAIROS-T-0421),
+    /// as `file:name`, split by whether they have a summary.
     fn summarized(&self) -> (BTreeSet<String>, BTreeSet<String>) {
         let mut with = BTreeSet::new();
         let mut without = BTreeSet::new();
         for s in self.index().symbols().expect("symbols") {
-            if s.is_test || !SUMMARIZED_KINDS.contains(&s.kind.as_str()) {
+            if !SUMMARIZED_KINDS.contains(&s.kind.as_str()) {
                 continue;
             }
             let name = format!("{}:{}", s.file, s.name);
@@ -995,7 +995,7 @@ fn each_symbol_has_its_summary(world: &mut CliWorld) {
             .symbols()
             .expect("symbols")
             .into_iter()
-            .filter(|s| !s.is_test && SUMMARIZED_KINDS.contains(&s.kind.as_str()))
+            .filter(|s| SUMMARIZED_KINDS.contains(&s.kind.as_str()))
             .map(|s| (format!("{}:{}", s.file, s.name), s.summary_key))
             .collect::<Vec<_>>()
     };
