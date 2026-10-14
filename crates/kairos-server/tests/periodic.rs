@@ -30,12 +30,12 @@ use kairos_server::periodic::{self, PassFn, PeriodicPayload};
 use uuid::Uuid;
 
 /// A scratch database with the public schema, and its URL.
-fn scratch(name: &str) -> String {
-    let _admin = common::recreate_scratch_db(name);
+fn scratch(name: &str) -> common::ScratchUrl {
+    let admin = common::recreate_scratch_db(name);
     let url = common::with_database(&common::admin_database_url(), name);
     let mut conn = PgConnection::establish(&url).expect("connect to the scratch database");
     run_public_migrations(&mut conn).expect("public migrations");
-    url
+    common::ScratchUrl::new(admin, url)
 }
 
 fn conn(url: &str) -> PgConnection {
@@ -400,7 +400,7 @@ async fn the_retention_pass_runs_as_a_periodic_job() {
         periodic::RETENTION,
         periodic::RETENTION_INTERVAL,
         periodic::retention_pass(
-            url.clone(),
+            url.to_string(),
             kairos_core::retention::RetentionConfig::default(),
         ),
     )

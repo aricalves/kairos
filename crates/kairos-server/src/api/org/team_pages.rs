@@ -224,13 +224,20 @@ pub(crate) async fn list_pages(
     let team_id = parse_uuid(&id, "id")?;
     let pages = state
         .blocking
-        .run(&tenant.slug, move |conn| {
-            require_team(conn, team_id)?;
-            let pages = team_pages::list_pages(conn, team_id).map_err(ApiError::internal)?;
-            Ok(pages.into_iter().map(page_dto).collect::<Vec<_>>())
-        })
+        .run(&tenant.slug, move |conn| list_as(conn, team_id))
         .await?;
     Ok(Json(pages))
+}
+
+/// The live page tree of a team, flat, as the REST route gives it. MCP
+/// calls this too (KAIROS-T-0434).
+pub(crate) fn list_as(
+    conn: &mut PgConnection,
+    team_id: Uuid,
+) -> Result<Vec<dto::TeamPage>, ApiError> {
+    require_team(conn, team_id)?;
+    let pages = team_pages::list_pages(conn, team_id).map_err(ApiError::internal)?;
+    Ok(pages.into_iter().map(page_dto).collect())
 }
 
 /// One live page (open tenant-wide).
@@ -287,41 +294,53 @@ pub(crate) async fn create_page(
     ApiJson(body): ApiJson<dto::CreateTeamPageRequest>,
 ) -> Result<(StatusCode, Json<dto::TeamPage>), ApiError> {
     let team_id = parse_uuid(&id, "id")?;
-    let kind: TeamPageKind = parse_enum(&body.kind, "kind", TeamPageKind::ALL)?;
-    let parent_id = parse_opt_uuid(body.parent_id.as_deref(), "parent_id")?;
     let slug = tenant.slug.clone();
     let user = auth.user_id;
     let created = state
         .blocking
         .run(&slug, move |conn| {
-            require_team(conn, team_id)?;
-            require_team_member_or_admin(conn, &tenant, team_id, user)?;
-            let created = team_pages::create_page(
-                conn,
-                team_id,
-                CreatePage {
-                    parent_id,
-                    kind,
-                    slug: &body.slug,
-                    title: &body.title,
-                    content: &body.content,
-                    position: body.position,
-                },
-                user,
-            )
-            .map_err(map_page_error)?;
-            log_page_activity(
-                conn,
-                user,
-                kairos_db::models::enums::ActivityAction::Create,
-                "team_page",
-                created.id,
-                format!("team:{team_id} kind:{} slug:{}", created.kind, created.slug),
-            )?;
-            Ok(page_dto(created))
+            create_as(conn, &tenant, user, team_id, &body)
         })
         .await?;
     Ok((StatusCode::CREATED, Json(created)))
+}
+
+/// Create a page or a folder, as the REST route does: the gate, the write
+/// and the activity row. MCP calls this too (KAIROS-T-0434).
+pub(crate) fn create_as(
+    conn: &mut PgConnection,
+    tenant: &TenantContext,
+    user: Uuid,
+    team_id: Uuid,
+    body: &dto::CreateTeamPageRequest,
+) -> Result<dto::TeamPage, ApiError> {
+    let kind: TeamPageKind = parse_enum(&body.kind, "kind", TeamPageKind::ALL)?;
+    let parent_id = parse_opt_uuid(body.parent_id.as_deref(), "parent_id")?;
+    require_team(conn, team_id)?;
+    require_team_member_or_admin(conn, tenant, team_id, user)?;
+    let created = team_pages::create_page(
+        conn,
+        team_id,
+        CreatePage {
+            parent_id,
+            kind,
+            slug: &body.slug,
+            title: &body.title,
+            content: &body.content,
+            position: body.position,
+        },
+        user,
+    )
+    .map_err(map_page_error)?;
+    log_page_activity(
+        conn,
+        user,
+        kairos_db::models::enums::ActivityAction::Create,
+        "team_page",
+        created.id,
+        format!("team:{team_id} kind:{} slug:{}", created.kind, created.slug),
+    )?;
+    Ok(page_dto(created))
 }
 
 /// Edit a page: EITHER a version-checked content save OR a rename/move —
@@ -352,6 +371,27 @@ pub(crate) async fn update_page(
 ) -> Result<Json<dto::TeamPage>, ApiError> {
     let team_id = parse_uuid(&id, "id")?;
     let page_id = parse_uuid(&page_id, "page_id")?;
+    let slug = tenant.slug.clone();
+    let user = auth.user_id;
+    let updated = state
+        .blocking
+        .run(&slug, move |conn| {
+            update_as(conn, &tenant, user, team_id, page_id, &body)
+        })
+        .await?;
+    Ok(Json(updated))
+}
+
+/// Edit a page, as the REST route does: either a version-checked content
+/// save or a rename/move, not both. MCP calls this too (KAIROS-T-0434).
+pub(crate) fn update_as(
+    conn: &mut PgConnection,
+    tenant: &TenantContext,
+    user: Uuid,
+    team_id: Uuid,
+    page_id: Uuid,
+    body: &dto::UpdateTeamPageRequest,
+) -> Result<dto::TeamPage, ApiError> {
     let is_content_edit = body.content.is_some();
     let is_structure_edit = body.slug.is_some()
         || body.parent_id.is_some()
@@ -381,53 +421,45 @@ pub(crate) async fn update_page(
     } else {
         parse_opt_uuid(body.parent_id.as_deref(), "parent_id")?.map(Some)
     };
-    let slug = tenant.slug.clone();
-    let user = auth.user_id;
-    let updated = state
-        .blocking
-        .run(&slug, move |conn| {
-            require_team(conn, team_id)?;
-            require_team_member_or_admin(conn, &tenant, team_id, user)?;
-            let before = team_pages::load_page(conn, team_id, page_id).map_err(map_page_error)?;
-            let updated = if let Some(content) = &body.content {
-                team_pages::update_page_content(
-                    conn,
-                    team_id,
-                    page_id,
-                    body.title.as_deref(),
-                    content,
-                    body.version.expect("checked above"),
-                    user,
-                )
-                .map_err(map_page_error)?
-            } else {
-                team_pages::rename_move_page(
-                    conn,
-                    team_id,
-                    page_id,
-                    body.slug.as_deref(),
-                    new_parent,
-                    body.position,
-                    user,
-                )
-                .map_err(map_page_error)?
-            };
-            // KAIROS-T-0268: a real change makes an activity entry. An edit
-            // with the stored values writes nothing, so it makes none.
-            if updated.updated_at != before.updated_at {
-                log_page_activity(
-                    conn,
-                    user,
-                    kairos_db::models::enums::ActivityAction::Update,
-                    "team_page",
-                    page_id,
-                    format!("team:{team_id} slug:{}", updated.slug),
-                )?;
-            }
-            Ok(page_dto(updated))
-        })
-        .await?;
-    Ok(Json(updated))
+    require_team(conn, team_id)?;
+    require_team_member_or_admin(conn, tenant, team_id, user)?;
+    let before = team_pages::load_page(conn, team_id, page_id).map_err(map_page_error)?;
+    let updated = if let Some(content) = &body.content {
+        team_pages::update_page_content(
+            conn,
+            team_id,
+            page_id,
+            body.title.as_deref(),
+            content,
+            body.version.expect("checked above"),
+            user,
+        )
+        .map_err(map_page_error)?
+    } else {
+        team_pages::rename_move_page(
+            conn,
+            team_id,
+            page_id,
+            body.slug.as_deref(),
+            new_parent,
+            body.position,
+            user,
+        )
+        .map_err(map_page_error)?
+    };
+    // KAIROS-T-0268: a real change makes an activity entry. An edit
+    // with the stored values writes nothing, so it makes none.
+    if updated.updated_at != before.updated_at {
+        log_page_activity(
+            conn,
+            user,
+            kairos_db::models::enums::ActivityAction::Update,
+            "team_page",
+            page_id,
+            format!("team:{team_id} slug:{}", updated.slug),
+        )?;
+    }
+    Ok(page_dto(updated))
 }
 
 /// Soft-delete a page (folders must be empty; the Charter never).
@@ -459,24 +491,37 @@ pub(crate) async fn delete_page(
     state
         .blocking
         .run(&slug, move |conn| {
-            require_team(conn, team_id)?;
-            require_team_member_or_admin(conn, &tenant, team_id, user)?;
-            let doomed = team_pages::load_page(conn, team_id, page_uuid).map_err(map_page_error)?;
-            team_pages::soft_delete_page(conn, team_id, page_uuid, user).map_err(map_page_error)?;
-            log_page_activity(
-                conn,
-                user,
-                kairos_db::models::enums::ActivityAction::Delete,
-                "team_page",
-                page_uuid,
-                format!("team:{team_id} slug:{}", doomed.slug),
-            )
+            delete_as(conn, &tenant, user, team_id, page_uuid).map(|_| ())
         })
         .await?;
     Ok(Json(kairos_client::types_org::OrgDeleteResponse {
         id: page_id,
         deleted: true,
     }))
+}
+
+/// Archive (soft-delete) a page or an empty folder, as the REST route does.
+/// Gives the page as it was. MCP calls this too (KAIROS-T-0434).
+pub(crate) fn delete_as(
+    conn: &mut PgConnection,
+    tenant: &TenantContext,
+    user: Uuid,
+    team_id: Uuid,
+    page_id: Uuid,
+) -> Result<dto::TeamPage, ApiError> {
+    require_team(conn, team_id)?;
+    require_team_member_or_admin(conn, tenant, team_id, user)?;
+    let doomed = team_pages::load_page(conn, team_id, page_id).map_err(map_page_error)?;
+    team_pages::soft_delete_page(conn, team_id, page_id, user).map_err(map_page_error)?;
+    log_page_activity(
+        conn,
+        user,
+        kairos_db::models::enums::ActivityAction::Delete,
+        "team_page",
+        page_id,
+        format!("team:{team_id} slug:{}", doomed.slug),
+    )?;
+    Ok(page_dto(doomed))
 }
 
 /// The team's announcements, pinned first then newest (open tenant-wide).

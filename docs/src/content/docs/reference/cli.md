@@ -724,6 +724,7 @@ kairos boards dispatch enable-target <BOARD> <TARGET> [OPTIONS]
 kairos boards dispatch test-target <BOARD> <TARGET> [OPTIONS]
 kairos boards dispatch add-rule <BOARD> [--trigger entered_column|unblocked] [--column <COLUMN>] --target <TARGET> [--task-type <TYPE>] [--metadata <SLUG=VALUE>] [--repository <REPO>] [OPTIONS]
 kairos boards dispatch remove-rule <BOARD> <RULE> [OPTIONS]
+kairos boards dispatch agent-triage <BOARD> [--on | --off] [OPTIONS]
 kairos boards dispatch log <BOARD> [--target <TARGET>] [--rule <RULE>] [--limit <N>] [OPTIONS]
 ```
 
@@ -741,6 +742,7 @@ Kairos sends one signed delivery to the target. See
 | `test-target` | `configure_boards` | Sends the event `ping` to a target. |
 | `add-rule` | `configure_boards` | Makes a rule. |
 | `remove-rule` | `configure_boards` | Removes a rule. Its deliveries stay in the log. |
+| `agent-triage` | a place on the board; `configure_boards` with `--on` or `--off` | Shows or sets who decides the triage of intake. `--on`: an agent decides. `--off`: an agent proposes with a note, and a person decides. |
 | `log` | a place on the board | Shows the newest deliveries, with the status, the tries and the response code. |
 
 A place on the board is a grant on the board, a place in its team, or the
@@ -924,6 +926,37 @@ kairos teams members remove <TEAM_ID> --user <USER> [OPTIONS]
 |---|---|---|---|
 | `<TEAM_ID>` | UUID | required | The team. |
 | `--user <USER>` | string | required on `add` and `remove` | A user id, an email, a user name, or the name of a service account. `kairos members list` gives them. |
+
+### `kairos teams pages`
+
+```
+kairos teams pages list   <TEAM> [OPTIONS]
+kairos teams pages show   <TEAM> <PAGE> [OPTIONS]
+kairos teams pages create <TEAM> --kind <KIND> --title <TITLE> [--slug <SLUG>] [--parent <PAGE>] [--content <TEXT> | --content-file <FILE>] [--position <N>] [OPTIONS]
+kairos teams pages edit   <TEAM> <PAGE> [--title <TITLE>] [--content <TEXT> | --content-file <FILE>] [--version <N>] [OPTIONS]
+kairos teams pages move   <TEAM> <PAGE> [--parent <PAGE> | --root] [--slug <SLUG>] [--position <N>] [OPTIONS]
+kairos teams pages delete <TEAM> <PAGE> --confirm [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<TEAM>` | slug or UUID | required | The team. |
+| `<PAGE>` | path or UUID | required | A path of slugs from the root, for example `documentation/runbooks`. `charter` is the charter. |
+| `--kind <KIND>` | `page` or `folder` | required on `create` | A folder holds folders and pages. A page holds nothing. |
+| `--slug <SLUG>` | string | from the title | Unique among the siblings. |
+| `--parent <PAGE>` | path or UUID | the root | The folder. |
+| `--content-file <FILE>` | path | — | Reads the content from a file. `-` reads standard input. |
+| `--version <N>` | integer | the current version | The version that the edit is based on. A stale version gives `409 CONFLICT`. |
+| `--root` | flag | off | Moves the node to the root. |
+| `--confirm` | flag | off | Required to archive. |
+
+The team page has the charter of the team and the folders and pages that the
+team makes. Every member of the organization can read it. To write, you must be
+a member of the team or an organization admin.
+
+`list` shows the tree, the charter first. `edit` replaces the whole content.
+`delete` archives a page or an empty folder. You cannot move or archive the
+charter.
 
 ### `kairos teams of`
 

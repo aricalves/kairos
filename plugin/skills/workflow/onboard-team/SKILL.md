@@ -1,0 +1,104 @@
+---
+name: onboard-team
+description: Take a new or half-set-up delivery team to a working state with the person — its team, members, board, repositories, team page and charter, dispatch, and local wiring. Reads first, lists the gaps, asks before each write; safe to run again.
+argument-hint: "[team slug | new team name]"
+disable-model-invocation: true
+---
+
+# Onboard a team
+
+Take one delivery team to a working state, step by step, with the person. Do this when a team is new, or when a team works but has gaps: no repository linked, an empty charter, no route for requests.
+
+The rules:
+
+- **Read first.** Read the state of the team before you write. Then show the person a checklist of what is there and what is missing.
+- **Ask before each write.** Say what you will change, and wait for a yes. A "yes" to one step is not a yes to the next.
+- **Only fix what is missing.** You can run this skill again on a team that is set up. Do not change a thing that is already correct.
+- **Use the MCP tools.** When a step has no MCP tool, use the CLI command that this skill names, or tell the person which step they must do in the web UI.
+
+## 1. Read the state
+
+Find the team with `whoami` (your teams) and `my_boards` (boards, columns, the team of each ADR board). For a team that does not exist yet, go to step 2.
+
+Collect:
+
+| Part | Read with |
+|---|---|
+| The team: name, slug, type | `whoami`, `my_boards` |
+| Members | `kairos teams members list <TEAM_ID>` (no MCP tool reads members) |
+| Delivery board: prefix, columns, entry column, WIP limits | `my_boards`; `kairos boards show <BOARD>` |
+| Transitions | `kairos boards transitions list <BOARD>` (no MCP tool reads them) |
+| ADR board | `my_boards` (`ADR board of the team <slug>`) |
+| Repositories, each with one owner team | `list_repositories {team}`, `get_repository` |
+| Team page: the charter and the tree | `team_pages {team}`, then `team_pages {team, page: "charter"}` |
+| Dispatch rules of the board | `list_dispatch_rules {board}` |
+
+Then show the checklist. Mark each line **ok**, **missing** or **to check**. Example:
+
+```text
+Team platform — checklist
+  ok       team, stream_aligned, 4 members
+  ok       delivery board platform-delivery (PLAT), entry column Backlog
+  missing  ADR board
+  missing  repository payments-api has no owner team here
+  missing  charter: still the empty skeleton
+  to check dispatch: no rules (does the team use a board session?)
+```
+
+Ask the person which lines to work on, in which order.
+
+## 2. The team and its members
+
+- **No team:** `create_team {name, slug, code_prefix}`. It makes the team and its delivery board (`{slug}-delivery`). Add `adr_board: true` when the team records its own decisions. The prefix does not change later, so agree it with the person first.
+- **A different name or type:** `update_team`.
+- **Members:** `add_team_member {team, user}` for each person. Membership gives `manage_tasks`, `manage_documents` and `transition_items` on the boards of the team, and the right to edit the team page. `remove_team_member` takes a person off.
+- **An agent of the team** (a service account or the agent key of a person) must also be a member to edit the team page. A board capability does not give that right.
+- **Extra rights:** `grant_capability` or `set_board_capabilities`, for example `configure_boards` for the person who looks after the board.
+
+These calls need the organization admin role or `manage_structure` on the organization. If they are refused, tell the person who can do them.
+
+## 3. The board
+
+The delivery board gets the default columns and transitions. Change them only when the team works in a different way.
+
+- **Columns:** `add_column`, `update_column` (name, position, WIP limit, done column), `remove_column`.
+- **Transitions:** `set_transition`. A board allows one-column hops by default.
+- **No ADR board, and the team wants one:** `create_board {board_level: "adr", team, ...}` with the prefix of the team.
+
+## 4. Repositories
+
+Each repository has exactly one owner team. For each repository of the team:
+
+- Not in the directory: `add_repository` with the team as owner.
+- In the directory with a different owner: ask the person. A move to this team is `kairos repos update --team` (MCP `update_repository` does not change the owner).
+- The description says how to work in the repository (build, test, review). Fill it in with `update_repository` when it is empty.
+
+## 5. The team page
+
+The team page has the charter and the folders and pages that the team grows. A folder holds folders and pages. A page holds nothing. You need membership of the team (or the organization admin role) to write.
+
+**The charter** is the landing page and the social contract of the team. Write it with the person, not for them. Ask one question at a time and put the answers in these sections:
+
+- **Mission:** why the team exists, in one or two sentences.
+- **Scope:** what the team owns (products, repositories, services) and what it does not.
+- **How to send us work:** a request to this team is a task on its delivery board. It lands in the entry column, in the support lane. Name who triages, and how often.
+- **Ways of working:** the cadence, reviews, on-call, where decisions are recorded.
+- **Success measures:** how the team knows it is doing well.
+
+Read the charter first (`team_pages {team, page: "charter"}`), and keep what the person already wrote. Save it with `edit_team_page {team, page: "charter", content, version}`. Use the version that you read. A `CONFLICT` means that somebody saved first: read again, merge, and save.
+
+**Folders and pages:** there is no fixed set. Ask the person what the team writes down (runbooks, how-to guides, design documents), and make only those: `create_team_page {team, kind: "folder", title}`, then pages in them with `parent`. `move_team_page` moves, reorders or renames. `delete_team_page` archives a page or an empty folder.
+
+The same steps are in the CLI: `kairos teams pages list|show|create|edit|move|delete`.
+
+## 6. Dispatch (when the team uses a board session)
+
+Ask the person whether an agent session works the board of the team. If yes, check `list_dispatch_rules {board}`. A missing rule: `create_dispatch_rule` (it can make the webhook target from `url`). If no, skip this step.
+
+## 7. Local wiring
+
+In each checkout of a repository of the team, run `/kairos:bootstrap`. It writes `.claude/kairos.local.md` with the team board and the repository. Then check that the repository has a code index: `rebuild_code_index` builds one when it is missing.
+
+## 8. Close
+
+Read the state again (step 1) and show the checklist. Each line must be **ok**, or the person must agree that it stays open. For each line that stays open, give the reason and who can close it.

@@ -26,6 +26,9 @@
 //! Against real Postgres from the compose stack (A-0012 tier 2). Each test
 //! owns a scratch database.
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use diesel::connection::SimpleConnection;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
@@ -79,7 +82,7 @@ fn with_database(url: &str, db_name: &str) -> String {
     let (base, _) = url
         .rsplit_once('/')
         .expect("DATABASE_URL must contain a database path segment");
-    format!("{base}/{db_name}")
+    format!("{base}/{}", scratch::scratch_db_name(db_name))
 }
 
 fn pin(conn: &mut PgConnection) {
@@ -90,6 +93,7 @@ fn pin(conn: &mut PgConnection) {
 
 /// A scratch database with the tenant `acme`, pinned to its schema.
 fn tenant(scratch_db: &str) -> (PgConnection, PgConnection) {
+    let scratch_db = &crate::scratch::scratch_db_name(scratch_db);
     let admin_url = admin_database_url();
     let mut admin_conn = PgConnection::establish(&admin_url).unwrap_or_else(|e| {
         panic!(
@@ -311,8 +315,10 @@ fn old_data(conn: &mut PgConnection) -> OldData {
 
 #[test]
 fn the_migration_changes_no_row() {
-    const SCRATCH_DB: &str = "kairos_document_board_t0269_data_test";
-    let (admin_conn, mut conn) = tenant(SCRATCH_DB);
+    static SCRATCH_DB: scratch::ScratchName =
+        scratch::ScratchName::new("kairos_document_board_t0269_data_test");
+    let (admin_conn, mut conn) = tenant(&SCRATCH_DB);
+    let _scratch_guard = crate::scratch::ScratchGuard::new(&SCRATCH_DB);
 
     let data = old_data(&mut conn);
     make_the_old_state(&mut conn);
@@ -392,13 +398,15 @@ fn the_migration_changes_no_row() {
     assert!(outcomes[0].applied.is_empty(), "{:?}", outcomes[0]);
     pin(&mut conn);
 
-    drop_database(admin_conn, conn, SCRATCH_DB);
+    drop_database(admin_conn, conn, &SCRATCH_DB);
 }
 
 #[test]
 fn a_tenant_keeps_its_own_product_vision_template() {
-    const SCRATCH_DB: &str = "kairos_document_board_t0269_template_test";
-    let (admin_conn, mut conn) = tenant(SCRATCH_DB);
+    static SCRATCH_DB: scratch::ScratchName =
+        scratch::ScratchName::new("kairos_document_board_t0269_template_test");
+    let (admin_conn, mut conn) = tenant(&SCRATCH_DB);
+    let _scratch_guard = crate::scratch::ScratchGuard::new(&SCRATCH_DB);
     make_the_old_state(&mut conn);
 
     // The tenant made a template with the name, and gave it a default of
@@ -445,13 +453,15 @@ fn a_tenant_keeps_its_own_product_vision_template() {
         "a template of the tenant gets no default"
     );
 
-    drop_database(admin_conn, conn, SCRATCH_DB);
+    drop_database(admin_conn, conn, &SCRATCH_DB);
 }
 
 #[test]
 fn a_tenant_with_no_vision_value_gets_the_template_with_no_default() {
-    const SCRATCH_DB: &str = "kairos_document_board_t0269_option_test";
-    let (admin_conn, mut conn) = tenant(SCRATCH_DB);
+    static SCRATCH_DB: scratch::ScratchName =
+        scratch::ScratchName::new("kairos_document_board_t0269_option_test");
+    let (admin_conn, mut conn) = tenant(&SCRATCH_DB);
+    let _scratch_guard = crate::scratch::ScratchGuard::new(&SCRATCH_DB);
     make_the_old_state(&mut conn);
 
     // The tenant removed the value `vision` of the document type.
@@ -485,7 +495,7 @@ fn a_tenant_with_no_vision_value_gets_the_template_with_no_default() {
     assert_eq!(product_vision_templates(&mut conn).len(), 1);
     assert_eq!(product_vision_templates(&mut conn)[0].defaults, None);
 
-    drop_database(admin_conn, conn, SCRATCH_DB);
+    drop_database(admin_conn, conn, &SCRATCH_DB);
 }
 
 /// [`make_the_old_state`] for a tenant that has no record of the
@@ -499,8 +509,10 @@ fn make_the_old_state_again(conn: &mut PgConnection) {
 
 #[test]
 fn a_new_tenant_has_the_template_of_the_system_defaults() {
-    const SCRATCH_DB: &str = "kairos_document_board_t0269_new_test";
-    let (admin_conn, mut conn) = tenant(SCRATCH_DB);
+    static SCRATCH_DB: scratch::ScratchName =
+        scratch::ScratchName::new("kairos_document_board_t0269_new_test");
+    let (admin_conn, mut conn) = tenant(&SCRATCH_DB);
+    let _scratch_guard = crate::scratch::ScratchGuard::new(&SCRATCH_DB);
 
     // The migration runs before the copy of the system defaults, so the
     // migration makes the template of a new tenant. The copy adds the
@@ -537,5 +549,5 @@ fn a_new_tenant_has_the_template_of_the_system_defaults() {
         1
     );
 
-    drop_database(admin_conn, conn, SCRATCH_DB);
+    drop_database(admin_conn, conn, &SCRATCH_DB);
 }

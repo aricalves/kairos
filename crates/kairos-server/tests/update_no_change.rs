@@ -53,7 +53,7 @@ const TENANT: [(&str, &str); 1] = [("x-tenant", "acme")];
 /// and `bob` as a member.
 struct Stack {
     scratch_db: &'static str,
-    admin_conn: PgConnection,
+    admin_conn: common::ScratchConn,
     /// Pinned to the tenant schema.
     conn: PgConnection,
     pool: TenantPool,

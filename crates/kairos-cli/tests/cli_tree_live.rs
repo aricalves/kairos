@@ -12,6 +12,9 @@
 //! clean edit) → delete (without --confirm refused; with it, deleted) →
 //! members list → orgs show → teams list.
 
+#[path = "../../kairos-db/tests/common/scratch.rs"]
+mod scratch;
+
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -31,7 +34,7 @@ use kairos_server::middleware::auth::Authenticator;
 
 /// Uniquely named scratch database for this test binary (shared-services
 /// discipline: own the database, nothing else).
-const SCRATCH_DB: &str = "kairos_cli_t0037_test";
+static SCRATCH_DB: scratch::ScratchName = scratch::ScratchName::new("kairos_cli_t0037_test");
 /// The live dev/test issuer (`.angreal/dex/config.yaml`).
 const ISSUER: &str = "http://localhost:41558/dex";
 const AUDIENCE: &str = "kairos-cli";
@@ -44,7 +47,7 @@ fn admin_database_url() -> String {
 
 fn with_database(url: &str, db_name: &str) -> String {
     let (base, _) = url.rsplit_once('/').expect("database url has a path");
-    format!("{base}/{db_name}")
+    format!("{base}/{}", scratch::scratch_db_name(db_name))
 }
 
 /// Run the `kairos` binary with `KAIROS_CONFIG_DIR` pointed at the test's
@@ -230,7 +233,8 @@ async fn cli_command_tree_golden_path_live() {
     sql_query(format!("CREATE DATABASE {SCRATCH_DB}"))
         .execute(&mut admin_conn)
         .expect("creating scratch db");
-    let scratch_url = with_database(&admin_url, SCRATCH_DB);
+    let _scratch_guard = scratch::ScratchGuard::new(&SCRATCH_DB);
+    let scratch_url = with_database(&admin_url, &SCRATCH_DB);
 
     let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch db");
     run_public_migrations(&mut conn).expect("public migrations");

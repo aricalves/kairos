@@ -47,6 +47,7 @@
     "./plugin/skills/workflow/grill-decomposition",
     "./plugin/skills/workflow/grill-initiative",
     "./plugin/skills/workflow/implement",
+    "./plugin/skills/workflow/onboard-team",
     "./plugin/skills/workflow/ralph",
     "./plugin/skills/workflow/ralph-initiative",
     "./plugin/skills/workflow/to-initiative",

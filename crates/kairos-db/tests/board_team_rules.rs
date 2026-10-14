@@ -14,6 +14,9 @@
 //! Against real Postgres from the compose stack (A-0012 tier 2). Each test
 //! owns a scratch database.
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::sync::{Arc, Barrier};
 
 use diesel::pg::PgConnection;
@@ -40,13 +43,14 @@ fn with_database(url: &str, db_name: &str) -> String {
     let (base, _) = url
         .rsplit_once('/')
         .expect("DATABASE_URL must contain a database path segment");
-    format!("{base}/{db_name}")
+    format!("{base}/{}", scratch::scratch_db_name(db_name))
 }
 
 /// A scratch database with the tenant `acme`, and a user to act as.
 struct Scratch {
     admin: PgConnection,
     name: &'static str,
+    _scratch_guard: scratch::ScratchGuard,
     url: String,
     conn: PgConnection,
     alice: Uuid,
@@ -54,6 +58,7 @@ struct Scratch {
 
 impl Scratch {
     fn new(name: &'static str) -> Self {
+        let name: &'static str = Box::leak(scratch::scratch_db_name(name).into_boxed_str());
         let admin_url = admin_database_url();
         let mut admin = PgConnection::establish(&admin_url).unwrap_or_else(|e| {
             panic!(
@@ -89,6 +94,7 @@ impl Scratch {
         Scratch {
             admin,
             name,
+            _scratch_guard: scratch::ScratchGuard::new(name),
             url,
             conn,
             alice,

@@ -68,7 +68,7 @@ fn rejection<T: std::fmt::Debug>(result: Result<T, Error>) -> Error {
     }
 }
 
-/// The scaffold node with this slug (panics when absent).
+/// The page with this slug (panics when absent).
 fn by_slug<'a>(pages: &'a [TeamPage], slug: &str) -> &'a TeamPage {
     pages
         .iter()
@@ -170,7 +170,7 @@ async fn team_pages_endpoints_against_live_stack() {
         .expect("pinning assertion connection to the tenant schema");
 
     // =======================================================================
-    // Team creation seeds the scaffold; by-slug resolves it
+    // Team creation seeds the charter; by-slug resolves it
     // =======================================================================
     let team = svc
         .create_team(&CreateTeamRequest {
@@ -198,19 +198,46 @@ async fn team_pages_endpoints_against_live_stack() {
     let err = rejection(svc.get_team_by_slug("nope").await);
     assert!(matches!(err, Error::NotFound { .. }), "{err}");
 
-    // Reads are open tenant-wide: bob (not a team member) sees the scaffold.
+    // Reads are open tenant-wide: bob (not a team member) sees the tree.
+    // KAIROS-T-0436: a new team has its charter only.
     let pages = bob
         .list_team_pages(&team.id)
         .await
         .expect("open tenant-wide read");
-    assert_eq!(pages.len(), 10, "scaffold shape: {pages:?}");
+    assert_eq!(pages.len(), 1, "the charter only: {pages:?}");
     let charter = by_slug(&pages, "charter").clone();
     assert!(charter.is_protected);
     assert_eq!(charter.kind, "page");
     assert_eq!(charter.version, 1);
-    let docs = by_slug(&pages, "documentation").clone();
-    assert_eq!(docs.kind, "folder");
-    let tutorials = by_slug(&pages, "tutorials").clone();
+    // The team grows its tree: two folders, one in the other.
+    let docs = svc
+        .create_team_page(
+            &team.id,
+            &CreateTeamPageRequest {
+                parent_id: None,
+                kind: "folder".into(),
+                slug: "documentation".into(),
+                title: "Documentation".into(),
+                content: String::new(),
+                position: 1,
+            },
+        )
+        .await
+        .expect("a folder at the root");
+    let tutorials = svc
+        .create_team_page(
+            &team.id,
+            &CreateTeamPageRequest {
+                parent_id: Some(docs.id.clone()),
+                kind: "folder".into(),
+                slug: "tutorials".into(),
+                title: "Tutorials".into(),
+                content: String::new(),
+                position: 0,
+            },
+        )
+        .await
+        .expect("a folder in the folder");
     assert_eq!(tutorials.parent_id.as_deref(), Some(docs.id.as_str()));
 
     // Unknown team id → 404 on every family.
@@ -551,7 +578,11 @@ async fn team_pages_endpoints_against_live_stack() {
             .get_result(conn)
             .expect("activity rows")
     };
-    assert_eq!(by_type(&mut conn, "team_page", "create"), 2, "alice + svc");
+    assert_eq!(
+        by_type(&mut conn, "team_page", "create"),
+        4,
+        "svc's two folders + alice + svc"
+    );
     assert_eq!(
         by_type(&mut conn, "team_page", "delete"),
         3,

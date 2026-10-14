@@ -17,4 +17,5 @@ pub mod repos;
 pub mod search;
 pub mod service_accounts;
 pub mod streams;
+pub mod team_pages;
 pub mod teams;

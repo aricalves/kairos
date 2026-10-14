@@ -238,6 +238,96 @@ def migrate_tenants():
     return _run_server_subcommand("migrate-tenants")
 
 
+# Scratch databases of the integration tests (KAIROS-T-0445): each test
+# process names them `ktest_<run>_<name>` (crates/kairos-db/tests/common/
+# scratch.rs). Only names of this shape are ever dropped.
+SCRATCH_DB_PATTERN = re.compile(r"^ktest_[a-z0-9_]{1,57}$")
+
+_SCRATCH_DBS_SQL = (
+    "SELECT d.datname FROM pg_database d "
+    "WHERE d.datname LIKE 'ktest\\_%' "
+    "AND NOT EXISTS (SELECT 1 FROM pg_stat_activity a WHERE a.datname = d.datname) "
+    "ORDER BY 1"
+)
+
+
+def _psql_query(sql: str):
+    """Rows of one column from the dev Postgres, or None when psql failed."""
+    result = subprocess.run(
+        [
+            "docker", "exec", "kairos-dev-postgres",
+            "psql", "-U", "kairos", "-d", "kairos", "-At", "-c", sql,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(result.stderr, file=sys.stderr)
+        return None
+    return [line for line in result.stdout.splitlines() if line]
+
+
+@db()
+@angreal.command(
+    name="clean-scratch",
+    about="drop the scratch databases (ktest_*) that crashed test runs left",
+    tool=angreal.ToolDescription(
+        """
+        Drop the scratch databases of the integration tests that a crashed
+        or killed run left on the dev Postgres (KAIROS-T-0445). A test
+        process names its scratch databases `ktest_<run>_<name>` and drops
+        them when the test ends; a run that was killed leaves them.
+
+        Drops only databases whose name starts with `ktest_` AND that
+        nobody is connected to, so a run in progress keeps its databases.
+        Never touches `kairos` or any other database.
+
+        ## Examples
+        ```
+        angreal db clean-scratch --dry-run   # list what would go
+        angreal db clean-scratch
+        ```
+
+        ## Output
+        The names dropped (or that would be dropped). Exit 1 when psql
+        failed.
+        """,
+        risk_level="safe",
+    ),
+)
+@angreal.argument(
+    name="dry_run",
+    long="dry-run",
+    help="list the databases, drop nothing",
+    takes_value=False,
+    is_flag=True,
+)
+def clean_scratch(dry_run=False):
+    """Drop leftover ktest_* scratch databases that nobody is connected to."""
+    names = _psql_query(_SCRATCH_DBS_SQL)
+    if names is None:
+        print("Could not list the databases (is the stack up? `angreal services up`).",
+              file=sys.stderr)
+        return 1
+    names = [name for name in names if SCRATCH_DB_PATTERN.match(name)]
+    if not names:
+        print("No leftover scratch databases.")
+        return 0
+    failed = 0
+    for name in names:
+        if dry_run:
+            print(f"would drop {name}")
+            continue
+        # No FORCE: a run that connected since the listing keeps its database.
+        if run_psql(f'DROP DATABASE IF EXISTS "{name}"') == 0:
+            print(f"dropped {name}")
+        else:
+            failed += 1
+    if failed:
+        print(f"{failed} database(s) not dropped (in use now?)", file=sys.stderr)
+    return 0
+
+
 @db()
 @angreal.command(name="psql", about="open psql shell")
 def psql():

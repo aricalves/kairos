@@ -225,7 +225,7 @@ impl Drop for Kairos {
 
 impl Kairos {
     async fn start() -> Kairos {
-        let scratch_db = format!("kairos_cli_t1854_{}", uuid::Uuid::new_v4().simple());
+        let scratch_db = format!("ktest_cli_t1854_{}", uuid::Uuid::new_v4().simple());
         let admin_url = admin_database_url();
         let mut admin = PgConnection::establish(&admin_url)
             .expect("connect to the dev stack (is it up? `angreal services up`)");

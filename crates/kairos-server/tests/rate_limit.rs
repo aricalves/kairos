@@ -422,8 +422,8 @@ mod rules {
 
     /// A throttle of 3 failures in 60 s and a lockout of 30 s (or `lockout`)
     /// on a scratch database of its own.
-    fn throttle(db: &str, lockout: i64) -> (AuthThrottle, String) {
-        let _admin = recreate_scratch_db(db);
+    fn throttle(db: &str, lockout: i64) -> (AuthThrottle, common::ScratchUrl) {
+        let admin = recreate_scratch_db(db);
         let url = with_database(&common::admin_database_url(), db);
         let mut conn = PgConnection::establish(&url).expect("connect scratch");
         run_public_migrations(&mut conn).expect("public migrations");
@@ -435,7 +435,7 @@ mod rules {
             },
             BlockingTenantPool::new(&url, 2),
         );
-        (throttle, url)
+        (throttle, common::ScratchUrl::new(admin, url))
     }
 
     fn subjects() -> Vec<Subject> {
@@ -451,7 +451,7 @@ mod rules {
 
     #[tokio::test]
     async fn failures_below_the_threshold_do_not_lock_out() {
-        let (t, _) = throttle("kairos_rate_limit_rules_below_t0377", 30);
+        let (t, _db) = throttle("kairos_rate_limit_rules_below_t0377", 30);
         let (now, s) = (start(), subjects());
         assert!(t.record_failure(&s, now).await.is_none());
         assert!(t.record_failure(&s, now).await.is_none());
@@ -460,7 +460,7 @@ mod rules {
 
     #[tokio::test]
     async fn the_threshold_locks_out_and_the_lockout_expires() {
-        let (t, _) = throttle("kairos_rate_limit_rules_expires_t0377", 30);
+        let (t, _db) = throttle("kairos_rate_limit_rules_expires_t0377", 30);
         let (start, s) = (start(), subjects());
         for _ in 0..3 {
             t.record_failure(&s, start).await;
@@ -473,7 +473,7 @@ mod rules {
 
     #[tokio::test]
     async fn failures_decay_so_a_slow_typist_is_never_locked_out() {
-        let (t, _) = throttle("kairos_rate_limit_rules_decay_t0377", 30);
+        let (t, _db) = throttle("kairos_rate_limit_rules_decay_t0377", 30);
         let (start, s) = (start(), subjects());
         t.record_failure(&s, start).await;
         t.record_failure(&s, start + Duration::seconds(61)).await;
@@ -483,7 +483,7 @@ mod rules {
 
     #[tokio::test]
     async fn identity_and_source_are_counted_separately() {
-        let (t, _) = throttle("kairos_rate_limit_rules_split_t0377", 30);
+        let (t, _db) = throttle("kairos_rate_limit_rules_split_t0377", 30);
         let now = start();
         let source = Subject::Source("203.0.113.9".parse().unwrap());
         for i in 0..3 {
@@ -500,7 +500,7 @@ mod rules {
 
     #[tokio::test]
     async fn a_success_clears_the_count_but_not_a_live_lockout() {
-        let (t, _) = throttle("kairos_rate_limit_rules_success_t0377", 30);
+        let (t, _db) = throttle("kairos_rate_limit_rules_success_t0377", 30);
         let (now, s) = (start(), subjects());
         t.record_failure(&s, now).await;
         t.record_failure(&s, now).await;
@@ -517,7 +517,7 @@ mod rules {
 
     #[tokio::test]
     async fn retry_after_rounds_up() {
-        let (t, _) = throttle("kairos_rate_limit_rules_round_t0377", 30);
+        let (t, _db) = throttle("kairos_rate_limit_rules_round_t0377", 30);
         let (start, s) = (start(), subjects());
         for _ in 0..3 {
             t.record_failure(&s, start).await;

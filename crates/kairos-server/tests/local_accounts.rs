@@ -137,7 +137,8 @@ async fn an_org_admin_manages_local_accounts() {
     member(&mut conn, "boss@example.test", acme, OrgRole::Admin);
     member(&mut conn, "worker@example.test", acme, OrgRole::Member);
     let outsider = member(&mut conn, "outsider@example.test", globex, OrgRole::Admin);
-    drop(admin_conn);
+    // Kept to the end: dropping it drops the scratch database (KAIROS-T-0445).
+    let _scratch = admin_conn;
 
     let pool = TenantPool::new(&scratch_url, 4).await.expect("pool");
     let auth = Arc::new(Authenticator::with_static_keys(ISSUER, AUDIENCE, []));
@@ -418,7 +419,8 @@ async fn the_break_glass_subcommand_needs_no_login() {
         },
     )
     .expect("session");
-    drop(admin_conn);
+    // Kept to the end: dropping it drops the scratch database (KAIROS-T-0445).
+    let _scratch = admin_conn;
 
     let exe = env!("CARGO_BIN_EXE_kairos-server");
     let output = std::process::Command::new(exe)

@@ -19,6 +19,9 @@
 //! Against real Postgres from the compose stack (A-0012 tier 2). Each test
 //! owns a scratch database.
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use diesel::connection::SimpleConnection;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
@@ -46,11 +49,12 @@ fn with_database(url: &str, db_name: &str) -> String {
     let (base, _) = url
         .rsplit_once('/')
         .expect("DATABASE_URL must contain a database path segment");
-    format!("{base}/{db_name}")
+    format!("{base}/{}", scratch::scratch_db_name(db_name))
 }
 
 /// A scratch database with the tenant `acme`, pinned to its schema.
 fn tenant(scratch_db: &str) -> (PgConnection, PgConnection) {
+    let scratch_db = &crate::scratch::scratch_db_name(scratch_db);
     let admin_url = admin_database_url();
     let mut admin_conn = PgConnection::establish(&admin_url).unwrap_or_else(|e| {
         panic!(
@@ -192,8 +196,10 @@ fn slugs_of_two_live_boards(conn: &mut PgConnection) -> Vec<String> {
 
 #[test]
 fn the_migration_gives_each_later_board_a_slug_of_its_own() {
-    const SCRATCH_DB: &str = "kairos_board_slug_dup_t0255_test";
-    let (admin_conn, mut conn) = tenant(SCRATCH_DB);
+    static SCRATCH_DB: scratch::ScratchName =
+        scratch::ScratchName::new("kairos_board_slug_dup_t0255_test");
+    let (admin_conn, mut conn) = tenant(&SCRATCH_DB);
+    let _scratch_guard = crate::scratch::ScratchGuard::new(&SCRATCH_DB);
     remove_the_index(&mut conn);
 
     // ------------------------------------------------------------------
@@ -330,7 +336,7 @@ fn the_migration_gives_each_later_board_a_slug_of_its_own() {
     assert!(!index_is_there(&mut conn));
     assert_eq!(all_boards(&mut conn), once);
 
-    drop_database(admin_conn, conn, SCRATCH_DB);
+    drop_database(admin_conn, conn, &SCRATCH_DB);
 }
 
 /// An insert that gives the error of the database to the caller.
@@ -351,8 +357,10 @@ fn old_board_insert(
 
 #[test]
 fn the_migration_changes_nothing_on_a_tenant_without_duplicates() {
-    const SCRATCH_DB: &str = "kairos_board_slug_clean_t0255_test";
-    let (admin_conn, mut conn) = tenant(SCRATCH_DB);
+    static SCRATCH_DB: scratch::ScratchName =
+        scratch::ScratchName::new("kairos_board_slug_clean_t0255_test");
+    let (admin_conn, mut conn) = tenant(&SCRATCH_DB);
+    let _scratch_guard = crate::scratch::ScratchGuard::new(&SCRATCH_DB);
 
     // The boards of a new tenant, and 2 more. One is deleted and has the
     // slug of a live board.
@@ -378,13 +386,15 @@ fn the_migration_changes_nothing_on_a_tenant_without_duplicates() {
     assert!(index_is_there(&mut conn));
     assert_eq!(board(&mut conn, live.id).slug, "roadmap");
 
-    drop_database(admin_conn, conn, SCRATCH_DB);
+    drop_database(admin_conn, conn, &SCRATCH_DB);
 }
 
 #[test]
 fn create_board_refuses_the_slug_of_a_live_board() {
-    const SCRATCH_DB: &str = "kairos_board_slug_create_t0255_test";
-    let (admin_conn, mut conn) = tenant(SCRATCH_DB);
+    static SCRATCH_DB: scratch::ScratchName =
+        scratch::ScratchName::new("kairos_board_slug_create_t0255_test");
+    let (admin_conn, mut conn) = tenant(&SCRATCH_DB);
+    let _scratch_guard = crate::scratch::ScratchGuard::new(&SCRATCH_DB);
     assert!(
         index_is_there(&mut conn),
         "a new tenant has the index from its first migration run"
@@ -457,5 +467,5 @@ fn create_board_refuses_the_slug_of_a_live_board() {
     .expect("the slug is free");
     assert_ne!(second.id, first.id);
 
-    drop_database(admin_conn, conn, SCRATCH_DB);
+    drop_database(admin_conn, conn, &SCRATCH_DB);
 }

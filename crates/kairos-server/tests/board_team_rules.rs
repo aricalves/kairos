@@ -52,7 +52,7 @@ const TENANT: [(&str, &str); 1] = [("x-tenant", "acme")];
 /// The booted router on a scratch database, with `svc` as the org admin.
 struct Stack {
     scratch_db: &'static str,
-    admin_conn: PgConnection,
+    admin_conn: common::ScratchConn,
     /// Pinned to the tenant schema.
     conn: PgConnection,
     pool: TenantPool,

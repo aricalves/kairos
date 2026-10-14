@@ -60,7 +60,7 @@ pub struct CreateTeamPageRequest {
 /// version-checked content edit (`content` present, `version` required)
 /// OR a structural rename/move (`slug`/`parent_id`/`position`); mixing
 /// both in one call is a 422.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateTeamPageRequest {
     /// New title (content edits only).

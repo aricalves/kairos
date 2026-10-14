@@ -302,6 +302,8 @@ struct World {
     /// (COLLIERY-T-3105), when the world has one.
     git_http: Option<common::git_http::GitHttp>,
     _work: tempfile::TempDir,
+    /// The scratch database: dropped last, with the world (KAIROS-T-0445).
+    _scratch: common::ScratchConn,
 }
 
 /// The user and the token that the git server of a private repository
@@ -322,7 +324,7 @@ impl World {
     }
 
     async fn build(scratch_db: &str, private: bool) -> World {
-        let _admin_conn = recreate_scratch_db(scratch_db);
+        let admin_conn = recreate_scratch_db(scratch_db);
         let scratch_url = with_database(&common::admin_database_url(), scratch_db);
         let mut conn =
             PgConnection::establish(&scratch_url).expect("connecting to scratch database");
@@ -441,6 +443,7 @@ impl World {
             .execute(&mut conn)
             .unwrap();
         World {
+            _scratch: admin_conn,
             conn,
             state,
             service,
