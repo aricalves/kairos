@@ -24,7 +24,7 @@ const DEFAULT_DATABASE_URL: &str = "postgres://kairos:kairos@localhost:41432/kai
 const SCRATCH_DB: &str = "kairos_team_pages_test";
 /// KAIROS-T-0436: the migration that removes the unused seeded folders.
 const SCAFFOLD_REMOVED: &str =
-    include_str!("../migrations/tenant/2026-10-14-000200_team_scaffold_removed/up.sql");
+    include_str!("../migrations/tenant/2026-10-14-000300_team_scaffold_removed/up.sql");
 
 fn admin_database_url() -> String {
     std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())

@@ -3,7 +3,7 @@
 //! A new team gets one page: its charter, the landing page and social
 //! contract of the team. The team grows the rest of its tree itself; there
 //! is no seeded folder set (KAIROS-T-0436, decided in KAIROS-T-0435). The
-//! migration `2026-10-14-000200_team_scaffold_removed` removed the unedited
+//! migration `2026-10-14-000300_team_scaffold_removed` removed the unedited
 //! seeded folders from the teams that had them.
 
 use diesel::pg::PgConnection;
