@@ -19,6 +19,29 @@ use super::api;
 use crate::auth::{Auth, use_auth};
 use crate::pages::item::api::error_text;
 
+thread_local! {
+    /// The folders a person opened in this browser session. The tree renders
+    /// again after each change (a refetch), so the open state lives here, not
+    /// in the DOM; a drop into a folder opens it.
+    static OPEN_FOLDERS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+fn folder_is_open(id: &str) -> bool {
+    OPEN_FOLDERS.with(|open| open.borrow().contains(id))
+}
+
+fn set_folder_open(id: &str, open: bool) {
+    OPEN_FOLDERS.with(|folders| {
+        let mut folders = folders.borrow_mut();
+        if open {
+            folders.insert(id.to_string());
+        } else {
+            folders.remove(id);
+        }
+    });
+}
+
 /// A slug from a title: lower case, each run of other characters one
 /// hyphen ("How-to Guides" gives "how-to-guides").
 pub(crate) fn slug_from_title(title: &str) -> String {
@@ -76,6 +99,7 @@ pub(crate) fn next_position(pages: &[api::TeamPageNode], parent: Option<&str>) -
     let base = if parent.is_none() { 1 } else { 0 };
     siblings(pages, parent)
         .iter()
+        .filter(|p| p.position < api::UNPLACED)
         .map(|p| p.position + 1)
         .max()
         .unwrap_or(base)
@@ -199,19 +223,53 @@ impl TreeCtx {
         else {
             return;
         };
+        // The folder that takes the node opens, so the person sees it land.
+        let landing = match &target {
+            DropTarget::Into(folder) => Some(folder.clone()),
+            DropTarget::Before { parent, .. } | DropTarget::End { parent } => parent.clone(),
+        };
+        if let Some(folder) = landing {
+            set_folder_open(&folder, true);
+        }
         if self.busy.get_untracked() {
             return;
         }
         let ctx = *self;
         ctx.busy.set(true);
         ctx.error.set(None);
+        // A step on a document or an ADR places the item (KAIROS-T-0437);
+        // an item always sends its parent, so a reorder keeps its folder.
+        let items: Vec<(String, String, Option<String>)> = ctx.pages.with_value(|pages| {
+            pages
+                .iter()
+                .filter_map(|p| {
+                    p.item
+                        .as_ref()
+                        .map(|i| (p.id.clone(), i.short_code.clone(), p.parent_id.clone()))
+                })
+                .collect()
+        });
         leptos::task::spawn_local(async move {
             let team_id = ctx.team_id.get_value();
             for step in steps {
-                let parent = step.parent.as_ref().map(|p| p.as_deref());
-                if let Err(e) =
-                    api::place_page(ctx.auth, &team_id, &step.id, parent, step.position).await
-                {
+                let result = match items.iter().find(|(id, _, _)| *id == step.id) {
+                    Some((_, code, current_parent)) => {
+                        let parent = match &step.parent {
+                            Some(parent) => parent.clone(),
+                            None => current_parent.clone(),
+                        };
+                        api::place_item(ctx.auth, &team_id, code, parent.as_deref(), step.position)
+                            .await
+                            .map(|_| ())
+                    }
+                    None => {
+                        let parent = step.parent.as_ref().map(|p| p.as_deref());
+                        api::place_page(ctx.auth, &team_id, &step.id, parent, step.position)
+                            .await
+                            .map(|_| ())
+                    }
+                };
+                if let Err(e) = result {
                     ctx.error.set(Some(error_text(&e)));
                     break;
                 }
@@ -222,21 +280,25 @@ impl TreeCtx {
     }
 }
 
-/// The team tree: folders and pages (not the charter), with in-place create
-/// and drag-and-drop for a team member or an organization admin.
+/// The team tree: folders and pages (not the charter), and the documents and
+/// ADRs of the team (KAIROS-T-0437), with in-place create and drag-and-drop
+/// for a team member or an organization admin.
 #[component]
 pub(crate) fn TeamTree(
     team_id: String,
     team_slug: String,
     pages: Vec<api::TeamPageNode>,
+    items: Vec<api::TreeItem>,
     manage: bool,
     on_changed: Callback<()>,
 ) -> impl IntoView {
+    let mut nodes = pages;
+    nodes.extend(api::item_nodes(&items));
     let ctx = TreeCtx {
         auth: use_auth(),
         team_id: StoredValue::new(team_id.clone()),
         team_slug: StoredValue::new(team_slug),
-        pages: StoredValue::new(pages),
+        pages: StoredValue::new(nodes),
         manage,
         drag: RwSignal::new(None),
         error: RwSignal::new(None),
@@ -340,12 +402,25 @@ fn render_level(ctx: TreeCtx, parent: Option<String>, path_prefix: String) -> An
             let into_check = into.clone();
             let team_id = ctx.team_id.get_value();
             let folder_id = node.id.clone();
+            let toggle_id = node.id.clone();
             let next = ctx
                 .pages
                 .with_value(|pages| next_position(pages, Some(&node.id)));
             rows.push(
                 view! {
-                    <details class="kairos-doctree__folder">
+                    <details
+                        class="kairos-doctree__folder"
+                        open=folder_is_open(&toggle_id)
+                        on:toggle=move |ev: web_sys::Event| {
+                            use wasm_bindgen::JsCast;
+                            if let Some(details) = ev
+                                .target()
+                                .and_then(|t| t.dyn_into::<web_sys::HtmlDetailsElement>().ok())
+                            {
+                                set_folder_open(&toggle_id, details.open());
+                            }
+                        }
+                    >
                         <summary
                             class="kairos-doctree__summary"
                             class:kairos-doctree__summary--over=move || over.get()
@@ -384,6 +459,32 @@ fn render_level(ctx: TreeCtx, parent: Option<String>, path_prefix: String) -> An
                             })}
                         </div>
                     </details>
+                }
+                .into_any(),
+            );
+        } else if let Some(item) = node.item.clone() {
+            // A document or an ADR: it links to its item page; the board shows
+            // where it is in its lifecycle.
+            let item_href = format!("/items/{}", item.short_code);
+            let kind = if item.entity_type == "adr" {
+                "ADR"
+            } else {
+                "doc"
+            };
+            rows.push(
+                view! {
+                    <div
+                        class="kairos-doctree__page kairos-doctree__item"
+                        draggable=if ctx.manage { "true" } else { "false" }
+                        on:dragstart=move |ev: web_sys::DragEvent| drag_start(ctx, id.clone(), &ev)
+                        on:dragend=move |_| ctx.drag.set(None)
+                    >
+                        <Group gap="xs">
+                            <Text dimmed=true size="xs">{kind}</Text>
+                            <Anchor href=item_href>{title}</Anchor>
+                            <Text dimmed=true size="xs">{format!("{} · {}", item.short_code, item.status)}</Text>
+                        </Group>
+                    </div>
                 }
                 .into_any(),
             );
@@ -532,6 +633,7 @@ mod tests {
             position,
             is_protected: false,
             version: 1,
+            item: None,
         }
     }
 
@@ -628,6 +730,28 @@ mod tests {
         assert_eq!(next_position(&pages, Some("b")), 0);
         // A team with the charter only: the root starts after it.
         assert_eq!(next_position(&pages[..1], None), 1);
+    }
+
+    #[test]
+    fn a_document_moves_like_a_page_and_is_no_container() {
+        let mut pages = tree();
+        pages.extend(api::item_nodes(&[api::TreeItem {
+            item_id: "d".into(),
+            short_code: "ACME-D-0001".into(),
+            entity_type: "document".into(),
+            title: "Plan".into(),
+            status: "draft".into(),
+            parent_id: None,
+            position: None,
+        }]));
+        // Unplaced, it sits after the placed root nodes and new nodes go
+        // before it.
+        assert_eq!(next_position(&pages, None), 3);
+        assert_eq!(
+            plan_drop(&pages, "d", &DropTarget::Into("b".into())),
+            Some(vec![step("d", Some(Some("b")), 0)])
+        );
+        assert_eq!(plan_drop(&pages, "p", &DropTarget::Into("d".into())), None);
     }
 
     #[test]

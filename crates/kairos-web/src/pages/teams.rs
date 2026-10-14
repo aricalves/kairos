@@ -37,17 +37,6 @@ use crate::pages::item::api::error_text;
 use crate::pages::item::markdown;
 use api::team_type_color;
 
-/// Lifecycle chip accent — the same mapping as the item detail's
-/// lifecycle panel (KAIROS-T-0078), so the states read identically.
-fn lifecycle_color(state: &str) -> &'static str {
-    use aurora_dark::tokens::token;
-    match state {
-        "published" => token::OK,
-        "review" => token::GOLD,
-        _ => token::MUTED,
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Directory
 // ---------------------------------------------------------------------------
@@ -139,8 +128,9 @@ struct TeamView {
     delivery_board: Option<(String, String)>,
     /// Streams this team participates in.
     streams: Vec<api::DeliveryStream>,
-    /// Documents attached to the team's work (KAIROS-T-0084, derived).
-    work_documents: Vec<api::WorkDocument>,
+    /// The documents and ADRs of the team, with their places in the tree
+    /// (KAIROS-T-0437; they replace the "Work documents" panel).
+    items: Vec<api::TreeItem>,
     /// The full page tree, flat: the charter and the pages of the team.
     pages: Vec<api::TeamPageNode>,
     /// Pinned first, newest first (server ordering).
@@ -205,20 +195,11 @@ async fn load_team_view(
     let team = api::team_by_slug(auth, slug).await?;
     let team_id = team.id.as_str();
 
-    let (
-        members,
-        delivery_board,
-        streams,
-        work_documents,
-        pages,
-        announcements,
-        links,
-        repositories,
-    ) = join!(
+    let (members, delivery_board, streams, items, pages, announcements, links, repositories) = join!(
         api::team_members(auth, team_id),
         load_delivery_board(auth, team.delivery_board_id.as_deref()),
         load_streams(auth, team_id),
-        api::team_work_documents(auth, team_id),
+        api::tree_items(auth, team_id),
         api::team_pages(auth, team_id),
         api::team_announcements(auth, team_id),
         api::team_links(auth, team_id),
@@ -227,7 +208,7 @@ async fn load_team_view(
     let members = members?;
     let delivery_board = delivery_board?;
     let streams = streams?;
-    let work_documents = work_documents?;
+    let items = items?;
     let pages = pages?;
     let announcements = announcements?;
     let links = links?;
@@ -238,7 +219,7 @@ async fn load_team_view(
         members,
         delivery_board,
         streams,
-        work_documents,
+        items,
         pages,
         announcements,
         links,
@@ -290,7 +271,7 @@ fn TeamBody(view_model: TeamView, on_changed: Callback<()>) -> impl IntoView {
         members,
         delivery_board,
         streams,
-        work_documents,
+        items,
         pages,
         announcements,
         links,
@@ -402,63 +383,18 @@ fn TeamBody(view_model: TeamView, on_changed: Callback<()>) -> impl IntoView {
                     let team_id_for_tree = team.id.clone();
                     let team_slug_for_tree = team_slug.clone();
                     let pages_for_tree = pages.clone();
+                    let items_for_tree = items.clone();
                     move || view! {
                         <tree::TeamTree
                             team_id=team_id_for_tree.clone()
                             team_slug=team_slug_for_tree.clone()
                             pages=pages_for_tree.clone()
+                            items=items_for_tree.clone()
                             manage=can_author()
                             on_changed
                         />
                     }
                 }
-            </Panel>
-            <Panel title="Work documents" caption="documents that a board of this team owns, and documents that support this team's work items">
-                {if work_documents.is_empty() {
-                    view! {
-                        <Empty message="This team has no documents. A board of this team owns no document, and no document supports a work item of this team."/>
-                    }.into_any()
-                } else {
-                    view! {
-                        <Stack gap="sm">
-                            {work_documents.into_iter().map(|doc| {
-                                let api::WorkDocument {
-                                    short_code, title, lifecycle, owned,
-                                    parent_short_code, parent_title, ..
-                                } = doc;
-                                // Why the row is listed (KAIROS-T-0393):
-                                // a board of the team owns it, it supports
-                                // a work item of the team, or both.
-                                let parent = parent_short_code.zip(parent_title);
-                                view! {
-                                    <Stack gap="xs">
-                                        <Group justify="between">
-                                            <Anchor href=format!("/items/{short_code}")>
-                                                {format!("{short_code} — {title}")}
-                                            </Anchor>
-                                            <Pill color=lifecycle_color(&lifecycle)>{lifecycle.clone()}</Pill>
-                                        </Group>
-                                        <Group gap="xs">
-                                            {owned.then(|| view! {
-                                                <Text dimmed=true size="xs">"owned by a board of this team"</Text>
-                                            })}
-                                            {parent.map(|(parent_short_code, parent_title)| view! {
-                                                <Text dimmed=true size="xs">
-                                                    {if owned { "· supports" } else { "supports" }}
-                                                </Text>
-                                                <Anchor href=format!("/items/{parent_short_code}")>
-                                                    <Text dimmed=true size="xs">
-                                                        {format!("{parent_short_code} — {parent_title}")}
-                                                    </Text>
-                                                </Anchor>
-                                            })}
-                                        </Group>
-                                    </Stack>
-                                }
-                            }).collect_view()}
-                        </Stack>
-                    }.into_any()
-                }}
             </Panel>
             <Panel title="Repositories" caption="the codebases this team owns; open counts cover all boards">
                 {if repositories.is_empty() {

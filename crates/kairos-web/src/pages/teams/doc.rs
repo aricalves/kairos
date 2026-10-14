@@ -34,6 +34,8 @@ use crate::pages::item::markdown;
 struct DocView {
     team: api::Team,
     pages: Vec<api::TeamPageNode>,
+    /// The documents and ADRs of the team (KAIROS-T-0437).
+    items: Vec<api::TreeItem>,
 }
 
 /// Resolve `segments` against the tree: each segment is a slug under the
@@ -83,7 +85,8 @@ pub fn TeamDocPage() -> impl IntoView {
         async move {
             let team = api::team_by_slug(auth, &slug).await?;
             let pages = api::team_pages(auth, &team.id).await?;
-            Ok::<_, ApiError>(DocView { team, pages })
+            let items = api::tree_items(auth, &team.id).await?;
+            Ok::<_, ApiError>(DocView { team, pages, items })
         }
     });
     view! {
@@ -132,7 +135,7 @@ fn DocBody(
     manage: bool,
     on_changed: Callback<()>,
 ) -> impl IntoView {
-    let DocView { team, pages } = doc_view;
+    let DocView { team, pages, items } = doc_view;
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     // KAIROS-T-0438: `/teams/:slug/pages/` is the root of the tree.
     if segments.is_empty() {
@@ -150,6 +153,7 @@ fn DocBody(
                         team_id=team.id.clone()
                         team_slug=team.slug.clone()
                         pages
+                        items
                         manage
                         on_changed
                     />

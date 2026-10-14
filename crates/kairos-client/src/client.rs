@@ -2166,6 +2166,27 @@ impl KairosClient {
             .await
     }
 
+    /// `GET /api/teams/{id}/tree-items` — the documents and ADRs of a team
+    /// with their places in its tree (KAIROS-T-0437).
+    pub async fn list_team_tree_items(
+        &self,
+        team_id: &str,
+    ) -> Result<Vec<crate::types_team_pages::TeamTreeItem>, Error> {
+        self.get(&format!("/api/teams/{team_id}/tree-items")).await
+    }
+
+    /// `PUT /api/teams/{id}/tree-items/{item}` — put a document or an ADR of
+    /// the team in a folder (team member or org admin).
+    pub async fn place_team_tree_item(
+        &self,
+        team_id: &str,
+        item: &str,
+        request: &crate::types_team_pages::PlaceTeamItemRequest,
+    ) -> Result<crate::types_team_pages::TeamTreeItem, Error> {
+        self.put_ok(&format!("/api/teams/{team_id}/tree-items/{item}"), request)
+            .await
+    }
+
     /// `GET /api/teams/{id}/archived-pages` — the archived nodes, newest
     /// archive first (KAIROS-T-0439).
     pub async fn list_archived_team_pages(

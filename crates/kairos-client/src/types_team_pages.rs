@@ -171,3 +171,34 @@ pub struct TeamPageVersion {
     #[serde(default)]
     pub agent_key_id: Option<String>,
 }
+
+/// One document or ADR in the tree of a team (KAIROS-T-0437): `GET
+/// /api/teams/{id}/tree-items`. Each document and ADR whose owner board is a
+/// board of the team. The board owns it; this is where it sits in the tree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct TeamTreeItem {
+    /// The item id (UUID).
+    pub item_id: String,
+    pub short_code: String,
+    /// `document` or `adr`.
+    pub entity_type: String,
+    pub title: String,
+    /// The lifecycle of a document, or the column of an ADR.
+    pub status: String,
+    /// Its folder (a team page id); null is the root.
+    pub parent_id: Option<String>,
+    /// Its position among its siblings; null when nobody placed it (it shows
+    /// at the end of the root).
+    pub position: Option<i32>,
+}
+
+/// Body of `PUT /api/teams/{id}/tree-items/{item}` (KAIROS-T-0437).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlaceTeamItemRequest {
+    /// The folder (a team page id); null or absent puts it at the root.
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    /// Its position among its siblings.
+    pub position: i32,
+}

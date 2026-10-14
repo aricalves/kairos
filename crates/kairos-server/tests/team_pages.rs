@@ -873,5 +873,85 @@ async fn team_pages_endpoints_against_live_stack() {
     let err = rejection(bob.list_team_work_documents(&ghost).await);
     assert!(matches!(err, Error::NotFound { .. }), "{err}");
 
+    // =======================================================================
+    // KAIROS-T-0437: the documents and ADRs of a team are nodes in its tree
+    // =======================================================================
+    let tree = bob
+        .list_team_tree_items(&team.id)
+        .await
+        .expect("open tenant-wide read");
+    let codes: Vec<&str> = tree.iter().map(|i| i.short_code.as_str()).collect();
+    for owned in [&doc_h, &doc_i, &doc_j] {
+        assert!(codes.contains(&owned.short_code.as_str()), "{codes:?}");
+    }
+    assert!(
+        !codes.contains(&doc_k.short_code.as_str()),
+        "an archived document is not in the tree"
+    );
+    assert!(
+        !codes.contains(&doc_c.short_code.as_str()),
+        "another team's document is not"
+    );
+    let i_item = tree
+        .iter()
+        .find(|i| i.short_code == doc_i.short_code)
+        .unwrap();
+    assert_eq!(
+        (i_item.parent_id.as_deref(), i_item.position),
+        (None, None),
+        "unplaced: the root"
+    );
+    assert_eq!(i_item.entity_type, "document");
+    // Placing needs membership; the item must be the team's.
+    let place = |parent: Option<String>| kairos_client::types_team_pages::PlaceTeamItemRequest {
+        parent_id: parent,
+        position: 0,
+    };
+    let err = rejection(
+        bob.place_team_tree_item(&team.id, &doc_i.short_code, &place(Some(docs.id.clone())))
+            .await,
+    );
+    assert!(matches!(err, Error::Forbidden { .. }), "{err}");
+    let err = rejection(
+        alice
+            .place_team_tree_item(&team.id, &doc_c.short_code, &place(None))
+            .await,
+    );
+    assert_eq!(err.code(), Some("VALIDATION"), "{err}");
+    let placed = alice
+        .place_team_tree_item(&team.id, &doc_i.short_code, &place(Some(docs.id.clone())))
+        .await
+        .expect("a member places a document of the team");
+    assert_eq!(placed.parent_id.as_deref(), Some(docs.id.as_str()));
+    assert_eq!(placed.position, Some(0));
+    // The folder archived: the document shows at the root, and comes back
+    // with the folder.
+    alice
+        .delete_team_page(&team.id, &docs.id)
+        .await
+        .expect("archive the folder");
+    let at_root = bob.list_team_tree_items(&team.id).await.unwrap();
+    assert_eq!(
+        at_root
+            .iter()
+            .find(|i| i.short_code == doc_i.short_code)
+            .unwrap()
+            .parent_id,
+        None
+    );
+    alice
+        .restore_team_page(&team.id, &docs.id)
+        .await
+        .expect("restore the folder");
+    let back = bob.list_team_tree_items(&team.id).await.unwrap();
+    assert_eq!(
+        back.iter()
+            .find(|i| i.short_code == doc_i.short_code)
+            .unwrap()
+            .parent_id
+            .as_deref(),
+        Some(docs.id.as_str())
+    );
+
     drop_scratch_db(&mut admin_conn, SCRATCH_DB);
 }

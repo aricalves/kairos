@@ -948,7 +948,8 @@ pub struct EditTeamPageParams {
 pub struct MoveTeamPageParams {
     /// The team, by slug or UUID.
     pub team: String,
-    /// The page or folder: a path of slugs or a UUID.
+    /// The page or folder: a path of slugs or a UUID. Or the short code of a
+    /// document or an ADR of the team, to place it in the tree.
     pub page: String,
     /// The folder to move it to: a path of slugs or a UUID.
     pub parent: Option<String>,
@@ -4621,7 +4622,7 @@ impl KairosMcp {
     // REST route, so the gate (a team member or an organization admin) and
     // the refusals are those of REST.
     #[tool(
-        description = "Read the team page of a team: its tree of folders and pages, with the charter first. With `page` (a path of slugs such as \"documentation/runbooks\", or a UUID), read one page or folder in full: its content and its version. `team` is a slug or UUID. Every member of the organization can read."
+        description = "Read the team page of a team: its tree of folders and pages, with the charter first, and the documents and ADRs that the boards of the team own, each in its folder (one that nobody placed is at the end of the root). With `page` (a path of slugs such as \"documentation/runbooks\", or a UUID), read one page or folder in full: its content and its version. `team` is a slug or UUID. Every member of the organization can read."
     )]
     pub async fn team_pages(
         &self,
@@ -4633,7 +4634,10 @@ impl KairosMcp {
             let team = team_by_ref(conn, &params.team)?;
             let pages = crate::api::org::team_pages::list_as(conn, team.id)?;
             match params.page {
-                None => Ok(render_page_tree(&team.slug, &pages)),
+                None => {
+                    let items = crate::api::org::team_pages::tree_items_as(conn, team.id)?;
+                    Ok(render_page_tree(&team.slug, &pages, &items))
+                }
                 Some(reference) => {
                     let page = page_by_ref(&pages, &reference)?;
                     Ok(format!(
@@ -4753,7 +4757,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Move, reorder or rename a page or a folder of a team, as PATCH /api/teams/{id}/pages/{page_id} does with slug, parent_id, move_to_root and position. `page` is a path of slugs or a UUID. `parent` is the new folder (a path of slugs or a UUID); `to_root: true` moves it to the root. `slug` renames it. `position` reorders it among its siblings. The charter cannot be moved or renamed. Requires membership of the team, or the organization admin role."
+        description = "Move, reorder or rename a page or a folder of a team, as PATCH /api/teams/{id}/pages/{page_id} does with slug, parent_id, move_to_root and position. `page` is a path of slugs or a UUID, or the short code of a document or an ADR of the team, which places that item in the tree (its board keeps it). `parent` is the new folder (a path of slugs or a UUID); `to_root: true` moves it to the root. `slug` renames a page or a folder. `position` reorders it among its siblings. The charter cannot be moved or renamed. Requires membership of the team, or the organization admin role."
     )]
     pub async fn move_team_page(
         &self,
@@ -4771,11 +4775,61 @@ impl KairosMcp {
             }
             let team = team_by_ref(conn, &params.team)?;
             let pages = crate::api::org::team_pages::list_as(conn, team.id)?;
-            let page_id = parse_page_id(page_by_ref(&pages, &params.page)?)?;
             let parent_id = match &params.parent {
                 Some(reference) => Some(page_by_ref(&pages, reference)?.id.clone()),
                 None => None,
             };
+            // KAIROS-T-0437: a document or an ADR of the team, by short code,
+            // is placed in the tree; the board keeps it.
+            let items = crate::api::org::team_pages::tree_items_as(conn, team.id)?;
+            if let Some(item) = items
+                .iter()
+                .find(|i| i.short_code.eq_ignore_ascii_case(&params.page))
+            {
+                if params.slug.is_some() {
+                    return Err(ApiError::validation(
+                        "A document or an ADR has no slug in the tree. Send parent, to_root or position.",
+                    ));
+                }
+                let position = params.position.unwrap_or_else(|| {
+                    pages
+                        .iter()
+                        .filter(|p| p.parent_id == parent_id)
+                        .map(|p| p.position + 1)
+                        .chain(
+                            items
+                                .iter()
+                                .filter(|i| i.parent_id == parent_id)
+                                .filter_map(|i| i.position.map(|p| p + 1)),
+                        )
+                        .max()
+                        .unwrap_or(0)
+                });
+                let placed = crate::api::org::team_pages::place_item_as(
+                    conn,
+                    &gate,
+                    user,
+                    team.id,
+                    &item.short_code,
+                    &kairos_client::types_team_pages::PlaceTeamItemRequest {
+                        parent_id: parent_id.clone(),
+                        position,
+                    },
+                )?;
+                let folder = parent_id
+                    .as_ref()
+                    .and_then(|id| pages.iter().find(|p| &p.id == id))
+                    .map(|p| page_path(&pages, p))
+                    .unwrap_or_else(|| "the root".to_string());
+                return Ok(format!(
+                    "Placed {} ({}) in the team page of {}: in {folder}, position {}.",
+                    placed.short_code,
+                    placed.title,
+                    team.slug,
+                    placed.position.unwrap_or(position)
+                ));
+            }
+            let page_id = parse_page_id(page_by_ref(&pages, &params.page)?)?;
             let updated = crate::api::org::team_pages::update_as(
                 conn,
                 &gate,
@@ -4890,47 +4944,84 @@ fn parse_page_id(page: &kairos_client::types_team_pages::TeamPage) -> Result<Uui
 }
 
 /// The tree, one line for each node, indented by depth, siblings in
-/// position order, the charter first.
-fn render_page_tree(team: &str, pages: &[kairos_client::types_team_pages::TeamPage]) -> String {
+/// position order, the charter first. The documents and ADRs of the team
+/// (KAIROS-T-0437) are nodes too; one that nobody placed is at the end of
+/// the root.
+fn render_page_tree(
+    team: &str,
+    pages: &[kairos_client::types_team_pages::TeamPage],
+    items: &[kairos_client::types_team_pages::TeamTreeItem],
+) -> String {
+    use kairos_client::types_team_pages::{TeamPage, TeamTreeItem};
+    enum Node<'a> {
+        Page(&'a TeamPage),
+        Item(&'a TeamTreeItem),
+    }
     fn walk(
-        pages: &[kairos_client::types_team_pages::TeamPage],
+        pages: &[TeamPage],
+        items: &[TeamTreeItem],
         parent: Option<&String>,
         depth: usize,
         out: &mut String,
     ) {
-        let mut level: Vec<_> = pages
+        let mut level: Vec<(bool, i32, String, Node)> = pages
             .iter()
             .filter(|p| p.parent_id.as_ref() == parent)
+            .map(|p| (!p.is_protected, p.position, p.title.clone(), Node::Page(p)))
+            .chain(
+                items
+                    .iter()
+                    .filter(|i| i.parent_id.as_ref() == parent)
+                    .map(|i| {
+                        (
+                            true,
+                            i.position.unwrap_or(i32::MAX),
+                            i.short_code.clone(),
+                            Node::Item(i),
+                        )
+                    }),
+            )
             .collect();
-        level.sort_by(|a, b| {
-            b.is_protected
-                .cmp(&a.is_protected)
-                .then(a.position.cmp(&b.position))
-                .then(a.title.cmp(&b.title))
-        });
-        for page in level {
-            let marker = if page.is_protected {
-                " [charter]"
-            } else if page.kind == "folder" {
-                " [folder]"
-            } else {
-                ""
-            };
-            out.push_str(&format!(
-                "{}- {} — {}{marker} (v{}, {})\n",
-                "  ".repeat(depth),
-                page.slug,
-                page.title,
-                page.version,
-                page.id
-            ));
-            if page.kind == "folder" && depth < 64 {
-                walk(pages, Some(&page.id), depth + 1, out);
+        level.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+        for (_, _, _, node) in level {
+            match node {
+                Node::Page(page) => {
+                    let marker = if page.is_protected {
+                        " [charter]"
+                    } else if page.kind == "folder" {
+                        " [folder]"
+                    } else {
+                        ""
+                    };
+                    out.push_str(&format!(
+                        "{}- {} — {}{marker} (v{}, {})\n",
+                        "  ".repeat(depth),
+                        page.slug,
+                        page.title,
+                        page.version,
+                        page.id
+                    ));
+                    if page.kind == "folder" && depth < 64 {
+                        walk(pages, items, Some(&page.id), depth + 1, out);
+                    }
+                }
+                Node::Item(item) => out.push_str(&format!(
+                    "{}- {} — {} [{}, {}]\n",
+                    "  ".repeat(depth),
+                    item.short_code,
+                    item.title,
+                    item.entity_type,
+                    item.status
+                )),
             }
         }
     }
-    let mut out = format!("# Team page of {team} ({} nodes)\n", pages.len());
-    walk(pages, None, 0, &mut out);
+    let mut out = format!(
+        "# Team page of {team} ({} pages and folders, {} documents and ADRs)\n",
+        pages.len(),
+        items.len()
+    );
+    walk(pages, items, None, 0, &mut out);
     out
 }
 

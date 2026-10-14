@@ -1921,6 +1921,12 @@ The tree has one line for each node: the slug, the title, `[charter]` or
 `[folder]`, the version and the id. The charter is first. Siblings are in
 position order.
 
+The documents and the ADRs of the team are nodes of the tree too. An item is
+the team's when a board of the team owns it. Its line has the short code, the
+title, the type and the status: `[document, draft]`, or the column of an ADR.
+The board keeps the item and its lifecycle. The tree only gives its place. An
+item that nobody placed is at the end of the root.
+
 Refuses: `VALIDATION` for an unknown team or page.
 
 ### `create_team_page`
@@ -1968,10 +1974,10 @@ Moves, reorders or renames a page or a folder, as
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `team` | string | yes | — | Slug or UUID. |
-| `page` | string | yes | — | A path or a UUID. |
+| `page` | string | yes | — | A path or a UUID. Or the short code of a document or an ADR of the team, to put that item in the tree. |
 | `parent` | string | no | — | The new folder. |
 | `to_root` | boolean | no | `false` | `true` moves the node to the root. Not with `parent`. |
-| `slug` | string | no | — | A new slug. |
+| `slug` | string | no | — | A new slug. A document or an ADR has no slug in the tree. |
 | `position` | integer | no | — | A new position among the siblings. |
 
 Refuses: `VALIDATION` for a move into the node itself or into a folder in it.

@@ -62,4 +62,6 @@ web-sys = { workspace = true, features = [
     # Scroll to the members panel of a board (KAIROS-T-0412)
     "Document",
     "Element",
+    # The team tree keeps its open folders across re-renders (KAIROS-T-0437)
+    "HtmlDetailsElement",
 ] }

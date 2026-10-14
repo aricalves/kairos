@@ -45,7 +45,7 @@ static SCRATCH_DB: scratch::ScratchName =
 /// The tenant tables (sorted): the 21 from the KAIROS-S-0004 DDL plus
 /// `scim_tokens` (KAIROS-T-0025 / A-0016) and `api_keys` (KAIROS-T-0057 /
 /// A-0017 service-account API keys).
-const EXPECTED_TABLES: [&str; 59] = [
+const EXPECTED_TABLES: [&str; 60] = [
     "activity_log",
     "adrs",
     "api_keys",
@@ -120,6 +120,7 @@ const EXPECTED_TABLES: [&str; 59] = [
     "team_delivery_streams",
     "team_members",
     "team_page_history",
+    "team_page_placements",
     "team_pages",
     "teams",
     "template_metadata",

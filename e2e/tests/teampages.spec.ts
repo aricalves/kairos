@@ -6,7 +6,7 @@
 //   1. REAL PKCE login via the Dex form (bob)
 //   2. /teams/platform: the fixed v1 layout — seeded charter rendered,
 //      announcements pinned-first, documentation tree with the diataxis
-//      folders, the runbook in Work documents
+//      folders, the runbook as a document of the tree
 //   3. post an announcement as bob (member) — it appears in the feed
 //   4. tree-navigate to the seeded how-to page → edit → save
 //   5. force a 409 via an API writer mid-edit → walk "take theirs"
@@ -83,14 +83,18 @@ test('team pages: landing layout → announcements → page edit + 409 merge →
       howTo.getByRole('link', { name: 'Deploy Kairos', exact: true }),
     ).toBeVisible();
 
-    // Work documents: the seeded runbook under its platform task — and
-    // the org-level PRD correctly absent.
-    const work = panel(page, 'Work documents');
-    await expect(
-      work.getByText('Runbook: password-less auth rollout', { exact: false }),
-    ).toBeVisible();
-    await expect(work.getByText('Password-less email auth', { exact: false })).toBeVisible();
-    await expect(work.getByText('PRD: Portal sign-up flow')).toHaveCount(0);
+    // KAIROS-T-0437: the documents of the team are nodes of its tree; the
+    // "Work documents" panel is gone. The seeded runbook (owned by the
+    // platform board) is at the root; the PRD (owned by the initiative
+    // board) is not the team's.
+    await expect(panel(page, 'Work documents')).toHaveCount(0);
+    const tree = panel(page, 'Documentation');
+    const runbook = tree.locator('.kairos-doctree__item', {
+      hasText: 'Runbook: password-less auth rollout',
+    });
+    await expect(runbook).toBeVisible();
+    await expect(runbook.getByText('doc', { exact: true })).toBeVisible();
+    await expect(tree.getByText('PRD: Portal sign-up flow')).toHaveCount(0);
   });
 
   // 3. The tree grows in place (KAIROS-T-0094, KAIROS-T-0438) -------------
@@ -123,6 +127,17 @@ test('team pages: landing layout → announcements → page edit + 409 merge →
     await expect(docs.getByText('Create failed')).toBeVisible();
     await docs.getByRole('button', { name: 'Cancel', exact: true }).click();
 
+    // The tree keeps the folders a person opened (step 2 opened
+    // Documentation). Close it, so each drag stays short and on screen; a
+    // drop into a folder opens it again.
+    const closeFolder = async (title: string) => {
+      await rootSummaries.filter({ hasText: title }).first().evaluate((summary) => {
+        const details = summary.parentElement as HTMLDetailsElement;
+        if (details.open) details.open = false;
+      });
+    };
+    await closeFolder('Documentation');
+
     // Reorder: drag Incidents onto the gap before the first root folder.
     await incidents.locator('summary').first().dragTo(
       rootList.locator(':scope > .kairos-doctree__gap').first(),
@@ -135,11 +150,25 @@ test('team pages: landing layout → announcements → page edit + 409 merge →
     }).first();
     await docs.locator('summary', { hasText: 'Incidents' }).first()
       .dragTo(documentation.locator('summary').first());
-    await documentation.locator('summary').first().click();
+    // The folder that takes the node opens, and stays open when the tree
+    // renders again.
+    await expect(rootSummaries.filter({ hasText: 'Incidents' })).toHaveCount(0);
     await expect(
       documentation.locator('details.kairos-doctree__folder summary', { hasText: 'Incidents' }),
     ).toBeVisible();
-    await expect(rootSummaries.filter({ hasText: 'Incidents' })).toHaveCount(0);
+
+    // KAIROS-T-0437: a document drags into a folder like a page; its board
+    // keeps it.
+    await closeFolder('Documentation');
+    await docs.locator('.kairos-doctree__item', { hasText: 'Runbook: password-less auth rollout' })
+      .first()
+      .dragTo(documentation.locator('summary').first());
+    await expect(
+      rootList.locator(':scope > .kairos-doctree__item', { hasText: 'Runbook: password-less auth rollout' }),
+    ).toHaveCount(0);
+    await expect(
+      documentation.locator('.kairos-doctree__item', { hasText: 'Runbook: password-less auth rollout' }),
+    ).toBeVisible();
   });
 
   await test.step('the empty pages path is the root of the tree', async () => {

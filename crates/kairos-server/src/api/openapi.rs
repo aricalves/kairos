@@ -234,6 +234,8 @@ use crate::app::AppState;
         crate::api::org::team_pages::list_archived,
         crate::api::org::team_pages::restore_page,
         crate::api::org::team_pages::page_history,
+        crate::api::org::team_pages::list_tree_items,
+        crate::api::org::team_pages::place_tree_item,
         crate::api::org::team_pages::list_announcements,
         crate::api::org::team_pages::create_announcement,
         crate::api::org::team_pages::delete_announcement,
