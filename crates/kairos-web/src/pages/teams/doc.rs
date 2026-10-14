@@ -7,9 +7,9 @@
 //! destructive controls (server-enforced, UI-honest).
 //!
 //! Decisions (recorded on KAIROS-T-0086): folder indexes are the create
-//! surface (root-level sections ship with the scaffold; creating new
-//! ROOT nodes is deliberately not offered in v1); after a delete the
-//! router goes up one level. COLLIERY-T-1836: a delete asks in an Aurora
+//! surface for the nodes in a folder; the team page offers new root nodes
+//! (KAIROS-T-0094, `teams.rs`); after a delete the router goes up one
+//! level. COLLIERY-T-1836: a delete asks in an Aurora
 //! `ConfirmDialog` (it was a second click on the button).
 
 use aurora_dark::components::{

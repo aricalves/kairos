@@ -312,6 +312,34 @@ async fn team_pages_endpoints_against_live_stack() {
             .await,
     );
     assert!(matches!(err, Error::Validation { .. }), "{err}");
+    // KAIROS-T-0441: a folder has no content; its title can change.
+    let folder = alice
+        .get_team_page(&team.id, &tutorials.id)
+        .await
+        .expect("the folder");
+    let err = rejection(
+        alice
+            .update_team_page(
+                &team.id,
+                &tutorials.id,
+                &content_edit("# Not here", folder.version),
+            )
+            .await,
+    );
+    assert!(matches!(err, Error::Validation { .. }), "{err}");
+    assert!(err.to_string().contains("folder"), "{err}");
+    let renamed = alice
+        .update_team_page(
+            &team.id,
+            &tutorials.id,
+            &UpdateTeamPageRequest {
+                title: Some("Tutorials and guides".into()),
+                ..content_edit(&folder.content, folder.version)
+            },
+        )
+        .await
+        .expect("a folder title edit");
+    assert_eq!(renamed.title, "Tutorials and guides");
     // Mixing a content edit with a rename in one call → 422.
     let err = rejection(
         alice
