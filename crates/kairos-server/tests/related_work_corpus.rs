@@ -39,6 +39,9 @@
 //! is fetched on the first run if it is missing (`angreal dev fetch-model` does
 //! the same ahead of time).
 
+#[path = "../../kairos-db/tests/common/scratch.rs"]
+mod scratch;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -60,7 +63,8 @@ use kairos_embed::local::{LocalConfig, LocalProvider};
 use kairos_server::embedding::{EmbeddingService, RelatedWork};
 
 const DEFAULT_DATABASE_URL: &str = "postgres://kairos:kairos@localhost:41432/kairos";
-const SCRATCH_DB: &str = "kairos_related_work_corpus_test";
+static SCRATCH_DB: scratch::ScratchName =
+    scratch::ScratchName::new("kairos_related_work_corpus_test");
 
 fn admin_database_url() -> String {
     std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
@@ -68,7 +72,7 @@ fn admin_database_url() -> String {
 
 fn with_database(url: &str, db: &str) -> String {
     let (base, _) = url.rsplit_once('/').expect("a database path segment");
-    format!("{base}/{db}")
+    format!("{base}/{}", scratch::scratch_db_name(db))
 }
 
 #[derive(serde::Deserialize)]
@@ -364,7 +368,8 @@ fn related_work_finds_prior_art_across_repositories_on_a_real_corpus() {
     sql_query(format!("CREATE DATABASE {SCRATCH_DB}"))
         .execute(&mut admin)
         .expect("creating scratch");
-    let url = with_database(&admin_url, SCRATCH_DB);
+    let _scratch_guard = scratch::ScratchGuard::new(&SCRATCH_DB);
+    let url = with_database(&admin_url, &SCRATCH_DB);
     let mut conn = PgConnection::establish(&url).expect("connecting");
     run_public_migrations(&mut conn).expect("public migrations");
     provision_tenant(&mut conn, "colliery", "Colliery").expect("provisioning");

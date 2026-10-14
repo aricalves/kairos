@@ -8,6 +8,9 @@
 //! Runs against the LIVE compose Postgres (`angreal services up`); owns
 //! the scratch database `kairos_jobs_migration_t0373_test`.
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use diesel::connection::SimpleConnection;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
@@ -18,7 +21,8 @@ use kairos_db::jobs::{self, NewJob};
 use kairos_db::run_public_migrations;
 
 const DEFAULT_DATABASE_URL: &str = "postgres://kairos:kairos@localhost:41432/kairos";
-const SCRATCH_DB: &str = "kairos_jobs_migration_t0373_test";
+static SCRATCH_DB: scratch::ScratchName =
+    scratch::ScratchName::new("kairos_jobs_migration_t0373_test");
 const UP_SQL: &str = include_str!("../migrations/public/2026-10-11-000003_jobs/up.sql");
 const DOWN_SQL: &str = include_str!("../migrations/public/2026-10-11-000003_jobs/down.sql");
 
@@ -28,7 +32,7 @@ fn admin_database_url() -> String {
 
 fn with_database(url: &str, db_name: &str) -> String {
     let (base, _) = url.rsplit_once('/').expect("database url has a path");
-    format!("{base}/{db_name}")
+    format!("{base}/{}", scratch::scratch_db_name(db_name))
 }
 
 #[derive(QueryableByName)]
@@ -57,7 +61,8 @@ fn the_jobs_migration_runs_again_and_reverts() {
     sql_query(format!("CREATE DATABASE {SCRATCH_DB}"))
         .execute(&mut admin)
         .unwrap();
-    let mut conn = PgConnection::establish(&with_database(&admin_url, SCRATCH_DB)).unwrap();
+    let _scratch_guard = scratch::ScratchGuard::new(&SCRATCH_DB);
+    let mut conn = PgConnection::establish(&with_database(&admin_url, &SCRATCH_DB)).unwrap();
     run_public_migrations(&mut conn).expect("public migrations");
     assert_eq!(table_count(&mut conn), 1, "public.jobs exists");
 

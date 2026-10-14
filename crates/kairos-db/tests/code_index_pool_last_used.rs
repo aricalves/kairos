@@ -11,6 +11,9 @@
 //! Runs against the LIVE compose Postgres (`angreal services up`); owns
 //! the scratch database `kairos_code_index_pool_t0378_test`.
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use chrono::{Duration, Utc};
 use diesel::connection::SimpleConnection;
 use diesel::pg::PgConnection;
@@ -24,7 +27,8 @@ use kairos_db::code_indexes::{self, MadeSummary, NewCodeIndex, PoolRow};
 use kairos_db::{provision_tenant, run_public_migrations};
 
 const DEFAULT_DATABASE_URL: &str = "postgres://kairos:kairos@localhost:41432/kairos";
-const SCRATCH_DB: &str = "kairos_code_index_pool_t0378_test";
+static SCRATCH_DB: scratch::ScratchName =
+    scratch::ScratchName::new("kairos_code_index_pool_t0378_test");
 const UP_SQL: &str =
     include_str!("../migrations/tenant/2026-10-12-000005_code_index_summaries_last_used/up.sql");
 const DOWN_SQL: &str =
@@ -36,7 +40,7 @@ fn admin_database_url() -> String {
 
 fn with_database(url: &str, db_name: &str) -> String {
     let (base, _) = url.rsplit_once('/').expect("database url has a path");
-    format!("{base}/{db_name}")
+    format!("{base}/{}", scratch::scratch_db_name(db_name))
 }
 
 #[derive(QueryableByName)]
@@ -79,7 +83,8 @@ fn the_pool_records_which_rows_an_index_used() {
     sql_query(format!("CREATE DATABASE {SCRATCH_DB}"))
         .execute(&mut admin_conn)
         .expect("creating scratch db");
-    let mut conn = PgConnection::establish(&with_database(&admin_url, SCRATCH_DB))
+    let _scratch_guard = scratch::ScratchGuard::new(&SCRATCH_DB);
+    let mut conn = PgConnection::establish(&with_database(&admin_url, &SCRATCH_DB))
         .expect("connecting to scratch db");
     run_public_migrations(&mut conn).expect("public migrations");
     provision_tenant(&mut conn, "acme", "Acme Inc").expect("provisioning acme");

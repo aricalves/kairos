@@ -144,7 +144,7 @@ async fn whoami(http: &reqwest::Client, port: u16, token: &str, tenant: &str) ->
 
 #[tokio::test]
 async fn the_server_migrates_the_tenants_and_refuses_one_that_cannot_against_live_stack() {
-    drop(recreate_scratch_db(SCRATCH_DB));
+    let _scratch = recreate_scratch_db(SCRATCH_DB);
     let url = with_database(&common::admin_database_url(), SCRATCH_DB);
     let mut conn = PgConnection::establish(&url).expect("connect scratch");
     run_public_migrations(&mut conn).expect("public migrations");

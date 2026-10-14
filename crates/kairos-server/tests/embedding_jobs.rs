@@ -77,8 +77,8 @@ impl EmbeddingProvider for CountingProvider {
 
 /// A scratch database with the public schema and the organizations
 /// `tenants`, each with `items` tasks. Its URL.
-fn scratch(name: &str, tenants: &[&str], items: usize) -> String {
-    let _admin = common::recreate_scratch_db(name);
+fn scratch(name: &str, tenants: &[&str], items: usize) -> common::ScratchUrl {
+    let admin = common::recreate_scratch_db(name);
     let url = common::with_database(&common::admin_database_url(), name);
     let mut conn = PgConnection::establish(&url).expect("connect to the scratch database");
     run_public_migrations(&mut conn).expect("public migrations");
@@ -127,7 +127,7 @@ fn scratch(name: &str, tenants: &[&str], items: usize) -> String {
             .execute(&mut conn)
             .expect("reset");
     }
-    url
+    common::ScratchUrl::new(admin, url)
 }
 
 fn pin(conn: &mut PgConnection, slug: &str) {

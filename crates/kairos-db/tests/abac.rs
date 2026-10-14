@@ -20,6 +20,9 @@
 //!   parent initiative's board; board items resolving to their own board;
 //!   off-board ADRs, orphan documents, and unknown ids resolving to None
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::sql_query;
@@ -36,7 +39,7 @@ use kairos_db::{provision_tenant, run_public_migrations, schema};
 /// Same default as `.angreal/task_db.py`'s `DATABASE_URL`.
 const DEFAULT_DATABASE_URL: &str = "postgres://kairos:kairos@localhost:41432/kairos";
 
-const SCRATCH_DB: &str = "kairos_abac_test";
+static SCRATCH_DB: scratch::ScratchName = scratch::ScratchName::new("kairos_abac_test");
 
 fn admin_database_url() -> String {
     std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
@@ -47,7 +50,7 @@ fn with_database(url: &str, db_name: &str) -> String {
     let (base, _) = url
         .rsplit_once('/')
         .expect("DATABASE_URL must contain a database path segment");
-    format!("{base}/{db_name}")
+    format!("{base}/{}", scratch::scratch_db_name(db_name))
 }
 
 fn insert_user(conn: &mut PgConnection, external_id: &str, email: &str, name: &str) -> Uuid {
@@ -138,8 +141,9 @@ fn abac_capability_lifecycle() {
     sql_query(format!("CREATE DATABASE {SCRATCH_DB}"))
         .execute(&mut admin_conn)
         .expect("creating scratch database");
+    let _scratch_guard = scratch::ScratchGuard::new(&SCRATCH_DB);
 
-    let scratch_url = with_database(&admin_url, SCRATCH_DB);
+    let scratch_url = with_database(&admin_url, &SCRATCH_DB);
     let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
 
     // Fresh tenant, then work inside its schema (same mechanism as the
@@ -639,7 +643,8 @@ fn abac_capability_lifecycle() {
 fn team_membership_implies_delivery_capabilities() {
     use kairos_db::models::{BoardLevel, NewBoard, NewTeam, NewTeamMember, TeamType};
 
-    const TEAM_SCRATCH_DB: &str = "kairos_abac_team_test";
+    static TEAM_SCRATCH_DB: scratch::ScratchName =
+        scratch::ScratchName::new("kairos_abac_team_test");
 
     let admin_url = admin_database_url();
     let mut admin_conn = PgConnection::establish(&admin_url).unwrap_or_else(|e| {
@@ -656,8 +661,9 @@ fn team_membership_implies_delivery_capabilities() {
     sql_query(format!("CREATE DATABASE {TEAM_SCRATCH_DB}"))
         .execute(&mut admin_conn)
         .expect("creating scratch database");
+    let _scratch_guard = scratch::ScratchGuard::new(&TEAM_SCRATCH_DB);
 
-    let scratch_url = with_database(&admin_url, TEAM_SCRATCH_DB);
+    let scratch_url = with_database(&admin_url, &TEAM_SCRATCH_DB);
     let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
 
     run_public_migrations(&mut conn).expect("running public migrations");
@@ -785,7 +791,8 @@ fn archived_items_resolve_the_same_capabilities_as_live_ones() {
         WorkClass,
     };
 
-    const ARCHIVE_SCRATCH_DB: &str = "kairos_abac_archive_test";
+    static ARCHIVE_SCRATCH_DB: scratch::ScratchName =
+        scratch::ScratchName::new("kairos_abac_archive_test");
 
     let admin_url = admin_database_url();
     let mut admin_conn = PgConnection::establish(&admin_url).unwrap_or_else(|e| {
@@ -802,8 +809,9 @@ fn archived_items_resolve_the_same_capabilities_as_live_ones() {
     sql_query(format!("CREATE DATABASE {ARCHIVE_SCRATCH_DB}"))
         .execute(&mut admin_conn)
         .expect("creating scratch database");
+    let _scratch_guard = scratch::ScratchGuard::new(&ARCHIVE_SCRATCH_DB);
 
-    let scratch_url = with_database(&admin_url, ARCHIVE_SCRATCH_DB);
+    let scratch_url = with_database(&admin_url, &ARCHIVE_SCRATCH_DB);
     let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
 
     run_public_migrations(&mut conn).expect("running public migrations");
@@ -955,7 +963,8 @@ fn board_membership_gives_edit_and_move_on_strategy_and_initiative_boards() {
     use kairos_core::abac::EditUse;
     use kairos_db::models::{BoardLevel, NewBoard};
 
-    const MEMBER_SCRATCH_DB: &str = "kairos_abac_member_test";
+    static MEMBER_SCRATCH_DB: scratch::ScratchName =
+        scratch::ScratchName::new("kairos_abac_member_test");
 
     let admin_url = admin_database_url();
     let mut admin_conn = PgConnection::establish(&admin_url).unwrap_or_else(|e| {
@@ -972,8 +981,9 @@ fn board_membership_gives_edit_and_move_on_strategy_and_initiative_boards() {
     sql_query(format!("CREATE DATABASE {MEMBER_SCRATCH_DB}"))
         .execute(&mut admin_conn)
         .expect("creating scratch database");
+    let _scratch_guard = scratch::ScratchGuard::new(&MEMBER_SCRATCH_DB);
 
-    let scratch_url = with_database(&admin_url, MEMBER_SCRATCH_DB);
+    let scratch_url = with_database(&admin_url, &MEMBER_SCRATCH_DB);
     let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
 
     run_public_migrations(&mut conn).expect("running public migrations");

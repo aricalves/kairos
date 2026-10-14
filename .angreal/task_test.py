@@ -269,8 +269,15 @@ def unit():
         (each crate's tests/ directory) against the real compose stack
         (Postgres 16 + Dex). The database is never mocked.
 
-        Lifecycle: compose up --wait, `cargo test --workspace --test '*'`,
-        compose down -v (unless --keep-running).
+        Lifecycle: compose up --wait, `cargo test --workspace --test '*'`.
+        The compose stack stays up afterwards (KAIROS-T-0445): it is the
+        shared dev stack, and other runs may use it at the same time. Pass
+        --down to run compose down -v after the tests.
+
+        Each test process names its scratch databases `ktest_<run>_<name>`,
+        so two runs at once (two worktrees) do not touch each other's
+        databases. `angreal db clean-scratch` removes those a crashed run
+        left behind.
 
         If the workspace has no integration test targets yet, the task
         prints an explicit "no integration test targets found" notice and
@@ -285,13 +292,13 @@ def unit():
 
         ## Examples
         ```
-        angreal test integration
-        angreal test integration --keep-running   # leave services up for debugging
+        angreal test integration          # the stack stays up
+        angreal test integration --down   # compose down -v afterwards
         ```
 
         ## Output
-        Cargo test output; exit code propagated. With --keep-running the
-        compose stack stays up (`angreal services down -v` to stop).
+        Cargo test output; exit code propagated. The compose stack stays
+        up unless --down (`angreal services down -v` to stop it).
         """,
         risk_level="safe",
     ),
@@ -300,16 +307,23 @@ def unit():
     name="keep_running",
     long="keep-running",
     short="k",
-    help="keep services running after tests complete",
+    help="keep services running after tests complete (the default; kept for old commands)",
     takes_value=False,
     is_flag=True,
 )
-def integration(keep_running=False):
+@angreal.argument(
+    name="down",
+    long="down",
+    help="run compose down -v after the tests (the stack is shared: other runs lose it)",
+    takes_value=False,
+    is_flag=True,
+)
+def integration(keep_running=False, down=False):
     """Run integration tests against the compose stack.
 
     1. Starts docker services (postgres, dex)
     2. Runs every workspace integration test target (tests/ directories)
-    3. Tears down services (unless --keep-running)
+    3. Tears down services only with --down (KAIROS-T-0445)
     """
     _no_incremental()
     print("Starting docker services...")
@@ -335,7 +349,7 @@ def integration(keep_running=False):
         )
         test_exit_code = result.returncode
 
-    if not keep_running:
+    if down and not keep_running:
         print("Tearing down services...", flush=True)
         docker_down(remove_volumes=True)
     else:

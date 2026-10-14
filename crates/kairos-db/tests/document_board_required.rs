@@ -13,6 +13,9 @@
 //! Against real Postgres from the compose stack (A-0012 tier 2). Each test
 //! owns a scratch database.
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use diesel::connection::SimpleConnection;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
@@ -42,7 +45,7 @@ fn with_database(url: &str, db_name: &str) -> String {
     let (base, _) = url
         .rsplit_once('/')
         .expect("DATABASE_URL must contain a database path segment");
-    format!("{base}/{db_name}")
+    format!("{base}/{}", scratch::scratch_db_name(db_name))
 }
 
 fn pin(conn: &mut PgConnection) {
@@ -53,6 +56,7 @@ fn pin(conn: &mut PgConnection) {
 
 /// A scratch database with the tenant `acme`, pinned to its schema.
 fn tenant(scratch_db: &str) -> (PgConnection, PgConnection) {
+    let scratch_db = &crate::scratch::scratch_db_name(scratch_db);
     let admin_url = admin_database_url();
     let mut admin_conn = PgConnection::establish(&admin_url).unwrap_or_else(|e| {
         panic!(
@@ -152,8 +156,10 @@ fn old_document(conn: &mut PgConnection, code: &str, board: Option<Uuid>, archiv
 
 #[test]
 fn the_migration_refuses_while_a_document_has_no_board() {
-    const SCRATCH_DB: &str = "kairos_document_board_required_t3109_test";
-    let (admin_conn, mut conn) = tenant(SCRATCH_DB);
+    static SCRATCH_DB: scratch::ScratchName =
+        scratch::ScratchName::new("kairos_document_board_required_t3109_test");
+    let (admin_conn, mut conn) = tenant(&SCRATCH_DB);
+    let _scratch_guard = crate::scratch::ScratchGuard::new(&SCRATCH_DB);
     let board = board_of_level(&mut conn, BoardLevel::Initiative);
 
     // A new tenant has the migration, and the column is NOT NULL.
@@ -244,5 +250,5 @@ fn the_migration_refuses_while_a_document_has_no_board() {
     conn.batch_execute(UP).expect("the second run passes");
     assert!(board_is_required(&mut conn));
 
-    drop_database(admin_conn, conn, SCRATCH_DB);
+    drop_database(admin_conn, conn, &SCRATCH_DB);
 }
