@@ -426,6 +426,27 @@ async fn typed_error_mapping_roundtrip() {
         "non-JSON bodies map to Error::Decode: {result:?}"
     );
 
+    // KAIROS-T-0432: the server tells its version, with no token.
+    let version: serde_json::Value = reqwest::get(format!("{}/version", server.base_url))
+        .await
+        .expect("GET /version")
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(version["version"], env!("CARGO_PKG_VERSION"), "{version}");
+    let mac = version["cli"]
+        .as_array()
+        .expect("the CLI downloads")
+        .iter()
+        .find(|download| download["target"] == "aarch64-apple-darwin")
+        .expect("a tarball for macOS on Apple silicon");
+    assert!(
+        mac["url"].as_str().is_some_and(
+            |url| url.starts_with("https://github.com/colliery-io/kairos/releases/download/v")
+        ),
+        "{mac}"
+    );
+
     // --- teardown -----------------------------------------------------------------
     drop(conn);
     drop(pool);

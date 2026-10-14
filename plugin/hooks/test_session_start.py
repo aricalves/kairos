@@ -157,5 +157,31 @@ class BuildContext(unittest.TestCase):
         self.assertNotIn("get_repository", text)
 
 
+class CliNote(unittest.TestCase):
+    """KAIROS-T-0432: the hook says when the CLI is behind the server."""
+
+    def test_an_older_cli_gets_a_line(self):
+        note = session_start.cli_note("0.8.0", "0.12.0")
+        self.assertIn("0.8.0", note)
+        self.assertIn("0.12.0", note)
+        self.assertIn("kairos self-update", note)
+
+    def test_versions_compare_by_number(self):
+        self.assertIsNotNone(session_start.cli_note("0.9.0", "0.12.0"))
+        self.assertIsNone(session_start.cli_note("0.12.0", "0.12.0"))
+        self.assertIsNone(session_start.cli_note("0.13.0", "0.12.0"))
+
+    def test_no_line_without_both_versions(self):
+        self.assertIsNone(session_start.cli_note(None, "0.12.0"))
+        self.assertIsNone(session_start.cli_note("0.12.0", None))
+
+    def test_the_line_is_in_the_context(self):
+        note = session_start.cli_note("0.8.0", "0.12.0")
+        text = session_start.build_context(
+            {"deployment_url": "http://localhost:41080"}, "deployment reachable", note
+        )
+        self.assertIn(note, text)
+
+
 if __name__ == "__main__":
     unittest.main()
