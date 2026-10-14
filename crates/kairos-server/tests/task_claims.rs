@@ -287,6 +287,7 @@ async fn a_task_in_active_has_a_claim() {
         work_class: None,
         team_id: None,
         repository: None,
+        from_team: None,
     };
 
     // --- 1. alice's agent moves the task to Active --------------------------

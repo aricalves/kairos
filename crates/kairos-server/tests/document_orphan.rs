@@ -373,6 +373,7 @@ async fn task_by(client: &KairosClient, board: &str, title: &str) -> Task {
             work_class: None,
             team_id: None,
             repository: None,
+            from_team: None,
         })
         .await
         .unwrap_or_else(|e| panic!("creating task {title:?}: {e}"))

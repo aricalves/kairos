@@ -237,5 +237,27 @@ journey(
       expect(remaining.map((t: any) => t.short_code)).not.toContain(work);
       return { deleted: work, live_cards_left: remaining.length };
     });
+
+    await step(alice, 'the migration is done: trims her grant to moving cards and nothing else (MCP)', async () => {
+      const mcp = await alice.mcp();
+      // The set replaces the set: what she no longer needs goes, in one call.
+      await mcp.call('set_board_capabilities', {
+        board: team.fixture.boardSlug,
+        user: joiner.credentials.email,
+        capabilities: ['transition_items'],
+      });
+      const api = await alice.api();
+      const granted = await api.get(`/api/boards/${team.fixture.boardId}/members`);
+      const hers = (granted as any[]).find((m: any) => m.email === joiner.credentials.email);
+      expect(hers.capabilities).toEqual(['transition_items']);
+      const refused = await (await joiner.mcp()).refused('create_item', {
+        item_type: 'task',
+        work_class: 'planned',
+        title: named('task: one more import fix'),
+        board: team.fixture.boardSlug,
+      });
+      expect(refused).toContain('manage_tasks');
+      return { member: joiner.credentials.email, grants: hers.capabilities, create_refused: 'manage_tasks' };
+    });
   },
 );

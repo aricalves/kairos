@@ -726,6 +726,7 @@ Creates a work item and returns its new short code.
 | `task_type` | string | no | `task` | Tasks only. `task`, `bug`, `tech_debt`, `support`. |
 | `repository` | string | no | — | Tasks only. Slug or UUID. An optional link that says where the code is. Any live repository, of any team. It does not choose the board. |
 | `work_class` | string | no | see below | Tasks only. `planned`, `support`. |
+| `from_team` | string | no | — | Tasks only. The team that sends the task. Slug or UUID. When it is not the team of the board, the task is a request: entry column, support lane, also for a manager of the board or an org admin. An agent in a board session sends its own team. |
 | `hypothesis` | string | no | — | Strategies only. |
 | `complexity` | string | no | — | Initiatives only. `xs`, `s`, `m`, `l`, `xl`. |
 | `bucket_type` | string | no | — | Initiatives only. `tech_debt`, `bug`, `ad_hoc`. Makes the initiative a bucket rather than a dated one; `is_bucket` is derived from it. |
@@ -1577,26 +1578,29 @@ principal of the call.
 
 ### `create_team`
 
-Creates a team, its delivery board and its ADR board, in one transaction.
-The team and the delivery board are those of `POST /api/teams`. The ADR board
-is that of `POST /api/boards` with `board_level` `adr` and the team.
+Creates a team and its delivery board, as `POST /api/teams` does. With
+`adr_board` `true`, it also creates the ADR board of the team, in the same
+transaction. That board is the board of `POST /api/boards` with `board_level`
+`adr` and the team.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `name` | string | yes | — | The name of the team. |
 | `slug` | string | yes | — | The slug of the team. It must match `^[a-z][a-z0-9_-]{1,62}$`. The delivery board gets the slug `{slug}-delivery`. The ADR board gets `{slug}-adrs`. |
-| `code_prefix` | string | yes | — | The short-code prefix of the two boards, for example `OPS`. It must match `^[A-Z][A-Z0-9]{1,9}$`. It does not change later. |
+| `code_prefix` | string | yes | — | The short-code prefix of the boards of the team, for example `OPS`. It must match `^[A-Z][A-Z0-9]{1,9}$`. It does not change later. |
 | `team_type` | string | no | `stream_aligned` | `stream_aligned`, `platform`, `enabling` or `complicated_subsystem`. |
-| `adr_board` | boolean | no | `true` | `false` makes no ADR board. |
+| `adr_board` | boolean | no | `false` | `true` also makes the ADR board of the team. |
 
 The new boards have no members. Use `add_team_member` and `grant_capability`.
 
 The result is two lines:
 
 ```text
-Created team home-ops (Home operations, stream_aligned). Delivery board: home-ops-delivery (prefix OPS). ADR board: home-ops-adrs.
+Created team home-ops (Home operations, stream_aligned). Delivery board: home-ops-delivery (prefix OPS).
 The boards have no members. Use add_team_member and grant_capability.
 ```
+
+With `adr_board` `true`, the first line ends with `ADR board: home-ops-adrs.`
 
 Requires the organization admin role or `manage_structure` on the
 organization.

@@ -439,6 +439,7 @@ fn task_on(board: &str, title: &str) -> CreateTaskRequest {
         work_class: None,
         team_id: None,
         repository: None,
+        from_team: None,
     }
 }
 

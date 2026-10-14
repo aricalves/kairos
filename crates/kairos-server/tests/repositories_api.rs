@@ -328,6 +328,7 @@ async fn repository_api_against_live_stack() {
             work_class: None,
             team_id: Some(platform.id.clone()),
             repository: Some("payments-api".into()),
+            from_team: None,
         })
         .await
         .expect("task against the repo");
@@ -401,6 +402,7 @@ async fn repository_api_against_live_stack() {
             work_class: None,
             team_id: Some(platform.id.clone()),
             repository: Some("acme-platform-infra".into()),
+            from_team: None,
         })
         .await
         .expect("task on infra");
@@ -729,6 +731,7 @@ async fn open_tasks_count_a_linked_task_on_the_board_of_a_different_team() {
             work_class: None,
             team_id: Some(web.id.clone()),
             repository: Some("payments-api".into()),
+            from_team: None,
         })
         .await
         .expect("a task on web's board that links to platform's repository");
@@ -769,6 +772,7 @@ async fn open_tasks_count_a_linked_task_on_the_board_of_a_different_team() {
         work_class: None,
         team_id: Some(platform.id.clone()),
         repository: Some("payments-api".into()),
+        from_team: None,
     })
     .await
     .expect("a task on the owner's board");

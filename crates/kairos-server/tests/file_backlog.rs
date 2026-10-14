@@ -323,6 +323,7 @@ async fn file_backlog_against_live_stack() {
         work_class: None,
         team_id: None,
         repository: Some("payments-api".into()),
+        from_team: None,
     };
 
     // =======================================================================
@@ -790,6 +791,7 @@ async fn file_backlog_against_live_stack() {
             work_class: None,
             team_id: None,
             repository: None,
+            from_team: None,
         })
         .await
         .expect("alice creates on her own team's board");
