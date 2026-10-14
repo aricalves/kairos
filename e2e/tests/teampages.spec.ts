@@ -311,7 +311,7 @@ test('team pages: landing layout → announcements → page edit + 409 merge →
     // … but protected: no Manage panel, no rename/move/delete anywhere.
     await expect(panel(page, 'Manage')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Rename' })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Delete' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Archive' })).toHaveCount(0);
     await expect(page.getByText('The charter is protected', { exact: false })).toBeVisible();
   });
 

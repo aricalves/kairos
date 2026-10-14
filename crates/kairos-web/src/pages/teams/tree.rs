@@ -317,6 +317,13 @@ pub(crate) fn TeamTree(
                     </Alert>
                 })}
                 {(empty && !manage).then(|| view! { <Text dimmed=true size="sm">"No pages yet."</Text> })}
+                // KAIROS-T-0467: a refused drop shows only the not-allowed
+                // cursor; this line says the rules while a drag is on.
+                {move || ctx.drag.get().map(|_| view! {
+                    <Text dimmed=true size="sm">
+                        "Drop onto a folder to move the node in, onto a gap to reorder. A folder cannot go into itself, and the charter stays first."
+                    </Text>
+                })}
                 {render_level(ctx, None, String::new())}
                 {manage.then(|| {
                     let position = ctx.pages.with_value(|pages| next_position(pages, None));
@@ -612,6 +619,11 @@ pub(crate) fn InlineCreate(
                         </Button>
                         <Button variant="subtle" on_click=Callback::new(move |_| reset())>"Cancel"</Button>
                     </Group>
+                    // KAIROS-T-0467: a title of emoji or CJK gives no slug,
+                    // and the Create button is just off; say what to type.
+                    {move || (!title.get().trim().is_empty() && slug.get().trim().is_empty()).then(|| view! {
+                        <Text dimmed=true size="sm">"Type a slug: 2 to 63 of a-z, 0-9, - and _, a letter first."</Text>
+                    })}
                 </Stack>
             }.into_any(),
         }}

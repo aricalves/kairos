@@ -87,6 +87,12 @@ pub enum TeamPageError {
     /// A sibling with this slug already exists.
     #[error("A page in the same folder has the slug {0:?} already.")]
     SlugConflict(String),
+    /// The slug does not have the form of a slug (KAIROS-T-0467): a `/`
+    /// in it broke the path of the page.
+    #[error(
+        "{0:?} is not a slug. A slug is 2 to 63 characters: lowercase letters, digits, - and _, a letter first."
+    )]
+    BadSlug(String),
     /// A page or folder at the top of the tree cannot have a slug that the
     /// docs sites use as a path segment (KAIROS-T-0403).
     #[error(
@@ -203,6 +209,9 @@ pub fn create_page(
 ) -> Result<TeamPage, TeamPageError> {
     conn.transaction::<_, TeamPageError, _>(|conn| {
         check_size(input.content)?;
+        if !kairos_core::slug::is_valid_slug(input.slug) {
+            return Err(TeamPageError::BadSlug(input.slug.to_string()));
+        }
         if input.parent_id.is_none() && kairos_core::slug::is_site_reserved(input.slug) {
             return Err(TeamPageError::ReservedSlug(input.slug.to_string()));
         }
@@ -340,6 +349,11 @@ pub fn rename_move_page(
         }
         // KAIROS-T-0403: a rename or a move that puts a reserved slug at the
         // top of the tree. A page that has one there from before stays.
+        if let Some(slug) = new_slug
+            && !kairos_core::slug::is_valid_slug(slug)
+        {
+            return Err(TeamPageError::BadSlug(slug.to_string()));
+        }
         let final_slug = new_slug.unwrap_or(&current.slug);
         let final_parent = new_parent.unwrap_or(current.parent_id);
         if (new_slug.is_some() || new_parent.is_some())

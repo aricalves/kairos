@@ -2,7 +2,7 @@
 //! page at its slug path, or index a folder's children — with the
 //! generalized markdown editor (Edit/Preview + toolbar + versioned saves
 //! and the 409 merge dialog) and the manage affordances (create
-//! page/folder, rename, move, soft-delete) under the
+//! page/folder, rename, move, archive) under the
 //! team-member-or-admin permission model. The charter shows no
 //! destructive controls (server-enforced, UI-honest).
 //!
@@ -375,7 +375,7 @@ fn PageView(
 /// KAIROS-T-0439). The
 /// move select offers every folder EXCEPT the node and its descendants
 /// (a folder inside itself is a cycle — the server refuses it too) plus
-/// the tree root. Delete asks in an Aurora `ConfirmDialog`
+/// the tree root. Archive asks in an Aurora `ConfirmDialog`
 /// (COLLIERY-T-1836; it was a second click) and names the kind; a folder
 /// is archived with what is in it.
 #[component]
@@ -429,6 +429,9 @@ fn StructurePanel(
         .collect::<Vec<_>>();
     move_targets.sort_by(|a, b| a.1.cmp(&b.1));
     let move_choice = RwSignal::new(node.parent_id.clone().unwrap_or_default());
+    // KAIROS-T-0467: a moved node goes after the last node of its new
+    // folder, as a drop does; a move with no position kept its old number.
+    let pages_for_move = StoredValue::new(pages.to_vec());
 
     let rename = move |_| {
         let slug_value = new_slug.get_untracked().trim().to_string();
@@ -490,11 +493,14 @@ fn StructurePanel(
         leptos::task::spawn_local(async move {
             let choice = move_choice.get_untracked();
             let parent = (!choice.is_empty()).then_some(choice);
-            let result = api::move_page(
+            let position = pages_for_move
+                .with_value(|pages| super::tree::next_position(pages, parent.as_deref()));
+            let result = api::place_page(
                 auth,
                 &team_id.get_value(),
                 &page_id.get_value(),
-                parent.as_deref(),
+                Some(parent.as_deref()),
+                position,
             )
             .await;
             busy.set(false);
