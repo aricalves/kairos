@@ -515,15 +515,15 @@ fn StructurePanel(
             "Archive this folder?",
             format!(
                 "Kairos archives the folder \"{page_title}\" and everything in it. You can \
-                 restore them from the archive of the team page."
+                 restore them in the Archived list of the Pages view of the team."
             ),
         )
     } else {
         (
             "Archive this page?",
             format!(
-                "Kairos archives the page \"{page_title}\". You can restore it from the \
-                 archive of the team page."
+                "Kairos archives the page \"{page_title}\". You can restore it in the \
+                 Archived list of the Pages view of the team."
             ),
         )
     };

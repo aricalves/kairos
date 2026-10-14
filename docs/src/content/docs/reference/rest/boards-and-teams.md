@@ -1052,6 +1052,20 @@ Delete an announcement (its author or an org admin).
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Not the author (and not org admin) |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown team or announcement |
 
+### `GET /api/teams/{id}/archived-pages`
+
+The archived nodes of a team, newest archive first (open tenant-wide,
+KAIROS-T-0439).
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `id` | path | yes | `string` | Team id (UUID) |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | array of [`ArchivedTeamPage`](../schemas/#archivedteampage) | The archived nodes |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown team |
+
 ### `GET /api/teams/{id}/pages`
 
 The team's live page tree as a flat list (open tenant-wide).
@@ -1098,7 +1112,7 @@ One live page (open tenant-wide).
 
 ### `DELETE /api/teams/{id}/pages/{page_id}`
 
-Soft-delete a page (folders must be empty; the Charter never).
+Archive a page, or a folder with everything in it (the Charter never).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
@@ -1110,7 +1124,7 @@ Soft-delete a page (folders must be empty; the Charter never).
 | `200` | [`OrgDeleteResponse`](../schemas/#orgdeleteresponse) | Deleted |
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Not a team member |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown team or page |
-| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Protected page or non-empty folder |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Protected page |
 
 ### `PATCH /api/teams/{id}/pages/{page_id}`
 
@@ -1131,6 +1145,38 @@ Request body (required): `application/json`, [`UpdateTeamPageRequest`](../schema
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown team or page |
 | `409` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Stale version; details.current carries the current page |
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Mixed edit kinds, protected page, slug conflict, or bad parent |
+
+### `GET /api/teams/{id}/pages/{page_id}/history`
+
+The saved versions of a page, newest first (open tenant-wide,
+KAIROS-T-0439).
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `id` | path | yes | `string` | Team id (UUID) |
+| `page_id` | path | yes | `string` | Page id (UUID) |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | array of [`TeamPageVersion`](../schemas/#teampageversion) | The versions, newest first |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown team or page |
+
+### `POST /api/teams/{id}/pages/{page_id}/restore`
+
+Restore an archived node and what was archived with it (team member or
+organization admin, KAIROS-T-0439).
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `id` | path | yes | `string` | Team id (UUID) |
+| `page_id` | path | yes | `string` | Page id (UUID) |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`TeamPage`](../schemas/#teampage) | Restored |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Not a team member |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown team or page |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Not archived, or a live sibling has the slug |
 
 ## delivery-streams
 

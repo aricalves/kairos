@@ -100,7 +100,7 @@ The team page has the charter and the folders and pages that the team grows. A f
 
 Read the charter first (`team_pages {team, page: "charter"}`), and keep what the person already wrote. Save it with `edit_team_page {team, page: "charter", content, version}`. Use the version that you read. A `CONFLICT` means that somebody saved first: read again, merge, and save.
 
-**Folders and pages:** there is no fixed set. Ask the person what the team writes down (runbooks, how-to guides, design documents), and make only those: `create_team_page {team, kind: "folder", title}`, then pages in them with `parent`. `move_team_page` moves, reorders or renames. `delete_team_page` archives a page or an empty folder.
+**Folders and pages:** there is no fixed set. Ask the person what the team writes down (runbooks, how-to guides, design documents), and make only those: `create_team_page {team, kind: "folder", title}`, then pages in them with `parent`. `move_team_page` moves, reorders or renames. `delete_team_page` archives a page, or a folder with everything in it; a person restores it in the Archived list of the Pages view of the team.
 
 The same steps are in the CLI: `kairos teams pages list|show|create|edit|move|delete`.
 

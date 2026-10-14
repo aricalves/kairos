@@ -515,6 +515,11 @@ pub fn restore_page(
                 .first(conn)?;
             (None, last.map_or(1, |p| p + 1))
         };
+        // The root refuses a slug that the docs sites use (KAIROS-T-0403),
+        // also for a node that comes back there because its folder is gone.
+        if parent_id.is_none() && kairos_core::slug::is_site_reserved(&current.slug) {
+            return Err(TeamPageError::ReservedSlug(current.slug.clone()));
+        }
         let restored: TeamPage = diesel::update(dsl::team_pages.filter(dsl::id.eq(page_id)))
             .set((
                 dsl::deleted_at.eq(None::<chrono::DateTime<chrono::Utc>>),

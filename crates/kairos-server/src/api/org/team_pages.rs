@@ -573,7 +573,7 @@ pub(crate) fn list_archived_as(
 }
 
 /// Restore an archived node and what was archived with it (team member or
-/// org admin, KAIROS-T-0439).
+/// organization admin, KAIROS-T-0439).
 #[utoipa::path(
     post,
     path = "/api/teams/{id}/pages/{page_id}/restore",
