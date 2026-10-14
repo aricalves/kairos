@@ -74,6 +74,9 @@ A command can also use a key in place of the login.
 |---|---|
 | `KAIROS_KEY`, then `KAIROS_MCP_KEY` | An agent key (it acts as you) or a service-account key. When one is set, each command that reaches the API sends it as the bearer, and does not read the credential cache. The key wins over a login. |
 | `KAIROS_URL` | The deployment, when `--url` is not given. With a key and no URL, the CLI uses the only cached deployment. Otherwise it exits with code 2. |
+| `KAIROS_UPDATE_CHECK` | `0` turns off the daily version check (see [`kairos self-update`](#kairos-self-update)). |
+| `KAIROS_AUTO_UPDATE` | `1` makes the daily check install the newer version of the server instead of printing a line. |
+| `KAIROS_RELEASES_URL` | The base URL of the release tarballs for `self-update --version` and `--latest`, for a mirror. The default is the GitHub releases. |
 
 A key carries its tenant, so it needs no `--tenant`. A 401 for a key names the
 variable that holds it. Use a key when the issuer gives the CLI no device
@@ -1679,20 +1682,27 @@ the CLI takes the tarball from the GitHub releases; `KAIROS_RELEASES_URL`
 replaces that URL, for a mirror.
 
 A server older than this command does not tell its version: name one with
-`--version`, or use `--latest`.
+`--version`, or use `--latest`. The CLI refuses a server whose links
+(`KAIROS_CLI_DOWNLOAD_URL`) have no tarball for this platform. The message
+names the platforms that the server lists.
+
+The command writes the binary that runs, wherever it is: a `cargo install`
+binary in `~/.cargo/bin` too. A folder the CLI cannot write refuses the
+update, and nothing changes.
 
 #### The daily check
 
-After a command that succeeded, the CLI asks the server
-for its version. It does this once a day for each deployment, with a 2 second
-limit. The commands `login`, `logout`, `index` and `self-update` make no
-check.
+After a command that succeeded, the CLI asks the default deployment for its
+version. That is `KAIROS_URL`, then the only cached deployment, not the
+`--url` of the command. It does this once a day, with a 2 second limit. The
+commands `login`, `logout`, `index` and `self-update` make no check.
+`KAIROS_UPDATE_CHECK=0` turns the check off, for a script or CI.
 
 When the server is newer, the CLI prints one line on stderr that names
 `kairos self-update`. With `KAIROS_AUTO_UPDATE=1`, the CLI updates itself
-instead of printing the line. The check keeps its state in
-`version-check.json` in the config directory. A server that does not answer
-counts as a check.
+instead of printing the line. It says so on stderr, and the output of the
+command stays what it is. The check keeps its state in `version-check.json`
+in the config directory. A server that does not answer counts as a check.
 
 ## Operator subcommands (`kairos-server`)
 

@@ -36,6 +36,8 @@ export class CliError extends Error {
 export function cliEnv(configDir?: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1' };
   for (const name of ['KAIROS_KEY', 'KAIROS_MCP_KEY', 'KAIROS_URL', 'KAIROS_AUTO_UPDATE']) delete env[name];
+  // No daily version check from a persona (KAIROS-T-0460).
+  env.KAIROS_UPDATE_CHECK = '0';
   if (configDir) env.KAIROS_CONFIG_DIR = configDir;
   return env;
 }

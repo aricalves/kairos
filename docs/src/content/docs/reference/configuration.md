@@ -804,13 +804,18 @@ Stored in `public.system_board_defaults`, one row per level.
 ## CLI configuration
 
 The CLI reads no server variables. Its configuration surface is where it keeps
-cached credentials, and the settings of `kairos index update` below.
+cached credentials, the daily version check, and the settings of
+`kairos index update` below. `KAIROS_URL` and the keys are in the
+[CLI reference](../cli/#authentication).
 
 | Variable | Description |
 |---|---|
 | `KAIROS_CONFIG_DIR` | The config directory, taken verbatim. Highest precedence. |
 | `XDG_CONFIG_HOME` | Used as `$XDG_CONFIG_HOME/kairos` when `KAIROS_CONFIG_DIR` is unset or empty. |
 | `HOME` | Used as `$HOME/.config/kairos` when neither of the above is set. |
+| `KAIROS_UPDATE_CHECK` | `0` turns off the daily version check of the CLI. |
+| `KAIROS_AUTO_UPDATE` | `1` makes the daily check install the newer version of the server. |
+| `KAIROS_RELEASES_URL` | The base URL of the release tarballs for `kairos self-update --version` and `--latest`; the default is the GitHub releases. |
 
 With none of the three set, any command that reaches the API fails with exit 1
 and a message naming all three.
