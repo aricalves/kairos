@@ -31,7 +31,7 @@ use kairos_db::models::{NewServiceAccountUser, NewUser, User};
 use kairos_db::{boards, items, provision_tenant, run_public_migrations};
 
 const DEFAULT_DATABASE_URL: &str = "postgres://kairos:kairos@localhost:41432/kairos";
-const SCRATCH_DB: &str = "kairos_item_owners_t0411_test";
+const SCRATCH_DB: &str = "kairos_db_item_owners_t0411_test";
 
 /// The migration under test, verbatim.
 const UP: &str = include_str!("../migrations/tenant/2026-10-13-000100_item_owners/up.sql");

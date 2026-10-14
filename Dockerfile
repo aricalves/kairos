@@ -31,7 +31,7 @@
 # fails with `undefined reference to std::__cxx11::basic_string::_M_replace_cold`,
 # a symbol that simply does not exist in the older runtime. Verified directly:
 # the same crate links in 43 s on trixie (GCC 14.2) and not at all on bookworm.
-FROM rust:1.93-slim-trixie AS builder
+FROM rust:1.93-slim-trixie AS chef
 
 # Native build dependencies:
 #   - libpq-dev + pkg-config: diesel's `postgres` feature links libpq (C).
@@ -64,15 +64,34 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # toolchain (no repo present yet) so this layer caches independently of source.
 ARG TRUNK_VERSION=0.21.14
 RUN cargo install trunk --version "${TRUNK_VERSION}" --locked
-
+# KAIROS-T-0447: cargo-chef builds the dependencies in a layer of their own,
+# from a recipe of the manifests. A change to the source of Kairos leaves
+# that layer in the build cache, so a release compiles only the workspace.
+ARG CHEF_VERSION=0.1.78
+RUN cargo install cargo-chef --version "${CHEF_VERSION}" --locked
 WORKDIR /build
-COPY . .
 
-# Add the wasm32 target AFTER the copy: the repo's rust-toolchain.toml pins
-# the toolchain, and the target must be installed for THAT toolchain (adding
-# it earlier, at /, lands on the default toolchain and trunk's cargo build
-# then can't find `core` for wasm32 — E0463).
+# The recipe: the manifests and the lock file, without the source.
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+# The pinned toolchain and the link flags of `.cargo/config.toml` before the
+# dependencies, so the cooked layer is built as the final build is.
+COPY rust-toolchain.toml ./
+COPY .cargo .cargo
+# The wasm32 target for THE pinned toolchain (adding it at / lands on the
+# default toolchain, and trunk's cargo build then can't find `core` for
+# wasm32 — E0463).
 RUN rustup target add wasm32-unknown-unknown
+COPY --from=planner /build/recipe.json recipe.json
+ARG KAIROS_SERVER_FEATURES=embed-web,llama
+RUN cargo chef cook --release --recipe-path recipe.json \
+        -p kairos-server --features "${KAIROS_SERVER_FEATURES}"
+RUN cargo chef cook --release --recipe-path recipe.json \
+        --target wasm32-unknown-unknown -p kairos-web
+COPY . .
 
 # 1) Build the GUI wasm bundle (release: opt-level z + wasm-opt) into
 #    crates/kairos-web/dist — exactly what `angreal web build --release`
@@ -96,7 +115,6 @@ WORKDIR /build
 # download at first start, for a deployment where every organization makes
 # its summaries on a hosted provider. The copies of the llama.cpp libraries
 # then find nothing, and the folders stay empty.
-ARG KAIROS_SERVER_FEATURES=embed-web,llama
 RUN cargo build --release -p kairos-server --features "${KAIROS_SERVER_FEATURES}" \
     && strip target/release/kairos-server \
     && mkdir -p /build/llama/lib /build/llama/backends \
