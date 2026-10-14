@@ -680,7 +680,7 @@ kairos boards dispatch add-target <BOARD> --name <NAME> --hook-url <URL> [OPTION
 kairos boards dispatch remove-target <BOARD> <TARGET> [OPTIONS]
 kairos boards dispatch enable-target <BOARD> <TARGET> [OPTIONS]
 kairos boards dispatch test-target <BOARD> <TARGET> [OPTIONS]
-kairos boards dispatch add-rule <BOARD> --column <COLUMN> --target <TARGET> [--task-type <TYPE>] [--metadata <SLUG=VALUE>] [--repository <REPO>] [OPTIONS]
+kairos boards dispatch add-rule <BOARD> [--trigger entered_column|unblocked] [--column <COLUMN>] --target <TARGET> [--task-type <TYPE>] [--metadata <SLUG=VALUE>] [--repository <REPO>] [OPTIONS]
 kairos boards dispatch remove-rule <BOARD> <RULE> [OPTIONS]
 kairos boards dispatch log <BOARD> [--target <TARGET>] [--rule <RULE>] [--limit <N>] [OPTIONS]
 ```
@@ -706,7 +706,8 @@ admin role.
 
 | Option of `add-rule` | Type | Default | Description |
 |---|---|---|---|
-| `--column <COLUMN>` | name or UUID | required | The column. |
+| `--trigger <TRIGGER>` | string | `entered_column` | `entered_column`: a task enters the column. `unblocked`: the last open blocker of a task closes (the event `task.unblocked`). |
+| `--column <COLUMN>` | name or UUID | required for `entered_column` | The column. For `unblocked`, the column the task must be in; with none, each column that is not done. |
 | `--target <TARGET>` | UUID | required | A target of the board. |
 | `--task-type <TYPE>` | string | none | Only tasks of this type: `task`, `bug`, `tech_debt` or `support`. |
 | `--metadata <SLUG=VALUE>` | string | none | Only tasks with this metadata value, for example `priority=high`. |

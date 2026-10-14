@@ -1745,6 +1745,15 @@ A task enters a column in 3 ways:
 - a move to the board, into its entry column;
 - a cancel, into the done column.
 
+A rule with the trigger `unblocked` (KAIROS-T-0427) fires when the last open
+blocker of a task closes: the blocker goes into a done column, is cancelled,
+or is archived. The event is `task.unblocked`. Its `data` has the fields
+above, with the column that the task is in, and `blocker`: the code of the
+blocker that closed. The rule can name a column: the task must be in it.
+With no column, a task in each column that is not done matches. A task with
+two blockers fires once, when the second closes. A blocker that opens again
+blocks the task again, so its next close fires again.
+
 ### `list_dispatch_rules`
 
 Gives the rules of a board, the webhook targets of the board, and the 20
@@ -1777,7 +1786,8 @@ time. Requires `configure_boards` on the board.
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `board` | string | yes | — | Slug or UUID. |
-| `column` | string | yes | — | The name or the UUID of a column of the board. |
+| `trigger` | string | no | `entered_column` | `entered_column`: a task enters `column`. `unblocked`: the last open blocker of a task closes. |
+| `column` | string | for `entered_column` | — | The name or the UUID of a column of the board. For `unblocked`, the column the task must be in. |
 | `target_id` | string | no | — | A webhook target of the board. |
 | `url` | string | no | — | The URL of a new target (`http` or `https`). |
 | `target_name` | string | no | `Agent runner` | The name of the new target. |
@@ -1792,7 +1802,8 @@ Refuses:
 
 - `FORBIDDEN` without `configure_boards`;
 - `NOT_FOUND` for an unknown board, target or repository;
-- `VALIDATION` for an unknown column, task type or metadata definition;
+- `VALIDATION` for an unknown trigger, column, task type or metadata
+  definition, and for an `entered_column` rule with no column;
 - `VALIDATION` for a URL that is not `http` or `https`, or a private address;
 - `SECRETS_NOT_CONFIGURED` for a new target with no `KAIROS_SECRETS_KEY`.
 
