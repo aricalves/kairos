@@ -396,6 +396,13 @@ jobs:
           # job checks out to the same folder.
           mkdir -p target/debug
           mv bdd-bin/kairos target/debug/kairos
+          # `cargo test` gives its children the pinned toolchain in
+          # RUSTUP_TOOLCHAIN; the index builder runs cargo in a temporary
+          # folder outside the repository, where rust-toolchain.toml does not
+          # reach. Give it the same.
+          RUSTUP_TOOLCHAIN="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
+          export RUSTUP_TOOLCHAIN
+          echo "RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN}"
           (cd crates/kairos-index && ../../bdd-bin/bdd)
           (cd crates/kairos-cli && ../../bdd-bin/index_bdd)
 
