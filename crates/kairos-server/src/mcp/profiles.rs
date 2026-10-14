@@ -13,7 +13,7 @@ use rmcp::model::Tool;
 
 /// The tools of the daily work: the default profile. Picked from the calls
 /// of the agents (2026-10-14): these make nearly all of them.
-pub(super) const WORK: [&str; 36] = [
+pub(super) const WORK: [&str; 37] = [
     "whoami",
     "my_boards",
     "board_items",
@@ -54,6 +54,9 @@ pub(super) const WORK: [&str; 36] = [
     "list_metadata_definitions",
     "list_templates",
     "archive_completed",
+    // A board session reads the charter of a team: its scope, and how a
+    // request reaches it. The four writes of team pages stay admin.
+    "team_pages",
 ];
 
 /// A profile of `tools/list`.

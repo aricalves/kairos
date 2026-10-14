@@ -94,9 +94,11 @@ fn pin(conn: &mut PgConnection) {
 
 /// The scratch database `db`: the tenant, an organization admin with a
 /// password, a team and one repository whose git repository is in `work`.
-/// The URL of the database, and the id of the repository.
-fn world(db: &str, work: &Path) -> (String, Uuid) {
-    let _admin = common::recreate_scratch_db(db);
+/// The guard of the database (it drops the database when the test ends,
+/// KAIROS-T-0445: keep it to the end), its URL, and the id of the
+/// repository.
+fn world(db: &str, work: &Path) -> (common::ScratchConn, String, Uuid) {
+    let admin = common::recreate_scratch_db(db);
     let url = common::with_database(&common::admin_database_url(), db);
     let mut conn = conn(&url);
     run_public_migrations(&mut conn).expect("public migrations");
@@ -144,7 +146,7 @@ fn world(db: &str, work: &Path) -> (String, Uuid) {
         },
     )
     .expect("repository");
-    (url, repo.id)
+    (admin, url, repo.id)
 }
 
 /// Short times, so that a dead worker shows in seconds.
@@ -294,7 +296,7 @@ async fn api_serves(router: &Router, token: &str) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_api_server_takes_no_build_and_a_worker_takes_it() {
     let work = tempfile::tempdir().unwrap();
-    let (url, repo) = world("kairos_server_roles_t0394_take", work.path());
+    let (_db, url, repo) = world("kairos_server_roles_t0394_take", work.path());
 
     // Given a server with the role api, with what `serve` would start for
     // a builder
@@ -468,7 +470,7 @@ fn build_worker(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_worker_killed_during_a_build_leaves_the_api_serving() {
     let work = tempfile::tempdir().unwrap();
-    let (url, repo) = world("kairos_server_roles_t0394_kill", work.path());
+    let (_db, url, repo) = world("kairos_server_roles_t0394_kill", work.path());
 
     // Given a server with the role api
     let api = state(&url, ServerRole::Api).await;

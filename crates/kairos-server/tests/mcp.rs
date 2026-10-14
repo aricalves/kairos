@@ -560,7 +560,7 @@ async fn mcp_endpoint_against_live_stack() {
          Repositories: `list_repositories` and `get_repository` read the directory, \
          `add_repository` and `update_repository` write it, and `set_repository` links a \
          task to one. This list is the work profile: the administration tools (teams, \
-         boards, grants, metadata, dispatch, team pages) are at /mcp?profile=admin, and \
+         boards, grants, metadata, dispatch, team page writes) are at /mcp?profile=admin, and \
          each tool is at /mcp?profile=all."
     );
 
@@ -777,6 +777,7 @@ async fn mcp_endpoint_against_live_stack() {
             "list_metadata_definitions",
             "list_templates",
             "archive_completed",
+            "team_pages",
         ]
         .iter()
         .map(|n| n.to_string())

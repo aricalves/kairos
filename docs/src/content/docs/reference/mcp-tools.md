@@ -22,8 +22,8 @@ organization.
 
 | URL | Profile | Tools |
 |---|---|---|
-| `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory, claims, notifications, the scales and templates: 36 tools. |
-| `/mcp?profile=admin` | admin | Teams, boards, columns and transitions, grants, metadata definitions and templates, dispatch rules and agent triage, team pages, org read tokens, delete and rebuild of repositories, board flow, purge: the other 31 tools. |
+| `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory, claims, notifications, the scales and templates, team pages to read: 37 tools. |
+| `/mcp?profile=admin` | admin | Teams, boards, columns and transitions, grants, metadata definitions and templates, dispatch rules and agent triage, the writes of team pages, org read tokens, delete and rebuild of repositories, board flow, purge: the other 30 tools. |
 | `/mcp?profile=all` | all | Each tool. |
 
 You can call each tool under each profile: the profile changes the list,
@@ -42,7 +42,8 @@ The work tools:
   `update_repository`;
 - claims and notifications: `claim_item`, `hand_off_item`, `release_item`,
   `get_events`, `mark_events_read`;
-- scales and templates: `list_metadata_definitions`, `list_templates`.
+- scales and templates: `list_metadata_definitions`, `list_templates`;
+- team pages, to read: `team_pages`.
 
 To administer from Claude Code, add a second server with the admin profile:
 
