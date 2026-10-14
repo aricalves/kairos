@@ -6867,6 +6867,10 @@ fn create_item_impl(
         })
         .transpose()?;
 
+    // KAIROS-T-0458: the answer names the lane of a task. `from_team` is
+    // not kept, so this is the one place the caller learns that the task
+    // is a request (entry column, support lane).
+    let mut lane: Option<WorkClass> = None;
     let (created_code, created_title, created_id) = match item_type {
         ItemType::Strategy => {
             let created = items::create_strategy(
@@ -6929,6 +6933,7 @@ fn create_item_impl(
                 user,
             )
             .map_err(map_item_error)?;
+            lane = Some(created.work_class);
             (created.short_code, created.title, created.id)
         }
         ItemType::Adr => {
@@ -6967,6 +6972,9 @@ fn create_item_impl(
         "Created {item_type} {created_code}: {created_title} (version 1) on board {}.",
         board.slug
     );
+    if let Some(lane) = lane {
+        out.push_str(&format!(" Lane: {lane}."));
+    }
     if let Some((parent_code, parent_id, parent_type, relationship)) = parent {
         // The link rule (COLLIERY-T-0228), by the ONE function that
         // `link_items` calls. The item and the edge are in one transaction

@@ -963,6 +963,8 @@ async fn mcp_endpoint_against_live_stack() {
         .await;
     assert!(text.contains("Created task"), "{text}");
     assert!(text.contains("platform-delivery"), "{text}");
+    // KAIROS-T-0458: the answer names the lane of a task.
+    assert!(text.contains("Lane: planned."), "{text}");
     assert!(
         text.contains(&format!("parent: {initiative_code}")),
         "{text}"
