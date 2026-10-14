@@ -12,6 +12,8 @@ import { journey, step } from '../run/narrate';
 import { openTeam, panel } from '../surfaces/gui';
 
 const TEAM = process.env.UAT_TEAM ?? 'platform';
+// A repository of TEAM, for its published docs site (KAIROS-T-0408).
+const REPO = process.env.UAT_PLATFORM_REPO ?? 'payments-api';
 
 journey(
   'team-knowledge',
@@ -243,6 +245,28 @@ journey(
       const after = await mcp.call('team_pages', { team: TEAM });
       expect(after).not.toContain(folderSlug);
       return { folder: folderSlug, edited_to_version: version + 1, archived: 2 };
+    });
+
+    await step(bob, `gets the docs site of ${REPO} ready for its CI: turns it on and reads the base path the build must use (\`kairos pages\`)`, async () => {
+      const cli = await bob.cli();
+      const api = await alice.api();
+      const before = await cli.json(['pages', 'base-path', '--repo', REPO]);
+      // Teardown leaves the switch as the seed had it.
+      if (!before.enabled) {
+        ledger.add({
+          kind: 'site-switch',
+          label: `${REPO} site off`,
+          delete: async () => { await api.patch(`/api/repositories/${REPO}`, { site_enabled: false }); },
+        });
+      }
+      const on = await cli.ok(['pages', 'on', '--repo', REPO]);
+      expect(on).toContain(`The site of ${REPO} is on.`);
+      const basePath = (await cli.ok(['pages', 'base-path', '--repo', REPO])).trim();
+      // The path names the organization, the owner team and the repository.
+      expect(basePath).toMatch(new RegExp(`^/pages/[^/]+/${TEAM}/repos/${REPO}/$`));
+      const after = await cli.json(['pages', 'base-path', '--repo', REPO]);
+      expect(after.enabled).toBe(true);
+      return { repository: REPO, site: 'on', base_path: basePath, was_on_before: Boolean(before.enabled) };
     });
 
     await step(bob, 'asks where he works, and the answer is his board', async () => {

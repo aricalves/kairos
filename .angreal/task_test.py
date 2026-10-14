@@ -506,6 +506,10 @@ def _gui_server_env(env, extra=None):
         # each tick. 0 keeps the service (requests are taken and stay
         # `running`) and runs no builder.
         "KAIROS_CODE_INDEX_POLL_SECS": "0",
+        # KAIROS-T-0453: the docs sites (pages-web, site-sandbox) publish
+        # sites, so the GUI server has a site store: a folder of target/.
+        "KAIROS_PAGES_STORE": "disk",
+        "KAIROS_PAGES_DIR": str(PROJECT_ROOT / "target" / "e2e-pages"),
         # KAIROS-T-0387: the dispatch spec sends a delivery to a receiver of
         # the spec on 127.0.0.1, which the address guard refuses unless this
         # is on. A short first wait, so a failed try comes back fast.
@@ -650,8 +654,9 @@ def _run_gui_smoke(env):
         (and, inside the runner, its step) on stderr.
 
         DESTRUCTIVE for the dev database's `demo` tenant (seed --force,
-        run twice — once for the API path, once for the GUI leg) and tears
-        down compose volumes afterwards.
+        run twice — once for the API path, once for the GUI leg). The
+        compose stack stays up unless --down (KAIROS-T-0453): the stack is
+        shared with other runs on the machine. CI passes --down.
 
         ## When to use
         - Gating releases and milestone acceptance, not per-task loops
@@ -659,8 +664,16 @@ def _run_gui_smoke(env):
         risk_level="destructive",
     ),
 )
-def e2e():
-    """Compose up -> seed-demo --force -> serve -> golden-path runner -> down."""
+@angreal.argument(
+    name="down",
+    long="down",
+    help="run compose down -v after the run (the stack is shared: other runs lose it)",
+    takes_value=False,
+    is_flag=True,
+)
+def e2e(down=False):
+    """Compose up -> seed-demo --force -> serve -> golden-path runner,
+    then compose down -v with --down only (KAIROS-T-0453)."""
     _no_incremental()
     print("Starting docker services for E2E smoke...", flush=True)
     exit_code = _e2e_phase("compose up", docker_up())
@@ -719,6 +732,11 @@ def e2e():
             # put it back for 30 s.
             "KAIROS_WEBHOOK_ALLOW_PRIVATE": "true",
             "KAIROS_WEBHOOK_RETRY_BASE_SECS": "1",
+            # KAIROS-T-0453: this server shares the database, and so the job
+            # queue, with the GUI server. It runs the webhook deliveries of
+            # the GUI leg too, and signs them with the secret of the target,
+            # sealed with this key: the same key as the GUI server.
+            "KAIROS_SECRETS_KEY": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
         })
         server = subprocess.Popen(
             [str(SERVER_BIN), "serve"],
@@ -770,8 +788,11 @@ def e2e():
             except subprocess.TimeoutExpired:
                 server.kill()
                 server.wait()
-        print("Tearing down services...", flush=True)
-        docker_down(remove_volumes=True)
+        if down:
+            print("Tearing down services...", flush=True)
+            docker_down(remove_volumes=True)
+        else:
+            print("Services kept running (shared stack). Use --down to tear down.")
 
 
 @test()

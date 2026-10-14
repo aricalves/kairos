@@ -767,6 +767,10 @@ impl ReposCommand {
                 if common.json {
                     return print_json(&list);
                 }
+                // KAIROS-T-0394: a deployment with no builder says so.
+                if let Some(note) = &list.builder {
+                    println!("{note}");
+                }
                 if list.items.is_empty() {
                     println!("The repository {repository} has no run of the code index builder.");
                     return Ok(());

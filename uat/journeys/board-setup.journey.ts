@@ -123,6 +123,19 @@ journey(
       return { field: fieldSlug, type: mine.field_type ?? mine.type };
     });
 
+    await step(bob, 'asks his agent which fields and templates a task can carry, and finds the new field (MCP)', async () => {
+      // An agent does not guess a slug: it reads the definitions first.
+      const mcp = await bob.mcp();
+      const fields = await mcp.call('list_metadata_definitions', { entity_type: 'task' });
+      const line = fields.split('\n').find((l) => l.includes(`\`${fieldSlug}\``)) ?? '';
+      expect(line, `the field ${fieldSlug} is listed for tasks`).toContain('UAT Risk');
+      const refused = await mcp.refused('list_metadata_definitions', { entity_type: 'pull_request' });
+      expect(refused).toContain('VALIDATION');
+      const templates = await mcp.call('list_templates');
+      expect(templates.trim().length).toBeGreaterThan(0);
+      return { field: line.trim().slice(0, 120), templates_listed: true };
+    });
+
     await step(bob, 'raises a card on the new board and stamps the field over MCP', async () => {
       const mcp = await bob.mcp();
       const created = await mcp.call('create_item', {
@@ -174,6 +187,37 @@ journey(
       return { stream: streamSlug, team_attached: team.fixture.teamSlug };
     });
 
+    let ruleId = '';
+    await step(alice, 'sends each bug that reaches Review to the team\'s review agent: a dispatch rule (MCP)', async () => {
+      const mcp = await alice.mcp();
+      const api = await alice.api();
+      const board = team.fixture.boardSlug!;
+      const made = await mcp.call('create_dispatch_rule', {
+        board,
+        column: 'Review',
+        task_type: 'bug',
+        // RFC 2606: a name that never answers. The rule only fires for a
+        // bug, and no bug reaches Review in this journey.
+        url: 'https://review-runner.example.com/kairos',
+        target_name: 'Review agent',
+      });
+      ruleId = made.match(/Made the dispatch rule ([0-9a-f-]{36})/)?.[1] ?? '';
+      const targetId = made.match(/Made the webhook target Review agent \(([0-9a-f-]{36})\)/)?.[1] ?? '';
+      expect(ruleId).toBeTruthy();
+      expect(targetId).toBeTruthy();
+      // The secret is shown once, to the person who made the target.
+      expect(made).toMatch(/secret: \S+/);
+      ledger.add({
+        kind: 'webhook-target',
+        label: `Review agent on ${board}`,
+        delete: async () => { await api.delete(`/api/boards/${team.fixture.boardId}/webhook-targets/${targetId}`); },
+      });
+      const listed = await mcp.call('list_dispatch_rules', { board });
+      expect(listed).toContain(`- ${ruleId}:`);
+      expect(listed).toContain('review-runner.example.com');
+      return { rule: ruleId, column: 'Review', only: 'bugs', target: 'Review agent' };
+    });
+
     await step(bob, 'drags the card through the transition alice invented minutes ago', async () => {
       const page = await bob.gui();
       await openBoard(page, team.fixture.boardSlug!);
@@ -184,6 +228,22 @@ journey(
       await dragCard(page, code, 'Review');
       await expect(cardIn(page, 'Review', code)).toBeVisible();
       return { task: code, column: 'Review', via: 'Active → Review (added today)' };
+    });
+
+    await step(alice, 'reads the delivery log: bob\'s task reached Review and went to no agent; then she takes the rule off (MCP)', async () => {
+      const mcp = await alice.mcp();
+      const board = team.fixture.boardSlug!;
+      const listed = await mcp.call('list_dispatch_rules', { board });
+      // The filter held: the card is a task, not a bug.
+      const log = listed.split('Newest deliveries')[1] ?? '';
+      expect(log).not.toContain(code);
+      const removed = await mcp.call('delete_dispatch_rule', { board, rule_id: ruleId });
+      expect(removed).toContain(`Removed the dispatch rule ${ruleId}`);
+      const after = await mcp.call('list_dispatch_rules', { board });
+      expect(after).not.toContain(`- ${ruleId}:`);
+      // The target stays, for the next rule.
+      expect(after).toContain('review-runner.example.com');
+      return { delivered_for_the_task: 'nothing', removed: ruleId, target: 'kept' };
     });
 
     await step(bob, 'retires the card, which clears the board for the team to be wound down', async () => {

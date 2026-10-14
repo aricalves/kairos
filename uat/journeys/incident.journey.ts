@@ -155,7 +155,20 @@ journey(
 
     const agent = cast.agent('agent', team!.apiKey);
 
-    await step(agent, 'finds the bug in its repository queue, flagged as unplanned, and picks it up', async () => {
+    await step(bob, 'is paged into another fire: releases his claim on the request, which stays in Active for the next person', async () => {
+      const mcp = await bob.mcp();
+      // He took the request to Active, so the claim is his.
+      const before = await mcp.call('get_item', { short_code: request });
+      expect(before.match(/- claim: ([^\n]+)/)?.[1] ?? '').not.toMatch(/^none/);
+      const released = await mcp.call('release_item', { short_code: request });
+      expect(released).toContain(`Released ${request}`);
+      const after = await mcp.call('get_item', { short_code: request });
+      expect(after).toContain('- claim: none');
+      expect(after.match(/- board: ([^\n]+)/)?.[1]).toContain('column: Active');
+      return { request, claim: 'none', column: 'Active' };
+    });
+
+    await step(agent, 'finds the bug in its repository queue, flagged as unplanned, and may only propose its triage', async () => {
       const mcp = await agent.mcp();
       const queue = await mcp.call('board_items', { board: team.boardSlug, repository: team.repoSlug });
       expect(shortCodes(queue)).toContain(bug);
@@ -163,9 +176,37 @@ journey(
       // which of its tickets is an incident will work them in filed order.
       const line = queue.split('\n').find((l) => l.includes(bug)) ?? '';
       expect(line).toContain('bug [support lane]');
+      // Intake is triaged by a person unless the board says otherwise
+      // (KAIROS-T-0428): the agent writes its proposal as a note.
+      const refused = await mcp.refused('transition_item', { short_code: bug, to_column: 'Todo' });
+      expect(refused).toContain('AGENT_TRIAGE_OFF');
+      const noted = await mcp.call('append_note', {
+        short_code: bug,
+        text: 'Proposal: work now, in the support lane. Checkout is down for trial accounts and the fix is small.',
+      });
+      expect(noted).toContain(`Appended a note to ${bug}`);
+      const item = await mcp.call('get_item', { short_code: bug });
+      expect(item).toContain('## Note (');
+      expect(item).toContain('Proposal: work now');
+      return { queue_line: line.trim().slice(0, 120), move: 'AGENT_TRIAGE_OFF', proposal: 'note on the bug' };
+    });
+
+    await step(alice, 'reads the proposal and lets agents decide the triage on the on-call board (MCP)', async () => {
+      const mcp = await alice.mcp();
+      const set = await mcp.call('set_agent_triage', { board: team.boardSlug, agents_decide: true });
+      expect(set).toContain('an agent decides');
+      const rules = await mcp.call('list_dispatch_rules', { board: team.boardSlug });
+      expect(rules).toContain('an agent decides');
+      return { board: team.boardSlug, triage: 'an agent decides' };
+    });
+
+    await step(agent, 'picks the bug up now that the board lets it decide', async () => {
+      const mcp = await agent.mcp();
       await mcp.call('transition_item', { short_code: bug, to_column: 'Todo' });
       await mcp.call('transition_item', { short_code: bug, to_column: 'Active' });
-      return { queue_line: line.trim().slice(0, 120), moved_to: 'Active' };
+      const item = await mcp.call('get_item', { short_code: bug });
+      expect(item.match(/- board: ([^\n]+)/)?.[1]).toContain('column: Active');
+      return { bug, moved_to: 'Active' };
     });
 
     await step(agent, 'opens a pull request naming the bug; the fix links back to the ticket', async () => {

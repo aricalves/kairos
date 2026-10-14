@@ -41,6 +41,7 @@ journey(
     // the seed's. Suffix distinct from mobile/ios/infra/ops/crm.
     const team = teamFixture(alice, ledger, 'legacy');
     const shipped: string[] = [];
+    let dropped = '';
     let stillOpen = '';
 
     await step(alice, 'has a team that has been running for a while: a repository and a quarter of work', async () => {
@@ -55,22 +56,50 @@ journey(
         shipped.push(made.short_code);
         ledger.add({ kind: 'task', label: made.short_code, delete: async () => { await api.delete(`/api/tasks/${made.short_code}`); } });
       }
+      const spike = await cli.json([
+        'tasks', 'create', '--board', team.fixture.boardId!, '--title', named('task: spike a CSV importer'),
+      ]);
+      dropped = spike.short_code;
+      ledger.add({ kind: 'task', label: dropped, delete: async () => { await api.delete(`/api/tasks/${dropped}`); } });
       const open = await cli.json([
         'tasks', 'create', '--board', team.fixture.boardId!, '--repo', team.fixture.repoSlug!, '--title', named('task: v2 export, still going'),
       ]);
       stillOpen = open.short_code;
       ledger.add({ kind: 'task', label: stillOpen, delete: async () => { await api.delete(`/api/tasks/${stillOpen}`); } });
-      return { team: observed.team, repository: team.fixture.repoSlug, shipped: shipped.length, still_open: stillOpen };
+      return { team: observed.team, repository: team.fixture.repoSlug, shipped: shipped.length, dropped, still_open: stillOpen };
     });
 
-    await step(alice, 'puts the shipped work away, and the board empties', async () => {
-      const cli = await alice.cli();
-      for (const code of shipped) await cli.ok(['tasks', 'delete', code, '--confirm']);
+    await step(alice, 'closes the quarter on the board: the shipped work to Completed, the spike nobody will do cancelled (MCP)', async () => {
+      const mcp = await alice.mcp();
+      for (const code of shipped) {
+        for (const column of ['Todo', 'Active', 'Completed']) {
+          await mcp.call('transition_item', { short_code: code, to_column: column });
+        }
+      }
+      // Not done, and not going to be: a cancel says so, with the reason,
+      // rather than dressing it up as shipped work.
+      const cancelled = await mcp.call('cancel_item', {
+        short_code: dropped,
+        reason: 'The v2 export replaces the CSV path; nobody needs the importer.',
+      });
+      expect(cancelled).toContain(`Cancelled ${dropped}`);
+      expect(cancelled).toContain('-> Completed');
+      const board = await mcp.call('board_items', { board: team.fixture.boardSlug });
+      const line = board.split('\n').find((l) => l.includes(dropped)) ?? '';
+      expect(line).toContain('[cancelled]');
+      return { completed: shipped, cancelled: dropped, reason_on_the_card: true };
+    });
+
+    await step(alice, 'puts the done column away in one call, and the board empties', async () => {
+      const mcp = await alice.mcp();
+      const archived = await mcp.call('archive_completed', { board: team.fixture.boardSlug, confirm: true });
+      expect(archived).toContain(`Archived 3 completed tasks of ${team.fixture.boardSlug}`);
+      for (const code of [...shipped, dropped]) expect(shortCodes(archived)).toContain(code);
       const page = await alice.gui();
       await openBoard(page, team.fixture.boardSlug!);
-      for (const code of shipped) await expect(card(page, code)).toHaveCount(0);
+      for (const code of [...shipped, dropped]) await expect(card(page, code)).toHaveCount(0);
       await expect(card(page, stillOpen)).toBeVisible();
-      return { archived: shipped, still_on_the_board: stillOpen };
+      return { archived: [...shipped, dropped], still_on_the_board: stillOpen };
     });
 
     await step(alice, 'finds the archived work off every default listing, but still able to answer for itself', async () => {
@@ -182,6 +211,32 @@ journey(
       return { archived: stillOpen, repository_retired: team.fixture.repoSlug };
     });
 
+    await step(alice, 'finds a task filed with a password pasted into it, and deletes it for good (MCP)', async () => {
+      const mcp = await alice.mcp();
+      const api = await alice.api();
+      const made = await mcp.call('create_item', {
+        item_type: 'task',
+        title: named('task: rotate the export credentials'),
+        board: team.fixture.boardSlug,
+        content: 'The old password is hunter2-not-a-real-secret, change it.',
+      });
+      const [leak] = shortCodes(made);
+      ledger.add({ kind: 'task', label: leak, delete: async () => { await api.delete(`/api/tasks/${leak}`); } });
+      // An archive keeps the text, which is the problem here: only a purge
+      // takes it out of the history.
+      const purged = await mcp.call('purge_task', { short_code: leak, confirm: true });
+      expect(purged).toContain(`Deleted ${leak}`);
+      expect(purged).toContain('No restore can bring it back');
+      expect((await api.raw('GET', `/api/tasks/${leak}`)).status).toBe(404);
+      const feed = await api.get('/api/activity?limit=50');
+      const row = ((feed.items ?? feed) as any[]).find(
+        (r: any) => r.action === 'purge' && (r.details ?? '').includes(`short_code:${leak}`),
+      );
+      expect(row, 'the purge is on the record, without the text').toBeTruthy();
+      expect(String(row.details)).not.toContain('hunter2');
+      return { purged: leak, item_now: 404, activity: String(row.details).slice(0, 100) };
+    });
+
     await step(alice, 'winds the team down — the board is clear because everything on it was put away', async () => {
       const api = await alice.api();
       const res = await api.raw('DELETE', `/api/teams/${team.fixture.teamId}`);
@@ -193,7 +248,7 @@ journey(
       const teams = await cli.json(['teams', 'list', '--limit', '100']);
       const slugs = ((teams.items ?? teams) as any[]).map((t: any) => t.slug);
       expect(slugs).not.toContain(team.fixture.teamSlug);
-      return { team_deleted: team.fixture.teamSlug, cards_archived: shipped.length + 1 };
+      return { team_deleted: team.fixture.teamSlug, cards_archived: shipped.length + 2 };
     });
 
     await step(alice, 'can still answer THAT the team did the work, though no longer what the work said', async () => {

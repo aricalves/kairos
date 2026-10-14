@@ -72,7 +72,11 @@ test('a dispatch rule of the board settings sends a signed delivery, and the log
   const receiver = await startReceiver();
   const name = `E2E runner ${Date.now()}`;
   const panel = page.locator('[data-testid="dispatch-panel"]');
-  const field = (label: string) => panel.locator('.cl-field', { hasText: label });
+  // KAIROS-T-0453: the label EXACTLY. A string hasText is a substring with no
+  // case, so 'Column' also found the trigger select ("enters the column") and
+  // 'Target' the field "Target name": strict mode refused two matches.
+  const field = (label: string) =>
+    panel.locator('.cl-field').filter({ has: page.getByText(label, { exact: true }) });
   let code = '';
   let secret = '';
 

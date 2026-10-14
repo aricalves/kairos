@@ -205,6 +205,34 @@ journey(
       return { required: 'transition_items', refused: refused.replace(/\s+/g, ' ').slice(0, 150), card_still_live: work };
     });
 
+    await step(alice, 'hands bob\'s claim on the card to the joiner, so nobody waits on someone who has left (MCP)', async () => {
+      const mcp = await alice.mcp();
+      // bob took the card to Active, so the claim is his, and leaving the
+      // team did not end it: the card still says he is on it.
+      const before = await mcp.call('get_item', { short_code: work });
+      const claimBefore = before.match(/- claim: ([^\n]+)/)?.[1] ?? '';
+      expect(claimBefore).not.toMatch(/^none/);
+      const handed = await mcp.call('hand_off_item', { short_code: work, to: joiner.credentials.email });
+      expect(handed).toContain(`Handed off ${work}`);
+      const claimAfter = handed.match(/- claim: ([^\n]+)/)?.[1] ?? '';
+      expect(claimAfter).not.toBe(claimBefore);
+      return { task: work, claim_before: claimBefore, claim_now: claimAfter };
+    });
+
+    await step(joiner, 'finds the hand-off in her notifications and marks it read (MCP)', async () => {
+      const mcp = await joiner.mcp();
+      const events = await mcp.call('get_events');
+      const line = events.split('\n').find((l) => l.includes('· hand_off ·') && l.includes(work) && !l.endsWith('(read)'));
+      expect(line, `a hand_off notification about ${work}`).toBeTruthy();
+      const id = line!.match(/^- (\S+) ·/)?.[1];
+      expect(id).toBeTruthy();
+      const marked = await mcp.call('mark_events_read', { ids: [id] });
+      expect(marked).toContain('Marked 1 notification(s) read');
+      const after = await mcp.call('get_events');
+      expect(after.split('\n').find((l) => l.startsWith(`- ${id} ·`))).toContain('(read)');
+      return { notification: line!.replace(/\s+/g, ' ').slice(0, 140), marked_read: id };
+    });
+
     await step(joiner, 'picks up his in-flight work and finishes it, so the offboarding orphans nothing', async () => {
       const page = await joiner.gui();
       await openBoard(page, team.fixture.boardSlug!);
