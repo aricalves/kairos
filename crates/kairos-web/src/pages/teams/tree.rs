@@ -19,6 +19,29 @@ use super::api;
 use crate::auth::{Auth, use_auth};
 use crate::pages::item::api::error_text;
 
+thread_local! {
+    /// The folders a person opened in this browser session. The tree renders
+    /// again after each change (a refetch), so the open state lives here, not
+    /// in the DOM; a drop into a folder opens it.
+    static OPEN_FOLDERS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+fn folder_is_open(id: &str) -> bool {
+    OPEN_FOLDERS.with(|open| open.borrow().contains(id))
+}
+
+fn set_folder_open(id: &str, open: bool) {
+    OPEN_FOLDERS.with(|folders| {
+        let mut folders = folders.borrow_mut();
+        if open {
+            folders.insert(id.to_string());
+        } else {
+            folders.remove(id);
+        }
+    });
+}
+
 /// A slug from a title: lower case, each run of other characters one
 /// hyphen ("How-to Guides" gives "how-to-guides").
 pub(crate) fn slug_from_title(title: &str) -> String {
@@ -200,6 +223,14 @@ impl TreeCtx {
         else {
             return;
         };
+        // The folder that takes the node opens, so the person sees it land.
+        let landing = match &target {
+            DropTarget::Into(folder) => Some(folder.clone()),
+            DropTarget::Before { parent, .. } | DropTarget::End { parent } => parent.clone(),
+        };
+        if let Some(folder) = landing {
+            set_folder_open(&folder, true);
+        }
         if self.busy.get_untracked() {
             return;
         }
@@ -371,12 +402,25 @@ fn render_level(ctx: TreeCtx, parent: Option<String>, path_prefix: String) -> An
             let into_check = into.clone();
             let team_id = ctx.team_id.get_value();
             let folder_id = node.id.clone();
+            let toggle_id = node.id.clone();
             let next = ctx
                 .pages
                 .with_value(|pages| next_position(pages, Some(&node.id)));
             rows.push(
                 view! {
-                    <details class="kairos-doctree__folder">
+                    <details
+                        class="kairos-doctree__folder"
+                        open=folder_is_open(&toggle_id)
+                        on:toggle=move |ev: web_sys::Event| {
+                            use wasm_bindgen::JsCast;
+                            if let Some(details) = ev
+                                .target()
+                                .and_then(|t| t.dyn_into::<web_sys::HtmlDetailsElement>().ok())
+                            {
+                                set_folder_open(&toggle_id, details.open());
+                            }
+                        }
+                    >
                         <summary
                             class="kairos-doctree__summary"
                             class:kairos-doctree__summary--over=move || over.get()
