@@ -1748,13 +1748,15 @@ A task enters a column in 3 ways:
 - a cancel, into the done column.
 
 A rule with the trigger `unblocked` (KAIROS-T-0427) fires when the last open
-blocker of a task closes: the blocker goes into a done column, is cancelled,
-or is archived. The event is `task.unblocked`. Its `data` has the fields
-above, with the column that the task is in, and `blocker`: the code of the
-blocker that closed. The rule can name a column: the task must be in it.
-With no column, a task in each column that is not done matches. A task with
-two blockers fires once, when the second closes. A blocker that opens again
-blocks the task again, so its next close fires again.
+blocker of a task closes. The blocker closes when it goes into a done column,
+or when a person cancels or archives it. The event is `task.unblocked`. Its
+`data` has the fields above and `blocker`, the code of the blocker that
+closed. The column in `data` is the column of the task.
+
+The rule can name a column: the task must be in it. With no column, a task
+in each column that is not done matches. A task with two blockers fires once,
+when the second closes. A blocker that opens again blocks the task again, so
+its next close fires again.
 
 ### `list_dispatch_rules`
 

@@ -4,15 +4,15 @@ title: "Receive dispatch in a Claude Code session"
 
 This page describes Kairos 0.12.0 and the `kairos` plugin.
 
-Send the tasks of a board to a Claude Code session that is already running,
-in place of a runner that starts a new session. The `kairos` plugin has a
-channel, `kairos-dispatch`: a local listener that checks each signed delivery
-of a [dispatch rule](../dispatch-tasks-to-an-agent/) and pushes it into the
+Send the tasks of a board to a Claude Code session that runs now. A runner
+is not necessary. The `kairos` plugin has a channel, `kairos-dispatch`. The
+channel is a local listener. It checks each signed delivery of a
+[dispatch rule](../dispatch-tasks-to-an-agent/) and pushes it into the
 session. The session then works the task with the Kairos MCP tools.
 
 **Before you start:**
 
-- The `kairos` plugin is installed, and the session can reach Kairos over MCP.
+- You installed the `kairos` plugin, and the session can reach Kairos over MCP.
 - You have `configure_boards` on the board.
 - The deployment has `KAIROS_SECRETS_KEY`, and
   `KAIROS_WEBHOOK_ALLOW_PRIVATE=true`: the listener is on your own machine.
@@ -96,7 +96,7 @@ Kairos dispatched PLAT-T-0042: it entered Todo on the board platform-delivery (l
 ```
 
 The event has facts only: no title and no content. The session reads the task
-with `get_item`. A task in the support lane is triaged; another task runs
+with `get_item`. The session triages a task in the support lane; another task runs
 `kairos:implement`. The session stops at a pushed branch, a pull request and
 the evidence on the task.
 
@@ -111,7 +111,7 @@ the evidence on the task.
 | An event other than `ping`, `task.entered_column` and `task.unblocked` | 200 | no |
 
 Events that arrive while the session is busy wait, and arrive together on its
-next turn. One session listens on a port: a second session of the same board
+next turn. One session listens on a port. A second session of the same board
 finds the port taken, and its channel is off.
 
 ## Related reading
