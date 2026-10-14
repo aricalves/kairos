@@ -127,8 +127,9 @@ pub enum TeamMembersCommand {
     Add {
         /// Team id (UUID)
         team_id: String,
-        /// User id (UUID; see `kairos members list`)
-        #[arg(long, value_name = "USER_ID")]
+        /// The user: a user id, an email, a user name or the name of a
+        /// service account (see `kairos members list`)
+        #[arg(long, value_name = "USER")]
         user: String,
         #[command(flatten)]
         common: Common,
@@ -137,8 +138,8 @@ pub enum TeamMembersCommand {
     Remove {
         /// Team id (UUID)
         team_id: String,
-        /// User id (UUID)
-        #[arg(long, value_name = "USER_ID")]
+        /// The user: a user id, an email or a user name
+        #[arg(long, value_name = "USER")]
         user: String,
         #[command(flatten)]
         common: Common,

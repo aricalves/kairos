@@ -196,6 +196,12 @@ enum Command {
     /// Deployment administration (tenant provisioning)
     #[command(subcommand)]
     Admin(AdminCommand),
+    /// The metadata definitions of the organization (writes: organization admins)
+    #[command(subcommand)]
+    Metadata(commands::meta::MetadataCommand),
+    /// The templates of the organization (writes: organization admins)
+    #[command(subcommand)]
+    Templates(commands::meta::TemplatesCommand),
     /// The code index of a checkout, and its code tools for an agent (COLLIERY-T-1852)
     Index(IndexArgs),
     /// Install the version of the server (or --latest, or --version) in place of this binary
@@ -265,6 +271,8 @@ async fn dispatch(command: Command) -> Result<(), CliError> {
         Command::Keys(command) => command.run().await,
         Command::Admin(command) => command.run().await,
         Command::Index(command) => command.run().await,
+        Command::Metadata(command) => command.run().await,
+        Command::Templates(command) => command.run().await,
         Command::SelfUpdate(args) => args.run().await,
     }
 }

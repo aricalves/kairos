@@ -874,14 +874,27 @@ pub(crate) async fn delete_repository(
     let id = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            let current = repositories::resolve(conn, &slug).map_err(map_error)?;
-            require_structure(conn, &tenant_slug, user)?;
-            repositories::soft_delete(conn, current.id, user).map_err(map_error)?;
-            Ok(current.id.to_string())
+            delete_as(conn, &tenant_slug, user, &slug).map(|repository| repository.id.to_string())
         })
         .await?;
     Ok(Json(kairos_client::types_org::OrgDeleteResponse {
         id,
         deleted: true,
     }))
+}
+
+/// Remove the repository `reference` (slug or UUID) as `user`: the ONE
+/// implementation of `DELETE /api/repositories/{slug}` and of the MCP tool
+/// `delete_repository` (KAIROS-T-0443). The gate is [`require_structure`].
+/// Returns the repository as it was.
+pub(crate) fn delete_as(
+    conn: &mut PgConnection,
+    tenant_slug: &str,
+    user: Uuid,
+    reference: &str,
+) -> Result<Repository, ApiError> {
+    let current = repositories::resolve(conn, reference).map_err(map_error)?;
+    require_structure(conn, tenant_slug, user)?;
+    repositories::soft_delete(conn, current.id, user).map_err(map_error)?;
+    Ok(current)
 }

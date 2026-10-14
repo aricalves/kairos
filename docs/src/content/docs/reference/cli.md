@@ -28,7 +28,7 @@ Command groups, each detailed below:
 | Authentication | `login`, `logout`, `whoami` |
 | Work items | `strategies`, `initiatives`, `tasks`, `documents`, `adrs` |
 | Finding work | `search`, `boards` |
-| Organization | `orgs`, `members`, `teams`, `streams`, `repos`, `grants`, `boards create` |
+| Organization | `orgs`, `members`, `teams`, `streams`, `repos`, `grants`, `boards create`, `boards columns`, `boards transitions`, `metadata`, `templates` |
 | Machine access | `service-accounts`, `keys` |
 | Deployment administration | `admin` |
 | The CLI itself | `self-update` |
@@ -672,6 +672,47 @@ board. Kairos does not refuse a move into a column over its limit. The REST
 answer has the header `Kairos-Warning`, and the MCP answer has a warning line.
 The board marks the column.
 
+### `kairos boards columns`
+
+```
+kairos boards columns list   <BOARD> [OPTIONS]
+kairos boards columns add    <BOARD> <NAME> [--position <N>] [OPTIONS]
+kairos boards columns update <BOARD> <COLUMN> [--name <NAME>] [--position <N>] [--done <BOOL>] [--claims <BOOL>] [OPTIONS]
+kairos boards columns remove <BOARD> <COLUMN> [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<BOARD>` | slug or UUID | required | The board. |
+| `<NAME>` | string | required on `add` | The name of the new column. |
+| `<COLUMN>` | name or UUID | required on `update` and `remove` | The column. |
+| `--position <N>` | integer | the last (on `add`) | From 0, the first column. |
+| `--name <NAME>` | string | no change | The new name. |
+| `--done <BOOL>` | `true` or `false` | no change | A done column. |
+| `--claims <BOOL>` | `true` or `false` | no change | A task in the column has a claim. |
+
+`list` shows the columns in their order. `add`, `update` and `remove` need
+`configure_boards` on the board. A new column has no transition. `remove`
+refuses a column that holds a live item. `kairos boards wip-limit` sets the
+WIP limit.
+
+### `kairos boards transitions`
+
+```
+kairos boards transitions list   <BOARD> [OPTIONS]
+kairos boards transitions add    <BOARD> <FROM> <TO> [OPTIONS]
+kairos boards transitions remove <BOARD> <FROM> <TO> [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<BOARD>` | slug or UUID | required | The board. |
+| `<FROM>` | name or UUID | required on `add` and `remove` | The column where the move starts. |
+| `<TO>` | name or UUID | required on `add` and `remove` | The column where the move ends. |
+
+`list` shows the moves that the board allows. `add` allows a move, and
+`remove` stops it. The two need `configure_boards` on the board.
+
 ### `kairos boards dispatch`
 
 ```
@@ -874,14 +915,14 @@ A soft delete.
 
 ```
 kairos teams members list   <TEAM_ID> [OPTIONS]
-kairos teams members add    <TEAM_ID> --user <USER_ID> [OPTIONS]
-kairos teams members remove <TEAM_ID> --user <USER_ID> [OPTIONS]
+kairos teams members add    <TEAM_ID> --user <USER> [OPTIONS]
+kairos teams members remove <TEAM_ID> --user <USER> [OPTIONS]
 ```
 
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
 | `<TEAM_ID>` | UUID | required | The team. |
-| `--user <USER_ID>` | UUID | required on `add` and `remove` | User id, from `kairos members list`. |
+| `--user <USER>` | string | required on `add` and `remove` | A user id, an email, a user name, or the name of a service account. `kairos members list` gives them. |
 
 ### `kairos teams of`
 
@@ -1321,21 +1362,74 @@ Repositories are the codebases that tasks link to. See
 kairos grants list [OPTIONS]
 kairos grants add --user <USER> [--capability <CAPABILITY>] [--board <BOARD>] [OPTIONS]
 kairos grants remove <GRANT_ID> --confirm [OPTIONS]
+kairos grants board-set <BOARD> <USER> --capability <CAPABILITY>... [OPTIONS]
+kairos grants board-revoke <BOARD> <USER> [OPTIONS]
 ```
 
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
-| `--user <USER>` | string | required on `add` | For `manage_structure`: a user id, an email, a user name, or the name of a service account. For a board capability: the user id. |
+| `--user <USER>`, `<USER>` | string | required on `add`, `board-set` and `board-revoke` | A user id, an email, a user name, or the name of a service account. |
 | `--capability <CAPABILITY>` | string | `manage_structure` | `manage_structure`, or a board capability such as `manage_tasks` or `configure_boards`. |
 | `--board <BOARD>` | slug or UUID | none | For `manage_structure`: the one board of the grant. With no `--board`, the grant is on the organization. A board capability needs it. |
 | `<GRANT_ID>` | UUID | required on `remove` | A grant of `manage_structure`, from `kairos grants list`. |
 | `--confirm` | flag | off | Required for the revoke to happen. |
+| `<BOARD>` | slug or UUID | required on `board-set` and `board-revoke` | The board. |
+
+`board-set` replaces the board capabilities of a member with the
+`--capability` values. Repeat `--capability` for each capability. The member
+must have one or more capabilities on the board. `board-revoke` revokes each
+board capability of the member on the board. The two need
+`administer_members` on the board, or `manage_structure` on the board or on
+the organization.
 
 `list` shows each grant of
 [`manage_structure`](../capabilities/#manage_structure). Only an organization
 admin can add or remove a grant of `manage_structure`. A board capability
 needs `administer_members` on the board, or `manage_structure` on the board or
 on the organization. See [Run an admin agent](../../how-to/run-an-admin-agent/).
+
+### `kairos metadata`
+
+```
+kairos metadata list [OPTIONS]
+kairos metadata create --name <NAME> --slug <SLUG> --type <TYPE> [--option <VALUE>]... [--entity-type <TYPE>]... [OPTIONS]
+kairos metadata update <DEFINITION> [--name <NAME>] [--slug <SLUG>] [--option <VALUE>]... [--entity-type <TYPE>]... [OPTIONS]
+kairos metadata delete <DEFINITION> [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<DEFINITION>` | slug or UUID | required on `update` and `delete` | The metadata definition. |
+| `--name <NAME>` | string | required on `create` | The name. |
+| `--slug <SLUG>` | string | required on `create` | The slug. |
+| `--type <TYPE>` | string | required on `create` | `text`, `number`, `date`, `enum` or `boolean`. It does not change later. |
+| `--option <VALUE>` | string | none | A value of an enum. Repeat it for each value, in the order of the scale. On `update`, the values replace the list. |
+| `--entity-type <TYPE>` | string | each type | An entity type of the definition: `strategy`, `initiative`, `task`, `document` or `adr`. Repeat it. On `update`, the values replace the list. |
+
+`list` shows the metadata definitions. Only an organization admin can create,
+update or delete a definition. `delete` refuses a definition that an item or a
+template uses, and the message names them.
+
+### `kairos templates`
+
+```
+kairos templates list [OPTIONS]
+kairos templates create --name <NAME> --slug <SLUG> [--content <TEXT>] [--field <FIELD>]... [OPTIONS]
+kairos templates update <TEMPLATE> [--name <NAME>] [--slug <SLUG>] [--content <TEXT>] [--field <FIELD>]... [OPTIONS]
+kairos templates delete <TEMPLATE> [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<TEMPLATE>` | slug or UUID | required on `update` and `delete` | The template. |
+| `--name <NAME>` | string | required on `create` | The name. |
+| `--slug <SLUG>` | string | required on `create` | The slug. |
+| `--content <TEXT>` | string | empty | The markdown of a new item of the template. |
+| `--field <FIELD>` | string | none | A metadata field: `SLUG`, `SLUG=DEFAULT`, `SLUG!` or `SLUG=DEFAULT!`. The `!` makes the field required. Repeat it. On `update`, the values replace the list. |
+
+`list` shows the templates. Only an organization admin can create, update or
+delete a template. Items from a deleted template keep their content and their
+metadata.
 
 ## Machine access
 

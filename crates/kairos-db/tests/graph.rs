@@ -726,6 +726,52 @@ fn relationship_graph_service() {
         "unlinked edge is gone from queries"
     );
 
+    // ---- informs task -> task (KAIROS-T-0444) -----------------------------------
+    // A research task informs the implementation. t3 already blocks t4; the
+    // informs edge is a second, separate edge between the same pair.
+    graph::link_items(&mut conn, t3.id, t4.id, RelationshipType::Informs, alice)
+        .expect("informs task -> task");
+    let t4_rels = graph::relationships_for(&mut conn, t4.id).expect("relationships_for t4");
+    assert!(
+        t4_rels
+            .incoming
+            .iter()
+            .any(|n| n.relationship == RelationshipType::Informs && n.id == t3.id),
+        "t4 is informed by t3: {:?}",
+        t4_rels.incoming
+    );
+    let t3_rels = graph::relationships_for(&mut conn, t3.id).expect("relationships_for t3");
+    assert!(
+        t3_rels
+            .outgoing
+            .iter()
+            .any(|n| n.relationship == RelationshipType::Informs && n.id == t4.id),
+        "t3 informs t4: {:?}",
+        t3_rels.outgoing
+    );
+    // informs is not cycle-checked: the reverse edge is allowed too.
+    graph::link_items(&mut conn, t4.id, t3.id, RelationshipType::Informs, alice)
+        .expect("informs task -> task, reverse");
+    // Only task -> task among workflow items.
+    assert_rule_rejected(
+        &mut conn,
+        i2.id,
+        t3.id,
+        RelationshipType::Informs,
+        Initiative,
+        Task,
+        alice,
+    );
+    assert_rule_rejected(
+        &mut conn,
+        t3.id,
+        i2.id,
+        RelationshipType::Informs,
+        Task,
+        Initiative,
+        alice,
+    );
+
     // ---- EXPLAIN: both lookup directions are index-backed (S-0004) -------------
     sql_query("SET enable_seqscan = off")
         .execute(&mut conn)

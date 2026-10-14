@@ -3,8 +3,8 @@ title: "MCP tools"
 ---
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-forty-nine tools. A drift gate in the test suite
-asserts that `tools/list` returns these forty-nine and no others. The same
+sixty-one tools. A drift gate in the test suite
+asserts that `tools/list` returns these sixty-one and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -210,14 +210,8 @@ not live.
 write it. They do not link a task to a repository: `set_repository` does
 that.
 
-No tool deletes a repository. No tool changes the owner team or the slug of a
-repository. A person does these:
-
-| Surface | Where |
-|---|---|
-| GUI | The page Admin → Repositories. |
-| CLI | `kairos repos update` and `kairos repos delete`. See [CLI](../cli/). |
-| REST | `PATCH /api/repositories/{slug}` and `DELETE /api/repositories/{slug}`. |
+`update_repository` also changes the slug and the owner team of a repository
+(KAIROS-T-0443). `delete_repository` removes a repository from the directory.
 
 ### `add_repository`
 
@@ -276,13 +270,16 @@ for the current owner team.
 | `default_branch_source` | string | no | no change | `forge` or `hand`. `forge` removes the branch set by hand: the builder follows the default branch of the forge again. `hand` keeps the current branch by hand. Do not send `forge` with `default_branch`. |
 | `repo_url` | string | no | no change | The new URL for a browser: `http` or `https`, with no user name and no password. |
 | `code_index_build` | string | no | no change | `on` or `off`: the builder of the code index of the server, for this repository. |
+| `slug` | string | no | no change | The new slug. |
+| `team` | string | no | no change | The new owner team. Slug or UUID. |
 
 The call must have one or more of `description`, `default_branch`,
-`default_branch_source`, `repo_url` and `code_index_build`. The tool has no `slug` argument and no `team` argument. Each
-checkout keeps the slug in `.claude/kairos.local.md`, and a new slug breaks
-that reference.
+`default_branch_source`, `repo_url`, `code_index_build`, `slug` and `team`.
+Each checkout keeps the slug in `.claude/kairos.local.md`, and a new slug
+breaks that reference: run `/kairos:bootstrap` in the checkout again.
 
-Requires membership of the owner team, or the organization admin role.
+Requires membership of the owner team, or the organization admin role. A new
+`team` also requires membership of that team.
 
 The result names the arguments that changed the repository:
 
@@ -308,6 +305,21 @@ values that the repository has. That call is a success and it writes nothing.
 ```text
 No change to repository fidius: it has these values already.
 ```
+
+### `delete_repository`
+
+Removes a repository from the directory, as `DELETE /api/repositories/{slug}`
+does.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `repository` | string | yes | — | Slug or UUID. |
+
+Requires the organization admin role or `manage_structure` on the
+organization.
+
+Refuses: `NOT_FOUND` for an unknown repository. `CONFLICT` while a live task
+links to the repository or a forge connection uses it.
 
 Refuses: `VALIDATION` with `details.field` for a new value that does not have
 [the form of its field](../glossary/#the-form-of-the-fields-of-a-repository).
@@ -1669,6 +1681,169 @@ details: {"board_id":"0193a1c2-0000-7000-8000-000000000003","or_capability":"man
 
 `FORBIDDEN` for `manage_structure` from a principal that is not an
 organization admin.
+
+### Team and board administration
+
+These tools do what the REST routes of teams and boards do (KAIROS-T-0443).
+Each tool calls the function of its route, so the gate is the same. A `user`
+is a user id, an email, a user name, or the name of a service account. A
+`board` or a `team` is a slug or a UUID. A `column` is a name or a UUID.
+
+### `update_team`
+
+Changes a team, as `PATCH /api/teams/{id}` does.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `team` | string | yes | — | Slug or UUID. |
+| `name` | string | no | no change | The new name. |
+| `slug` | string | no | no change | The new slug. |
+| `team_type` | string | no | no change | `stream_aligned`, `platform`, `enabling` or `complicated_subsystem`. |
+| `site_enabled` | boolean | no | no change | The published site of the team: on or off. |
+
+Requires the organization admin role or `manage_structure` on the
+organization. A value that the team has already changes nothing.
+
+### `remove_team_member`
+
+Takes a member off a team, as `DELETE /api/teams/{id}/members/{user_id}` does.
+The person loses the rights that the team gives. Grants on a board stay.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `team` | string | yes | — | Slug or UUID. |
+| `user` | string | yes | — | The member. A UUID also finds a person who left the organization. |
+
+Requires the organization admin role or `manage_structure` on the
+organization. Refuses: `NOT_FOUND` when the person is not a member of the
+team.
+
+### `set_board_capabilities`
+
+Sets the board capabilities of a person on a board, as
+`PATCH /api/boards/{id}/members/{user_id}` does.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `board` | string | yes | — | Slug or UUID. |
+| `user` | string | yes | — | A member of the organization. |
+| `capabilities` | array of strings | yes | — | The full set. It replaces the set of the person. An empty list revokes each capability. |
+
+A person with no capability on the board gets the set, as `grant_capability`
+gives it. Requires `administer_members` on the board, or `manage_structure`
+on the board or on the organization. Refuses: `VALIDATION` for a capability
+outside the vocabulary.
+
+### `add_column`
+
+Adds a column to a board, as `POST /api/boards/{id}/columns` does. The new
+column has no transition.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `board` | string | yes | — | Slug or UUID. |
+| `name` | string | yes | — | The name of the column. |
+| `position` | integer | no | the last | From 0, the first column. |
+
+Requires `configure_boards` on the board. Refuses: `DUPLICATE_COLUMN_NAME`.
+
+### `update_column`
+
+Changes a column, as `PATCH /api/boards/{id}/columns/{col_id}` does.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `board` | string | yes | — | Slug or UUID. |
+| `column` | string | yes | — | Name or UUID. |
+| `name` | string | no | no change | The new name. |
+| `position` | integer | no | no change | From 0, the first column. |
+| `is_done` | boolean | no | no change | A done column. |
+| `claims` | boolean | no | no change | A task in the column has a claim. |
+| `wip_limit` | integer | no | no change | The WIP limit, 1 or more. |
+| `no_wip_limit` | boolean | no | `false` | `true` removes the WIP limit. Not with `wip_limit`. |
+
+Requires `configure_boards` on the board.
+
+### `remove_column`
+
+Removes a column, as `DELETE /api/boards/{id}/columns/{col_id}` does. Its
+transitions stop.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `board` | string | yes | — | Slug or UUID. |
+| `column` | string | yes | — | Name or UUID. |
+
+Requires `configure_boards` on the board. Refuses: `COLUMN_NOT_EMPTY` while
+the column holds a live item.
+
+### `set_transition`
+
+Allows or stops a move between two columns, as
+`POST /api/boards/{id}/transitions` and
+`DELETE /api/boards/{id}/transitions/{transition_id}` do.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `board` | string | yes | — | Slug or UUID. |
+| `from` | string | yes | — | The column where the move starts. Name or UUID. |
+| `to` | string | yes | — | The column where the move ends. Name or UUID. |
+| `allowed` | boolean | yes | — | `true` adds the transition. `false` removes it. |
+
+Requires `configure_boards` on the board. Refuses: `DUPLICATE_TRANSITION`.
+
+### `save_metadata_definition`
+
+Makes or changes a metadata definition, as `POST` and
+`PATCH /api/metadata-definitions` do.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `definition` | string | no | none | The definition to change. Slug or UUID. With no value, the tool makes a definition. |
+| `name` | string | for a new one | no change | The name. |
+| `slug` | string | for a new one | no change | The slug. |
+| `field_type` | string | for a new one | — | `text`, `number`, `date`, `enum` or `boolean`. It does not change later. |
+| `enum_options` | array of strings | no | no change | The values of an enum, in their order. It replaces the list. |
+| `entity_types` | array of strings | no | no change | The entity types of the definition. Empty: each type. It replaces the list. |
+
+For organization admins only.
+
+### `delete_metadata_definition`
+
+Deletes a metadata definition, as `DELETE /api/metadata-definitions/{id}`
+does.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `reference` | string | yes | — | Slug or UUID. |
+
+For organization admins only. Refuses: `DEFINITION_IN_USE` while an item has a
+value or a template has the field. The message names them.
+
+### `save_template`
+
+Makes or changes a template, as `POST` and `PATCH /api/templates` do.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `template` | string | no | none | The template to change. Slug or UUID. With no value, the tool makes a template. |
+| `name` | string | for a new one | no change | The name. |
+| `slug` | string | for a new one | no change | The slug. |
+| `content` | string | no | no change | The markdown of a new item of the template. |
+| `metadata` | array | no | no change | The fields: `definition_slug`, optional `default_value`, `required`. It replaces the list. |
+
+For organization admins only.
+
+### `delete_template`
+
+Deletes a template, as `DELETE /api/templates/{id}` does. Items made from it
+keep their content and their metadata.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `reference` | string | yes | — | Slug or UUID. |
+
+For organization admins only.
 
 ## Your notifications
 

@@ -140,7 +140,7 @@ If the tool refuses, tell the user the message and do not try again with differe
 | `CONFLICT` | A repository has the slug already. Ask the user for a different `slug`. |
 | `VALIDATION` | The message names the value that is not correct. Correct it with the user. |
 
-`update_repository` changes the description, the default branch and the URL later. No tool changes the slug or the owner team, and no tool deletes a repository. A person does these on the GUI page Admin → Repositories, with `kairos repos update` and `kairos repos delete`, or with the REST API.
+`update_repository` changes the description, the default branch, the URL, the slug and the owner team later; a new slug breaks the slug in `.claude/kairos.local.md`, so run this bootstrap again after it. `delete_repository` removes a repository from the directory.
 
 ### Find the team board
 
