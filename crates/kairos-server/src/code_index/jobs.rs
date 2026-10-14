@@ -35,8 +35,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{
-    ACTIVE_RUN, BREAKER_TRIPPED, BuildCtx, BuildOutcome, CodeIndexService, Fetched, MIN_REBUILD,
-    OPTED_OUT, Pass, STOPPED, SummarizerSource, YIELDED, build_repository, fetch_head,
+    ACTIVE_RUN, BREAKER_TRIPPED, BuildCtx, BuildOutcome, CodeIndexService, Fetched, HAS_INDEX,
+    MIN_REBUILD, OPTED_OUT, Pass, STOPPED, SummarizerSource, YIELDED, build_repository, fetch_head,
     full_build_repository, notify_run, repositories_of, update_order,
 };
 use crate::blocking::BlockingTenantPool;
@@ -360,55 +360,93 @@ async fn enqueue_updates_with(
 }
 
 /// Add a first-build job for each repository that has no index
-/// (KAIROS-T-0318). The `run_after` of the job is the time at which the
-/// repository was registered. A note for each repository that got no job.
+/// (KAIROS-T-0318), with [`enqueue_first_build`]. A note for each
+/// repository that got no job.
 pub async fn enqueue_first_builds(
     blocking: &BlockingTenantPool,
     service: &Arc<CodeIndexService>,
     worker: &Worker,
 ) -> Vec<BuildOutcome> {
-    let max_tries = worker.settings().max_tries;
     let mut notes = Vec::new();
     for (tenant, repos) in repositories_of(blocking, Pass::FirstBuilds).await {
         for repo in repos {
-            if !repo.code_index_build_on() {
-                if service.note_changed(repo.id, OPTED_OUT) {
-                    tracing::info!(tenant = %tenant, repository = %repo.slug, note = OPTED_OUT, "code index first build not started");
-                }
-                notes.push(note_of(&tenant, &repo, "", OPTED_OUT.into()));
-                continue;
-            }
-            if let Some(breaker) = tripped(blocking, &tenant, repo.id).await {
-                let note = breaker_note(&breaker);
-                if service.note_changed(repo.id, &note) {
-                    tracing::info!(tenant = %tenant, repository = %repo.slug, %note, "code index first build not started");
-                }
-                notes.push(note_of(&tenant, &repo, "", note));
-                continue;
-            }
-            let added = {
-                let tenant = tenant.clone();
-                let repo = repo.clone();
-                let at = repo.created_at;
-                blocking
-                    .run(&tenant.clone(), move |conn| {
-                        enqueue_build(conn, &tenant, &repo, FIRST, None, Some(at), max_tries)
-                    })
-                    .await
-            };
-            match added {
-                Ok(Ok(job)) => {
-                    tracing::debug!(tenant = %tenant, repository = %repo.slug, job = %job.id, "code index first-build job added")
-                }
-                Ok(Err(open)) => notes.push(note_of(&tenant, &repo, "", open_note(&open))),
-                Err(e) => {
-                    tracing::warn!(tenant = %tenant, repository = %repo.slug, error = ?e, "code index first-build job not added")
-                }
+            if let Some(note) = enqueue_first_build(blocking, service, worker, &tenant, &repo).await
+            {
+                notes.push(note);
             }
         }
     }
     worker.wake();
     notes
+}
+
+/// Add the first-build job of `repo` of `tenant`, a repository that had no
+/// index when the sweep read the list. The `run_after` of the job is the
+/// time at which the repository was registered. The note of the
+/// repository when it got no job.
+pub async fn enqueue_first_build(
+    blocking: &BlockingTenantPool,
+    service: &Arc<CodeIndexService>,
+    worker: &Worker,
+    tenant: &str,
+    repo: &Repository,
+) -> Option<BuildOutcome> {
+    let max_tries = worker.settings().max_tries;
+    if !repo.code_index_build_on() {
+        if service.note_changed(repo.id, OPTED_OUT) {
+            tracing::info!(tenant = %tenant, repository = %repo.slug, note = OPTED_OUT, "code index first build not started");
+        }
+        return Some(note_of(tenant, repo, "", OPTED_OUT.into()));
+    }
+    if let Some(breaker) = tripped(blocking, tenant, repo.id).await {
+        let note = breaker_note(&breaker);
+        if service.note_changed(repo.id, &note) {
+            tracing::info!(tenant = %tenant, repository = %repo.slug, %note, "code index first build not started");
+        }
+        return Some(note_of(tenant, repo, "", note));
+    }
+    let added = {
+        let tenant_c = tenant.to_string();
+        let repo = repo.clone();
+        let at = repo.created_at;
+        blocking
+            .run(tenant, move |conn| {
+                // KAIROS-T-0450: the list that names the repository was read
+                // before this call, and the first build of another server
+                // can end in between: its job is done, so the dedupe key no
+                // longer blocks. Read the open job FIRST, then the index. A
+                // build stores its index before its job ends, so when no job
+                // is open here, the index of a build that ended is visible.
+                if let Some(open) = queue::open_by_key(conn, &job_key(&tenant_c, repo.id))
+                    .map_err(ApiError::internal)?
+                {
+                    return Ok(Err(Some(open)));
+                }
+                if !kairos_db::code_indexes::list(conn, repo.id)
+                    .map_err(ApiError::internal)?
+                    .is_empty()
+                {
+                    return Ok(Err(None));
+                }
+                Ok(
+                    enqueue_build(conn, &tenant_c, &repo, FIRST, None, Some(at), max_tries)?
+                        .map_err(Some),
+                )
+            })
+            .await
+    };
+    match added {
+        Ok(Ok(job)) => {
+            tracing::debug!(tenant = %tenant, repository = %repo.slug, job = %job.id, "code index first-build job added");
+            None
+        }
+        Ok(Err(Some(open))) => Some(note_of(tenant, repo, "", open_note(&open))),
+        Ok(Err(None)) => Some(note_of(tenant, repo, "", HAS_INDEX.into())),
+        Err(e) => {
+            tracing::warn!(tenant = %tenant, repository = %repo.slug, error = ?e, "code index first-build job not added");
+            None
+        }
+    }
 }
 
 /// End the `running` runs of each tenant that no open job names, when the

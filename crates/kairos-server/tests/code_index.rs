@@ -3215,6 +3215,98 @@ async fn enqueue_updates_of(
     kairos_server::code_index::enqueue_updates(&w.state.blocking, service, worker).await;
 }
 
+// KAIROS-T-0450: the sweep of a server reads the repositories with no
+// index, then adds a first build for each. When the first build of another
+// server ends between the read and the add, the dedupe key no longer
+// blocks: the add must see the index.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_first_build_is_not_added_again_after_the_first_job_ends() {
+    // Given a repository with no index, and 2 servers
+    const DB: &str = "kairos_code_index_t0450_first";
+    let w = World::new(DB).await;
+    let other = second_service(&w, &w.work().join("clones-2"));
+    let fake: Arc<dyn SummarizerSource> = Arc::new(FakeSummarizers);
+    let (one, one_out) = build_worker(
+        w.state.blocking.clone(),
+        &w.service,
+        Arc::clone(&fake),
+        quick_jobs(),
+    );
+    let (two, _) = build_worker(w.state.blocking.clone(), &other, fake, quick_jobs());
+
+    // And the sweep of server two read the list before the first build
+    // ended: the repository has no index
+    let listed = {
+        let mut conn = scratch_conn(DB);
+        assert_eq!(
+            kairos_db::code_indexes::unindexed_repositories(&mut conn).unwrap(),
+            vec![w.repo_id]
+        );
+        kairos_db::repositories::load(&mut conn, w.repo_id).unwrap()
+    };
+
+    // And server one added the first build
+    let notes =
+        kairos_server::code_index::enqueue_first_builds(&w.state.blocking, &w.service, &one).await;
+    assert!(notes.is_empty(), "{notes:?}");
+
+    // When server two adds its first build while the job is open
+    let note = kairos_server::code_index::enqueue_first_build(
+        &w.state.blocking,
+        &other,
+        &two,
+        "acme",
+        &listed,
+    )
+    .await
+    .and_then(|n| n.note)
+    .unwrap_or_default();
+
+    // Then it adds none
+    assert!(note.starts_with(ACTIVE_RUN), "{note}");
+
+    // When the first build ends on server one
+    let key = job_key("acme", w.repo_id);
+    let worker = tokio::spawn(Arc::clone(&one).run());
+    wait_for(
+        std::time::Duration::from_secs(60),
+        "the end of the first build",
+        || {
+            let key = key.clone();
+            async move {
+                kairos_db::jobs::open_by_key(&mut scratch_conn(DB), &key)
+                    .unwrap()
+                    .is_none()
+            }
+        },
+    )
+    .await;
+    worker.abort();
+    assert_eq!(reports(&one_out), 1, "{:?}", one_out.lock().unwrap());
+
+    // And server two adds its first build from the list it read before
+    let note = kairos_server::code_index::enqueue_first_build(
+        &w.state.blocking,
+        &other,
+        &two,
+        "acme",
+        &listed,
+    )
+    .await
+    .and_then(|n| n.note)
+    .unwrap_or_default();
+
+    // Then it adds none: the repository has an index
+    assert_eq!(note, kairos_server::code_index::HAS_INDEX);
+    let jobs = kairos_db::jobs::list(&mut scratch_conn(DB), "embedded_build").unwrap();
+    assert_eq!(jobs.len(), 1, "one first build: {jobs:?}");
+    assert_eq!(jobs[0].state, "done");
+    let runs = runs_of(&w).await;
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    assert_eq!(runs[0].trigger, "first");
+    assert_eq!(runs[0].outcome, "ok");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_requested_rebuild_is_not_started_twice() {
     // Given a repository with no index, and a request
