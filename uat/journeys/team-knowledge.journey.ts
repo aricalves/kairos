@@ -174,6 +174,77 @@ journey(
       return { can_read: true, write_controls_offered: 0 };
     });
 
+    // KAIROS-T-0434: an agent keeps the team page in order through MCP, as
+    // the onboarding skill does: it reads the tree, makes a folder and a
+    // page in it, edits the page, moves it, and archives both.
+    await step(alice, 'has her agent file a runbook in a new folder of the team page', async () => {
+      const mcp = await alice.mcp();
+      const tree = await mcp.call('team_pages', { team: TEAM });
+      expect(tree).toContain('[charter]');
+      const folderSlug = named('runbooks').toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, 60);
+      const api = await alice.api();
+      const team = await api.teamBySlug(TEAM);
+      const archive = async (path: string) => {
+        const pages = (await api.get(`/api/teams/${team.id}/pages`)) as any[];
+        const byPath = (p: string) => {
+          let parent: string | null = null;
+          let found: any;
+          for (const slug of p.split('/')) {
+            found = pages.find((x: any) => (x.parent_id ?? null) === parent && x.slug === slug);
+            if (!found) return undefined;
+            parent = found.id;
+          }
+          return found;
+        };
+        const node = byPath(path);
+        if (node) await api.delete(`/api/teams/${team.id}/pages/${node.id}`);
+      };
+      ledger.add({
+        kind: 'team-page',
+        label: `${TEAM}/${folderSlug}`,
+        delete: async () => {
+          await archive('restart-the-worker');
+          await archive(`${folderSlug}/restart-the-worker`);
+          await archive(folderSlug);
+        },
+      });
+      const created = await mcp.call('create_team_page', {
+        team: TEAM,
+        kind: 'folder',
+        title: 'Runbooks',
+        slug: folderSlug,
+      });
+      expect(created).toContain(`path ${folderSlug}`);
+      const page = await mcp.call('create_team_page', {
+        team: TEAM,
+        kind: 'page',
+        title: 'Restart the worker',
+        parent: folderSlug,
+        content: '# Restart the worker\n',
+      });
+      expect(page).toContain(`path ${folderSlug}/restart-the-worker`);
+      const read = await mcp.call('team_pages', { team: TEAM, page: `${folderSlug}/restart-the-worker` });
+      const version = Number(/- version: (\d+)/.exec(read)?.[1]);
+      const edited = await mcp.call('edit_team_page', {
+        team: TEAM,
+        page: `${folderSlug}/restart-the-worker`,
+        content: '# Restart the worker\n\n1. Drain the queue.\n2. Restart.\n',
+        version,
+      });
+      expect(edited).toContain(`version ${version + 1}`);
+      const moved = await mcp.call('move_team_page', {
+        team: TEAM,
+        page: `${folderSlug}/restart-the-worker`,
+        to_root: true,
+      });
+      expect(moved).toContain('path restart-the-worker');
+      await mcp.call('delete_team_page', { team: TEAM, page: 'restart-the-worker' });
+      await mcp.call('delete_team_page', { team: TEAM, page: folderSlug });
+      const after = await mcp.call('team_pages', { team: TEAM });
+      expect(after).not.toContain(folderSlug);
+      return { folder: folderSlug, edited_to_version: version + 1, archived: 2 };
+    });
+
     await step(bob, 'asks where he works, and the answer is his board', async () => {
       const mcp = await bob.mcp();
       const text = await mcp.call('my_boards');

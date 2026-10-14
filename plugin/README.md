@@ -6,7 +6,7 @@ repo root in `.claude-plugin/plugin.json`; layout per KAIROS-A-0014).
 ```
 plugin/
 ├── skills/
-│   ├── workflow/     # grill-initiative, to-initiative, decompose, grill-decomposition, triage, implement, ralph, ralph-initiative, cancel-ralph
+│   ├── workflow/     # grill-initiative, to-initiative, decompose, grill-decomposition, triage, onboard-team, implement, ralph, ralph-initiative, cancel-ralph
 │   ├── engineering/  # tdd, diagnosing-bugs, prototype, research, code-review, ...
 │   ├── review/       # architecture-review, diataxis-review
 │   └── meta/         # kairos (router), kairos-vocabulary, grill-me, grilling, handoff, writing-great-skills, bootstrap
