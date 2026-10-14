@@ -42,13 +42,13 @@ standards. It does not bring tasks to the team's board. A task on any team's
 board may link to any repository, which is argued in [repositories as
 execution scope](../repositories-as-execution-scope/).
 
-The upper levels work differently. Strategy, initiative and ADR boards are
-boards of the organisation, and no delivery team owns them. The asymmetry is
-intentional: at the delivery level the owner genuinely is a team, and the
-schema can say so; at the coordination and strategy levels the owner is a role
-— a coordinator, leadership — and roles in Kairos are expressed as capability
-grants rather than as entities. Putting a `team_id` on a strategy board would
-invent an organisational structure that most tenants do not have.
+The upper levels have teams too (KAIROS-A-0026). A strategy or initiative
+board has a team, as a delivery board does: the team that plans at that level.
+The team is often small, and at first it is empty. When a board is created
+without a team, Kairos makes one for it, `<level>-<board slug>`, with a charter
+and no members, and an administrator adds the people. The team gives the board
+a charter and a page tree, so the documents of the board have a place to live,
+like the documents of a delivery team.
 
 ADR boards are the exception at the upper level. A decision about how one team
 builds its own product is delivery work, and its owner is that team. An ADR
@@ -66,8 +66,8 @@ grant.
 
 ## The teams of an initiative or a strategy
 
-An initiative or a strategy is on a board of the organisation, so it has no
-owner team. It still has teams: the teams that do its work. Kairos reads them
+An initiative or a strategy is on a board whose team plans it, but other
+teams do its work. Those are the teams of the item. Kairos reads them
 from the work, and a person can add a team before the work exists.
 
 An initiative gets the team of the board of each live task below it. A
@@ -98,13 +98,18 @@ delivery board cannot lose its team: no operation clears the team of a board
 or moves a board to a different team. When a team is deleted, its delivery
 board and its ADR board are put away with it.
 
-A board of the organisation has no record in the team directory and no
+A strategy or initiative board has a team in the team directory too
+(KAIROS-T-0440). With no team in the create, Kairos makes one for the board,
+with no members. A member of that team edits and moves the items of the board
+with no grant. A grant on the board still makes a person a member of the
+board, with the same rights.
+
+The ADR board of the organisation has no record in the team directory and no
 `team_id`. Its team is the list of the members of the board. Admission is
-about being added to the board: a person joins the team of a strategy board
-when an administrator adds the person to that board, and leaves it when the
-administrator removes the person. The list is on the configuration page of the
-board, and `GET /api/boards/{id}/members` returns it to every member of the
-tenant.
+about being added to the board: a person joins it when an administrator adds
+the person to that board, and leaves it when the administrator removes the
+person. The list is on the configuration page of the board, and
+`GET /api/boards/{id}/members` returns it to every member of the tenant.
 
 The reason for the first form is what a delivery board decides. A task takes
 the team of its board, so a task on a board with no team has no team. It is in
@@ -112,10 +117,10 @@ no team's work, no team's rollup and no search by team. Any member of the
 tenant can also send a request to any delivery board. A request to a board
 with no team is a request to nobody.
 
-The reason for the second form is the asymmetry above. The people who decide
-strategy are a group, and a reader must be able to see who they are. But they
-are a group because they were admitted to the board, not because the
-organisation chart has a team of that name.
+The reason for the team of a strategy or initiative board is the same as for
+a delivery board: the people who plan at that level are a group, and a reader
+must be able to see who they are and read their charter. For the ADR board of
+the organisation, the group is the people admitted to the board.
 
 The rule applies when a board is created. Kairos does not change boards that
 exist. A delivery board that was created with no team before the rule stays as

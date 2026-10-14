@@ -230,7 +230,13 @@ fn team_implies(required: &str) -> bool {
 /// (an off-board item), the mirror uses [`team_implies`] only. The server
 /// stays the authority.
 fn team_implies_on_team_board(required: &str) -> bool {
-    team_implies(required) || required == "manage_adrs"
+    // KAIROS-T-0440: the team of a strategy or initiative board gets its
+    // `manage_<type>` too; only that board's items ask for it.
+    team_implies(required)
+        || matches!(
+            required,
+            "manage_adrs" | "manage_strategies" | "manage_initiatives"
+        )
 }
 
 /// The link from a board to its members panel (KAIROS-T-0412): the admin
@@ -3414,10 +3420,10 @@ mod tests {
             Some(EntityKind::Task),
         );
         assert!(on_team.transition && on_team.create && on_team.documents);
-        // A team-owned STRATEGY board: transition/docs implied, create is
-        // manage_strategies — not implied.
+        // A team-owned STRATEGY board (KAIROS-T-0440): the team also gets
+        // manage_strategies there, so create too.
         let strat = board_powers(&bob, "s", Some("t1"), Some(EntityKind::Strategy));
-        assert!(strat.transition && strat.documents && !strat.create);
+        assert!(strat.transition && strat.documents && strat.create);
         // Someone else's board: nothing.
         let other = board_powers(&bob, "web-delivery", Some("t2"), Some(EntityKind::Task));
         assert_eq!(other, BoardPowers::default());

@@ -397,42 +397,40 @@ fn the_only_delivery_board_of_a_team_is_not_deleted() {
     scratch.drop_database();
 }
 
-/// COLLIERY-T-0242.
+/// KAIROS-T-0440 (KAIROS-A-0026; it replaces COLLIERY-T-0242): a strategy or
+/// initiative board has a team: the one in the request, or its own empty
+/// team `<level>-<slug>`, with its charter and no members.
 #[test]
-fn a_board_of_the_organization_has_no_team_id() {
+fn a_strategy_or_initiative_board_has_a_team() {
     let mut scratch = Scratch::new("kairos_board_rules_t0242_test");
     let alice = scratch.alice;
     let conn = &mut scratch.conn;
 
     let platform = bare_team(conn, "Platform", "platform");
-    for (level, slug, name) in [
-        (BoardLevel::Strategy, "team-strategy", "strategy"),
-        (BoardLevel::Initiative, "team-initiatives", "initiative"),
-        // An ADR board can have a team (COLLIERY-T-3102, team_adr_boards.rs).
+    // A team has the slug that a board team would take.
+    bare_team(conn, "Taken", "initiative-roadmap");
+    for (level, slug, team_slug) in [
+        (
+            BoardLevel::Strategy,
+            "team-strategy",
+            "strategy-team-strategy",
+        ),
+        (BoardLevel::Initiative, "roadmap", "initiative-roadmap-2"),
     ] {
-        let err = create_board(
+        // With a team: the board has it, and the team keeps its one delivery
+        // board free.
+        let given = create_board(
             conn,
             level,
-            slug,
-            slug,
+            &format!("{slug} given"),
+            &format!("{slug}-given"),
             kairos_db::CodePrefix::FromSlug,
             Some(platform),
             Some(alice),
         )
-        .expect_err("a board of the organization with a team");
-        assert!(
-            matches!(err, BoardError::OrganizationBoardHasNoTeam(l) if l == level),
-            "{level}: {err}"
-        );
-        assert_eq!(
-            err.to_string(),
-            format!(
-                "Only a delivery board or an ADR board has a team. Do not send team_id for a \
-                 board of level {name}."
-            )
-        );
-        assert_eq!(boards_with_slug(conn, slug), 0, "{level}");
-        // With no team, the same create succeeds.
+        .unwrap_or_else(|e| panic!("a {level} board with a team: {e}"));
+        assert_eq!(given.team_id, Some(platform));
+        // With no team: its own empty team, with its charter.
         let board = create_board(
             conn,
             level,
@@ -443,7 +441,42 @@ fn a_board_of_the_organization_has_no_team_id() {
             Some(alice),
         )
         .unwrap_or_else(|e| panic!("a {level} board with no team: {e}"));
-        assert_eq!(board.team_id, None);
+        let team_id = board.team_id.expect("the board has a team");
+        let team: kairos_db::models::teams::Team = kairos_db::schema::teams::table
+            .find(team_id)
+            .select(kairos_db::models::teams::Team::as_select())
+            .first(conn)
+            .expect("the team of the board");
+        assert_eq!((team.slug.as_str(), team.name.as_str()), (team_slug, slug));
+        let members: i64 = kairos_db::schema::team_members::table
+            .filter(kairos_db::schema::team_members::team_id.eq(team_id))
+            .count()
+            .get_result(conn)
+            .expect("members");
+        assert_eq!(members, 0, "an admin adds people later");
+        let pages = kairos_db::team_pages::list_pages(conn, team_id).expect("pages");
+        assert!(
+            pages.iter().any(|p| p.slug == "charter" && p.is_protected),
+            "the team has its charter"
+        );
+        // A document that the board owns is in the tree of its team
+        // (KAIROS-T-0437).
+        let doc = kairos_db::items::create_document(
+            conn,
+            kairos_db::items::CreateDocument {
+                board_id: board.id,
+                title: "Plan",
+                content: Some(""),
+                template_id: None,
+            },
+            alice,
+        )
+        .expect("a document of the board");
+        let items = kairos_db::team_pages::team_tree_items(conn, team_id).expect("tree items");
+        assert!(
+            items.iter().any(|i| i.short_code == doc.short_code),
+            "{level}: the document is in the tree of the board's team"
+        );
     }
     // The team did not use its one delivery board.
     assert_eq!(live_delivery_boards(conn, platform), 0);
@@ -485,13 +518,15 @@ fn the_team_of_a_board_does_not_change() {
     check_board_team(&delivery, None).expect("no team_id");
     check_board_team(&delivery, Some(Some(platform))).expect("the same team");
     check_board_team(&strategy, None).expect("no team_id");
-    check_board_team(&strategy, Some(None)).expect("the same null");
+    // KAIROS-T-0440: a strategy board has its own team, which stays.
+    check_board_team(&strategy, Some(strategy.team_id)).expect("the same team");
 
     // A different team, and a null for a board that has a team.
     for (board, sent) in [
         (&delivery, Some(data)),
         (&delivery, None),
         (&strategy, Some(platform)),
+        (&strategy, None),
     ] {
         let err = check_board_team(board, Some(sent)).expect_err("a different team");
         match &err {
@@ -507,6 +542,74 @@ fn the_team_of_a_board_does_not_change() {
              the task to the board of that team."
         );
     }
+
+    scratch.drop_database();
+}
+
+/// KAIROS-T-0440: the migration gives each live strategy and initiative
+/// board with no team its own empty team, `<level>-<slug>` (a suffix when the
+/// slug is taken), with its charter. It runs twice with no change.
+#[test]
+fn the_migration_gives_each_strategy_and_initiative_board_a_team() {
+    use diesel::connection::SimpleConnection;
+    const UP: &str = include_str!(
+        "../migrations/tenant/2026-10-14-000900_strategy_initiative_board_teams/up.sql"
+    );
+    let mut scratch = Scratch::new("kairos_board_teams_migration_test");
+    let conn = &mut scratch.conn;
+
+    // Boards from before KAIROS-T-0440: no team.
+    let mut old_board = |slug: &str, level: BoardLevel| -> Uuid {
+        diesel::insert_into(kairos_db::schema::boards::table)
+            .values(NewBoard {
+                name: format!("{slug} board"),
+                slug: slug.into(),
+                board_level: level,
+                team_id: None,
+                code_prefix: format!("M{}", &Uuid::new_v4().simple().to_string()[..8])
+                    .to_uppercase(),
+            })
+            .returning(kairos_db::schema::boards::id)
+            .get_result(conn)
+            .expect("an old board")
+    };
+    let roadmap = old_board("roadmap", BoardLevel::Initiative);
+    let vision = old_board("vision", BoardLevel::Strategy);
+    bare_team(conn, "Taken", "initiative-roadmap");
+
+    conn.batch_execute(UP).expect("the up migration");
+    conn.batch_execute(UP).expect("the up migration runs twice");
+
+    for (board, slug, name) in [
+        (roadmap, "initiative-roadmap-2", "roadmap board"),
+        (vision, "strategy-vision", "vision board"),
+    ] {
+        let team_id: Option<Uuid> = kairos_db::schema::boards::table
+            .find(board)
+            .select(kairos_db::schema::boards::team_id)
+            .first(conn)
+            .expect("the board");
+        let team_id = team_id.expect("the board has a team");
+        let (team_slug, team_name): (String, String) = kairos_db::schema::teams::table
+            .find(team_id)
+            .select((
+                kairos_db::schema::teams::slug,
+                kairos_db::schema::teams::name,
+            ))
+            .first(conn)
+            .expect("the team");
+        assert_eq!((team_slug.as_str(), team_name.as_str()), (slug, name));
+        let pages = kairos_db::team_pages::list_pages(conn, team_id).expect("pages");
+        assert_eq!(pages.len(), 1, "the charter only");
+        assert!(pages[0].is_protected);
+    }
+    // One team for each board: the second run made none.
+    let board_teams: i64 = kairos_db::schema::teams::table
+        .filter(kairos_db::schema::teams::slug.like("initiative-roadmap%"))
+        .count()
+        .get_result(conn)
+        .expect("teams");
+    assert_eq!(board_teams, 2, "the taken one and the board's");
 
     scratch.drop_database();
 }

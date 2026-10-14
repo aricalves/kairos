@@ -391,11 +391,6 @@ pub fn map_config_error(e: BoardError) -> ApiError {
         e @ BoardError::DeliveryBoardNeedsTeam => {
             ApiError::validation(e.to_string()).with_details(json!({ "field": "team_id" }))
         }
-        // COLLIERY-T-0242: the mirror of the rule above. The caller sent a
-        // team for a board that has none.
-        e @ BoardError::OrganizationBoardHasNoTeam(_) => {
-            ApiError::validation(e.to_string()).with_details(json!({ "field": "team_id" }))
-        }
         // COLLIERY-T-0240: a rule of the data, so a 422 with its own code.
         // The details name the board that the team has.
         BoardError::TeamHasDeliveryBoard {

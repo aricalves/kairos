@@ -117,8 +117,9 @@ pub const GLOBS: &[&str] = &[GLOB_ALL, GLOB_MANAGE, GLOB_CONFIGURE, GLOB_TRANSIT
 /// ([`TEAM_ADR_BOARD_IMPLIED_CAPABILITIES`], COLLIERY-T-3108). On strategy
 /// and initiative boards, membership of the BOARD (any grant on it) gives
 /// the edit and the move of its items
-/// ([`STRATEGY_BOARD_MEMBER_CAPABILITIES`], KAIROS-T-0410); a team gives
-/// nothing there.
+/// ([`STRATEGY_BOARD_MEMBER_CAPABILITIES`], KAIROS-T-0410). Since
+/// KAIROS-T-0440 such a board has a team too, and the members of that team
+/// get the same ([`team_capabilities`]).
 pub const TEAM_IMPLIED_CAPABILITIES: &[&str] = &[MANAGE_TASKS, MANAGE_DOCUMENTS, TRANSITION_ITEMS];
 
 /// Does membership of the board's owning team satisfy `required` on its
@@ -146,6 +147,38 @@ pub const TEAM_ADR_BOARD_IMPLIED_CAPABILITIES: &[&str] = &[
 /// [`team_implies`].
 pub fn team_implies_on_adr_board(required: &str) -> bool {
     TEAM_ADR_BOARD_IMPLIED_CAPABILITIES.contains(&required)
+}
+
+/// The capabilities implied by membership of the team that owns a strategy
+/// board (KAIROS-T-0440, KAIROS-A-0026): the delivery set plus what board
+/// membership gives there ([`STRATEGY_BOARD_MEMBER_CAPABILITIES`]).
+pub const TEAM_STRATEGY_BOARD_IMPLIED_CAPABILITIES: &[&str] = &[
+    MANAGE_TASKS,
+    MANAGE_DOCUMENTS,
+    TRANSITION_ITEMS,
+    MANAGE_STRATEGIES,
+];
+
+/// As [`TEAM_STRATEGY_BOARD_IMPLIED_CAPABILITIES`], for the team that owns
+/// an initiative board.
+pub const TEAM_INITIATIVE_BOARD_IMPLIED_CAPABILITIES: &[&str] = &[
+    MANAGE_TASKS,
+    MANAGE_DOCUMENTS,
+    TRANSITION_ITEMS,
+    MANAGE_INITIATIVES,
+];
+
+/// The capabilities that membership of the owning team gives on a board of
+/// the level `board_level` (the text of `boards.board_level`): the delivery
+/// set, widened on an ADR board (`manage_adrs`), a strategy board
+/// (`manage_strategies`) and an initiative board (`manage_initiatives`).
+pub fn team_capabilities(board_level: &str) -> &'static [&'static str] {
+    match board_level {
+        "adr" => TEAM_ADR_BOARD_IMPLIED_CAPABILITIES,
+        "strategy" => TEAM_STRATEGY_BOARD_IMPLIED_CAPABILITIES,
+        "initiative" => TEAM_INITIATIVE_BOARD_IMPLIED_CAPABILITIES,
+        _ => TEAM_IMPLIED_CAPABILITIES,
+    }
 }
 
 /// The capabilities implied by MEMBERSHIP of a strategy board
@@ -746,6 +779,27 @@ mod tests {
     /// COLLIERY-T-3108: on the ADR board of the team, membership also
     /// implies `manage_adrs` — and still nothing configuration- or
     /// membership-shaped.
+    /// KAIROS-T-0440: the team of a strategy or initiative board gets what
+    /// board membership gives there, and nothing configuration- or
+    /// membership-shaped.
+    #[test]
+    fn team_capabilities_follow_the_level() {
+        assert_eq!(team_capabilities("delivery"), TEAM_IMPLIED_CAPABILITIES);
+        assert!(team_capabilities("adr").contains(&MANAGE_ADRS));
+        for level in ["strategy", "initiative"] {
+            for member in board_member_capabilities(level) {
+                assert!(
+                    team_capabilities(level).contains(member),
+                    "{level}: {member}"
+                );
+            }
+            assert!(!team_capabilities(level).contains(&CONFIGURE_BOARDS));
+            assert!(!team_capabilities(level).contains(&ADMINISTER_MEMBERS));
+        }
+        assert!(!team_capabilities("strategy").contains(&MANAGE_INITIATIVES));
+        assert!(!team_capabilities("initiative").contains(&MANAGE_STRATEGIES));
+    }
+
     #[test]
     fn team_implies_on_adr_board_adds_manage_adrs_only() {
         for implied in TEAM_IMPLIED_CAPABILITIES {

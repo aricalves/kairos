@@ -882,13 +882,18 @@ async fn scim_provisioning_against_live_stack() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["totalResults"], 1, "only kairos-admins so far: {body}");
-    assert_eq!(body["Resources"][0]["displayName"], "kairos-admins");
-    assert_eq!(body["Resources"][0]["id"], org_id.to_string());
-    assert_eq!(
-        body["Resources"][0]["members"][0]["value"],
-        svc_id.to_string()
-    );
+    // kairos-admins, and the teams of the strategy and the initiative board
+    // of the tenant (KAIROS-T-0440), which have no members yet.
+    assert_eq!(body["totalResults"], 3, "{body}");
+    let admins = body["Resources"]
+        .as_array()
+        .expect("resources")
+        .iter()
+        .find(|g| g["displayName"] == "kairos-admins")
+        .expect("the kairos-admins group")
+        .clone();
+    assert_eq!(admins["id"], org_id.to_string());
+    assert_eq!(admins["members"][0]["value"], svc_id.to_string());
     let admins_group = format!("/scim/v2/Groups/{org_id}");
 
     // Create a team-mapped group with dave as an initial member.

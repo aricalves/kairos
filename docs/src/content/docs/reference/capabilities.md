@@ -174,6 +174,10 @@ check rather than by a stored row:
   member of a different team cannot. The ADR board of the organization has no
   team, so `manage_adrs` on it needs a grant. The MCP tools `whoami` and
   `my_boards` show the capabilities that each team board gives.
+- **On a strategy or initiative board, the set also has `manage_strategies` or
+  `manage_initiatives`.** Each such board has a team. A member of that team can
+  edit and move the items of the board with no grant. A person with a grant on
+  the board can do the same. Archive and restore still need a grant.
 - **On a strategy or initiative board, a grant makes a person a member.** A
   person with one or more grants on the board is a member of it. A member
   holds these capabilities on the board with no further grant:

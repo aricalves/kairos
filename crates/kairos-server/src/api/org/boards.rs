@@ -429,9 +429,10 @@ pub(crate) fn archive_completed_tasks(
 /// check is in `kairos_db::boards::create_board`, which every entry point
 /// shares.
 ///
-/// A strategy or initiative board has no `team_id`. Its team is the list
-/// of its members (`GET /api/boards/{id}/members`). A request for such a
-/// board with a `team_id` is a 422 (COLLIERY-T-0242).
+/// A strategy or initiative board has a team (KAIROS-T-0440,
+/// KAIROS-A-0026). It is the `team_id` of the request. With no `team_id`,
+/// Kairos makes an empty team `<level>-<slug>` with its charter. An admin
+/// adds people to it. Board members and grants still work.
 ///
 /// An ADR board can have a team (COLLIERY-T-3102). That board holds the
 /// delivery ADRs of the team. Its `code_prefix` must be the

@@ -407,13 +407,14 @@ async fn the_only_delivery_board_of_a_team_is_not_deleted_against_live_stack() {
     stack.shutdown();
 }
 
-/// COLLIERY-T-0242.
+/// KAIROS-T-0440 (KAIROS-A-0026; it replaces COLLIERY-T-0242): a strategy or
+/// initiative board has a team: the one in the request, or its own empty
+/// team `<level>-<slug>`.
 #[tokio::test]
-async fn a_board_of_the_organization_has_no_team_id_against_live_stack() {
+async fn a_strategy_or_initiative_board_has_a_team_against_live_stack() {
     let mut stack = Stack::boot("kairos_board_rules_t0242_server_test").await;
 
     let data = seed_team(&mut stack.conn, "Data", "data");
-    // An ADR board can have a team (COLLIERY-T-3102, team_adr_boards.rs).
     for level in ["strategy", "initiative"] {
         let slug = format!("team-{level}");
         let (status, body) = stack
@@ -429,25 +430,17 @@ async fn a_board_of_the_organization_has_no_team_id_against_live_stack() {
                 })),
             )
             .await;
-        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{level}: {body}");
-        assert_eq!(error_code(&body), "VALIDATION", "{level}");
-        assert_eq!(
-            message(&body),
-            format!(
-                "Only a delivery board or an ADR board has a team. Do not send team_id for a \
-                 board of level {level}."
-            )
-        );
-        assert_eq!(body["error"]["details"]["field"], "team_id", "{body}");
-        assert_eq!(boards_with_slug(&mut stack.conn, &slug), 0, "{level}");
+        assert_eq!(status, StatusCode::CREATED, "{level}: {body}");
+        assert_eq!(body["team_id"], data.to_string(), "{level}: {body}");
 
-        // With no team, and with a null, the same create succeeds.
+        // With no team (absent or null), the board gets its own team.
+        let slug = format!("own-{level}");
         let (status, body) = stack
             .send(
                 Method::POST,
                 "/api/boards",
                 Some(json!({
-                    "name": "With no team",
+                    "name": "Its own team",
                     "slug": slug,
                     "board_level": level,
                     "team_id": null,
@@ -456,7 +449,13 @@ async fn a_board_of_the_organization_has_no_team_id_against_live_stack() {
             )
             .await;
         assert_eq!(status, StatusCode::CREATED, "{level}: {body}");
-        assert_eq!(body["team_id"], Value::Null, "{level}: {body}");
+        let team_id = body["team_id"].as_str().expect("a team").to_string();
+        let (status, team) = stack
+            .send(Method::GET, &format!("/api/teams/{team_id}"), None)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{team}");
+        assert_eq!(team["slug"], format!("{level}-{slug}"), "{team}");
+        assert_eq!(team["name"], "Its own team", "{team}");
     }
 
     stack.shutdown();
@@ -564,18 +563,25 @@ async fn the_team_of_a_board_does_not_change_against_live_stack() {
     }
     assert!(err.to_string().contains("move the task"), "{err}");
 
-    // --- a board of the organization: a null is the team that it has
+    // --- a strategy board (KAIROS-T-0440): it has its own team, which stays;
+    // a null is a different team now.
     let strategy = stack.board_of_level("strategy").await;
     let uri = format!("/api/boards/{strategy}");
+    let own_team = board_row(&mut stack.conn, &strategy).1;
+    assert!(own_team.is_some(), "the strategy board has a team");
     let (status, answer) = stack
         .send(
             Method::PATCH,
             &uri,
-            Some(json!({ "name": "Strategy 2027", "team_id": null })),
+            Some(json!({ "name": "Strategy 2027", "team_id": own_team.map(|t| t.to_string()) })),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{answer}");
-    assert_eq!(answer["team_id"], Value::Null);
+    let (status, answer) = stack
+        .send(Method::PATCH, &uri, Some(json!({ "team_id": null })))
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
+    assert_eq!(error_code(&answer), "BOARD_TEAM_IS_FIXED");
     let (status, answer) = stack
         .send(
             Method::PATCH,
@@ -587,7 +593,7 @@ async fn the_team_of_a_board_does_not_change_against_live_stack() {
     assert_eq!(error_code(&answer), "BOARD_TEAM_IS_FIXED");
     assert_eq!(
         board_row(&mut stack.conn, &strategy),
-        ("Strategy 2027".to_string(), None, true)
+        ("Strategy 2027".to_string(), own_team, true)
     );
 
     stack.shutdown();

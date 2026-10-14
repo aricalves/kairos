@@ -830,9 +830,10 @@ pub struct CreateBoardParams {
     pub slug: String,
     /// strategy | initiative | delivery | adr.
     pub board_level: String,
-    /// The owner team (slug or UUID). A delivery board must have one; a
-    /// strategy or an initiative board must not. An ADR board with a team
-    /// is the ADR board of that team.
+    /// The owner team (slug or UUID). A delivery board must have one. A
+    /// strategy or initiative board with no team gets its own empty team,
+    /// `<level>-<slug>`. An ADR board with a team is the ADR board of that
+    /// team.
     pub team: Option<String>,
     /// The short-code prefix of the board: a capital letter, then 1 to 9
     /// capital letters or digits. The ADR board of a team takes the prefix
@@ -6506,13 +6507,10 @@ fn map_link_error(e: GraphError) -> ApiError {
 
 /// The capabilities that membership of the owning team implies on a board
 /// of `level` (KAIROS-T-0072; the ADR board of a team adds `manage_adrs`,
-/// COLLIERY-T-3108). The vocabulary is `kairos_core::abac`.
+/// COLLIERY-T-3108; a strategy or initiative board adds its `manage_<type>`,
+/// KAIROS-T-0440). The vocabulary is `kairos_core::abac`.
 fn team_capabilities(level: BoardLevel) -> &'static [&'static str] {
-    if level == BoardLevel::Adr {
-        kairos_core::abac::TEAM_ADR_BOARD_IMPLIED_CAPABILITIES
-    } else {
-        kairos_core::abac::TEAM_IMPLIED_CAPABILITIES
-    }
+    kairos_core::abac::team_capabilities(level.as_str())
 }
 
 /// The capabilities that membership of a board of `level` gives with no

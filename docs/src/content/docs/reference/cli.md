@@ -788,7 +788,7 @@ kairos boards create --name <NAME> --slug <SLUG> --level <LEVEL> --code-prefix <
 | `--slug <SLUG>` | string | required | Board slug. It must match `^[a-z][a-z0-9_-]{1,62}$`. |
 | `--level <LEVEL>` | `strategy` \| `initiative` \| `delivery` \| `adr` | required | The level of the board. |
 | `--code-prefix <PREFIX>` | string | required | The short-code prefix of the board. A capital letter, then 1 to 9 capital letters or digits. The ADR board of a team takes the prefix of the team. |
-| `--team <TEAM>` | slug or UUID | none | The owner team. A delivery board needs a team. An ADR board with a team is the ADR board of that team. |
+| `--team <TEAM>` | slug or UUID | none | The owner team. A delivery board needs a team. An ADR board with a team is the ADR board of that team. A strategy or initiative board with no team gets its own empty team. |
 
 `POST /api/boards`. The board gets the default columns and transitions of its
 level. You need the organization admin role or `manage_structure` on the

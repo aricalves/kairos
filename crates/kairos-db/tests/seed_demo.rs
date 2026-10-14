@@ -143,7 +143,9 @@ fn seed_demo_fixture_lifecycle() {
 
     // The documented inventory.
     let expectations = [
-        ("teams", "SELECT COUNT(*) AS count FROM org_demo.teams", 2),
+        // KAIROS-T-0440: platform and web, and the teams of the strategy
+        // and the initiative board.
+        ("teams", "SELECT COUNT(*) AS count FROM org_demo.teams", 4),
         (
             "boards (3 provision + 2 delivery)",
             "SELECT COUNT(*) AS count FROM org_demo.boards",
@@ -270,17 +272,18 @@ fn seed_demo_fixture_lifecycle() {
             2,
         ),
         (
-            "team pages (2 charters + platform's two folders and how-to page)",
+            "team pages (4 charters + platform's two folders and how-to page)",
             "SELECT COUNT(*) AS count FROM org_demo.team_pages \
              WHERE deleted_at IS NULL",
-            5,
+            7,
         ),
         (
-            "charter content saves wrote history (baseline + v2, both teams)",
+            "charter content saves wrote history (baseline + v2, both teams; \
+             a baseline for each board team)",
             "SELECT COUNT(*) AS count FROM org_demo.team_page_history h \
              JOIN org_demo.team_pages p ON p.id = h.page_id \
              WHERE p.slug = 'charter'",
-            4,
+            6,
         ),
         (
             "team announcements (platform pinned + web)",
@@ -395,7 +398,9 @@ fn seed_demo_fixture_lifecycle() {
     assert_eq!(
         report.dropped,
         Some(kairos_db::DroppedDemo {
-            teams: 2,
+            // Platform and web, and the teams of the strategy and the
+            // initiative board (KAIROS-T-0440).
+            teams: 4,
             boards: seeded_boards + 1,
             items: seeded_items,
         })

@@ -307,22 +307,22 @@ fn a_team_has_one_adr_board_with_the_prefix_of_the_team() {
     .expect("the ADR board of crt");
     assert_eq!(crt_adrs.code_prefix, "CRT");
 
-    // --- a strategy or initiative board still has no team
-    for level in [BoardLevel::Strategy, BoardLevel::Initiative] {
-        let err = create_board(
+    // --- a strategy or initiative board can have a team (KAIROS-T-0440)
+    for (level, slug, prefix) in [
+        (BoardLevel::Strategy, "team-strategy", "TEAMS"),
+        (BoardLevel::Initiative, "team-initiatives", "TEAMI"),
+    ] {
+        let board = create_board(
             conn,
             level,
             "Team board",
-            "team-board",
-            CodePrefix::Given("TEAMB"),
+            slug,
+            CodePrefix::Given(prefix),
             Some(crt),
             Some(user),
         )
-        .expect_err("a team for a board of the organization");
-        assert!(
-            matches!(err, BoardError::OrganizationBoardHasNoTeam(l) if l == level),
-            "{err}"
-        );
+        .expect("a team for a strategy or initiative board");
+        assert_eq!(board.team_id, Some(crt));
     }
 
     // --- the delete of a team removes its delivery board and its ADR board

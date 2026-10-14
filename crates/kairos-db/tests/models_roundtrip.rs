@@ -590,10 +590,15 @@ async fn pool_isolation_interleaved() {
             "round {round}: beta search_path"
         );
 
-        let alpha_rows = team_names(&mut alpha).await;
-        let beta_rows = team_names(&mut beta).await;
+        // KAIROS-T-0440: provisioning gives the strategy and initiative
+        // boards their own teams; the check is about the teams of the test.
+        let mine = |names: Vec<String>| -> Vec<String> {
+            names.into_iter().filter(|n| n.ends_with("-team")).collect()
+        };
+        let alpha_rows = mine(team_names(&mut alpha).await);
+        let beta_rows = mine(team_names(&mut beta).await);
         // Query alpha again AFTER beta ran on the pool, same checkouts.
-        let alpha_again = team_names(&mut alpha).await;
+        let alpha_again = mine(team_names(&mut alpha).await);
 
         assert_eq!(alpha_rows, ["alpha-team"], "round {round}: alpha leakage");
         assert_eq!(beta_rows, ["beta-team"], "round {round}: beta leakage");
