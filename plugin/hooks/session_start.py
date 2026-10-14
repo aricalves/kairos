@@ -25,6 +25,8 @@ Not configured (no kairos.local.md) -> silent exit 0. Python stdlib only.
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 import urllib.request
 
@@ -118,7 +120,51 @@ def live_state_hint(values):
     )
 
 
-def build_context(values, status):
+def server_version(url):
+    """The version of the server (`GET /version`, open), or None."""
+    try:
+        with urllib.request.urlopen(url + "/version", timeout=3) as response:
+            return json.load(response).get("version")
+    except Exception:
+        return None
+
+
+def cli_version():
+    """The version of the `kairos` CLI on PATH, or None."""
+    binary = shutil.which("kairos")
+    if not binary:
+        return None
+    try:
+        out = subprocess.run(
+            [binary, "--version"], capture_output=True, text=True, timeout=3
+        ).stdout
+    except Exception:
+        return None
+    parts = out.split()
+    return parts[-1] if parts else None
+
+
+def version_tuple(version):
+    parts = []
+    for part in version.lstrip("v").replace("-", ".").split(".")[:3]:
+        parts.append(int(part) if part.isdigit() else 0)
+    return tuple(parts)
+
+
+def cli_note(cli, server):
+    """One line when the CLI is older than the server (KAIROS-T-0432), else
+    None (pure; testable)."""
+    if not cli or not server:
+        return None
+    if version_tuple(cli) >= version_tuple(server):
+        return None
+    return (
+        f"- cli: the kairos CLI is {cli} and the server is {server}. "
+        "Tell the user; `kairos self-update` installs the version of the server."
+    )
+
+
+def build_context(values, status, note=None):
     """The full additionalContext text (pure; testable)."""
     lines = [
         "Kairos wiring for this repo (.claude/kairos.local.md; "
@@ -127,6 +173,8 @@ def build_context(values, status):
     for key in FRONTMATTER_KEYS:
         lines.append(f"- {key}: {values.get(key) or '(not set)'}")
     lines.append(f"- status: {status}")
+    if note:
+        lines.append(note)
     if "NOT reachable" not in status and values.get("deployment_url"):
         lines.append(live_state_hint(values))
     return "\n".join(lines)
@@ -142,12 +190,15 @@ def main():
     values = read_frontmatter(config_path)
     deployment = values.get("deployment_url", "")
     status = probe(deployment) if deployment else "no deployment_url configured"
+    note = None
+    if deployment and "NOT reachable" not in status:
+        note = cli_note(cli_version(), server_version(deployment))
 
     json.dump(
         {
             "hookSpecificOutput": {
                 "hookEventName": "SessionStart",
-                "additionalContext": build_context(values, status),
+                "additionalContext": build_context(values, status, note),
             }
         },
         sys.stdout,

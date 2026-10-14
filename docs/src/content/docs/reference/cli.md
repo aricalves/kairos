@@ -31,6 +31,7 @@ Command groups, each detailed below:
 | Organization | `orgs`, `members`, `teams`, `streams`, `repos`, `grants`, `boards create` |
 | Machine access | `service-accounts`, `keys` |
 | Deployment administration | `admin` |
+| The CLI itself | `self-update` |
 
 ## Exit codes
 
@@ -1515,6 +1516,42 @@ kairos admin tenants delete <SLUG> --confirm [OPTIONS]
 
 Drops the tenant's organization and schema. Destructive and unrecoverable.
 
+## The CLI itself
+
+### `kairos self-update`
+
+```
+kairos self-update [--url <URL>] [--version <VERSION> | --latest | --check]
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--url <URL>` | string | `KAIROS_URL`, then the only cached deployment | The deployment whose version to install. |
+| `--version <VERSION>` | string | the version of the server | Install this version (e.g. `0.12.0`). |
+| `--latest` | flag | off | Install the latest release on GitHub. |
+| `--check` | flag | off | Print the version of the CLI and of the server, and change nothing. |
+
+Installs the version of the server in place of the running binary. The server
+tells its version at `GET /version` (open), with the links of the tarball of
+the CLI and its `.sha256` for each platform (`KAIROS_CLI_DOWNLOAD_URL` on the
+server, by default the GitHub releases). The CLI downloads the tarball of its
+platform, `kairos-<version>-<target>.tar.gz`, checks it against the `.sha256`, and writes the new binary to a new
+file next to the old one. It keeps the old binary as `kairos.bak` and renames
+the new file over the old path. A failed download or a bad checksum changes
+nothing. With `--version` or `--latest`, the CLI takes the tarball from the
+GitHub releases; `KAIROS_RELEASES_URL` replaces that URL, for a mirror.
+
+A server older than this command does not tell its version: name one with
+`--version`, or use `--latest`.
+
+**The daily check.** Before a command (not `login`, `logout`, `index` or
+`self-update`), the CLI asks the server for its version once a day for each
+deployment, with a 2 second limit. When the server is newer, it prints one
+line on stderr that names `kairos self-update`. With `KAIROS_AUTO_UPDATE=1`
+the CLI updates itself instead of printing the line. The check keeps its
+state in `version-check.json` in the config directory. A server that does not
+answer counts as a check, and the command goes on.
+
 ## Operator subcommands (`kairos-server`)
 
 These are not `kairos` commands. They are subcommands of the **server binary**, run
@@ -1608,6 +1645,7 @@ plaintext password never has to be written into a manifest.
 |---|---|---|
 | config directory | `0700` | Resolved from `KAIROS_CONFIG_DIR`, else `$XDG_CONFIG_HOME/kairos`, else `$HOME/.config/kairos`. |
 | `credentials.json` inside it | `0600` | The credential cache, keyed by normalized deployment URL. Holds issuer tokens and local sessions. |
+| `version-check.json` inside it | default | The last daily version check: the deployment, the time and the version of the server. |
 
 [Configuration](../configuration/#cli-configuration) is the canonical entry for
 the resolution order, the file's full shape, and the refresh behaviour.

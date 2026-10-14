@@ -165,6 +165,7 @@ A third party defines the inputs of these routes, so the rule does not apply:
 | `POST /api/auth/token` | The OAuth standard |
 | `/mcp`, `/.well-known/oauth-protected-resource` | The MCP transport and RFC 9728. The arguments of a tool have the rule: see below |
 | `/healthz`, `/readyz`, `/metrics` | The probe of the platform that runs the server |
+| `/version` | The CLI, which compares the version of the server with its own |
 | Each path of the GUI, and its files | The browser. The GUI reads the query of its own pages |
 
 Each MCP tool has the same rule for its arguments. See
