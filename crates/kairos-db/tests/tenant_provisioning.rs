@@ -120,6 +120,7 @@ const EXPECTED_TABLES: [&str; 59] = [
     "team_delivery_streams",
     "team_members",
     "team_page_history",
+    "team_page_placements",
     "team_pages",
     "teams",
     "template_metadata",

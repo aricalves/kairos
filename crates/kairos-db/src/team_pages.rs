@@ -100,6 +100,10 @@ pub enum TeamPageError {
     /// The page is protected (the Charter): rename/move/delete refused.
     #[error("The page {0} is the Charter. You cannot change its slug, move it, or delete it.")]
     ProtectedPage(Uuid),
+    /// The item is not a document or an ADR that a board of the team owns
+    /// (KAIROS-T-0437).
+    #[error("The item {0} is not a document or an ADR of this team.")]
+    NotTeamItem(Uuid),
     /// A restore of a page that is not archived (KAIROS-T-0439).
     #[error("The team page {0} is not archived. You can restore only an archived page.")]
     NotArchived(Uuid),
@@ -578,4 +582,117 @@ pub fn list_announcements(
         .order((dsl::pinned.desc(), dsl::created_at.desc()))
         .select(TeamAnnouncement::as_select())
         .load(conn)
+}
+
+// ---------------------------------------------------------------------------
+// Items in the tree (KAIROS-T-0437)
+// ---------------------------------------------------------------------------
+
+/// The items of a team that are part of its tree: each live document and
+/// ADR whose owner board is a live board of the team. The SQL is shared by
+/// [`team_tree_items`] and the check of [`place_item`].
+const TEAM_ITEMS_SQL: &str = "\
+    SELECT d.id, d.short_code, 'document'::text AS entity_type, d.title, \
+        d.lifecycle::text AS status \
+    FROM documents d \
+    JOIN boards b ON b.id = d.board_id AND b.deleted_at IS NULL AND b.team_id = $1 \
+    WHERE d.deleted_at IS NULL \
+    UNION ALL \
+    SELECT a.id, a.short_code, 'adr'::text AS entity_type, a.title, \
+        COALESCE(c.name, '') AS status \
+    FROM adrs a \
+    JOIN boards b ON b.id = a.board_id AND b.deleted_at IS NULL AND b.team_id = $1 \
+    LEFT JOIN board_columns c ON c.id = a.column_id \
+    WHERE a.deleted_at IS NULL";
+
+/// One document or ADR in the tree of a team.
+#[derive(Debug, Clone, PartialEq, Eq, QueryableByName)]
+pub struct TreeItem {
+    #[diesel(sql_type = diesel::sql_types::Uuid)]
+    pub item_id: Uuid,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub short_code: String,
+    /// `document` or `adr`.
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub entity_type: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub title: String,
+    /// The lifecycle of a document, or the column of an ADR: the board
+    /// shows where the item is; the tree shows where it lives.
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub status: String,
+    /// Its folder, when it is placed in a live folder; `None` is the root.
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Uuid>)]
+    pub parent_id: Option<Uuid>,
+    /// Its position among its siblings; `None` when nobody placed it (it
+    /// shows at the end of the root).
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Integer>)]
+    pub position: Option<i32>,
+}
+
+/// The documents and ADRs of a team, each with its place in the tree
+/// (KAIROS-T-0437). An item that nobody placed, or whose folder is archived,
+/// is at the root.
+pub fn team_tree_items(
+    conn: &mut PgConnection,
+    team_id: Uuid,
+) -> Result<Vec<TreeItem>, DieselError> {
+    diesel::sql_query(format!(
+        "SELECT x.id AS item_id, x.short_code, x.entity_type, x.title, x.status, \
+             CASE WHEN f.id IS NOT NULL THEN p.parent_id END AS parent_id, \
+             p.position \
+         FROM ({TEAM_ITEMS_SQL}) x \
+         LEFT JOIN team_page_placements p ON p.item_id = x.id AND p.team_id = $1 \
+         LEFT JOIN team_pages f ON f.id = p.parent_id AND f.deleted_at IS NULL \
+         ORDER BY x.short_code"
+    ))
+    .bind::<diesel::sql_types::Uuid, _>(team_id)
+    .load(conn)
+}
+
+/// Put a document or an ADR of the team in a folder (`None`: the root) at a
+/// position (KAIROS-T-0437). An item has one place: a second call moves it.
+/// Refused: an item that is not the team's (`NotTeamItem`), a parent that
+/// is not a live folder of the team (`BadParent`).
+pub fn place_item(
+    conn: &mut PgConnection,
+    team_id: Uuid,
+    item_id: Uuid,
+    parent_id: Option<Uuid>,
+    position: i32,
+    actor: Uuid,
+) -> Result<(), TeamPageError> {
+    conn.transaction::<_, TeamPageError, _>(|conn| {
+        #[derive(QueryableByName)]
+        struct Found {
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            n: i64,
+        }
+        let found: Found = diesel::sql_query(format!(
+            "SELECT count(*) AS n FROM ({TEAM_ITEMS_SQL}) x WHERE x.id = $2"
+        ))
+        .bind::<diesel::sql_types::Uuid, _>(team_id)
+        .bind::<diesel::sql_types::Uuid, _>(item_id)
+        .get_result(conn)?;
+        if found.n == 0 {
+            return Err(TeamPageError::NotTeamItem(item_id));
+        }
+        if let Some(parent) = parent_id {
+            check_parent(conn, team_id, parent)?;
+        }
+        diesel::sql_query(
+            "INSERT INTO team_page_placements (item_id, team_id, parent_id, position, placed_by) \
+             VALUES ($1, $2, $3, $4, $5) \
+             ON CONFLICT (item_id) DO UPDATE SET team_id = EXCLUDED.team_id, \
+                 parent_id = EXCLUDED.parent_id, position = EXCLUDED.position, \
+                 placed_by = EXCLUDED.placed_by, updated_at = now()",
+        )
+        .bind::<diesel::sql_types::Uuid, _>(item_id)
+        .bind::<diesel::sql_types::Uuid, _>(team_id)
+        .bind::<diesel::sql_types::Nullable<diesel::sql_types::Uuid>, _>(parent_id)
+        .bind::<diesel::sql_types::Integer, _>(position)
+        .bind::<diesel::sql_types::Uuid, _>(actor)
+        .execute(conn)?;
+        Ok(())
+    })
 }

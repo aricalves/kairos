@@ -648,6 +648,51 @@ async fn an_admin_agent_sets_up_a_team_with_manage_structure() {
         text.contains("restart-the-worker") && !text.contains("ops-guides"),
         "{text}"
     );
+    // KAIROS-T-0437: a document of the team is a node of its tree. Nobody
+    // placed it, so it is at the end of the root; move_team_page with its
+    // short code places it in a folder.
+    let text = board_mcp
+        .ok(
+            "create_item",
+            json!({"item_type": "document", "board": "home-ops-delivery", "title": "Network plan"}),
+        )
+        .await;
+    let doc_code = text
+        .split_whitespace()
+        .find(|w| w.starts_with("OPS-D-"))
+        .expect("the short code of the document")
+        .trim_end_matches(|c: char| !c.is_ascii_alphanumeric())
+        .to_string();
+    let text = board_mcp
+        .ok("team_pages", json!({"team": "home-ops"}))
+        .await;
+    assert!(
+        text.contains(&format!("- {doc_code} — Network plan [document, draft]")),
+        "{text}"
+    );
+    board_mcp
+        .ok(
+            "create_team_page",
+            json!({"team": "home-ops", "kind": "folder", "title": "Design"}),
+        )
+        .await;
+    let text = board_mcp
+        .ok(
+            "move_team_page",
+            json!({"team": "home-ops", "page": doc_code, "parent": "design"}),
+        )
+        .await;
+    assert!(
+        text.contains("Placed") && text.contains("in design"),
+        "{text}"
+    );
+    let text = board_mcp
+        .ok("team_pages", json!({"team": "home-ops"}))
+        .await;
+    assert!(
+        text.contains(&format!("  - {doc_code} — Network plan")),
+        "nested under design: {text}"
+    );
     let text = board_mcp
         .err("team_pages", json!({"team": "home-ops", "page": "nowhere"}))
         .await;

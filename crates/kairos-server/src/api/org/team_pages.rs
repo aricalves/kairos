@@ -41,6 +41,11 @@ pub fn router() -> Router<AppState> {
             axum::routing::post(restore_page),
         )
         .route("/api/teams/{id}/pages/{page_id}/history", get(page_history))
+        .route("/api/teams/{id}/tree-items", get(list_tree_items))
+        .route(
+            "/api/teams/{id}/tree-items/{item}",
+            axum::routing::put(place_tree_item),
+        )
         .route(
             "/api/teams/{id}/announcements",
             get(list_announcements).post(create_announcement),
@@ -146,6 +151,7 @@ fn map_page_error(e: TeamPageError) -> ApiError {
                  delete it."
             ),
         ),
+        e @ TeamPageError::NotTeamItem(_) => ApiError::validation(e.to_string()),
         TeamPageError::NotArchived(id) => ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
             "NOT_ARCHIVED",
@@ -695,6 +701,132 @@ pub(crate) fn history_as(
             agent_key_id: row.agent_key_id.map(|key| key.to_string()),
         })
         .collect())
+}
+
+/// The documents and ADRs of a team with their places in its tree (open
+/// tenant-wide, KAIROS-T-0437).
+#[utoipa::path(
+    get,
+    path = "/api/teams/{id}/tree-items",
+    tag = "team-pages",
+    params(("id" = String, Path, description = "Team id (UUID)")),
+    responses(
+        (status = 200, description = "The items of the team", body = Vec<dto::TeamTreeItem>),
+        (status = 404, description = "Unknown team", body = kairos_client::types::ErrorEnvelope),
+    ),
+)]
+pub(crate) async fn list_tree_items(
+    State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<dto::TeamTreeItem>>, ApiError> {
+    let team_id = parse_uuid(&id, "id")?;
+    let rows = state
+        .blocking
+        .run(&tenant.slug, move |conn| tree_items_as(conn, team_id))
+        .await?;
+    Ok(Json(rows))
+}
+
+/// The documents and ADRs of a team with their places, as the REST route
+/// gives them. MCP calls this too.
+pub(crate) fn tree_items_as(
+    conn: &mut PgConnection,
+    team_id: Uuid,
+) -> Result<Vec<dto::TeamTreeItem>, ApiError> {
+    require_team(conn, team_id)?;
+    let rows = team_pages::team_tree_items(conn, team_id).map_err(ApiError::internal)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| dto::TeamTreeItem {
+            item_id: row.item_id.to_string(),
+            short_code: row.short_code,
+            entity_type: row.entity_type,
+            title: row.title,
+            status: row.status,
+            parent_id: row.parent_id.map(|id| id.to_string()),
+            position: row.position,
+        })
+        .collect())
+}
+
+/// Put a document or an ADR of the team in a folder of its tree (team member
+/// or org admin, KAIROS-T-0437). `item` is a short code or a UUID.
+#[utoipa::path(
+    put,
+    path = "/api/teams/{id}/tree-items/{item}",
+    tag = "team-pages",
+    params(
+        ("id" = String, Path, description = "Team id (UUID)"),
+        ("item" = String, Path, description = "The short code or the id of a document or an ADR of the team"),
+    ),
+    request_body = dto::PlaceTeamItemRequest,
+    responses(
+        (status = 200, description = "Placed", body = dto::TeamTreeItem),
+        (status = 403, description = "Not a team member", body = kairos_client::types::ErrorEnvelope),
+        (status = 404, description = "Unknown team", body = kairos_client::types::ErrorEnvelope),
+        (status = 422, description = "Not an item of the team, or a parent that is not a live folder", body = kairos_client::types::ErrorEnvelope),
+    ),
+)]
+pub(crate) async fn place_tree_item(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Extension(tenant): Extension<TenantContext>,
+    Path((id, item)): Path<(String, String)>,
+    ApiJson(body): ApiJson<dto::PlaceTeamItemRequest>,
+) -> Result<Json<dto::TeamTreeItem>, ApiError> {
+    let team_id = parse_uuid(&id, "id")?;
+    let slug = tenant.slug.clone();
+    let user = auth.user_id;
+    let placed = state
+        .blocking
+        .run(&slug, move |conn| {
+            place_item_as(conn, &tenant, user, team_id, &item, &body)
+        })
+        .await?;
+    Ok(Json(placed))
+}
+
+/// Place an item, as the REST route does. MCP calls this too.
+pub(crate) fn place_item_as(
+    conn: &mut PgConnection,
+    tenant: &TenantContext,
+    user: Uuid,
+    team_id: Uuid,
+    item: &str,
+    body: &dto::PlaceTeamItemRequest,
+) -> Result<dto::TeamTreeItem, ApiError> {
+    let parent_id = parse_opt_uuid(body.parent_id.as_deref(), "parent_id")?;
+    require_team(conn, team_id)?;
+    require_team_member_or_admin(conn, tenant, team_id, user)?;
+    let items = tree_items_as(conn, team_id)?;
+    let found = items
+        .iter()
+        .find(|row| row.short_code.eq_ignore_ascii_case(item) || row.item_id == item)
+        .ok_or_else(|| {
+            ApiError::validation(format!(
+                "The item {item:?} is not a document or an ADR of this team. Send the short code \
+                 or the id of a document or an ADR that a board of the team owns."
+            ))
+        })?;
+    let item_id = parse_uuid(&found.item_id, "item")?;
+    team_pages::place_item(conn, team_id, item_id, parent_id, body.position, user)
+        .map_err(map_page_error)?;
+    log_page_activity(
+        conn,
+        user,
+        kairos_db::models::enums::ActivityAction::Update,
+        "team_page_placement",
+        item_id,
+        format!(
+            "team:{team_id} item:{} position:{}",
+            found.short_code, body.position
+        ),
+    )?;
+    tree_items_as(conn, team_id)?
+        .into_iter()
+        .find(|row| row.item_id == found.item_id)
+        .ok_or_else(|| ApiError::internal("the placed item is gone"))
 }
 
 /// The team's announcements, pinned first then newest (open tenant-wide).

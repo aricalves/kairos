@@ -111,6 +111,89 @@ pub struct TeamPageNode {
     pub position: i32,
     pub is_protected: bool,
     pub version: i32,
+    /// KAIROS-T-0437: set when the node is a document or an ADR of the team
+    /// (made by [`item_nodes`]), not a team page.
+    #[serde(skip)]
+    pub item: Option<ItemRef>,
+}
+
+/// What a tree node needs to know about a document or an ADR.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ItemRef {
+    pub short_code: String,
+    /// `document` or `adr`.
+    pub entity_type: String,
+    /// The lifecycle of a document, or the column of an ADR.
+    pub status: String,
+}
+
+/// The position of an item that nobody placed: after every placed node.
+pub const UNPLACED: i32 = 1_000_000;
+
+/// mirror of: `kairos_client::types_team_pages::TeamTreeItem`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct TreeItem {
+    pub item_id: String,
+    pub short_code: String,
+    pub entity_type: String,
+    pub title: String,
+    pub status: String,
+    pub parent_id: Option<String>,
+    pub position: Option<i32>,
+}
+
+/// The documents and ADRs of a team as tree nodes (KAIROS-T-0437).
+pub fn item_nodes(items: &[TreeItem]) -> Vec<TeamPageNode> {
+    items
+        .iter()
+        .map(|item| TeamPageNode {
+            id: item.item_id.clone(),
+            parent_id: item.parent_id.clone(),
+            kind: item.entity_type.clone(),
+            slug: item.short_code.clone(),
+            title: item.title.clone(),
+            content: String::new(),
+            position: item.position.unwrap_or(UNPLACED),
+            is_protected: false,
+            version: 0,
+            item: Some(ItemRef {
+                short_code: item.short_code.clone(),
+                entity_type: item.entity_type.clone(),
+                status: item.status.clone(),
+            }),
+        })
+        .collect()
+}
+
+/// `GET /api/teams/{id}/tree-items` — the documents and ADRs of a team with
+/// their places in its tree.
+pub async fn tree_items(auth: Auth, team_id: &str) -> Result<Vec<TreeItem>, ApiError> {
+    get_json(auth, &format!("/api/teams/{team_id}/tree-items")).await
+}
+
+/// `PUT /api/teams/{id}/tree-items/{code}` — put a document or an ADR of the
+/// team in a folder (`None`: the root) at a position.
+pub async fn place_item(
+    auth: Auth,
+    team_id: &str,
+    short_code: &str,
+    parent: Option<&str>,
+    position: i32,
+) -> Result<TreeItem, ApiError> {
+    #[derive(Serialize)]
+    struct Body<'a> {
+        parent_id: Option<&'a str>,
+        position: i32,
+    }
+    crate::api::put_json(
+        auth,
+        &format!("/api/teams/{team_id}/tree-items/{short_code}"),
+        &Body {
+            parent_id: parent,
+            position,
+        },
+    )
+    .await
 }
 
 impl TeamPageNode {
@@ -417,25 +500,6 @@ pub async fn team_links(auth: Auth, team_id: &str) -> Result<Vec<TeamLink>, ApiE
     get_json(auth, &format!("/api/teams/{team_id}/links")).await
 }
 
-/// mirror of: `kairos_client::types_team_pages::TeamWorkDocument`.
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-pub struct WorkDocument {
-    pub short_code: String,
-    pub title: String,
-    pub lifecycle: String,
-    pub owned: bool,
-    pub parent_short_code: Option<String>,
-    pub parent_title: Option<String>,
-    pub parent_type: Option<String>,
-}
-
-/// `GET /api/teams/{id}/work-documents` (KAIROS-T-0084, KAIROS-T-0393) —
-/// live documents that a board of the team owns, or that support the
-/// team's tasks or items on its delivery board.
-pub async fn team_work_documents(auth: Auth, team_id: &str) -> Result<Vec<WorkDocument>, ApiError> {
-    get_json(auth, &format!("/api/teams/{team_id}/work-documents")).await
-}
-
 /// The accent token for a team type pill (shared by directory, detail,
 /// and the admin teams table).
 pub fn team_type_color(team_type: &str) -> &'static str {
@@ -527,6 +591,7 @@ mod tests {
             position: 0,
             is_protected,
             version: 1,
+            item: None,
         }
     }
 
@@ -575,37 +640,5 @@ mod tests {
         let link: TeamLink = serde_json::from_value(body).expect("mirror decodes");
         assert_eq!(link.item_short_code, "DEMO-T-0002");
         assert_eq!(link.state, "open");
-    }
-
-    /// `WorkDocument` decodes the derived work-documents row.
-    #[test]
-    fn work_document_mirror_decodes_server_shape() {
-        let body = serde_json::json!({
-            "short_code": "ACME-D-0002",
-            "title": "Rollout runbook",
-            "lifecycle": "published",
-            "owned": false,
-            "parent_short_code": "ACME-T-0009",
-            "parent_title": "Ship the rollout",
-            "parent_type": "task"
-        });
-        let doc: WorkDocument = serde_json::from_value(body).expect("mirror decodes");
-        assert_eq!(doc.lifecycle, "published");
-        assert!(!doc.owned);
-        assert_eq!(doc.parent_short_code.as_deref(), Some("ACME-T-0009"));
-        // A document that the team's board owns and that supports none of
-        // the team's work has no parent (KAIROS-T-0393).
-        let owned: WorkDocument = serde_json::from_value(serde_json::json!({
-            "short_code": "ACME-D-0003",
-            "title": "Team handbook",
-            "lifecycle": "draft",
-            "owned": true,
-            "parent_short_code": null,
-            "parent_title": null,
-            "parent_type": null
-        }))
-        .expect("mirror decodes an owned row");
-        assert!(owned.owned);
-        assert_eq!(owned.parent_short_code, None);
     }
 }
