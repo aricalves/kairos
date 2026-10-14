@@ -484,7 +484,9 @@ test('repositories: team panel → board lens → cross-team filing → any repo
     const rules = form.locator('[data-testid="repository-rules"]');
     await expect(rules).toContainText('Full name: 2 parts for the forge github');
     await expect(rules).toContainText('URL: an absolute http or https URL');
-    await expect(rules).toContainText('Default branch: a branch name that git accepts');
+    // KAIROS-T-0430: the branch follows the forge, or is set by hand.
+    await expect(rules).toContainText('Default branch: forge or hand.');
+    await expect(rules).toContainText('The branch is a name that git accepts, with no space.');
     await field('Full name').locator('input').fill(`acme/${notifier}`);
     // A refusal of the server shows next to its field, and the form keeps
     // the values.
