@@ -44,7 +44,8 @@ use kairos_client::types_code_index::{
 };
 use kairos_client::types_org::{AddTeamMemberRequest, CreateTeamRequest};
 use kairos_client::types_repositories::{
-    CodeIndexBuild, CodeIndexSummaries, CreateRepositoryRequest, UpdateRepositoryRequest,
+    CodeIndexBuild, CodeIndexSummaries, CreateRepositoryRequest, DefaultBranchSource,
+    UpdateRepositoryRequest,
 };
 use kairos_db::models::{NewOrganizationMember, OrgRole};
 use kairos_db::schema::{organization_members, organizations, users};
@@ -3641,4 +3642,179 @@ async fn an_update_stopped_on_one_server_finishes_on_another_with_an_empty_folde
         .expect("the index of B downloads");
     assert_eq!(content_of(&built), content_of(&w.index(&b)));
     assert!(unused_pool_keys(&mut w).is_empty(), "each row is used now");
+}
+
+// ===========================================================================
+// KAIROS-T-0430: the builder indexes the default branch of the forge, read
+// at each fetch; a branch set by hand wins
+// ===========================================================================
+
+/// The outcome of `slug` in `outcomes`.
+fn outcome_of<'a>(
+    outcomes: &'a [kairos_server::code_index::BuildOutcome],
+    slug: &str,
+) -> &'a kairos_server::code_index::BuildOutcome {
+    outcomes
+        .iter()
+        .find(|o| o.repository == slug)
+        .unwrap_or_else(|| panic!("no outcome of {slug}: {outcomes:?}"))
+}
+
+async fn set_branch(
+    w: &World,
+    request: UpdateRepositoryRequest,
+) -> kairos_client::types_repositories::Repository {
+    w.bob
+        .update_repository("ledger", &request)
+        .await
+        .expect("bob changes the branch of ledger")
+}
+
+// Scenario: a repository registered with no branch follows the HEAD of a
+// bare repository; a branch set by hand wins; clearing it goes back to the
+// forge (criteria 1, 2, 3, 4)
+#[tokio::test]
+async fn the_builder_follows_the_head_of_the_forge_and_a_branch_set_by_hand_wins() {
+    let w = World::new("kairos_code_index_t0430_forge_branch").await;
+    let a = w.a.clone();
+    // Only ledger is built in this scenario.
+    set_build(&w, CodeIndexBuild::Off).await;
+
+    // Given a bare repository `ledger` with commit A on main, and HEAD on
+    // main, registered with no branch
+    let bare = w.work().join("ledger");
+    git(
+        w.work(),
+        &["clone", "-q", "--bare", "payments-api", "ledger"],
+    );
+    let created = w
+        .bob
+        .create_repository(&repository("ledger"))
+        .await
+        .expect("ledger");
+    assert_eq!(created.default_branch, "main");
+    assert_eq!(created.default_branch_source, DefaultBranchSource::Forge);
+    assert_eq!(created.forge_branch, None);
+
+    // When the first build runs
+    let outcomes = w.first_builds().await;
+
+    // Then it indexes the head of the branch that HEAD names
+    assert_eq!(outcome_of(&outcomes, "ledger").commit, a);
+    let repo = w.bob.get_repository("ledger").await.unwrap().repository;
+    assert_eq!(repo.default_branch, "main");
+    assert_eq!(repo.default_branch_source, DefaultBranchSource::Forge);
+    assert_eq!(repo.forge_branch.as_deref(), Some("main"));
+    assert_eq!(repo.default_branch_summary(), "from the forge");
+
+    // When the forge gets a new default branch `development` with commit B
+    git(&w.git, &["checkout", "-q", "-b", "development"]);
+    let b = commit_b(&w.git);
+    git(
+        &w.git,
+        &["push", "-q", &bare.display().to_string(), "development"],
+    );
+    git(&bare, &["symbolic-ref", "HEAD", "refs/heads/development"]);
+    let outcomes = w.sweep().await;
+
+    // Then the next fetch picks it up, and the index of B is on development
+    let outcome = outcome_of(&outcomes, "ledger");
+    assert_eq!(outcome.commit, b, "{outcome:?}");
+    assert_eq!(outcome.base.as_deref(), Some(a.as_str()), "{outcome:?}");
+    let repo = w.bob.get_repository("ledger").await.unwrap().repository;
+    assert_eq!(repo.default_branch, "development");
+    assert_eq!(repo.default_branch_source, DefaultBranchSource::Forge);
+    assert_eq!(repo.forge_branch.as_deref(), Some("development"));
+    let listed = w.alice.list_code_indexes("ledger").await.unwrap();
+    let index_b = listed
+        .iter()
+        .find(|i| i.commit == b)
+        .expect("an index of B");
+    assert_eq!(index_b.r#ref.as_deref(), Some("development"));
+
+    // When a person sets main by hand
+    let repo = set_branch(
+        &w,
+        UpdateRepositoryRequest {
+            default_branch: Some("main".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_eq!(repo.default_branch, "main");
+    assert_eq!(repo.default_branch_source, DefaultBranchSource::Hand);
+    assert_eq!(
+        repo.default_branch_summary(),
+        "set by hand; the forge gives development"
+    );
+
+    // Then the builder indexes main, whatever the forge says
+    let outcomes = w.sweep().await;
+    let outcome = outcome_of(&outcomes, "ledger");
+    assert_eq!(outcome.commit, a, "{outcome:?}");
+    assert_eq!(outcome.note.as_deref(), Some("the head has an index"));
+    let repo = w.bob.get_repository("ledger").await.unwrap().repository;
+    assert_eq!(repo.default_branch, "main");
+    assert_eq!(repo.default_branch_source, DefaultBranchSource::Hand);
+    assert_eq!(repo.forge_branch.as_deref(), Some("development"));
+
+    // And main set by hand again changes nothing
+    let before = repo.updated_at.clone();
+    let repo = set_branch(
+        &w,
+        UpdateRepositoryRequest {
+            default_branch: Some("main".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_eq!(repo.updated_at, before);
+
+    // And a branch with forge is refused, and the error names the field
+    let refused = w
+        .bob
+        .update_repository(
+            "ledger",
+            &UpdateRepositoryRequest {
+                default_branch: Some("main".into()),
+                default_branch_source: Some(DefaultBranchSource::Forge),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("a branch set by hand cannot follow the forge");
+    assert!(
+        matches!(&refused, Error::Validation { field: Some(f), .. } if f == "default_branch_source"),
+        "{refused}"
+    );
+
+    // When the person clears the branch set by hand
+    let repo = set_branch(
+        &w,
+        UpdateRepositoryRequest {
+            default_branch_source: Some(DefaultBranchSource::Forge),
+            ..Default::default()
+        },
+    )
+    .await;
+
+    // Then the repository follows the forge again, at once with the branch
+    // of the last fetch
+    assert_eq!(repo.default_branch, "development");
+    assert_eq!(repo.default_branch_source, DefaultBranchSource::Forge);
+    let outcomes = w.sweep().await;
+    let outcome = outcome_of(&outcomes, "ledger");
+    assert_eq!(outcome.commit, b, "{outcome:?}");
+    assert_eq!(outcome.note.as_deref(), Some("the head has an index"));
+
+    // And a repository registered with a branch has it by hand
+    let mut pinned = repository("ledger-pinned");
+    pinned.default_branch = Some("trunk".into());
+    let pinned = w
+        .bob
+        .create_repository(&pinned)
+        .await
+        .expect("ledger-pinned");
+    assert_eq!(pinned.default_branch, "trunk");
+    assert_eq!(pinned.default_branch_source, DefaultBranchSource::Hand);
 }

@@ -616,7 +616,7 @@ Body of `POST /api/repositories`.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `default_branch` | `string`, nullable | no | A branch name that git accepts, 255 characters at most. Defaults to `main`. |
+| `default_branch` | `string`, nullable | no | A branch name that git accepts, 255 characters at most. With a value, the branch is set by hand, and the code index builder indexes it. With no value, the builder follows the default branch of the forge, read at each fetch; until the first fetch the value is `main` (KAIROS-T-0430). |
 | `description` | `string`, nullable | no | Short "how to work here" blurb for agents. |
 | `forge` | `string` | yes | `github|gitlab|other`. |
 | `repo_full_name` | `string` | yes | The name on the forge — must match what the forge sends in webhook payloads. `github`: 2 parts (`owner/repo`). `gitlab`: 2 or more parts (`group/subgroup/project`). `other`: 1 or more parts. No space, no `.git` at the end, 255 characters at most. |
@@ -816,6 +816,12 @@ One day of the cumulative flow.
 |---|---|---|---|
 | `counts` | array of `integer` | yes |  |
 | `date` | `string` | yes | `YYYY-MM-DD`. |
+
+## DefaultBranchSource
+
+Where the default branch of a repository comes from (KAIROS-T-0430).
+
+One of: `forge`, `hand`
 
 ## DeleteResponse
 
@@ -1766,10 +1772,12 @@ One repository, as returned by `/api/repositories` (KAIROS-T-0106).
 | `code_index_summaries_resolved` | [`CodeIndexSummaries`](#codeindexsummaries) | no | Where the summaries are made now: `embedded` or `hosted`. For `organization`, the default of the organization (KAIROS-T-0358). |
 | `created_at` | `string` | yes | RFC 3339. |
 | `credential` | [`RepositoryCredential`](#repositorycredential) | no | The status of the read token of the repository (COLLIERY-T-3105). It never has the token. |
-| `default_branch` | `string` | yes |  |
+| `default_branch` | `string` | yes | The branch that the code index builder indexes (KAIROS-T-0430): the branch set by hand, or else the default branch of the forge at the last fetch. `default_branch_source` says which. |
+| `default_branch_source` | [`DefaultBranchSource`](#defaultbranchsource) | no | Where `default_branch` comes from (KAIROS-T-0430): `forge` (the builder reads the default branch of the remote at each fetch) or `hand` (a person set it; it wins over the forge). |
 | `delivery_board_id` | `string`, nullable | no | The delivery board of the owning team (UUID). It is a fact about the owner, not where tasks go: the board or the team of a task decides that (COLLIERY-T-0219, COLLIERY-A-0023). `None` only in a misconfigured tenant (team without a delivery board). |
 | `description` | `string` | yes | Short "how to work here" blurb agents read before starting. |
 | `forge` | `string` | yes | `github|gitlab|other`. |
+| `forge_branch` | `string`, nullable | no | The default branch that the remote gave at the last fetch of the builder, or `None` before the first fetch (KAIROS-T-0430). |
 | `has_webhook` | `boolean` | yes | Whether a live webhook connection exists for it. |
 | `id` | `string` | yes | Repository id (UUID). |
 | `open_tasks` | `integer` | yes | Live tasks that link to this repository and are not in a done column, on all boards of all teams (COLLIERY-T-0219). |
@@ -2544,7 +2552,8 @@ Body of `PATCH /api/repositories/{slug}` — every field optional; `team` re-hom
 |---|---|---|---|
 | `code_index_build` | [`CodeIndexBuild`](#codeindexbuild), nullable | no |  |
 | `code_index_summaries` | [`CodeIndexSummaries`](#codeindexsummaries), nullable | no |  |
-| `default_branch` | `string`, nullable | no | The form is that of `default_branch` in `CreateRepositoryRequest`. |
+| `default_branch` | `string`, nullable | no | The form is that of `default_branch` in `CreateRepositoryRequest`. A value sets the branch by hand (KAIROS-T-0430): the builder indexes it, whatever the forge says. |
+| `default_branch_source` | [`DefaultBranchSource`](#defaultbranchsource), nullable | no |  |
 | `description` | `string`, nullable | no |  |
 | `repo_url` | `string`, nullable | no | The form is that of `repo_url` in `CreateRepositoryRequest`. |
 | `site_enabled` | `boolean`, nullable | no | The site switch (KAIROS-T-0406). Off: a publish is refused, and the site is not served. |

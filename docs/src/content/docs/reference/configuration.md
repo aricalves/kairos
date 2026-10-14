@@ -413,6 +413,39 @@ share the builds, and each build runs one time. There are 3 types of build:
 A repository has one build job at a time. A server does not add a second
 job for a repository that has a job. The note of the pass names that job.
 
+#### The branch that the builder indexes
+
+The builder indexes the default branch of the repository. At each fetch, the
+builder reads the default branch of the forge. This is the branch that `HEAD`
+of the remote names (`git ls-remote --symref <remote> HEAD`). The builder uses
+the read token of the repository for this, as for the fetch. The builder selects the branch
+in this sequence:
+
+1. The branch that a person set by hand. It wins over the forge.
+2. The default branch of the forge, from the fetch.
+3. The stored default branch, when the forge gives no default branch.
+
+Thus, when the forge gets a new default branch, the next fetch finds it.
+
+The repository shows the branch that the builder indexes and where it comes
+from:
+
+- REST: `default_branch`, and `default_branch_source` (`forge` or `hand`).
+  `forge_branch` is the default branch of the forge at the last fetch.
+- `get_repository` and `kairos repos get`: the line `default branch`.
+- The panel of the repository: the line `Indexed branch:`.
+
+To set the branch by hand, send a `default_branch`: `PATCH
+/api/repositories/{slug}`, `update_repository`, `kairos repos update
+--default-branch`, or "Default branch from: hand" in Admin, Repositories. To
+follow the forge again, send `default_branch_source: forge`: `kairos repos
+update --follow-forge`, or "Default branch from: forge". A repository that
+you add with no `default_branch` follows the forge. A repository that you add
+with a `default_branch` has it by hand.
+
+A repository from before this rule follows the forge after the upgrade, also
+when a person set its branch. To keep a different branch, set it again.
+
 The jobs run in this order: a requested build, then an update, then a first
 build. Inside one type, the repository that has been stale longest goes
 first. The order of the list and the time of the pushes do not change it. A

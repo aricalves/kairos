@@ -118,14 +118,8 @@ pub(crate) fn content_md5(bytes: &[u8]) -> String {
 
 fn switch(on: bool) -> UpdateRepositoryRequest {
     UpdateRepositoryRequest {
-        slug: None,
-        repo_url: None,
-        default_branch: None,
-        team: None,
-        description: None,
-        code_index_build: None,
-        code_index_summaries: None,
         site_enabled: Some(on),
+        ..UpdateRepositoryRequest::default()
     }
 }
 

@@ -148,7 +148,11 @@ path.
 
 One repository in full. The output has these parts:
 
-- the slug, the forge, the full name, the URL and the default branch
+- the slug, the forge, the full name, the URL and the default branch. After
+  the branch, the line says where it comes from: `set by hand`, `set by hand;
+  the forge gives <branch>`, `from the forge`, or `from the forge; no fetch
+  yet`. The code index builder indexes this branch. See
+  [the branch that the builder indexes](../configuration/#the-branch-that-the-builder-indexes).
 - `owner team`: the single owning team
 - `owner's delivery board`: the delivery board of that team
 - `open tasks (all boards)`: the open task count
@@ -227,7 +231,7 @@ are those of `POST /api/repositories`.
 | `repo_url` | string | yes | — | The URL of the repository for a browser: `http` or `https`, with no user name and no password. |
 | `team` | string | yes | — | The one owner team. Slug or UUID. |
 | `slug` | string | no | made from `repo_full_name` | The slug of the repository in Kairos. `acme/payments-api` gives `acme-payments-api`. It must match `^[a-z0-9][a-z0-9-]{1,62}$`. |
-| `default_branch` | string | no | `main` | The default branch: a branch name that git accepts. |
+| `default_branch` | string | no | the default branch of the forge | The default branch: a branch name that git accepts. With a value, the branch is set by hand. With no value, the code index builder follows the default branch of the forge, and the value is `main` until the first fetch. |
 | `description` | string | no | empty | How to work in the repository. `get_repository` shows it to each agent. |
 
 The glossary gives the full rule of `repo_full_name`, `repo_url` and
@@ -261,19 +265,20 @@ details: {"field":"repo_full_name"}
 ### `update_repository`
 
 Changes the description, the default branch, the URL and the code index
-builder of a repository. The rule is that of `PATCH /api/repositories/{slug}`,
+builder of a repository. It also changes the source of the default branch. The rule is that of `PATCH /api/repositories/{slug}`,
 for the current owner team.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `repository` | string | yes | — | Slug or UUID. |
 | `description` | string | no | no change | The new text on how to work in the repository. It replaces the full text. An empty string removes the text. |
-| `default_branch` | string | no | no change | The new default branch: a branch name that git accepts. |
+| `default_branch` | string | no | no change | The new default branch: a branch name that git accepts. The branch is then set by hand: the code index builder indexes it, whatever the forge says. |
+| `default_branch_source` | string | no | no change | `forge` or `hand`. `forge` removes the branch set by hand: the builder follows the default branch of the forge again. `hand` keeps the current branch by hand. Do not send `forge` with `default_branch`. |
 | `repo_url` | string | no | no change | The new URL for a browser: `http` or `https`, with no user name and no password. |
 | `code_index_build` | string | no | no change | `on` or `off`: the builder of the code index of the server, for this repository. |
 
-The call must have one or more of `description`, `default_branch`, `repo_url`
-and `code_index_build`. The tool has no `slug` argument and no `team` argument. Each
+The call must have one or more of `description`, `default_branch`,
+`default_branch_source`, `repo_url` and `code_index_build`. The tool has no `slug` argument and no `team` argument. Each
 checkout keeps the slug in `.claude/kairos.local.md`, and a new slug breaks
 that reference.
 

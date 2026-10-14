@@ -227,7 +227,15 @@ pub(crate) fn add(
     let forge: Forge = parse_enum(&body.forge, "forge", Forge::ALL)?;
     let team = resolve_team(conn, &body.team)?;
     require_manage_for_team(conn, tenant_slug, user, team.id)?;
-    let created = repositories::create(
+    // KAIROS-T-0430: a branch in the body is set by hand. With no branch,
+    // the builder follows the default branch of the forge, and `main` is
+    // the value until its first fetch.
+    let create = if body.default_branch.is_some() {
+        repositories::create
+    } else {
+        repositories::create_following_forge
+    };
+    let created = create(
         conn,
         NewRepository {
             slug: body.slug.unwrap_or_else(|| {
@@ -298,6 +306,7 @@ pub(crate) fn change(
     if body.slug.is_none()
         && body.repo_url.is_none()
         && body.default_branch.is_none()
+        && body.default_branch_source.is_none()
         && body.team.is_none()
         && body.description.is_none()
         && body.code_index_build.is_none()
@@ -306,9 +315,21 @@ pub(crate) fn change(
     {
         return Err(ApiError::validation(
             "The request has no field to change. Send one or more of slug, repo_url, \
-             default_branch, team, description, code_index_build, code_index_summaries and \
-             site_enabled.",
+             default_branch, default_branch_source, team, description, code_index_build, \
+             code_index_summaries and site_enabled.",
         ));
+    }
+    // KAIROS-T-0430: a branch is set by hand, so it cannot also follow the
+    // forge.
+    if body.default_branch.is_some()
+        && body.default_branch_source == Some(dto::DefaultBranchSource::Forge)
+    {
+        return Err(ApiError::validation(
+            "The request has a default_branch and default_branch_source forge. A \
+             default_branch is set by hand. Send default_branch to set the branch by hand, \
+             or default_branch_source forge to follow the forge.",
+        )
+        .with_details(json!({ "field": "default_branch_source" })));
     }
     // KAIROS-T-0340: `hosted` needs a hosted provider on the tenant.
     if body.code_index_summaries == Some(dto::CodeIndexSummaries::Hosted) {
@@ -336,10 +357,34 @@ pub(crate) fn change(
         require_manage_for_team(conn, tenant_slug, user, new_team)?;
     }
     let different = |new: Option<String>, old: &str| new.filter(|new| new != old);
+    // KAIROS-T-0430: a default_branch sets the branch by hand, also when
+    // it has the value of the row. `forge` takes the branch of the forge
+    // at the last fetch, when the builder has read one.
+    let branch_sent = body.default_branch.is_some();
+    let (default_branch, default_branch_source) =
+        match (body.default_branch, body.default_branch_source) {
+            (Some(branch), _) => (
+                different(Some(branch), &current.default_branch),
+                Some(dto::DefaultBranchSource::Hand),
+            ),
+            (None, Some(dto::DefaultBranchSource::Forge)) => (
+                current
+                    .forge_branch
+                    .clone()
+                    .filter(|branch| branch != &current.default_branch),
+                Some(dto::DefaultBranchSource::Forge),
+            ),
+            (None, source) => (None, source),
+        };
+    let default_branch_source = different(
+        default_branch_source.map(|v| v.as_str().to_string()),
+        &current.default_branch_source,
+    );
     let changes = RepositoryChangeset {
         slug: different(body.slug, &current.slug),
         repo_url: different(body.repo_url, &current.repo_url),
-        default_branch: different(body.default_branch, &current.default_branch),
+        default_branch,
+        default_branch_source,
         team_id,
         description: different(body.description, &current.description),
         code_index_build: different(
@@ -358,7 +403,17 @@ pub(crate) fn change(
     let changed: Vec<&'static str> = [
         ("slug", changes.slug.is_some()),
         ("repo_url", changes.repo_url.is_some()),
-        ("default_branch", changes.default_branch.is_some()),
+        // A branch that is now set by hand is a change of the branch,
+        // also with the value of the row.
+        (
+            "default_branch",
+            changes.default_branch.is_some()
+                || (branch_sent && changes.default_branch_source.is_some()),
+        ),
+        (
+            "default_branch_source",
+            !branch_sent && changes.default_branch_source.is_some(),
+        ),
         ("team", changes.team_id.is_some()),
         ("description", changes.description.is_some()),
         ("code_index_build", changes.code_index_build.is_some()),
@@ -489,6 +544,9 @@ pub(crate) fn render(
                 repo_full_name: repo.repo_full_name,
                 repo_url: repo.repo_url,
                 default_branch: repo.default_branch,
+                default_branch_source: dto::DefaultBranchSource::parse(&repo.default_branch_source)
+                    .unwrap_or_default(),
+                forge_branch: repo.forge_branch,
                 description: repo.description,
                 team: dto::RepositoryTeam {
                     id: team.id.to_string(),

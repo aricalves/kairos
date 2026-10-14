@@ -455,6 +455,8 @@ diesel::table! {
         code_index_summaries -> Text,
         site_enabled -> Bool,
         site_publish_id -> Nullable<Uuid>,
+        default_branch_source -> Text,
+        forge_branch -> Nullable<Text>,
     }
 }
 
