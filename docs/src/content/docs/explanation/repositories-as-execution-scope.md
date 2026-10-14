@@ -297,7 +297,9 @@ that works with that person's key, would make planned work on each board by
 this rule. So a task can name the team that sends it, `from_team`
 (KAIROS-T-0426). When that team is not the team of the board, the task is a
 request whoever sends it. An agent in the session of a board names its own
-team. With no `from_team`, the rule above applies.
+team. With no `from_team`, the rule above applies. Kairos does not keep
+`from_team` on the task: it decides the column and the lane at create, and
+the body names the sending team.
 
 So the incoming work of a team is its support lane, and that is the whole
 intake mechanism. There is no separate inbox and no notification, for the same

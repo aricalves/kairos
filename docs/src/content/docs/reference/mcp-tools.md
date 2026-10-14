@@ -765,7 +765,7 @@ Creates a work item and returns its new short code.
 | `task_type` | string | no | `task` | Tasks only. `task`, `bug`, `tech_debt`, `support`. |
 | `repository` | string | no | — | Tasks only. Slug or UUID. An optional link that says where the code is. Any live repository, of any team. It does not choose the board. |
 | `work_class` | string | no | see below | Tasks only. `planned`, `support`. |
-| `from_team` | string | no | — | Tasks only. The team that sends the task. Slug or UUID. When it is not the team of the board, the task is a request: entry column, support lane, also for a manager of the board or an org admin. An agent in a board session sends its own team. |
+| `from_team` | string | no | — | Tasks only. The team that sends the task. Slug or UUID. When it is not the team of the board, the task is a request: entry column, support lane, also for a manager of the board or an org admin. An agent in a board session sends its own team. Kairos does not keep it on the task: name the sending team in the body. |
 | `hypothesis` | string | no | — | Strategies only. |
 | `complexity` | string | no | — | Initiatives only. `xs`, `s`, `m`, `l`, `xl`. |
 | `bucket_type` | string | no | — | Initiatives only. `tech_debt`, `bug`, `ad_hoc`. Makes the initiative a bucket rather than a dated one; `is_bucket` is derived from it. |
