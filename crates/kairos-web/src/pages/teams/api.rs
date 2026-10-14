@@ -311,27 +311,6 @@ pub async fn rename_page(
     .await
 }
 
-/// `PATCH /api/teams/{id}/pages/{page_id}` — move under `new_parent`
-/// (`None` = to the tree root, via `move_to_root`).
-pub async fn move_page(
-    auth: Auth,
-    team_id: &str,
-    page_id: &str,
-    new_parent: Option<&str>,
-) -> Result<TeamPageNode, ApiError> {
-    crate::api::patch_json(
-        auth,
-        &format!("/api/teams/{team_id}/pages/{page_id}"),
-        &StructureBody {
-            slug: None,
-            parent_id: new_parent,
-            move_to_root: new_parent.is_none(),
-            position: None,
-        },
-    )
-    .await
-}
-
 /// `PATCH /api/teams/{id}/pages/{page_id}` — place a node (KAIROS-T-0438):
 /// `parent` `Some(Some(id))` moves it into a folder, `Some(None)` to the
 /// root, `None` keeps the parent; `position` sets its place among its
