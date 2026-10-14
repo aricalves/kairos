@@ -383,6 +383,21 @@ pub fn on_blockers_closed(
     if blockers.is_empty() {
         return Ok(Vec::new());
     }
+    // KAIROS-T-0457: lock the tasks that the blockers block, in one order.
+    // Two blockers of one task closed in two transactions at one time each
+    // saw the other still open, and neither queued the event. The second
+    // transaction now waits here for the first to commit, and its check
+    // below (a new statement, a new snapshot) sees the blocker closed.
+    sql_query(
+        "SELECT t.id FROM tasks t \
+          WHERE t.deleted_at IS NULL \
+            AND t.id IN (SELECT r.target_id FROM item_relationships r \
+                          WHERE r.relationship = 'blocks' AND r.source_id = ANY($1)) \
+          ORDER BY t.id \
+            FOR UPDATE",
+    )
+    .bind::<Array<SqlUuid>, _>(blockers)
+    .execute(conn)?;
     // An open blocker: live, and not in a done column.
     let unblocked: Vec<Unblocked> = sql_query(
         "SELECT DISTINCT ON (t.id) t.id AS task_id, t.column_id, b.short_code AS blocker_code \

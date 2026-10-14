@@ -8,7 +8,7 @@
 --
 -- WHAT THIS DOES TO THE DATA OF A TENANT
 --
--- 1 new column, `entered_column` on each rule. No other row is changed.
+-- 1 new column, `trigger`, with `entered_column` on each rule. No other row is changed.
 --
 -- Re-runnable: each statement has a guard.
 ALTER TABLE dispatch_rules

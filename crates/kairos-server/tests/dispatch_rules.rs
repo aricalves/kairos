@@ -684,6 +684,18 @@ async fn a_task_that_enters_the_column_of_a_rule_fires_one_signed_delivery() {
         .await
         .expect_err("no such trigger");
     assert!(err.to_string().contains("unblocked"), "{err}");
+    // KAIROS-T-0457: an unblocked rule on a done column would never fire.
+    let err = alice
+        .create_dispatch_rule(
+            &slug,
+            &CreateDispatchRuleRequest {
+                trigger: Some("unblocked".into()),
+                ..rule("Completed", None)
+            },
+        )
+        .await
+        .expect_err("a done column");
+    assert!(err.to_string().contains("done column"), "{err}");
     // U1: each task (type task) that is unblocked, in each column. U2: a
     // bug in Todo that is unblocked.
     let u1 = alice
@@ -783,6 +795,37 @@ async fn a_task_that_enters_the_column_of_a_rule_fires_one_signed_delivery() {
     ];
     want.sort();
     assert_eq!(got, want);
+    // KAIROS-T-0457: two blockers of one task close at one time. The task
+    // is unblocked once, by one of them.
+    let race_a = new_task(&alice, &board, "Race blocker A", "task").await;
+    let race_b = new_task(&alice, &board, "Race blocker B", "task").await;
+    let racing = new_task(&alice, &board, "Waits for the race", "task").await;
+    for source in [&race_a, &race_b] {
+        alice
+            .create_relationship(&blocks(source, &racing))
+            .await
+            .expect("blocks");
+    }
+    let before_race = receiver.received().len();
+    let (a, b) = tokio::join!(
+        alice.cancel_task(&race_a, "Done elsewhere"),
+        alice.cancel_task(&race_b, "Done elsewhere"),
+    );
+    a.expect("cancel a");
+    b.expect("cancel b");
+    deliver(&worker, &scratch_url).await;
+    let raced: Vec<(String, String)> = unblocked(before_race)
+        .iter()
+        .map(|body| {
+            (
+                body["data"]["code"].as_str().unwrap().to_string(),
+                body["data"]["blocker"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(raced.len(), 1, "{raced:?}");
+    assert_eq!(raced[0].0, racing);
+    assert!(raced[0].1 == race_a || raced[0].1 == race_b, "{raced:?}");
     let (text, error) = alice_mcp
         .call(
             "create_dispatch_rule",

@@ -418,6 +418,16 @@ pub(crate) fn column_of(
         })
 }
 
+/// Whether the column is a done column.
+fn column_is_done(conn: &mut PgConnection, column_id: Uuid) -> Result<bool, ApiError> {
+    use kairos_db::schema::board_columns::dsl;
+    dsl::board_columns
+        .filter(dsl::id.eq(column_id))
+        .select(dsl::is_done)
+        .first(conn)
+        .map_err(ApiError::internal)
+}
+
 /// Make a rule.
 pub fn create_rule_as(
     conn: &mut PgConnection,
@@ -437,7 +447,20 @@ pub fn create_rule_as(
         .with_details(json!({ "field": "trigger" })));
     }
     let column_id = match given(&request.column) {
-        Some(column) => Some(column_of(conn, &board, &column)?),
+        Some(column) => {
+            let id = column_of(conn, &board, &column)?;
+            // KAIROS-T-0457: an unblocked rule on a done column never fires
+            // (a task in a done column waits for nothing).
+            if trigger == dispatch::TRIGGER_UNBLOCKED && column_is_done(conn, id)? {
+                return Err(ApiError::validation(format!(
+                    "An unblocked rule cannot name a done column: a task in {} waits for \
+                     nothing.",
+                    column.trim()
+                ))
+                .with_details(json!({ "field": "column" })));
+            }
+            Some(id)
+        }
         None if trigger == dispatch::TRIGGER_UNBLOCKED => None,
         None => {
             return Err(ApiError::validation(
