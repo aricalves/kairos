@@ -139,17 +139,23 @@ test('team pages: landing layout → announcements → page edit + 409 merge →
     }).first();
     await docs.locator('summary', { hasText: 'Incidents' }).first()
       .dragTo(documentation.locator('summary').first());
+    // The tree refetches after a drop and renders its folders closed: wait
+    // for the move to land, then open the folder.
+    await expect(rootSummaries.filter({ hasText: 'Incidents' })).toHaveCount(0);
     await documentation.locator('summary').first().click();
     await expect(
       documentation.locator('details.kairos-doctree__folder summary', { hasText: 'Incidents' }),
     ).toBeVisible();
-    await expect(rootSummaries.filter({ hasText: 'Incidents' })).toHaveCount(0);
 
     // KAIROS-T-0437: a document drags into a folder like a page; its board
     // keeps it.
     await docs.locator('.kairos-doctree__item', { hasText: 'Runbook: password-less auth rollout' })
       .first()
       .dragTo(documentation.locator('summary').first());
+    await expect(
+      rootList.locator(':scope > .kairos-doctree__item', { hasText: 'Runbook: password-less auth rollout' }),
+    ).toHaveCount(0);
+    await documentation.locator('summary').first().click();
     await expect(
       documentation.locator('.kairos-doctree__item', { hasText: 'Runbook: password-less auth rollout' }),
     ).toBeVisible();
