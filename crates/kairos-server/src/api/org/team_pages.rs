@@ -750,8 +750,9 @@ pub(crate) fn tree_items_as(
         .collect())
 }
 
-/// Put a document or an ADR of the team in a folder of its tree (team member
-/// or org admin, KAIROS-T-0437). `item` is a short code or a UUID.
+/// Put a document or an ADR of the team in a folder of its tree
+/// (KAIROS-T-0437). A team member or an organization admin can do this.
+/// `item` is a short code or a UUID.
 #[utoipa::path(
     put,
     path = "/api/teams/{id}/tree-items/{item}",

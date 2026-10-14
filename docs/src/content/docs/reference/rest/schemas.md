@@ -1620,6 +1620,17 @@ The read token of the organization for one forge host (KAIROS-T-0431). A read sh
 | `set_by` | `string` | yes |  |
 | `set_by_name` | `string`, nullable | no | The display name of `set_by`, else the email. |
 
+## PlaceTeamItemRequest
+
+Body of `PUT /api/teams/{id}/tree-items/{item}` (KAIROS-T-0437).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `parent_id` | `string`, nullable | no | The folder (a team page id); null or absent puts it at the root. |
+| `position` | `integer` | yes | Its position among its siblings. |
+
+The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
+
 ## ProgressCounts
 
 A `(done, total)` children rollup (KAIROS-T-0080). `done` counts the children sitting in `is_done` columns.
@@ -2395,6 +2406,20 @@ One saved version of a page (KAIROS-T-0439): `GET /api/teams/{id}/pages/{page_id
 | `edited_by_name` | `string` | yes | The display name of that person. |
 | `title` | `string` | yes |  |
 | `version` | `integer` | yes |  |
+
+## TeamTreeItem
+
+One document or ADR in the tree of a team (KAIROS-T-0437): `GET /api/teams/{id}/tree-items`. Each document and ADR whose owner board is a board of the team. The board owns it; this is where it sits in the tree.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `entity_type` | `string` | yes | `document` or `adr`. |
+| `item_id` | `string` | yes | The item id (UUID). |
+| `parent_id` | `string`, nullable | no | Its folder (a team page id); null is the root. |
+| `position` | `integer`, nullable | no | Its position among its siblings; null when nobody placed it (it shows at the end of the root). |
+| `short_code` | `string` | yes |  |
+| `status` | `string` | yes | The lifecycle of a document, or the column of an ADR. |
+| `title` | `string` | yes |  |
 
 ## TeamWorkDocument
 

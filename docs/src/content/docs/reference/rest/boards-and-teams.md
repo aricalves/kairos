@@ -1178,6 +1178,40 @@ organization admin, KAIROS-T-0439).
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown team or page |
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Not archived, or a live sibling has the slug |
 
+### `GET /api/teams/{id}/tree-items`
+
+The documents and ADRs of a team with their places in its tree (open
+tenant-wide, KAIROS-T-0437).
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `id` | path | yes | `string` | Team id (UUID) |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | array of [`TeamTreeItem`](../schemas/#teamtreeitem) | The items of the team |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown team |
+
+### `PUT /api/teams/{id}/tree-items/{item}`
+
+Put a document or an ADR of the team in a folder of its tree
+(KAIROS-T-0437). A team member or an organization admin can do this.
+`item` is a short code or a UUID.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `id` | path | yes | `string` | Team id (UUID) |
+| `item` | path | yes | `string` | The short code or the id of a document or an ADR of the team |
+
+Request body (required): `application/json`, [`PlaceTeamItemRequest`](../schemas/#placeteamitemrequest)
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`TeamTreeItem`](../schemas/#teamtreeitem) | Placed |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Not a team member |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown team |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Not an item of the team, or a parent that is not a live folder |
+
 ## delivery-streams
 
 ### `GET /api/delivery-streams`
