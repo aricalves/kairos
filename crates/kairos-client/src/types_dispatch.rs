@@ -51,11 +51,11 @@ pub struct CreatedWebhookTarget {
     pub secret: String,
 }
 
-/// A dispatch rule of a board. With the trigger `entered_column`, a task can
-/// enter `column` and match the filter; with `unblocked` (KAIROS-T-0427), the
-/// last open blocker of a task that matches can close, and the task must be
-/// in `column` when the rule names one. Then Kairos sends one signed
-/// delivery to the target.
+/// A dispatch rule of a board. With the trigger `entered_column`, the rule
+/// fires when a task that matches the filter enters `column`. With
+/// `unblocked` (KAIROS-T-0427), it fires when the last open blocker of a task
+/// that matches closes. Then the task must be in `column`, if the rule names
+/// one. Kairos sends one signed delivery to the target.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct DispatchRule {
     pub id: String,

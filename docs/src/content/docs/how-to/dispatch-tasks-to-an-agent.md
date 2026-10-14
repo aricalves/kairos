@@ -102,10 +102,11 @@ The filter is optional. Each part that you set must match:
 - `--metadata`: a metadata value, for example `priority=high`.
 - `--repository`: the repository of the task.
 
-A rule can fire when a task is unblocked in place of when it enters a column:
-the last open blocker of the task is done, cancelled or archived. The event
-is `task.unblocked`, and its `blocker` is the code of the blocker that
-closed. Use it to start a wave when an upstream task is done:
+A rule can also fire when the last open blocker of a task closes. The
+blocker closes when it goes into a done column, or when a person cancels or
+archives it. The event is `task.unblocked`. Its `blocker` is the code of the
+blocker that closed. Use this trigger to start a wave when an upstream task
+is done:
 
 ```sh
 kairos boards dispatch add-rule platform-delivery \
@@ -141,9 +142,10 @@ The GUI has the same targets, rules and log. Open **Admin**, then
 
 1. Put a name and the URL of the runner, and select **Add target**. Copy
    the secret that the page shows.
-2. Select when the rule fires (**enters the column** or **is unblocked**),
-   the column, the target and a filter, and select **Add rule**. For a rule
-   on **is unblocked**, the column can be **any column**.
+2. Select the trigger in **A task that**: **enters the column**, or the
+   trigger for the last blocker. Then select the column, the target and a
+   filter, and select **Add rule**. With the trigger for the last blocker,
+   the column can be **any column**.
 3. Read the **Delivery log**. Select **Refresh** to read it again.
 
 ## Related reading

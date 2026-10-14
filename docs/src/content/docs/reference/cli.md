@@ -1533,25 +1533,33 @@ kairos self-update [--url <URL>] [--version <VERSION> | --latest | --check]
 | `--check` | flag | off | Print the version of the CLI and of the server, and change nothing. |
 
 Installs the version of the server in place of the running binary. The server
-tells its version at `GET /version` (open), with the links of the tarball of
-the CLI and its `.sha256` for each platform (`KAIROS_CLI_DOWNLOAD_URL` on the
-server, by default the GitHub releases). The CLI downloads the tarball of its
-platform, `kairos-<version>-<target>.tar.gz`, checks it against the `.sha256`, and writes the new binary to a new
-file next to the old one. It keeps the old binary as `kairos.bak` and renames
-the new file over the old path. A failed download or a bad checksum changes
-nothing. With `--version` or `--latest`, the CLI takes the tarball from the
-GitHub releases; `KAIROS_RELEASES_URL` replaces that URL, for a mirror.
+tells its version at `GET /version` (open). It also gives the links of the
+tarball of the CLI and its `.sha256` for each platform. `KAIROS_CLI_DOWNLOAD_URL`
+on the server sets these links; the default is the GitHub releases.
+
+The CLI downloads the tarball of its platform,
+`kairos-<version>-<target>.tar.gz`, and checks it against the `.sha256`. It
+writes the new binary to a new file next to the old one. It keeps the old
+binary as `kairos.bak` and renames the new file over the old path. A failed
+download or a bad checksum changes nothing. With `--version` or `--latest`,
+the CLI takes the tarball from the GitHub releases; `KAIROS_RELEASES_URL`
+replaces that URL, for a mirror.
 
 A server older than this command does not tell its version: name one with
 `--version`, or use `--latest`.
 
-**The daily check.** Before a command (not `login`, `logout`, `index` or
-`self-update`), the CLI asks the server for its version once a day for each
-deployment, with a 2 second limit. When the server is newer, it prints one
-line on stderr that names `kairos self-update`. With `KAIROS_AUTO_UPDATE=1`
-the CLI updates itself instead of printing the line. The check keeps its
-state in `version-check.json` in the config directory. A server that does not
-answer counts as a check, and the command goes on.
+#### The daily check
+
+After a command that succeeded, the CLI asks the server
+for its version. It does this once a day for each deployment, with a 2 second
+limit. The commands `login`, `logout`, `index` and `self-update` make no
+check.
+
+When the server is newer, the CLI prints one line on stderr that names
+`kairos self-update`. With `KAIROS_AUTO_UPDATE=1`, the CLI updates itself
+instead of printing the line. The check keeps its state in
+`version-check.json` in the config directory. A server that does not answer
+counts as a check.
 
 ## Operator subcommands (`kairos-server`)
 
