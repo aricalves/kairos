@@ -17,6 +17,7 @@
 
 pub(crate) mod api;
 pub(crate) mod doc;
+pub(crate) mod tree;
 
 use aurora_dark::components::{
     ActionIcon, Alert, Anchor, Button, Empty, ErrorState, Group, Loading, PageHeader, Panel, Pill,
@@ -387,31 +388,26 @@ fn TeamBody(view_model: TeamView, on_changed: Callback<()>) -> impl IntoView {
                     }.into_any()
                 }}
             </Panel>
+            // KAIROS-T-0438: the tree is grown in place. A member (or an org
+            // admin) gets "+ Page" and "+ Folder" in each folder and at the
+            // root, and moves nodes by drag and drop. Re-rendered when the
+            // identity lands, like the announcement composer.
             <Panel title="Documentation" caption="the team's page tree — folders expand, pages open">
-                <DocTree pages=pages.clone() team_slug=team_slug.clone()/>
-            </Panel>
-            // KAIROS-T-0094: root-level creation. The API always allowed it
-            // (`POST /api/teams/{id}/pages` with no parent_id) and no UI offered
-            // it, so adding a top-level sibling of Documentation meant an API
-            // call. The create form only ever appeared inside folder indexes.
-            //
-            // Gated on membership or org-admin, matching the announcement
-            // composer below: a non-member sees no affordance rather than a
-            // button that 403s.
-            {
-                let team_id_for_create = team.id.clone();
-                move || {
-                    can_author().then(|| {
-                        view! {
-                            <doc::CreateForm
-                                team_id=team_id_for_create.clone()
-                                parent_id=None
-                                on_changed
-                            />
-                        }
-                    })
+                {
+                    let team_id_for_tree = team.id.clone();
+                    let team_slug_for_tree = team_slug.clone();
+                    let pages_for_tree = pages.clone();
+                    move || view! {
+                        <tree::TeamTree
+                            team_id=team_id_for_tree.clone()
+                            team_slug=team_slug_for_tree.clone()
+                            pages=pages_for_tree.clone()
+                            manage=can_author()
+                            on_changed
+                        />
+                    }
                 }
-            }
+            </Panel>
             <Panel title="Work documents" caption="documents that a board of this team owns, and documents that support this team's work items">
                 {if work_documents.is_empty() {
                     view! {
@@ -722,79 +718,4 @@ fn AnnouncementsPanel(
             </Stack>
         </Panel>
     }
-}
-
-// ---------------------------------------------------------------------------
-// Documentation tree (KAIROS-T-0085)
-// ---------------------------------------------------------------------------
-
-/// The page-tree navigator: root nodes except the charter (it has its own
-/// panel above), folders as native `<details>` disclosures, pages linking
-/// to the KAIROS-T-0086 route at their slug path.
-#[component]
-fn DocTree(pages: Vec<api::TeamPageNode>, team_slug: String) -> impl IntoView {
-    let visible = pages
-        .iter()
-        .filter(|p| !p.is_charter())
-        .cloned()
-        .collect::<Vec<_>>();
-    if visible.is_empty() {
-        return view! { <Empty message="No pages yet."/> }.into_any();
-    }
-    render_tree_level(&visible, None, &team_slug, "")
-}
-
-/// One nesting level: `parent`'s children in position-then-title order
-/// (the server ordering), recursing into folders. Views are built
-/// EAGERLY (owned) before assembly — `view!` output must be `'static`.
-fn render_tree_level(
-    pages: &[api::TeamPageNode],
-    parent: Option<&str>,
-    team_slug: &str,
-    path_prefix: &str,
-) -> AnyView {
-    let rows = pages
-        .iter()
-        .filter(|p| p.parent_id.as_deref() == parent)
-        .map(|node| {
-            let path = if path_prefix.is_empty() {
-                node.slug.clone()
-            } else {
-                format!("{path_prefix}/{}", node.slug)
-            };
-            if node.kind == "folder" {
-                let inner = render_tree_level(pages, Some(&node.id), team_slug, &path);
-                let title = node.title.clone();
-                let href = format!("/teams/{team_slug}/pages/{path}");
-                view! {
-                    <details class="kairos-doctree__folder">
-                        <summary class="kairos-doctree__summary">
-                            <Group gap="xs">
-                                <Text bright=true size="sm">{title}</Text>
-                                <Anchor href=href>
-                                    <Text dimmed=true size="xs">"open"</Text>
-                                </Anchor>
-                            </Group>
-                        </summary>
-                        <div class="kairos-doctree__children">{inner}</div>
-                    </details>
-                }
-                .into_any()
-            } else {
-                let href = format!("/teams/{team_slug}/pages/{path}");
-                let title = node.title.clone();
-                let protected = node.is_protected;
-                view! {
-                    <Group gap="xs">
-                        <Anchor href=href>{title}</Anchor>
-                        {protected.then(|| view! {
-                            <Text dimmed=true size="xs">"(protected)"</Text>
-                        })}
-                    </Group>
-                }
-                .into_any()
-            }
-        })
-        .collect::<Vec<_>>();
-    view! { <Stack gap="xs">{rows}</Stack> }.into_any()
 }

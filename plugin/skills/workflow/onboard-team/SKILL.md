@@ -16,6 +16,19 @@ The rules:
 - **Only fix what is missing.** You can run this skill again on a team that is set up. Do not change a thing that is already correct.
 - **Use the MCP tools.** When a step has no MCP tool, use the CLI command that this skill names, or tell the person which step they must do in the web UI.
 
+## 0. Check the admin tools
+
+Most tools of this skill are in the admin profile of the Kairos MCP server (KAIROS-T-0454): `create_team`, `update_team`, `add_team_member`, `grant_capability`, the column and transition tools, the dispatch tools, `set_agent_triage` and the tools that write the team page. The default server (`/mcp`) does not list them, and Claude Code calls only the tools that a server lists.
+
+Look for the `kairos-admin` server: its tools have names such as `mcp__kairos-admin__create_team_page`. (`team_pages`, which reads the team page, is on the default server only: read with the default server, write with `kairos-admin`.) If it is not there, stop and tell the person to add it, then to start a new session:
+
+```sh
+claude mcp add --scope user --transport http kairos-admin \
+  "$KAIROS_URL/mcp?profile=admin" --header "Authorization: Bearer $KAIROS_MCP_KEY"
+```
+
+Use the `kairos-admin` tools for the admin steps, and the default server for the rest.
+
 ## 1. Read the state
 
 Find the team with `whoami` (your teams) and `my_boards` (boards, columns, the team of each ADR board). For a team that does not exist yet, go to step 2.
@@ -91,9 +104,12 @@ Read the charter first (`team_pages {team, page: "charter"}`), and keep what the
 
 The same steps are in the CLI: `kairos teams pages list|show|create|edit|move|delete`.
 
-## 6. Dispatch (when the team uses a board session)
+## 6. Dispatch and agent triage (when the team uses a board session)
 
-Ask the person whether an agent session works the board of the team. If yes, check `list_dispatch_rules {board}`. A missing rule: `create_dispatch_rule` (it can make the webhook target from `url`). If no, skip this step.
+Ask the person whether an agent session works the board of the team. If no, skip this step. If yes:
+
+- Check `list_dispatch_rules {board}`. It also shows the agent triage setting. A missing rule: `create_dispatch_rule` (it can make the webhook target from `url`).
+- Ask who decides the triage of intake (a request in the support lane). By default a person decides, and an agent only writes its proposal with `append_note`. When the team wants the agent to decide, call `set_agent_triage {board, agents_decide: true}`. It needs `configure_boards` on the board.
 
 ## 7. Local wiring
 

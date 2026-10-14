@@ -165,9 +165,11 @@ struct CreatePageBody<'a> {
     slug: &'a str,
     title: &'a str,
     content: &'a str,
+    position: i32,
 }
 
-/// `POST /api/teams/{id}/pages` (team member or org admin).
+/// `POST /api/teams/{id}/pages` (team member or org admin). `position` is
+/// its place among its siblings (KAIROS-T-0438: after the last one).
 pub async fn create_page(
     auth: Auth,
     team_id: &str,
@@ -175,6 +177,7 @@ pub async fn create_page(
     kind: &str,
     slug: &str,
     title: &str,
+    position: i32,
 ) -> Result<TeamPageNode, ApiError> {
     post_json(
         auth,
@@ -185,6 +188,7 @@ pub async fn create_page(
             slug,
             title,
             content: "",
+            position,
         },
     )
     .await
@@ -200,6 +204,8 @@ struct StructureBody<'a> {
     parent_id: Option<&'a str>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     move_to_root: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    position: Option<i32>,
 }
 
 /// `PATCH /api/teams/{id}/pages/{page_id}` — rename (new sibling slug).
@@ -216,6 +222,7 @@ pub async fn rename_page(
             slug: Some(slug),
             parent_id: None,
             move_to_root: false,
+            position: None,
         },
     )
     .await
@@ -236,6 +243,31 @@ pub async fn move_page(
             slug: None,
             parent_id: new_parent,
             move_to_root: new_parent.is_none(),
+            position: None,
+        },
+    )
+    .await
+}
+
+/// `PATCH /api/teams/{id}/pages/{page_id}` — place a node (KAIROS-T-0438):
+/// `parent` `Some(Some(id))` moves it into a folder, `Some(None)` to the
+/// root, `None` keeps the parent; `position` sets its place among its
+/// siblings.
+pub async fn place_page(
+    auth: Auth,
+    team_id: &str,
+    page_id: &str,
+    parent: Option<Option<&str>>,
+    position: i32,
+) -> Result<TeamPageNode, ApiError> {
+    crate::api::patch_json(
+        auth,
+        &format!("/api/teams/{team_id}/pages/{page_id}"),
+        &StructureBody {
+            slug: None,
+            parent_id: parent.flatten(),
+            move_to_root: parent == Some(None),
+            position: Some(position),
         },
     )
     .await

@@ -544,6 +544,34 @@
   padding: var(--space-xs) 0 0 var(--space-sm);
 }
 
+/* KAIROS-T-0438: drag and drop in the tree. A gap is the drop zone before
+   a node or at the end of a list; it shows a line while a legal drop is
+   over it. A folder row highlights while a node can drop into it. */
+.kairos-doctree__list {
+  display: flex;
+  flex-direction: column;
+}
+
+.kairos-doctree__gap {
+  height: 6px;
+  margin: 1px 0;
+  border-radius: var(--radius-sm);
+}
+
+.kairos-doctree__gap--over {
+  outline: 1px solid var(--gold);
+}
+
+.kairos-doctree__page[draggable="true"],
+.kairos-doctree__summary[draggable="true"] {
+  cursor: grab;
+}
+
+.kairos-doctree__summary--over {
+  outline: 1px dashed var(--gold);
+  border-radius: var(--radius-sm);
+}
+
 /* Focal flight-level graph (KAIROS-T-0089): the Aurora Dag draws it,
    with its own tokens (COLLIERY-T-1836). The wrapper only scrolls a wide
    graph on a narrow screen. */
