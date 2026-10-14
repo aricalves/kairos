@@ -104,8 +104,8 @@ The filter is optional. Each part that you set must match:
 
 A rule can also fire when the last open blocker of a task closes. The
 blocker closes when it goes into a done column, or when a person cancels or
-archives it. The event is `task.unblocked`. Its `blocker` is the code of the
-blocker that closed. Use this trigger to start a wave when an upstream task
+archives it. The event is `task.unblocked`. Its `blocker` is the code of the blocker that
+closed. Use this trigger to start a wave when an upstream task
 is done:
 
 ```sh
@@ -115,6 +115,9 @@ kairos boards dispatch add-rule platform-delivery \
 ```
 
 Without `--column`, a task in each column that is not done matches.
+
+Removing the edge with `unlink_items` does not fire the rule. The rule names
+no done column: a task in a done column waits for nothing.
 
 An agent can make the same rule with the MCP tool `create_dispatch_rule`. With
 `url` in place of `target_id`, the tool makes the target too, and its answer

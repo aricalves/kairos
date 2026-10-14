@@ -2085,6 +2085,9 @@ or when a person cancels or archives it. The event is `task.unblocked`. Its
 `data` has the fields above and `blocker`, the code of the blocker that
 closed. The column in `data` is the column of the task.
 
+Removing the edge with `unlink_items` does not fire the rule. The rule names
+no done column: a task in a done column waits for nothing.
+
 The rule can name a column: the task must be in it. With no column, a task
 in each column that is not done matches. A task with two blockers fires once,
 when the second closes. A blocker that opens again blocks the task again, so
