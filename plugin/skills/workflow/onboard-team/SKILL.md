@@ -91,9 +91,12 @@ Read the charter first (`team_pages {team, page: "charter"}`), and keep what the
 
 The same steps are in the CLI: `kairos teams pages list|show|create|edit|move|delete`.
 
-## 6. Dispatch (when the team uses a board session)
+## 6. Dispatch and agent triage (when the team uses a board session)
 
-Ask the person whether an agent session works the board of the team. If yes, check `list_dispatch_rules {board}`. A missing rule: `create_dispatch_rule` (it can make the webhook target from `url`). If no, skip this step.
+Ask the person whether an agent session works the board of the team. If no, skip this step. If yes:
+
+- Check `list_dispatch_rules {board}`. It also shows the agent triage setting. A missing rule: `create_dispatch_rule` (it can make the webhook target from `url`).
+- Ask who decides the triage of intake (a request in the support lane). By default a person decides, and an agent only writes its proposal with `append_note`. When the team wants the agent to decide, call `set_agent_triage {board, agents_decide: true}`. It needs `configure_boards` on the board.
 
 ## 7. Local wiring
 
