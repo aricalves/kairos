@@ -382,7 +382,11 @@ fn given(value: &Option<String>) -> Option<String> {
 }
 
 /// The live column of `board` with the name (no case) or the id `column`.
-fn column_of(conn: &mut PgConnection, board: &Board, column: &str) -> Result<Uuid, ApiError> {
+pub(crate) fn column_of(
+    conn: &mut PgConnection,
+    board: &Board,
+    column: &str,
+) -> Result<Uuid, ApiError> {
     use kairos_db::schema::board_columns::dsl;
     let columns: Vec<(Uuid, String)> = dsl::board_columns
         .filter(dsl::board_id.eq(board.id))

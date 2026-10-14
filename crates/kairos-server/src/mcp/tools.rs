@@ -625,6 +625,12 @@ pub struct UpdateRepositoryParams {
     /// "off" (KAIROS-T-0398). "off" cancels the build jobs that wait, and
     /// the builder adds no new job. A build that runs now goes on.
     pub code_index_build: Option<String>,
+    /// The new slug (KAIROS-T-0443). Each checkout keeps the slug in
+    /// `.claude/kairos.local.md`: a new slug breaks that reference.
+    pub slug: Option<String>,
+    /// The new owner team, by slug or UUID (KAIROS-T-0443). You need the
+    /// right on the old team and on the new team.
+    pub team: Option<String>,
 }
 
 /// Parameters for `rebuild_code_index` (KAIROS-T-0332).
@@ -829,6 +835,192 @@ pub struct GrantCapabilityParams {
     /// The board, by slug or UUID. A board capability needs it. For
     /// manage_structure, omit it for a grant at the organization.
     pub board: Option<String>,
+}
+
+/// Parameters for `update_team` (KAIROS-T-0443). The names are those of the
+/// body of `PATCH /api/teams/{id}`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct UpdateTeamParams {
+    /// The team, by slug or UUID.
+    pub team: String,
+    /// The new name.
+    pub name: Option<String>,
+    /// The new slug.
+    pub slug: Option<String>,
+    /// The new type: stream_aligned | platform | enabling |
+    /// complicated_subsystem.
+    pub team_type: Option<String>,
+    /// The published site of the team: true (on) or false (off).
+    pub site_enabled: Option<bool>,
+}
+
+/// Parameters for `remove_team_member` (KAIROS-T-0443).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct RemoveTeamMemberParams {
+    /// The team, by slug or UUID.
+    pub team: String,
+    /// The member: a user id, an email, a user name, or the name of a
+    /// service account.
+    pub user: String,
+}
+
+/// Parameters for `set_board_capabilities` (KAIROS-T-0443).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct SetBoardCapabilitiesParams {
+    /// The board, by slug or UUID.
+    pub board: String,
+    /// The member of the organization: a user id, an email, a user name, or
+    /// the name of a service account.
+    pub user: String,
+    /// The full set of board capabilities of the user on the board. It
+    /// replaces the set. An empty list revokes each capability.
+    pub capabilities: Vec<String>,
+}
+
+/// Parameters for `add_column` (KAIROS-T-0443).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct AddColumnParams {
+    /// The board, by slug or UUID.
+    pub board: String,
+    /// The name of the new column.
+    pub name: String,
+    /// The position of the new column, from 0 (the first). Default: the
+    /// last.
+    pub position: Option<i32>,
+}
+
+/// Parameters for `update_column` (KAIROS-T-0443). The names are those of
+/// the body of `PATCH /api/boards/{id}/columns/{col_id}`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct UpdateColumnParams {
+    /// The board, by slug or UUID.
+    pub board: String,
+    /// The column, by name or UUID.
+    pub column: String,
+    /// The new name.
+    pub name: Option<String>,
+    /// The new position, from 0 (the first).
+    pub position: Option<i32>,
+    /// True: the column is a done column.
+    pub is_done: Option<bool>,
+    /// True: a task in the column has a claim.
+    pub claims: Option<bool>,
+    /// The WIP limit, 1 or more.
+    pub wip_limit: Option<i32>,
+    /// True: remove the WIP limit. Not with `wip_limit`.
+    #[serde(default)]
+    pub no_wip_limit: bool,
+}
+
+/// Parameters for `remove_column` (KAIROS-T-0443).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct RemoveColumnParams {
+    /// The board, by slug or UUID.
+    pub board: String,
+    /// The column, by name or UUID. It must hold no live item.
+    pub column: String,
+}
+
+/// Parameters for `set_transition` (KAIROS-T-0443).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct SetTransitionParams {
+    /// The board, by slug or UUID.
+    pub board: String,
+    /// The column the move starts in, by name or UUID.
+    pub from: String,
+    /// The column the move ends in, by name or UUID.
+    pub to: String,
+    /// True: allow the move. False: stop it.
+    pub allowed: bool,
+}
+
+/// Parameters for `delete_repository` (KAIROS-T-0443).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct DeleteRepositoryParams {
+    /// The repository, by slug or UUID.
+    pub repository: String,
+}
+
+/// Parameters for `save_metadata_definition` (KAIROS-T-0443).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct SaveMetadataDefinitionParams {
+    /// The definition to change, by slug or UUID. Omit it to make a new
+    /// definition.
+    pub definition: Option<String>,
+    /// The name. A new definition needs it.
+    pub name: Option<String>,
+    /// The slug. A new definition needs it.
+    pub slug: Option<String>,
+    /// The type of a new definition: text | number | date | enum | boolean.
+    /// It does not change later.
+    pub field_type: Option<String>,
+    /// The values of an enum, in their order (the scale). It replaces the
+    /// list.
+    pub enum_options: Option<Vec<String>>,
+    /// The entity types that the definition applies to (strategy,
+    /// initiative, task, document, adr). Empty: each type. It replaces the
+    /// list.
+    pub entity_types: Option<Vec<String>>,
+}
+
+/// Parameters for `delete_metadata_definition` and `delete_template`
+/// (KAIROS-T-0443).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct DeleteMetaParams {
+    /// The definition or the template, by slug or UUID.
+    pub reference: String,
+}
+
+/// A metadata field of a template (KAIROS-T-0443).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct TemplateFieldParams {
+    /// The slug of a metadata definition.
+    pub definition_slug: String,
+    /// The default value.
+    pub default_value: Option<String>,
+    /// True: an item of the template must have a value.
+    #[serde(default)]
+    pub required: bool,
+}
+
+/// Parameters for `save_template` (KAIROS-T-0443).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct SaveTemplateParams {
+    /// The template to change, by slug or UUID. Omit it to make a new
+    /// template.
+    pub template: Option<String>,
+    /// The name. A new template needs it.
+    pub name: Option<String>,
+    /// The slug. A new template needs it.
+    pub slug: Option<String>,
+    /// The markdown content of a new item of the template.
+    pub content: Option<String>,
+    /// The metadata fields. It replaces the list.
+    pub metadata: Option<Vec<TemplateFieldParams>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2693,7 +2885,7 @@ impl KairosMcp {
     // `POST /api/repositories`: the two call one function
     // (`crate::api::org::repositories::add`).
     #[tool(
-        description = "Add a repository to the directory of the organization. This tool does not link a task to a repository: `set_repository` does that. A repository can be in the directory only one time, so call `list_repositories` first. `forge` is github, gitlab or other. `repo_full_name` is the name on the forge, as the forge sends it in a webhook: 2 parts for github (owner/repo), 2 or more for gitlab (group/subgroup/project), 1 or more for other. It does not end with .git. `repo_url` is the URL for a browser: an absolute http or https URL, with no user name and no password in it. No value can be empty or have a space. `team` (slug or UUID) is the ONE owner team. Optional: `slug` (the default is made from the full name: acme/payments-api gives acme-payments-api), `default_branch` (a branch name that git accepts; the default is main), and `description`. The description tells an agent how to work in the repository: the task runner, the tests, the rules for a branch. You must be a member of the owner team, or an organization admin. No tool deletes a repository, and no tool changes its owner team or its slug. A person does these on the GUI page Admin, Repositories, with the CLI (`kairos repos update`, `kairos repos delete`) or with the REST API (PATCH or DELETE /api/repositories/{slug})."
+        description = "Add a repository to the directory of the organization. This tool does not link a task to a repository: `set_repository` does that. A repository can be in the directory only one time, so call `list_repositories` first. `forge` is github, gitlab or other. `repo_full_name` is the name on the forge, as the forge sends it in a webhook: 2 parts for github (owner/repo), 2 or more for gitlab (group/subgroup/project), 1 or more for other. It does not end with .git. `repo_url` is the URL for a browser: an absolute http or https URL, with no user name and no password in it. No value can be empty or have a space. `team` (slug or UUID) is the ONE owner team. Optional: `slug` (the default is made from the full name: acme/payments-api gives acme-payments-api), `default_branch` (a branch name that git accepts; the default is main), and `description`. The description tells an agent how to work in the repository: the task runner, the tests, the rules for a branch. You must be a member of the owner team, or an organization admin. `update_repository` changes its slug and its owner team; `delete_repository` removes it."
     )]
     pub async fn add_repository(
         &self,
@@ -2743,7 +2935,7 @@ impl KairosMcp {
     // COLLIERY-T-0267 the tool made the comparison, and the REST route
     // always wrote.
     #[tool(
-        description = "Change a repository of the directory: its `description` (how to work in the repository), its `default_branch`, its `repo_url` and its `code_index_build`. Send one or more of them. `default_branch` is a branch name that git accepts. `repo_url` is an absolute http or https URL, with no user name and no password in it. The two cannot be empty or have a space. `code_index_build` is `on` or `off`: the code index builder of the server for the repository. Set it to `off` to stop the builds of the repository: Kairos cancels the build jobs that wait, and the builder adds no new job. Kairos does not stop a build that runs now, but the build gets no further try. `get_repository` shows the value, and the REST API sets it too (PATCH /api/repositories/{slug} with `code_index_build`). A value that the repository has already changes nothing. `repository` is a slug or UUID. `description` replaces the full text, so read the text with `get_repository` first. This tool does not link a task to a repository: `set_repository` does that. You must be a member of the owner team, or an organization admin. This tool does not change the slug: each checkout keeps the slug in `.claude/kairos.local.md`, and a new slug breaks that reference. This tool does not change the owner team, and no tool deletes a repository. A person does these on the GUI page Admin, Repositories, with the CLI (`kairos repos update`, `kairos repos delete`) or with the REST API (PATCH or DELETE /api/repositories/{slug})."
+        description = "Change a repository of the directory: its `description` (how to work in the repository), its `default_branch`, its `repo_url`, its `code_index_build`, its `slug` and its owner `team` (slug or UUID; you need the right on the old team and on the new team). Send one or more of them. `default_branch` is a branch name that git accepts. `repo_url` is an absolute http or https URL, with no user name and no password in it. The two cannot be empty or have a space. `code_index_build` is `on` or `off`: the code index builder of the server for the repository. Set it to `off` to stop the builds of the repository: Kairos cancels the build jobs that wait, and the builder adds no new job. Kairos does not stop a build that runs now, but the build gets no further try. `get_repository` shows the value, and the REST API sets it too (PATCH /api/repositories/{slug} with `code_index_build`). A value that the repository has already changes nothing. `repository` is a slug or UUID. `description` replaces the full text, so read the text with `get_repository` first. This tool does not link a task to a repository: `set_repository` does that. You must be a member of the owner team, or an organization admin. A new slug breaks the reference in `.claude/kairos.local.md` of each checkout: run /kairos:bootstrap there again. `delete_repository` removes a repository."
     )]
     pub async fn update_repository(
         &self,
@@ -2760,10 +2952,12 @@ impl KairosMcp {
                 && params.default_branch.is_none()
                 && params.repo_url.is_none()
                 && params.code_index_build.is_none()
+                && params.slug.is_none()
+                && params.team.is_none()
             {
                 return Err(ApiError::validation(
                     "The call has nothing to change. Send one or more of these arguments: \
-                     description, default_branch, repo_url, code_index_build.",
+                     description, default_branch, repo_url, code_index_build, slug, team.",
                 ));
             }
             // KAIROS-T-0398: refuse an unknown value, and name it.
@@ -2794,6 +2988,8 @@ impl KairosMcp {
                     default_branch: params.default_branch,
                     repo_url: params.repo_url,
                     code_index_build,
+                    slug: params.slug,
+                    team: params.team,
                     ..Default::default()
                 },
             )?;
@@ -2810,6 +3006,8 @@ impl KairosMcp {
                 "default_branch",
                 "repo_url",
                 "code_index_build",
+                "slug",
+                "team",
             ]
             .into_iter()
             .filter(|name| change.changed.contains(name))
@@ -3663,6 +3861,481 @@ impl KairosMcp {
         })
         .await
     }
+
+    // KAIROS-T-0443: team and board administration, as REST does. Each tool
+    // calls the function of its REST route, so the gate is the same.
+    #[tool(
+        description = "Change a team, as PATCH /api/teams/{id} does: its `name`, `slug`, `team_type` (stream_aligned | platform | enabling | complicated_subsystem) or `site_enabled` (the published site of the team). Send one or more. A value that the team has already changes nothing. `team` is a slug or UUID. Requires the organization admin role or `manage_structure` on the organization."
+    )]
+    pub async fn update_team(
+        &self,
+        Parameters(params): Parameters<UpdateTeamParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            let team = team_by_ref(conn, &params.team)?;
+            let updated = crate::api::org::teams::update_as(
+                conn,
+                &slug,
+                user,
+                team.id,
+                &kairos_client::types_org::UpdateTeamRequest {
+                    name: params.name,
+                    slug: params.slug,
+                    team_type: params.team_type,
+                    site_enabled: params.site_enabled,
+                },
+            )?;
+            Ok(format!(
+                "The team {} ({}): name {:?}, type {}, site {}.",
+                updated.slug,
+                updated.id,
+                updated.name,
+                updated.team_type,
+                if updated.site_enabled { "on" } else { "off" }
+            ))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Take a member off a team, as DELETE /api/teams/{id}/members/{user_id} does. The person loses the rights that the team gives on its boards; grants on a board stay. `team` is a slug or UUID. `user` is a user id, an email, a user name, or the name of a service account. Requires the organization admin role or `manage_structure` on the organization."
+    )]
+    pub async fn remove_team_member(
+        &self,
+        Parameters(params): Parameters<RemoveTeamMemberParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            let team = team_by_ref(conn, &params.team)?;
+            let target = match Uuid::parse_str(params.user.trim()) {
+                Ok(id) => id,
+                Err(_) => {
+                    crate::api::org::structure_grants::resolve_member(
+                        conn,
+                        &slug,
+                        &params.user,
+                        "user",
+                    )?
+                    .id
+                }
+            };
+            crate::api::org::teams::remove_member_as(conn, &slug, user, team.id, target)?;
+            Ok(format!("Took {} off the team {}.", params.user, team.slug))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Set the board capabilities of a person on a board, as PATCH and DELETE /api/boards/{id}/members/{user_id} do. `capabilities` is the full set: it replaces the set the person has. An empty list revokes each capability. A person with no capability on the board gets the set (as grant_capability). The capabilities are those of grant_capability, without manage_structure. `board` is a slug or UUID. `user` is a user id, an email, a user name, or the name of a service account. Requires `administer_members` on the board, or `manage_structure` on the board or on the organization."
+    )]
+    pub async fn set_board_capabilities(
+        &self,
+        Parameters(params): Parameters<SetBoardCapabilitiesParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            use crate::api::org::boards as b;
+            let board = board_by_ref(conn, &params.board)?;
+            let target = crate::api::org::structure_grants::resolve_member(
+                conn,
+                &slug,
+                &params.user,
+                "user",
+            )?;
+            let had = kairos_db::schema::board_member_capabilities::table
+                .filter(kairos_db::schema::board_member_capabilities::board_id.eq(board.id))
+                .filter(kairos_db::schema::board_member_capabilities::user_id.eq(target.id))
+                .count()
+                .get_result::<i64>(conn)
+                .map_err(ApiError::internal)?;
+            if params.capabilities.is_empty() {
+                if had == 0 {
+                    return Ok(format!(
+                        "{} has no capability on the board {}: nothing changed.",
+                        params.user, board.slug
+                    ));
+                }
+                let revoked = b::revoke_all_as(conn, &slug, user, board.id, target.id)?;
+                return Ok(format!(
+                    "Revoked each capability of {} on the board {}: {}.",
+                    params.user,
+                    board.slug,
+                    revoked.revoked_capabilities.join(", ")
+                ));
+            }
+            let member = if had == 0 {
+                b::grant_as(conn, &slug, user, board.id, target.id, &params.capabilities)?
+            } else {
+                b::replace_as(conn, &slug, user, board.id, target.id, &params.capabilities)?
+            };
+            Ok(format!(
+                "{} has on the board {}: {}.",
+                params.user,
+                board.slug,
+                member.capabilities.join(", ")
+            ))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Add a column to a board, as POST /api/boards/{id}/columns does. `position` is from 0 (the first); the default is the last. The new column has no transition: add them with set_transition. `board` is a slug or UUID. Requires `configure_boards` on the board."
+    )]
+    pub async fn add_column(
+        &self,
+        Parameters(params): Parameters<AddColumnParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            let board = board_by_ref(conn, &params.board)?;
+            let position = match params.position {
+                Some(position) => position,
+                None => kairos_db::schema::board_columns::table
+                    .filter(kairos_db::schema::board_columns::board_id.eq(board.id))
+                    .filter(kairos_db::schema::board_columns::deleted_at.is_null())
+                    .count()
+                    .get_result::<i64>(conn)
+                    .map_err(ApiError::internal)? as i32,
+            };
+            let column = crate::api::org::boards::add_column_as(
+                conn,
+                &slug,
+                user,
+                board.id,
+                &params.name,
+                position,
+            )?;
+            Ok(format!(
+                "Added the column {} ({}) to the board {} at position {}.",
+                column.name, column.id, board.slug, column.position
+            ))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Change a column of a board, as PATCH /api/boards/{id}/columns/{col_id} does: `name`, `position` (from 0), `is_done` (a done column), `claims` (a task in it has a claim), `wip_limit` (1 or more), or `no_wip_limit: true` to remove the limit. Send one or more. `board` is a slug or UUID; `column` is a name or UUID. Requires `configure_boards` on the board."
+    )]
+    pub async fn update_column(
+        &self,
+        Parameters(params): Parameters<UpdateColumnParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            if params.no_wip_limit && params.wip_limit.is_some() {
+                return Err(
+                    ApiError::validation("Send wip_limit or no_wip_limit, not both.")
+                        .with_details(json!({ "argument": "no_wip_limit" })),
+                );
+            }
+            let board = board_by_ref(conn, &params.board)?;
+            let column_id = crate::api::org::dispatch::column_of(conn, &board, &params.column)?;
+            let wip_limit = if params.no_wip_limit {
+                Some(None)
+            } else {
+                params.wip_limit.map(Some)
+            };
+            let column = crate::api::org::boards::update_column_as(
+                conn,
+                &slug,
+                user,
+                board.id,
+                column_id,
+                &kairos_client::types_org::UpdateColumnRequest {
+                    name: params.name,
+                    position: params.position,
+                    is_done: params.is_done,
+                    claims: params.claims,
+                    wip_limit,
+                },
+            )?;
+            Ok(format!(
+                "The column {} of the board {}: position {}, done {}, claims {}, WIP limit {}.",
+                column.name,
+                board.slug,
+                column.position,
+                column.is_done,
+                column.claims,
+                column
+                    .wip_limit
+                    .map(|limit| limit.to_string())
+                    .unwrap_or_else(|| "none".into())
+            ))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Remove a column of a board, as DELETE /api/boards/{id}/columns/{col_id} does. The column must hold no live item (COLUMN_NOT_EMPTY). Its transitions stop. `board` is a slug or UUID; `column` is a name or UUID. Requires `configure_boards` on the board."
+    )]
+    pub async fn remove_column(
+        &self,
+        Parameters(params): Parameters<RemoveColumnParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            let board = board_by_ref(conn, &params.board)?;
+            let column_id = crate::api::org::dispatch::column_of(conn, &board, &params.column)?;
+            crate::api::org::boards::remove_column_as(conn, &slug, user, board.id, column_id)?;
+            Ok(format!(
+                "Removed the column {} of the board {}.",
+                params.column, board.slug
+            ))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Allow or stop a move between two columns of a board, as POST and DELETE /api/boards/{id}/transitions do. `allowed: true` adds the transition `from` -> `to`; `allowed: false` removes it. `board` is a slug or UUID; `from` and `to` are column names or UUIDs. Requires `configure_boards` on the board."
+    )]
+    pub async fn set_transition(
+        &self,
+        Parameters(params): Parameters<SetTransitionParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            use crate::api::org::boards as b;
+            let board = board_by_ref(conn, &params.board)?;
+            let from = crate::api::org::dispatch::column_of(conn, &board, &params.from)
+                .map_err(|e| e.with_details(json!({ "argument": "from" })))?;
+            let to = crate::api::org::dispatch::column_of(conn, &board, &params.to)
+                .map_err(|e| e.with_details(json!({ "argument": "to" })))?;
+            if params.allowed {
+                b::add_transition_as(conn, &slug, user, board.id, from, to)?;
+                Ok(format!(
+                    "The board {} allows the move {} -> {}.",
+                    board.slug, params.from, params.to
+                ))
+            } else {
+                b::remove_transition_as(conn, &slug, user, board.id, from, to)?;
+                Ok(format!(
+                    "The board {} does not allow the move {} -> {} now.",
+                    board.slug, params.from, params.to
+                ))
+            }
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Remove a repository from the directory, as DELETE /api/repositories/{slug} does. Refused while a live task links to it or a forge connection uses it (409). `repository` is a slug or UUID. Requires the organization admin role or `manage_structure` on the organization."
+    )]
+    pub async fn delete_repository(
+        &self,
+        Parameters(params): Parameters<DeleteRepositoryParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            let removed =
+                crate::api::org::repositories::delete_as(conn, &slug, user, &params.repository)?;
+            Ok(format!(
+                "Removed the repository {} ({}) from the directory.",
+                removed.slug, removed.id
+            ))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Make or change a metadata definition, as POST and PATCH /api/metadata-definitions do. With `definition` (slug or UUID), the tool changes it: `name`, `slug`, `enum_options` (the scale, in order) and `entity_types` (each replaces the value). With no `definition`, it makes one: `name`, `slug` and `field_type` (text | number | date | enum | boolean) are required. The type does not change later. Organization admins only."
+    )]
+    pub async fn save_metadata_definition(
+        &self,
+        Parameters(params): Parameters<SaveMetadataDefinitionParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let gate = crate::api::meta::require_org_admin(&tenant);
+        let user = auth.user_id;
+        self.run_tool(&tenant, move |conn| {
+            gate?;
+            use crate::api::meta::definitions as d;
+            use kairos_client::types_meta as dto;
+            let saved = match params.definition.as_deref() {
+                Some(reference) => {
+                    if params.field_type.is_some() {
+                        return Err(ApiError::validation(
+                            "The type of a definition does not change. Omit field_type.",
+                        )
+                        .with_details(json!({ "argument": "field_type" })));
+                    }
+                    let id = meta_id(conn, "metadata_definitions", reference, "definition")?;
+                    d::update_definition_in(
+                        conn,
+                        user,
+                        id,
+                        &dto::UpdateMetadataDefinitionRequest {
+                            name: params.name,
+                            slug: params.slug,
+                            enum_options: params.enum_options,
+                            entity_types: params.entity_types,
+                        },
+                    )?
+                }
+                None => {
+                    let required = |value: Option<String>, name: &str| {
+                        value.ok_or_else(|| {
+                            ApiError::validation(format!(
+                                "A new definition needs {name}. To change a definition, send \
+                                 definition."
+                            ))
+                            .with_details(json!({ "argument": name }))
+                        })
+                    };
+                    d::create_definition_in(
+                        conn,
+                        &dto::CreateMetadataDefinitionRequest {
+                            name: required(params.name, "name")?,
+                            slug: required(params.slug, "slug")?,
+                            field_type: required(params.field_type, "field_type")?,
+                            enum_options: params.enum_options.unwrap_or_default(),
+                            entity_types: params.entity_types.unwrap_or_default(),
+                        },
+                    )?
+                }
+            };
+            Ok(format!(
+                "The metadata definition {} ({}): {}, type {}.",
+                saved.slug, saved.id, saved.name, saved.field_type
+            ))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Delete a metadata definition, as DELETE /api/metadata-definitions/{id} does. Refused while an item has a value or a template has the field (DEFINITION_IN_USE names them). `reference` is a slug or UUID. Organization admins only."
+    )]
+    pub async fn delete_metadata_definition(
+        &self,
+        Parameters(params): Parameters<DeleteMetaParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (_, tenant) = Self::caller(&context)?;
+        let gate = crate::api::meta::require_org_admin(&tenant);
+        self.run_tool(&tenant, move |conn| {
+            gate?;
+            let id = meta_id(conn, "metadata_definitions", &params.reference, "reference")?;
+            crate::api::meta::definitions::delete_definition_in(conn, id)?;
+            Ok(format!(
+                "Deleted the metadata definition {}.",
+                params.reference
+            ))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Make or change a template, as POST and PATCH /api/templates do. With `template` (slug or UUID), the tool changes it: `name`, `slug`, `content` and `metadata` (each replaces the value). With no `template`, it makes one: `name` and `slug` are required. `metadata` is a list of fields: `definition_slug`, optional `default_value`, `required`. Organization admins only."
+    )]
+    pub async fn save_template(
+        &self,
+        Parameters(params): Parameters<SaveTemplateParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let gate = crate::api::meta::require_org_admin(&tenant);
+        let user = auth.user_id;
+        self.run_tool(&tenant, move |conn| {
+            gate?;
+            use crate::api::meta::templates as t;
+            use kairos_client::types_meta as dto;
+            let metadata = params.metadata.map(|fields| {
+                fields
+                    .into_iter()
+                    .map(|field| dto::TemplateMetadataEntry {
+                        definition_slug: field.definition_slug,
+                        default_value: field.default_value,
+                        required: field.required,
+                    })
+                    .collect::<Vec<_>>()
+            });
+            let saved = match params.template.as_deref() {
+                Some(reference) => {
+                    let id = meta_id(conn, "templates", reference, "template")?;
+                    t::update_template_in(
+                        conn,
+                        user,
+                        id,
+                        &dto::UpdateTemplateRequest {
+                            name: params.name,
+                            slug: params.slug,
+                            content: params.content,
+                            metadata,
+                        },
+                    )?
+                }
+                None => {
+                    let required = |value: Option<String>, name: &str| {
+                        value.ok_or_else(|| {
+                            ApiError::validation(format!(
+                                "A new template needs {name}. To change a template, send \
+                                 template."
+                            ))
+                            .with_details(json!({ "argument": name }))
+                        })
+                    };
+                    t::create_template_in(
+                        conn,
+                        &dto::CreateTemplateRequest {
+                            name: required(params.name, "name")?,
+                            slug: required(params.slug, "slug")?,
+                            content: params.content.unwrap_or_default(),
+                            metadata: metadata.unwrap_or_default(),
+                        },
+                    )?
+                }
+            };
+            Ok(format!(
+                "The template {} ({}): {}.",
+                saved.slug, saved.id, saved.name
+            ))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Delete a template, as DELETE /api/templates/{id} does. Items made from it keep their content and their metadata. `reference` is a slug or UUID. Organization admins only."
+    )]
+    pub async fn delete_template(
+        &self,
+        Parameters(params): Parameters<DeleteMetaParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (_, tenant) = Self::caller(&context)?;
+        let gate = crate::api::meta::require_org_admin(&tenant);
+        self.run_tool(&tenant, move |conn| {
+            gate?;
+            let id = meta_id(conn, "templates", &params.reference, "reference")?;
+            crate::api::meta::templates::delete_template_in(conn, id)?;
+            Ok(format!("Deleted the template {}.", params.reference))
+        })
+        .await
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4005,6 +4678,38 @@ fn board_by_ref(conn: &mut PgConnection, reference: &str) -> Result<Board, ApiEr
 }
 
 /// Resolve a team by UUID or slug; 422 otherwise (a filter value).
+/// The id of a metadata definition or a template (KAIROS-T-0443), by slug
+/// or UUID. `table` is `metadata_definitions` or `templates`.
+fn meta_id(
+    conn: &mut PgConnection,
+    table: &str,
+    reference: &str,
+    argument: &str,
+) -> Result<Uuid, ApiError> {
+    #[derive(diesel::QueryableByName)]
+    struct Row {
+        #[diesel(sql_type = diesel::sql_types::Uuid)]
+        id: Uuid,
+    }
+    let reference = reference.trim();
+    let sql = format!("SELECT id FROM {table} WHERE id::text = $1 OR slug = $1 LIMIT 1");
+    let row: Option<Row> = diesel::sql_query(sql)
+        .bind::<diesel::sql_types::Text, _>(reference)
+        .get_result(conn)
+        .optional()
+        .map_err(ApiError::internal)?;
+    row.map(|row| row.id).ok_or_else(|| {
+        ApiError::not_found(format!(
+            "No {} has the slug or the id {reference:?}.",
+            match table {
+                "templates" => "template",
+                _ => "metadata definition",
+            }
+        ))
+        .with_details(json!({ "argument": argument }))
+    })
+}
+
 fn team_by_ref(
     conn: &mut PgConnection,
     reference: &str,

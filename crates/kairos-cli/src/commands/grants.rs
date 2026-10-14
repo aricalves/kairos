@@ -5,7 +5,7 @@
 //! (`POST /api/boards/{id}/members`).
 
 use kairos_client::types_org::{
-    AddBoardMemberRequest, CreateStructureGrantRequest, StructureGrant,
+    AddBoardMemberRequest, CreateStructureGrantRequest, ReplaceCapabilitiesRequest, StructureGrant,
 };
 
 use crate::context::{Common, client, print_json};
@@ -28,9 +28,8 @@ pub enum GrantsCommand {
     /// --board: that board only. Only an organization admin grants
     /// manage_structure. A board capability needs --board
     Add {
-        /// The member. For manage_structure: a user id, an email, a user name
-        /// or the name of a service account. For a board capability: the user
-        /// id (UUID)
+        /// The member: a user id, an email, a user name or the name of a
+        /// service account
         #[arg(long)]
         user: String,
         /// manage_structure, or a board capability (manage_tasks,
@@ -40,6 +39,37 @@ pub enum GrantsCommand {
         /// The board, by slug or id (UUID)
         #[arg(long)]
         board: Option<String>,
+        #[command(flatten)]
+        common: Common,
+    },
+    /// Set the board capabilities of a member: the list replaces the set
+    /// (needs administer_members on the board)
+    #[command(name = "board-set")]
+    BoardSet {
+        /// The board, by slug or id (UUID)
+        #[arg(value_name = "BOARD")]
+        board: String,
+        /// The member: a user id, an email, a user name or the name of a
+        /// service account
+        #[arg(value_name = "USER")]
+        user: String,
+        /// A board capability; repeat it. The list replaces the set
+        #[arg(long = "capability", value_name = "CAPABILITY", required = true)]
+        capabilities: Vec<String>,
+        #[command(flatten)]
+        common: Common,
+    },
+    /// Revoke each board capability of a member on a board (needs
+    /// administer_members on the board)
+    #[command(name = "board-revoke")]
+    BoardRevoke {
+        /// The board, by slug or id (UUID)
+        #[arg(value_name = "BOARD")]
+        board: String,
+        /// The member: a user id, an email, a user name or the name of a
+        /// service account
+        #[arg(value_name = "USER")]
+        user: String,
         #[command(flatten)]
         common: Common,
     },
@@ -135,6 +165,49 @@ impl GrantsCommand {
                     member.display_name,
                     member.email,
                     member.capabilities.join(", ")
+                );
+                Ok(())
+            }
+            Self::BoardSet {
+                board,
+                user,
+                capabilities,
+                common,
+            } => {
+                let client = client(&common)?;
+                let board_id = client.get_board(&board).await?.board.id;
+                let member = client
+                    .replace_capabilities(
+                        &board_id,
+                        &user,
+                        &ReplaceCapabilitiesRequest { capabilities },
+                    )
+                    .await?;
+                if common.json {
+                    return print_json(&member);
+                }
+                println!(
+                    "The capabilities of {} <{}> on the board {board}: {}.",
+                    member.display_name,
+                    member.email,
+                    member.capabilities.join(", ")
+                );
+                Ok(())
+            }
+            Self::BoardRevoke {
+                board,
+                user,
+                common,
+            } => {
+                let client = client(&common)?;
+                let board_id = client.get_board(&board).await?.board.id;
+                let revoked = client.remove_board_member(&board_id, &user).await?;
+                if common.json {
+                    return print_json(&revoked);
+                }
+                println!(
+                    "Revoked each capability of {user} on the board {board}: {}.",
+                    revoked.revoked_capabilities.join(", ")
                 );
                 Ok(())
             }

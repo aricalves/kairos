@@ -4,11 +4,13 @@
 
 pub mod admin;
 pub mod boards;
+pub mod columns;
 pub mod dispatch;
 pub mod entities;
 pub mod grants;
 pub mod keys;
 pub mod members;
+pub mod meta;
 pub mod orgs;
 pub mod pages;
 pub mod repos;
