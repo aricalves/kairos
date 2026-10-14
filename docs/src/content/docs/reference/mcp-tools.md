@@ -1974,8 +1974,8 @@ Refuses: `VALIDATION` for a move into the node itself or into a folder in it.
 ### `delete_team_page`
 
 Archives a page or a folder, as `DELETE /api/teams/{id}/pages/{page_id}` does.
-A folder is archived with everything in it. A person restores archived nodes on
-the team page.
+A folder is archived with everything in it. A person restores archived nodes in
+the Archived list of the Pages view of the team (`/teams/<slug>/pages/`).
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|

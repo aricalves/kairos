@@ -236,6 +236,15 @@ fn team_page_scaffold() {
         .collect();
     assert!(live.contains(&shelf.id) && live.contains(&late.id));
     assert!(!live.contains(&early.id));
+    // A page slugged `docs` in an archived folder cannot come back to the
+    // root: the docs sites use that path segment.
+    let reserved = page_in(&mut conn, "docs");
+    kairos_db::team_pages::soft_delete_page(&mut conn, team.id, shelf.id, actor).unwrap();
+    match kairos_db::team_pages::restore_page(&mut conn, team.id, reserved.id, actor) {
+        Err(TeamPageError::ReservedSlug(slug)) => assert_eq!(slug, "docs"),
+        other => panic!("a reserved slug at the root must refuse the restore, got {other:?}"),
+    }
+    kairos_db::team_pages::restore_page(&mut conn, team.id, shelf.id, actor).unwrap();
     // A live sibling took the slug: the restore is refused.
     page_in(&mut conn, "early");
     match kairos_db::team_pages::restore_page(&mut conn, team.id, early.id, actor) {

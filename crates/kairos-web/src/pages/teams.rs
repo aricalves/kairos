@@ -375,6 +375,10 @@ fn TeamBody(view_model: TeamView, on_changed: Callback<()>) -> impl IntoView {
             // root, and moves nodes by drag and drop. Re-rendered when the
             // identity lands, like the announcement composer.
             <Panel title="Documentation" caption="the team's page tree — folders expand, pages open">
+                // KAIROS-T-0439: the Pages view holds the tree and the archive.
+                <Anchor href=format!("/teams/{}/pages/", team_slug)>
+                    <Text dimmed=true size="xs">"All pages, the archive and restore"</Text>
+                </Anchor>
                 {
                     let team_id_for_tree = team.id.clone();
                     let team_slug_for_tree = team_slug.clone();

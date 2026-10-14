@@ -4840,7 +4840,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Archive a page or a folder of a team, as DELETE /api/teams/{id}/pages/{page_id} does. A folder is archived with everything in it. `page` is a path of slugs or a UUID. The charter is refused. A person restores archived nodes on the team page or with POST /api/teams/{id}/pages/{page_id}/restore. Requires membership of the team, or the organization admin role."
+        description = "Archive a page or a folder of a team, as DELETE /api/teams/{id}/pages/{page_id} does. A folder is archived with everything in it. `page` is a path of slugs or a UUID. The charter is refused. A person restores archived nodes in the Archived list of the Pages view of the team (/teams/<slug>/pages/) or with POST /api/teams/{id}/pages/{page_id}/restore. Requires membership of the team, or the organization admin role."
     )]
     pub async fn delete_team_page(
         &self,
