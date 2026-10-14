@@ -99,6 +99,29 @@ journey(
       };
     });
 
+    await step(alice, 'gives the code index builder a read token for the company forge, checks it is never shown, then takes it out (MCP)', async () => {
+      // KAIROS-T-0431: one read token per forge host, for each repository
+      // on it. The host is this run's own, so no real fetch uses it.
+      const mcp = await alice.mcp();
+      const api = await alice.api();
+      const host = `${named('forge')}.example.com`;
+      const token = `uat-read-token-${ctx.run}`;
+      const set = await mcp.call('set_org_read_token', { host: `https://${host.toUpperCase()}/`, token });
+      expect(set).toContain(`Set the read token of the organization for ${host}`);
+      ledger.add({
+        kind: 'org-read-token',
+        label: host,
+        delete: async () => { await api.delete(`/api/org/read-tokens/${host}`); },
+      });
+      const listed = await mcp.call('list_org_read_tokens');
+      expect(listed).toContain(`- ${host}: set by`);
+      expect(listed, 'no tool gives the token back').not.toContain(token);
+      const removed = await mcp.call('remove_org_read_token', { host });
+      expect(removed).toContain(`Removed the read token of the organization for ${host}`);
+      expect(removed).not.toContain(`- ${host}:`);
+      return { host, listed_without_the_token: true, removed: true };
+    });
+
     let strategy = '';
     let initiative = '';
     const tasks: string[] = [];

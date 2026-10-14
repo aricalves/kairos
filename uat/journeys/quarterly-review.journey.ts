@@ -255,6 +255,23 @@ journey(
       };
     });
 
+    await step(alice, 'asks her agent how work flowed through the platform board this quarter (MCP)', async () => {
+      // The other question of a review: not what is planned, but how fast
+      // work moves. Cycle time, throughput, what is ageing, and the
+      // cumulative flow, for the last 90 days by default.
+      const mcp = await alice.mcp();
+      const flow = await mcp.call('board_flow', { board: 'platform-delivery' });
+      expect(flow).toMatch(/^# Flow of platform-delivery \(\d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}\)/);
+      for (const part of ['## Cycle time (days)', '## Throughput per week', '## Work in progress', '## Cumulative flow']) {
+        expect(flow, `the flow has the part ${part}`).toContain(part);
+      }
+      const cycle = flow.match(/## Cycle time \(days\)\n([^\n]+)/)?.[1] ?? '';
+      const ageing = flow.split('## Work in progress')[1]?.split('\n## ')[0]?.split('\n').filter((l) => l.startsWith('- ')).length ?? 0;
+      const refused = await mcp.refused('board_flow', { board: 'platform-delivery', from: '2026-12-01', to: '2026-01-01' });
+      expect(refused).toContain('VALIDATION');
+      return { board: 'platform-delivery', cycle_time: cycle, in_progress: ageing, backwards_range: 'VALIDATION' };
+    });
+
     await step(carol, 'reads the delivery stream: which teams are in it and what each has in flight', async () => {
       const page = await carol.gui();
       const api = await carol.api();
