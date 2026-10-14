@@ -34,6 +34,9 @@ const LATEST_API: &str = "https://api.github.com/repos/colliery-io/kairos/releas
 /// The variable that turns the daily check into an update without asking.
 const AUTO_UPDATE_VAR: &str = "KAIROS_AUTO_UPDATE";
 
+/// The variable that turns the daily check off (`0`).
+const UPDATE_CHECK_VAR: &str = "KAIROS_UPDATE_CHECK";
+
 /// One check a day at most.
 const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 
@@ -75,19 +78,32 @@ impl SelfUpdateArgs {
             (None, true) => Release::published(&latest_version(&http).await?)?,
             (None, false) => {
                 let deployment = deployment(self.url.as_deref())?;
-                server_version(&http, &deployment).await?.release()?
+                server_version(&http, &deployment)
+                    .await
+                    .map_err(|err| match err {
+                        CliError::Failure(message) => CliError::Failure(format!(
+                            "{message} Name one with --version or use --latest."
+                        )),
+                        other => other,
+                    })?
+                    .release()?
             }
         };
-        update_to(&http, &release).await
+        println!("{}", update_to(&http, &release).await?);
+        Ok(())
     }
 }
 
 /// Download, check and install a release. The same version is no change.
-async fn update_to(http: &reqwest::Client, release: &Release) -> Result<(), CliError> {
+/// Gives the line to print: `self-update` prints it on stdout, the daily
+/// check on stderr, so the output of a command stays what it is
+/// (KAIROS-T-0460).
+async fn update_to(http: &reqwest::Client, release: &Release) -> Result<String, CliError> {
     let version = &release.version;
     if version == CLI_VERSION {
-        println!("The CLI is {CLI_VERSION} already: nothing changed.");
-        return Ok(());
+        return Ok(format!(
+            "The CLI is {CLI_VERSION} already: nothing changed."
+        ));
     }
     let asset = release.url.rsplit('/').next().unwrap_or("the tarball");
     let archive = download(http, &release.url).await?;
@@ -97,12 +113,21 @@ async fn update_to(http: &reqwest::Client, release: &Release) -> Result<(), CliE
         .and_then(|path| path.canonicalize())
         .map_err(|err| CliError::Failure(format!("The CLI cannot find its own path: {err}.")))?;
     let backup = install(&exe, &binary)?;
-    println!(
-        "Updated the CLI from {CLI_VERSION} to {version}: {}. The old binary is {}.",
+    Ok(installed_line(version, &exe, &backup))
+}
+
+/// The line after a swap. A version older than this CLI is installed, not
+/// an update (`self-update` installs the version of the server).
+fn installed_line(version: &str, exe: &Path, backup: &Path) -> String {
+    let what = match compare(CLI_VERSION, version) {
+        std::cmp::Ordering::Greater => format!("Installed {version} in place of {CLI_VERSION}"),
+        _ => format!("Updated the CLI from {CLI_VERSION} to {version}"),
+    };
+    format!(
+        "{what}: {}. The old binary is {}.",
         exe.display(),
         backup.display()
-    );
-    Ok(())
+    )
 }
 
 /// One tarball of the CLI to install, and its checksum.
@@ -151,10 +176,17 @@ struct CliDownload {
 }
 
 impl ServerVersion {
-    /// The tarball for this platform that the server names; else the
-    /// published release of its version.
+    /// The tarball for this platform that the server names. A server with
+    /// no links (an older one) gives the published release of its version.
+    /// A server whose links have no tarball for this platform is refused,
+    /// and the message names the platforms it lists (KAIROS-T-0460): a
+    /// mirror that lacks one is a gap to fix, not a reason to go to GitHub.
     fn release(self) -> Result<Release, CliError> {
         let target = target_triple()?;
+        if self.cli.is_empty() {
+            return Release::published(&self.version);
+        }
+        let listed: Vec<String> = self.cli.iter().map(|d| d.target.clone()).collect();
         match self
             .cli
             .into_iter()
@@ -165,7 +197,13 @@ impl ServerVersion {
                 url: download.url,
                 sha256_url: download.sha256_url,
             }),
-            None => Release::published(&self.version),
+            None => Err(CliError::Failure(format!(
+                "The server lists the CLI {} for {}, not for this platform ({target}). \
+                 Use --version {} or --latest for the published release.",
+                self.version,
+                listed.join(", "),
+                self.version
+            ))),
         }
     }
 }
@@ -175,6 +213,10 @@ impl ServerVersion {
 /// `KAIROS_AUTO_UPDATE=1` it updates instead. It never fails the command:
 /// a check that cannot run says nothing.
 pub async fn daily_check() {
+    // KAIROS-T-0460: a script or CI turns the check off.
+    if std::env::var(UPDATE_CHECK_VAR).is_ok_and(|value| value.trim() == "0") {
+        return;
+    }
     let Ok(dir) = credentials::config_dir() else {
         return;
     };
@@ -222,8 +264,10 @@ pub async fn daily_check() {
             (Ok(http), Ok(release)) => update_to(&http, &release).await,
             (Err(err), _) | (_, Err(err)) => Err(err),
         };
-        if let Err(err) = result {
-            eprintln!("warning: the CLI could not update itself to {version}: {err}");
+        // On stderr: the command's own output on stdout stays what it is.
+        match result {
+            Ok(line) => eprintln!("{line}"),
+            Err(err) => eprintln!("warning: the CLI could not update itself to {version}: {err}"),
         }
         return;
     }
@@ -273,15 +317,13 @@ async fn server_version(
         .map_err(|err| CliError::Failure(format!("The CLI cannot reach {url}: {err}.")))?;
     if !response.status().is_success() {
         return Err(CliError::Failure(format!(
-            "{url} answered {}. An older server does not tell its version: \
-             name one with --version or use --latest.",
+            "{url} answered {}. An older server does not tell its version.",
             response.status()
         )));
     }
     let body: ServerVersion = response.json().await.map_err(|_| {
         CliError::Failure(format!(
-            "{url} sent no version. An older server does not tell its version: \
-                 name one with --version or use --latest."
+            "{url} sent no version. An older server does not tell its version."
         ))
     })?;
     Ok(body)
@@ -547,6 +589,40 @@ mod tests {
             "{release:?}"
         );
         assert_eq!(release.sha256_url, format!("{}.sha256", release.url));
+    }
+
+    #[test]
+    fn a_server_that_lists_other_platforms_only_is_refused() {
+        // KAIROS-T-0460: a mirror with a gap, not a silent trip to GitHub.
+        let server: ServerVersion = serde_json::from_value(serde_json::json!({
+            "version": "9.9.9",
+            "cli": [
+                {"target": "a-b-c", "url": "https://x/a", "sha256_url": "https://x/a.sha256"},
+                {"target": "d-e-f", "url": "https://x/d", "sha256_url": "https://x/d.sha256"},
+            ],
+        }))
+        .unwrap();
+        let err = server.release().unwrap_err().to_string();
+        let target = target_triple().unwrap();
+        assert!(err.contains("a-b-c, d-e-f"), "{err}");
+        assert!(err.contains(target), "{err}");
+        assert!(err.contains("--version 9.9.9"), "{err}");
+    }
+
+    #[test]
+    fn a_downgrade_says_installed_and_an_upgrade_says_updated() {
+        let exe = Path::new("/usr/local/bin/kairos");
+        let backup = Path::new("/usr/local/bin/kairos.bak");
+        let newer = installed_line("999.0.0", exe, backup);
+        let updated = format!("Updated the CLI from {CLI_VERSION} to 999.0.0");
+        assert!(newer.starts_with(updated.as_str()), "{newer}");
+        let older = installed_line("0.0.1", exe, backup);
+        let installed = format!("Installed 0.0.1 in place of {CLI_VERSION}");
+        assert!(older.starts_with(installed.as_str()), "{older}");
+        assert!(
+            older.ends_with("The old binary is /usr/local/bin/kairos.bak."),
+            "{older}"
+        );
     }
 
     #[test]
