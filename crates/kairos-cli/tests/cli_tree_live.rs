@@ -263,6 +263,7 @@ async fn cli_command_tree_golden_path_live() {
         // No background embedding sweep in a CLI test fixture.
         embed_refresh_secs: 0,
         code_index_dir: None,
+        role: Default::default(),
         code_index_poll_secs: 0,
         code_index_threads: 4,
         code_index_min_rebuild_secs: 0,

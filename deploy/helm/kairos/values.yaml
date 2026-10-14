@@ -143,6 +143,50 @@ autoscaling:
   # -- Optional target average memory utilization; null disables the metric.
   targetMemoryUtilizationPercentage: null
 
+# The code index worker (KAIROS-T-0394, KAIROS-A-0027). Off by default: the
+# server pods run the API and the code index builds (KAIROS_ROLE=all), which
+# suits a small install. On: a Deployment of its own runs the same image with
+# KAIROS_ROLE=worker, which takes only the code index builds and the
+# new-commits sweep from the job queue, and serves only /healthz, /readyz,
+# /version and /metrics; the server pods get KAIROS_ROLE=api. A build that
+# runs out of memory then ends the worker pod only: the API keeps serving,
+# Kubernetes starts the pod again, and the breaker of the repository
+# (KAIROS-T-0399) stops the build until a person asks again.
+worker:
+  # -- Run the code index builds in worker pods, and the API pods with
+  # KAIROS_ROLE=api.
+  enabled: false
+  # -- Number of worker pods. The pods share the builds through the job
+  # queue; KAIROS_JOB_LIMIT_EMBEDDED_BUILD is for each pod.
+  replicaCount: 1
+  # -- CPU and memory of a worker pod. The limit of the memory is the knob
+  # for big repositories. The defaults come from GitHub #34: a full build
+  # with the embedded summary model of a repository of about 1,200 files
+  # used about 6.3 GiB at its peak, and 4 cores.
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+  # -- Extra environment of the worker pods only, after `extraEnv` (e.g.
+  # KAIROS_CODE_INDEX_DIR, KAIROS_CODE_INDEX_THREADS).
+  extraEnv: []
+  # -- Extra volumes of the worker pods (e.g. a PVC for
+  # KAIROS_CODE_INDEX_DIR: its clones and about 2.7 GB of tools).
+  extraVolumes: []
+  # -- Extra volume mounts of the worker container.
+  extraVolumeMounts: []
+  # -- Extra annotations of the worker pods.
+  podAnnotations: {}
+  # -- Node selector of the worker pods (e.g. nodes with more memory).
+  nodeSelector: {}
+  # -- Tolerations of the worker pods.
+  tolerations: []
+  # -- Affinity rules of the worker pods.
+  affinity: {}
+
 metrics:
   serviceMonitor:
     # -- Create a Prometheus Operator ServiceMonitor scraping /metrics

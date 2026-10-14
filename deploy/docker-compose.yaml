@@ -66,7 +66,8 @@ services:
     # tini is PID 1: it reaps the orphaned children (the curl of the
     # healthcheck, the git of the code index builder) and sends SIGTERM on
     # to kairos-server. An image before 0.11 needs `init: true` here.
-    environment:
+    # The anchor gives the same settings to the `worker` service below.
+    environment: &kairos_env
       DATABASE_URL: postgres://kairos:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/kairos
       # Identity is external (KAIROS-A-0016): point these at YOUR IdP. Both
       # are optional ONLY when KAIROS_LOCAL_AUTH is on (KAIROS-T-0208); the
@@ -93,6 +94,11 @@ services:
       KAIROS_AUTO_JOIN_DOMAINS: ${KAIROS_AUTO_JOIN_DOMAINS:-}
       KAIROS_DEPLOYMENT_ADMINS: ${KAIROS_DEPLOYMENT_ADMINS:-}
       KAIROS_BIND_ADDR: 0.0.0.0:8080
+      # KAIROS-T-0394: `all` (the default) serves the API and runs the code
+      # index builds. With the `worker` profile on, set `api` in .env: the
+      # worker then runs the builds, and a build that runs out of memory
+      # ends the worker only.
+      KAIROS_ROLE: ${KAIROS_ROLE:-all}
       KAIROS_LOG_FORMAT: json
       KAIROS_LOG_LEVEL: ${KAIROS_LOG_LEVEL:-info}
       # KAIROS-T-0196: OTLP/HTTP traces endpoint (note :4318, not gRPC :4317).
@@ -148,6 +154,39 @@ services:
     # The image applies pending migrations on boot (KAIROS-T-0007) before it
     # binds, so no separate migrate step is required. Liveness is the image's
     # own HEALTHCHECK against /healthz.
+    expose:
+      - "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # The code index worker (KAIROS-T-0394, KAIROS-A-0027). Opt-in:
+  # COMPOSE_PROFILES=worker (with your front door, e.g. caddy,worker) and
+  # KAIROS_ROLE=api in .env for the kairos service. The same image with
+  # KAIROS_ROLE=worker: it runs only the code index builds and the
+  # new-commits sweep, and serves only /healthz, /readyz, /version and
+  # /metrics. It applies the migrations at start like the server, under the
+  # same lock, so the two can start together.
+  #
+  # The limits are for the builder. GitHub #34: a full build with the
+  # embedded summary model of a repository of about 1,200 files used about
+  # 6.3 GiB at its peak, and 4 cores. Raise mem_limit for big repositories.
+  # A build that runs out of memory ends this container only: the API keeps
+  # serving, Docker starts the worker again, and the breaker of the
+  # repository (KAIROS-T-0399) stops the build until a person asks again.
+  worker:
+    image: ghcr.io/colliery-io/kairos:${KAIROS_VERSION:?pin KAIROS_VERSION to a published release tag, never latest}
+    profiles: ["worker"]
+    restart: unless-stopped
+    environment:
+      <<: *kairos_env
+      KAIROS_ROLE: worker
+    mem_limit: 8g
+    mem_reservation: 2g
+    cpus: 4
+    volumes:
+      # Its own clones and tools (about 2.7 GB on the first start).
+      - code_index_worker:/var/lib/kairos/code-index
     expose:
       - "8080"
     depends_on:
@@ -341,6 +380,9 @@ volumes:
   # Clones and tools of the code index builder. It can be made again, so it
   # needs no backup.
   code_index:
+  # The clones and tools of the worker (KAIROS-T-0394). It can be made
+  # again, so it needs no backup.
+  code_index_worker:
   # KAIROS-T-0409: the published repository sites. CI can publish them again,
   # so they need no backup.
   kairos_pages:

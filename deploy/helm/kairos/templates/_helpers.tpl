@@ -52,6 +52,17 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
+The selector labels of the worker pods (KAIROS-T-0394). Their name differs
+from the server pods, so the selector of the server Deployment and of the
+Service do not match a worker pod.
+*/}}
+{{- define "kairos.workerSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "kairos.name" . }}-worker
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: worker
+{{- end }}
+
+{{/*
 The fully-qualified image reference. image.tag defaults to the chart's
 appVersion, so the chart never runs `latest` (KAIROS-A-0013).
 */}}

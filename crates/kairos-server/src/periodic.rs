@@ -17,8 +17,10 @@
 //! later start changes nothing.
 //!
 //! A server that takes the run of a pass that it does not run (not yet: the
-//! tools of the code index are not ready) gives it back with no try
-//! counted ([`crate::jobs::JobError::not_here`]).
+//! tools of the code index are not ready; or not in its role, KAIROS-T-0394:
+//! an `api` server does not run the new-commits sweep, and a `worker` runs
+//! only that pass) gives it back with no try counted
+//! ([`crate::jobs::JobError::not_here`]).
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -159,6 +161,16 @@ impl Worker {
         interval: Duration,
         run: PassFn,
     ) -> Result<Option<Job>, ApiError> {
+        // KAIROS-T-0394: a server runs only the passes of its role, and adds
+        // no run of a pass that it does not run.
+        if !self.role().runs_pass(pass) {
+            tracing::info!(
+                pass,
+                role = self.role().as_str(),
+                "periodic pass: this role does not run the pass"
+            );
+            return Ok(None);
+        }
         self.periodic.insert(pass, run);
         self.register(
             kinds::PERIODIC,

@@ -204,6 +204,7 @@ impl Deployment {
             log_format: LogFormat::Json,
             embed_refresh_secs: 0,
             code_index_dir: None,
+            role: Default::default(),
             code_index_poll_secs: 0,
             code_index_threads: 4,
             code_index_min_rebuild_secs: 0,

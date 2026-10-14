@@ -392,6 +392,9 @@ pub struct Worker {
     last_purge: Mutex<Option<Instant>>,
     /// The periodic passes of this server (KAIROS-T-0376).
     pub(crate) periodic: Arc<crate::periodic::Passes>,
+    /// The role of this server (KAIROS-T-0394): the kinds of job that it
+    /// takes, and the periodic passes that it runs.
+    role: crate::config::ServerRole,
 }
 
 impl std::fmt::Debug for Worker {
@@ -399,6 +402,7 @@ impl std::fmt::Debug for Worker {
         f.debug_struct("Worker")
             .field("instance", &self.instance)
             .field("settings", &self.settings)
+            .field("role", &self.role)
             .finish()
     }
 }
@@ -430,7 +434,22 @@ impl Worker {
             wake: tokio::sync::Notify::new(),
             last_purge: Mutex::default(),
             periodic: Arc::default(),
+            role: crate::config::ServerRole::All,
         }
+    }
+
+    /// The worker of a server with the role `role` (KAIROS-T-0394). It
+    /// registers only the kinds of job that the role takes
+    /// ([`crate::config::ServerRole::takes`]), and adds only the periodic
+    /// passes that the role runs. The default is `all`.
+    pub fn with_role(mut self, role: crate::config::ServerRole) -> Self {
+        self.role = role;
+        self
+    }
+
+    /// The role of the server.
+    pub fn role(&self) -> crate::config::ServerRole {
+        self.role
     }
 
     /// The id of the server that leases the jobs.
@@ -444,8 +463,18 @@ impl Worker {
     }
 
     /// Run the jobs of `kind` with `handler`. A second handler of a kind
-    /// replaces the first.
+    /// replaces the first. A kind that the role of the server does not take
+    /// is not registered (KAIROS-T-0394): a server with the role `api` takes
+    /// no code index build, and a `worker` takes only the builds.
     pub fn register(&self, kind: &str, handler: Arc<dyn JobHandler>) {
+        if !self.role.takes(kind) {
+            tracing::info!(
+                kind,
+                role = self.role.as_str(),
+                "job worker: this role does not take this kind of job"
+            );
+            return;
+        }
         self.handlers
             .write()
             .unwrap_or_else(|e| e.into_inner())
