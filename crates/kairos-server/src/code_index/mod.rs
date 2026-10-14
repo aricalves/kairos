@@ -130,8 +130,8 @@ pub mod git;
 pub mod jobs;
 
 pub use jobs::{
-    BuildHandler, end_stale_runs, enqueue_first_builds, enqueue_updates, first_builds, job_key,
-    requested_builds, run_builder, sweep,
+    BuildHandler, end_stale_runs, enqueue_first_build, enqueue_first_builds, enqueue_updates,
+    first_builds, job_key, requested_builds, run_builder, sweep,
 };
 
 use std::collections::{HashMap, HashSet};
