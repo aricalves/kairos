@@ -1572,26 +1572,29 @@ principal of the call.
 
 ### `create_team`
 
-Creates a team, its delivery board and its ADR board, in one transaction.
-The team and the delivery board are those of `POST /api/teams`. The ADR board
-is that of `POST /api/boards` with `board_level` `adr` and the team.
+Creates a team and its delivery board, as `POST /api/teams` does. With
+`adr_board` `true`, it also creates the ADR board of the team, in the same
+transaction. That board is the board of `POST /api/boards` with `board_level`
+`adr` and the team.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `name` | string | yes | — | The name of the team. |
 | `slug` | string | yes | — | The slug of the team. It must match `^[a-z][a-z0-9_-]{1,62}$`. The delivery board gets the slug `{slug}-delivery`. The ADR board gets `{slug}-adrs`. |
-| `code_prefix` | string | yes | — | The short-code prefix of the two boards, for example `OPS`. It must match `^[A-Z][A-Z0-9]{1,9}$`. It does not change later. |
+| `code_prefix` | string | yes | — | The short-code prefix of the boards of the team, for example `OPS`. It must match `^[A-Z][A-Z0-9]{1,9}$`. It does not change later. |
 | `team_type` | string | no | `stream_aligned` | `stream_aligned`, `platform`, `enabling` or `complicated_subsystem`. |
-| `adr_board` | boolean | no | `true` | `false` makes no ADR board. |
+| `adr_board` | boolean | no | `false` | `true` also makes the ADR board of the team. |
 
 The new boards have no members. Use `add_team_member` and `grant_capability`.
 
 The result is two lines:
 
 ```text
-Created team home-ops (Home operations, stream_aligned). Delivery board: home-ops-delivery (prefix OPS). ADR board: home-ops-adrs.
+Created team home-ops (Home operations, stream_aligned). Delivery board: home-ops-delivery (prefix OPS).
 The boards have no members. Use add_team_member and grant_capability.
 ```
+
+With `adr_board` `true`, the first line ends with `ADR board: home-ops-adrs.`
 
 Requires the organization admin role or `manage_structure` on the
 organization.

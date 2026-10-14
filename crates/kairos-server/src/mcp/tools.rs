@@ -772,7 +772,7 @@ pub struct CreateTeamParams {
     pub name: String,
     /// The slug of the team (e.g. "home-ops"): it must match
     /// ^[a-z][a-z0-9_-]{1,62}$. The delivery board gets the slug
-    /// "{slug}-delivery", and the ADR board "{slug}-adrs".
+    /// "{slug}-delivery", and the ADR board (with `adr_board`) "{slug}-adrs".
     pub slug: String,
     /// The short-code prefix of the boards of the team (e.g. "OPS"): a
     /// capital letter, then 1 to 9 capital letters or digits. It does not
@@ -781,7 +781,9 @@ pub struct CreateTeamParams {
     /// stream_aligned | platform | enabling | complicated_subsystem. The
     /// default is stream_aligned.
     pub team_type: Option<String>,
-    /// Also make the ADR board of the team. The default is true.
+    /// Also make the ADR board of the team. The default is false: the
+    /// team gets its delivery board only, as with REST and the CLI
+    /// (KAIROS-T-0448).
     pub adr_board: Option<bool>,
 }
 
@@ -3673,7 +3675,7 @@ impl KairosMcp {
     // REST route, so the gate and the refusals are those of REST: an
     // organization admin, or a grant of `manage_structure` at the scope.
     #[tool(
-        description = "Create a team with its delivery board (slug {slug}-delivery) and its ADR board (slug {slug}-adrs), as POST /api/teams does, in one transaction. `code_prefix` is the short-code prefix of the two boards (e.g. OPS gives OPS-T-0001 and OPS-A-0001): a capital letter, then 1 to 9 capital letters or digits; it does not change later. Optional: `team_type` (stream_aligned, platform, enabling, complicated_subsystem; the default is stream_aligned), `adr_board` (false makes no ADR board). The new boards have no members: use `add_team_member` (a team member can work the boards of the team) and `grant_capability`. Requires the organization admin role or `manage_structure` on the organization. A grant of manage_structure on one board does not create a team."
+        description = "Create a team with its delivery board (slug {slug}-delivery), as POST /api/teams does. `code_prefix` is the short-code prefix of the boards of the team (e.g. OPS gives OPS-T-0001 and OPS-A-0001): a capital letter, then 1 to 9 capital letters or digits; it does not change later. Optional: `team_type` (stream_aligned, platform, enabling, complicated_subsystem; the default is stream_aligned), `adr_board` (true also makes the ADR board of the team, slug {slug}-adrs, in the same transaction; the default is false). The new boards have no members: use `add_team_member` (a team member can work the boards of the team) and `grant_capability`. Requires the organization admin role or `manage_structure` on the organization. A grant of manage_structure on one board does not create a team."
     )]
     pub async fn create_team(
         &self,
@@ -3700,7 +3702,7 @@ impl KairosMcp {
                     "Created team {} ({}, {}). Delivery board: {}-delivery (prefix {}).",
                     team.slug, team.name, team.team_type, team.slug, params.code_prefix
                 );
-                if params.adr_board.unwrap_or(true) {
+                if params.adr_board.unwrap_or(false) {
                     let adr = crate::api::org::boards::create(
                         conn,
                         &slug,
