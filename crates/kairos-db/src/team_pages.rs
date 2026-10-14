@@ -90,7 +90,7 @@ pub enum TeamPageError {
     /// The slug does not have the form of a slug (KAIROS-T-0467): a `/`
     /// in it broke the path of the page.
     #[error(
-        "{0:?} is not a slug. A slug is 2 to 63 characters: lowercase letters, digits, - and _, a letter first."
+        "{0:?} is not a slug. A slug is 2 to 63 characters: lowercase letters, digits, hyphens and underscores, with a letter first."
     )]
     BadSlug(String),
     /// A page or folder at the top of the tree cannot have a slug that the
