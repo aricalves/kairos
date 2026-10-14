@@ -1,0 +1,13 @@
+# cargo-nextest (KAIROS-T-0447): the integration tests in CI run from one
+# archive, split over the shards of the `integration` job.
+#
+# Each test binary uses its own scratch databases (each test of a binary
+# has its own name), so tests of different binaries can run at the same
+# time against one compose stack.
+
+[profile.ci]
+fail-fast = false
+# A test that has not ended after 1 minute is reported; after 10 it is
+# stopped.
+slow-timeout = { period = "60s", terminate-after = 10 }
+failure-output = "immediate-final"

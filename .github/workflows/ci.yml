@@ -1,15 +1,23 @@
-# Kairos CI — runs the KAIROS-A-0012 verification gates via angreal so that
-# CI and the agent completion gate are the exact same commands.
+# Kairos CI — the KAIROS-A-0012 verification gates, run as parallel jobs
+# (KAIROS-T-0447). Each gate is the same command a developer runs.
 #
-# Gates (sequential by design, single job):
-#   1. cargo fmt --check
-#   2. cargo clippy --workspace --all-targets -- -D warnings
-#   3. angreal test unit          (tier 1: pure cargo, no services)
-#   4. angreal test integration   (tiers 2+3: task drives compose up/down itself)
+#   changes      which parts of the tree the change touches
+#   lint         Gate 1 cargo fmt, Gate 2 clippy, Gate 5 STE (docs and code),
+#                Gate 6 GUI conventions grep, Gate 8 Helm chart renders
+#   build-tests  compiles every test binary once (a nextest archive), then
+#                Gate 3 (unit tests) and the OpenAPI artifact and REST check
+#   integration  Gate 4: the archive, split over 4 shards, each with its own
+#                compose stack (Postgres, Dex, S3Mock)
+#   bdd          Gate 4: the cucumber scenarios (their own runner)
+#   web          Gate 7: the GUI wasm build (release on main, debug on a PR)
+#   ci           the one required check: it fails when a gate failed
 #
-# NOTE: this repo has no GitHub remote yet. Activation steps are documented
-# in README.md ("CI" section): create the remote, push, and enable branch
-# protection requiring the `ci` check.
+# A change to the docs only runs lint. On main each commit gets a full run:
+# a new push does not cancel the run of the commit before it. On a pull
+# request a new push cancels the old run.
+#
+# Run one shard locally: `cargo nextest run --profile ci --partition hash:2/4`
+# with the compose stack up (`angreal services up`).
 
 name: ci
 
@@ -20,55 +28,76 @@ on:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  # No debug info in CI: the test binaries are a fraction of the size, they
+  # link faster, and the archive goes to the shards in seconds, not minutes.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
 jobs:
-  ci:
-    name: ci
+  changes:
+    name: changes
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      web: ${{ steps.filter.outputs.web }}
+      helm: ${{ steps.filter.outputs.helm }}
+      python: ${{ steps.filter.outputs.python }}
+      image: ${{ steps.filter.outputs.image }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-
-      # The job builds the workspace, runs the integration tests and then
-      # compiles trunk for Gate 7 on one runner disk. In 0.11.0 that filled
-      # the disk ("No space left on device" in Gate 7, twice). The runner
-      # image ships toolchains this job never uses; remove them first.
-      - name: Free disk space
+        with:
+          fetch-depth: 0
+      - name: Which parts changed
+        id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
         run: |
-          df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-          sudo docker image prune --all --force >/dev/null
-          df -h /
+          set -euo pipefail
+          if [ "${EVENT}" != "pull_request" ]; then
+            # main: every gate, each commit.
+            for part in rust web helm python; do echo "${part}=true" >> "$GITHUB_OUTPUT"; done
+            # The release workflow builds the images of a tag.
+            echo "image=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files="$(git diff --name-only "${BASE}...HEAD")"
+          echo "${files}"
+          has() { echo "${files}" | grep -Eq "$1" && echo true || echo false; }
+          # The workflow itself, the cargo setup and the angreal tasks run
+          # every gate.
+          all='^(\.github/workflows/ci\.yml|\.config/nextest\.toml|\.angreal/|Cargo\.(toml|lock)|rust-toolchain\.toml|\.cargo/)'
+          rust="$(has "${all}|^crates/|^scripts/render-openapi\.py|^docs/src/content/docs/reference/rest/")"
+          web="$(has "${all}|^crates/kairos-web/|^crates/kairos-client/")"
+          helm="$(has "${all}|^deploy/helm/")"
+          python="$(has "${all}|^plugin/|^\.claude-plugin/|^scripts/")"
+          image="$(has '^(Dockerfile|\.dockerignore|scripts/image-smoke\.sh)$')"
+          {
+            echo "rust=${rust}"
+            echo "web=${web}"
+            echo "helm=${helm}"
+            echo "python=${python}"
+            echo "image=${image}"
+          } | tee -a "$GITHUB_OUTPUT"
 
-      - name: Install Rust toolchain (from rust-toolchain.toml)
-        # rustup (>= 1.28, preinstalled on ubuntu-24.04) reads
-        # rust-toolchain.toml and installs the pinned channel + components
-        # (rustfmt, clippy) when invoked with no arguments.
-        run: |
-          rustup toolchain install
-          rustup show
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Verify Docker is available
-        # `angreal test integration` drives docker compose itself
-        # (up --wait / down -v); this step just fails fast if the
-        # runner image ever loses docker.
-        run: |
-          docker version
-          docker compose version
-
-      - name: Install libpq (diesel postgres backend links against it)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libpq-dev
+  lint:
+    name: lint
+    needs: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -76,96 +105,56 @@ jobs:
           python-version: "3.12"
 
       - name: Install angreal
-        run: |
-          pip install "angreal==2.8.8"
-          angreal --version
+        run: pip install "angreal==2.8.8"
 
-      - name: Gate 1 — cargo fmt
-        run: cargo fmt --check
-
-      - name: Gate 2 — cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Gate 3 — angreal test unit
-        run: angreal test unit
-
-      # The kairos-index scenarios use the pinned rust-analyzer release
-      # (COLLIERY-T-1858) and the pinned std source (COLLIERY-T-1860), and
-      # never download them themselves.
-      - name: Fetch the pinned rust-analyzer and std source
-        run: angreal dev fetch-rust-analyzer
-
-      - name: Gate 4 — angreal test integration
-        run: angreal test integration
-
-      # KAIROS-T-0023 (A-0005 §6): the OpenAPI document is a CI artifact
-      # per run, enabling client SDK generation without a running server.
-      # `write_spec_artifact` is a pure test (no services) that writes the
-      # aggregated spec to target/openapi.json.
-      - name: Generate OpenAPI artifact
-        run: cargo test -p kairos-server --test openapi write_spec_artifact
-
-      # The REST reference pages in the book are GENERATED from that spec
-      # (KAIROS-T-0170). Committing them keeps the docs build fast — it needs
-      # no Rust toolchain — and this check is what stops them rotting: change
-      # a handler's #[utoipa::path] without re-rendering and CI says so.
-      - name: Check the generated REST reference is current
-        run: python3 scripts/render-openapi.py --check
-
-      - name: Upload OpenAPI artifact
-        uses: actions/upload-artifact@v6
-        with:
-          name: openapi.json
-          path: target/openapi.json
-          if-no-files-found: error
-
-      # KAIROS-T-0039 (A-0015): the GUI must keep compiling to wasm and
-      # keep the token rule clean. `angreal web build` provisions the
-      # wasm32 target (rustup) and trunk itself (pinned cargo install
-      # into target/tools/, warmed by the rust-cache step) — CI runs the
-      # exact same entry point developers do. `angreal web lint` is the
-      # docs/gui-conventions.md conventions grep (no hardcoded colors).
-      # Gate 5 — procedural docs follow KAIROS-S-0009 (Simplified Technical English).
-      #
-      # Baselined rather than big-bang: `scripts/ste-baseline.json` holds the current
-      # violation count per file and this fails only when a file gets WORSE, so the
-      # rule applies from KAIROS-T-0207 forward without a corpus rewrite nobody
-      # reviewed. A new file must be clean.
-      #
-      # It does NOT check the approved vocabulary (STE-V1) — ASD owns its copyright, so
-      # this repository ships no word list. Green here is not STE conformance.
+      # Gate 5 — procedural docs follow KAIROS-S-0009 (Simplified Technical
+      # English). Baselined: `scripts/ste-baseline.json` holds the count per
+      # file, and the gate fails only when a file gets WORSE. It does NOT
+      # check the approved vocabulary (STE-V1): ASD owns its copyright.
       - name: Gate 5 — Simplified Technical English
         run: angreal docs ste
 
-      # COLLIERY-T-0258: the same rules for the texts of errors in the Rust code
-      # (`#[error("...")]` attributes and the arguments of `ApiError` constructors).
-      # `scripts/ste-code-baseline.json` is the ceiling. It reads the source as text,
-      # so it needs no build.
+      # COLLIERY-T-0258: the same rules for the texts of errors in the Rust
+      # code. `scripts/ste-code-baseline.json` is the ceiling.
       - name: Gate 5 — Simplified Technical English, the texts of the code
         run: angreal docs ste --code
 
       - name: Gate 6 — GUI conventions grep
         run: angreal web lint
 
-      - name: Gate 7 — GUI wasm build
-        run: angreal web build --release
+      - name: Install Rust toolchain (from rust-toolchain.toml)
+        if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.web == 'true'
+        run: rustup toolchain install
+
+      - name: Gate 1 — cargo fmt
+        if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.web == 'true'
+        run: cargo fmt --check
+
+      - name: Install libpq
+        if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.web == 'true'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpq-dev
+
+      - name: Cache cargo
+        if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.web == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: clippy
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Gate 2 — cargo clippy
+        if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.web == 'true'
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Set up Helm
+        if: needs.changes.outputs.helm == 'true'
         uses: azure/setup-helm@v5
 
-      # Gate 8 — the chart actually renders, for every deployment shape in
-      # `deploy/helm/kairos/ci/`.
-      #
-      # `helm lint` is NOT this gate, which is what KAIROS-T-0208 found: it
-      # reports a template `fail` as INFO and exits 0, so the release workflow's
-      # lint step passed on default values that the chart is supposed to refuse.
-      # `helm template` is the one that returns non-zero.
-      #
-      # The two halves matter separately. The values sets prove each supported
-      # shape renders; the refusals prove the guards actually fire, because a
-      # guard that has stopped firing looks exactly like one that was never
-      # needed.
+      # Gate 8 — the chart renders, for every deployment shape in
+      # `deploy/helm/kairos/ci/`. `helm lint` is NOT this gate (KAIROS-T-0208):
+      # it reports a template `fail` as INFO and exits 0. `helm template` is
+      # the one that returns non-zero. The refusals prove the guards fire.
       - name: Gate 8 — Helm chart renders
+        if: needs.changes.outputs.helm == 'true'
         run: |
           set -euo pipefail
           for values in deploy/helm/kairos/ci/*-values.yaml; do
@@ -198,3 +187,313 @@ jobs:
             echo "FAIL: naming both tenancy modes should be refused"
             exit 1
           fi
+
+  # The Python tests alone, for a change that touches no Rust (the plugin
+  # hooks and the Metis import script). With Rust, `angreal test unit` in
+  # build-tests runs them.
+  python:
+    name: python
+    needs: changes
+    if: needs.changes.outputs.python == 'true' && needs.changes.outputs.rust != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Plugin hooks and the Metis import script
+        run: |
+          python -B -m unittest discover -s plugin/hooks -p 'test_*.py'
+          python -B -m unittest discover -s scripts/metis_import -t scripts
+
+  build-tests:
+    name: build-tests
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain (from rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: Install libpq
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpq-dev
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: tests
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # Every integration test target but the two cucumber runners (their
+      # own harness, which nextest cannot list): those go to the bdd job.
+      - name: Build the nextest archive
+        run: |
+          set -euo pipefail
+          targets="$(cargo metadata --no-deps --format-version 1 | python3 -c '
+          import json, sys
+          skip = {("kairos-cli", "index_bdd"), ("kairos-index", "bdd")}
+          for p in json.load(sys.stdin)["packages"]:
+              for t in p["targets"]:
+                  if "test" in t["kind"] and (p["name"], t["name"]) not in skip:
+                      print("--package", p["name"], "--test", t["name"])
+          ')"
+          # shellcheck disable=SC2086
+          cargo nextest archive ${targets} --archive-file tests.tar.zst
+          ls -la tests.tar.zst
+          df -h /
+
+      - name: Build the cucumber runners
+        run: |
+          set -euo pipefail
+          mkdir -p bdd-bin
+          cargo test --no-run --message-format=json \
+              -p kairos-cli --test index_bdd -p kairos-index --test bdd \
+            | python3 -c '
+          import json, shutil, sys
+          for line in sys.stdin:
+              m = json.loads(line)
+              if m.get("reason") == "compiler-artifact" and m.get("executable") and m["target"]["name"] in ("index_bdd", "bdd"):
+                  shutil.copy(m["executable"], "bdd-bin/" + m["target"]["name"])
+                  print(m["target"]["name"], m["executable"])
+          '
+          # index_bdd runs the CLI at its compile-time path.
+          cp target/debug/kairos bdd-bin/kairos
+          ls -la bdd-bin
+
+      - name: Upload the nextest archive
+        uses: actions/upload-artifact@v6
+        with:
+          name: nextest-archive
+          path: tests.tar.zst
+          retention-days: 1
+          if-no-files-found: error
+          # The archive is zstd already.
+          compression-level: 0
+
+      - name: Upload the cucumber runners
+        uses: actions/upload-artifact@v6
+        with:
+          name: bdd-bin
+          path: bdd-bin/
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install angreal
+        run: pip install "angreal==2.8.8"
+
+      - name: Gate 3 — angreal test unit
+        run: angreal test unit
+
+      # KAIROS-T-0023 (A-0005 §6): the OpenAPI document is a CI artifact per
+      # run. `write_spec_artifact` is a pure test (no services) that writes
+      # the spec to target/openapi.json.
+      - name: Generate OpenAPI artifact
+        run: cargo test -p kairos-server --test openapi write_spec_artifact
+
+      # The REST reference pages are GENERATED from that spec (KAIROS-T-0170).
+      - name: Check the generated REST reference is current
+        run: python3 scripts/render-openapi.py --check
+
+      - name: Upload OpenAPI artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: openapi.json
+          path: target/openapi.json
+          if-no-files-found: error
+
+  integration:
+    name: integration (${{ matrix.shard }}/4)
+    needs: build-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Start the compose stack (Postgres, Dex, S3Mock)
+        run: docker compose -f .angreal/docker-compose.yaml up -d --wait
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: Download the nextest archive
+        uses: actions/download-artifact@v7
+        with:
+          name: nextest-archive
+
+      # The test binaries have the paths of the build job compiled in
+      # (CARGO_BIN_EXE_*, CARGO_MANIFEST_DIR). Each job checks out to the
+      # same folder, so the archive goes into ./target, where they look.
+      - name: Gate 4 — integration tests, shard ${{ matrix.shard }} of 4
+        run: |
+          cargo nextest run --profile ci --archive-file tests.tar.zst \
+            --workspace-remap . --extract-to . --extract-overwrite \
+            --partition hash:${{ matrix.shard }}/4
+
+  bdd:
+    name: bdd
+    needs: build-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Start the compose stack (Postgres, Dex, S3Mock)
+        run: docker compose -f .angreal/docker-compose.yaml up -d --wait
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install angreal
+        run: pip install "angreal==2.8.8"
+
+      # The kairos-index scenarios use the pinned rust-analyzer release
+      # (COLLIERY-T-1858) and the pinned std source (COLLIERY-T-1860), and
+      # never download them themselves.
+      - name: Fetch the pinned rust-analyzer and std source
+        run: angreal dev fetch-rust-analyzer
+
+      - name: Install Rust toolchain (from rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: Download the cucumber runners
+        uses: actions/download-artifact@v7
+        with:
+          name: bdd-bin
+          path: bdd-bin
+
+      - name: Gate 4 — the cucumber scenarios
+        run: |
+          set -euo pipefail
+          chmod +x bdd-bin/*
+          # The runners have the paths of the build job compiled in, and each
+          # job checks out to the same folder.
+          mkdir -p target/debug
+          mv bdd-bin/kairos target/debug/kairos
+          # `cargo test` gives its children the pinned toolchain in
+          # RUSTUP_TOOLCHAIN; the index builder runs cargo in a temporary
+          # folder outside the repository, where rust-toolchain.toml does not
+          # reach. Give it the same.
+          RUSTUP_TOOLCHAIN="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
+          export RUSTUP_TOOLCHAIN
+          echo "RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN}"
+          (cd crates/kairos-index && ../../bdd-bin/bdd)
+          (cd crates/kairos-cli && ../../bdd-bin/index_bdd)
+
+  web:
+    name: web
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain (from rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: web
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install angreal
+        run: pip install "angreal==2.8.8"
+
+      # KAIROS-T-0039 (A-0015): the GUI must keep compiling to wasm.
+      # `angreal web build` provisions the wasm32 target and trunk itself.
+      # The release profile (wasm-opt) runs on main; a pull request gets the
+      # debug profile, which compiles the same code faster.
+      - name: Gate 7 — GUI wasm build
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            angreal web build
+          else
+            angreal web build --release
+          fi
+
+  # A pull request that changes the Dockerfile builds the hosted image for
+  # amd64 (no push) and runs its smoke check, so a release does not find
+  # the fault. It shares the build cache of the release workflow.
+  image:
+    name: image
+    needs: changes
+    if: needs.changes.outputs.image == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Build the hosted image (amd64)
+        uses: docker/build-push-action@v7
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: false
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          build-args: |
+            KAIROS_SERVER_FEATURES=embed-web
+          tags: kairos:ci
+          load: true
+          cache-from: type=gha,scope=image-hosted-amd64
+          cache-to: type=gha,mode=max,scope=image-hosted-amd64
+      - name: Smoke check the image
+        run: scripts/image-smoke.sh kairos:ci
+
+  # The one required check. A gate that a change does not touch is skipped,
+  # and a skipped gate passes; a failed or cancelled gate fails this job.
+  ci:
+    name: ci
+    if: always()
+    needs: [changes, lint, python, build-tests, integration, bdd, web, image]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every gate passed or was not needed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "${RESULTS}" | python3 -c '
+          import json, sys
+          needs = json.load(sys.stdin)
+          bad = {k: v["result"] for k, v in needs.items() if v["result"] not in ("success", "skipped")}
+          for k, v in needs.items():
+              print(k + ": " + v["result"])
+          sys.exit("failed: " + str(bad) if bad else 0)
+          '
