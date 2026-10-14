@@ -191,7 +191,10 @@ test('team lens: bob → my teams → roster/board/stream → directory → acti
     const tiles = page.locator('.kairos-board-tile');
     await expect(tiles.filter({ hasText: 'Platform' })).toBeVisible();
     await expect(tiles.filter({ hasText: 'Web' })).toBeVisible();
-    await expect(tiles).toHaveCount(2);
+    // KAIROS-T-0440: the strategy and the initiative board have their own
+    // teams too; other specs may add teams, so the count is not fixed.
+    await expect(tiles.filter({ hasText: 'initiative-initiatives' })).toBeVisible();
+    await expect(tiles.filter({ hasText: 'strategy-strategy' })).toBeVisible();
   });
 
   // 7. Activity: the server filters by the members of the team ------------
