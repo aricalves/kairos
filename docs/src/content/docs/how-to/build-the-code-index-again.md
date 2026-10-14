@@ -63,7 +63,7 @@ tool `rebuild_code_index`. The REST route is
 |---|---|---|
 | `CODE_INDEX_BUILD_RUNNING` | A run of the repository is active, or a build of it runs now. | Wait for its end. `kairos repos builds <slug>` shows it. |
 | `CODE_INDEX_BUILD_OFF` | The repository has the builder off. | Run `kairos repos update <slug> --code-index-build on`, then ask again. |
-| `CODE_INDEX_BUILDER_OFF` | The deployment has no builder. | An operator sets `KAIROS_CODE_INDEX_DIR`. See [Configuration](../../reference/configuration/). |
+| `CODE_INDEX_BUILDER_OFF` | The deployment has no builder. A server with `KAIROS_ROLE=api` gives this never: it queues the build for a worker. | An operator sets `KAIROS_CODE_INDEX_DIR`. See [Configuration](../../reference/configuration/). |
 | `FORBIDDEN` | You cannot change the repository. | Ask an organization admin, or a member of the owner team. |
 
 ## Stop the builds of a repository

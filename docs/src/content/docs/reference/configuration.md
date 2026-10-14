@@ -333,6 +333,18 @@ of a repository has the field `builder` with a note. The list is
 the repository page, and `kairos repos builds`. The note shows when no worker
 ended a sweep in the last 2 intervals of the sweep and 5 minutes.
 
+A request for a build on an `api` server puts the build in the queue, and a
+worker takes it. A request is `POST /api/repositories/{slug}/code-indexes/rebuild`,
+the MCP tool `rebuild_code_index` or `kairos repos reindex`. An `api` server
+does not need `KAIROS_CODE_INDEX_DIR` for this. It needs the folder to find
+the nearest indexed commit (`kairos index update`). For that, give the api
+pods the folder and a volume that they can write. Or let the CLI do a full
+index.
+
+A worker does not start without `KAIROS_CODE_INDEX_DIR`. The Helm chart gives
+the worker pods `worker.codeIndexDir`; the Compose file gives the service
+`worker` its volume at `/var/lib/kairos/code-index`.
+
 ### The base code index
 
 Kairos keeps the code index of each indexed commit of a repository
@@ -343,7 +355,7 @@ the index after each push to the default branch.
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
-| `KAIROS_CODE_INDEX_DIR` | directory path | unset | The folder for a bare clone of each repository, the tools of the builder and the work folders of the builder. Put it on a volume. When it is not set, the server cannot find the nearest indexed commit, does not build and downloads nothing. Uploads and downloads of indexes still work. |
+| `KAIROS_CODE_INDEX_DIR` | directory path | unset | The folder for a bare clone of each repository, the tools of the builder and the work folders of the builder. Put it on a volume. When it is not set, the server cannot find the nearest indexed commit, does not build and downloads nothing. Uploads and downloads of indexes still work. A server with `KAIROS_ROLE=worker` does not start without it. A server with `KAIROS_ROLE=api` takes a rebuild request without it: the build goes to a worker. |
 | `KAIROS_CODE_INDEX_POLL_SECS` | whole number | `300` | How often the sweep fetches each indexed repository and adds the build jobs. The sweep is a periodic job: one server runs it at each interval. `0` turns the builder off on that server. |
 | `KAIROS_CODE_INDEX_THREADS` | whole number, 1 or more | `4` | The number of CPU threads that the summary model of the builder uses. More threads make the summaries faster, but they take CPU from the other services on the host. `0` or a value that is not a number stops the start of the server. |
 | `KAIROS_CODE_INDEX_MIN_REBUILD_SECS` | whole number | `0` | The least time in seconds between 2 updates of one repository. `0` turns the limit off. On a slow host, a repository with many pushes then waits, and the other stale repositories get their updates. A value that is not a number stops the start of the server. |
@@ -449,7 +461,8 @@ job for a repository that has a job. The note of the pass names that job.
 The builder indexes the default branch of the repository. At each fetch, the
 builder reads the default branch of the forge. This is the branch that `HEAD`
 of the remote names (`git ls-remote --symref <remote> HEAD`). The builder uses
-the read token of the repository for this, as for the fetch. The builder selects the branch
+the token of the fetch for this. That is the read token of the organization
+for the host, or else the token of the repository. The builder selects the branch
 in this sequence:
 
 1. The branch that a person set by hand. It wins over the forge.
@@ -1042,8 +1055,10 @@ the image sets it to `/var/lib/kairos/models`) and `KAIROS_EMBED_REFRESH_SECS`
 | `worker.enabled` | bool | `false` | Runs the code index builds in a Deployment of their own, with `KAIROS_ROLE=worker`, and sets `KAIROS_ROLE=api` on the server pods. See [Server role](#server-role). |
 | `worker.replicaCount` | integer | `1` | Worker pods. |
 | `worker.resources` | resources | requests `1` CPU, `2Gi`; limits `4` CPU, `8Gi` | CPU and memory of a worker pod. Increase the memory limit for big repositories. The limits of the server pods do not change. |
-| `worker.extraEnv` | list of EnvVar | `[]` | Added after `extraEnv`, on the worker pods only, e.g. `KAIROS_CODE_INDEX_DIR`. |
-| `worker.extraVolumes` / `worker.extraVolumeMounts` | list | `[]` | Volumes of the worker pods, e.g. a volume for `KAIROS_CODE_INDEX_DIR`. |
+| `worker.codeIndexDir` | path | `/var/lib/kairos/code-index` | `KAIROS_CODE_INDEX_DIR` of the worker pods, an emptyDir of the pod. A pod that starts again downloads the tools again. For a folder that stays, mount a volume at this path with `worker.extraVolumes` and `worker.extraVolumeMounts`. |
+| `worker.codeIndexSizeLimit` | quantity | `null` | Size limit of that emptyDir. |
+| `worker.extraEnv` | list of EnvVar | `[]` | Added after `extraEnv`, on the worker pods only, e.g. `KAIROS_CODE_INDEX_THREADS`. |
+| `worker.extraVolumes` / `worker.extraVolumeMounts` | list | `[]` | Volumes of the worker pods, e.g. a volume for `worker.codeIndexDir`. |
 | `worker.podAnnotations` / `worker.nodeSelector` / `worker.tolerations` / `worker.affinity` | map / list | `{}` / `[]` | Annotations and scheduling of the worker pods. |
 
 ### Security context
@@ -1189,7 +1204,9 @@ stock `postgres:16` does not carry it. There is no bundled identity provider.
 | `KAIROS_WEB_CLIENT_SECRET` | empty | Nothing. Present in `.env.example` but **not forwarded** to the container by `deploy/docker-compose.yaml`. |
 
 The profile `worker` adds the service `worker`. It is the same image with
-`KAIROS_ROLE=worker` and its own volume for the clones and the tools. Its
+`KAIROS_ROLE=worker` and its own volume for the clones and the tools. The
+volume is at `/var/lib/kairos/code-index`, its `KAIROS_CODE_INDEX_DIR`, unless
+`.env` names another folder. Its
 limits are `mem_limit` 8g, `mem_reservation` 2g and `cpus` 4. To use it, add `worker` to
 `COMPOSE_PROFILES` and set `KAIROS_ROLE=api` in `.env`. Increase `mem_limit`
 for big repositories. See [Server role](#server-role).

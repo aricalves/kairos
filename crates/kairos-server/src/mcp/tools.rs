@@ -3296,13 +3296,13 @@ impl KairosMcp {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let (auth, tenant) = Self::caller(&context)?;
-        let Some(service) = self.state.code_index.clone() else {
-            return Ok(tool_error(crate::api::org::code_indexes::no_builder()));
+        let instance = match crate::api::org::code_indexes::rebuild_instance(&self.state) {
+            Ok(instance) => instance,
+            Err(e) => return Ok(tool_error(e)),
         };
         let user = auth.user_id;
         let slug = tenant.slug.clone();
         let reference = params.repository;
-        let instance = service.instance();
         let max_tries = self.state.config.jobs.max_tries;
         let requested = self
             .state
