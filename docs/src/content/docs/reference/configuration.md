@@ -709,8 +709,8 @@ token.
 
 ### The CLI downloads
 
-`GET /version` (open) gives the version of the server and, for each platform,
-the tarball of the CLI of that version and its `.sha256`. `kairos self-update`
+`GET /version` (open) gives the version of the server. For each platform, it
+also gives the tarball of the CLI of that version and its `.sha256`. `kairos self-update`
 installs from these links.
 
 | Variable | Type | Default | Description |

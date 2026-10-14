@@ -1725,13 +1725,15 @@ A board manager sets rules that send a task to an agent runner
 Then Kairos sends one signed delivery to a webhook target. Kairos does not
 start a session itself: the runner does. See
 [Webhook deliveries](../webhooks/) for the request, the signature and the
-tries.
+tries. To push the deliveries into a running Claude Code session, see
+[Receive dispatch in a Claude Code session](../../how-to/receive-dispatch-in-a-session/).
 
 The event is `task.entered_column`. Its `data` has these fields:
 
 | Field | Description |
 |---|---|
 | `code`, `title`, `task_type` | The task. |
+| `work_class` | The lane of the task: `planned` or `support`. |
 | `link` | The URL of the task in the GUI. |
 | `board` | `id`, `slug` and `name` of the board. |
 | `column` | `id` and `name` of the column. |
@@ -1744,6 +1746,17 @@ A task enters a column in 3 ways:
 - a transition;
 - a move to the board, into its entry column;
 - a cancel, into the done column.
+
+A rule with the trigger `unblocked` (KAIROS-T-0427) fires when the last open
+blocker of a task closes. The blocker closes when it goes into a done column,
+or when a person cancels or archives it. The event is `task.unblocked`. Its
+`data` has the fields above and `blocker`, the code of the blocker that
+closed. The column in `data` is the column of the task.
+
+The rule can name a column: the task must be in it. With no column, a task
+in each column that is not done matches. A task with two blockers fires once,
+when the second closes. A blocker that opens again blocks the task again, so
+its next close fires again.
 
 ### `list_dispatch_rules`
 
@@ -1777,7 +1790,8 @@ time. Requires `configure_boards` on the board.
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `board` | string | yes | — | Slug or UUID. |
-| `column` | string | yes | — | The name or the UUID of a column of the board. |
+| `trigger` | string | no | `entered_column` | `entered_column`: a task enters `column`. `unblocked`: the last open blocker of a task closes. |
+| `column` | string | for `entered_column` | — | The name or the UUID of a column of the board. For `unblocked`, the column the task must be in. |
 | `target_id` | string | no | — | A webhook target of the board. |
 | `url` | string | no | — | The URL of a new target (`http` or `https`). |
 | `target_name` | string | no | `Agent runner` | The name of the new target. |
@@ -1792,7 +1806,8 @@ Refuses:
 
 - `FORBIDDEN` without `configure_boards`;
 - `NOT_FOUND` for an unknown board, target or repository;
-- `VALIDATION` for an unknown column, task type or metadata definition;
+- `VALIDATION` for an unknown trigger, column, task type or metadata
+  definition, and for an `entered_column` rule with no column;
 - `VALIDATION` for a URL that is not `http` or `https`, or a private address;
 - `SECRETS_NOT_CONFIGURED` for a new target with no `KAIROS_SECRETS_KEY`.
 

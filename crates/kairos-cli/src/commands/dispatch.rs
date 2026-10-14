@@ -84,9 +84,14 @@ pub enum DispatchCommand {
         /// Board slug or id (UUID)
         #[arg(value_name = "BOARD")]
         board: String,
-        /// Column name or id (UUID)
+        /// When the rule fires: entered_column (a task enters --column) or
+        /// unblocked (the last open blocker of a task closes)
+        #[arg(long, default_value = "entered_column")]
+        trigger: String,
+        /// Column name or id (UUID). Required for entered_column; for
+        /// unblocked, the column the task must be in
         #[arg(long)]
-        column: String,
+        column: Option<String>,
         /// The id of a webhook target of the board
         #[arg(long)]
         target: String,
@@ -148,6 +153,15 @@ pub fn split_metadata(raw: &str) -> Result<(String, String), CliError> {
 }
 
 /// The filter of a rule in words. Pure.
+/// When a rule fires (KAIROS-T-0427).
+fn when_text(rule: &DispatchRule) -> String {
+    match (rule.trigger.as_str(), rule.column.as_deref()) {
+        ("unblocked", Some(column)) => format!("in {column} that is unblocked"),
+        ("unblocked", None) => "that is unblocked".to_string(),
+        (_, column) => format!("that enters {}", column.unwrap_or("?")),
+    }
+}
+
 fn filter_text(rule: &DispatchRule) -> String {
     let mut parts = Vec::new();
     if let Some(t) = &rule.task_type {
@@ -208,11 +222,12 @@ impl DispatchCommand {
                         "targets": targets,
                     }));
                 }
-                let mut table = Table::new(&["RULE", "COLUMN", "FILTER", "TARGET"]);
+                let mut table = Table::new(&["RULE", "TRIGGER", "COLUMN", "FILTER", "TARGET"]);
                 for rule in &rules {
                     table.row(vec![
                         rule.id.clone(),
-                        rule.column.clone(),
+                        rule.trigger.clone(),
+                        rule.column.clone().unwrap_or_else(|| "-".into()),
                         filter_text(rule),
                         rule.target.clone(),
                     ]);
@@ -309,6 +324,7 @@ impl DispatchCommand {
             }
             Self::AddRule {
                 board,
+                trigger,
                 column,
                 target,
                 task_type,
@@ -328,6 +344,7 @@ impl DispatchCommand {
                     .create_dispatch_rule(
                         &board,
                         &CreateDispatchRuleRequest {
+                            trigger: Some(trigger),
                             column,
                             target_id: target,
                             task_type,
@@ -341,10 +358,10 @@ impl DispatchCommand {
                     return print_json(&rule);
                 }
                 println!(
-                    "Made the dispatch rule {}: {} that enters {} goes to {}.",
+                    "Made the dispatch rule {}: {} {} goes to {}.",
                     rule.id,
                     filter_text(&rule),
-                    rule.column,
+                    when_text(&rule),
                     rule.target
                 );
                 Ok(())
@@ -360,8 +377,9 @@ impl DispatchCommand {
                     return print_json(&removed);
                 }
                 println!(
-                    "Removed the dispatch rule {} (column {}).",
-                    removed.id, removed.column
+                    "Removed the dispatch rule {} ({}).",
+                    removed.id,
+                    when_text(&removed)
                 );
                 Ok(())
             }

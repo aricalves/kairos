@@ -119,7 +119,8 @@ pub fn rule_view(rule: &dispatch::Rule) -> dto::DispatchRule {
     dto::DispatchRule {
         id: rule.id.to_string(),
         board_id: rule.board_id.to_string(),
-        column_id: rule.column_id.to_string(),
+        trigger: rule.trigger.clone(),
+        column_id: rule.column_id.map(|id| id.to_string()),
         column: rule.column_name.clone(),
         target_id: rule.target_id.to_string(),
         target: rule.target_name.clone(),
@@ -418,7 +419,25 @@ pub fn create_rule_as(
     request: &dto::CreateDispatchRuleRequest,
 ) -> Result<dto::DispatchRule, ApiError> {
     let board = configurable(conn, slug, user, board_ref)?;
-    let column_id = column_of(conn, &board, &request.column)?;
+    let trigger =
+        given(&request.trigger).unwrap_or_else(|| dispatch::TRIGGER_ENTERED_COLUMN.to_string());
+    if !dispatch::TRIGGERS.contains(&trigger.as_str()) {
+        return Err(ApiError::validation(format!(
+            "{trigger:?} is not a trigger. The triggers are: {}.",
+            dispatch::TRIGGERS.join(", ")
+        ))
+        .with_details(json!({ "field": "trigger" })));
+    }
+    let column_id = match given(&request.column) {
+        Some(column) => Some(column_of(conn, &board, &column)?),
+        None if trigger == dispatch::TRIGGER_UNBLOCKED => None,
+        None => {
+            return Err(ApiError::validation(
+                "A rule with the trigger entered_column needs a column.",
+            )
+            .with_details(json!({ "field": "column" })));
+        }
+    };
     let target = target_of(conn, &board, &request.target_id)
         .map_err(|e| e.with_details(json!({ "field": "target_id" })))?;
     let task_type = given(&request.task_type);
@@ -471,6 +490,7 @@ pub fn create_rule_as(
         conn,
         &NewRule {
             board_id: board.id,
+            trigger,
             column_id,
             target_id: target.id,
             task_type,
