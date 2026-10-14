@@ -427,6 +427,8 @@ pub struct CreateTaskRequest {
     /// The team that sends the task, by slug or UUID (KAIROS-T-0426). When
     /// it is not the team of the board, the task is a request whoever
     /// sends it: entry column, support lane. Omit it for today's rule.
+    /// Kairos does not keep it on the task: name the sending team in the
+    /// body.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_team: Option<String>,
 }
