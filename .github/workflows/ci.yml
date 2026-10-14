@@ -4,11 +4,12 @@
 #   changes      which parts of the tree the change touches
 #   lint         Gate 1 cargo fmt, Gate 2 clippy, Gate 5 STE (docs and code),
 #                Gate 6 GUI conventions grep, Gate 8 Helm chart renders
-#   build-tests  compiles every test binary once (a nextest archive), then
-#                Gate 3 (unit tests) and the OpenAPI artifact and REST check
+#   build-tests  compiles every test binary once (a nextest archive)
+#   unit         Gate 3 (unit tests), the OpenAPI artifact and REST check
 #   integration  Gate 4: the archive, split over 4 shards, each with its own
 #                compose stack (Postgres, Dex, S3Mock)
-#   bdd          Gate 4: the cucumber scenarios (their own runner)
+#   bdd          Gate 4: the cucumber scenarios (their own runner), one job
+#                for each of the two suites
 #   web          Gate 7: the GUI wasm build (release on main, debug on a PR)
 #   ci           the one required check: it fails when a gate failed
 #
@@ -293,6 +294,31 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+
+  # Gate 3 and the OpenAPI check, beside build-tests so the shards do not
+  # wait for them. It restores the cache of build-tests and saves none.
+  unit:
+    name: unit
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain (from rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: Install libpq
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpq-dev
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: tests
+          save-if: false
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -357,10 +383,16 @@ jobs:
             --partition hash:${{ matrix.shard }}/4
 
   bdd:
-    name: bdd
+    name: bdd (${{ matrix.suite.name }})
     needs: build-tests
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - { name: kairos-index, dir: crates/kairos-index, bin: bdd }
+          - { name: kairos-cli, dir: crates/kairos-cli, bin: index_bdd }
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -406,8 +438,8 @@ jobs:
           RUSTUP_TOOLCHAIN="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
           export RUSTUP_TOOLCHAIN
           echo "RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN}"
-          (cd crates/kairos-index && ../../bdd-bin/bdd)
-          (cd crates/kairos-cli && ../../bdd-bin/index_bdd)
+          cd "${{ matrix.suite.dir }}"
+          "${GITHUB_WORKSPACE}/bdd-bin/${{ matrix.suite.bin }}"
 
   web:
     name: web
@@ -484,7 +516,7 @@ jobs:
   ci:
     name: ci
     if: always()
-    needs: [changes, lint, python, build-tests, integration, bdd, web, image]
+    needs: [changes, lint, python, build-tests, unit, integration, bdd, web, image]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
