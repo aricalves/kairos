@@ -119,8 +119,8 @@ fn make_user(conn: &mut PgConnection, email: &str, org_id: Uuid, with_password: 
 }
 
 /// Scratch DB + provisioned `acme`, and the org id to hang members off.
-fn fixture(scratch_db: &str) -> (PgConnection, String, Uuid) {
-    drop(recreate_scratch_db(scratch_db));
+fn fixture(scratch_db: &str) -> (PgConnection, common::ScratchUrl, Uuid) {
+    let admin = recreate_scratch_db(scratch_db);
     let scratch_url = with_database(&common::admin_database_url(), scratch_db);
     let mut conn = PgConnection::establish(&scratch_url).expect("connect scratch");
     run_public_migrations(&mut conn).expect("public migrations");
@@ -130,7 +130,7 @@ fn fixture(scratch_db: &str) -> (PgConnection, String, Uuid) {
         .select(organizations::id)
         .first(&mut conn)
         .expect("acme org id");
-    (conn, scratch_url, org_id)
+    (conn, common::ScratchUrl::new(admin, scratch_url), org_id)
 }
 
 /// Drop the scratch database. A fresh admin connection, because the scratch one

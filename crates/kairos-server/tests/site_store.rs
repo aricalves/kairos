@@ -98,7 +98,7 @@ async fn the_s3_backend_against_live_stack() {
 
 #[tokio::test]
 async fn cleanup_jobs_delete_their_publish_only_against_live_stack() {
-    drop(recreate_scratch_db(SCRATCH_DB));
+    let _scratch = recreate_scratch_db(SCRATCH_DB);
     let scratch_url = with_database(&common::admin_database_url(), SCRATCH_DB);
     let mut conn = PgConnection::establish(&scratch_url).expect("connect scratch");
     run_public_migrations(&mut conn).expect("public migrations");

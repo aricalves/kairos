@@ -11,6 +11,9 @@
 //! Runs against the LIVE compose Postgres (`angreal services up`); owns
 //! the scratch database `kairos_repositories_migration_test`.
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use diesel::connection::SimpleConnection;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
@@ -22,7 +25,8 @@ use kairos_core::repositories::{is_valid_slug, slug_from_full_name};
 use kairos_db::{migrate_all_tenants, provision_tenant, run_public_migrations};
 
 const DEFAULT_DATABASE_URL: &str = "postgres://kairos:kairos@localhost:41432/kairos";
-const SCRATCH_DB: &str = "kairos_repositories_migration_test";
+static SCRATCH_DB: scratch::ScratchName =
+    scratch::ScratchName::new("kairos_repositories_migration_test");
 const DOWN_SQL: &str = include_str!("../migrations/tenant/2026-09-22-000000_repositories/down.sql");
 /// The diesel bookkeeping version of the migration above — its directory
 /// timestamp with the separators stripped. Named rather than taken as
@@ -67,7 +71,7 @@ fn admin_database_url() -> String {
 
 fn with_database(url: &str, db_name: &str) -> String {
     let (base, _) = url.rsplit_once('/').expect("database url has a path");
-    format!("{base}/{db_name}")
+    format!("{base}/{}", scratch::scratch_db_name(db_name))
 }
 
 #[derive(QueryableByName)]
@@ -175,7 +179,8 @@ fn repositories_migration_on_populated_tables() {
     sql_query(format!("CREATE DATABASE {SCRATCH_DB}"))
         .execute(&mut admin_conn)
         .expect("creating scratch db");
-    let scratch_url = with_database(&admin_url, SCRATCH_DB);
+    let _scratch_guard = scratch::ScratchGuard::new(&SCRATCH_DB);
+    let scratch_url = with_database(&admin_url, &SCRATCH_DB);
     let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch db");
     run_public_migrations(&mut conn).expect("public migrations");
     provision_tenant(&mut conn, "acme", "Acme Inc").expect("provisioning acme");

@@ -93,8 +93,8 @@ fn with_cookie(
     .expect("request")
 }
 
-fn fixture() -> (PgConnection, String) {
-    drop(recreate_scratch_db(SCRATCH_DB));
+fn fixture() -> (PgConnection, common::ScratchUrl) {
+    let admin = recreate_scratch_db(SCRATCH_DB);
     let scratch_url = with_database(&common::admin_database_url(), SCRATCH_DB);
     let mut conn = PgConnection::establish(&scratch_url).expect("connect scratch");
     run_public_migrations(&mut conn).expect("public migrations");
@@ -124,7 +124,7 @@ fn fixture() -> (PgConnection, String) {
         .expect("membership");
     let hash = hash_password(PASSWORD).expect("hash");
     db_local_auth::set_password(&mut conn, user.id, &hash).expect("password");
-    (conn, scratch_url)
+    (conn, common::ScratchUrl::new(admin, scratch_url))
 }
 
 #[tokio::test]

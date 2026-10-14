@@ -6,6 +6,9 @@
 //! Runs against the real compose Postgres (`angreal services up`); owns
 //! the scratch database `kairos_team_pages_test`.
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::result::{DatabaseErrorKind, Error as DieselError};
@@ -19,7 +22,7 @@ use kairos_db::team_pages::seed_team_scaffold;
 use kairos_db::{provision_tenant, run_public_migrations, schema};
 
 const DEFAULT_DATABASE_URL: &str = "postgres://kairos:kairos@localhost:41432/kairos";
-const SCRATCH_DB: &str = "kairos_team_pages_test";
+static SCRATCH_DB: scratch::ScratchName = scratch::ScratchName::new("kairos_team_pages_test");
 
 fn admin_database_url() -> String {
     std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
@@ -29,7 +32,7 @@ fn with_database(url: &str, db_name: &str) -> String {
     let (base, _) = url
         .rsplit_once('/')
         .expect("DATABASE_URL must contain a database path segment");
-    format!("{base}/{db_name}")
+    format!("{base}/{}", scratch::scratch_db_name(db_name))
 }
 
 /// All live scaffold nodes of a team as (parent slug or "", slug, kind,
@@ -78,7 +81,8 @@ fn team_page_scaffold() {
     sql_query(format!("CREATE DATABASE {SCRATCH_DB}"))
         .execute(&mut admin_conn)
         .expect("creating scratch database");
-    let scratch_url = with_database(&admin_url, SCRATCH_DB);
+    let _scratch_guard = scratch::ScratchGuard::new(&SCRATCH_DB);
+    let scratch_url = with_database(&admin_url, &SCRATCH_DB);
     let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
 
     run_public_migrations(&mut conn).expect("running public migrations");

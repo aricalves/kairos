@@ -12,6 +12,9 @@
 //! KAIROS-T-0189's measurements against a real model, and the seeded tenant's own
 //! distribution in KAIROS-T-0190.
 
+#[path = "../../kairos-db/tests/common/scratch.rs"]
+mod scratch;
+
 use std::sync::Arc;
 
 use diesel::pg::PgConnection;
@@ -44,7 +47,7 @@ fn seed_board_team(conn: &mut PgConnection, name: &str, slug: &str) -> Uuid {
 }
 
 const DEFAULT_DATABASE_URL: &str = "postgres://kairos:kairos@localhost:41432/kairos";
-const SCRATCH_DB: &str = "kairos_related_work_test";
+static SCRATCH_DB: scratch::ScratchName = scratch::ScratchName::new("kairos_related_work_test");
 
 fn admin_database_url() -> String {
     std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
@@ -52,7 +55,7 @@ fn admin_database_url() -> String {
 
 fn with_database(url: &str, db: &str) -> String {
     let (base, _) = url.rsplit_once('/').expect("a database path segment");
-    format!("{base}/{db}")
+    format!("{base}/{}", scratch::scratch_db_name(db))
 }
 
 /// A document whose MIDDLE section is the part shared between fixtures.
@@ -87,7 +90,8 @@ fn related_work_proposes_and_degrades() {
     sql_query(format!("CREATE DATABASE {SCRATCH_DB}"))
         .execute(&mut admin)
         .expect("creating scratch");
-    let url = with_database(&admin_url, SCRATCH_DB);
+    let _scratch_guard = scratch::ScratchGuard::new(&SCRATCH_DB);
+    let url = with_database(&admin_url, &SCRATCH_DB);
 
     let mut conn = PgConnection::establish(&url).expect("connecting");
     run_public_migrations(&mut conn).expect("public migrations");

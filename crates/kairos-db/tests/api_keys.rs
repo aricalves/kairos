@@ -9,6 +9,9 @@
 //! Each test uses its OWN scratch database name so the two run in parallel
 //! without colliding.
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use chrono::{Duration, Utc};
 use diesel::prelude::*;
 use diesel::sql_query;
@@ -26,12 +29,13 @@ fn admin_url() -> String {
 
 fn with_database(url: &str, db: &str) -> String {
     let (base, _) = url.rsplit_once('/').expect("DATABASE_URL has a db segment");
-    format!("{base}/{db}")
+    format!("{base}/{}", scratch::scratch_db_name(db))
 }
 
 /// Drop+recreate the named scratch DB, run public migrations, provision one
 /// tenant, and return a connection pinned to that tenant's schema.
 fn setup(db: &str) -> PgConnection {
+    let db = &scratch::scratch_db_name(db);
     let admin = admin_url();
     let mut root = PgConnection::establish(&admin).expect("connect admin");
     let _ = sql_query(format!("DROP DATABASE IF EXISTS {db} WITH (FORCE)")).execute(&mut root);
@@ -50,6 +54,7 @@ fn setup(db: &str) -> PgConnection {
 }
 
 fn teardown(db: &str) {
+    let db = &scratch::scratch_db_name(db);
     let mut root = PgConnection::establish(&admin_url()).expect("connect admin for teardown");
     let _ = sql_query(format!("DROP DATABASE IF EXISTS {db} WITH (FORCE)")).execute(&mut root);
 }
@@ -58,6 +63,7 @@ fn teardown(db: &str) {
 fn api_key_round_trip() {
     let db = "kairos_api_keys_roundtrip_test";
     let mut conn = setup(db);
+    let _scratch_guard = scratch::ScratchGuard::new(db);
 
     // A service-account principal is a public.users row with kind='service_account'.
     let sa = diesel::insert_into(kairos_db::schema::users::table)
@@ -126,6 +132,7 @@ fn api_key_round_trip() {
 fn expiry_is_honored() {
     let db = "kairos_api_keys_expiry_test";
     let mut conn = setup(db);
+    let _scratch_guard = scratch::ScratchGuard::new(db);
 
     let user_id = uuid::Uuid::new_v4();
     let past = api_keys::create_key(

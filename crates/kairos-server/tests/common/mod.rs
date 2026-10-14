@@ -16,6 +16,10 @@ pub mod embed_http;
 pub mod git_http;
 pub mod github_http;
 pub mod hook_http;
+#[path = "../../../kairos-db/tests/common/scratch.rs"]
+pub mod scratch;
+
+pub use scratch::scratch_db_name;
 
 use axum::Router;
 use axum::body::Body;
@@ -46,12 +50,14 @@ pub fn admin_database_url() -> String {
     std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
 }
 
-/// Replace the database name (final path segment) in a postgres URL.
+/// The URL of a scratch database: replaces the database name (final path
+/// segment) with this run's name for `db_name` ([`scratch_db_name`],
+/// KAIROS-T-0445).
 pub fn with_database(url: &str, db_name: &str) -> String {
     let (base, _) = url
         .rsplit_once('/')
         .expect("DATABASE_URL must contain a database path segment");
-    format!("{base}/{db_name}")
+    format!("{base}/{}", scratch_db_name(db_name))
 }
 
 /// Attempts for each transient scratch-DB lifecycle op against the SHARED
@@ -109,32 +115,97 @@ fn connect_admin() -> PgConnection {
     )
 }
 
-/// Drop (if present) and recreate the uniquely named scratch database on
-/// the shared compose server (shared-services discipline: each test binary
-/// owns its own database and nothing else). Returns the admin connection
-/// for later teardown.
+/// Drop (if present) and recreate the scratch database for `scratch_db`
+/// on the shared compose server (shared-services discipline: each test
+/// owns its own database and nothing else). The name is this run's name
+/// for the base ([`scratch_db_name`], KAIROS-T-0445), so two runs at once
+/// never touch each other's databases.
+///
+/// Returns the admin connection as a [`ScratchConn`]: it derefs to the
+/// `PgConnection` and drops the scratch database when it goes out of
+/// scope, also when the test panics. Keep it alive for the whole test.
 ///
 /// Every step retries transient shared-Postgres errors with bounded backoff
-/// (KAIROS-T-0048): the target database name is unique per binary, so the
+/// (KAIROS-T-0048): the target database name is unique per run, so the
 /// `DROP`/`CREATE` pair is idempotent under retry and re-running it after a
 /// partial failure never clobbers another binary's state.
-pub fn recreate_scratch_db(scratch_db: &str) -> PgConnection {
+pub fn recreate_scratch_db(scratch_db: &str) -> ScratchConn {
+    let name = scratch_db_name(scratch_db);
     let mut admin_conn = connect_admin();
     retry_db("dropping scratch database", || {
-        sql_query(format!("DROP DATABASE IF EXISTS {scratch_db} WITH (FORCE)"))
-            .execute(&mut admin_conn)
+        sql_query(format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)")).execute(&mut admin_conn)
     });
     retry_db("creating scratch database", || {
-        sql_query(format!("CREATE DATABASE {scratch_db}")).execute(&mut admin_conn)
+        sql_query(format!("CREATE DATABASE {name}")).execute(&mut admin_conn)
     });
-    admin_conn
+    ScratchConn {
+        conn: admin_conn,
+        name,
+    }
+}
+
+/// The admin connection of a scratch database: it derefs to the
+/// `PgConnection`, and dropping it drops the database (errors ignored, see
+/// [`scratch::ScratchGuard`]).
+pub struct ScratchConn {
+    conn: PgConnection,
+    name: String,
+}
+
+impl std::ops::Deref for ScratchConn {
+    type Target = PgConnection;
+
+    fn deref(&self) -> &PgConnection {
+        &self.conn
+    }
+}
+
+impl std::ops::DerefMut for ScratchConn {
+    fn deref_mut(&mut self) -> &mut PgConnection {
+        &mut self.conn
+    }
+}
+
+impl Drop for ScratchConn {
+    fn drop(&mut self) {
+        scratch::drop_quietly(&mut self.conn, &self.name);
+    }
+}
+
+/// The URL of a scratch database that owns its [`ScratchConn`]: it derefs
+/// to (and displays as) the URL, and dropping it drops the database. For
+/// fixture helpers that hand back only the URL.
+pub struct ScratchUrl {
+    url: String,
+    _admin: ScratchConn,
+}
+
+impl ScratchUrl {
+    pub fn new(admin: ScratchConn, url: String) -> Self {
+        Self { url, _admin: admin }
+    }
+}
+
+impl std::ops::Deref for ScratchUrl {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.url
+    }
+}
+
+impl std::fmt::Display for ScratchUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.url)
+    }
 }
 
 /// Drop the scratch database after the test (retries transient errors,
 /// KAIROS-T-0048).
 pub fn drop_scratch_db(admin_conn: &mut PgConnection, scratch_db: &str) {
+    let name = scratch_db_name(scratch_db);
     retry_db("dropping scratch database after test", || {
-        sql_query(format!("DROP DATABASE IF EXISTS {scratch_db} WITH (FORCE)")).execute(admin_conn)
+        sql_query(format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)")).execute(admin_conn)
     });
 }
 

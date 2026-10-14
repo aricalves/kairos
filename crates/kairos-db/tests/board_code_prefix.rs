@@ -22,6 +22,9 @@
 //! Against real Postgres from the compose stack (A-0012 tier 2). Each test
 //! owns a scratch database.
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::collections::BTreeMap;
 
 use diesel::connection::SimpleConnection;
@@ -54,12 +57,13 @@ fn with_database(url: &str, db_name: &str) -> String {
     let (base, _) = url
         .rsplit_once('/')
         .expect("DATABASE_URL must contain a database path segment");
-    format!("{base}/{db_name}")
+    format!("{base}/{}", scratch::scratch_db_name(db_name))
 }
 
 /// A scratch database with the tenant `colliery`, pinned to its schema, and
 /// a user.
 fn tenant(scratch_db: &str) -> (PgConnection, PgConnection, Uuid) {
+    let scratch_db = &crate::scratch::scratch_db_name(scratch_db);
     let admin_url = admin_database_url();
     let mut admin_conn = PgConnection::establish(&admin_url).unwrap_or_else(|e| {
         panic!(
@@ -241,8 +245,10 @@ fn codes(conn: &mut PgConnection) -> Vec<String> {
 
 #[test]
 fn a_new_task_on_a_board_gets_the_prefix_of_the_board() {
-    const DB: &str = "kairos_board_prefix_new_task_t3099";
-    let (admin, mut conn, user) = tenant(DB);
+    static DB: scratch::ScratchName =
+        scratch::ScratchName::new("kairos_board_prefix_new_task_t3099");
+    let (admin, mut conn, user) = tenant(&DB);
+    let _scratch_guard = crate::scratch::ScratchGuard::new(&DB);
 
     let colliery_team = team(&mut conn, "colliery-io");
     let colliery = create_board(
@@ -299,7 +305,7 @@ fn a_new_task_on_a_board_gets_the_prefix_of_the_board() {
     assert_eq!(document(&mut conn, colliery.id, user), "COLLIERY-D-0002");
     assert_eq!(initiative(&mut conn, initiatives, user), "COLLIERY-I-0001");
 
-    drop_database(admin, conn, DB);
+    drop_database(admin, conn, &DB);
 }
 
 // ---------------------------------------------------------------------------
@@ -309,8 +315,9 @@ fn a_new_task_on_a_board_gets_the_prefix_of_the_board() {
 
 #[test]
 fn boards_share_a_prefix_only_for_different_types() {
-    const DB: &str = "kairos_board_prefix_share_t3099";
-    let (admin, mut conn, user) = tenant(DB);
+    static DB: scratch::ScratchName = scratch::ScratchName::new("kairos_board_prefix_share_t3099");
+    let (admin, mut conn, user) = tenant(&DB);
+    let _scratch_guard = crate::scratch::ScratchGuard::new(&DB);
 
     // Given the board "initiatives" with prefix "COLLIERY" (provisioning).
     let all = prefixes(&mut conn);
@@ -441,7 +448,7 @@ fn boards_share_a_prefix_only_for_different_types() {
     .expect("a numbered prefix from the slug");
     assert_eq!(other.code_prefix, "NEWCOMERS2");
 
-    drop_database(admin, conn, DB);
+    drop_database(admin, conn, &DB);
 }
 
 // ---------------------------------------------------------------------------
@@ -512,8 +519,10 @@ fn footer(code: &str) -> String {
 
 #[test]
 fn the_migration_keeps_each_code_and_can_run_2_times() {
-    const DB: &str = "kairos_board_prefix_migration_t3099";
-    let (admin, mut conn, user) = tenant(DB);
+    static DB: scratch::ScratchName =
+        scratch::ScratchName::new("kairos_board_prefix_migration_t3099");
+    let (admin, mut conn, user) = tenant(&DB);
+    let _scratch_guard = crate::scratch::ScratchGuard::new(&DB);
 
     // Given the tenant before the migration.
     conn.batch_execute(DOWN).expect("the down migration");
@@ -655,5 +664,5 @@ fn the_migration_keeps_each_code_and_can_run_2_times() {
     let after = codes(&mut conn);
     assert!(after.contains(&"COLLIERY-T-0015".to_string()), "{after:?}");
 
-    drop_database(admin, conn, DB);
+    drop_database(admin, conn, &DB);
 }

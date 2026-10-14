@@ -38,12 +38,12 @@ const KIND: &str = "test";
 const OTHER: &str = "test_other";
 
 /// A scratch database with the public schema, and its URL.
-fn scratch(name: &str) -> String {
-    let _admin = common::recreate_scratch_db(name);
+fn scratch(name: &str) -> common::ScratchUrl {
+    let admin = common::recreate_scratch_db(name);
     let url = common::with_database(&common::admin_database_url(), name);
     let mut conn = PgConnection::establish(&url).expect("connect to the scratch database");
     run_public_migrations(&mut conn).expect("public migrations");
-    url
+    common::ScratchUrl::new(admin, url)
 }
 
 fn conn(url: &str) -> PgConnection {
@@ -63,6 +63,21 @@ fn settings(limit: usize) -> JobSettings {
     settings.limits.insert(KIND.to_string(), limit);
     settings.limits.insert(OTHER.to_string(), 1);
     settings
+}
+
+/// The settings of the tests of a stalled job (KAIROS-T-0449). The watchdog
+/// kills a job with no progress one heartbeat before its lease runs out.
+/// With the heartbeat of 100 ms of [`settings`], a late watchdog on a
+/// loaded machine let a pass of the drain fail the job for its lease
+/// first. A long heartbeat keeps the kill at 500 ms and the end of the
+/// lease 4 s after it, so the watchdog ends each try. A stalled job never
+/// progresses, so no heartbeat is written.
+fn stall_settings() -> JobSettings {
+    JobSettings {
+        heartbeat: Duration::from_secs(4),
+        lease: Duration::from_millis(4500),
+        ..settings(1)
+    }
 }
 
 fn worker(url: &str, settings: JobSettings) -> Arc<Worker> {
@@ -199,6 +214,15 @@ fn jobs_of(url: &str, kind: &str) -> Vec<Job> {
     db::list(&mut conn(url), kind).expect("list the jobs")
 }
 
+/// Let go of the workers before the test returns, so that their pools
+/// close their connections now (KAIROS-T-0449): a test process that
+/// exited with them open died with SIGSEGV under nextest.
+async fn shut_down<const N: usize>(workers: [Arc<Worker>; N]) {
+    for w in workers {
+        w.shutdown(Duration::from_secs(5)).await;
+    }
+}
+
 /// Wait until `check` is true, or fail after `limit`.
 async fn wait_until(limit: Duration, what: &str, mut check: impl FnMut() -> bool) {
     let until = tokio::time::Instant::now() + limit;
@@ -243,6 +267,7 @@ async fn two_workers_run_each_job_once() {
     .await;
     for l in loops {
         l.abort();
+        let _ = l.await;
     }
 
     let runs = record.runs.lock().unwrap().clone();
@@ -263,6 +288,7 @@ async fn two_workers_run_each_job_once() {
         "both workers took jobs: {by_a} and {by_b}"
     );
     assert!(jobs_of(&url, KIND).iter().all(|j| j.tries == 1));
+    shut_down([a, b]).await;
 }
 
 // ===========================================================================
@@ -308,6 +334,7 @@ async fn jobs_run_by_priority_then_age() {
         .find(|j| j.payload_json()["n"] == 99)
         .unwrap();
     assert_eq!(later.state, "queued", "a job is not taken before run_after");
+    shut_down([w]).await;
 }
 
 // ===========================================================================
@@ -355,6 +382,7 @@ async fn a_server_runs_at_most_the_limit_of_each_kind() {
     );
     assert_eq!(record.runs.lock().unwrap().len(), 8);
     assert_eq!(other.runs.lock().unwrap().len(), 3);
+    shut_down([w]).await;
 }
 
 // ===========================================================================
@@ -364,7 +392,7 @@ async fn a_server_runs_at_most_the_limit_of_each_kind() {
 async fn a_stalled_job_is_killed_and_fails_after_its_tries() {
     let url = scratch("kairos_jobs_t0373_stall");
     let record = Arc::new(Record::default());
-    let w = worker(&url, settings(1));
+    let w = worker(&url, stall_settings());
     register(&w, KIND, &record, Behaviour::Stall);
     let added = w
         .enqueue(NewJob {
@@ -400,6 +428,7 @@ async fn a_stalled_job_is_killed_and_fails_after_its_tries() {
         "killed at the lease time, not later: {:?}",
         started.elapsed()
     );
+    shut_down([w]).await;
 }
 
 // ===========================================================================
@@ -425,6 +454,7 @@ async fn progress_keeps_the_lease_of_a_long_job() {
     assert_eq!(row.state, "done");
     assert_eq!(row.tries, 1, "one lease, kept by the progress");
     assert!(row.heartbeat_at.unwrap() > row.created_at);
+    shut_down([w]).await;
 }
 
 // ===========================================================================
@@ -462,6 +492,7 @@ async fn another_worker_takes_the_job_of_a_dead_worker() {
         "the row names the server whose lease ran out"
     );
     assert_eq!(*record.runs.lock().unwrap(), vec![(added.id, w.instance())]);
+    shut_down([w]).await;
 }
 
 // ===========================================================================
@@ -501,6 +532,7 @@ async fn a_dedupe_key_keeps_a_second_job_out() {
     assert_eq!(again.tenant.as_deref(), Some("acme"));
     w.drain().await;
     assert_eq!(*record.order.lock().unwrap(), vec![4]);
+    shut_down([w]).await;
 }
 
 // ===========================================================================
@@ -539,6 +571,7 @@ async fn a_job_that_ran_out_of_tries_fails_with_the_reason() {
         1,
         "the failed hook ran"
     );
+    shut_down([w]).await;
 }
 
 // ===========================================================================
@@ -580,6 +613,7 @@ async fn a_drain_runs_the_job_that_waits_for_a_slot_that_frees_during_a_pass() {
             .collect();
         assert!(queued.is_empty(), "round {round}: left queued: {queued:?}");
         assert_eq!(record.runs.lock().unwrap().len(), total, "round {round}");
+        shut_down([w]).await;
     }
 }
 
@@ -591,7 +625,7 @@ async fn a_drain_runs_the_job_that_waits_for_a_slot_that_frees_during_a_pass() {
 async fn a_stalled_job_of_a_no_retry_kind_fails_on_its_first_try() {
     let url = scratch("kairos_jobs_t0399_stall");
     let record = Arc::new(Record::default());
-    let w = worker(&url, settings(1));
+    let w = worker(&url, stall_settings());
     register_with(&w, KIND, &record, Behaviour::Stall, false);
     let added = w.enqueue(job(KIND, 1)).await.unwrap().unwrap();
 
@@ -611,6 +645,7 @@ async fn a_stalled_job_of_a_no_retry_kind_fails_on_its_first_try() {
         1,
         "the failed hook ran"
     );
+    shut_down([w]).await;
 }
 
 // ===========================================================================
@@ -670,4 +705,5 @@ async fn a_no_retry_job_of_a_dead_worker_fails_and_other_kinds_run_again() {
     assert_eq!(row.tries, 2);
     assert_eq!(other.runs.lock().unwrap().len(), 1);
     assert!(other.stopped.lock().unwrap().is_empty());
+    shut_down([w]).await;
 }

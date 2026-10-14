@@ -11,6 +11,9 @@
 //! Against real Postgres from the compose stack (A-0012 tier 2). The test
 //! owns a scratch database.
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::sql_query;
@@ -26,7 +29,8 @@ use kairos_db::{
 };
 
 const DEFAULT_DATABASE_URL: &str = "postgres://kairos:kairos@localhost:41432/kairos";
-const SCRATCH_DB: &str = "kairos_team_delete_t0250_db_test";
+static SCRATCH_DB: scratch::ScratchName =
+    scratch::ScratchName::new("kairos_team_delete_t0250_db_test");
 
 fn team(conn: &mut PgConnection, name: &str, slug: &str) -> Uuid {
     use kairos_db::schema::teams;
@@ -91,6 +95,7 @@ fn the_delivery_boards_of_a_team() {
     sql_query(format!("CREATE DATABASE {SCRATCH_DB}"))
         .execute(&mut admin)
         .expect("creating scratch database");
+    let _scratch_guard = scratch::ScratchGuard::new(&SCRATCH_DB);
     let (base, _) = admin_url.rsplit_once('/').expect("a database path segment");
     let mut scratch =
         PgConnection::establish(&format!("{base}/{SCRATCH_DB}")).expect("connecting to scratch");
