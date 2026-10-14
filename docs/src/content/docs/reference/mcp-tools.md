@@ -1725,13 +1725,15 @@ A board manager sets rules that send a task to an agent runner
 Then Kairos sends one signed delivery to a webhook target. Kairos does not
 start a session itself: the runner does. See
 [Webhook deliveries](../webhooks/) for the request, the signature and the
-tries.
+tries. To push the deliveries into a running Claude Code session, see
+[Receive dispatch in a Claude Code session](../../how-to/receive-dispatch-in-a-session/).
 
 The event is `task.entered_column`. Its `data` has these fields:
 
 | Field | Description |
 |---|---|
 | `code`, `title`, `task_type` | The task. |
+| `work_class` | The lane of the task: `planned` or `support`. |
 | `link` | The URL of the task in the GUI. |
 | `board` | `id`, `slug` and `name` of the board. |
 | `column` | `id` and `name` of the column. |

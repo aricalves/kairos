@@ -520,6 +520,7 @@ async fn a_task_that_enters_the_column_of_a_rule_fires_one_signed_delivery() {
     let data = &by_code[&bug][0]["data"];
     assert_eq!(data["title"], "Fix the login");
     assert_eq!(data["task_type"], "bug");
+    assert_eq!(data["work_class"], "planned", "KAIROS-T-0429: the lane");
     assert_eq!(data["link"], format!("https://kairos.test/items/{bug}"));
     assert_eq!(data["board"]["slug"], json!(slug));
     assert_eq!(data["column"]["name"], "Active");

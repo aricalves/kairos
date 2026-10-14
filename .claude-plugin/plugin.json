@@ -17,6 +17,11 @@
       "type": "stdio",
       "command": "${CLAUDE_PLUGIN_ROOT}/plugin/bin/kairos-code",
       "args": []
+    },
+    "kairos-dispatch": {
+      "type": "stdio",
+      "command": "${CLAUDE_PLUGIN_ROOT}/plugin/bin/kairos-channel",
+      "args": []
     }
   },
   "skills": [
