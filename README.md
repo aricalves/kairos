@@ -113,9 +113,24 @@ testing and verification strategy is [`KAIROS-A-0012`](.metis/adrs/KAIROS-A-0012
 ## CI
 
 `.github/workflows/ci.yml` runs the KAIROS-A-0012 gates on every push to `main`
-and every pull request: `cargo fmt --check`, `clippy --workspace --all-targets
--D warnings`, `angreal test unit`, `angreal test integration`, and a check that
-the generated REST reference still matches the OpenAPI spec.
+and every pull request, as parallel jobs (KAIROS-T-0447):
+
+| Job | Gates |
+|---|---|
+| `lint` | `cargo fmt --check`, `clippy --workspace --all-targets -D warnings`, the STE checks, the GUI conventions grep, the Helm chart renders |
+| `build-tests` | compiles every test binary once (a nextest archive), then `angreal test unit` and the check that the generated REST reference matches the OpenAPI spec |
+| `integration (1/4)` to `(4/4)` | the integration tests from the archive, split in 4, each shard with its own compose stack |
+| `bdd` | the cucumber scenarios of `kairos-index` and `kairos-cli` |
+| `web` | the GUI wasm build (debug on a pull request, release on `main`) |
+| `image` | a pull request that changes the `Dockerfile`: the image builds and passes its smoke check |
+| `ci` | the one required check: it fails when a job failed |
+
+A pull request runs only the jobs of the parts it changes: a docs change runs
+`lint`. On `main`, a push does not cancel the run of the commit before it.
+
+To run one shard locally, start the stack (`angreal services up`) and run
+`cargo nextest run --profile ci --partition hash:2/4`. `angreal test
+integration` still runs all the integration tests in one go.
 
 Two workflows publish, deliberately on different triggers:
 

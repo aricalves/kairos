@@ -36,6 +36,10 @@ permissions:
 env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
+  # No debug info in CI: the test binaries are a fraction of the size, they
+  # link faster, and the archive goes to the shards in seconds, not minutes.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
 
 jobs:
   changes:
@@ -215,10 +219,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      # The test binaries of the workspace take much of the runner disk.
-      - name: Free disk space
-        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
-
       - name: Install Rust toolchain (from rust-toolchain.toml)
         run: rustup toolchain install
 
@@ -251,6 +251,8 @@ jobs:
           ')"
           # shellcheck disable=SC2086
           cargo nextest archive ${targets} --archive-file tests.tar.zst
+          ls -la tests.tar.zst
+          df -h /
 
       - name: Build the cucumber runners
         run: |
@@ -277,6 +279,8 @@ jobs:
           path: tests.tar.zst
           retention-days: 1
           if-no-files-found: error
+          # The archive is zstd already.
+          compression-level: 0
 
       - name: Upload the cucumber runners
         uses: actions/upload-artifact@v6
