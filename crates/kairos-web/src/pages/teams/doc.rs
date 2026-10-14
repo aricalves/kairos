@@ -6,10 +6,11 @@
 //! team-member-or-admin permission model. The charter shows no
 //! destructive controls (server-enforced, UI-honest).
 //!
-//! Decisions (recorded on KAIROS-T-0086): folder indexes are the create
-//! surface for the nodes in a folder; the team page offers new root nodes
-//! (KAIROS-T-0094, `teams.rs`); after a delete the router goes up one
-//! level. COLLIERY-T-1836: a delete asks in an Aurora
+//! Decisions (recorded on KAIROS-T-0086, KAIROS-T-0438): the tree
+//! (`tree.rs`) is the create and move surface, in place, on the team page
+//! and at `/teams/:slug/pages/` (the root); a folder index offers the same
+//! in-place create; Manage renames the title and changes the slug
+//! separately; after a delete the router goes up one level. COLLIERY-T-1836: a delete asks in an Aurora
 //! `ConfirmDialog` (it was a second click on the button).
 
 use aurora_dark::components::{
@@ -133,6 +134,29 @@ fn DocBody(
 ) -> impl IntoView {
     let DocView { team, pages } = doc_view;
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    // KAIROS-T-0438: `/teams/:slug/pages/` is the root of the tree.
+    if segments.is_empty() {
+        let team_href = format!("/teams/{}", team.slug);
+        return view! {
+            <PageHeader title="Pages" sub=format!("team · {}", team.slug)/>
+            <Stack gap="md">
+                <Group gap="xs">
+                    <Anchor href=team_href>{team.name.clone()}</Anchor>
+                    <Text dimmed=true size="sm">"/"</Text>
+                </Group>
+                <Panel title="Pages" caption="the team's page tree — folders expand, pages open">
+                    <super::tree::TeamTree
+                        team_id=team.id.clone()
+                        team_slug=team.slug.clone()
+                        pages
+                        manage
+                        on_changed
+                    />
+                </Panel>
+            </Stack>
+        }
+        .into_any();
+    }
     let Some(node) = resolve_path(&pages, &segments).cloned() else {
         let team_href = format!("/teams/{}", team.slug);
         return view! {
@@ -240,6 +264,8 @@ fn FolderIndex(
         })
         .collect::<Vec<_>>();
 
+    let create_team_id = team.id.clone();
+    let create_parent_id = folder.id.clone();
     view! {
         <Panel title="Contents" caption="pages and folders inside">
             {if child_rows.is_empty() {
@@ -248,8 +274,14 @@ fn FolderIndex(
                 view! { <Stack gap="xs">{child_rows}</Stack> }.into_any()
             }}
         </Panel>
-        {manage.then(|| view! {
-            <CreateForm team_id=team.id.clone() parent_id=Some(folder.id.clone()) on_changed/>
+        {manage.then(move || view! {
+            <Panel title="New page or folder" caption="created inside this folder">
+                <super::tree::InlineCreate
+                    team_id=create_team_id
+                    parent_id=Some(create_parent_id)
+                    on_changed
+                />
+            </Panel>
             <StructurePanel team pages node=folder on_changed/>
         })}
     }
@@ -330,92 +362,6 @@ fn PageView(
     }
 }
 
-/// The create surface inside a folder (KAIROS-T-0086): kind + slug +
-/// title → POST.
-#[component]
-pub(crate) fn CreateForm(
-    team_id: String,
-    parent_id: Option<String>,
-    on_changed: Callback<()>,
-) -> impl IntoView {
-    let auth = use_auth();
-    let team_id = StoredValue::new(team_id);
-    let parent_id = StoredValue::new(parent_id);
-    let kind = RwSignal::new("page".to_string());
-    let slug = RwSignal::new(String::new());
-    let title = RwSignal::new(String::new());
-    let busy = RwSignal::new(false);
-    let error = RwSignal::new(None::<String>);
-    // KAIROS-T-0094: the same form serves a folder index and the tree root, so
-    // the caption has to say which one the reader is looking at.
-    let caption = if parent_id.get_value().is_some() {
-        "created inside this folder"
-    } else {
-        "created at the top level of the tree"
-    };
-
-    let create = move |_: ()| {
-        let slug_value = slug.get_untracked().trim().to_string();
-        let title_value = title.get_untracked().trim().to_string();
-        if slug_value.is_empty() || title_value.is_empty() || busy.get_untracked() {
-            return;
-        }
-        busy.set(true);
-        error.set(None);
-        leptos::task::spawn_local(async move {
-            let result = api::create_page(
-                auth,
-                &team_id.get_value(),
-                parent_id.get_value().as_deref(),
-                &kind.get_untracked(),
-                &slug_value,
-                &title_value,
-            )
-            .await;
-            busy.set(false);
-            match result {
-                Ok(_) => {
-                    slug.set(String::new());
-                    title.set(String::new());
-                    on_changed.run(());
-                }
-                Err(e) => error.set(Some(error_text(&e))),
-            }
-        });
-    };
-
-    view! {
-        <Panel title="New page or folder" caption=caption>
-            <Stack gap="sm">
-                {move || error.get().map(|message| view! {
-                    <Alert title="Create failed" color=token::BAD>
-                        <Text size="sm" dimmed=true>{message}</Text>
-                    </Alert>
-                })}
-                <Group align="end" gap="sm">
-                    <Select
-                        label="Kind"
-                        options=vec!["page".to_string(), "folder".to_string()]
-                        value=kind
-                    />
-                    <TextInput label="Slug" value=slug/>
-                    <TextInput label="Title" value=title/>
-                    <Button
-                        disabled=move || {
-                            slug.get().trim().is_empty() || title.get().trim().is_empty()
-                        }
-                        loading=busy
-                        loading_label="Creating…"
-                        on_click=Callback::new(create)
-                    >
-                        "Create"
-                    </Button>
-                </Group>
-            </Stack>
-        </Panel>
-    }
-}
-
 /// Rename / move / delete for an unprotected node (KAIROS-T-0086). The
 /// move select offers every folder EXCEPT the node and its descendants
 /// (a folder inside itself is a cycle — the server refuses it too) plus
@@ -437,6 +383,12 @@ fn StructurePanel(
     let busy = RwSignal::new(false);
     let error = RwSignal::new(None::<String>);
     let new_slug = RwSignal::new(node.slug.clone());
+    // KAIROS-T-0438: rename changes the title; the slug (the URL) is a
+    // separate change. A title edit is a versioned save with the content as
+    // it is (a folder has none).
+    let new_title = RwSignal::new(node.title.clone());
+    let content = StoredValue::new(node.content.clone());
+    let version = node.version;
     let confirm_delete = RwSignal::new(false);
 
     // Folders the node could move into: not itself, not its descendants.
@@ -487,6 +439,35 @@ fn StructurePanel(
             match result {
                 Ok(_) => on_changed.run(()),
                 Err(e) => error.set(Some(error_text(&e))),
+            }
+        });
+    };
+    let retitle = move |_| {
+        let title_value = new_title.get_untracked().trim().to_string();
+        if title_value.is_empty() || busy.get_untracked() {
+            return;
+        }
+        busy.set(true);
+        error.set(None);
+        leptos::task::spawn_local(async move {
+            let result = api::save_page_content(
+                auth,
+                &team_id.get_value(),
+                &page_id.get_value(),
+                &title_value,
+                &content.get_value(),
+                version,
+            )
+            .await;
+            busy.set(false);
+            match result {
+                Ok(_) => on_changed.run(()),
+                Err(e) => error.set(Some(match e {
+                    crate::pages::item::api::SaveError::Conflict(_) => {
+                        "Somebody changed this page. Reload it, then rename it again.".to_string()
+                    }
+                    crate::pages::item::api::SaveError::Api(e) => error_text(&e),
+                })),
             }
         });
     };
@@ -544,7 +525,7 @@ fn StructurePanel(
     };
 
     view! {
-        <Panel title="Manage" caption="rename · move · delete">
+        <Panel title="Manage" caption="rename · slug · move · delete">
             <Stack gap="sm">
                 {move || error.get().map(|message| view! {
                     <Alert title="Change failed" color=token::BAD>
@@ -552,8 +533,12 @@ fn StructurePanel(
                     </Alert>
                 })}
                 <Group align="end" gap="sm">
-                    <TextInput label="Slug" value=new_slug/>
-                    <Button variant="default" on_click=Callback::new(rename)>"Rename"</Button>
+                    <TextInput label="Title" value=new_title/>
+                    <Button variant="default" on_click=Callback::new(retitle)>"Rename"</Button>
+                </Group>
+                <Group align="end" gap="sm">
+                    <TextInput label="Slug" value=new_slug mono=true/>
+                    <Button variant="default" on_click=Callback::new(rename)>"Change slug"</Button>
                 </Group>
                 <Group align="end" gap="sm">
                     <Select
