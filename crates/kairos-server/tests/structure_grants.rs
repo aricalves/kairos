@@ -476,19 +476,33 @@ async fn an_admin_agent_sets_up_a_team_with_manage_structure() {
         .await;
     assert!(text.contains("Created team home-ops"), "{text}");
     assert!(text.contains("home-ops-delivery"), "{text}");
-    assert!(text.contains("ADR board: home-ops-adrs"), "{text}");
+    // KAIROS-T-0448: as REST and the CLI, the default is the delivery board
+    // only. No ADR board.
+    assert!(!text.contains("ADR board"), "{text}");
     assert_eq!(
         boards_of_team(&mut conn, "home-ops"),
+        [(
+            "home-ops-delivery".to_string(),
+            "delivery".to_string(),
+            "OPS".to_string()
+        )]
+    );
+    // `adr_board: true` makes the ADR board of the team in the same call.
+    let text = org_mcp
+        .ok(
+            "create_team",
+            json!({"name": "Lab", "slug": "lab", "code_prefix": "LAB", "adr_board": true}),
+        )
+        .await;
+    assert!(text.contains("ADR board: lab-adrs"), "{text}");
+    assert_eq!(
+        boards_of_team(&mut conn, "lab"),
         [
+            ("lab-adrs".to_string(), "adr".to_string(), "LAB".to_string()),
             (
-                "home-ops-adrs".to_string(),
-                "adr".to_string(),
-                "OPS".to_string()
-            ),
-            (
-                "home-ops-delivery".to_string(),
+                "lab-delivery".to_string(),
                 "delivery".to_string(),
-                "OPS".to_string()
+                "LAB".to_string()
             ),
         ]
     );
@@ -559,7 +573,7 @@ async fn an_admin_agent_sets_up_a_team_with_manage_structure() {
     // The activity log names the service account.
     assert_eq!(
         activity_count(&mut conn, org_agent_uuid, "create", "team"),
-        3
+        4
     );
     assert_eq!(
         activity_count(&mut conn, org_agent_uuid, "capability_grant", "board"),

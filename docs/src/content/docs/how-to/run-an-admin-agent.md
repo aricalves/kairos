@@ -100,7 +100,7 @@ The agent uses four MCP tools:
 
 | Tool | What it does |
 |---|---|
-| `create_team` | Makes a team, its delivery board and its ADR board. |
+| `create_team` | Makes a team and its delivery board. With `adr_board` `true`, it also makes the ADR board of the team. |
 | `create_board` | Makes one board. |
 | `add_team_member` | Adds a person or a service account to a team. |
 | `grant_capability` | Grants a board capability on one board. |
