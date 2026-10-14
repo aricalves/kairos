@@ -1592,6 +1592,17 @@ An organization member (`GET /api/members` element).
 | `role` | `string` | yes | `admin|member`. |
 | `user_id` | `string` | yes | `public.users.id` (UUID). |
 
+## OrgReadToken
+
+The read token of the organization for one forge host (KAIROS-T-0431). A read shows the host, who set it and when. It never shows the token.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `host` | `string` | yes | The host in lowercase, with `:port` only when the port is not the default, for example `github.com`. |
+| `set_at` | `string` | yes | RFC 3339. |
+| `set_by` | `string` | yes |  |
+| `set_by_name` | `string`, nullable | no | The display name of `set_by`, else the email. |
+
 ## ProgressCounts
 
 A `(done, total)` children rollup (KAIROS-T-0080). `done` counts the children sitting in `is_done` columns.
@@ -2094,6 +2105,16 @@ Body of `POST /api/tasks/{short_code}/work-class` (KAIROS-T-0077): move a task b
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `lifecycle` | `string` | yes | `draft|review|published|archived`. |
+
+The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
+
+## SetOrgReadTokenRequest
+
+Body of `PUT /api/org/read-tokens/{host}` (KAIROS-T-0431, an organization admin): the read token of the organization for the host.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `token` | `string` | yes | The token. Kairos encrypts it, and no read gives it back. |
 
 The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
 

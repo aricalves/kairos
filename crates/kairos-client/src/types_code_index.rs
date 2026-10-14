@@ -284,6 +284,31 @@ pub struct PutCodeIndexSettings {
     pub version: Option<i32>,
 }
 
+/// The read token of the organization for one forge host (KAIROS-T-0431).
+/// A read shows the host, who set it and when. It never shows the token.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct OrgReadToken {
+    /// The host in lowercase, with `:port` only when the port is not the
+    /// default, for example `github.com`.
+    pub host: String,
+    pub set_by: String,
+    /// The display name of `set_by`, else the email.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set_by_name: Option<String>,
+    /// RFC 3339.
+    pub set_at: String,
+}
+
+/// Body of `PUT /api/org/read-tokens/{host}` (KAIROS-T-0431, an
+/// organization admin): the read token of the organization for the host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetOrgReadTokenRequest {
+    /// The token. Kairos encrypts it, and no read gives it back.
+    #[schema(value_type = String, format = Password)]
+    pub token: crate::types_auth::Secret,
+}
+
 /// Body of `POST /api/code-index/query-vector` (KAIROS-T-0360): the text of
 /// a code search, and the model of the vectors of the index.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

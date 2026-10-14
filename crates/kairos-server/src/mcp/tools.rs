@@ -190,6 +190,34 @@ pub struct DeleteDispatchRuleParams {
     pub rule_id: String,
 }
 
+/// `list_org_read_tokens` (KAIROS-T-0431).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct ListOrgReadTokensParams {}
+
+/// `set_org_read_token` (KAIROS-T-0431).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct SetOrgReadTokenParams {
+    /// The forge host, for example "github.com" (a port only when it is not
+    /// 443).
+    pub host: String,
+    /// The read token. Kairos encrypts it; no tool gives it back.
+    #[schemars(with = "String")]
+    pub token: kairos_client::types_auth::Secret,
+}
+
+/// `remove_org_read_token` (KAIROS-T-0431).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct RemoveOrgReadTokenParams {
+    /// The forge host, for example "github.com".
+    pub host: String,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
@@ -1705,6 +1733,84 @@ impl KairosMcp {
             Ok(format!(
                 "Removed the dispatch rule {} (column {}, target {}).",
                 rule.id, rule.column, rule.target
+            ))
+        })
+        .await
+    }
+
+    // KAIROS-T-0431: the read token of the organization for each forge host.
+    #[tool(
+        description = "The read tokens of the organization for the code index builder: for each forge host (for example github.com), who set the token and when. Never the token. The builder uses the token of the host of a repository before the token of the repository. Only an organization admin."
+    )]
+    pub async fn list_org_read_tokens(
+        &self,
+        Parameters(ListOrgReadTokensParams {}): Parameters<ListOrgReadTokensParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (_, tenant) = Self::caller(&context)?;
+        if let Err(e) = crate::api::meta::require_org_admin(&tenant) {
+            return Ok(tool_error(e));
+        }
+        self.run_tool(&tenant, |conn| {
+            Ok(org_read_tokens_text(
+                &crate::api::org::org_read_tokens::list(conn)?,
+            ))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Set or replace the read token of the organization for a forge host. The code index builder then fetches each repository on that host with this token, before the token of the repository. `host` is the host only (github.com, or git.example.org:8443); `token` is a read-only token. Kairos encrypts it with KAIROS_SECRETS_KEY, and no tool gives it back. Only an organization admin."
+    )]
+    pub async fn set_org_read_token(
+        &self,
+        Parameters(params): Parameters<SetOrgReadTokenParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        if let Err(e) = crate::api::meta::require_org_admin(&tenant) {
+            return Ok(tool_error(e));
+        }
+        let (user, slug) = (auth.user_id, tenant.slug.clone());
+        let key = crate::api::org::repository_credentials::secrets_key(&self.state);
+        self.run_tool(&tenant, move |conn| {
+            let status = crate::api::org::org_read_tokens::set(
+                conn,
+                &slug,
+                user,
+                key,
+                &params.host,
+                &params.token,
+            )?;
+            Ok(format!(
+                "Set the read token of the organization for {}. The builder uses it for each \
+                 repository on this host.",
+                status.host
+            ))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Remove the read token of the organization for a forge host. The next fetch of a repository on the host uses the token of the repository, or no token. `host` is the host only (github.com). Only an organization admin."
+    )]
+    pub async fn remove_org_read_token(
+        &self,
+        Parameters(params): Parameters<RemoveOrgReadTokenParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        if let Err(e) = crate::api::meta::require_org_admin(&tenant) {
+            return Ok(tool_error(e));
+        }
+        let user = auth.user_id;
+        self.run_tool(&tenant, move |conn| {
+            let left = crate::api::org::org_read_tokens::remove(conn, user, &params.host)?;
+            Ok(format!(
+                "Removed the read token of the organization for {}.\n{}",
+                kairos_core::repositories::normalize_host(&params.host)
+                    .unwrap_or_else(|_| params.host.clone()),
+                org_read_tokens_text(&left)
             ))
         })
         .await
@@ -4426,6 +4532,25 @@ fn rule_filter_text(rule: &kairos_client::types_dispatch::DispatchRule) -> Strin
     } else {
         format!("and {} ", parts.join(" and "))
     }
+}
+
+/// The text of `list_org_read_tokens` (KAIROS-T-0431). Pure. It has no
+/// token: the status has none.
+fn org_read_tokens_text(tokens: &[kairos_client::types_code_index::OrgReadToken]) -> String {
+    if tokens.is_empty() {
+        return "Read tokens of the organization: none. The builder uses the token of each \
+                repository, or no token."
+            .to_string();
+    }
+    let mut out = String::from("Read tokens of the organization, by host:\n");
+    for token in tokens {
+        let by = token.set_by_name.as_deref().unwrap_or(&token.set_by);
+        out.push_str(&format!(
+            "- {}: set by {by} at {}\n",
+            token.host, token.set_at
+        ));
+    }
+    out
 }
 
 /// The text of `list_dispatch_rules` (KAIROS-T-0385). Pure.

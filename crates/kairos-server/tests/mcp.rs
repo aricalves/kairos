@@ -85,8 +85,8 @@ const TENANT: &str = "acme";
 
 /// How many tools `tools/list` returns, and the word the reference pages
 /// use for that number (COLLIERY-T-0220, COLLIERY-T-0266).
-const TOOL_COUNT: usize = 46;
-const TOOL_COUNT_WORD: &str = "forty-six";
+const TOOL_COUNT: usize = 49;
+const TOOL_COUNT_WORD: &str = "forty-nine";
 
 /// Every request carries a real `Host` header and the tenant resolves from
 /// its subdomain against the configured base domain — the S-0006 REQ-1.2
@@ -671,6 +671,11 @@ async fn mcp_endpoint_against_live_stack() {
         "list_dispatch_rules",
         "create_dispatch_rule",
         "delete_dispatch_rule",
+        // KAIROS-T-0431: the read token of the organization for each forge
+        // host (an organization admin).
+        "list_org_read_tokens",
+        "set_org_read_token",
+        "remove_org_read_token",
     ];
     expected.sort_unstable();
     assert_eq!(names, expected, "tools/list is exactly the S-0006 surface");
@@ -717,6 +722,7 @@ async fn mcp_endpoint_against_live_stack() {
             "forty-one",
             "forty-four",
             "forty-five",
+            "forty-six",
         ] {
             assert!(
                 !reference.contains(stale),

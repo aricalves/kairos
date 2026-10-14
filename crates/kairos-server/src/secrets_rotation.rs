@@ -12,7 +12,9 @@
 //! - `webhook_targets`: the secret of a webhook target (`secret_*`;
 //!   associated data [`crate::secrets::webhook_target_aad`], KAIROS-T-0384);
 //! - `repository_write_tokens`: the write token of a repository (associated
-//!   data [`crate::secrets::write_token_aad`], KAIROS-T-0386).
+//!   data [`crate::secrets::write_token_aad`], KAIROS-T-0386);
+//! - `org_read_tokens`: the read token of the organization for a forge host
+//!   (associated data [`crate::secrets::org_read_token_aad`], KAIROS-T-0431).
 //!
 //! The webhook secrets of the forge connections are not stored: Kairos
 //! derives them from `KAIROS_WEBHOOK_SIGNING_KEY`, so they have nothing to
@@ -55,6 +57,7 @@ pub fn rotate_tenant(
         rotate_code_index_settings(conn, slug, key, &mut report)?;
         rotate_webhook_targets(conn, slug, key, &mut report)?;
         rotate_write_tokens(conn, slug, key, &mut report)?;
+        rotate_org_read_tokens(conn, slug, key, &mut report)?;
         Ok(report)
     })
 }
@@ -127,6 +130,41 @@ fn rotate_write_tokens(
                 "repository_write_tokens ({}): {e}",
                 token.repository_id
             )),
+        }
+    }
+    Ok(())
+}
+
+/// KAIROS-T-0431: the read tokens of the organization by host.
+fn rotate_org_read_tokens(
+    conn: &mut PgConnection,
+    slug: &str,
+    key: &SecretsKey,
+    report: &mut RotationReport,
+) -> Result<(), diesel::result::Error> {
+    for token in kairos_db::org_read_tokens::all_for_update(conn)? {
+        if !key.needs_reseal(&token.key_id) {
+            report.current += 1;
+            continue;
+        }
+        let aad = crate::secrets::org_read_token_aad(slug, &token.host);
+        match key.open(&aad, &token.key_id, &token.nonce, &token.ciphertext) {
+            Ok(plain) => {
+                let again = key.seal(&aad, &plain);
+                kairos_db::org_read_tokens::reseal(
+                    conn,
+                    &kairos_db::org_read_tokens::StoredOrgToken {
+                        host: token.host.clone(),
+                        ciphertext: again.ciphertext,
+                        nonce: again.nonce,
+                        key_id: again.key_id,
+                    },
+                )?;
+                report.resealed += 1;
+            }
+            Err(e) => report
+                .failed
+                .push(format!("org_read_tokens ({}): {e}", token.host)),
         }
     }
     Ok(())

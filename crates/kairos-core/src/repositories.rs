@@ -276,6 +276,75 @@ pub fn check_url(value: &str) -> Result<(), FieldFault> {
     Ok(())
 }
 
+/// The forge host of a repository URL (KAIROS-T-0431): the host in
+/// lowercase, with `:port` only when the port is not the default port of
+/// the scheme. `https://GitHub.com:443/acme/api` gives `github.com`. `None`:
+/// the value is not a URL with a host.
+pub fn forge_host(repo_url: &str) -> Option<String> {
+    let parsed = url::Url::parse(repo_url).ok()?;
+    let host = parsed.host_str().filter(|h| !h.is_empty())?;
+    let host = host.to_ascii_lowercase();
+    Some(match parsed.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host,
+    })
+}
+
+/// The longest host that [`normalize_host`] takes.
+pub const HOST_MAX: usize = 255;
+
+/// A forge host as a person writes it (KAIROS-T-0431), in the form of
+/// [`forge_host`]: `github.com`, `GitHub.com`, `https://github.com/` and
+/// `github.com:443` all give `github.com`. A host with a port that is not
+/// 443 keeps it (`git.example.org:8443`). A value with a path, a user name,
+/// a password, a query or a space is refused: send the host only.
+pub fn normalize_host(value: &str) -> Result<String, FieldFault> {
+    let field = "host";
+    let example = "github.com";
+    check_text(field, value, HOST_MAX, example)?;
+    let fault = |message: String| {
+        Err(FieldFault {
+            field,
+            kind: FaultKind::NoHost,
+            message,
+        })
+    };
+    let lower = value.to_ascii_lowercase();
+    let as_url = if lower.starts_with("http://") || lower.starts_with("https://") {
+        value.to_string()
+    } else if value.contains("://") {
+        return fault(format!(
+            "The host {value:?} has a scheme that is not http or https. Send the host only, \
+             for example {example}."
+        ));
+    } else {
+        format!("https://{value}")
+    };
+    let Ok(parsed) = url::Url::parse(&as_url) else {
+        return fault(format!(
+            "The host {value:?} is not a host name. Send the host only, for example {example}."
+        ));
+    };
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return fault(
+            "The host has a user name or a password in it. Send the host only, for example \
+             github.com."
+                .to_string(),
+        );
+    }
+    if parsed.path() != "/" || parsed.query().is_some() || parsed.fragment().is_some() {
+        return fault(format!(
+            "The host {value:?} has a path. Send the host only, for example {example}."
+        ));
+    }
+    match forge_host(parsed.as_str()) {
+        Some(host) => Ok(host),
+        None => fault(format!(
+            "The host {value:?} is not a host name. Send the host only, for example {example}."
+        )),
+    }
+}
+
 /// The form of `default_branch` (COLLIERY-T-0267): the rules of
 /// `git check-ref-format --branch` that a name can break. The name does not
 /// start with `-` or `/`, and it does not end with `/`, `.` or `.lock`. It
@@ -378,6 +447,53 @@ pub fn slug_from_full_name(full_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_forge_host_of_a_url_is_lowercase_with_a_port_only_when_not_default() {
+        for (url, host) in [
+            ("https://github.com/acme/api", Some("github.com")),
+            ("https://GitHub.COM:443/acme/api.git", Some("github.com")),
+            ("http://git.example.org:80/a/b", Some("git.example.org")),
+            (
+                "https://git.example.org:8443/a/b",
+                Some("git.example.org:8443"),
+            ),
+            (
+                "http://127.0.0.1:41999/private/.git",
+                Some("127.0.0.1:41999"),
+            ),
+            ("not a url", None),
+        ] {
+            assert_eq!(forge_host(url).as_deref(), host, "{url}");
+        }
+    }
+
+    #[test]
+    fn a_host_as_a_person_writes_it_is_normalized() {
+        for (value, host) in [
+            ("github.com", "github.com"),
+            ("GitHub.com", "github.com"),
+            ("https://github.com/", "github.com"),
+            ("github.com:443", "github.com"),
+            ("git.example.org:8443", "git.example.org:8443"),
+            ("http://git.example.org:8080", "git.example.org:8080"),
+        ] {
+            assert_eq!(normalize_host(value).as_deref(), Ok(host), "{value}");
+        }
+        for bad in [
+            "",
+            " github.com",
+            "github.com/acme",
+            "https://github.com/acme/api",
+            "user:pw@github.com",
+            "ssh://github.com",
+            "github.com?x=1",
+            "two words",
+        ] {
+            let fault = normalize_host(bad).expect_err(bad);
+            assert_eq!(fault.field, "host", "{bad}");
+        }
+    }
 
     const FORGES: [ForgeKind; 3] = [ForgeKind::Github, ForgeKind::Gitlab, ForgeKind::Other];
 

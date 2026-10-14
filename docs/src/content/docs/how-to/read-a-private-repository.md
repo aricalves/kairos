@@ -107,6 +107,34 @@ kairos repos credential remove skadi
 The next fetch has no credential. A delete of the repository also removes its
 token.
 
+## Use one token for each host
+
+An organization admin can set one read token for a forge host, for example
+`github.com`. The builder then uses that token for each repository on the
+host. It uses the token of a repository only for a host that has no token of
+the organization.
+
+In the GUI, open **Admin**, then **Code index**. In the section **Read tokens
+by host**, select **Set a token**. Type the host and the token, and select
+**Save**. To remove the token of a host, select **Remove** on its row.
+
+With the REST API:
+
+```sh
+curl -X PUT "$KAIROS_URL/api/org/read-tokens/github.com" \
+  -H "Authorization: Bearer $KAIROS_TOKEN" -H 'Content-Type: application/json' \
+  --data @token.json
+```
+
+The file `token.json` holds `{"token": "…"}`. `GET /api/org/read-tokens` gives
+each host, who set its token and when. `DELETE /api/org/read-tokens/github.com`
+removes the token. The MCP tools are `list_org_read_tokens`,
+`set_org_read_token` and `remove_org_read_token`.
+
+The log of each fetch says which token the builder used. It is the token of
+the host, the token of the repository, or no token. When a build fails, its note
+says the same. Neither shows the token.
+
 ## When a fetch fails
 
 | The error | What to do |
@@ -114,6 +142,7 @@ token.
 | `Authentication failed` | The token is wrong, or it cannot read the repository. Make a new token (step 2), and set it again. |
 | `The token was set with a different KAIROS_SECRETS_KEY. Set the token again.` | The key of the deployment changed. Set the token again. |
 | `The repository has a read token, but this deployment has no KAIROS_SECRETS_KEY.` | Set `KAIROS_SECRETS_KEY` to the key that encrypted the token, or set the token again. |
+| `The organization has a read token for github.com, but this deployment has no KAIROS_SECRETS_KEY.` | Set `KAIROS_SECRETS_KEY` to the key that encrypted the token, or set the token of the host again. |
 | `The stored token does not decrypt. Set the token again.` | The row of the token changed in the database. Set the token again. |
 
 ## Related

@@ -205,6 +205,10 @@ use crate::app::AppState;
         crate::api::org::code_indexes::rebuild_code_index,
         crate::api::org::code_index_settings::get_settings,
         crate::api::org::code_index_settings::put_settings,
+        // The read tokens of the organization by host (KAIROS-T-0431).
+        crate::api::org::org_read_tokens::list_org_read_tokens,
+        crate::api::org::org_read_tokens::set_org_read_token,
+        crate::api::org::org_read_tokens::remove_org_read_token,
         crate::api::org::code_index_query::query_vector,
         // The read token of a repository (COLLIERY-T-3105).
         crate::api::org::repository_credentials::get_credential,

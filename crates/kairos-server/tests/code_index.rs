@@ -896,6 +896,110 @@ async fn a_private_repository_is_fetched_with_the_stored_read_token() {
 }
 
 // ===========================================================================
+// Scenario: The read token of the organization for the host comes before
+// the token of the repository (KAIROS-T-0431)
+// ===========================================================================
+#[tokio::test]
+async fn the_org_token_of_the_host_comes_before_the_token_of_the_repository() {
+    // Given a private repository on github.com with an index of commit A, a
+    // push of B, and a repository token that the git server refuses
+    let w = World::private("kairos_code_index_t0431_org_token").await;
+    let server = w.git_http.as_ref().expect("a git server");
+    let a = w.a.clone();
+    w.bob
+        .upload_code_index("payments-api", &a, Some("main"), w.index(&a))
+        .await
+        .expect("the first index");
+    let b = commit_b(&w.git);
+    const WRONG: &str = "fake_repository_token_t0431";
+    w.bob
+        .set_repository_credential(
+            "payments-api",
+            &kairos_client::types_auth::Secret::new(WRONG),
+        )
+        .await
+        .expect("the repository token is set");
+
+    // When the builder runs and the host has no token of the organization
+    let outcomes = w.sweep().await;
+
+    // Then the fetch uses the token of the repository, and the note says so
+    let note = outcomes[0].note.clone().unwrap_or_default();
+    println!("repository token: {note}");
+    assert!(note.starts_with("failed: git fetch failed"), "{note}");
+    assert!(
+        note.ends_with("The fetch used the read token of the repository."),
+        "{note}"
+    );
+    assert!(!note.contains(WRONG), "{note}");
+
+    // When a member who is not an organization admin sets a token of the
+    // host, the call is refused
+    let (status, body) = w
+        .bob
+        .raw_request(
+            reqwest::Method::PUT,
+            "/api/org/read-tokens/github.com",
+            Some(&serde_json::json!({ "token": TOKEN })),
+        )
+        .await
+        .unwrap();
+    assert_eq!(status, 403, "{body}");
+
+    // When the organization admin sets the token of the host (written in
+    // another case)
+    let set = w
+        .svc
+        .set_org_read_token("GitHub.com", &kairos_client::types_auth::Secret::new(TOKEN))
+        .await
+        .expect("the token of the host is set");
+    assert_eq!(set.host, "github.com");
+
+    // Then the builder fetches with the token of the host, and indexes B,
+    // though the token of the repository is wrong
+    let before = server.seen().len();
+    let outcomes = w.sweep().await;
+    let built: Vec<_> = outcomes.iter().filter(|o| o.report.is_some()).collect();
+    assert_eq!(built.len(), 1, "{outcomes:?}");
+    assert_eq!(built[0].commit, b);
+    let seen = server.seen();
+    assert!(
+        seen[before..]
+            .iter()
+            .any(|s| s.user.as_deref() == Some(TOKEN_USER)),
+        "{seen:?}"
+    );
+    assert!(seen.iter().all(|s| !s.uri.contains(TOKEN)), "{seen:?}");
+    assert!(!any_file_contains(&w._work.path().join("clones"), TOKEN));
+
+    // When the token of the host is removed, and C is pushed
+    let left = w
+        .svc
+        .remove_org_read_token("github.com")
+        .await
+        .expect("the token of the host is removed");
+    assert!(left.is_empty());
+    commit_c(&w.git);
+    let outcomes = w.sweep().await;
+
+    // Then the next fetch uses the token of the repository again
+    let note = outcomes[0].note.clone().unwrap_or_default();
+    assert!(
+        note.ends_with("The fetch used the read token of the repository."),
+        "{note}"
+    );
+
+    // When the repository token is removed too, the fetch has no token
+    w.bob
+        .remove_repository_credential("payments-api")
+        .await
+        .expect("the repository token is removed");
+    let outcomes = w.sweep().await;
+    let note = outcomes[0].note.clone().unwrap_or_default();
+    assert!(note.ends_with("The fetch used no read token."), "{note}");
+}
+
+// ===========================================================================
 // KAIROS-T-0318: the first index of a repository that has no index
 // ===========================================================================
 

@@ -3,8 +3,8 @@ title: "MCP tools"
 ---
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-forty-six tools. A drift gate in the test suite
-asserts that `tools/list` returns these forty-six and no others. The same
+forty-nine tools. A drift gate in the test suite
+asserts that `tools/list` returns these forty-nine and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -1818,6 +1818,67 @@ Refuses: `FORBIDDEN` without `configure_boards`; `NOT_FOUND` for an unknown
 board or rule.
 
 REST: `DELETE /api/boards/{id}/dispatch-rules/{rule_id}`.
+
+## Read tokens of the organization
+
+The code index builder of the server fetches each repository with git
+(KAIROS-T-0431). An organization admin can keep one read token for each
+forge host, for example `github.com`. The builder uses the token of the host
+of a repository first. It uses the token of the repository only for a host
+that has no token of the organization.
+
+With no token, the fetch has no credential. The log of each fetch, and the
+note of a failed build, say which token the fetch used. They never show the
+token.
+
+Kairos encrypts each token with `KAIROS_SECRETS_KEY`. No tool and no route
+gives a token back. Each set, change and removal writes an activity row with
+the host.
+
+The host is the host of the URL of the repository, in lowercase. It has a
+port only when the port is not 443 (or 80 for `http`). Kairos changes
+`GitHub.com`, `https://github.com/` and `github.com:443` to `github.com`.
+
+### `list_org_read_tokens`
+
+Gives the hosts that have a token, and for each host who set the token and
+when. Only an organization admin. No arguments.
+
+Refuses: `FORBIDDEN` for a person who is not an organization admin.
+
+REST: `GET /api/org/read-tokens`.
+
+### `set_org_read_token`
+
+Sets the token of a host, or replaces it. Only an organization admin.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `host` | string | yes | — | The host only, for example `github.com`. |
+| `token` | string | yes | — | A token that can only read the code. |
+
+Refuses:
+
+- `FORBIDDEN` for a person who is not an organization admin;
+- `VALIDATION` for a host with a path, a user name or a scheme that is not
+  `http` or `https`, and for a token that is empty, too long or has a space;
+- `SECRETS_NOT_CONFIGURED` when the deployment has no `KAIROS_SECRETS_KEY`.
+
+REST: `PUT /api/org/read-tokens/{host}`.
+
+### `remove_org_read_token`
+
+Removes the token of a host. The next fetch of a repository on the host uses
+the token of the repository, or no token. Only an organization admin.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `host` | string | yes | — | The host only, for example `github.com`. |
+
+Refuses: `FORBIDDEN` for a person who is not an organization admin;
+`NOT_FOUND` for a host with no token.
+
+REST: `DELETE /api/org/read-tokens/{host}`.
 
 ## Related reading
 

@@ -17,10 +17,14 @@
 //! The nearest indexed commit below a commit, and the tree of a new commit,
 //! come from a bare clone of the repository in `KAIROS_CODE_INDEX_DIR`
 //! ([`git`]). The clone fetches from the `repo_url` of the repository. When
-//! the repository has a read token (COLLIERY-T-3105), the fetch gives it to
-//! git through an askpass helper ([`git`]); [`crate::credentials`] reads and
-//! decrypts it with `KAIROS_SECRETS_KEY`. With no token, the fetch has no
-//! credential, and a remote that asks for one fails at once.
+//! the organization has a read token for the host of the repository
+//! (KAIROS-T-0431), the fetch gives that token to git; else, when the
+//! repository has a read token (COLLIERY-T-3105), it gives that one. Git
+//! gets it through an askpass helper ([`git`]); [`crate::credentials`]
+//! chooses, reads and decrypts it with `KAIROS_SECRETS_KEY`. The log of each
+//! fetch and the note of a failed fetch name the kind of token, never the
+//! value. With no token, the fetch has no credential, and a remote that asks
+//! for one fails at once.
 //!
 //! # The builder
 //!
@@ -1092,27 +1096,30 @@ async fn fetch_head(
     repo: &mut Repository,
     with_ancestors: bool,
 ) -> Result<Fetched, String> {
-    // The read token of the repository, when it has one (COLLIERY-T-3105).
+    // The token of the fetch (KAIROS-T-0431): the read token of the
+    // organization for the host, else the token of the repository
+    // (COLLIERY-T-3105), else none. The log names the kind, never the value.
     let token = {
         let key = service.secrets_key().cloned();
         let tenant_slug = tenant.to_string();
-        let repo_id = repo.id;
+        let row = repo.clone();
         blocking
             .run(tenant, move |conn| {
-                Ok(crate::credentials::read_token(
+                Ok(crate::credentials::fetch_token(
                     conn,
                     &tenant_slug,
-                    repo_id,
+                    &row,
                     key.as_ref(),
                 ))
             })
             .await
     };
-    let token = match token {
+    let (token, source) = match token {
         Ok(Ok(token)) => token,
         Ok(Err(e)) => return Err(format!("failed: {e}")),
         Err(e) => return Err(format!("failed: {e:?}")),
     };
+    tracing::info!(tenant, repository = %repo.slug, token = %source, "code index fetch");
 
     // The default branch of the remote, the clone, and the head of the
     // branch to index.
@@ -1142,7 +1149,7 @@ async fn fetch_head(
     };
     let (clone, head, ancestors, forge_branch, branch) = match fetched {
         Ok(Ok(fetched)) => fetched,
-        Ok(Err(e)) => return Err(format!("failed: {e}")),
+        Ok(Err(e)) => return Err(format!("failed: {e} The fetch used {source}.")),
         Err(e) => return Err(format!("failed: {e}")),
     };
     if let Some(forge_branch) = forge_branch {
