@@ -12,10 +12,9 @@ fail-fast = false
 # stopped.
 slow-timeout = { period = "60s", terminate-after = 10 }
 failure-output = "immediate-final"
-
-# KAIROS-T-0449: a stopgap. A test of `jobs` passed and its process then
-# died with SIGSEGV at exit (worker connections still open). The tests now
-# shut their workers down; the retries stay until that is seen to hold.
-[[profile.ci.overrides]]
-filter = 'binary(jobs)'
-retries = 2
+# A stopgap (KAIROS-T-0449, KAIROS-T-0452): a test that starts a job
+# worker or the code index builder can pass and then die with SIGSEGV at
+# exit (jobs, code_index), with background tasks and Postgres connections
+# still open. One retry for each test until KAIROS-T-0452 stops the crash;
+# nextest reports a test that passed only on its retry as flaky.
+retries = 1
