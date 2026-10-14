@@ -10,6 +10,7 @@
 // journey's whole claim is "what a newcomer needs is where they would
 // look for it".
 import { expect } from '@playwright/test';
+import { runContext } from '../run/context';
 import { journey, step } from '../run/narrate';
 import { openBoard, openTeam, panel } from '../surfaces/gui';
 import { shortCodes } from '../surfaces/mcp';
@@ -121,6 +122,19 @@ journey(
         explicit_grants: (me.capabilities ?? []).length,
         implicit: me.implicit,
       };
+    });
+
+    await step(bob, 'checks that his CLI is the version of the deployment, and changes nothing', async () => {
+      const cli = await bob.cli();
+      const server = runContext().server;
+      // `--check` reads GET /version and installs nothing. The URL is named
+      // so a KAIROS_URL in the shell cannot point the check elsewhere.
+      const said = await cli.ok(['self-update', '--check', '--url', server]);
+      expect(said).toContain('The CLI is');
+      expect(said).toContain(server);
+      const versions = said.match(/The CLI is ([^;\s]+); the server \S+ is (\S+?)\.(?:\s|$)/);
+      expect(versions, said).toBeTruthy();
+      return { cli: versions![1], server: versions![2], installed: 'nothing' };
     });
   },
 );

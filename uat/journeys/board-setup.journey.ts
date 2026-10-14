@@ -77,6 +77,32 @@ journey(
       return { columns: names, transitions: board.transitions.length };
     });
 
+    await step(alice, 'tunes the board from her agent: caps Review, tries a Parked column, then takes it out again (MCP)', async () => {
+      // The same configuration over MCP (KAIROS-T-0443), the way an admin
+      // agent would do it. Parked is a second thought that does not survive
+      // the afternoon: its transition is stopped and the column removed.
+      const mcp = await alice.mcp();
+      const board = team.fixture.boardSlug!;
+      const api = await alice.api();
+      await mcp.call('update_column', { board, column: 'Review', wip_limit: 3 });
+      const added = await mcp.call('add_column', { board, name: 'Parked' });
+      expect(added).toContain('Parked');
+      await mcp.call('set_transition', { board, from: 'Active', to: 'Parked', allowed: true });
+      let detail = await api.get(`/api/boards/${team.fixture.boardId}`);
+      const parked = detail.columns.find((c: any) => c.name === 'Parked');
+      expect(parked, 'the column exists').toBeTruthy();
+      expect(detail.transitions.some((t: any) => t.to_column_id === parked.id)).toBe(true);
+      expect(detail.columns.find((c: any) => c.name === 'Review').wip_limit).toBe(3);
+
+      await mcp.call('set_transition', { board, from: 'Active', to: 'Parked', allowed: false });
+      await mcp.call('remove_column', { board, column: 'Parked' });
+      detail = await api.get(`/api/boards/${team.fixture.boardId}`);
+      const names = detail.columns.map((c: any) => c.name);
+      expect(names).not.toContain('Parked');
+      expect(names).toContain('Review');
+      return { review_wip_limit: 3, tried_and_removed: 'Parked', columns: names };
+    });
+
     await step(alice, 'defines a field the team will fill in, scoped to tasks', async () => {
       const page = await alice.gui();
       await page.goto('/admin/metadata');

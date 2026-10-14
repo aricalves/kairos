@@ -160,23 +160,22 @@ journey(
     });
 
     await step(alice, 'cannot retire the repository yet — a live ticket still points at it', async () => {
-      const api = await alice.api();
-      const res = await api.raw('DELETE', `/api/repositories/${team.fixture.repoSlug}`);
-      expect(res.status).toBe(409);
-      const message = res.body?.error?.message ?? '';
+      // Asked of her agent, as an admin retires a repository (MCP).
+      const mcp = await alice.mcp();
+      const message = await mcp.refused('delete_repository', { repository: team.fixture.repoSlug });
+      expect(message).toContain('CONFLICT');
       // The guard counts the LIVE ticket, not the archived ones: if
       // archiving did not release the guard, nothing could ever be retired.
       expect(message).toMatch(/task|reference|in use/i);
-      return { status: res.status, held_by: stillOpen, message: message.slice(0, 130) };
+      return { refused: 'CONFLICT', held_by: stillOpen, message: message.replace(/\s+/g, ' ').slice(0, 130) };
     });
 
     await step(alice, 'archives the last ticket, and the repository retires cleanly', async () => {
       const cli = await alice.cli();
       await cli.ok(['tasks', 'delete', stillOpen, '--confirm']);
-      const api = await alice.api();
-      const res = await api.raw('DELETE', `/api/repositories/${team.fixture.repoSlug}`);
-      expect(res.status, 'archived tickets do not hold a repository hostage').toBeGreaterThanOrEqual(200);
-      expect(res.status).toBeLessThan(300);
+      // Archived tickets do not hold a repository hostage: the call succeeds.
+      const mcp = await alice.mcp();
+      await mcp.call('delete_repository', { repository: team.fixture.repoSlug });
       const listed = await cli.json(['repos', 'list']);
       const slugs = ((listed.items ?? listed) as any[]).map((r: any) => r.slug);
       expect(slugs).not.toContain(team.fixture.repoSlug);
