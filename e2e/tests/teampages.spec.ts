@@ -127,6 +127,17 @@ test('team pages: landing layout → announcements → page edit + 409 merge →
     await expect(docs.getByText('Create failed')).toBeVisible();
     await docs.getByRole('button', { name: 'Cancel', exact: true }).click();
 
+    // The tree keeps the folders a person opened (step 2 opened
+    // Documentation). Close it, so each drag stays short and on screen; a
+    // drop into a folder opens it again.
+    const closeFolder = async (title: string) => {
+      await rootSummaries.filter({ hasText: title }).first().evaluate((summary) => {
+        const details = summary.parentElement as HTMLDetailsElement;
+        if (details.open) details.open = false;
+      });
+    };
+    await closeFolder('Documentation');
+
     // Reorder: drag Incidents onto the gap before the first root folder.
     await incidents.locator('summary').first().dragTo(
       rootList.locator(':scope > .kairos-doctree__gap').first(),
@@ -148,6 +159,7 @@ test('team pages: landing layout → announcements → page edit + 409 merge →
 
     // KAIROS-T-0437: a document drags into a folder like a page; its board
     // keeps it.
+    await closeFolder('Documentation');
     await docs.locator('.kairos-doctree__item', { hasText: 'Runbook: password-less auth rollout' })
       .first()
       .dragTo(documentation.locator('summary').first());
