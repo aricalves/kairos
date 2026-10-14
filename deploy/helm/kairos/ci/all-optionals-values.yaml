@@ -47,3 +47,8 @@ metrics:
 extraEnv:
   - name: RUST_BACKTRACE
     value: "1"
+
+# KAIROS-T-0394: the code index worker, with the API pods on KAIROS_ROLE=api.
+worker:
+  enabled: true
+  replicaCount: 1

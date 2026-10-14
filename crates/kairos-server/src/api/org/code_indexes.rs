@@ -179,19 +179,23 @@ pub(crate) async fn list_code_index_builds(
         .limit
         .unwrap_or(code_index_builds::DEFAULT_LIST)
         .clamp(1, code_index_builds::MAX_LIST);
-    let (runs, total) = state
+    let role = state.config.role;
+    let (runs, total, builder) = state
         .blocking
         .run(&tenant.slug, move |conn| {
             let id = repository_id(conn, &slug)?;
             let runs = code_index_builds::list(conn, id, limit).map_err(ApiError::internal)?;
             let total = code_index_builds::count(conn, id).map_err(ApiError::internal)?;
-            Ok((runs, total))
+            // KAIROS-T-0394: an `api` server with no worker says so.
+            let builder = crate::code_index::jobs::builder_note(conn, role)?;
+            Ok((runs, total, builder))
         })
         .await?;
     Ok(Json(dto::CodeIndexBuildList {
         items: runs.into_iter().map(build_dto_of).collect(),
         total,
         limit,
+        builder,
     }))
 }
 

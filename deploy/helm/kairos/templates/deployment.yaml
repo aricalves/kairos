@@ -86,6 +86,12 @@ spec:
                   name: {{ include "kairos.bootstrapSecretName" . }}
                   key: {{ include "kairos.bootstrapSecretKey" . }}
             {{- end }}
+            {{- if .Values.worker.enabled }}
+            # KAIROS-T-0394: the worker pods run the code index builds, so
+            # these pods serve the API only.
+            - name: KAIROS_ROLE
+              value: api
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

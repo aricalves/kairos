@@ -1,0 +1,128 @@
+{{- if .Values.worker.enabled }}
+{{- /*
+The code index worker (KAIROS-T-0394, KAIROS-A-0027): the same image with
+KAIROS_ROLE=worker. It takes only the code index builds and the new-commits
+sweep from the job queue, and serves only the probes, /version and /metrics.
+It applies the migrations at start like the server, under the same lock, so
+it can start with the server pods. No Service: nothing calls it.
+*/}}
+{{- include "kairos.validateTenancy" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kairos.fullname" . }}-worker
+  labels:
+    helm.sh/chart: {{ include "kairos.chart" . }}
+    {{- include "kairos.workerSelectorLabels" . | nindent 4 }}
+    {{- if .Chart.AppVersion }}
+    app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+    {{- end }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "kairos.workerSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.worker.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "kairos.workerSelectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "kairos.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: worker
+          image: {{ include "kairos.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.containerPort }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "kairos.fullname" . }}
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kairos.databaseSecretName" . }}
+                  key: {{ include "kairos.databaseSecretKey" . }}
+            {{- if include "kairos.embedSecretEnabled" . }}
+            - name: KAIROS_EMBED_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kairos.embedSecretName" . }}
+                  key: {{ include "kairos.embedSecretKey" . }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with .Values.worker.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            # Last, so that no extra value changes the role.
+            - name: KAIROS_ROLE
+              value: worker
+          {{- if .Values.startupProbe.enabled }}
+          startupProbe:
+            {{- omit .Values.startupProbe "enabled" | toYaml | nindent 12 }}
+          {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          {{- if or .Values.tmp.enabled .Values.worker.extraVolumeMounts }}
+          volumeMounts:
+            {{- if .Values.tmp.enabled }}
+            - name: tmp
+              mountPath: /tmp
+            {{- end }}
+            {{- with .Values.worker.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+      {{- if or .Values.tmp.enabled .Values.worker.extraVolumes }}
+      volumes:
+        {{- if .Values.tmp.enabled }}
+        - name: tmp
+          {{- with .Values.tmp.sizeLimit }}
+          emptyDir:
+            sizeLimit: {{ . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- end }}
+        {{- with .Values.worker.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      {{- with .Values.worker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -407,7 +407,8 @@ struct McpSession {
 impl McpSession {
     async fn open(base_url: &str, token: &str, tenant: &str) -> Self {
         let http = reqwest::Client::new();
-        let url = format!("{base_url}/mcp");
+        // KAIROS-T-0454: each tool is listed.
+        let url = format!("{base_url}/mcp?profile=all");
         let response = http
             .post(&url)
             .bearer_auth(token)

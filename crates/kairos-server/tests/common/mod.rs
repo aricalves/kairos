@@ -282,6 +282,7 @@ pub fn base_config(scratch_url: &str) -> AppConfig {
         // counts, and a sweep running underneath would make those flaky.
         embed_refresh_secs: 0,
         code_index_dir: None,
+        role: Default::default(),
         code_index_poll_secs: 0,
         code_index_threads: 4,
         code_index_min_rebuild_secs: 0,

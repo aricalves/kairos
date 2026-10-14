@@ -73,6 +73,21 @@ journey(
       return { short_code: initiative, parent: strategy, linked_via: 'Manage links panel' };
     });
 
+    // KAIROS-A-0025: one person answers for a bet. Nobody is the owner
+    // until someone says so; alice wrote it, and she takes it.
+    await step(alice, 'takes ownership of the initiative she wrote (MCP)', async () => {
+      const mcp = await alice.mcp();
+      const before = await mcp.call('get_item', { short_code: initiative });
+      expect(before).toContain('- owner: none');
+      const claimed = await mcp.call('claim_item', { short_code: initiative });
+      expect(claimed).toContain(`Claimed ${initiative}`);
+      const owner = claimed.match(/- owner: ([^\n]+)/)?.[1] ?? '';
+      expect(owner).not.toMatch(/^none/);
+      const after = await mcp.call('get_item', { short_code: initiative });
+      expect(after).toContain(`- owner: ${owner}`);
+      return { short_code: initiative, owner };
+    });
+
     // KAIROS-T-0321: the team is known before the work is divided.
     await step(alice, 'names the platform team on the initiative over MCP before it has tasks', async () => {
       const mcp = await alice.mcp();

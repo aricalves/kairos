@@ -302,6 +302,37 @@ Neither `KAIROS_WEBHOOK_SIGNING_KEY` nor `KAIROS_PUBLIC_URL` has a dedicated
 Helm value or `.env.example` entry; both are set through the chart's
 `extraEnv` or the container environment directly.
 
+### Server role
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `KAIROS_ROLE` | `all` \| `api` \| `worker` | `all` | The work of this server. `all`: the API and each job, the code index builds too. `api`: the API and each job, but no code index build and no new-commits sweep. `worker`: only the code index builds and the new-commits sweep; the server listens on `KAIROS_BIND_ADDR` for `/healthz`, `/readyz`, `/version` and `/metrics` only. Any other value stops the start, and the message names `KAIROS_ROLE`. |
+
+Use `all` for a small install. For a larger install, run servers with `api`
+and servers with `worker` on the same database. A build of the code index can
+use much memory.
+
+With a worker, a build that runs out of memory stops the worker only. The API
+continues to serve. The platform starts the worker
+again. The breaker of the repository stops more tries of that build until a
+person asks for a build.
+
+The memory limit of the worker is the setting to increase for big
+repositories. The packaged defaults are a limit of 8 GiB and 4 CPUs. The
+requests are 2 GiB and 1 CPU. These values come from GitHub issue #34. There,
+a full build of about 1,200 files used about 6.3 GiB at its peak, and 4
+cores. The build used the embedded summary model.
+
+A worker applies the migrations at its start, as an API server does. The
+migrations run under a lock in the database. Thus a worker and an API server
+can start at the same time.
+
+A deployment with only `api` servers makes no index. Then the list of the runs
+of a repository has the field `builder` with a note. The list is
+`GET /api/repositories/{slug}/code-indexes/builds`, the code index panel of
+the repository page, and `kairos repos builds`. The note shows when no worker
+ended a sweep in the last 2 intervals of the sweep and 5 minutes.
+
 ### The base code index
 
 Kairos keeps the code index of each indexed commit of a repository
@@ -1008,6 +1039,12 @@ the image sets it to `/var/lib/kairos/models`) and `KAIROS_EMBED_REFRESH_SECS`
 | `tmp.sizeLimit` | quantity | `8Gi` | The size limit of that emptyDir. Empty means no limit. |
 | `extraVolumes` | list | `[]` | Extra pod volumes. |
 | `extraVolumeMounts` | list | `[]` | Extra container volume mounts. |
+| `worker.enabled` | bool | `false` | Runs the code index builds in a Deployment of their own, with `KAIROS_ROLE=worker`, and sets `KAIROS_ROLE=api` on the server pods. See [Server role](#server-role). |
+| `worker.replicaCount` | integer | `1` | Worker pods. |
+| `worker.resources` | resources | requests `1` CPU, `2Gi`; limits `4` CPU, `8Gi` | CPU and memory of a worker pod. Increase the memory limit for big repositories. The limits of the server pods do not change. |
+| `worker.extraEnv` | list of EnvVar | `[]` | Added after `extraEnv`, on the worker pods only, e.g. `KAIROS_CODE_INDEX_DIR`. |
+| `worker.extraVolumes` / `worker.extraVolumeMounts` | list | `[]` | Volumes of the worker pods, e.g. a volume for `KAIROS_CODE_INDEX_DIR`. |
+| `worker.podAnnotations` / `worker.nodeSelector` / `worker.tolerations` / `worker.affinity` | map / list | `{}` / `[]` | Annotations and scheduling of the worker pods. |
 
 ### Security context
 
@@ -1150,6 +1187,12 @@ stock `postgres:16` does not carry it. There is no bundled identity provider.
 | `KAIROS_LOG_LEVEL` | `info` | The server. Falls back to `info`. |
 | `KAIROS_API_BEARER` | `access_token` | Nothing. Present in `.env.example` but **not forwarded** to the container by `deploy/docker-compose.yaml`. |
 | `KAIROS_WEB_CLIENT_SECRET` | empty | Nothing. Present in `.env.example` but **not forwarded** to the container by `deploy/docker-compose.yaml`. |
+
+The profile `worker` adds the service `worker`. It is the same image with
+`KAIROS_ROLE=worker` and its own volume for the clones and the tools. Its
+limits are `mem_limit` 8g, `mem_reservation` 2g and `cpus` 4. To use it, add `worker` to
+`COMPOSE_PROFILES` and set `KAIROS_ROLE=api` in `.env`. Increase `mem_limit`
+for big repositories. See [Server role](#server-role).
 
 The Compose file also fixes two values that have no `.env` entry:
 `KAIROS_BIND_ADDR` is `0.0.0.0:8080` and `KAIROS_LOG_FORMAT` is `json`. The

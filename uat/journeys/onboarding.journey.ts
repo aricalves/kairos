@@ -5,6 +5,7 @@
 // compose-only (needs a deployment-admin token and a throwaway tenant).
 import { expect } from '@playwright/test';
 import { teamFixture } from '../fixtures/team';
+import type { Persona } from '../personas';
 import { named } from '../run/context';
 import { journey, step } from '../run/narrate';
 import { cardIn, openBoard, openTeam, panel } from '../surfaces/gui';
@@ -101,6 +102,110 @@ journey(
         implicit: text.match(/- implicit[^:]*: ([a-z_, ]+)/)?.[1]?.trim(),
         description_seen: 'yes',
       };
+    });
+
+    // The next team is set up by an admin agent, not by alice's hands
+    // (KAIROS-T-0337, "Run an admin agent"): she grants it
+    // manage_structure on the organization from the CLI, it builds the
+    // team over MCP, and she takes the grant back when it is done.
+    let adminAgent: Persona | undefined;
+    let structureGrant = '';
+    const deskSlug = named('desk');
+    const deskPrefix = `U${`uat${deskSlug}`.replace(/[^a-z0-9]/gi, '').slice(-9)}`.toUpperCase();
+    await step(alice, 'makes an admin agent and grants it manage_structure on the organization (`kairos grants`)', async () => {
+      const cli = await alice.cli();
+      const api = await alice.api();
+      const sa = await cli.json(['service-accounts', 'create', '--name', named('admin-agent')]);
+      ledger.add({
+        kind: 'service-account',
+        label: sa.name,
+        delete: async () => { await api.delete(`/api/service-accounts/${sa.id}`); },
+      });
+      const key = await cli.json(['keys', 'create', '--service-account', sa.id, '--name', 'uat-run']);
+      ledger.add({
+        kind: 'api-key',
+        label: key.prefix ?? key.id,
+        delete: async () => { await api.delete(`/api/service-accounts/${sa.id}/keys/${key.id}`); },
+      });
+      const grant = await cli.json(['grants', 'add', '--user', sa.id]);
+      structureGrant = grant.id;
+      ledger.add({
+        kind: 'structure-grant',
+        label: `manage_structure for ${sa.name}`,
+        delete: async () => { await api.delete(`/api/structure-grants/${grant.id}`); },
+      });
+      const listed = (await cli.json(['grants', 'list'])) as any[];
+      const mine = listed.find((g) => g.id === grant.id);
+      expect(mine, 'the grant is listed').toBeTruthy();
+      expect(mine.scope).toBe('organization');
+      adminAgent = cast.agent('admin-agent', key.key);
+      return { service_account: sa.name, capability: 'manage_structure', scope: mine.scope };
+    });
+
+    await step(adminAgent!, 'creates the next team over MCP, gives it an ADR board, a member and a guest grant', async () => {
+      const mcp = await adminAgent!.mcp();
+      const api = await alice.api();
+      const created = await mcp.call('create_team', {
+        name: `UAT desk (${deskSlug})`,
+        slug: deskSlug,
+        code_prefix: deskPrefix,
+      });
+      expect(created).toContain(`Created team ${deskSlug}`);
+      expect(created).toContain(`Delivery board: ${deskSlug}-delivery`);
+      const team = await api.teamBySlug(deskSlug);
+      ledger.add({
+        kind: 'team',
+        label: deskSlug,
+        delete: async () => { await api.delete(`/api/teams/${team.id}`); },
+      });
+      const board = await mcp.call('create_board', {
+        name: `UAT desk ADRs (${deskSlug})`,
+        slug: `${deskSlug}-adrs`,
+        board_level: 'adr',
+        code_prefix: deskPrefix,
+        team: deskSlug,
+      });
+      expect(board).toContain(`Created board ${deskSlug}-adrs`);
+      const added = await mcp.call('add_team_member', { team: deskSlug, user: newhire.credentials.email });
+      expect(added).toContain(`to the team ${deskSlug}`);
+      // carol works on the desk's board without joining the team: a grant.
+      const carol = cast.human('carol');
+      const granted = await mcp.call('grant_capability', {
+        user: carol.credentials.email,
+        capability: 'manage_tasks',
+        board: `${deskSlug}-delivery`,
+      });
+      expect(granted).toContain(`Granted manage_tasks on the board ${deskSlug}-delivery`);
+      const delivery = await api.boardBySlug(`${deskSlug}-delivery`);
+      const members = (await api.get(`/api/boards/${delivery.id}/members`)) as any[];
+      const hers = members.find((m: any) => m.email === carol.credentials.email);
+      expect(hers.capabilities).toContain('manage_tasks');
+      ledger.add({
+        kind: 'board-grant',
+        label: `${carol.credentials.email} on ${deskSlug}-delivery`,
+        delete: async () => { await api.delete(`/api/boards/${delivery.id}/members/${hers.user_id}`); },
+      });
+      return {
+        team: deskSlug,
+        boards: [`${deskSlug}-delivery`, `${deskSlug}-adrs`],
+        member: newhire.credentials.email,
+        guest_grant: `${carol.credentials.email}: manage_tasks`,
+      };
+    });
+
+    await step(alice, 'takes the grant back when the work is done, and the admin agent is refused the next team', async () => {
+      const cli = await alice.cli();
+      await cli.ok(['grants', 'remove', structureGrant, '--confirm']);
+      const listed = (await cli.json(['grants', 'list'])) as any[];
+      expect(listed.map((g) => g.id)).not.toContain(structureGrant);
+      const refused = await (await adminAgent!.mcp()).refused('create_team', {
+        name: 'UAT one more team',
+        slug: named('desk2'),
+        code_prefix: `${deskPrefix.slice(0, 9)}X`,
+      });
+      expect(refused).toContain('FORBIDDEN');
+      expect(refused).toContain('manage_structure');
+      return { revoked: structureGrant, refused: refused.split('\n')[0].slice(0, 140) };
     });
 
     // The other half of onboarding: a team can also be wound down, and

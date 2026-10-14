@@ -147,6 +147,9 @@ did the wildcard routing; on Kubernetes the Ingress replaces Caddy.
 | `imagePullSecrets` | `[]` | Private-registry pull secrets. |
 | `replicaCount` | `2` | The pods share the background work through the job queue in Postgres (COLLIERY-I-0613): each build, embedding batch, periodic pass, webhook delivery and GitHub write-back runs on one pod, and the login throttle counts in Postgres. The `KAIROS_JOB_LIMIT_*` limits are for each pod. Ignored when autoscaling is on. |
 | `resources` | 100m/128Mi … 1/512Mi | Requests/limits. |
+| `worker.enabled` | `false` | Runs the code index builds in worker pods (`KAIROS_ROLE=worker`), and the server pods with `KAIROS_ROLE=api` (KAIROS-T-0394). A build that runs out of memory then stops the worker pod only. |
+| `worker.replicaCount` / `worker.resources` | `1` / 1 CPU, 2Gi … 4 CPU, 8Gi | Worker pods and their requests/limits. The memory limit is the knob for big repositories (GitHub #34: about 6.3 GiB and 4 cores for a full embedded build of about 1,200 files). |
+| `worker.extraEnv` / `worker.extraVolumes` / `worker.extraVolumeMounts` | `[]` | Extra env and volumes of the worker pods, e.g. `KAIROS_CODE_INDEX_DIR` on a volume. |
 | `nodeSelector` / `tolerations` / `affinity` / `topologySpreadConstraints` | `{}` / `[]` | Scheduling. |
 | `podSecurityContext` / `containerSecurityContext` | non-root, read-only rootfs, drop ALL caps | Hardened defaults. |
 

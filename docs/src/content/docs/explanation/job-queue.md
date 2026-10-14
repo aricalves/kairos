@@ -179,8 +179,31 @@ delivery job in its own transaction, and the answer comes back at once.
 - The event sockets (`/ws/events`) of the browsers and the agents that
   connect to this server.
 
-Each server of one database takes jobs of every kind, so give each server
-the same settings. A server with a different setting does the job in its
+## Server roles
+
+`KAIROS_ROLE` (see the configuration reference) sets the kinds of job that a
+server takes:
+
+| Role | Kinds of job | Periodic passes |
+|---|---|---|
+| `all` | every kind | the retention pass and the sweep |
+| `api` | every kind except `embedded_build` and `hosted_build` | the retention pass |
+| `worker` | `embedded_build` and `hosted_build` | the sweep |
+
+The embedding batches, the webhook deliveries, the GitHub write-backs and
+the cleanup of the sites stay on the servers that serve the API. They are
+not build work, and they use little memory. A server that takes the run of
+a pass that its role does not run gives it back with no try counted. Another
+server takes the run.
+
+A build job of a worker that stops (for example, the kernel stops it because
+it ran out of memory) holds its lease until the lease runs out. The next
+worker that looks then fails the job, with the reason, and the breaker of
+the repository trips. A server with the role `api` does not fail a build
+job: it does not take that kind.
+
+Each server of one database takes the jobs of the kinds of its role, so give
+each server the same settings. A server with a different setting does the job in its
 own way. For example, a server with no `KAIROS_WEBHOOK_ALLOW_PRIVATE`
 refuses a delivery to a private address that another server sends.
 

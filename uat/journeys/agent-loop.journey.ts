@@ -56,6 +56,24 @@ journey(
       return { repository: team.repoSlug, how_to_work_here: 'read', in_flight: 'nothing open' };
     });
 
+    await step.composeOnly(
+      agent,
+      'finds its repository has no code index yet and asks Kairos to build one (MCP)',
+      'the compose server takes a build request and runs no builder (KAIROS_CODE_INDEX_POLL_SECS=0); ' +
+        'on a deployment the builder would fetch a repository that does not exist',
+      async () => {
+        const mcp = await agent.mcp();
+        const asked = await mcp.call('rebuild_code_index', { repository: team.repoSlug });
+        expect(asked).toContain(`Kairos builds the code index of the repository ${team.repoSlug} again`);
+        const run = asked.match(/run ([0-9a-f-]{36})/)?.[1];
+        expect(run).toBeTruthy();
+        // One run at a time: a second ask while it runs is refused.
+        const again = await mcp.refused('rebuild_code_index', { repository: team.repoSlug });
+        expect(again).toContain('CODE_INDEX_BUILD_RUNNING');
+        return { repository: team.repoSlug, run, second_ask: 'CODE_INDEX_BUILD_RUNNING' };
+      },
+    );
+
     await step(agent, 'adds a second repository of its team to the directory, then corrects its description', async () => {
       // COLLIERY-T-0266: the agent stands in a checkout that the directory
       // does not have. Until `add_repository` it had to leave MCP for

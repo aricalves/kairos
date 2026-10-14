@@ -484,6 +484,50 @@ pub async fn end_stale_runs(blocking: &BlockingTenantPool) {
     }
 }
 
+/// The time after the end of a sweep run, on top of 2 intervals of the
+/// sweep, in which a server with the role `api` takes the builder as
+/// running (KAIROS-T-0394).
+pub const BUILDER_SEEN_SLACK: Duration = Duration::from_secs(5 * 60);
+
+/// The note of a deployment in which no code index builder runs
+/// (KAIROS-T-0394), or `None`. A server whose role builds runs the builder
+/// itself: `None`. A server with the role `api` looks for a worker: a run
+/// of the new-commits sweep that ended `done` in the last 2 intervals of
+/// the sweep and [`BUILDER_SEEN_SLACK`].
+pub(crate) fn builder_note(
+    conn: &mut PgConnection,
+    role: crate::config::ServerRole,
+) -> Result<Option<String>, ApiError> {
+    if role.builds() {
+        return Ok(None);
+    }
+    let key = crate::periodic::key(crate::periodic::CODE_INDEX_SWEEP);
+    let last = queue::last_done(conn, &key).map_err(ApiError::internal)?;
+    let now = Utc::now();
+    let ended = last.as_ref().and_then(|job| {
+        let finished = job.finished_at?;
+        let payload: crate::periodic::PeriodicPayload = serde_json::from_str(&job.payload).ok()?;
+        let interval = Duration::try_from_secs_f64(payload.interval_secs).ok()?;
+        let window = chrono::Duration::from_std(interval * 2 + BUILDER_SEEN_SLACK).ok()?;
+        Some((finished, finished + window > now))
+    });
+    Ok(match ended {
+        Some((_, true)) => None,
+        Some((finished, false)) => Some(format!(
+            "No code index builder runs. This server has the role api (KAIROS_ROLE=api), and \
+             the last sweep of a worker ended at {}. Kairos builds no index until an operator \
+             starts a server with KAIROS_ROLE=worker.",
+            finished.to_rfc3339()
+        )),
+        None => Some(
+            "No code index builder runs. This server has the role api (KAIROS_ROLE=api), and no \
+             server with KAIROS_ROLE=worker ran the sweep. Kairos builds no index until an \
+             operator starts a worker."
+                .to_string(),
+        ),
+    })
+}
+
 /// The handler of the build jobs (KAIROS-T-0374).
 #[derive(Clone)]
 pub struct BuildHandler {

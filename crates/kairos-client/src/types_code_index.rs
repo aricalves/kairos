@@ -142,6 +142,12 @@ pub struct CodeIndexBuildList {
     pub total: i64,
     /// The limit that the answer used.
     pub limit: i64,
+    /// Set when no code index builder runs for the deployment
+    /// (KAIROS-T-0394): the server has the role `api`, and no server with
+    /// the role `worker` ran the new-commits sweep lately. The text says
+    /// what to do.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builder: Option<String>,
 }
 
 // ---- the provider settings of a tenant (KAIROS-T-0339) ---------------------

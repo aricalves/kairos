@@ -157,6 +157,10 @@ fn rpc_message(body: &str) -> Value {
     panic!("no JSON-RPC message in response body: {body:?}");
 }
 
+/// The path of the test sessions: the profile `all` lists each tool
+/// (KAIROS-T-0454); a call works under each profile.
+const MCP_PATH: &str = "/mcp?profile=all";
+
 /// An MCP session over the production router: POSTs JSON-RPC to `/mcp`
 /// with the bearer token and (after initialize) the session id.
 struct McpSession<'a> {
@@ -179,7 +183,7 @@ impl<'a> McpSession<'a> {
         let (status, headers, body) = raw_request(
             router,
             Method::POST,
-            "/mcp",
+            MCP_PATH,
             Some(token),
             None,
             Some(json!({
@@ -206,7 +210,7 @@ impl<'a> McpSession<'a> {
         let (status, _, body) = raw_request(
             router,
             Method::POST,
-            "/mcp",
+            MCP_PATH,
             Some(&session.token),
             session.session_id.as_deref(),
             Some(json!({"jsonrpc": "2.0", "method": "notifications/initialized"})),
@@ -222,7 +226,7 @@ impl<'a> McpSession<'a> {
         let (status, _, body) = raw_request(
             self.router,
             Method::POST,
-            "/mcp",
+            MCP_PATH,
             Some(&self.token),
             self.session_id.as_deref(),
             Some(json!({
@@ -555,7 +559,9 @@ async fn mcp_endpoint_against_live_stack() {
          work them; writes require board capabilities and edits use optimistic versioning. \
          Repositories: `list_repositories` and `get_repository` read the directory, \
          `add_repository` and `update_repository` write it, and `set_repository` links a \
-         task to one."
+         task to one. This list is the work profile: the administration tools (teams, \
+         boards, grants, metadata, dispatch, team pages) are at /mcp?profile=admin, and \
+         each tool is at /mcp?profile=all."
     );
 
     // --- KAIROS-T-0392: stateless — no handshake, a stale session id -------
@@ -704,6 +710,116 @@ async fn mcp_endpoint_against_live_stack() {
     // what the reference pages quote, so it fails with them.
     assert_eq!(names.len(), TOOL_COUNT, "{names:?}");
     assert!(names.iter().any(|name| name == "set_repository"));
+
+    // --- KAIROS-T-0454: the profiles of tools/list -----------------------------
+    {
+        let list_at = |path: &'static str| {
+            let token = alice_token.clone();
+            let router = &router;
+            async move {
+                let (status, _, body) = raw_request(
+                    router,
+                    Method::POST,
+                    path,
+                    Some(&token),
+                    None,
+                    Some(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})),
+                )
+                .await;
+                assert_eq!(status, StatusCode::OK, "{path}: {body}");
+                rpc_message(&body)
+            }
+        };
+        let names_of = |message: &Value| -> Vec<String> {
+            let mut names: Vec<String> = message["result"]["tools"]
+                .as_array()
+                .expect("tools")
+                .iter()
+                .map(|t| t["name"].as_str().unwrap().to_string())
+                .collect();
+            names.sort();
+            names
+        };
+        let mut work: Vec<String> = [
+            "whoami",
+            "my_boards",
+            "board_items",
+            "search",
+            "get_item",
+            "get_history",
+            "related_work",
+            "create_item",
+            "edit_item",
+            "update_item",
+            "transition_item",
+            "move_item",
+            "link_items",
+            "unlink_items",
+            "propose_edge",
+            "append_note",
+            "set_metadata",
+            "set_repository",
+            "set_work_class",
+            "set_team",
+            "clear_team",
+            "cancel_item",
+            "delete_item",
+            "restore_item",
+            "list_repositories",
+            "get_repository",
+            "add_repository",
+            "update_repository",
+            "claim_item",
+            "hand_off_item",
+            "release_item",
+            "get_events",
+            "mark_events_read",
+            "list_metadata_definitions",
+            "list_templates",
+            "archive_completed",
+        ]
+        .iter()
+        .map(|n| n.to_string())
+        .collect();
+        work.sort();
+        assert_eq!(
+            names_of(&list_at("/mcp").await),
+            work,
+            "the default is the work profile"
+        );
+        assert_eq!(names_of(&list_at("/mcp?profile=work").await), work);
+        let admin = names_of(&list_at("/mcp?profile=admin").await);
+        assert!(admin.iter().all(|name| !work.contains(name)), "{admin:?}");
+        assert_eq!(
+            admin.len() + work.len(),
+            names.len(),
+            "work and admin make all"
+        );
+        let refused = list_at("/mcp?profile=every").await;
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("every"),
+            "{refused}"
+        );
+        // A tool of the admin profile is called through the default path.
+        let (status, _, body) = raw_request(
+            &router,
+            Method::POST,
+            "/mcp",
+            Some(&alice_token),
+            None,
+            Some(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                        "params": {"name": "list_templates", "arguments": {}}})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            rpc_message(&body)["result"]["isError"] != json!(true),
+            "{body}"
+        );
+    }
 
     // --- COLLIERY-T-0220: the reference pages agree with tools/list ---------
     // The reference page is hand-written. Until this task it gave a count

@@ -44,6 +44,7 @@
 //! constructor and is not used in this mode.
 
 mod arguments;
+mod profiles;
 mod service;
 mod tools;
 

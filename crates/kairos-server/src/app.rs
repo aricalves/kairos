@@ -97,6 +97,9 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
     // is still discovered here and still fails fast, so making it optional did not
     // turn a broken issuer into a runtime surprise.
     let auth = match (&config.oidc_issuer_url, &config.oidc_audience) {
+        // KAIROS-T-0394: a worker serves no API, so it authenticates nobody
+        // and does not need the issuer to start.
+        _ if !config.role.serves_api() => Authenticator::disabled(),
         (Some(issuer), Some(audience)) => Authenticator::discover(issuer, audience).await?,
         _ => {
             tracing::warn!(
@@ -111,11 +114,11 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
     let instance = uuid::Uuid::new_v4();
     let code_index = code_index_service(&config, instance);
     let throttle = crate::rate_limit::from_config(&config, &blocking).map(Arc::new);
-    let jobs = Arc::new(crate::jobs::Worker::new(
-        blocking.clone(),
-        instance,
-        config.jobs.clone(),
-    ));
+    // KAIROS-T-0394: the worker registers only the kinds of its role.
+    let jobs = Arc::new(
+        crate::jobs::Worker::new(blocking.clone(), instance, config.jobs.clone())
+            .with_role(config.role),
+    );
     // KAIROS-T-0384: the signed webhook deliveries are jobs of the queue.
     crate::webhooks::WebhookService::new(
         blocking.clone(),
@@ -132,7 +135,12 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
         config.public_url.clone(),
     )
     .register(&jobs);
-    let site_store = site_store(&config, &jobs)?;
+    // KAIROS-T-0394: a worker serves no site, so it opens no store.
+    let site_store = if config.role.serves_api() {
+        site_store(&config, &jobs)?
+    } else {
+        None
+    };
     Ok(AppState {
         config: Arc::new(config),
         pool,
@@ -300,11 +308,10 @@ pub fn state_with(config: AppConfig, pool: TenantPool, auth: Arc<Authenticator>)
     // `KAIROS_AUTH_MAX_FAILURES` to 0.
     let throttle = crate::rate_limit::from_config(&config, &blocking).map(Arc::new);
     // The worker of a test state runs no job until a test starts it.
-    let jobs = Arc::new(crate::jobs::Worker::new(
-        blocking.clone(),
-        uuid::Uuid::new_v4(),
-        config.jobs.clone(),
-    ));
+    let jobs = Arc::new(
+        crate::jobs::Worker::new(blocking.clone(), uuid::Uuid::new_v4(), config.jobs.clone())
+            .with_role(config.role),
+    );
     // KAIROS-T-0384: a test that drains the worker sends the deliveries.
     crate::webhooks::WebhookService::new(
         blocking.clone(),
@@ -532,6 +539,30 @@ pub fn router(state: AppState) -> Router {
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             crate::security_headers::security_headers,
+        ))
+        .with_state(state)
+}
+
+/// The router of a server with the role `worker` (KAIROS-T-0394): the
+/// probes, the version and the metrics, and no API. Each other path is a
+/// 404 that names the role.
+pub fn worker_router(state: AppState) -> Router {
+    Router::new()
+        .route("/healthz", get(|| async { "ok" }))
+        .route("/version", get(crate::version::version))
+        .route("/readyz", get(crate::metrics::readyz))
+        .route("/metrics", get(crate::metrics::metrics_handler))
+        .fallback(|| async {
+            ApiError::new(
+                axum::http::StatusCode::NOT_FOUND,
+                "NOT_FOUND",
+                "This server has the role worker (KAIROS_ROLE=worker). It runs the code index \
+                 builds and serves no API. Send the request to a server with the role all or api.",
+            )
+        })
+        .layer(axum_middleware::from_fn_with_state(
+            state.clone(),
+            crate::metrics::track_metrics,
         ))
         .with_state(state)
 }
@@ -790,7 +821,6 @@ pub async fn serve(
     readiness: crate::tenant_readiness::TenantReadiness,
 ) -> Result<(), String> {
     let bind_addr = config.bind_addr;
-    let refresh_secs = config.embed_refresh_secs;
     // KAIROS-T-0366: a bad retention value stops the start, like any other
     // bad setting.
     let retention = kairos_core::retention::RetentionConfig::from_env()
@@ -798,6 +828,8 @@ pub async fn serve(
     let mut state = build_state(config).await.map_err(|e| e.to_string())?;
     // KAIROS-T-0330: the tenants that did not migrate at startup.
     state.tenant_readiness = Arc::new(readiness);
+    let role = state.config.role;
+    tracing::info!(role = role.as_str(), "kairos-server role (KAIROS_ROLE)");
 
     // KAIROS-T-0204: the first-boot admin, before the listener binds. A fresh
     // local-auth deployment has nobody who can log in, and no way to make anybody.
@@ -806,54 +838,24 @@ pub async fn serve(
     // us the deployment has no other way in, so carrying on would produce a server
     // that starts, serves a login page and cannot be logged into — the failure mode
     // hardest to diagnose from the outside.
-    bootstrap_first_admin(&state).await?;
-
-    // The background refresher (KAIROS-T-0190): embedding happens off the write
-    // path, so a create never waits on a model. Its pages are jobs of the queue
-    // (KAIROS-T-0375), so 2 servers do not embed one page twice. Detached
-    // deliberately — it is not part of graceful shutdown, because there is
-    // nothing to drain: a batch interrupted mid-page keeps its lease until it
-    // runs out, and a server takes it again.
-    if let (Some(service), true) = (state.embedding.clone(), refresh_secs > 0) {
-        tokio::spawn(crate::embedding::run_refresher(
-            Arc::clone(&state.jobs),
-            state.blocking.clone(),
-            service,
-            std::time::Duration::from_secs(refresh_secs),
-            crate::embedding::REFRESH_BATCH,
-        ));
+    //
+    // KAIROS-T-0394: a worker serves no API; the first-boot admin is the
+    // work of a server that does.
+    if role.serves_api() {
+        bootstrap_first_admin(&state).await?;
     }
+    start_background(&state, retention).await;
 
-    start_code_index_builder(&state);
-    // KAIROS-T-0373: the worker of the job queue. Detached like the
-    // refresher: a job that a stop cuts short keeps its lease until it runs
-    // out, and then a server takes it again.
-    tokio::spawn(Arc::clone(&state.jobs).run());
-    // KAIROS-T-0366, KAIROS-T-0376: retention is a periodic job. The queue
-    // gives each run to one server, and each run adds the next.
-    tracing::info!(
-        mode = %retention.mode,
-        interval_secs = crate::periodic::RETENTION_INTERVAL.as_secs(),
-        "retention: the pass is a periodic job"
-    );
-    if let Err(e) = state
-        .jobs
-        .add_periodic(
-            crate::periodic::RETENTION,
-            crate::periodic::RETENTION_INTERVAL,
-            crate::periodic::retention_pass(state.config.database_url.clone(), retention),
-        )
-        .await
-    {
-        tracing::error!(error = ?e, "retention: the first run of the pass was not added");
-    }
-
-    let app = router(state);
+    let app = if role.serves_api() {
+        router(state)
+    } else {
+        worker_router(state)
+    };
 
     let listener = tokio::net::TcpListener::bind(bind_addr)
         .await
         .map_err(|e| format!("cannot bind KAIROS_BIND_ADDR {bind_addr}: {e}"))?;
-    tracing::info!(%bind_addr, "kairos-server listening");
+    tracing::info!(%bind_addr, role = role.as_str(), "kairos-server listening");
 
     // KAIROS-T-0202: the throttle needs the socket peer for its source bucket,
     // and `ConnectInfo` is the only place axum will put it. Tests that drive the
@@ -870,6 +872,70 @@ pub async fn serve(
     // image smoke check) can tell it from a kill.
     tracing::info!("shutdown complete");
     Ok(())
+}
+
+/// The background work of `serve` for the role of the server
+/// (KAIROS-T-0394): the embedding refresher and retention where the API
+/// runs, the code index builder where the builds run, and the job worker
+/// on each server. The job worker of `state` registers only the kinds of
+/// its role.
+async fn start_background(state: &AppState, retention: kairos_core::retention::RetentionConfig) {
+    let role = state.config.role;
+    let refresh_secs = state.config.embed_refresh_secs;
+
+    // The background refresher (KAIROS-T-0190): embedding happens off the write
+    // path, so a create never waits on a model. Its pages are jobs of the queue
+    // (KAIROS-T-0375), so 2 servers do not embed one page twice. Detached
+    // deliberately — it is not part of graceful shutdown, because there is
+    // nothing to drain: a batch interrupted mid-page keeps its lease until it
+    // runs out, and a server takes it again.
+    if let (Some(service), true, true) =
+        (state.embedding.clone(), refresh_secs > 0, role.serves_api())
+    {
+        tokio::spawn(crate::embedding::run_refresher(
+            Arc::clone(&state.jobs),
+            state.blocking.clone(),
+            service,
+            std::time::Duration::from_secs(refresh_secs),
+            crate::embedding::REFRESH_BATCH,
+        ));
+    }
+
+    // KAIROS-T-0394: an `api` server starts no builder, so it fetches no
+    // tools and runs no build.
+    if role.builds() {
+        start_code_index_builder(state);
+    } else {
+        tracing::info!(
+            "this server runs no code index builder (KAIROS_ROLE=api): a server with \
+             KAIROS_ROLE=worker runs the builds"
+        );
+    }
+    // KAIROS-T-0373: the worker of the job queue. Detached like the
+    // refresher: a job that a stop cuts short keeps its lease until it runs
+    // out, and then a server takes it again.
+    tokio::spawn(Arc::clone(&state.jobs).run());
+    // KAIROS-T-0366, KAIROS-T-0376: retention is a periodic job. The queue
+    // gives each run to one server, and each run adds the next.
+    if !role.runs_pass(crate::periodic::RETENTION) {
+        return;
+    }
+    tracing::info!(
+        mode = %retention.mode,
+        interval_secs = crate::periodic::RETENTION_INTERVAL.as_secs(),
+        "retention: the pass is a periodic job"
+    );
+    if let Err(e) = state
+        .jobs
+        .add_periodic(
+            crate::periodic::RETENTION,
+            crate::periodic::RETENTION_INTERVAL,
+            crate::periodic::retention_pass(state.config.database_url.clone(), retention),
+        )
+        .await
+    {
+        tracing::error!(error = ?e, "retention: the first run of the pass was not added");
+    }
 }
 
 /// Create the first-boot admin if `KAIROS_BOOTSTRAP_ADMIN` is set and the
