@@ -130,7 +130,7 @@ deprovisioned user's still-valid OIDC token receives 403
 | Group `displayName` | `id` | Maps to |
 |---|---|---|
 | `kairos-admins` | the organization UUID | `organization_members.role`: add = promote to `admin`, remove = demote to `member` |
-| `kairos-team-<slug>` | the team UUID | `team_members`; `POST` creates the team + its delivery board, `DELETE` soft-deletes both |
+| `kairos-team-<slug>` | the team UUID | `team_members`; `POST` creates the team, its delivery board and its charter page, `DELETE` soft-deletes the team and the board |
 
 No other `displayName` is meaningful, and Kairos accepts no other `displayName`.
 `POST` of one is **400 `invalidValue`**, not a silent skip. The slug after

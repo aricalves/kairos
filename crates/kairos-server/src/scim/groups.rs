@@ -660,6 +660,10 @@ pub(crate) async fn create_group(
                 )),
                 e => ScimError::internal(e),
             })?;
+            // KAIROS-T-0459: the charter comes with the team, as it does
+            // for POST /api/teams. A SCIM team was born without one.
+            kairos_db::team_pages::seed_team_charter(conn, team.id, ctx.actor_id)
+                .map_err(ScimError::internal)?;
             log_scim_activity(
                 conn,
                 ctx.actor_id,
