@@ -13,6 +13,9 @@
 //! happened needs. It cannot say anything about whether retrieval finds the
 //! right thing — that is KAIROS-T-0189's measurements, against a real model.
 
+#[path = "../../kairos-db/tests/common/scratch.rs"]
+mod scratch;
+
 use std::sync::Arc;
 
 use diesel::pg::PgConnection;
@@ -45,7 +48,8 @@ fn seed_board_team(conn: &mut PgConnection, name: &str, slug: &str) -> Uuid {
 }
 
 const DEFAULT_DATABASE_URL: &str = "postgres://kairos:kairos@localhost:41432/kairos";
-const SCRATCH_DB: &str = "kairos_embedding_service_test";
+static SCRATCH_DB: scratch::ScratchName =
+    scratch::ScratchName::new("kairos_embedding_service_test");
 
 /// A document with a heading per section, so chunking produces a known count.
 fn document(status: &str) -> String {
@@ -62,7 +66,7 @@ fn admin_database_url() -> String {
 
 fn with_database(url: &str, db_name: &str) -> String {
     let (base, _) = url.rsplit_once('/').expect("a database path segment");
-    format!("{base}/{db_name}")
+    format!("{base}/{}", scratch::scratch_db_name(db_name))
 }
 
 #[test]
@@ -76,8 +80,9 @@ fn refreshing_embeds_only_what_changed() {
     sql_query(format!("CREATE DATABASE {SCRATCH_DB}"))
         .execute(&mut admin)
         .expect("creating scratch database");
+    let _scratch_guard = scratch::ScratchGuard::new(&SCRATCH_DB);
 
-    let url = with_database(&admin_url, SCRATCH_DB);
+    let url = with_database(&admin_url, &SCRATCH_DB);
     let mut conn = PgConnection::establish(&url).expect("connecting");
     run_public_migrations(&mut conn).expect("public migrations");
     provision_tenant(&mut conn, "acme", "Acme Inc").expect("provisioning");
@@ -261,7 +266,7 @@ struct VersionRow {
 /// than one page.
 #[test]
 fn a_sweep_reaches_items_beyond_the_first_page() {
-    const SCRATCH: &str = "kairos_sweep_paging_test";
+    static SCRATCH: scratch::ScratchName = scratch::ScratchName::new("kairos_sweep_paging_test");
     let admin_url = admin_database_url();
     let mut admin = PgConnection::establish(&admin_url)
         .unwrap_or_else(|e| panic!("cannot connect to compose postgres at {admin_url}: {e}"));
@@ -271,7 +276,8 @@ fn a_sweep_reaches_items_beyond_the_first_page() {
     sql_query(format!("CREATE DATABASE {SCRATCH}"))
         .execute(&mut admin)
         .expect("creating scratch");
-    let url = with_database(&admin_url, SCRATCH);
+    let _scratch_guard = scratch::ScratchGuard::new(&SCRATCH);
+    let url = with_database(&admin_url, &SCRATCH);
 
     let mut conn = PgConnection::establish(&url).expect("connecting");
     run_public_migrations(&mut conn).expect("public migrations");
@@ -368,7 +374,7 @@ fn a_sweep_reaches_items_beyond_the_first_page() {
 /// recorded, so the only honest test is to watch the world change.
 #[tokio::test]
 async fn the_refresher_picks_up_work_created_after_it_started() {
-    const SCRATCH: &str = "kairos_refresher_test";
+    static SCRATCH: scratch::ScratchName = scratch::ScratchName::new("kairos_refresher_test");
     let admin_url = admin_database_url();
     let mut admin = PgConnection::establish(&admin_url)
         .unwrap_or_else(|e| panic!("cannot connect to compose postgres at {admin_url}: {e}"));
@@ -378,7 +384,8 @@ async fn the_refresher_picks_up_work_created_after_it_started() {
     sql_query(format!("CREATE DATABASE {SCRATCH}"))
         .execute(&mut admin)
         .expect("creating scratch");
-    let url = with_database(&admin_url, SCRATCH);
+    let _scratch_guard = scratch::ScratchGuard::new(&SCRATCH);
+    let url = with_database(&admin_url, &SCRATCH);
 
     let mut conn = PgConnection::establish(&url).expect("connecting");
     run_public_migrations(&mut conn).expect("public migrations");

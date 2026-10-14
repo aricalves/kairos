@@ -21,6 +21,13 @@
 //! the builder starts no build of the repository until a person pushes
 //! "Build again" in the panel Code index of the repository (on the page
 //! Repositories, or on the team page).
+//!
+//! The section "Read tokens by host" (KAIROS-T-0431) lists the read tokens
+//! of the organization: one for each forge host, with who set it and when,
+//! never the token. The builder uses the token of the host of a repository
+//! before the token of the repository. "Set a token" sets or replaces the
+//! token of a host, after a confirmation; "Remove" is its own action, with a
+//! confirmation.
 
 use aurora_dark::components::{
     Anchor, Button, ErrorState, Group, Loading, PageHeader, Panel, Pill, Select, Stack, Text,
@@ -32,7 +39,7 @@ use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use super::{MutationNotice, MutationOutcome};
-use crate::api::{get_json, put_json};
+use crate::api::{delete_json, encode_component, get_json, put_json};
 use crate::auth::{Auth, use_auth};
 use crate::pages::repositories::api::{Repository, list_repositories};
 
@@ -309,6 +316,7 @@ pub fn AdminCodeIndexPage() -> impl IntoView {
                     }.into_any()
                 }
             }}
+            <ReadTokens outcome/>
             <Breakers/>
         </Stack>
     }
@@ -748,6 +756,190 @@ fn BuilderSection(
     }
 }
 
+/// mirror of: `kairos_client::types_code_index::OrgReadToken`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct OrgReadToken {
+    pub host: String,
+    pub set_by: String,
+    #[serde(default)]
+    pub set_by_name: Option<String>,
+    pub set_at: String,
+}
+
+/// mirror of: `kairos_client::types_code_index::SetOrgReadTokenRequest`.
+#[derive(Clone, Debug, Serialize)]
+struct SetOrgReadToken {
+    token: String,
+}
+
+/// The line of a read token of a host: who set it and when. Pure,
+/// host-tested.
+pub(crate) fn read_token_line(token: &OrgReadToken) -> String {
+    let by = token.set_by_name.as_ref().unwrap_or(&token.set_by);
+    format!("Set by {by} at {} (UTC).", when(&token.set_at))
+}
+
+const READ_TOKENS_HINT: &str = "The builder fetches each repository on a host with the token of \
+                                the host. The token of a repository is used only for a host \
+                                with no token here. Use a token that can only read the code. \
+                                The host is the host only, for example github.com, or \
+                                git.example.org:8443 for a port that is not 443.";
+
+/// The read tokens of the organization by host (KAIROS-T-0431).
+#[component]
+fn ReadTokens(outcome: RwSignal<MutationOutcome>) -> impl IntoView {
+    let auth = use_auth();
+    let reload = RwSignal::new(0u32);
+    let busy = RwSignal::new(false);
+    let editing = RwSignal::new(false);
+    let confirm = RwSignal::new(false);
+    let confirm_remove = RwSignal::new(false);
+    let host = RwSignal::new(String::new());
+    let secret = RwSignal::new(String::new());
+    let removing = RwSignal::new(String::new());
+    let tokens = LocalResource::new(move || {
+        let _ = auth.token();
+        reload.get();
+        get_json::<Vec<OrgReadToken>>(auth, "/api/org/read-tokens")
+    });
+    let close = move || {
+        confirm.set(false);
+        confirm_remove.set(false);
+        editing.set(false);
+        host.set(String::new());
+        secret.set(String::new());
+    };
+    let save = move || {
+        if busy.get_untracked() {
+            return;
+        }
+        let Some(target) = given(&host.get_untracked()) else {
+            confirm.set(false);
+            outcome.set(Some(Err(ApiError::Unknown(
+                "Write the host, for example github.com.".to_string(),
+            ))));
+            return;
+        };
+        busy.set(true);
+        let body = SetOrgReadToken {
+            token: secret.get_untracked(),
+        };
+        leptos::task::spawn_local(async move {
+            let path = format!("/api/org/read-tokens/{}", encode_component(&target));
+            let result: Result<OrgReadToken, ApiError> = put_json(auth, &path, &body).await;
+            busy.set(false);
+            match result {
+                Ok(token) => {
+                    close();
+                    outcome.set(Some(Ok(format!(
+                        "Kairos keeps the read token of {}.",
+                        token.host
+                    ))));
+                    reload.update(|n| *n += 1);
+                }
+                Err(error) => {
+                    // The confirmation closes; the form stays.
+                    confirm.set(false);
+                    outcome.set(Some(Err(error)));
+                }
+            }
+        });
+    };
+    let remove = move || {
+        if busy.get_untracked() {
+            return;
+        }
+        busy.set(true);
+        let target = removing.get_untracked();
+        leptos::task::spawn_local(async move {
+            let path = format!("/api/org/read-tokens/{}", encode_component(&target));
+            let result: Result<Vec<OrgReadToken>, ApiError> = delete_json(auth, &path).await;
+            busy.set(false);
+            confirm_remove.set(false);
+            match result {
+                Ok(_) => outcome.set(Some(Ok(format!(
+                    "Kairos removed the read token of {target}."
+                )))),
+                Err(error) => outcome.set(Some(Err(error))),
+            }
+            reload.update(|n| *n += 1);
+        });
+    };
+    let confirm_lines = Signal::derive(move || {
+        let target = given(&host.get()).unwrap_or_else(|| "none".to_string());
+        vec![
+            format!("Host: {target}"),
+            "Token: the new value replaces a stored token of this host.".to_string(),
+        ]
+    });
+    let remove_title =
+        Signal::derive(move || format!("Remove the read token of {}?", removing.get()));
+    view! {
+        <Panel title="Read tokens by host" caption="the tokens that the builder uses for each repository on a host">
+            <Stack gap="sm" attr:data-testid="code-index-read-tokens">
+                {move || match tokens.get() {
+                    None => view! { <Loading/> }.into_any(),
+                    Some(Err(error)) => view! {
+                        <ErrorState error on_retry=Callback::new(move |_| reload.update(|n| *n += 1))/>
+                    }.into_any(),
+                    Some(Ok(list)) if list.is_empty() => view! {
+                        <Text size="sm">"No host has a token."</Text>
+                    }.into_any(),
+                    Some(Ok(list)) => list
+                        .into_iter()
+                        .map(|token| {
+                            let line = read_token_line(&token);
+                            let target = token.host.clone();
+                            view! {
+                                <Group gap="sm">
+                                    <Text size="sm">{token.host.clone()}</Text>
+                                    <Text dimmed=true size="xs">{line}</Text>
+                                    <Button variant="default" size="xs" bad=true
+                                        on_click=Callback::new(move |_| {
+                                            removing.set(target.clone());
+                                            confirm_remove.set(true);
+                                        })>
+                                        "Remove"
+                                    </Button>
+                                </Group>
+                            }
+                        })
+                        .collect_view()
+                        .into_any(),
+                }}
+                <Show when=move || !editing.get()>
+                    <Group gap="sm">
+                        <Button size="xs" on_click=Callback::new(move |_| editing.set(true))
+                            attr:data-testid="code-index-read-token-add">"Set a token"</Button>
+                    </Group>
+                </Show>
+                <Show when=move || editing.get()>
+                    <Group gap="sm" wrap=true top=true>
+                        <TextInput label="Host" value=host placeholder="github.com"/>
+                        <TextInput label="Token" value=secret input_type="password"
+                            autocomplete="new-password" spellcheck=false name="org-read-token"/>
+                    </Group>
+                    <Group gap="sm">
+                        <Button size="xs" on_click=Callback::new(move |_| confirm.set(true))
+                            attr:data-testid="code-index-read-token-save">"Save"</Button>
+                        <Button variant="default" size="xs" on_click=Callback::new(move |_| close())>
+                            "Cancel"
+                        </Button>
+                    </Group>
+                </Show>
+                <Text dimmed=true size="xs">{READ_TOKENS_HINT}</Text>
+            </Stack>
+        </Panel>
+        <ConfirmDialog open=confirm title="Set the read token of this host?" confirm_label="Save"
+            danger=false busy=busy impacts=confirm_lines impacts_label="This save changes:"
+            on_confirm=Callback::new(move |()| save())/>
+        <ConfirmDialog open=confirm_remove title=remove_title confirm_label="Remove" busy=busy
+            message="The builder then fetches each repository on this host with the token of \
+                     the repository, or with no token."
+            on_confirm=Callback::new(move |()| remove())/>
+    }
+}
+
 /// The repositories whose code index breaker is tripped (KAIROS-T-0399),
 /// by slug. Pure, host-tested.
 pub(crate) fn tripped(repos: &[Repository]) -> Vec<&Repository> {
@@ -901,6 +1093,27 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&body).unwrap(),
             serde_json::json!({"concurrency": 8, "version": 3})
+        );
+    }
+
+    #[test]
+    fn a_read_token_reads_as_who_and_when_and_never_a_value() {
+        let token: OrgReadToken = serde_json::from_str(
+            r#"{"host":"github.com","set_by":"u1","set_by_name":"Robin",
+                "set_at":"2026-10-14T08:30:00+00:00"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_token_line(&token),
+            "Set by Robin at 2026-10-14 08:30 (UTC)."
+        );
+        let unnamed = OrgReadToken {
+            set_by_name: None,
+            ..token
+        };
+        assert_eq!(
+            read_token_line(&unnamed),
+            "Set by u1 at 2026-10-14 08:30 (UTC)."
         );
     }
 

@@ -13,6 +13,7 @@
 //! - [`mcp`] — the `/mcp` MCP endpoint (A-0011 / S-0006, KAIROS-T-0026)
 //! - [`web`] — GUI serving + SPA auth support (A-0015, KAIROS-T-0039)
 
+pub mod agent_triage;
 pub mod api;
 pub mod app;
 pub mod blocking;

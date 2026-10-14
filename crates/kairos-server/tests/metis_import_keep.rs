@@ -48,7 +48,7 @@ const TENANT: [(&str, &str); 1] = [("x-tenant", "acme")];
 /// `skadi-adrs` and the repository `skadi`.
 struct Stack {
     scratch_db: &'static str,
-    admin_conn: PgConnection,
+    admin_conn: common::ScratchConn,
     conn: PgConnection,
     pool: TenantPool,
     router: Router,

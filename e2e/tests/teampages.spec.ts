@@ -67,14 +67,14 @@ test('team pages: landing layout → announcements → page edit + 409 merge →
     // One-way by design: no comment or reaction affordance anywhere.
     await expect(announcements.getByRole('button', { name: /comment|react/i })).toHaveCount(0);
 
-    // Documentation tree: scaffold folders, diataxis sections nested.
+    // Documentation tree: the folders the team made (KAIROS-T-0436: no
+    // seeded folder set), nested.
     const docs = panel(page, 'Documentation');
-    await expect(docs.getByText('Support Processes')).toBeVisible();
+    await expect(docs.getByText('Support Processes')).toHaveCount(0);
     const docsFolder = docs.locator('details.kairos-doctree__folder', {
       has: page.locator('summary', { hasText: 'Documentation' }),
     });
     await docsFolder.locator('summary').first().click();
-    await expect(docsFolder.getByText('Tutorials')).toBeVisible();
     const howTo = docsFolder.locator('details.kairos-doctree__folder', {
       has: page.locator('summary', { hasText: 'How-to Guides' }),
     });

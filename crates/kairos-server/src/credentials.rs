@@ -7,6 +7,12 @@
 //! [`status_dto`] (set or not, who set it and when, the last access check).
 //! Only the builder of the base code index decrypts it ([`read_token`]), to
 //! give it to git ([`crate::code_index::git`]).
+//!
+//! KAIROS-T-0431: the organization can keep one read token for each forge
+//! host ([`kairos_db::org_read_tokens`]). [`fetch_token`] chooses the token
+//! of a fetch: the token of the host of the repository when there is one,
+//! else the token of the repository, else none. [`TokenSource`] names the
+//! choice for the log, never the value.
 
 use diesel::pg::PgConnection;
 use kairos_client::types_repositories as dto;
@@ -14,7 +20,7 @@ use kairos_db::repository_credentials::{self, CredentialStatus};
 use uuid::Uuid;
 
 use crate::code_index::git::GitToken;
-use crate::secrets::{OpenError, SecretsKey, credential_aad};
+use crate::secrets::{OpenError, SecretsKey, credential_aad, org_read_token_aad};
 
 /// The longest token that Kairos takes. A GitHub fine-grained token has 93
 /// characters.
@@ -29,6 +35,14 @@ pub enum TokenError {
          Set KAIROS_SECRETS_KEY to the key that encrypted the token, or set the token again."
     )]
     NoKey,
+    /// The host has a token of the organization, and the deployment has no
+    /// key (KAIROS-T-0431).
+    #[error(
+        "The organization has a read token for {0}, but this deployment has no \
+         KAIROS_SECRETS_KEY. Set KAIROS_SECRETS_KEY to the key that encrypted the token, or \
+         set the token again."
+    )]
+    OrgNoKey(String),
     /// The token does not decrypt.
     #[error(transparent)]
     Open(#[from] OpenError),
@@ -72,11 +86,75 @@ pub fn read_token(
     Ok(Some(GitToken::new(token)))
 }
 
+/// The token that a fetch of a repository uses (KAIROS-T-0431). It names
+/// the kind of token, never the value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenSource {
+    /// The read token of the organization for this host.
+    Org { host: String },
+    /// The read token of the repository.
+    Repository,
+    /// No token: the fetch has no credential.
+    None,
+}
+
+impl std::fmt::Display for TokenSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TokenSource::Org { host } => write!(f, "the organization read token of {host}"),
+            TokenSource::Repository => f.write_str("the read token of the repository"),
+            TokenSource::None => f.write_str("no read token"),
+        }
+    }
+}
+
+/// The decrypted read token of the organization for `host`. `None`: the
+/// host has no token.
+pub fn org_token(
+    conn: &mut PgConnection,
+    tenant: &str,
+    host: &str,
+    key: Option<&SecretsKey>,
+) -> Result<Option<GitToken>, TokenError> {
+    let Some(stored) = kairos_db::org_read_tokens::load(conn, host)? else {
+        return Ok(None);
+    };
+    let key = key.ok_or_else(|| TokenError::OrgNoKey(host.to_string()))?;
+    let plain = key.open(
+        &org_read_token_aad(tenant, host),
+        &stored.key_id,
+        &stored.nonce,
+        &stored.ciphertext,
+    )?;
+    let token = String::from_utf8(plain).map_err(|_| OpenError::Corrupt)?;
+    Ok(Some(GitToken::new(token)))
+}
+
+/// The token of a fetch of `repo` (KAIROS-T-0431): the read token of the
+/// organization for the host of its `repo_url` when there is one, else the
+/// read token of the repository, else none.
+pub fn fetch_token(
+    conn: &mut PgConnection,
+    tenant: &str,
+    repo: &kairos_db::models::repositories::Repository,
+    key: Option<&SecretsKey>,
+) -> Result<(Option<GitToken>, TokenSource), TokenError> {
+    if let Some(host) = kairos_core::repositories::forge_host(&repo.repo_url)
+        && let Some(token) = org_token(conn, tenant, &host, key)?
+    {
+        return Ok((Some(token), TokenSource::Org { host }));
+    }
+    Ok(match read_token(conn, tenant, repo.id, key)? {
+        Some(token) => (Some(token), TokenSource::Repository),
+        None => (None, TokenSource::None),
+    })
+}
+
 /// The fault of a token that Kairos does not take, as a text for the
 /// refusal. The text does not hold the token.
 pub fn token_fault(token: &str) -> Option<String> {
     if token.is_empty() {
-        return Some("The token is empty. Send the read token of the repository.".into());
+        return Some("The token is empty. Send the read token.".into());
     }
     if token.len() > MAX_TOKEN_LEN {
         return Some(format!(

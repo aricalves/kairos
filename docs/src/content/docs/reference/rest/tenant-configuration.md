@@ -201,3 +201,49 @@ Request body (required): `application/json`, [`PutCodeIndexSettings`](../schemas
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | An unknown provider or field, a value that a provider needs and the body does not give, or a value that is not correct |
 | `501` | [`ErrorEnvelope`](../schemas/#errorenvelope) | A secret was sent, and this deployment has no KAIROS_SECRETS_KEY |
 
+### `GET /api/org/read-tokens`
+
+The read tokens of the organization: the host, who set the token and
+when (an organization admin). Never the token.
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | array of [`OrgReadToken`](../schemas/#orgreadtoken) | The token of each host, as a status |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Not an organization admin |
+
+### `PUT /api/org/read-tokens/{host}`
+
+Set or replace the read token of the organization for a forge host (an
+organization admin). Kairos encrypts the token. The builder uses it for
+each repository on the host, before the token of the repository.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `host` | path | yes | `string` | The forge host, for example github.com |
+
+Request body (required): `application/json`, [`SetOrgReadTokenRequest`](../schemas/#setorgreadtokenrequest)
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`OrgReadToken`](../schemas/#orgreadtoken) | The token is set |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Not an organization admin |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | An unknown field, a host that is not a host, or a token that is empty, too long or has a space |
+| `501` | [`ErrorEnvelope`](../schemas/#errorenvelope) | This deployment has no KAIROS_SECRETS_KEY |
+
+### `DELETE /api/org/read-tokens/{host}`
+
+Remove the read token of the organization for a forge host (an
+organization admin). The next fetch of a repository on the host uses the
+token of the repository, or no token. The answer is the list that stays.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `host` | path | yes | `string` | The forge host, for example github.com |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | array of [`OrgReadToken`](../schemas/#orgreadtoken) | The token is removed; the tokens that stay |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Not an organization admin |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The host has no token |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | A host that is not a host |
+

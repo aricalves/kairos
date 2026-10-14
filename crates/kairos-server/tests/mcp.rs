@@ -85,8 +85,8 @@ const TENANT: &str = "acme";
 
 /// How many tools `tools/list` returns, and the word the reference pages
 /// use for that number (COLLIERY-T-0220, COLLIERY-T-0266).
-const TOOL_COUNT: usize = 63;
-const TOOL_COUNT_WORD: &str = "sixty-three";
+const TOOL_COUNT: usize = 67;
+const TOOL_COUNT_WORD: &str = "sixty-seven";
 
 /// Every request carries a real `Host` header and the tenant resolves from
 /// its subdomain against the configured base domain — the S-0006 REQ-1.2
@@ -671,6 +671,13 @@ async fn mcp_endpoint_against_live_stack() {
         "list_dispatch_rules",
         "create_dispatch_rule",
         "delete_dispatch_rule",
+        // KAIROS-T-0431: the read token of the organization for each forge
+        // host (an organization admin).
+        "list_org_read_tokens",
+        "set_org_read_token",
+        "remove_org_read_token",
+        // KAIROS-T-0428: who decides the triage of intake on a board.
+        "set_agent_triage",
         // KAIROS-T-0443: team and board administration, as REST.
         "update_team",
         "remove_team_member",
@@ -737,6 +744,10 @@ async fn mcp_endpoint_against_live_stack() {
             "forty-four",
             "forty-five",
             "forty-six",
+            "forty-nine",
+            "sixty-one",
+            "sixty-two",
+            "sixty-three",
             "fifty-eight",
         ] {
             assert!(
@@ -2759,6 +2770,7 @@ async fn repository_tools_against_live_stack() {
         [
             "code_index_build",
             "default_branch",
+            "default_branch_source",
             "description",
             "repo_url",
             "repository",
@@ -3264,7 +3276,8 @@ async fn repository_tools_against_live_stack() {
         assert_eq!(
             text,
             "VALIDATION: The call has nothing to change. Send one or more of these \
-             arguments: description, default_branch, repo_url, code_index_build, slug, team."
+             arguments: description, default_branch, default_branch_source, repo_url, \
+             code_index_build, slug, team."
         );
     }
     // The values that the repository has: a success that writes nothing.
@@ -3295,7 +3308,8 @@ async fn repository_tools_against_live_stack() {
         text.starts_with(
             "VALIDATION: The call has the argument \"owner\". This tool does not \
              accept that argument. The arguments of this tool are: repository, \
-             description, default_branch, repo_url, code_index_build, slug, team."
+             description, default_branch, default_branch_source, repo_url, \
+             code_index_build, slug, team."
         ),
         "{text}"
     );
@@ -3322,6 +3336,63 @@ async fn repository_tools_against_live_stack() {
     assert_eq!(
         repository_row(&mut conn, "acme-fidius").unwrap().team,
         platform.id
+    );
+
+    // --- KAIROS-T-0430: the branch set by hand, and back to the forge --------
+    let text = alice_session
+        .call_ok("get_repository", json!({"repository": "acme-fidius"}))
+        .await;
+    assert!(
+        text.contains("\n- default branch: trunk (set by hand)\n"),
+        "{text}"
+    );
+    let text = alice_session
+        .call_err(
+            "update_repository",
+            json!({"repository": "acme-fidius", "default_branch_source": "remote"}),
+        )
+        .await;
+    assert!(
+        text.starts_with(
+            "VALIDATION: The argument default_branch_source has the value \"remote\". Send \
+             \"forge\" or \"hand\"."
+        ),
+        "{text}"
+    );
+    let text = alice_session
+        .call_err(
+            "update_repository",
+            json!({"repository": "acme-fidius", "default_branch": "trunk", "default_branch_source": "forge"}),
+        )
+        .await;
+    assert!(text.contains("default_branch_source"), "{text}");
+    let text = alice_session
+        .call_ok(
+            "update_repository",
+            json!({"repository": "acme-fidius", "default_branch_source": "forge"}),
+        )
+        .await;
+    assert_eq!(
+        text,
+        "Updated repository acme-fidius: default_branch_source."
+    );
+    // No fetch yet: the branch stays until the builder reads the forge.
+    let text = alice_session
+        .call_ok("get_repository", json!({"repository": "acme-fidius"}))
+        .await;
+    assert!(
+        text.contains("\n- default branch: trunk (from the forge; no fetch yet)\n"),
+        "{text}"
+    );
+    let text = alice_session
+        .call_ok(
+            "update_repository",
+            json!({"repository": "acme-fidius", "default_branch_source": "hand"}),
+        )
+        .await;
+    assert_eq!(
+        text,
+        "Updated repository acme-fidius: default_branch_source."
     );
 
     // --- KAIROS-T-0398: update_repository turns the code index builder off --

@@ -67,6 +67,10 @@ pub(crate) fn router() -> Router<AppState> {
             get(list_dispatch_rules).post(create_dispatch_rule),
         )
         .route(
+            "/api/boards/{id}/agent-triage",
+            get(get_agent_triage).put(set_agent_triage),
+        )
+        .route(
             "/api/boards/{id}/dispatch-rules/{rule_id}",
             delete(delete_dispatch_rule),
         )
@@ -728,6 +732,101 @@ pub(crate) async fn test_webhook_target(
         .await?;
     state.jobs.wake();
     Ok((StatusCode::CREATED, Json(delivery)))
+}
+
+/// The triage setting of a board (KAIROS-T-0428), for a reader of its
+/// dispatch.
+pub fn agent_triage_as(
+    conn: &mut PgConnection,
+    slug: &str,
+    user: Uuid,
+    board_ref: &str,
+) -> Result<dto::AgentTriage, ApiError> {
+    let (board, _) = readable(conn, slug, user, board_ref)?;
+    Ok(dto::AgentTriage {
+        board_id: board.id.to_string(),
+        agents_decide: crate::agent_triage::agents_decide(conn, board.id)?,
+    })
+}
+
+/// Set the triage setting of a board (KAIROS-T-0428). Needs
+/// `configure_boards`.
+pub fn set_agent_triage_as(
+    conn: &mut PgConnection,
+    slug: &str,
+    user: Uuid,
+    board_ref: &str,
+    agents_decide: bool,
+) -> Result<dto::AgentTriage, ApiError> {
+    let board = configurable(conn, slug, user, board_ref)?;
+    let agents_decide =
+        crate::agent_triage::set_agents_decide(conn, board.id, agents_decide, user)?;
+    Ok(dto::AgentTriage {
+        board_id: board.id.to_string(),
+        agents_decide,
+    })
+}
+
+/// Who decides the triage of intake on the board (KAIROS-T-0428). A person
+/// who belongs to the board reads it.
+#[utoipa::path(
+    get,
+    path = "/api/boards/{id}/agent-triage",
+    tag = "boards",
+    params(("id" = String, Path, description = "The slug or the id (UUID) of the board")),
+    responses(
+        (status = 200, description = "The setting", body = dto::AgentTriage),
+        (status = 403, description = "The caller does not belong to the board", body = kairos_client::types::ErrorEnvelope),
+        (status = 404, description = "Unknown board", body = kairos_client::types::ErrorEnvelope),
+    ),
+)]
+pub(crate) async fn get_agent_triage(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Extension(tenant): Extension<TenantContext>,
+    Path(id): Path<String>,
+) -> Result<Json<dto::AgentTriage>, ApiError> {
+    let (slug, user) = (tenant.slug.clone(), auth.user_id);
+    let setting = state
+        .blocking
+        .run(&tenant.slug, move |conn| {
+            agent_triage_as(conn, &slug, user, &id)
+        })
+        .await?;
+    Ok(Json(setting))
+}
+
+/// Let agents decide the triage of intake on the board, or not
+/// (KAIROS-T-0428). Off: Kairos refuses an agent's move of intake with 403
+/// `AGENT_TRIAGE_OFF`. The agent proposes with a note. Needs
+/// `configure_boards`.
+#[utoipa::path(
+    put,
+    path = "/api/boards/{id}/agent-triage",
+    tag = "boards",
+    params(("id" = String, Path, description = "The slug or the id (UUID) of the board")),
+    request_body = dto::SetAgentTriageRequest,
+    responses(
+        (status = 200, description = "The setting", body = dto::AgentTriage),
+        (status = 403, description = "Missing configure_boards", body = kairos_client::types::ErrorEnvelope),
+        (status = 404, description = "Unknown board", body = kairos_client::types::ErrorEnvelope),
+    ),
+)]
+pub(crate) async fn set_agent_triage(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Extension(tenant): Extension<TenantContext>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<dto::SetAgentTriageRequest>,
+) -> Result<Json<dto::AgentTriage>, ApiError> {
+    let (slug, user) = (tenant.slug.clone(), auth.user_id);
+    let setting = state
+        .blocking
+        .run(&tenant.slug, move |conn| {
+            set_agent_triage_as(conn, &slug, user, &id, body.agents_decide)
+        })
+        .await?;
+    Ok(Json(setting))
 }
 
 /// The dispatch rules of a board (KAIROS-T-0385). A person who belongs to

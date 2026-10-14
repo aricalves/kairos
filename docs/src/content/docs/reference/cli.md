@@ -724,6 +724,7 @@ kairos boards dispatch enable-target <BOARD> <TARGET> [OPTIONS]
 kairos boards dispatch test-target <BOARD> <TARGET> [OPTIONS]
 kairos boards dispatch add-rule <BOARD> [--trigger entered_column|unblocked] [--column <COLUMN>] --target <TARGET> [--task-type <TYPE>] [--metadata <SLUG=VALUE>] [--repository <REPO>] [OPTIONS]
 kairos boards dispatch remove-rule <BOARD> <RULE> [OPTIONS]
+kairos boards dispatch agent-triage <BOARD> [--on | --off] [OPTIONS]
 kairos boards dispatch log <BOARD> [--target <TARGET>] [--rule <RULE>] [--limit <N>] [OPTIONS]
 ```
 
@@ -741,6 +742,7 @@ Kairos sends one signed delivery to the target. See
 | `test-target` | `configure_boards` | Sends the event `ping` to a target. |
 | `add-rule` | `configure_boards` | Makes a rule. |
 | `remove-rule` | `configure_boards` | Removes a rule. Its deliveries stay in the log. |
+| `agent-triage` | a place on the board; `configure_boards` with `--on` or `--off` | Shows or sets who decides the triage of intake. `--on`: an agent decides. `--off`: an agent proposes with a note, and a person decides. |
 | `log` | a place on the board | Shows the newest deliveries, with the status, the tries and the response code. |
 
 A place on the board is a grant on the board, a place in its team, or the
@@ -1138,6 +1140,10 @@ Documents and ADRs that impact this repository:
 
 The section shows `(none)` when no item impacts the repository.
 
+The line `default branch:` gives the branch that the code index builder
+indexes. Then it gives where the branch comes from: `set by hand`, `from the
+forge`, or `from the forge; no fetch yet`.
+
 ### `kairos repos create`
 
 ```
@@ -1151,7 +1157,7 @@ kairos repos create --forge <FORGE> --name <FULL_NAME> --repo-url <URL> --team <
 | `--repo-url <URL>` | string | required | Browser URL of the repository: `http` or `https`. |
 | `--team <TEAM>` | slug or UUID | required | Owning team. |
 | `--slug <SLUG>` | string | derived from `--name` | Slug. |
-| `--default-branch <BRANCH>` | string | `main` | Default branch: a branch name that git accepts. |
+| `--default-branch <BRANCH>` | string | the default branch of the forge | Default branch: a branch name that git accepts. With it, the branch is set by hand. Without it, the code index builder follows the default branch of the forge. |
 | `--description <DESCRIPTION>` | string | none | Short "how to work here" blurb for agents. |
 
 Permitted to an organization admin or a member of the owning team.
@@ -1171,7 +1177,8 @@ kairos repos update <REPOSITORY> [OPTIONS]
 | `<REPOSITORY>` | slug or UUID | required | The repository. |
 | `--slug <SLUG>` | string | unchanged | New slug. |
 | `--repo-url <URL>` | string | unchanged | New browser URL. |
-| `--default-branch <BRANCH>` | string | unchanged | New default branch. |
+| `--default-branch <BRANCH>` | string | unchanged | New default branch. The branch is then set by hand: the code index builder indexes it, whatever the forge says. |
+| `--follow-forge` | flag | off | Remove the branch set by hand. The code index builder follows the default branch of the forge again. You cannot use it with `--default-branch`. |
 | `--team <TEAM>` | slug or UUID | unchanged | New owning team. Re-homes the repository. |
 | `--description <DESCRIPTION>` | string | unchanged | New description. |
 | `--code-index-build <ON\|OFF>` | `on` or `off` | unchanged | With `off`, the code index builder makes no index of the repository. Another value is refused. See [The base code index](../configuration/#stop-the-builder-for-one-repository). |

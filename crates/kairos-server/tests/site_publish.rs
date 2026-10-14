@@ -219,7 +219,7 @@ async fn router_with(scratch_url: &str, edit: impl FnOnce(&mut AppConfig)) -> Ro
 
 #[tokio::test]
 async fn ci_publishes_a_site_against_live_stack() {
-    drop(recreate_scratch_db(SCRATCH_DB));
+    let _scratch = recreate_scratch_db(SCRATCH_DB);
     let scratch_url = with_database(&common::admin_database_url(), SCRATCH_DB);
     let mut conn = PgConnection::establish(&scratch_url).expect("connect scratch");
     run_public_migrations(&mut conn).expect("public migrations");

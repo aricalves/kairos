@@ -185,6 +185,18 @@ pub struct CreateDispatchRuleParams {
     pub repository: Option<String>,
 }
 
+/// `set_agent_triage` (KAIROS-T-0428).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct SetAgentTriageParams {
+    /// The board, by slug (e.g. "platform-delivery") or UUID.
+    pub board: String,
+    /// True: an agent decides the triage of intake. False: an agent
+    /// proposes it with a note and a person decides.
+    pub agents_decide: bool,
+}
+
 /// `delete_dispatch_rule` (KAIROS-T-0385).
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -194,6 +206,34 @@ pub struct DeleteDispatchRuleParams {
     pub board: String,
     /// The id of the rule (from `list_dispatch_rules`).
     pub rule_id: String,
+}
+
+/// `list_org_read_tokens` (KAIROS-T-0431).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct ListOrgReadTokensParams {}
+
+/// `set_org_read_token` (KAIROS-T-0431).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct SetOrgReadTokenParams {
+    /// The forge host, for example "github.com" (a port only when it is not
+    /// 443).
+    pub host: String,
+    /// The read token. Kairos encrypts it; no tool gives it back.
+    #[schemars(with = "String")]
+    pub token: kairos_client::types_auth::Secret,
+}
+
+/// `remove_org_read_token` (KAIROS-T-0431).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct RemoveOrgReadTokenParams {
+    /// The forge host, for example "github.com".
+    pub host: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -600,8 +640,10 @@ pub struct AddRepositoryParams {
     /// URL (e.g. "https://github.com/acme/payments-api"). It has no user
     /// name and no password, because each member can read it.
     pub repo_url: String,
-    /// The default branch: a branch name that git accepts. Omit it and
-    /// the default branch is "main".
+    /// The default branch: a branch name that git accepts. With it, the
+    /// branch is set by hand, and the code index builder indexes it. Omit
+    /// it, and the builder follows the default branch of the forge, read at
+    /// each fetch ("main" until the first fetch).
     pub default_branch: Option<String>,
     /// The ONE owner team (slug or UUID).
     pub team: String,
@@ -622,8 +664,13 @@ pub struct UpdateRepositoryParams {
     /// The new text on how to work in the repository. It replaces the
     /// full text. An empty string removes the text.
     pub description: Option<String>,
-    /// The new default branch: a branch name that git accepts.
+    /// The new default branch: a branch name that git accepts. It is set
+    /// by hand: the code index builder indexes it, whatever the forge says.
     pub default_branch: Option<String>,
+    /// "forge" clears the branch set by hand: the code index builder
+    /// follows the default branch of the forge again. "hand" keeps the
+    /// current branch by hand. Do not send "forge" with `default_branch`.
+    pub default_branch_source: Option<String>,
     /// The new URL of the repository for a browser: an absolute http or
     /// https URL, with no user name and no password.
     pub repo_url: Option<String>,
@@ -1396,12 +1443,14 @@ impl KairosMcp {
                 graph::repository_link_rollup(conn, repo_id, &["open", "draft"], 50)
                     .map_err(ApiError::internal)?;
             let mut out = format!(
-                "# Repository {} — {} {}\n- url: {}\n- default branch: {}\n- owner team: {} ({})\n- owner's delivery board: {}\n- open tasks (all boards): {}\n- webhooks: {}\n- read token: {}\n- write-back: {}\n- code index build: {}\n- code index breaker: {}\n- code index summaries: {}\n",
+                "# Repository {} — {} {}\n- url: {}\n- default branch: {} ({})\n- owner team: {} ({})\n- owner's delivery board: {}\n- open tasks (all boards): {}\n- webhooks: {}\n- read token: {}\n- write-back: {}\n- code index build: {}\n- code index breaker: {}\n- code index summaries: {}\n",
                 rendered.slug,
                 rendered.forge,
                 rendered.repo_full_name,
                 rendered.repo_url,
                 rendered.default_branch,
+                // KAIROS-T-0430: where the indexed branch comes from.
+                rendered.default_branch_summary(),
                 rendered.team.slug,
                 rendered.team.name,
                 delivery_board,
@@ -1878,7 +1927,17 @@ impl KairosMcp {
                     ..Default::default()
                 },
             )?;
-            Ok(dispatch_text(&params.board, &rules, &targets, &log))
+            let triage = d::agent_triage_as(conn, &slug, user, &params.board)?;
+            let mut text = dispatch_text(&params.board, &rules, &targets, &log);
+            text.push_str(&format!(
+                "Triage of intake (KAIROS-T-0428): {}.\n",
+                if triage.agents_decide {
+                    "an agent decides"
+                } else {
+                    "an agent proposes with a note, a person decides"
+                }
+            ));
+            Ok(text)
         })
         .await
     }
@@ -1964,6 +2023,37 @@ impl KairosMcp {
     }
 
     #[tool(
+        description = "Set who decides the triage of intake on a board (KAIROS-T-0428). Intake is a task in the support lane. With `agents_decide: false` (the default) an agent (an agent key or a service account) that moves such a task into the planned lane or into another column is refused with AGENT_TRIAGE_OFF: it writes its proposal (planned backlog or work now, and why) with append_note and leaves the task for a person. With `agents_decide: true` the agent's move works, and the activity log names it. A person's triage works either way. `board` is a slug or UUID. Requires configure_boards on the board. list_dispatch_rules shows the setting."
+    )]
+    pub async fn set_agent_triage(
+        &self,
+        Parameters(params): Parameters<SetAgentTriageParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let (user, slug) = (auth.user_id, tenant.slug.clone());
+        self.run_tool(&tenant, move |conn| {
+            let setting = crate::api::org::dispatch::set_agent_triage_as(
+                conn,
+                &slug,
+                user,
+                &params.board,
+                params.agents_decide,
+            )?;
+            Ok(format!(
+                "Triage of intake on {}: {}.",
+                params.board,
+                if setting.agents_decide {
+                    "an agent decides"
+                } else {
+                    "an agent proposes with a note, a person decides"
+                }
+            ))
+        })
+        .await
+    }
+
+    #[tool(
         description = "Remove an agent dispatch rule of a board. Its deliveries stay in the log, and its webhook target stays. `board` is a slug or UUID; `rule_id` comes from list_dispatch_rules. Requires configure_boards on the board."
     )]
     pub async fn delete_dispatch_rule(
@@ -1986,6 +2076,84 @@ impl KairosMcp {
                 rule.id,
                 rule_when_text(&rule),
                 rule.target
+            ))
+        })
+        .await
+    }
+
+    // KAIROS-T-0431: the read token of the organization for each forge host.
+    #[tool(
+        description = "The read tokens of the organization for the code index builder: for each forge host (for example github.com), who set the token and when. Never the token. The builder uses the token of the host of a repository before the token of the repository. Only an organization admin."
+    )]
+    pub async fn list_org_read_tokens(
+        &self,
+        Parameters(ListOrgReadTokensParams {}): Parameters<ListOrgReadTokensParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (_, tenant) = Self::caller(&context)?;
+        if let Err(e) = crate::api::meta::require_org_admin(&tenant) {
+            return Ok(tool_error(e));
+        }
+        self.run_tool(&tenant, |conn| {
+            Ok(org_read_tokens_text(
+                &crate::api::org::org_read_tokens::list(conn)?,
+            ))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Set or replace the read token of the organization for a forge host. The code index builder then fetches each repository on that host with this token, before the token of the repository. `host` is the host only (github.com, or git.example.org:8443); `token` is a read-only token. Kairos encrypts it with KAIROS_SECRETS_KEY, and no tool gives it back. Only an organization admin."
+    )]
+    pub async fn set_org_read_token(
+        &self,
+        Parameters(params): Parameters<SetOrgReadTokenParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        if let Err(e) = crate::api::meta::require_org_admin(&tenant) {
+            return Ok(tool_error(e));
+        }
+        let (user, slug) = (auth.user_id, tenant.slug.clone());
+        let key = crate::api::org::repository_credentials::secrets_key(&self.state);
+        self.run_tool(&tenant, move |conn| {
+            let status = crate::api::org::org_read_tokens::set(
+                conn,
+                &slug,
+                user,
+                key,
+                &params.host,
+                &params.token,
+            )?;
+            Ok(format!(
+                "Set the read token of the organization for {}. The builder uses it for each \
+                 repository on this host.",
+                status.host
+            ))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Remove the read token of the organization for a forge host. The next fetch of a repository on the host uses the token of the repository, or no token. `host` is the host only (github.com). Only an organization admin."
+    )]
+    pub async fn remove_org_read_token(
+        &self,
+        Parameters(params): Parameters<RemoveOrgReadTokenParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        if let Err(e) = crate::api::meta::require_org_admin(&tenant) {
+            return Ok(tool_error(e));
+        }
+        let user = auth.user_id;
+        self.run_tool(&tenant, move |conn| {
+            let left = crate::api::org::org_read_tokens::remove(conn, user, &params.host)?;
+            Ok(format!(
+                "Removed the read token of the organization for {}.\n{}",
+                kairos_core::repositories::normalize_host(&params.host)
+                    .unwrap_or_else(|_| params.host.clone()),
+                org_read_tokens_text(&left)
             ))
         })
         .await
@@ -2873,7 +3041,6 @@ impl KairosMcp {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let (auth, tenant) = Self::caller(&context)?;
-        let user = auth.user_id;
         let slug = tenant.slug.clone();
         self.run_tool(&tenant, move |conn| {
             let work_class = parse_enum(&params.work_class, "work_class", WorkClass::ALL)?;
@@ -2888,7 +3055,7 @@ impl KairosMcp {
                 return Err(ApiError::internal("a task has a board and a lane"));
             };
             let updated = crate::api::tasks::change_task_lane(
-                conn, &slug, item.id, board_id, work_class, user,
+                conn, &slug, &auth, item.id, board_id, work_class,
             )?;
             Ok(if before == updated.work_class {
                 format!(
@@ -2975,7 +3142,7 @@ impl KairosMcp {
     // `POST /api/repositories`: the two call one function
     // (`crate::api::org::repositories::add`).
     #[tool(
-        description = "Add a repository to the directory of the organization. This tool does not link a task to a repository: `set_repository` does that. A repository can be in the directory only one time, so call `list_repositories` first. `forge` is github, gitlab or other. `repo_full_name` is the name on the forge, as the forge sends it in a webhook: 2 parts for github (owner/repo), 2 or more for gitlab (group/subgroup/project), 1 or more for other. It does not end with .git. `repo_url` is the URL for a browser: an absolute http or https URL, with no user name and no password in it. No value can be empty or have a space. `team` (slug or UUID) is the ONE owner team. Optional: `slug` (the default is made from the full name: acme/payments-api gives acme-payments-api), `default_branch` (a branch name that git accepts; the default is main), and `description`. The description tells an agent how to work in the repository: the task runner, the tests, the rules for a branch. You must be a member of the owner team, or an organization admin. `update_repository` changes its slug and its owner team; `delete_repository` removes it."
+        description = "Add a repository to the directory of the organization. This tool does not link a task to a repository: `set_repository` does that. A repository can be in the directory only one time, so call `list_repositories` first. `forge` is github, gitlab or other. `repo_full_name` is the name on the forge, as the forge sends it in a webhook: 2 parts for github (owner/repo), 2 or more for gitlab (group/subgroup/project), 1 or more for other. It does not end with .git. `repo_url` is the URL for a browser: an absolute http or https URL, with no user name and no password in it. No value can be empty or have a space. `team` (slug or UUID) is the ONE owner team. Optional: `slug` (the default is made from the full name: acme/payments-api gives acme-payments-api), `default_branch` (a branch name that git accepts; with it, the branch is set by hand; with no value, the code index builder follows the default branch of the forge), and `description`. The description tells an agent how to work in the repository: the task runner, the tests, the rules for a branch. You must be a member of the owner team, or an organization admin. `update_repository` changes its slug and its owner team; `delete_repository` removes it."
     )]
     pub async fn add_repository(
         &self,
@@ -3025,7 +3192,7 @@ impl KairosMcp {
     // COLLIERY-T-0267 the tool made the comparison, and the REST route
     // always wrote.
     #[tool(
-        description = "Change a repository of the directory: its `description` (how to work in the repository), its `default_branch`, its `repo_url`, its `code_index_build`, its `slug` and its owner `team` (slug or UUID; you need the right on the old team and on the new team). Send one or more of them. `default_branch` is a branch name that git accepts. `repo_url` is an absolute http or https URL, with no user name and no password in it. The two cannot be empty or have a space. `code_index_build` is `on` or `off`: the code index builder of the server for the repository. Set it to `off` to stop the builds of the repository: Kairos cancels the build jobs that wait, and the builder adds no new job. Kairos does not stop a build that runs now, but the build gets no further try. `get_repository` shows the value, and the REST API sets it too (PATCH /api/repositories/{slug} with `code_index_build`). A value that the repository has already changes nothing. `repository` is a slug or UUID. `description` replaces the full text, so read the text with `get_repository` first. This tool does not link a task to a repository: `set_repository` does that. You must be a member of the owner team, or an organization admin. A new slug breaks the reference in `.claude/kairos.local.md` of each checkout: run /kairos:bootstrap there again. `delete_repository` removes a repository."
+        description = "Change a repository of the directory: its `description` (how to work in the repository), its `default_branch`, its `default_branch_source`, its `repo_url`, its `code_index_build`, its `slug` and its owner `team` (slug or UUID; you need the right on the old team and on the new team). Send one or more of them. `default_branch` is a branch name that git accepts. A `default_branch` is set by hand: the code index builder indexes it, whatever the default branch of the forge is. `default_branch_source` `forge` clears the branch set by hand: the builder follows the default branch of the forge again. Do not send the two together with `forge`. `get_repository` shows the branch and where it comes from. `repo_url` is an absolute http or https URL, with no user name and no password in it. The two cannot be empty or have a space. `code_index_build` is `on` or `off`: the code index builder of the server for the repository. Set it to `off` to stop the builds of the repository: Kairos cancels the build jobs that wait, and the builder adds no new job. Kairos does not stop a build that runs now, but the build gets no further try. `get_repository` shows the value, and the REST API sets it too (PATCH /api/repositories/{slug} with `code_index_build`). A value that the repository has already changes nothing. `repository` is a slug or UUID. `description` replaces the full text, so read the text with `get_repository` first. This tool does not link a task to a repository: `set_repository` does that. You must be a member of the owner team, or an organization admin. A new slug breaks the reference in `.claude/kairos.local.md` of each checkout: run /kairos:bootstrap there again. `delete_repository` removes a repository."
     )]
     pub async fn update_repository(
         &self,
@@ -3040,6 +3207,7 @@ impl KairosMcp {
             // the same for each caller and each repository.
             if params.description.is_none()
                 && params.default_branch.is_none()
+                && params.default_branch_source.is_none()
                 && params.repo_url.is_none()
                 && params.code_index_build.is_none()
                 && params.slug.is_none()
@@ -3047,9 +3215,26 @@ impl KairosMcp {
             {
                 return Err(ApiError::validation(
                     "The call has nothing to change. Send one or more of these arguments: \
-                     description, default_branch, repo_url, code_index_build, slug, team.",
+                     description, default_branch, default_branch_source, repo_url, \
+                     code_index_build, slug, team.",
                 ));
             }
+            // KAIROS-T-0430: refuse an unknown value, and name it.
+            let default_branch_source = params
+                .default_branch_source
+                .as_deref()
+                .map(|value| {
+                    kairos_client::types_repositories::DefaultBranchSource::parse(value).ok_or_else(
+                        || {
+                            ApiError::validation(format!(
+                                "The argument default_branch_source has the value {value:?}. \
+                                 Send \"forge\" or \"hand\"."
+                            ))
+                            .with_details(json!({ "argument": "default_branch_source" }))
+                        },
+                    )
+                })
+                .transpose()?;
             // KAIROS-T-0398: refuse an unknown value, and name it.
             let code_index_build = params
                 .code_index_build
@@ -3076,6 +3261,7 @@ impl KairosMcp {
                 kairos_client::types_repositories::UpdateRepositoryRequest {
                     description: params.description,
                     default_branch: params.default_branch,
+                    default_branch_source,
                     repo_url: params.repo_url,
                     code_index_build,
                     slug: params.slug,
@@ -3094,6 +3280,7 @@ impl KairosMcp {
             let changed: Vec<&str> = [
                 "description",
                 "default_branch",
+                "default_branch_source",
                 "repo_url",
                 "code_index_build",
                 "slug",
@@ -3205,6 +3392,13 @@ impl KairosMcp {
             let columns = board_columns(conn, board_id)?;
             let to_column_id = resolve_column(&columns, &params.to_column)?;
             if item.item_type == ItemType::Task {
+                // KAIROS-T-0428: an agent's triage of intake.
+                crate::agent_triage::check(
+                    conn,
+                    &auth,
+                    item.id,
+                    crate::agent_triage::TriageMove::Column(to_column_id),
+                )?;
                 crate::claims::note(conn, item.id, user)?;
             }
 
@@ -5539,6 +5733,25 @@ fn rule_filter_text(rule: &kairos_client::types_dispatch::DispatchRule) -> Strin
     } else {
         format!("and {} ", parts.join(" and "))
     }
+}
+
+/// The text of `list_org_read_tokens` (KAIROS-T-0431). Pure. It has no
+/// token: the status has none.
+fn org_read_tokens_text(tokens: &[kairos_client::types_code_index::OrgReadToken]) -> String {
+    if tokens.is_empty() {
+        return "Read tokens of the organization: none. The builder uses the token of each \
+                repository, or no token."
+            .to_string();
+    }
+    let mut out = String::from("Read tokens of the organization, by host:\n");
+    for token in tokens {
+        let by = token.set_by_name.as_deref().unwrap_or(&token.set_by);
+        out.push_str(&format!(
+            "- {}: set by {by} at {}\n",
+            token.host, token.set_at
+        ));
+    }
+    out
 }
 
 /// The text of `list_dispatch_rules` (KAIROS-T-0385). Pure.

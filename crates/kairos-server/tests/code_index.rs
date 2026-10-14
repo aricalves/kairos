@@ -44,7 +44,8 @@ use kairos_client::types_code_index::{
 };
 use kairos_client::types_org::{AddTeamMemberRequest, CreateTeamRequest};
 use kairos_client::types_repositories::{
-    CodeIndexBuild, CodeIndexSummaries, CreateRepositoryRequest, UpdateRepositoryRequest,
+    CodeIndexBuild, CodeIndexSummaries, CreateRepositoryRequest, DefaultBranchSource,
+    UpdateRepositoryRequest,
 };
 use kairos_db::models::{NewOrganizationMember, OrgRole};
 use kairos_db::schema::{organization_members, organizations, users};
@@ -301,6 +302,8 @@ struct World {
     /// (COLLIERY-T-3105), when the world has one.
     git_http: Option<common::git_http::GitHttp>,
     _work: tempfile::TempDir,
+    /// The scratch database: dropped last, with the world (KAIROS-T-0445).
+    _scratch: common::ScratchConn,
 }
 
 /// The user and the token that the git server of a private repository
@@ -321,7 +324,7 @@ impl World {
     }
 
     async fn build(scratch_db: &str, private: bool) -> World {
-        let _admin_conn = recreate_scratch_db(scratch_db);
+        let admin_conn = recreate_scratch_db(scratch_db);
         let scratch_url = with_database(&common::admin_database_url(), scratch_db);
         let mut conn =
             PgConnection::establish(&scratch_url).expect("connecting to scratch database");
@@ -440,6 +443,7 @@ impl World {
             .execute(&mut conn)
             .unwrap();
         World {
+            _scratch: admin_conn,
             conn,
             state,
             service,
@@ -892,6 +896,110 @@ async fn a_private_repository_is_fetched_with_the_stored_read_token() {
     assert!(note.starts_with("failed: git fetch failed"), "{note}");
     assert!(server.seen()[before..].iter().all(|s| s.user.is_none()));
     assert!(!note.contains(TOKEN));
+}
+
+// ===========================================================================
+// Scenario: The read token of the organization for the host comes before
+// the token of the repository (KAIROS-T-0431)
+// ===========================================================================
+#[tokio::test]
+async fn the_org_token_of_the_host_comes_before_the_token_of_the_repository() {
+    // Given a private repository on github.com with an index of commit A, a
+    // push of B, and a repository token that the git server refuses
+    let w = World::private("kairos_code_index_t0431_org_token").await;
+    let server = w.git_http.as_ref().expect("a git server");
+    let a = w.a.clone();
+    w.bob
+        .upload_code_index("payments-api", &a, Some("main"), w.index(&a))
+        .await
+        .expect("the first index");
+    let b = commit_b(&w.git);
+    const WRONG: &str = "fake_repository_token_t0431";
+    w.bob
+        .set_repository_credential(
+            "payments-api",
+            &kairos_client::types_auth::Secret::new(WRONG),
+        )
+        .await
+        .expect("the repository token is set");
+
+    // When the builder runs and the host has no token of the organization
+    let outcomes = w.sweep().await;
+
+    // Then the fetch uses the token of the repository, and the note says so
+    let note = outcomes[0].note.clone().unwrap_or_default();
+    println!("repository token: {note}");
+    assert!(note.starts_with("failed: git fetch failed"), "{note}");
+    assert!(
+        note.ends_with("The fetch used the read token of the repository."),
+        "{note}"
+    );
+    assert!(!note.contains(WRONG), "{note}");
+
+    // When a member who is not an organization admin sets a token of the
+    // host, the call is refused
+    let (status, body) = w
+        .bob
+        .raw_request(
+            reqwest::Method::PUT,
+            "/api/org/read-tokens/github.com",
+            Some(&serde_json::json!({ "token": TOKEN })),
+        )
+        .await
+        .unwrap();
+    assert_eq!(status, 403, "{body}");
+
+    // When the organization admin sets the token of the host (written in
+    // another case)
+    let set = w
+        .svc
+        .set_org_read_token("GitHub.com", &kairos_client::types_auth::Secret::new(TOKEN))
+        .await
+        .expect("the token of the host is set");
+    assert_eq!(set.host, "github.com");
+
+    // Then the builder fetches with the token of the host, and indexes B,
+    // though the token of the repository is wrong
+    let before = server.seen().len();
+    let outcomes = w.sweep().await;
+    let built: Vec<_> = outcomes.iter().filter(|o| o.report.is_some()).collect();
+    assert_eq!(built.len(), 1, "{outcomes:?}");
+    assert_eq!(built[0].commit, b);
+    let seen = server.seen();
+    assert!(
+        seen[before..]
+            .iter()
+            .any(|s| s.user.as_deref() == Some(TOKEN_USER)),
+        "{seen:?}"
+    );
+    assert!(seen.iter().all(|s| !s.uri.contains(TOKEN)), "{seen:?}");
+    assert!(!any_file_contains(&w._work.path().join("clones"), TOKEN));
+
+    // When the token of the host is removed, and C is pushed
+    let left = w
+        .svc
+        .remove_org_read_token("github.com")
+        .await
+        .expect("the token of the host is removed");
+    assert!(left.is_empty());
+    commit_c(&w.git);
+    let outcomes = w.sweep().await;
+
+    // Then the next fetch uses the token of the repository again
+    let note = outcomes[0].note.clone().unwrap_or_default();
+    assert!(
+        note.ends_with("The fetch used the read token of the repository."),
+        "{note}"
+    );
+
+    // When the repository token is removed too, the fetch has no token
+    w.bob
+        .remove_repository_credential("payments-api")
+        .await
+        .expect("the repository token is removed");
+    let outcomes = w.sweep().await;
+    let note = outcomes[0].note.clone().unwrap_or_default();
+    assert!(note.ends_with("The fetch used no read token."), "{note}");
 }
 
 // ===========================================================================
@@ -3107,6 +3215,98 @@ async fn enqueue_updates_of(
     kairos_server::code_index::enqueue_updates(&w.state.blocking, service, worker).await;
 }
 
+// KAIROS-T-0450: the sweep of a server reads the repositories with no
+// index, then adds a first build for each. When the first build of another
+// server ends between the read and the add, the dedupe key no longer
+// blocks: the add must see the index.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_first_build_is_not_added_again_after_the_first_job_ends() {
+    // Given a repository with no index, and 2 servers
+    const DB: &str = "kairos_code_index_t0450_first";
+    let w = World::new(DB).await;
+    let other = second_service(&w, &w.work().join("clones-2"));
+    let fake: Arc<dyn SummarizerSource> = Arc::new(FakeSummarizers);
+    let (one, one_out) = build_worker(
+        w.state.blocking.clone(),
+        &w.service,
+        Arc::clone(&fake),
+        quick_jobs(),
+    );
+    let (two, _) = build_worker(w.state.blocking.clone(), &other, fake, quick_jobs());
+
+    // And the sweep of server two read the list before the first build
+    // ended: the repository has no index
+    let listed = {
+        let mut conn = scratch_conn(DB);
+        assert_eq!(
+            kairos_db::code_indexes::unindexed_repositories(&mut conn).unwrap(),
+            vec![w.repo_id]
+        );
+        kairos_db::repositories::load(&mut conn, w.repo_id).unwrap()
+    };
+
+    // And server one added the first build
+    let notes =
+        kairos_server::code_index::enqueue_first_builds(&w.state.blocking, &w.service, &one).await;
+    assert!(notes.is_empty(), "{notes:?}");
+
+    // When server two adds its first build while the job is open
+    let note = kairos_server::code_index::enqueue_first_build(
+        &w.state.blocking,
+        &other,
+        &two,
+        "acme",
+        &listed,
+    )
+    .await
+    .and_then(|n| n.note)
+    .unwrap_or_default();
+
+    // Then it adds none
+    assert!(note.starts_with(ACTIVE_RUN), "{note}");
+
+    // When the first build ends on server one
+    let key = job_key("acme", w.repo_id);
+    let worker = tokio::spawn(Arc::clone(&one).run());
+    wait_for(
+        std::time::Duration::from_secs(60),
+        "the end of the first build",
+        || {
+            let key = key.clone();
+            async move {
+                kairos_db::jobs::open_by_key(&mut scratch_conn(DB), &key)
+                    .unwrap()
+                    .is_none()
+            }
+        },
+    )
+    .await;
+    worker.abort();
+    assert_eq!(reports(&one_out), 1, "{:?}", one_out.lock().unwrap());
+
+    // And server two adds its first build from the list it read before
+    let note = kairos_server::code_index::enqueue_first_build(
+        &w.state.blocking,
+        &other,
+        &two,
+        "acme",
+        &listed,
+    )
+    .await
+    .and_then(|n| n.note)
+    .unwrap_or_default();
+
+    // Then it adds none: the repository has an index
+    assert_eq!(note, kairos_server::code_index::HAS_INDEX);
+    let jobs = kairos_db::jobs::list(&mut scratch_conn(DB), "embedded_build").unwrap();
+    assert_eq!(jobs.len(), 1, "one first build: {jobs:?}");
+    assert_eq!(jobs[0].state, "done");
+    let runs = runs_of(&w).await;
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    assert_eq!(runs[0].trigger, "first");
+    assert_eq!(runs[0].outcome, "ok");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_requested_rebuild_is_not_started_twice() {
     // Given a repository with no index, and a request
@@ -3641,4 +3841,179 @@ async fn an_update_stopped_on_one_server_finishes_on_another_with_an_empty_folde
         .expect("the index of B downloads");
     assert_eq!(content_of(&built), content_of(&w.index(&b)));
     assert!(unused_pool_keys(&mut w).is_empty(), "each row is used now");
+}
+
+// ===========================================================================
+// KAIROS-T-0430: the builder indexes the default branch of the forge, read
+// at each fetch; a branch set by hand wins
+// ===========================================================================
+
+/// The outcome of `slug` in `outcomes`.
+fn outcome_of<'a>(
+    outcomes: &'a [kairos_server::code_index::BuildOutcome],
+    slug: &str,
+) -> &'a kairos_server::code_index::BuildOutcome {
+    outcomes
+        .iter()
+        .find(|o| o.repository == slug)
+        .unwrap_or_else(|| panic!("no outcome of {slug}: {outcomes:?}"))
+}
+
+async fn set_branch(
+    w: &World,
+    request: UpdateRepositoryRequest,
+) -> kairos_client::types_repositories::Repository {
+    w.bob
+        .update_repository("ledger", &request)
+        .await
+        .expect("bob changes the branch of ledger")
+}
+
+// Scenario: a repository registered with no branch follows the HEAD of a
+// bare repository; a branch set by hand wins; clearing it goes back to the
+// forge (criteria 1, 2, 3, 4)
+#[tokio::test]
+async fn the_builder_follows_the_head_of_the_forge_and_a_branch_set_by_hand_wins() {
+    let w = World::new("kairos_code_index_t0430_forge_branch").await;
+    let a = w.a.clone();
+    // Only ledger is built in this scenario.
+    set_build(&w, CodeIndexBuild::Off).await;
+
+    // Given a bare repository `ledger` with commit A on main, and HEAD on
+    // main, registered with no branch
+    let bare = w.work().join("ledger");
+    git(
+        w.work(),
+        &["clone", "-q", "--bare", "payments-api", "ledger"],
+    );
+    let created = w
+        .bob
+        .create_repository(&repository("ledger"))
+        .await
+        .expect("ledger");
+    assert_eq!(created.default_branch, "main");
+    assert_eq!(created.default_branch_source, DefaultBranchSource::Forge);
+    assert_eq!(created.forge_branch, None);
+
+    // When the first build runs
+    let outcomes = w.first_builds().await;
+
+    // Then it indexes the head of the branch that HEAD names
+    assert_eq!(outcome_of(&outcomes, "ledger").commit, a);
+    let repo = w.bob.get_repository("ledger").await.unwrap().repository;
+    assert_eq!(repo.default_branch, "main");
+    assert_eq!(repo.default_branch_source, DefaultBranchSource::Forge);
+    assert_eq!(repo.forge_branch.as_deref(), Some("main"));
+    assert_eq!(repo.default_branch_summary(), "from the forge");
+
+    // When the forge gets a new default branch `development` with commit B
+    git(&w.git, &["checkout", "-q", "-b", "development"]);
+    let b = commit_b(&w.git);
+    git(
+        &w.git,
+        &["push", "-q", &bare.display().to_string(), "development"],
+    );
+    git(&bare, &["symbolic-ref", "HEAD", "refs/heads/development"]);
+    let outcomes = w.sweep().await;
+
+    // Then the next fetch picks it up, and the index of B is on development
+    let outcome = outcome_of(&outcomes, "ledger");
+    assert_eq!(outcome.commit, b, "{outcome:?}");
+    assert_eq!(outcome.base.as_deref(), Some(a.as_str()), "{outcome:?}");
+    let repo = w.bob.get_repository("ledger").await.unwrap().repository;
+    assert_eq!(repo.default_branch, "development");
+    assert_eq!(repo.default_branch_source, DefaultBranchSource::Forge);
+    assert_eq!(repo.forge_branch.as_deref(), Some("development"));
+    let listed = w.alice.list_code_indexes("ledger").await.unwrap();
+    let index_b = listed
+        .iter()
+        .find(|i| i.commit == b)
+        .expect("an index of B");
+    assert_eq!(index_b.r#ref.as_deref(), Some("development"));
+
+    // When a person sets main by hand
+    let repo = set_branch(
+        &w,
+        UpdateRepositoryRequest {
+            default_branch: Some("main".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_eq!(repo.default_branch, "main");
+    assert_eq!(repo.default_branch_source, DefaultBranchSource::Hand);
+    assert_eq!(
+        repo.default_branch_summary(),
+        "set by hand; the forge gives development"
+    );
+
+    // Then the builder indexes main, whatever the forge says
+    let outcomes = w.sweep().await;
+    let outcome = outcome_of(&outcomes, "ledger");
+    assert_eq!(outcome.commit, a, "{outcome:?}");
+    assert_eq!(outcome.note.as_deref(), Some("the head has an index"));
+    let repo = w.bob.get_repository("ledger").await.unwrap().repository;
+    assert_eq!(repo.default_branch, "main");
+    assert_eq!(repo.default_branch_source, DefaultBranchSource::Hand);
+    assert_eq!(repo.forge_branch.as_deref(), Some("development"));
+
+    // And main set by hand again changes nothing
+    let before = repo.updated_at.clone();
+    let repo = set_branch(
+        &w,
+        UpdateRepositoryRequest {
+            default_branch: Some("main".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_eq!(repo.updated_at, before);
+
+    // And a branch with forge is refused, and the error names the field
+    let refused = w
+        .bob
+        .update_repository(
+            "ledger",
+            &UpdateRepositoryRequest {
+                default_branch: Some("main".into()),
+                default_branch_source: Some(DefaultBranchSource::Forge),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("a branch set by hand cannot follow the forge");
+    assert!(
+        matches!(&refused, Error::Validation { field: Some(f), .. } if f == "default_branch_source"),
+        "{refused}"
+    );
+
+    // When the person clears the branch set by hand
+    let repo = set_branch(
+        &w,
+        UpdateRepositoryRequest {
+            default_branch_source: Some(DefaultBranchSource::Forge),
+            ..Default::default()
+        },
+    )
+    .await;
+
+    // Then the repository follows the forge again, at once with the branch
+    // of the last fetch
+    assert_eq!(repo.default_branch, "development");
+    assert_eq!(repo.default_branch_source, DefaultBranchSource::Forge);
+    let outcomes = w.sweep().await;
+    let outcome = outcome_of(&outcomes, "ledger");
+    assert_eq!(outcome.commit, b, "{outcome:?}");
+    assert_eq!(outcome.note.as_deref(), Some("the head has an index"));
+
+    // And a repository registered with a branch has it by hand
+    let mut pinned = repository("ledger-pinned");
+    pinned.default_branch = Some("trunk".into());
+    let pinned = w
+        .bob
+        .create_repository(&pinned)
+        .await
+        .expect("ledger-pinned");
+    assert_eq!(pinned.default_branch, "trunk");
+    assert_eq!(pinned.default_branch_source, DefaultBranchSource::Hand);
 }

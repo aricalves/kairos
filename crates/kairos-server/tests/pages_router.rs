@@ -147,8 +147,8 @@ fn add_user(conn: &mut PgConnection, org_id: Option<Uuid>, email: &str) {
     db_local_auth::set_password(conn, user.id, &hash).expect("password");
 }
 
-fn fixture() -> String {
-    drop(recreate_scratch_db(SCRATCH_DB));
+fn fixture() -> common::ScratchUrl {
+    let admin = recreate_scratch_db(SCRATCH_DB);
     let scratch_url = with_database(&common::admin_database_url(), SCRATCH_DB);
     let mut conn = PgConnection::establish(&scratch_url).expect("connect scratch");
     run_public_migrations(&mut conn).expect("public migrations");
@@ -161,7 +161,7 @@ fn fixture() -> String {
         .expect("acme org id");
     add_user(&mut conn, Some(org_id), "robin@example.test");
     add_user(&mut conn, None, "sam@example.test");
-    scratch_url
+    common::ScratchUrl::new(admin, scratch_url)
 }
 
 async fn router_with(scratch_url: &str, edit: impl FnOnce(&mut AppConfig)) -> Router {

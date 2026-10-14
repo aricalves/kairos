@@ -144,7 +144,19 @@ pub struct Repository {
     pub repo_full_name: String,
     /// Browser URL of the repository.
     pub repo_url: String,
+    /// The branch that the code index builder indexes (KAIROS-T-0430):
+    /// the branch set by hand, or else the default branch of the forge at
+    /// the last fetch. `default_branch_source` says which.
     pub default_branch: String,
+    /// Where `default_branch` comes from (KAIROS-T-0430): `forge` (the
+    /// builder reads the default branch of the remote at each fetch) or
+    /// `hand` (a person set it; it wins over the forge).
+    #[serde(default)]
+    pub default_branch_source: DefaultBranchSource,
+    /// The default branch that the remote gave at the last fetch of the
+    /// builder, or `None` before the first fetch (KAIROS-T-0430).
+    #[serde(default)]
+    pub forge_branch: Option<String>,
     /// Short "how to work here" blurb agents read before starting.
     pub description: String,
     /// The one owning team.
@@ -193,6 +205,22 @@ pub struct Repository {
     pub created_at: String,
     /// RFC 3339.
     pub updated_at: String,
+}
+
+impl Repository {
+    /// Where `default_branch` comes from, for a person (KAIROS-T-0430):
+    /// `set by hand`, `set by hand; the forge gives <branch>`, `from the
+    /// forge`, or `from the forge; no fetch yet`.
+    pub fn default_branch_summary(&self) -> String {
+        match (self.default_branch_source, self.forge_branch.as_deref()) {
+            (DefaultBranchSource::Hand, Some(forge)) if forge != self.default_branch => {
+                format!("set by hand; the forge gives {forge}")
+            }
+            (DefaultBranchSource::Hand, _) => "set by hand".to_string(),
+            (DefaultBranchSource::Forge, Some(_)) => "from the forge".to_string(),
+            (DefaultBranchSource::Forge, None) => "from the forge; no fetch yet".to_string(),
+        }
+    }
 }
 
 /// The owning team, embedded on [`Repository`].
@@ -247,8 +275,11 @@ pub struct CreateRepositoryRequest {
     /// with a host, no space, and no user name or password (each member
     /// can read it). 2048 characters at most.
     pub repo_url: String,
-    /// A branch name that git accepts, 255 characters at most. Defaults to
-    /// `main`.
+    /// A branch name that git accepts, 255 characters at most. With a
+    /// value, the branch is set by hand, and the code index builder indexes
+    /// it. With no value, the builder follows the default branch of the
+    /// forge, read at each fetch; until the first fetch the value is `main`
+    /// (KAIROS-T-0430).
     #[serde(default)]
     pub default_branch: Option<String>,
     /// The owning team (UUID or slug). Exactly one (KAIROS-A-0019).
@@ -273,8 +304,17 @@ pub struct UpdateRepositoryRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_url: Option<String>,
     /// The form is that of `default_branch` in `CreateRepositoryRequest`.
+    /// A value sets the branch by hand (KAIROS-T-0430): the builder indexes
+    /// it, whatever the forge says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_branch: Option<String>,
+    /// `forge` clears the branch set by hand: the builder follows the
+    /// default branch of the forge again, and `default_branch` gets the
+    /// forge branch of the last fetch. `hand` keeps the current
+    /// `default_branch` by hand. `forge` with `default_branch` is refused
+    /// (KAIROS-T-0430).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_branch_source: Option<DefaultBranchSource>,
     /// New owning team (UUID or slug).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub team: Option<String>,
@@ -295,6 +335,37 @@ pub struct UpdateRepositoryRequest {
     /// site is not served.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub site_enabled: Option<bool>,
+}
+
+/// Where the default branch of a repository comes from (KAIROS-T-0430).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum DefaultBranchSource {
+    /// The default branch of the remote, read at each fetch of the code
+    /// index builder.
+    #[default]
+    Forge,
+    /// A person set the branch. It wins over the forge.
+    Hand,
+}
+
+impl DefaultBranchSource {
+    /// The value on the wire: `forge` or `hand`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DefaultBranchSource::Forge => "forge",
+            DefaultBranchSource::Hand => "hand",
+        }
+    }
+
+    /// The value of `text`. `None` for another text.
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "forge" => Some(DefaultBranchSource::Forge),
+            "hand" => Some(DefaultBranchSource::Hand),
+            _ => None,
+        }
+    }
 }
 
 /// Where the summaries of the code index of a repository are made

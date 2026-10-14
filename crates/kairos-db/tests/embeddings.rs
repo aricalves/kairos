@@ -10,6 +10,9 @@
 //! Runs against the compose stack (`angreal services up` /
 //! `angreal test integration`), per KAIROS-A-0012: the database is never mocked.
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::sql_query;
@@ -43,7 +46,7 @@ fn seed_board_team(conn: &mut PgConnection, name: &str, slug: &str) -> Uuid {
 }
 
 const DEFAULT_DATABASE_URL: &str = "postgres://kairos:kairos@localhost:41432/kairos";
-const SCRATCH_DB: &str = "kairos_embeddings_test";
+static SCRATCH_DB: scratch::ScratchName = scratch::ScratchName::new("kairos_embeddings_test");
 
 /// The width the local model produces (KAIROS-T-0189), so the fixtures exercise
 /// the real shape rather than a toy one.
@@ -55,7 +58,7 @@ fn admin_database_url() -> String {
 
 fn with_database(url: &str, db_name: &str) -> String {
     let (base, _) = url.rsplit_once('/').expect("a database path segment");
-    format!("{base}/{db_name}")
+    format!("{base}/{}", scratch::scratch_db_name(db_name))
 }
 
 /// A deterministic unit vector, so assertions can be exact.
@@ -98,8 +101,9 @@ fn embedding_store_lifecycle() {
     sql_query(format!("CREATE DATABASE {SCRATCH_DB}"))
         .execute(&mut admin)
         .expect("creating scratch database");
+    let _scratch_guard = scratch::ScratchGuard::new(&SCRATCH_DB);
 
-    let url = with_database(&admin_url, SCRATCH_DB);
+    let url = with_database(&admin_url, &SCRATCH_DB);
     let mut conn = PgConnection::establish(&url).expect("connecting to scratch database");
     run_public_migrations(&mut conn).expect("public migrations");
     provision_tenant(&mut conn, "acme", "Acme Inc").expect("provisioning acme");

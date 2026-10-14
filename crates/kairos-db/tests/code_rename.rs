@@ -15,6 +15,9 @@
 //! Against real Postgres from the compose stack (A-0012 tier 2). Each test
 //! owns a scratch database.
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::sql_query;
@@ -42,7 +45,7 @@ fn with_database(url: &str, db_name: &str) -> String {
     let (base, _) = url
         .rsplit_once('/')
         .expect("DATABASE_URL must contain a database path segment");
-    format!("{base}/{db_name}")
+    format!("{base}/{}", scratch::scratch_db_name(db_name))
 }
 
 /// The tenant `colliery` with the delivery boards `colliery-io-delivery`
@@ -52,6 +55,7 @@ struct Fixture {
     admin: PgConnection,
     conn: PgConnection,
     db: &'static str,
+    _scratch_guard: scratch::ScratchGuard,
     user: Uuid,
     colliery: Uuid,
     skadi: Uuid,
@@ -59,6 +63,7 @@ struct Fixture {
 
 impl Fixture {
     fn new(db: &'static str) -> Self {
+        let db: &'static str = Box::leak(scratch::scratch_db_name(db).into_boxed_str());
         let admin_url = admin_database_url();
         let mut admin = PgConnection::establish(&admin_url).unwrap_or_else(|e| {
             panic!(
@@ -129,6 +134,7 @@ impl Fixture {
             admin,
             conn,
             db,
+            _scratch_guard: scratch::ScratchGuard::new(db),
             user,
             colliery,
             skadi,

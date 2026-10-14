@@ -107,6 +107,7 @@ async fn serve_receiver() -> (Arc<Receiver>, SocketAddr) {
 
 struct Fixture {
     url: String,
+    _db: common::ScratchConn,
     board: Uuid,
     /// The person who makes the targets.
     robin: Uuid,
@@ -143,7 +144,7 @@ fn person(conn: &mut PgConnection, name: &str) -> Uuid {
 }
 
 fn fixture(name: &str) -> Fixture {
-    let _admin = common::recreate_scratch_db(name);
+    let admin = common::recreate_scratch_db(name);
     let url = common::with_database(&common::admin_database_url(), name);
     let mut conn = PgConnection::establish(&url).expect("connect to the scratch database");
     run_public_migrations(&mut conn).expect("public migrations");
@@ -173,6 +174,7 @@ fn fixture(name: &str) -> Fixture {
     .expect("grants");
     Fixture {
         url,
+        _db: admin,
         board,
         robin,
         sam,

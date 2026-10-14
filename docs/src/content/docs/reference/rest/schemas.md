@@ -91,6 +91,15 @@ An Architecture Decision Record, as returned by `/api/adrs`. Board placement is 
 | `updated_by` | `string` | yes | Last editor user id (UUID). |
 | `version` | `integer` | yes | Optimistic-concurrency version (KAIROS-A-0004). |
 
+## AgentTriage
+
+Who decides the triage of intake on a board (KAIROS-T-0428). Intake is a task in the support lane. Off (the default): an agent proposes with a note, and a person decides. On: an agent moves intake itself, and the activity log names the agent.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `agents_decide` | `boolean` | yes |  |
+| `board_id` | `string` | yes |  |
+
 ## ApiKeyCreatedResponse
 
 `POST /api/service-accounts/{id}/keys` response — the ONLY place the secret appears.
@@ -617,7 +626,7 @@ Body of `POST /api/repositories`.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `default_branch` | `string`, nullable | no | A branch name that git accepts, 255 characters at most. Defaults to `main`. |
+| `default_branch` | `string`, nullable | no | A branch name that git accepts, 255 characters at most. With a value, the branch is set by hand, and the code index builder indexes it. With no value, the builder follows the default branch of the forge, read at each fetch; until the first fetch the value is `main` (KAIROS-T-0430). |
 | `description` | `string`, nullable | no | Short "how to work here" blurb for agents. |
 | `forge` | `string` | yes | `github|gitlab|other`. |
 | `repo_full_name` | `string` | yes | The name on the forge — must match what the forge sends in webhook payloads. `github`: 2 parts (`owner/repo`). `gitlab`: 2 or more parts (`group/subgroup/project`). `other`: 1 or more parts. No space, no `.git` at the end, 255 characters at most. |
@@ -818,6 +827,12 @@ One day of the cumulative flow.
 |---|---|---|---|
 | `counts` | array of `integer` | yes |  |
 | `date` | `string` | yes | `YYYY-MM-DD`. |
+
+## DefaultBranchSource
+
+Where the default branch of a repository comes from (KAIROS-T-0430).
+
+One of: `forge`, `hand`
 
 ## DeleteResponse
 
@@ -1589,6 +1604,17 @@ An organization member (`GET /api/members` element).
 | `role` | `string` | yes | `admin|member`. |
 | `user_id` | `string` | yes | `public.users.id` (UUID). |
 
+## OrgReadToken
+
+The read token of the organization for one forge host (KAIROS-T-0431). A read shows the host, who set it and when. It never shows the token.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `host` | `string` | yes | The host in lowercase, with `:port` only when the port is not the default, for example `github.com`. |
+| `set_at` | `string` | yes | RFC 3339. |
+| `set_by` | `string` | yes |  |
+| `set_by_name` | `string`, nullable | no | The display name of `set_by`, else the email. |
+
 ## ProgressCounts
 
 A `(done, total)` children rollup (KAIROS-T-0080). `done` counts the children sitting in `is_done` columns.
@@ -1769,10 +1795,12 @@ One repository, as returned by `/api/repositories` (KAIROS-T-0106).
 | `code_index_summaries_resolved` | [`CodeIndexSummaries`](#codeindexsummaries) | no | Where the summaries are made now: `embedded` or `hosted`. For `organization`, the default of the organization (KAIROS-T-0358). |
 | `created_at` | `string` | yes | RFC 3339. |
 | `credential` | [`RepositoryCredential`](#repositorycredential) | no | The status of the read token of the repository (COLLIERY-T-3105). It never has the token. |
-| `default_branch` | `string` | yes |  |
+| `default_branch` | `string` | yes | The branch that the code index builder indexes (KAIROS-T-0430): the branch set by hand, or else the default branch of the forge at the last fetch. `default_branch_source` says which. |
+| `default_branch_source` | [`DefaultBranchSource`](#defaultbranchsource) | no | Where `default_branch` comes from (KAIROS-T-0430): `forge` (the builder reads the default branch of the remote at each fetch) or `hand` (a person set it; it wins over the forge). |
 | `delivery_board_id` | `string`, nullable | no | The delivery board of the owning team (UUID). It is a fact about the owner, not where tasks go: the board or the team of a task decides that (COLLIERY-T-0219, COLLIERY-A-0023). `None` only in a misconfigured tenant (team without a delivery board). |
 | `description` | `string` | yes | Short "how to work here" blurb agents read before starting. |
 | `forge` | `string` | yes | `github|gitlab|other`. |
+| `forge_branch` | `string`, nullable | no | The default branch that the remote gave at the last fetch of the builder, or `None` before the first fetch (KAIROS-T-0430). |
 | `has_webhook` | `boolean` | yes | Whether a live webhook connection exists for it. |
 | `id` | `string` | yes | Repository id (UUID). |
 | `open_tasks` | `integer` | yes | Live tasks that link to this repository and are not in a done column, on all boards of all teams (COLLIERY-T-0219). |
@@ -2051,6 +2079,16 @@ One session, for the audit listing. Never the token or its hash.
 | `last_used_at` | `string`, nullable | no | `null` until the session is first used. |
 | `revoked_at` | `string`, nullable | no | `null` while the session is live. |
 
+## SetAgentTriageRequest
+
+`PUT /api/boards/{id}/agent-triage` body.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `agents_decide` | `boolean` | yes |  |
+
+The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
+
 ## SetCodeSequenceRequest
 
 Body of `PUT /api/boards/{id}/code-sequences/{item_type}` (COLLIERY-T-3104): the number of the next code of the type on the board.
@@ -2089,6 +2127,16 @@ Body of `POST /api/tasks/{short_code}/work-class` (KAIROS-T-0077): move a task b
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `lifecycle` | `string` | yes | `draft|review|published|archived`. |
+
+The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
+
+## SetOrgReadTokenRequest
+
+Body of `PUT /api/org/read-tokens/{host}` (KAIROS-T-0431, an organization admin): the read token of the organization for the host.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `token` | `string` | yes | The token. Kairos encrypts it, and no read gives it back. |
 
 The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
 
@@ -2547,7 +2595,8 @@ Body of `PATCH /api/repositories/{slug}` — every field optional; `team` re-hom
 |---|---|---|---|
 | `code_index_build` | [`CodeIndexBuild`](#codeindexbuild), nullable | no |  |
 | `code_index_summaries` | [`CodeIndexSummaries`](#codeindexsummaries), nullable | no |  |
-| `default_branch` | `string`, nullable | no | The form is that of `default_branch` in `CreateRepositoryRequest`. |
+| `default_branch` | `string`, nullable | no | The form is that of `default_branch` in `CreateRepositoryRequest`. A value sets the branch by hand (KAIROS-T-0430): the builder indexes it, whatever the forge says. |
+| `default_branch_source` | [`DefaultBranchSource`](#defaultbranchsource), nullable | no |  |
 | `description` | `string`, nullable | no |  |
 | `repo_url` | `string`, nullable | no | The form is that of `repo_url` in `CreateRepositoryRequest`. |
 | `site_enabled` | `boolean`, nullable | no | The site switch (KAIROS-T-0406). Off: a publish is refused, and the site is not served. |

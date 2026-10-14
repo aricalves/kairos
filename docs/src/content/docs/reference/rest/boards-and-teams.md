@@ -179,6 +179,40 @@ Request body (required): `application/json`, [`UpdateBoardRequest`](../schemas/#
 | `409` | [`ErrorEnvelope`](../schemas/#errorenvelope) | A live board has the slug; details.board names it |
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | No field to update, BOARD_TEAM_IS_FIXED, or CODE_PREFIX_IS_FIXED |
 
+### `GET /api/boards/{id}/agent-triage`
+
+Who decides the triage of intake on the board (KAIROS-T-0428). A person
+who belongs to the board reads it.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `id` | path | yes | `string` | The slug or the id (UUID) of the board |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`AgentTriage`](../schemas/#agenttriage) | The setting |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The caller does not belong to the board |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown board |
+
+### `PUT /api/boards/{id}/agent-triage`
+
+Let agents decide the triage of intake on the board, or not
+(KAIROS-T-0428). Off: Kairos refuses an agent's move of intake with 403
+`AGENT_TRIAGE_OFF`. The agent proposes with a note. Needs
+`configure_boards`.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `id` | path | yes | `string` | The slug or the id (UUID) of the board |
+
+Request body (required): `application/json`, [`SetAgentTriageRequest`](../schemas/#setagenttriagerequest)
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`AgentTriage`](../schemas/#agenttriage) | The setting |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Missing configure_boards |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown board |
+
 ### `POST /api/boards/{id}/archive-completed`
 
 Archive each live task in the done columns of a board (KAIROS-T-0363,

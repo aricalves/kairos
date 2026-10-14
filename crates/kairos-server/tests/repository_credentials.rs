@@ -626,4 +626,211 @@ async fn the_read_token_of_a_repository() {
         .await
         .expect("svc removes the repository");
     assert!(credential_rows(&mut conn).is_empty());
+
+    org_read_tokens(
+        &mut conn,
+        &keyed,
+        &unkeyed,
+        &svc_token,
+        &alice_token,
+        svc_id,
+    )
+    .await;
+}
+
+/// Each row of the read tokens of the organization, as JSON text.
+fn org_token_rows(conn: &mut PgConnection) -> Vec<String> {
+    diesel::sql_query("SELECT row_to_json(t)::text AS text FROM org_acme.org_read_tokens t")
+        .load::<Text>(conn)
+        .unwrap()
+        .into_iter()
+        .map(|r| r.text)
+        .collect()
+}
+
+/// KAIROS-T-0431: the read token of the organization for each forge host,
+/// over REST and MCP. Only an organization admin; the reads show the host,
+/// who set it and when, never the token; each write has an activity row.
+async fn org_read_tokens(
+    conn: &mut PgConnection,
+    keyed: &common::TestServer,
+    unkeyed: &common::TestServer,
+    svc_token: &str,
+    alice_token: &str,
+    svc_id: Uuid,
+) {
+    let svc = keyed.client(svc_token, "acme");
+    let alice = keyed.client(alice_token, "acme");
+    let list = "/api/org/read-tokens";
+    let github = "/api/org/read-tokens/github.com";
+
+    // A member who is not an admin can not list, set or remove.
+    for (method, uri, body) in [
+        (Method::GET, list, None),
+        (Method::PUT, github, Some(json!({ "token": TOKEN }))),
+        (Method::DELETE, github, None),
+    ] {
+        let (status, response) = alice
+            .raw_request(method.clone(), uri, body.as_ref())
+            .await
+            .unwrap();
+        println!("T-0431 alice {method} {uri}: {status}");
+        assert_eq!(status, 403, "{method} {uri}: {response}");
+    }
+    // With no KAIROS_SECRETS_KEY, a set is refused and names the setting.
+    let (status, body) = unkeyed
+        .client(svc_token, "acme")
+        .raw_request(Method::PUT, github, Some(&json!({ "token": TOKEN })))
+        .await
+        .unwrap();
+    assert_eq!(status, 501, "{body}");
+    assert_eq!(body["error"]["code"], "SECRETS_NOT_CONFIGURED");
+    // A host with a path, an unknown field and a token with a space are
+    // refused and named.
+    for (uri, body, field) in [
+        (
+            "/api/org/read-tokens/github.com%2Facme",
+            json!({ "token": TOKEN }),
+            "host",
+        ),
+        (github, json!({ "token": TOKEN, "user": "x" }), "user"),
+        (github, json!({ "token": "two words" }), "token"),
+    ] {
+        let (status, response) = svc
+            .raw_request(Method::PUT, uri, Some(&body))
+            .await
+            .unwrap();
+        println!("T-0431 refused {uri}: {status} {response}");
+        assert_eq!(status, 422, "{uri}: {response}");
+        assert_eq!(response["error"]["details"]["field"], field, "{response}");
+        assert_no_token("the refusal", &response.to_string());
+    }
+    assert!(org_token_rows(conn).is_empty());
+
+    // The admin sets the token of a host as a person writes it; Kairos
+    // keeps the normalized host and the ciphertext only.
+    let set = svc
+        .set_org_read_token("GitHub.com", &Secret::new(TOKEN))
+        .await
+        .expect("svc sets the token of github.com");
+    assert_eq!(set.host, "github.com");
+    assert_eq!(set.set_by, svc_id.to_string());
+    svc.set_org_read_token("github.com:443", &Secret::new(TOKEN))
+        .await
+        .expect("svc replaces the token of github.com");
+    svc.set_org_read_token("git.example.org:8443", &Secret::new(OTHER_TOKEN))
+        .await
+        .expect("svc sets the token of a second host");
+    let rows = org_token_rows(conn);
+    println!("T-0431 rows: {rows:?}");
+    assert_eq!(rows.len(), 2);
+    for row in &rows {
+        assert_no_token("a row", row);
+        assert!(!row.contains(OTHER_TOKEN), "{row}");
+    }
+
+    // The list: the host, who set it and when. Never the token.
+    let (status, listed) = svc.raw_request(Method::GET, list, None).await.unwrap();
+    println!("T-0431 GET {list}: {listed}");
+    assert_eq!(status, 200);
+    assert_no_token("the list", &listed.to_string());
+    assert!(!listed.to_string().contains(OTHER_TOKEN));
+    let hosts: Vec<&str> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["host"].as_str().unwrap())
+        .collect();
+    assert_eq!(hosts, ["git.example.org:8443", "github.com"]);
+    assert_eq!(listed[1]["set_by"], svc_id.to_string());
+    assert!(listed[1]["set_at"].is_string());
+
+    // MCP: the same, for an admin only.
+    let mcp = Mcp::open(&keyed.base_url, svc_token).await;
+    let text = mcp.call("list_org_read_tokens", json!({})).await;
+    println!("T-0431 MCP list: {text}");
+    assert!(text.contains("- github.com: set by "), "{text}");
+    assert!(text.contains("- git.example.org:8443: set by "), "{text}");
+    assert_no_token("list_org_read_tokens", &text);
+    let text = mcp
+        .call(
+            "set_org_read_token",
+            json!({ "host": "https://GitLab.example.org/", "token": "fake_mcp_token_t0431" }),
+        )
+        .await;
+    assert!(
+        text.contains("Set the read token of the organization for gitlab.example.org."),
+        "{text}"
+    );
+    assert!(!text.contains("fake_mcp_token_t0431"), "{text}");
+    let text = mcp
+        .call(
+            "remove_org_read_token",
+            json!({ "host": "gitlab.example.org" }),
+        )
+        .await;
+    assert!(
+        text.contains("Removed the read token of the organization for gitlab.example.org."),
+        "{text}"
+    );
+    let alice_mcp = Mcp::open(&keyed.base_url, alice_token).await;
+    for (tool, arguments) in [
+        ("list_org_read_tokens", json!({})),
+        (
+            "set_org_read_token",
+            json!({ "host": "github.com", "token": "fake_x" }),
+        ),
+        ("remove_org_read_token", json!({ "host": "github.com" })),
+    ] {
+        let text = alice_mcp.call(tool, arguments).await;
+        assert!(text.starts_with("FORBIDDEN"), "{tool}: {text}");
+    }
+
+    // The key rotation encrypts the tokens of the hosts again.
+    let ring = SecretsKey::from_bytes([10u8; 32]).with_old_bytes([7u8; 32]);
+    let report = kairos_server::secrets_rotation::rotate_tenant(conn, "acme", &ring)
+        .expect("rotate-secrets");
+    println!("T-0431 rotation: {report:?}");
+    assert_eq!(report.resealed, 2, "{report:?}");
+    assert!(report.failed.is_empty(), "{report:?}");
+
+    // Remove: the list that stays. A second remove is a 404.
+    let left = svc
+        .remove_org_read_token("git.example.org:8443")
+        .await
+        .expect("svc removes a token");
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].host, "github.com");
+    let (status, body) = svc
+        .raw_request(
+            Method::DELETE,
+            "/api/org/read-tokens/git.example.org:8443",
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(status, 404, "{body}");
+
+    // The activity rows: the actor and the host, never the token.
+    let activity: Vec<String> = diesel::sql_query(
+        "SELECT actor_id::text || ' ' || details AS text FROM org_acme.activity_log \
+         WHERE details LIKE 'org_read_token%' ORDER BY occurred_at",
+    )
+    .load::<Text>(conn)
+    .unwrap()
+    .into_iter()
+    .map(|r| r.text)
+    .collect();
+    println!("T-0431 activity: {activity:#?}");
+    assert_eq!(
+        activity,
+        vec![
+            format!("{svc_id} org_read_token_set:github.com"),
+            format!("{svc_id} org_read_token_replaced:github.com"),
+            format!("{svc_id} org_read_token_set:git.example.org:8443"),
+            format!("{svc_id} org_read_token_set:gitlab.example.org"),
+            format!("{svc_id} org_read_token_removed:gitlab.example.org"),
+            format!("{svc_id} org_read_token_removed:git.example.org:8443"),
+        ]
+    );
 }

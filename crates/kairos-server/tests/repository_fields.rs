@@ -441,6 +441,7 @@ async fn repository_fields_against_live_stack() {
             "slug",
             "repo_url",
             "default_branch",
+            "default_branch_source",
             "team",
             "description",
             "code_index_build",

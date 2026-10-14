@@ -353,9 +353,9 @@ fn seed_team(
         Some(team.id),
         Some(actor),
     )?;
-    // KAIROS-T-0082: seeded teams get the page scaffold exactly like
-    // API-created ones (a team is never born bare).
-    crate::team_pages::seed_team_scaffold(conn, team.id, actor)?;
+    // KAIROS-T-0082, KAIROS-T-0436: seeded teams get their charter exactly
+    // like API-created ones.
+    crate::team_pages::seed_team_charter(conn, team.id, actor)?;
     for user_id in member_ids {
         diesel::insert_into(team_members::table)
             .values(NewTeamMember {
@@ -944,21 +944,35 @@ pub fn seed_demo(conn: &mut PgConnection, force: bool) -> Result<SeedDemoReport,
             carol,
         )?;
 
-        let how_to_folder: Uuid = {
-            use crate::schema::team_pages as tp;
-            let docs_folder: Uuid = tp::table
-                .filter(tp::team_id.eq(platform.id))
-                .filter(tp::parent_id.is_null())
-                .filter(tp::slug.eq("documentation"))
-                .select(tp::id)
-                .first(conn)?;
-            tp::table
-                .filter(tp::team_id.eq(platform.id))
-                .filter(tp::parent_id.eq(docs_folder))
-                .filter(tp::slug.eq("how-to-guides"))
-                .select(tp::id)
-                .first(conn)?
-        };
+        // KAIROS-T-0436: a team grows its own tree. The demo team makes its
+        // folders as a person would.
+        let docs_folder = crate::team_pages::create_page(
+            conn,
+            platform.id,
+            crate::team_pages::CreatePage {
+                parent_id: None,
+                kind: TeamPageKind::Folder,
+                slug: "documentation",
+                title: "Documentation",
+                content: "",
+                position: 1,
+            },
+            bob,
+        )?;
+        let how_to_folder = crate::team_pages::create_page(
+            conn,
+            platform.id,
+            crate::team_pages::CreatePage {
+                parent_id: Some(docs_folder.id),
+                kind: TeamPageKind::Folder,
+                slug: "how-to-guides",
+                title: "How-to Guides",
+                content: "",
+                position: 0,
+            },
+            bob,
+        )?
+        .id;
         crate::team_pages::create_page(
             conn,
             platform.id,

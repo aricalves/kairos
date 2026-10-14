@@ -262,9 +262,31 @@ pub fn find_by_forge_name(
 /// name, the URL and the default branch must have the form of their field
 /// (COLLIERY-T-0267). The full name goes first, because the default slug
 /// comes from it: an empty name gives an empty slug.
+///
+/// The row gets `default_branch_source = hand`: the caller named the
+/// branch. [`create_following_forge`] makes a row that follows the forge.
 pub fn create(
     conn: &mut PgConnection,
     input: NewRepository,
+) -> Result<Repository, RepositoryError> {
+    create_with_source(conn, input, "hand")
+}
+
+/// [`create`], for a repository whose caller named no branch
+/// (KAIROS-T-0430): the row gets `default_branch_source = forge`, and the
+/// builder writes the default branch of the remote to `default_branch` at
+/// each fetch. `input.default_branch` is the value until the first fetch.
+pub fn create_following_forge(
+    conn: &mut PgConnection,
+    input: NewRepository,
+) -> Result<Repository, RepositoryError> {
+    create_with_source(conn, input, "forge")
+}
+
+fn create_with_source(
+    conn: &mut PgConnection,
+    input: NewRepository,
+    source: &'static str,
 ) -> Result<Repository, RepositoryError> {
     kairos_core::repositories::check_full_name(input.forge.into(), &input.repo_full_name)?;
     kairos_core::repositories::check_url(&input.repo_url)?;
@@ -279,7 +301,10 @@ pub fn create(
     let actor = input.created_by;
     conn.transaction::<_, RepositoryError, _>(|conn| {
         let created: Repository = diesel::insert_into(crate::schema::repositories::table)
-            .values(input)
+            .values((
+                input,
+                crate::schema::repositories::default_branch_source.eq(source),
+            ))
             .returning(Repository::as_returning())
             .get_result(conn)
             .map_err(|e| map_unique(e, &slug, forge, &repo))?;
@@ -347,6 +372,31 @@ pub fn update(
         )?;
         Ok(updated)
     })
+}
+
+/// Record the default branch that the remote of a repository gave at a
+/// fetch (KAIROS-T-0430): `forge_branch` gets `branch`, and so does
+/// `default_branch` when the row follows the forge. A branch set by hand
+/// stays. The write does not change `updated_at` and adds no activity row:
+/// the builder does it, not a person. Returns the row after the write.
+pub fn record_forge_branch(
+    conn: &mut PgConnection,
+    id: Uuid,
+    branch: &str,
+) -> Result<Repository, RepositoryError> {
+    use crate::schema::repositories::dsl;
+    kairos_core::repositories::check_default_branch(branch)?;
+    diesel::update(dsl::repositories.filter(dsl::id.eq(id)))
+        .set(dsl::forge_branch.eq(Some(branch)))
+        .execute(conn)?;
+    diesel::update(
+        dsl::repositories
+            .filter(dsl::id.eq(id))
+            .filter(dsl::default_branch_source.eq("forge")),
+    )
+    .set(dsl::default_branch.eq(branch))
+    .execute(conn)?;
+    load(conn, id)
 }
 
 /// Soft-delete a repository. Refused with [`RepositoryError::InUse`] while

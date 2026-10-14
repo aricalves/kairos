@@ -9,6 +9,9 @@
 //! Against real Postgres from the compose stack (A-0012 tier 2), in its own
 //! scratch database like the other kairos-db integration tests.
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::sql_query;
@@ -21,7 +24,7 @@ use kairos_db::models::{NewUser, TeamType, User};
 use kairos_db::{create_board, provision_tenant, run_public_migrations};
 
 const DEFAULT_DATABASE_URL: &str = "postgres://kairos:kairos@localhost:41432/kairos";
-const SCRATCH_DB: &str = "kairos_board_team_t0230_test";
+static SCRATCH_DB: scratch::ScratchName = scratch::ScratchName::new("kairos_board_team_t0230_test");
 
 fn admin_database_url() -> String {
     std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
@@ -31,7 +34,7 @@ fn with_database(url: &str, db_name: &str) -> String {
     let (base, _) = url
         .rsplit_once('/')
         .expect("DATABASE_URL must contain a database path segment");
-    format!("{base}/{db_name}")
+    format!("{base}/{}", scratch::scratch_db_name(db_name))
 }
 
 /// How many board rows have this slug, live or not.
@@ -59,8 +62,9 @@ fn a_delivery_board_always_has_a_team() {
     sql_query(format!("CREATE DATABASE {SCRATCH_DB}"))
         .execute(&mut admin_conn)
         .expect("creating scratch database");
+    let _scratch_guard = scratch::ScratchGuard::new(&SCRATCH_DB);
 
-    let scratch_url = with_database(&admin_url, SCRATCH_DB);
+    let scratch_url = with_database(&admin_url, &SCRATCH_DB);
     let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
     run_public_migrations(&mut conn).expect("running public migrations");
     // Provisioning creates the three boards of the organization with no

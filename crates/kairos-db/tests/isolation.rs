@@ -39,6 +39,9 @@
 // one async test confines diesel-async's `RunQueryDsl` to its own module so
 // the two `RunQueryDsl`s never collide (same discipline as
 // `tests/models_roundtrip.rs`).
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use chrono::{TimeZone, Utc};
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
@@ -101,12 +104,13 @@ fn with_database(url: &str, db_name: &str) -> String {
     let (base, _) = url
         .rsplit_once('/')
         .expect("DATABASE_URL must contain a database path segment");
-    format!("{base}/{db_name}")
+    format!("{base}/{}", crate::scratch::scratch_db_name(db_name))
 }
 
 /// Drop + recreate `db_name`, run public migrations, provision `acme` and
 /// `zenith`. Returns the scratch database URL.
 fn scratch_database(db_name: &str) -> String {
+    let db_name = &crate::scratch::scratch_db_name(db_name);
     let admin_url = admin_database_url();
     let mut admin_conn = PgConnection::establish(&admin_url).unwrap_or_else(|e| {
         panic!(
@@ -131,6 +135,7 @@ fn scratch_database(db_name: &str) -> String {
 }
 
 fn drop_scratch_database(db_name: &str) {
+    let db_name = &crate::scratch::scratch_db_name(db_name);
     let mut admin_conn =
         PgConnection::establish(&admin_database_url()).expect("connecting for scratch teardown");
     sql_query(format!("DROP DATABASE IF EXISTS {db_name} WITH (FORCE)"))
@@ -495,8 +500,10 @@ fn fingerprint_all(conn: &mut PgConnection) -> Vec<(String, String)> {
 
 #[test]
 fn cross_read_visibility_sweep() {
-    const DB: &str = "kairos_isolation_read_test";
-    let url = scratch_database(DB);
+    static DB: crate::scratch::ScratchName =
+        crate::scratch::ScratchName::new("kairos_isolation_read_test");
+    let url = scratch_database(&DB);
+    let _scratch_guard = crate::scratch::ScratchGuard::new(&DB);
 
     // A single shared user in the public schema (users are cross-tenant per
     // A-0001); both tenants reference it.
@@ -692,7 +699,7 @@ fn cross_read_visibility_sweep() {
 
     drop(acme);
     drop(zconn);
-    drop_scratch_database(DB);
+    drop_scratch_database(&DB);
 }
 
 // ===========================================================================
@@ -701,8 +708,10 @@ fn cross_read_visibility_sweep() {
 
 #[test]
 fn cross_write_battery() {
-    const DB: &str = "kairos_isolation_write_test";
-    let url = scratch_database(DB);
+    static DB: crate::scratch::ScratchName =
+        crate::scratch::ScratchName::new("kairos_isolation_write_test");
+    let url = scratch_database(&DB);
+    let _scratch_guard = crate::scratch::ScratchGuard::new(&DB);
 
     let mut pconn = PgConnection::establish(&url).expect("connecting");
     let user = insert_user(&mut pconn, "dex|eve", "eve@example.test", "Eve");
@@ -815,7 +824,7 @@ fn cross_write_battery() {
     drop(acme);
     drop(zenith);
     drop(zenith_after_conn);
-    drop_scratch_database(DB);
+    drop_scratch_database(&DB);
 }
 
 // ===========================================================================
@@ -824,8 +833,10 @@ fn cross_write_battery() {
 
 #[test]
 fn short_code_collision() {
-    const DB: &str = "kairos_isolation_collision_test";
-    let url = scratch_database(DB);
+    static DB: crate::scratch::ScratchName =
+        crate::scratch::ScratchName::new("kairos_isolation_collision_test");
+    let url = scratch_database(&DB);
+    let _scratch_guard = crate::scratch::ScratchGuard::new(&DB);
 
     let mut pconn = PgConnection::establish(&url).expect("connecting");
     let user = insert_user(&mut pconn, "dex|trudy", "trudy@example.test", "Trudy");
@@ -889,7 +900,7 @@ fn short_code_collision() {
 
     drop(acme);
     drop(zenith);
-    drop_scratch_database(DB);
+    drop_scratch_database(&DB);
 }
 
 // ===========================================================================
@@ -934,8 +945,10 @@ mod pool_stress {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn pool_reuse_stress() {
-        const DB: &str = "kairos_isolation_pool_test";
-        let url = scratch_database(DB);
+        static DB: crate::scratch::ScratchName =
+            crate::scratch::ScratchName::new("kairos_isolation_pool_test");
+        let url = scratch_database(&DB);
+        let _scratch_guard = crate::scratch::ScratchGuard::new(&DB);
 
         // Shared public user + per-tenant strategy board/column (sync setup).
         // A tenant-pinned connection can insert into `public.users` (the pool
@@ -1058,6 +1071,6 @@ mod pool_stress {
         eprintln!("pool_reuse_stress: {total} operations across {ROUNDS} rounds, no leakage");
 
         drop(pool);
-        super::drop_scratch_database(DB);
+        super::drop_scratch_database(&DB);
     }
 }

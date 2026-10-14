@@ -163,6 +163,8 @@ use crate::app::AppState;
         crate::api::org::dispatch::enable_webhook_target,
         crate::api::org::dispatch::test_webhook_target,
         crate::api::org::dispatch::list_dispatch_rules,
+        crate::api::org::dispatch::get_agent_triage,
+        crate::api::org::dispatch::set_agent_triage,
         crate::api::org::dispatch::create_dispatch_rule,
         crate::api::org::dispatch::delete_dispatch_rule,
         crate::api::org::dispatch::list_webhook_deliveries,
@@ -205,6 +207,10 @@ use crate::app::AppState;
         crate::api::org::code_indexes::rebuild_code_index,
         crate::api::org::code_index_settings::get_settings,
         crate::api::org::code_index_settings::put_settings,
+        // The read tokens of the organization by host (KAIROS-T-0431).
+        crate::api::org::org_read_tokens::list_org_read_tokens,
+        crate::api::org::org_read_tokens::set_org_read_token,
+        crate::api::org::org_read_tokens::remove_org_read_token,
         crate::api::org::code_index_query::query_vector,
         // The read token of a repository (COLLIERY-T-3105).
         crate::api::org::repository_credentials::get_credential,

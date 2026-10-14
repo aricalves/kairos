@@ -19,6 +19,9 @@
 //!   delivery boards are per-team and created later, but all four
 //!   `system_board_defaults` rows are seeded.
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 use std::collections::BTreeSet;
 
 use diesel::pg::PgConnection;
@@ -36,12 +39,13 @@ use kairos_db::{drop_tenant, migrate_all_tenants, provision_tenant, run_public_m
 /// Same default as `.angreal/task_db.py`'s `DATABASE_URL`.
 const DEFAULT_DATABASE_URL: &str = "postgres://kairos:kairos@localhost:41432/kairos";
 
-const SCRATCH_DB: &str = "kairos_tenant_provisioning_test";
+static SCRATCH_DB: scratch::ScratchName =
+    scratch::ScratchName::new("kairos_tenant_provisioning_test");
 
 /// The tenant tables (sorted): the 21 from the KAIROS-S-0004 DDL plus
 /// `scim_tokens` (KAIROS-T-0025 / A-0016) and `api_keys` (KAIROS-T-0057 /
 /// A-0017 service-account API keys).
-const EXPECTED_TABLES: [&str; 57] = [
+const EXPECTED_TABLES: [&str; 58] = [
     "activity_log",
     "adrs",
     "api_keys",
@@ -88,6 +92,8 @@ const EXPECTED_TABLES: [&str; 57] = [
     // KAIROS-T-0381: the notifications of a person, and their settings.
     "notification_settings",
     "notifications",
+    // KAIROS-T-0431: the read token of the organization for each forge host.
+    "org_read_tokens",
     "repositories",
     // COLLIERY-T-3105: the encrypted read token of a repository.
     "repository_credentials",
@@ -181,7 +187,7 @@ fn with_database(url: &str, db_name: &str) -> String {
     let (base, _) = url
         .rsplit_once('/')
         .expect("DATABASE_URL must contain a database path segment");
-    format!("{base}/{db_name}")
+    format!("{base}/{}", scratch::scratch_db_name(db_name))
 }
 
 #[derive(QueryableByName)]
@@ -372,8 +378,9 @@ fn tenant_provisioning_lifecycle() {
     sql_query(format!("CREATE DATABASE {SCRATCH_DB}"))
         .execute(&mut admin_conn)
         .expect("creating scratch database");
+    let _scratch_guard = scratch::ScratchGuard::new(&SCRATCH_DB);
 
-    let scratch_url = with_database(&admin_url, SCRATCH_DB);
+    let scratch_url = with_database(&admin_url, &SCRATCH_DB);
     let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
 
     // KAIROS-T-0187: the pre-flight extension check, both ways round. The

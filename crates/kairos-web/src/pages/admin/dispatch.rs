@@ -8,7 +8,7 @@
 
 use aurora_dark::components::{
     Alert, Button, Code, CopyButton, Divider, ErrorState, Group, Loading, Panel, Pill, Select,
-    Stack, Table, Text, TextInput,
+    Stack, Switch, Table, Text, TextInput,
 };
 use aurora_dark::tokens::{ApiError, token};
 use leptos::prelude::*;
@@ -16,7 +16,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{MutationOutcome, run_mutation};
-use crate::api::{delete_json, get_json, post_empty, post_json};
+use crate::api::{delete_json, get_json, post_empty, post_json, put_json};
 use crate::auth::{Auth, use_auth};
 
 /// mirror of: `kairos_client::types_dispatch::WebhookTarget` (partial).
@@ -182,12 +182,24 @@ async fn deliveries(auth: Auth, board: &str) -> Result<Vec<Delivery>, ApiError> 
     .await
 }
 
+/// mirror of: `kairos_client::types_dispatch::AgentTriage` (partial).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct AgentTriage {
+    agents_decide: bool,
+}
+
+async fn agent_triage(auth: Auth, board: &str) -> Result<AgentTriage, ApiError> {
+    get_json(auth, &format!("/api/boards/{board}/agent-triage")).await
+}
+
 /// The data of the section, in one load.
 #[derive(Clone, Debug, PartialEq)]
 struct Data {
     targets: Vec<Target>,
     rules: Vec<Rule>,
     log: Vec<Delivery>,
+    /// KAIROS-T-0428: an agent decides the triage of intake.
+    agents_decide: bool,
 }
 
 async fn load(auth: Auth, board: String) -> Result<Data, ApiError> {
@@ -195,6 +207,7 @@ async fn load(auth: Auth, board: String) -> Result<Data, ApiError> {
         targets: targets(auth, &board).await?,
         rules: rules(auth, &board).await?,
         log: deliveries(auth, &board).await?,
+        agents_decide: agent_triage(auth, &board).await?.agents_decide,
     })
 }
 
@@ -363,6 +376,8 @@ pub fn DispatchPanel(
                                 <Button on_click=Callback::new(on_add_target)>"Add target"</Button>
                             </Group>
                             <Divider/>
+                            <TriageSetting agents_decide=data.agents_decide board busy outcome reload/>
+                            <Divider/>
                             <RuleRows rules=data.rules.clone() board busy outcome reload/>
                             <Group align="end" gap="sm" wrap=true>
                                 <Select label="A task that"
@@ -526,6 +541,48 @@ fn RuleRows(
         })
         .collect_view()
         .into_any()
+}
+
+/// Who decides the triage of intake (KAIROS-T-0428): off, an agent
+/// proposes with a note and a person decides; on, an agent decides.
+#[component]
+fn TriageSetting(
+    agents_decide: bool,
+    board: StoredValue<String>,
+    busy: RwSignal<bool>,
+    outcome: RwSignal<MutationOutcome>,
+    reload: RwSignal<u32>,
+) -> impl IntoView {
+    let auth = use_auth();
+    let checked = RwSignal::new(agents_decide);
+    let on_save = move |_| {
+        let board_id = board.get_value();
+        let decide = checked.get_untracked();
+        run_mutation(
+            busy,
+            outcome,
+            reload,
+            "Kairos saved the triage setting.".to_string(),
+            async move {
+                put_json::<_, Value>(
+                    auth,
+                    &format!("/api/boards/{board_id}/agent-triage"),
+                    &json!({ "agents_decide": decide }),
+                )
+                .await
+                .map(|_| ())
+            },
+        );
+    };
+    view! {
+        <Group align="end" gap="sm" wrap=true attr:data-testid="agent-triage">
+            <Switch checked label="An agent decides the triage of intake (support lane)"/>
+            <Button variant="default" size="xs" on_click=Callback::new(on_save)>"Save"</Button>
+        </Group>
+        <Text size="xs" dimmed=true>
+            "Off: an agent writes its proposal as a note, and a person moves the task."
+        </Text>
+    }
 }
 
 #[component]

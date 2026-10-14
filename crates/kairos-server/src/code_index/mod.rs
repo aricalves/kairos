@@ -17,10 +17,14 @@
 //! The nearest indexed commit below a commit, and the tree of a new commit,
 //! come from a bare clone of the repository in `KAIROS_CODE_INDEX_DIR`
 //! ([`git`]). The clone fetches from the `repo_url` of the repository. When
-//! the repository has a read token (COLLIERY-T-3105), the fetch gives it to
-//! git through an askpass helper ([`git`]); [`crate::credentials`] reads and
-//! decrypts it with `KAIROS_SECRETS_KEY`. With no token, the fetch has no
-//! credential, and a remote that asks for one fails at once.
+//! the organization has a read token for the host of the repository
+//! (KAIROS-T-0431), the fetch gives that token to git; else, when the
+//! repository has a read token (COLLIERY-T-3105), it gives that one. Git
+//! gets it through an askpass helper ([`git`]); [`crate::credentials`]
+//! chooses, reads and decrypts it with `KAIROS_SECRETS_KEY`. The log of each
+//! fetch and the note of a failed fetch name the kind of token, never the
+//! value. With no token, the fetch has no credential, and a remote that asks
+//! for one fails at once.
 //!
 //! # The builder
 //!
@@ -126,8 +130,8 @@ pub mod git;
 pub mod jobs;
 
 pub use jobs::{
-    BuildHandler, end_stale_runs, enqueue_first_builds, enqueue_updates, first_builds, job_key,
-    requested_builds, run_builder, sweep,
+    BuildHandler, end_stale_runs, enqueue_first_build, enqueue_first_builds, enqueue_updates,
+    first_builds, job_key, requested_builds, run_builder, sweep,
 };
 
 use std::collections::{HashMap, HashSet};
@@ -352,6 +356,16 @@ impl CodeIndexService {
         let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
         git::fetch(&path, &(self.remote_of)(repo), token)?;
         Ok(path)
+    }
+
+    /// The default branch of the remote of `repo` (KAIROS-T-0430), read
+    /// with `token`: [`git::remote_head`].
+    pub fn remote_head(
+        &self,
+        repo: &Repository,
+        token: Option<&git::GitToken>,
+    ) -> Result<Option<String>, git::GitError> {
+        git::remote_head(&(self.remote_of)(repo), token)
     }
 
     /// The commits at and below `commit`, nearest first, from the clone of
@@ -1066,58 +1080,82 @@ struct Fetched {
     ancestors: Vec<String>,
 }
 
-/// Read the token of `repo`, fetch its clone, and find the head of its
-/// default branch. The error is the note of the outcome.
+/// Read the token of `repo`, read the default branch of its remote, fetch
+/// its clone, and find the head of the branch to index. The error is the
+/// note of the outcome.
+///
+/// KAIROS-T-0430: the branch to index is the branch set by hand, or else
+/// the default branch of the remote (`HEAD`), read at each fetch, or else
+/// the stored `default_branch` when the remote gives none. The branch of
+/// the remote is written to the row ([`record_forge_branch`]), and `repo`
+/// gets the branch that is indexed.
 async fn fetch_head(
     blocking: &BlockingTenantPool,
     service: &Arc<CodeIndexService>,
     tenant: &str,
-    repo: &Repository,
+    repo: &mut Repository,
     with_ancestors: bool,
 ) -> Result<Fetched, String> {
-    // The read token of the repository, when it has one (COLLIERY-T-3105).
+    // The token of the fetch (KAIROS-T-0431): the read token of the
+    // organization for the host, else the token of the repository
+    // (COLLIERY-T-3105), else none. The log names the kind, never the value.
     let token = {
         let key = service.secrets_key().cloned();
         let tenant_slug = tenant.to_string();
-        let repo_id = repo.id;
+        let row = repo.clone();
         blocking
             .run(tenant, move |conn| {
-                Ok(crate::credentials::read_token(
+                Ok(crate::credentials::fetch_token(
                     conn,
                     &tenant_slug,
-                    repo_id,
+                    &row,
                     key.as_ref(),
                 ))
             })
             .await
     };
-    let token = match token {
+    let (token, source) = match token {
         Ok(Ok(token)) => token,
         Ok(Err(e)) => return Err(format!("failed: {e}")),
         Err(e) => return Err(format!("failed: {e:?}")),
     };
+    tracing::info!(tenant, repository = %repo.slug, token = %source, "code index fetch");
 
-    // The clone and the head of the default branch.
+    // The default branch of the remote, the clone, and the head of the
+    // branch to index.
     let fetched = {
         let service = Arc::clone(service);
         let tenant = tenant.to_string();
         let repo = repo.clone();
         tokio::task::spawn_blocking(move || {
+            // A remote that gives no default branch, or a failed read,
+            // leaves the stored branch: the fetch then says what is wrong.
+            let forge_branch = service
+                .remote_head(&repo, token.as_ref())
+                .unwrap_or_else(|e| {
+                    tracing::warn!(repository = %repo.slug, error = %e, "the default branch of the forge was not read");
+                    None
+                });
+            let branch = indexed_branch(&repo, forge_branch.as_deref()).to_string();
             let path = service.fetch(&tenant, &repo, token.as_ref())?;
-            let head = git::branch_head(&path, &repo.default_branch)?;
+            let head = git::branch_head(&path, &branch)?;
             let ancestors = match &head {
                 Some(head) if with_ancestors => git::ancestors(&path, head, MAX_DISTANCE)?,
                 _ => Vec::new(),
             };
-            Ok::<_, git::GitError>((path, head, ancestors))
+            Ok::<_, git::GitError>((path, head, ancestors, forge_branch, branch))
         })
         .await
     };
-    let (clone, head, ancestors) = match fetched {
+    let (clone, head, ancestors, forge_branch, branch) = match fetched {
         Ok(Ok(fetched)) => fetched,
-        Ok(Err(e)) => return Err(format!("failed: {e}")),
+        Ok(Err(e)) => return Err(format!("failed: {e} The fetch used {source}.")),
         Err(e) => return Err(format!("failed: {e}")),
     };
+    if let Some(forge_branch) = forge_branch {
+        record_forge_branch(blocking, tenant, repo, &forge_branch).await;
+    }
+    repo.default_branch = branch;
     let Some(head) = head else {
         return Err(format!(
             "the repository has no branch {}",
@@ -1129,6 +1167,63 @@ async fn fetch_head(
         head,
         ancestors,
     })
+}
+
+/// The branch that the builder indexes (KAIROS-T-0430): the branch set by
+/// hand; else the default branch of the remote, when it gave one and git
+/// accepts its form; else the stored branch.
+fn indexed_branch<'a>(repo: &'a Repository, forge_branch: Option<&'a str>) -> &'a str {
+    match forge_branch {
+        Some(branch)
+            if repo.follows_forge()
+                && kairos_core::repositories::check_default_branch(branch).is_ok() =>
+        {
+            branch
+        }
+        _ => &repo.default_branch,
+    }
+}
+
+/// Write the default branch of the remote to the row of `repo`
+/// (KAIROS-T-0430), when it is new. A failed write is logged: the build
+/// goes on with the branch it read.
+async fn record_forge_branch(
+    blocking: &BlockingTenantPool,
+    tenant: &str,
+    repo: &mut Repository,
+    branch: &str,
+) {
+    let unchanged = repo.forge_branch.as_deref() == Some(branch)
+        && (!repo.follows_forge() || repo.default_branch == branch);
+    if unchanged || kairos_core::repositories::check_default_branch(branch).is_err() {
+        return;
+    }
+    let repo_id = repo.id;
+    let value = branch.to_string();
+    match blocking
+        .run(tenant, move |conn| {
+            kairos_db::repositories::record_forge_branch(conn, repo_id, &value)
+                .map_err(ApiError::internal)
+        })
+        .await
+    {
+        Ok(row) => {
+            if row.default_branch != repo.default_branch {
+                tracing::info!(
+                    tenant,
+                    repository = %repo.slug,
+                    from = %repo.default_branch,
+                    to = %row.default_branch,
+                    "code index follows the new default branch of the forge"
+                );
+            }
+            repo.forge_branch = row.forge_branch;
+            repo.default_branch_source = row.default_branch_source;
+        }
+        Err(e) => {
+            tracing::warn!(tenant, repository = %repo.slug, error = ?e, "the default branch of the forge was not recorded");
+        }
+    }
 }
 
 impl CodeIndexService {
@@ -1394,7 +1489,7 @@ pub(crate) async fn build_repository(
     blocking: &BlockingTenantPool,
     service: &Arc<CodeIndexService>,
     tenant: &str,
-    repo: Repository,
+    mut repo: Repository,
     summarizers: Option<Arc<dyn SummarizerSource>>,
     embedder: Arc<dyn kairos_embed::EmbeddingProvider>,
     ctx: &BuildCtx,
@@ -1423,7 +1518,7 @@ pub(crate) async fn build_repository(
         clone,
         head,
         ancestors,
-    } = match fetch_head(blocking, service, tenant, &repo, true).await {
+    } = match fetch_head(blocking, service, tenant, &mut repo, true).await {
         Ok(fetched) => fetched,
         Err(note) => {
             match ctx.run {
@@ -1715,7 +1810,7 @@ pub(crate) async fn full_build_repository(
     blocking: &BlockingTenantPool,
     service: &Arc<CodeIndexService>,
     tenant: &str,
-    repo: Repository,
+    mut repo: Repository,
     summarizers: Option<Arc<dyn SummarizerSource>>,
     embedder: Arc<dyn kairos_embed::EmbeddingProvider>,
     trigger: &'static str,
@@ -1758,7 +1853,7 @@ pub(crate) async fn full_build_repository(
         }
     }
 
-    let Fetched { clone, head, .. } = match fetch_head(blocking, service, tenant, &repo, false)
+    let Fetched { clone, head, .. } = match fetch_head(blocking, service, tenant, &mut repo, false)
         .await
     {
         Ok(fetched) => fetched,

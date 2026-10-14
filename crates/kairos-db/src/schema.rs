@@ -437,6 +437,17 @@ diesel::table! {
 }
 
 diesel::table! {
+    org_read_tokens (host) {
+        host -> Text,
+        ciphertext -> Bytea,
+        nonce -> Bytea,
+        key_id -> Text,
+        set_by -> Uuid,
+        set_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
     repositories (id) {
         id -> Uuid,
         slug -> Text,
@@ -455,6 +466,8 @@ diesel::table! {
         code_index_summaries -> Text,
         site_enabled -> Bool,
         site_publish_id -> Nullable<Uuid>,
+        default_branch_source -> Text,
+        forge_branch -> Nullable<Text>,
     }
 }
 
@@ -755,6 +768,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     metadata_enum_options,
     notification_settings,
     notifications,
+    org_read_tokens,
     repositories,
     repository_credentials,
     site_files,

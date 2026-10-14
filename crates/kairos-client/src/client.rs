@@ -821,6 +821,27 @@ impl KairosClient {
             .await
     }
 
+    /// `GET /api/boards/{id}/agent-triage` (KAIROS-T-0428).
+    pub async fn get_agent_triage(
+        &self,
+        board: &str,
+    ) -> Result<crate::types_dispatch::AgentTriage, Error> {
+        self.get(&format!("/api/boards/{board}/agent-triage")).await
+    }
+
+    /// `PUT /api/boards/{id}/agent-triage` (KAIROS-T-0428).
+    pub async fn set_agent_triage(
+        &self,
+        board: &str,
+        agents_decide: bool,
+    ) -> Result<crate::types_dispatch::AgentTriage, Error> {
+        self.put_ok(
+            &format!("/api/boards/{board}/agent-triage"),
+            &crate::types_dispatch::SetAgentTriageRequest { agents_decide },
+        )
+        .await
+    }
+
     /// `POST /api/boards/{id}/dispatch-rules`.
     pub async fn create_dispatch_rule(
         &self,
@@ -1875,6 +1896,41 @@ impl KairosClient {
         body: &crate::types_code_index::PutCodeIndexSettings,
     ) -> Result<crate::types_code_index::CodeIndexSettings, Error> {
         self.put_ok("/api/org/code-index-settings", body).await
+    }
+
+    /// `GET /api/org/read-tokens` — the read tokens of the organization,
+    /// one for each forge host (KAIROS-T-0431, an organization admin). The
+    /// host, who set it and when; never the token.
+    pub async fn org_read_tokens(
+        &self,
+    ) -> Result<Vec<crate::types_code_index::OrgReadToken>, Error> {
+        self.get("/api/org/read-tokens").await
+    }
+
+    /// `PUT /api/org/read-tokens/{host}` — set or replace the read token of
+    /// the organization for `host` (KAIROS-T-0431, an organization admin).
+    pub async fn set_org_read_token(
+        &self,
+        host: &str,
+        token: &crate::types_auth::Secret,
+    ) -> Result<crate::types_code_index::OrgReadToken, Error> {
+        self.put_ok(
+            &format!("/api/org/read-tokens/{host}"),
+            &crate::types_code_index::SetOrgReadTokenRequest {
+                token: token.clone(),
+            },
+        )
+        .await
+    }
+
+    /// `DELETE /api/org/read-tokens/{host}` — remove the read token of the
+    /// organization for `host` (KAIROS-T-0431, an organization admin). The
+    /// answer is the list that stays.
+    pub async fn remove_org_read_token(
+        &self,
+        host: &str,
+    ) -> Result<Vec<crate::types_code_index::OrgReadToken>, Error> {
+        self.delete(&format!("/api/org/read-tokens/{host}")).await
     }
 
     /// `POST /api/code-index/query-vector` — the vector of the text of a

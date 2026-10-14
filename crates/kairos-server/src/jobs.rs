@@ -466,6 +466,21 @@ impl Worker {
         Ok(added)
     }
 
+    /// Let go of the worker: wait (at most `limit`) until no task of it
+    /// holds it any more, then drop it, and with it its pool, so that its
+    /// database connections close now. For tests and a one-shot command,
+    /// after [`Worker::drain`]: a process that exits while the tasks of a
+    /// worker still hold connections can crash at exit (KAIROS-T-0449). A
+    /// worker whose loop ([`Worker::run`]) still runs is dropped here only
+    /// as one reference.
+    pub async fn shutdown(self: Arc<Self>, limit: Duration) {
+        let until = Instant::now() + limit;
+        while Arc::strong_count(&self) > 1 && Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        drop(self);
+    }
+
     /// Wake the worker: it looks for jobs now.
     pub fn wake(&self) {
         self.wake.notify_one();
