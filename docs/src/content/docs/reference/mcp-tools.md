@@ -3,8 +3,8 @@ title: "MCP tools"
 ---
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-forty-five tools. A drift gate in the test suite
-asserts that `tools/list` returns these forty-five and no others. The same
+forty-six tools. A drift gate in the test suite
+asserts that `tools/list` returns these forty-six and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -919,6 +919,25 @@ that sets the repository that the task already has is a success.
 Refuses: `NOT_FOUND` for an unknown short code or an archived task.
 `VALIDATION` when the item is not a task, and for an unknown `repository`.
 `FORBIDDEN` when the edit rule refuses the caller.
+
+### `set_work_class`
+
+Changes the lane of a task: planned or support. Moving a support request to
+the planned backlog is a lane change. The task stays in its column.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `short_code` | string | yes | — | The short code of the task. |
+| `work_class` | string | yes | — | `planned` or `support`. |
+
+The caller needs `transition_items` on the board of the task. Creating the
+task gives no right here. The rule is that of
+`POST /api/tasks/{short_code}/work-class`, and the change writes the same
+activity line. A lane the task already has changes nothing.
+
+Refuses: `NOT_FOUND` for an unknown short code or an archived task.
+`VALIDATION` when the item is not a task, and for an unknown `work_class`.
+`FORBIDDEN` without `transition_items`.
 
 ### The teams of an initiative or a strategy
 

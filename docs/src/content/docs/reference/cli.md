@@ -31,6 +31,7 @@ Command groups, each detailed below:
 | Organization | `orgs`, `members`, `teams`, `streams`, `repos`, `grants`, `boards create` |
 | Machine access | `service-accounts`, `keys` |
 | Deployment administration | `admin` |
+| The CLI itself | `self-update` |
 
 ## Exit codes
 
@@ -429,6 +430,27 @@ kairos tasks cancel <SHORT_CODE> --reason <TEXT> [OPTIONS]
 to the done column of its board with the mark "cancelled" and the reason.
 `tasks get` shows the mark in the line `cancelled`. A move out of the done
 column removes the mark. You need `transition_items` on the board of the task.
+
+### `tasks lane`
+
+```
+kairos tasks lane <SHORT_CODE> <LANE> [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<SHORT_CODE>` | string | required | The task's short code. |
+| `<LANE>` | string | required | `planned` or `support`. |
+
+Changes the lane of a task. Moving a support request to the planned backlog
+is a lane change. The task stays in its column. You need `transition_items`
+on the board of the task; creating the task gives no right here. A lane the
+task already has changes nothing. The command prints one of these lines:
+
+```text
+Moved ACME-T-0001 to the planned lane (was support).
+ACME-T-0001 is already in the planned lane: nothing changed.
+```
 
 ### `documents move`
 
@@ -1499,6 +1521,42 @@ kairos admin tenants delete <SLUG> --confirm [OPTIONS]
 
 Drops the tenant's organization and schema. Destructive and unrecoverable.
 
+## The CLI itself
+
+### `kairos self-update`
+
+```
+kairos self-update [--url <URL>] [--version <VERSION> | --latest | --check]
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--url <URL>` | string | `KAIROS_URL`, then the only cached deployment | The deployment whose version to install. |
+| `--version <VERSION>` | string | the version of the server | Install this version (e.g. `0.12.0`). |
+| `--latest` | flag | off | Install the latest release on GitHub. |
+| `--check` | flag | off | Print the version of the CLI and of the server, and change nothing. |
+
+Installs the version of the server in place of the running binary. The server
+tells its version at `GET /version` (open), with the links of the tarball of
+the CLI and its `.sha256` for each platform (`KAIROS_CLI_DOWNLOAD_URL` on the
+server, by default the GitHub releases). The CLI downloads the tarball of its
+platform, `kairos-<version>-<target>.tar.gz`, checks it against the `.sha256`, and writes the new binary to a new
+file next to the old one. It keeps the old binary as `kairos.bak` and renames
+the new file over the old path. A failed download or a bad checksum changes
+nothing. With `--version` or `--latest`, the CLI takes the tarball from the
+GitHub releases; `KAIROS_RELEASES_URL` replaces that URL, for a mirror.
+
+A server older than this command does not tell its version: name one with
+`--version`, or use `--latest`.
+
+**The daily check.** Before a command (not `login`, `logout`, `index` or
+`self-update`), the CLI asks the server for its version once a day for each
+deployment, with a 2 second limit. When the server is newer, it prints one
+line on stderr that names `kairos self-update`. With `KAIROS_AUTO_UPDATE=1`
+the CLI updates itself instead of printing the line. The check keeps its
+state in `version-check.json` in the config directory. A server that does not
+answer counts as a check, and the command goes on.
+
 ## Operator subcommands (`kairos-server`)
 
 These are not `kairos` commands. They are subcommands of the **server binary**, run
@@ -1592,6 +1650,7 @@ plaintext password never has to be written into a manifest.
 |---|---|---|
 | config directory | `0700` | Resolved from `KAIROS_CONFIG_DIR`, else `$XDG_CONFIG_HOME/kairos`, else `$HOME/.config/kairos`. |
 | `credentials.json` inside it | `0600` | The credential cache, keyed by normalized deployment URL. Holds issuer tokens and local sessions. |
+| `version-check.json` inside it | default | The last daily version check: the deployment, the time and the version of the server. |
 
 [Configuration](../configuration/#cli-configuration) is the canonical entry for
 the resolution order, the file's full shape, and the refresh behaviour.

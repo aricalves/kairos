@@ -85,8 +85,8 @@ const TENANT: &str = "acme";
 
 /// How many tools `tools/list` returns, and the word the reference pages
 /// use for that number (COLLIERY-T-0220, COLLIERY-T-0266).
-const TOOL_COUNT: usize = 45;
-const TOOL_COUNT_WORD: &str = "forty-five";
+const TOOL_COUNT: usize = 46;
+const TOOL_COUNT_WORD: &str = "forty-six";
 
 /// Every request carries a real `Host` header and the tenant resolves from
 /// its subdomain against the configured base domain — the S-0006 REQ-1.2
@@ -623,6 +623,9 @@ async fn mcp_endpoint_against_live_stack() {
         // COLLIERY-T-0220 (COLLIERY-A-0023): set or clear the repository of
         // a task. A tool of its own, not an argument of `update_item`.
         "set_repository",
+        // KAIROS-T-0433: change the lane of a task. A tool of its own, as
+        // set_repository.
+        "set_work_class",
         // COLLIERY-T-0266: an agent adds a repository to the directory, and
         // changes its description, its default branch and its URL. No tool
         // deletes a repository, and no tool changes its owner or its slug.
@@ -713,6 +716,7 @@ async fn mcp_endpoint_against_live_stack() {
             "thirty-nine",
             "forty-one",
             "forty-four",
+            "forty-five",
         ] {
             assert!(
                 !reference.contains(stale),

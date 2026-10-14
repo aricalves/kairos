@@ -740,6 +740,16 @@ Kairos seals the write token with `KAIROS_SECRETS_KEY`, as it seals the read
 token.
 `kairos-server rotate-secrets` seals the write tokens again.
 
+### The CLI downloads
+
+`GET /version` (open) gives the version of the server and, for each platform,
+the tarball of the CLI of that version and its `.sha256`. `kairos self-update`
+installs from these links.
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `KAIROS_CLI_DOWNLOAD_URL` | URL | `https://github.com/colliery-io/kairos/releases` | Where the tarballs of the CLI are. A mirror has the layout of the GitHub releases: `<url>/download/v<version>/kairos-<version>-<target>.tar.gz`, with the `.sha256` beside each. |
+
 ## Default board configurations
 
 Provisioning a tenant seeds one configuration per flight level, and creating a

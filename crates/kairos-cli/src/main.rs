@@ -41,6 +41,7 @@ mod index;
 mod oidc;
 mod password;
 mod provider;
+mod self_update;
 mod table;
 
 use std::process::ExitCode;
@@ -197,6 +198,8 @@ enum Command {
     Admin(AdminCommand),
     /// The code index of a checkout, and its code tools for an agent (COLLIERY-T-1852)
     Index(IndexArgs),
+    /// Install the version of the server (or --latest, or --version) in place of this binary
+    SelfUpdate(self_update::SelfUpdateArgs),
 }
 
 #[tokio::main]
@@ -212,6 +215,21 @@ async fn main() -> ExitCode {
 }
 
 async fn run(command: Command) -> Result<(), CliError> {
+    // KAIROS-T-0432: one line a day when the server is newer, after a
+    // command that succeeded. Not for the commands that set up the CLI, and
+    // not for `index`: its MCP server is a long stdio session.
+    let check = !matches!(
+        command,
+        Command::Login { .. } | Command::Logout { .. } | Command::Index(_) | Command::SelfUpdate(_)
+    );
+    let result = dispatch(command).await;
+    if check && result.is_ok() {
+        self_update::daily_check().await;
+    }
+    result
+}
+
+async fn dispatch(command: Command) -> Result<(), CliError> {
     match command {
         Command::Login {
             url,
@@ -247,6 +265,7 @@ async fn run(command: Command) -> Result<(), CliError> {
         Command::Keys(command) => command.run().await,
         Command::Admin(command) => command.run().await,
         Command::Index(command) => command.run().await,
+        Command::SelfUpdate(args) => args.run().await,
     }
 }
 
