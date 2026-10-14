@@ -504,6 +504,7 @@ async fn entity_endpoints_against_live_stack() {
         task_type: None,
         work_class: Some("planned".into()),
         team_id: None,
+        from_team: None,
     };
     let err = rejection(bob.create_task(&create_task_request).await);
     match &err {
@@ -541,6 +542,7 @@ async fn entity_endpoints_against_live_stack() {
             task_type: Some("bug".into()),
             work_class: None,
             team_id: None,
+            from_team: None,
         })
         .await
         .expect("creating bug task");
@@ -569,6 +571,7 @@ async fn entity_endpoints_against_live_stack() {
             task_type: None,
             work_class: None,
             team_id: None,
+            from_team: None,
         })
         .await
         .expect("creating a task by board slug");
@@ -591,6 +594,7 @@ async fn entity_endpoints_against_live_stack() {
                 task_type: None,
                 work_class: None,
                 team_id: None,
+                from_team: None,
             })
             .await,
     );
@@ -652,6 +656,7 @@ async fn entity_endpoints_against_live_stack() {
             task_type: Some("support".into()),
             work_class: None,
             team_id: None,
+            from_team: None,
         })
         .await
         .expect("creating support task");
@@ -670,6 +675,7 @@ async fn entity_endpoints_against_live_stack() {
             task_type: Some("bug".into()),
             work_class: Some("support".into()),
             team_id: None,
+            from_team: None,
         })
         .await
         .expect("creating unplanned bug");
@@ -807,6 +813,7 @@ async fn entity_endpoints_against_live_stack() {
                 task_type: None,
                 work_class: None,
                 team_id: None,
+                from_team: None,
             })
             .await,
     );
@@ -822,6 +829,7 @@ async fn entity_endpoints_against_live_stack() {
                 task_type: None,
                 work_class: None,
                 team_id: None,
+                from_team: None,
             })
             .await,
     );
