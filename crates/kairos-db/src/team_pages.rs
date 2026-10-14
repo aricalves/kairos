@@ -1,13 +1,10 @@
-//! Team-page write services (KAIROS-T-0082, design in KAIROS-I-0007):
-//! the seeded scaffold every team gets. Page/announcement CRUD arrives
-//! with KAIROS-T-0083.
+//! Team-page write services (KAIROS-T-0082, design in KAIROS-I-0007).
 //!
-//! The scaffold here and the SQL backfill in migration
-//! `2026-08-29-000000_team_pages` MUST stay in step: new teams scaffold
-//! through this function (inside the create-team transaction, the
-//! delivery-board precedent), pre-existing teams through the migration.
-//! Both are guarded per (team, parent, slug), so re-runs and partially
-//! scaffolded teams converge.
+//! A new team gets one page: its charter, the landing page and social
+//! contract of the team. The team grows the rest of its tree itself; there
+//! is no seeded folder set (KAIROS-T-0436, decided in KAIROS-T-0435). The
+//! migration `2026-10-14-000200_team_scaffold_removed` removed the unedited
+//! seeded folders from the teams that had them.
 
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
@@ -22,156 +19,52 @@ use crate::models::team_pages::{NewTeamPage, NewTeamPageHistory, TeamPage};
 const CHARTER_CONTENT: &str =
     "# Team Charter\n\n## Mission\n\n## Scope\n\n## Ways of Working\n\n## Success Measures\n";
 
-/// The Support Processes index page's starter content.
-const SUPPORT_OVERVIEW_CONTENT: &str =
-    "# Support Processes\n\nHow to reach this team and how support work is handled.\n";
-
-/// The Documentation section folders, in display order (the diataxis
-/// buckets plus planning and design docs — KAIROS-I-0007 requirements).
-const DOC_SECTIONS: &[(&str, &str)] = &[
-    ("planning", "Planning"),
-    ("tutorials", "Tutorials"),
-    ("how-to-guides", "How-to Guides"),
-    ("reference", "Reference"),
-    ("explanation", "Explanation"),
-    ("design-docs", "Design Docs"),
-];
-
-/// Insert one scaffold node if no live-or-deleted sibling with the slug
-/// exists yet; returns the node's id either way. Pages get a v1 history
-/// baseline (the T-0012 "complete from birth" posture).
-#[allow(clippy::too_many_arguments)]
-fn ensure_node(
+/// Give a team its charter (idempotent): the protected page `charter` at
+/// the top of the tree, with a v1 history baseline. Runs in the caller's
+/// transaction: team creation calls this beside the delivery-board
+/// creation, so a team is never born without its landing page. The charter
+/// cannot be deleted or moved, so an existing one is always live.
+pub fn seed_team_charter(
     conn: &mut PgConnection,
     team_id: Uuid,
-    parent_id: Option<Uuid>,
-    kind: TeamPageKind,
-    slug: &str,
-    title: &str,
-    content: &str,
-    position: i32,
-    is_protected: bool,
     actor: Uuid,
-) -> Result<Uuid, DieselError> {
+) -> Result<(), DieselError> {
     use crate::schema::team_pages::dsl;
-    let base = dsl::team_pages
+    let existing: Option<Uuid> = dsl::team_pages
         .filter(dsl::team_id.eq(team_id))
-        .filter(dsl::slug.eq(slug))
-        .select(dsl::id);
-    let existing: Option<Uuid> = match parent_id {
-        Some(parent) => base
-            .filter(dsl::parent_id.eq(parent))
-            .first(conn)
-            .optional()?,
-        None => base
-            .filter(dsl::parent_id.is_null())
-            .first(conn)
-            .optional()?,
-    };
-    if let Some(id) = existing {
-        return Ok(id);
+        .filter(dsl::parent_id.is_null())
+        .filter(dsl::slug.eq("charter"))
+        .filter(dsl::deleted_at.is_null())
+        .select(dsl::id)
+        .first(conn)
+        .optional()?;
+    if existing.is_some() {
+        return Ok(());
     }
     let created: TeamPage = diesel::insert_into(dsl::team_pages)
         .values(NewTeamPage {
             team_id,
-            parent_id,
-            kind,
-            slug: slug.to_string(),
-            title: title.to_string(),
-            content: content.to_string(),
-            position,
-            is_protected,
+            parent_id: None,
+            kind: TeamPageKind::Page,
+            slug: "charter".to_string(),
+            title: "Team Charter".to_string(),
+            content: CHARTER_CONTENT.to_string(),
+            position: 0,
+            is_protected: true,
             created_by: actor,
             updated_by: actor,
         })
         .returning(TeamPage::as_returning())
         .get_result(conn)?;
-    if kind == TeamPageKind::Page {
-        diesel::insert_into(crate::schema::team_page_history::table)
-            .values(NewTeamPageHistory {
-                page_id: created.id,
-                version: 1,
-                title: created.title.clone(),
-                content: created.content.clone(),
-                edited_by: actor,
-            })
-            .execute(conn)?;
-    }
-    Ok(created.id)
-}
-
-/// Seed a team's opinionated scaffold (idempotent): the protected Team
-/// Charter, Support Processes (folder + Overview page), and the
-/// Documentation folder with its section subfolders. Runs in the
-/// caller's transaction — team creation calls this alongside the
-/// delivery-board creation so a team is never born bare.
-pub fn seed_team_scaffold(
-    conn: &mut PgConnection,
-    team_id: Uuid,
-    actor: Uuid,
-) -> Result<(), DieselError> {
-    ensure_node(
-        conn,
-        team_id,
-        None,
-        TeamPageKind::Page,
-        "charter",
-        "Team Charter",
-        CHARTER_CONTENT,
-        0,
-        true,
-        actor,
-    )?;
-    let support = ensure_node(
-        conn,
-        team_id,
-        None,
-        TeamPageKind::Folder,
-        "support-processes",
-        "Support Processes",
-        "",
-        1,
-        false,
-        actor,
-    )?;
-    ensure_node(
-        conn,
-        team_id,
-        Some(support),
-        TeamPageKind::Page,
-        "overview",
-        "Overview",
-        SUPPORT_OVERVIEW_CONTENT,
-        0,
-        false,
-        actor,
-    )?;
-    let docs = ensure_node(
-        conn,
-        team_id,
-        None,
-        TeamPageKind::Folder,
-        "documentation",
-        "Documentation",
-        "",
-        2,
-        false,
-        actor,
-    )?;
-    for (position, (slug, title)) in DOC_SECTIONS.iter().enumerate() {
-        ensure_node(
-            conn,
-            team_id,
-            Some(docs),
-            TeamPageKind::Folder,
-            slug,
-            title,
-            "",
-            position as i32,
-            false,
-            actor,
-        )?;
-    }
+    diesel::insert_into(crate::schema::team_page_history::table)
+        .values(NewTeamPageHistory {
+            page_id: created.id,
+            version: 1,
+            title: created.title.clone(),
+            content: created.content.clone(),
+            edited_by: actor,
+        })
+        .execute(conn)?;
     Ok(())
 }
 

@@ -113,6 +113,14 @@ pub struct TeamPageNode {
     pub version: i32,
 }
 
+impl TeamPageNode {
+    /// The charter of the team: the protected page at the top of the tree
+    /// (KAIROS-T-0436). Found by its flag, not by its slug.
+    pub fn is_charter(&self) -> bool {
+        self.parent_id.is_none() && self.is_protected && self.kind == "page"
+    }
+}
+
 /// `GET /api/teams/{id}/pages` — the flat page tree (nest by parent_id).
 pub async fn team_pages(auth: Auth, team_id: &str) -> Result<Vec<TeamPageNode>, ApiError> {
     get_json(auth, &format!("/api/teams/{team_id}/pages")).await
@@ -418,6 +426,30 @@ mod tests {
         assert!(node.is_protected);
         assert_eq!(node.parent_id, None);
         assert_eq!(node.kind, "page");
+    }
+
+    fn node(parent_id: Option<&str>, slug: &str, is_protected: bool) -> TeamPageNode {
+        TeamPageNode {
+            id: slug.into(),
+            parent_id: parent_id.map(Into::into),
+            kind: "page".into(),
+            slug: slug.into(),
+            title: slug.into(),
+            content: String::new(),
+            position: 0,
+            is_protected,
+            version: 1,
+        }
+    }
+
+    /// KAIROS-T-0436: the charter is the protected root page, whatever its
+    /// slug; a root page that a team calls `charter` is not the charter.
+    #[test]
+    fn the_charter_is_found_by_its_flag() {
+        assert!(node(None, "charter", true).is_charter());
+        assert!(node(None, "landing", true).is_charter());
+        assert!(!node(None, "charter", false).is_charter());
+        assert!(!node(Some("f1"), "charter", true).is_charter());
     }
 
     /// `Announcement` decodes the server's TeamAnnouncement shape.

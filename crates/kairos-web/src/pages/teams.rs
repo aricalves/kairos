@@ -139,7 +139,7 @@ struct TeamView {
     streams: Vec<api::DeliveryStream>,
     /// Documents attached to the team's work (KAIROS-T-0084, derived).
     work_documents: Vec<api::WorkDocument>,
-    /// The full page tree, flat (KAIROS-T-0082 scaffold + user pages).
+    /// The full page tree, flat: the charter and the pages of the team.
     pages: Vec<api::TeamPageNode>,
     /// Pinned first, newest first (server ordering).
     announcements: Vec<api::Announcement>,
@@ -315,10 +315,7 @@ fn TeamBody(view_model: TeamView, on_changed: Callback<()>) -> impl IntoView {
     let header_right: Children = Box::new(move || {
         view! { <Pill color=team_type_color(&type_pill)>{type_pill.clone()}</Pill> }.into_any()
     });
-    let charter = pages
-        .iter()
-        .find(|p| p.parent_id.is_none() && p.slug == "charter")
-        .cloned();
+    let charter = pages.iter().find(|p| p.is_charter()).cloned();
     let team_id = team.id.clone();
     let team_slug = team.slug.clone();
     let charter_href = format!("/teams/{team_slug}/pages/charter");
@@ -335,7 +332,7 @@ fn TeamBody(view_model: TeamView, on_changed: Callback<()>) -> impl IntoView {
                         </Stack>
                     }.into_any(),
                     None => view! {
-                        <Empty message="No charter page — the scaffold seeds one for every team."/>
+                        <Empty message="This team has no charter page."/>
                     }.into_any(),
                 }}
             </Panel>
@@ -738,7 +735,7 @@ fn AnnouncementsPanel(
 fn DocTree(pages: Vec<api::TeamPageNode>, team_slug: String) -> impl IntoView {
     let visible = pages
         .iter()
-        .filter(|p| !(p.parent_id.is_none() && p.slug == "charter"))
+        .filter(|p| !p.is_charter())
         .cloned()
         .collect::<Vec<_>>();
     if visible.is_empty() {
