@@ -18,9 +18,9 @@ The rules:
 
 ## 0. Check the admin tools
 
-Most tools of this skill are in the admin profile of the Kairos MCP server (KAIROS-T-0454): `create_team`, `update_team`, `add_team_member`, `grant_capability`, the column and transition tools, the dispatch tools, `set_agent_triage` and the team page tools. The default server (`/mcp`) does not list them, and Claude Code calls only the tools that a server lists.
+Most tools of this skill are in the admin profile of the Kairos MCP server (KAIROS-T-0454): `create_team`, `update_team`, `add_team_member`, `grant_capability`, the column and transition tools, the dispatch tools, `set_agent_triage` and the tools that write the team page. The default server (`/mcp`) does not list them, and Claude Code calls only the tools that a server lists.
 
-Look for the `kairos-admin` server: its tools have names such as `mcp__kairos-admin__team_pages`. If it is not there, stop and tell the person to add it, then to start a new session:
+Look for the `kairos-admin` server: its tools have names such as `mcp__kairos-admin__create_team_page`. (`team_pages`, which reads the team page, is on both servers.) If it is not there, stop and tell the person to add it, then to start a new session:
 
 ```sh
 claude mcp add --scope user --transport http kairos-admin \
