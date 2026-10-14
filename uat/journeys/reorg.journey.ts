@@ -236,7 +236,20 @@ journey(
         delete: async () => { await api.delete(`/api/teams/${surviving.fixture.teamId}/members/${agentId}`); },
       });
       const listed = await cli.json(['teams', 'members', 'list', surviving.fixture.teamId!]);
-      return { team: surviving.fixture.teamSlug, members: ((listed.items ?? listed) as any[]).length };
+      // And off the old team, which is going away (MCP).
+      const mcp = await alice.mcp();
+      for (const userId of [bobId, agentId]) {
+        await mcp.call('remove_team_member', { team: oldTeamSlug, user: userId });
+      }
+      const left = await cli.json(['teams', 'members', 'list', oldTeamId]);
+      const leftIds = ((left.items ?? left) as any[]).map((m: any) => m.user_id ?? m.id);
+      expect(leftIds).not.toContain(bobId);
+      expect(leftIds).not.toContain(agentId);
+      return {
+        team: surviving.fixture.teamSlug,
+        members: ((listed.items ?? listed) as any[]).length,
+        left_on_old_team: leftIds.length,
+      };
     });
 
     await step(agent, 'picks the work back up, on a board it had never heard of this morning', async () => {
@@ -262,6 +275,17 @@ journey(
       const gone = await api.raw('GET', `/api/boards/${oldBoardId}`);
       expect(gone.status).toBe(404);
       return { deleted: oldTeamSlug, board_status: gone.status, teams_left: slugs.length };
+    });
+
+    await step(alice, 'renames the surviving team so its name says it holds search too (MCP)', async () => {
+      const mcp = await alice.mcp();
+      const name = `UAT data and search (${surviving.fixture.teamSlug})`;
+      await mcp.call('update_team', { team: surviving.fixture.teamSlug, name });
+      const api = await alice.api();
+      const team = await api.teamBySlug(surviving.fixture.teamSlug!);
+      expect(team.name).toBe(name);
+      expect(team.slug, 'the slug stays, so links keep working').toBe(surviving.fixture.teamSlug);
+      return { team: team.slug, name: team.name };
     });
 
     await step(bob, 'finds his work on the surviving team\'s board and carries on', async () => {

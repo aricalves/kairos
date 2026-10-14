@@ -247,5 +247,75 @@ journey(
         definition_still_pinned_by: `${after.body.error.details.item_values} item value(s)`,
       };
     });
+
+    const impactSlug = `uat-impact-${stamp}`;
+    const reviewSlug = `uat-review-${stamp}`;
+
+    await step(alice, 'drafts a post-incident review kind from her agent, then drops it before anyone uses it (MCP)', async () => {
+      // The same admin work as the screens above, the way an admin agent
+      // does it (KAIROS-T-0443): a field, a template that stamps it, and
+      // the same guard on the way out.
+      const mcp = await alice.mcp();
+      const tolerant = (path: string) => async () => {
+        const res = await api.raw('DELETE', path);
+        if (res.status !== 404 && (res.status < 200 || res.status >= 300)) {
+          throw new Error(`DELETE ${path} -> ${res.status}`);
+        }
+      };
+      const made = await mcp.call('save_metadata_definition', {
+        name: 'UAT Impact',
+        slug: impactSlug,
+        field_type: 'enum',
+        enum_options: ['low', 'high'],
+        entity_types: ['document'],
+      });
+      expect(made).toContain(impactSlug);
+      const impactOf = async () => {
+        const defs = await api.get('/api/metadata-definitions');
+        return (defs.items ?? defs).find((d: any) => d.slug === impactSlug);
+      };
+      const impactId = (await impactOf()).id;
+      ledger.add({ kind: 'metadata-definition', label: impactSlug, delete: tolerant(`/api/metadata-definitions/${impactId}`) });
+      // A middle value, once the team sees "low" and "high" are not enough.
+      await mcp.call('save_metadata_definition', { definition: impactSlug, enum_options: ['low', 'medium', 'high'] });
+      expect((await impactOf()).enum_options).toEqual(['low', 'medium', 'high']);
+
+      const template = await mcp.call('save_template', {
+        name: 'UAT Post-incident review',
+        slug: reviewSlug,
+        content: '## Timeline\n\n## What we change\n',
+        metadata: [{ definition_slug: impactSlug, default_value: 'low' }],
+      });
+      expect(template).toContain(reviewSlug);
+      const templates = await api.get('/api/templates?limit=100');
+      const review = (templates.items ?? templates).find((t: any) => t.slug === reviewSlug);
+      expect(review, 'the template exists').toBeTruthy();
+      ledger.add({ kind: 'template', label: reviewSlug, delete: tolerant(`/api/templates/${review.id}`) });
+
+      // The template carries the field, so the field cannot go first.
+      const refused = await mcp.refused('delete_metadata_definition', { reference: impactSlug });
+      expect(refused).toContain('DEFINITION_IN_USE');
+      await mcp.call('delete_template', { reference: reviewSlug });
+      await mcp.call('delete_metadata_definition', { reference: impactSlug });
+      return {
+        field: `${impactSlug} (low | medium | high)`,
+        template: reviewSlug,
+        field_first: 'DEFINITION_IN_USE',
+        dropped: 'template, then field',
+      };
+    });
+
+    await step(alice, 'checks from the terminal what is left: the support request\'s field and template only', async () => {
+      const cli = await alice.cli();
+      const defs = await cli.json(['metadata', 'list']);
+      const defSlugs = (defs.items as any[]).map((d: any) => d.slug);
+      expect(defSlugs).toContain(fieldSlug);
+      expect(defSlugs).not.toContain(impactSlug);
+      const templates = await cli.json(['templates', 'list']);
+      const templateSlugs = (templates.items as any[]).map((t: any) => t.slug);
+      expect(templateSlugs).toContain(templateSlug);
+      expect(templateSlugs).not.toContain(reviewSlug);
+      return { fields: defSlugs.length, templates: templateSlugs.length, kept: [fieldSlug, templateSlug] };
+    });
   },
 );

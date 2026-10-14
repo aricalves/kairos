@@ -213,9 +213,11 @@ journey(
       await expect(requested.locator('.cl-pill', { hasText: 'blocks 1' })).toBeVisible();
       // The team plans its own work: bob, a member of the receiving team,
       // changes the work class. carol could not.
+      const mcp = await bob.mcp();
+      const changed = await mcp.call('set_work_class', { short_code: filed, work_class: 'planned' });
+      expect(changed).toContain('planned lane (was support)');
       const api = await bob.api();
-      const planned = await api.post(`/api/tasks/${filed}/work-class`, { work_class: 'planned' });
-      expect(planned.work_class).toBe('planned');
+      expect((await api.task(filed)).work_class).toBe('planned');
       await page.reload();
       await expect(cardIn(page, 'Backlog', filed)).toBeVisible({ timeout: 15_000 });
       await dragCard(page, filed, 'Todo');
