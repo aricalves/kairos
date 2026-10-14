@@ -244,13 +244,36 @@ async fn an_agent_decides_intake_only_when_the_board_allows_it() {
         .expect("alice in the team");
     let board = "web-delivery";
     let detail = admin.get_board(board).await.expect("board");
-    let todo = detail
-        .columns
-        .iter()
-        .find(|c| c.name == "Todo")
-        .expect("Todo")
-        .id
-        .clone();
+    let column = |name: &str| {
+        detail
+            .columns
+            .iter()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("column {name}"))
+            .id
+            .clone()
+    };
+    let todo = column("Todo");
+    let active = column("Active");
+    // A second team, for a move to another board.
+    let ops = admin
+        .create_team(&CreateTeamRequest {
+            name: "Ops".into(),
+            slug: "ops".into(),
+            code_prefix: "OPS".into(),
+            team_type: None,
+        })
+        .await
+        .expect("team");
+    admin
+        .add_team_member(
+            &ops.id,
+            &AddTeamMemberRequest {
+                user_id: "alice@kairos.test".into(),
+            },
+        )
+        .await
+        .expect("alice in ops");
     let key = alice
         .create_agent_key(&CreateApiKeyRequest {
             name: "board session".into(),
@@ -284,6 +307,9 @@ async fn an_agent_decides_intake_only_when_the_board_allows_it() {
     );
     triage_off(agent.set_task_work_class(&intake, "planned").await);
     triage_off(agent.transition_task(&intake, &todo).await);
+    // KAIROS-T-0456: a cancel and a move to another team are triage too.
+    triage_off(agent.cancel_task(&intake, "won't do").await);
+    triage_off(agent.move_task(&intake, "ops-delivery").await);
     // The agent proposes with a note.
     agent
         .append_note(
@@ -298,6 +324,16 @@ async fn an_agent_decides_intake_only_when_the_board_allows_it() {
         .transition_task(&other, &todo)
         .await
         .expect("a person moves intake");
+    // KAIROS-T-0456: back into the entry column is a triage again...
+    let entry = column("Backlog");
+    triage_off(agent.transition_task(&other, &entry).await);
+    // ...but once a person has triaged the task out of the entry column,
+    // the agent moves it on as any other task, in the support lane.
+    let worked = agent
+        .transition_task(&other, &active)
+        .await
+        .expect("the agent takes triaged support work");
+    assert_eq!(worked.work_class, "support");
     // A task in the planned lane is not intake.
     let planned = admin
         .create_task(&CreateTaskRequest {
@@ -353,6 +389,15 @@ async fn an_agent_decides_intake_only_when_the_board_allows_it() {
         .await
         .expect("task")
         .short_code;
+    // A move the board refuses leaves no triage line (KAIROS-T-0456).
+    agent_mcp
+        .refused(
+            "transition_item",
+            json!({"short_code": third, "to_column": "Completed"}),
+            "INVALID_TRANSITION",
+        )
+        .await;
+    assert_eq!(agent_rows(&mut conn), 1, "no line for a refused move");
     agent_mcp
         .ok(
             "transition_item",
@@ -360,6 +405,29 @@ async fn an_agent_decides_intake_only_when_the_board_allows_it() {
         )
         .await;
     assert_eq!(agent_rows(&mut conn), 2, "one line for each agent decision");
+    let fifth = admin
+        .create_task(&support_task(board, "Fifth intake"))
+        .await
+        .expect("task")
+        .short_code;
+    agent
+        .cancel_task(&fifth, "duplicate")
+        .await
+        .expect("the agent decides a cancel");
+    let sixth = admin
+        .create_task(&support_task(board, "Sixth intake"))
+        .await
+        .expect("task")
+        .short_code;
+    agent
+        .move_task(&sixth, "ops-delivery")
+        .await
+        .expect("the agent decides a move");
+    assert_eq!(
+        agent_rows(&mut conn),
+        4,
+        "a line for the cancel and the move"
+    );
 
     // Back off over REST.
     let setting = admin.set_agent_triage(board, false).await.expect("off");

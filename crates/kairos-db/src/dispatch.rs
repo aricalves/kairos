@@ -219,6 +219,8 @@ struct TaskFacts {
     board_slug: String,
     #[diesel(sql_type = Text)]
     board_name: String,
+    #[diesel(sql_type = Bool)]
+    agents_decide: bool,
     #[diesel(sql_type = Text)]
     column_name: String,
     #[diesel(sql_type = Nullable<Text>)]
@@ -287,13 +289,15 @@ fn queue(
     }
     let facts: TaskFacts = sql_query(
         "SELECT t.short_code, t.title, t.task_type, t.work_class::text AS work_class, b.id AS board_id, b.slug AS board_slug, \
-                b.name AS board_name, c.name AS column_name, p.slug AS repository_slug, \
+                b.name AS board_name, COALESCE(a.agents_decide, false) AS agents_decide, \
+                c.name AS column_name, p.slug AS repository_slug, \
                 p.repo_full_name AS repository_full_name, p.forge AS repository_forge, \
                 p.repo_url AS repository_url, \
                 (SELECT COALESCE(NULLIF(btrim(u.display_name), ''), u.email) \
                    FROM public.users u WHERE u.id = $3) AS actor_name \
            FROM tasks t \
            JOIN boards b ON b.id = t.board_id \
+           LEFT JOIN board_agent_triage a ON a.board_id = b.id \
            JOIN board_columns c ON c.id = $2 \
            LEFT JOIN repositories p ON p.id = t.repository_id AND p.deleted_at IS NULL \
           WHERE t.id = $1",
@@ -329,6 +333,9 @@ fn queue(
                 "id": facts.board_id,
                 "slug": facts.board_slug,
                 "name": facts.board_name,
+                // KAIROS-T-0456: whether an agent may decide the triage of
+                // intake here, so a runner knows before it tries.
+                "agents_decide": facts.agents_decide,
             },
             "column": { "id": column_id, "name": facts.column_name },
             "repository": repository,
