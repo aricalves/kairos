@@ -166,6 +166,9 @@ fn map_page_error(e: TeamPageError) -> ApiError {
                 "content": current_content,
             }
         })),
+        e @ TeamPageError::FolderContent(_) => {
+            ApiError::validation(e.to_string()).with_details(json!({ "field": "content" }))
+        }
         TeamPageError::ContentTooLarge { actual } => ApiError::validation(format!(
             "The content has {actual} bytes. The limit is {} bytes.",
             team_pages::MAX_CONTENT_BYTES
