@@ -1206,8 +1206,9 @@ stock `postgres:16` does not carry it. There is no bundled identity provider.
 The profile `worker` adds the service `worker`. It is the same image with
 `KAIROS_ROLE=worker` and its own volume for the clones and the tools. The
 volume is at `/var/lib/kairos/code-index`, its `KAIROS_CODE_INDEX_DIR`, unless
-`.env` names another folder. Its
-limits are `mem_limit` 8g, `mem_reservation` 2g and `cpus` 4. To use it, add `worker` to
+`.env` names another folder.
+
+Its limits are `mem_limit` 8g, `mem_reservation` 2g and `cpus` 4. To use it, add `worker` to
 `COMPOSE_PROFILES` and set `KAIROS_ROLE=api` in `.env`. Increase `mem_limit`
 for big repositories. See [Server role](#server-role).
 
