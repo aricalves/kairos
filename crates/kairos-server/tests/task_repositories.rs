@@ -183,6 +183,7 @@ async fn task_repository_binding_against_live_stack() {
         work_class: None,
         team_id: None,
         repository: None,
+        from_team: None,
     };
 
     // =======================================================================

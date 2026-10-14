@@ -239,6 +239,7 @@ async fn notifications_ride_along_until_read() {
             work_class: None,
             team_id: None,
             repository: None,
+            from_team: None,
         })
         .await
         .expect("task");

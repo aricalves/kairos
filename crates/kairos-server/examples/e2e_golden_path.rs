@@ -335,6 +335,7 @@ async fn main() -> ExitCode {
                     task_type: Some("task".to_string()),
                     work_class: None,
                     team_id: None,
+                    from_team: None,
                 })
                 .await,
         );

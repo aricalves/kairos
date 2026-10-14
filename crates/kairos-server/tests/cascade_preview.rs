@@ -158,6 +158,7 @@ async fn cascade_preview_matches_actual_cascade() {
             task_type: None,
             work_class: None,
             team_id: None,
+            from_team: None,
         })
         .await
         .expect("creating task");

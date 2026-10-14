@@ -148,6 +148,13 @@ impl TaskCreateAccess {
 /// the same reason and of the same shape: the request is well formed, and
 /// what the caller lacks is `manage_tasks` on that board. Shared by HTTP and
 /// MCP so the two entry points cannot diverge (the KAIROS-T-0096 lesson).
+///
+/// KAIROS-T-0426 (Dylan, 2026-10-14): `from_team` names the team that sends
+/// the task. When it is not the team of the target board, the task is a
+/// request whoever sends it, a manager of the board or an org admin too:
+/// entry column, support lane. A person or an agent key that manages every
+/// board says so with `from_team`; with no `from_team`, the rule above
+/// stays.
 pub(crate) fn require_task_create_capability(
     conn: &mut PgConnection,
     slug: &str,
@@ -155,11 +162,20 @@ pub(crate) fn require_task_create_capability(
     route: &TaskRoute,
     column_id: Option<Uuid>,
     requested_work_class: Option<WorkClass>,
+    from_team: Option<&str>,
 ) -> Result<TaskCreateAccess, ApiError> {
     use kairos_db::abac;
+    let from_other_team = match from_team.map(str::trim).filter(|team| !team.is_empty()) {
+        Some(reference) => {
+            let team = super::org::repositories::resolve_team(conn, reference)
+                .map_err(|e| e.with_details(json!({ "field": "from_team" })))?;
+            route.team_id != Some(team.id)
+        }
+        None => false,
+    };
     let manages =
         abac::authorize(conn, slug, route.board_id, user, MANAGE).map_err(super::map_abac_error)?;
-    if manages {
+    if manages && !from_other_team {
         return Ok(TaskCreateAccess::Manager);
     }
     let targets_entry = match column_id {
@@ -169,7 +185,25 @@ pub(crate) fn require_task_create_capability(
         }
     };
     if !targets_entry {
+        if manages {
+            return Err(ApiError::validation(
+                "A task from a different team (from_team) is a request: it goes to the entry \
+                 column of the board. Remove column_id.",
+            )
+            .with_details(json!({ "field": "column_id" })));
+        }
         return Err(ApiError::capability_required(MANAGE, Some(route.board_id)));
+    }
+    if requested_work_class == Some(WorkClass::Planned) && manages {
+        return Err(ApiError::validation(
+            "A task from a different team (from_team) is a request: it goes to the support \
+             lane. Remove work_class, or send support. The receiving team moves it to the \
+             planned lane when it takes it.",
+        )
+        .with_details(json!({ "field": "work_class" })));
+    }
+    if manages {
+        return Ok(TaskCreateAccess::Request);
     }
     if requested_work_class == Some(WorkClass::Planned) {
         return Err(ApiError::forbidden(format!(
@@ -373,6 +407,7 @@ pub(crate) async fn create_task(
                 &route,
                 column_id,
                 requested_work_class,
+                body.from_team.as_deref(),
             )?;
             let work_class = access.work_class(requested_work_class, task_type);
             let created = items::create_task(

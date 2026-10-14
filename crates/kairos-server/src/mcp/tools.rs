@@ -423,6 +423,12 @@ pub struct CreateItemParams {
     /// else planned. On every other board the task is a request: the work
     /// class is support, and planned is refused (COLLIERY-A-0023).
     pub work_class: Option<String>,
+    /// Tasks only: the team that sends the task, by slug or UUID
+    /// (KAIROS-T-0426). When it is not the team of the board, the task is a
+    /// request whoever sends it, also a manager or an org admin: entry
+    /// column, support lane, and planned is refused. An agent in a board
+    /// session sends its own team.
+    pub from_team: Option<String>,
     /// Strategies only: the strategy's hypothesis.
     pub hypothesis: Option<String>,
     /// Initiatives only: t-shirt complexity xs | s | m | l | xl.
@@ -2412,7 +2418,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Create a work item: strategy | initiative | task | document | adr. Boards resolve by slug/UUID (defaulted when unambiguous); `parent` (short code) creates the parent edge; for a document or an ADR it creates the supports edge, from a strategy, initiative or task. A refused create writes nothing. You create the item, so you can link it to the parent. Tasks: `board` chooses the board, and the task gets the team of that board. `repository` (slug/UUID) is an optional link to any live repository; it does not choose the board. Any member can send a request to any team: name the delivery board of that team in `board`. The request goes to the entry column, in the support lane. On a board that you do not manage, `work_class: planned` is refused. Initiatives: `bucket_type` makes it a bucket rather than a dated initiative. There is deliberately no `column` argument — every item is created in its board's entry column, and `transition_item` is the only way work moves, so placing an item directly would bypass the board's transition graph. Documents: `board` is required. It is the owner board of the document: you need `manage_documents` on it, it gives the right to edit the document, and the code of the document gets the prefix of that board. A call with no `board` is refused, and the refusal names `board`; there is no default board, and `parent` does not give one. The document is not a card of the board. A document that is about a repository as a whole (its vision, its architecture) names the board of the team and impacts the repository: create it with `board`, then call `link_items` with the relationship `impacts`. ADRs: `board` is the ADR board. A team can have an ADR board for its delivery ADRs, with the prefix of the team: `my_boards` names the team of each ADR board. Returns the new short code."
+        description = "Create a work item: strategy | initiative | task | document | adr. Boards resolve by slug/UUID (defaulted when unambiguous); `parent` (short code) creates the parent edge; for a document or an ADR it creates the supports edge, from a strategy, initiative or task. A refused create writes nothing. You create the item, so you can link it to the parent. Tasks: `board` chooses the board, and the task gets the team of that board. `repository` (slug/UUID) is an optional link to any live repository; it does not choose the board. Any member can send a request to any team: name the delivery board of that team in `board`. The request goes to the entry column, in the support lane. On a board that you do not manage, `work_class: planned` is refused. `from_team` (slug or UUID) names the team that sends a task: when it is not the team of the board, the task is a request whoever sends it (a manager or an org admin too), so an agent in a board session sends its own team. Initiatives: `bucket_type` makes it a bucket rather than a dated initiative. There is deliberately no `column` argument — every item is created in its board's entry column, and `transition_item` is the only way work moves, so placing an item directly would bypass the board's transition graph. Documents: `board` is required. It is the owner board of the document: you need `manage_documents` on it, it gives the right to edit the document, and the code of the document gets the prefix of that board. A call with no `board` is refused, and the refusal names `board`; there is no default board, and `parent` does not give one. The document is not a card of the board. A document that is about a repository as a whole (its vision, its architecture) names the board of the team and impacts the repository: create it with `board`, then call `link_items` with the relationship `impacts`. ADRs: `board` is the ADR board. A team can have an ADR board for its delivery ADRs, with the prefix of the team: `my_boards` names the team of each ADR board. Returns the new short code."
     )]
     pub async fn create_item(
         &self,
@@ -6076,12 +6082,20 @@ fn create_item_impl(
             &route,
             None,
             requested_work_class,
+            params.from_team.as_deref(),
         )?;
         // The SAME function as POST /api/tasks chooses the stored work
         // class, so the two cannot disagree about what a request is.
         let work_class = access.work_class(requested_work_class, task_type);
         (board, Some(route), Some((task_type, work_class)))
     } else {
+        // KAIROS-T-0426: `from_team` says who sends a task.
+        if params.from_team.is_some() {
+            return Err(ApiError::validation(format!(
+                "The argument from_team is for a task. A {item_type} has no sending team."
+            ))
+            .with_details(json!({ "argument": "from_team" })));
+        }
         let board = match params.board.as_deref() {
             Some(reference) => board_by_ref(conn, reference)?,
             None => default_board_for(conn, level_of(item_type))?,

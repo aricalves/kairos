@@ -292,6 +292,13 @@ as a quantity. Nothing is lost by it, because the receiving team can take a
 request into its plan: a member of that team changes the work class, and from
 then on it is planned work that the team planned.
 
+A person who manages every board, such as an organization admin, or an agent
+that works with that person's key, would make planned work on each board by
+this rule. So a task can name the team that sends it, `from_team`
+(KAIROS-T-0426). When that team is not the team of the board, the task is a
+request whoever sends it. An agent in the session of a board names its own
+team. With no `from_team`, the rule above applies.
+
 So the incoming work of a team is its support lane, and that is the whole
 intake mechanism. There is no separate inbox and no notification, for the same
 reason the owner of a repository gets no list: a second place to look is a

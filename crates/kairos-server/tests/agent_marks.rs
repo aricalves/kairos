@@ -271,6 +271,7 @@ async fn history_and_activity_mark_a_change_made_by_an_agent() {
             work_class: None,
             team_id: None,
             repository: None,
+            from_team: None,
         })
         .await
         .expect("alice makes a task");
