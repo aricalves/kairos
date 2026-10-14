@@ -845,7 +845,7 @@ both fields were already *readable* through `get_item`. They are accepted now.
 Refuses: `VALIDATION` for an unknown `item_type`; for a `task_type`,
 `work_class`, `complexity` or `bucket_type` outside its vocabulary; for a `decision_date` that is not `YYYY-MM-DD`; for a type-specific
 argument passed with the wrong `item_type`, naming the type it belongs to; for a
-document with no `board` and no `parent`, or whose parent is not a strategy, initiative or
+document with no `board`, or whose parent is not a strategy, initiative or
 task; for a document with `repository`; for a `parent` relationship that the type rules do not allow, with the
 rule in the message; for a `parent` that does not name a live item; for an unknown template,
 and for a template *name* that matches more than one template, which asks for
@@ -1603,7 +1603,7 @@ short code; `FORBIDDEN` without `manage_tasks`.
 
 ## The structure of the organization
 
-These four tools change the teams, the boards and the grants of the
+These tools change the teams, the boards and the grants of the
 organization. An organization admin can use each tool. A principal with the
 capability [`manage_structure`](../capabilities/#manage_structure) can use them
 too, at the scope of the grant:

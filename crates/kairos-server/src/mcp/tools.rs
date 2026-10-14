@@ -1,10 +1,10 @@
-//! The S-0006 tool surface (KAIROS-T-0026): 23 tools — the 14 frozen by
+//! The S-0006 tool surface (KAIROS-T-0026): the 14 tools frozen by
 //! S-0006, plus the two repository tools (KAIROS-T-0107), `move_item`
 //! (KAIROS-I-0012), `restore_item` (KAIROS-A-0020), `related_work`
 //! (KAIROS-T-0191), `propose_edge` (KAIROS-T-0192), `set_repository`
 //! (COLLIERY-T-0220), and `add_repository` and `update_repository`
-//! (COLLIERY-T-0266); later tasks added more (41 in all since KAIROS-T-0382
-//! added `get_events` and `mark_events_read`) — each a
+//! (COLLIERY-T-0266); later tasks added more (67 in all, in the profiles
+//! of `profiles.rs`, KAIROS-T-0454) — each a
 //! thin wrapper over the same `kairos-core`/`kairos-db` services the REST
 //! handlers call — through [`crate::blocking::BlockingTenantPool`], never
 //! HTTP (A-0011). Contracts:
@@ -862,7 +862,7 @@ pub struct GrantCapabilityParams {
     pub user: String,
     /// A board capability (manage_tasks, manage_documents, manage_adrs,
     /// manage_initiatives, manage_strategies, transition_items,
-    /// configure_boards, administer_members, or a glob: *, manage_*,
+    /// configure_boards, administer_members, pages, or a glob: *, manage_*,
     /// configure_*, transition_*), or manage_structure.
     pub capability: String,
     /// The board, by slug or UUID. A board capability needs it. For
@@ -1139,7 +1139,7 @@ pub struct SaveTemplateParams {
 }
 
 // ---------------------------------------------------------------------------
-// The tools (41; the list is asserted in tests/mcp.rs)
+// The tools (67; the list of each profile is asserted in tests/mcp.rs)
 // ---------------------------------------------------------------------------
 
 #[tool_router(vis = "pub(super)")]
@@ -1387,7 +1387,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "One repository: owner team and its delivery board, open task count, default branch and where it comes from, the team's `description` of how to work in it (read it before working in an unfamiliar repository), the documents and ADRs that impact it (read them with `get_item` before planning), its open branches and pull requests with their items, and the lines read token, write-back, code index build and code index breaker (a tripped breaker stops builds until `rebuild_code_index`). `repository` is a slug or UUID; `include_deleted: true` adds archived documents and ADRs."
+        description = "One repository: owner team and its delivery board, open task count, default branch and where it comes from, the team's `description` of how to work in it (read it before working in an unfamiliar repository), the documents and ADRs that impact it (read them with `get_item` before planning), its open branches and pull requests with their items, and the lines read token, write-back, code index build and code index breaker (a tripped breaker stops builds until `rebuild_code_index` (admin profile)). `repository` is a slug or UUID; `include_deleted: true` adds archived documents and ADRs."
     )]
     pub async fn get_repository(
         &self,
@@ -1936,33 +1936,35 @@ impl KairosMcp {
             use crate::api::org::dispatch as d;
             use kairos_client::types_dispatch as dto;
             crate::api::org::run_in_transaction(conn, |conn| {
-                let (target_id, created) = match (params.target_id.as_deref(), params.url.as_deref()) {
-                    (Some(id), None) => (id.to_string(), None),
-                    (None, Some(url)) => {
-                        let created = d::create_target_as(
-                            conn,
-                            &slug,
-                            user,
-                            &params.board,
-                            &dto::CreateWebhookTargetRequest {
-                                name: params
-                                    .target_name
-                                    .clone()
-                                    .unwrap_or_else(|| "Agent runner".to_string()),
-                                url: url.to_string(),
-                            },
-                            key.as_ref(),
-                            allow_private,
-                        )?;
-                        (created.target.id.clone(), Some(created))
-                    }
-                    _ => {
-                        return Err(ApiError::validation(
-                            "Send target_id (a webhook target of the board) or url (a new                              target), and not both.",
-                        )
-                        .with_details(serde_json::json!({ "argument": "target_id" })));
-                    }
-                };
+                let (target_id, created) =
+                    match (params.target_id.as_deref(), params.url.as_deref()) {
+                        (Some(id), None) => (id.to_string(), None),
+                        (None, Some(url)) => {
+                            let created = d::create_target_as(
+                                conn,
+                                &slug,
+                                user,
+                                &params.board,
+                                &dto::CreateWebhookTargetRequest {
+                                    name: params
+                                        .target_name
+                                        .clone()
+                                        .unwrap_or_else(|| "Agent runner".to_string()),
+                                    url: url.to_string(),
+                                },
+                                key.as_ref(),
+                                allow_private,
+                            )?;
+                            (created.target.id.clone(), Some(created))
+                        }
+                        _ => {
+                            return Err(ApiError::validation(
+                                "Send target_id (a webhook target of the board) or url (a new \
+                             target), and not both.",
+                            )
+                            .with_details(serde_json::json!({ "argument": "target_id" })));
+                        }
+                    };
                 let rule = d::create_rule_as(
                     conn,
                     &slug,
@@ -3128,7 +3130,7 @@ impl KairosMcp {
     // `POST /api/repositories`: the two call one function
     // (`crate::api::org::repositories::add`).
     #[tool(
-        description = "Add a repository to the directory (once: call `list_repositories` first). `forge`: github, gitlab or other. `repo_full_name`: the name on the forge (owner/repo for github; group/…/project for gitlab), no .git. `repo_url`: absolute http or https, no credentials. `team` (slug or UUID): the one owner team. Optional: `slug` (default from the full name: acme/payments-api gives acme-payments-api), `default_branch` (set by hand; with none the code index follows the forge), `description` (how to work in it: task runner, tests, branch rules). Needs membership of the owner team, or the org admin role. `set_repository` links a task; `update_repository` changes the slug and the owner team; `delete_repository` removes it."
+        description = "Add a repository to the directory (once: call `list_repositories` first). `forge`: github, gitlab or other. `repo_full_name`: the name on the forge (owner/repo for github; group/…/project for gitlab), no .git. `repo_url`: absolute http or https, no credentials. `team` (slug or UUID): the one owner team. Optional: `slug` (default from the full name: acme/payments-api gives acme-payments-api), `default_branch` (set by hand; with none the code index follows the forge), `description` (how to work in it: task runner, tests, branch rules). Needs membership of the owner team, or the org admin role. `set_repository` links a task; `update_repository` changes the slug and the owner team; `delete_repository` (admin profile) removes it."
     )]
     pub async fn add_repository(
         &self,
@@ -3741,7 +3743,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Archive an item by short code (it is not deleted): hidden from boards and default search, read-only, and `restore_item` brings it back. Needs `confirm: true`: the archive cascades to the descendants that you can edit, and the answer lists what was archived and what stayed, and why. You can archive an item you created, or with `manage_<type>` on its board. `purge_task` deletes a task for good."
+        description = "Archive an item by short code (it is not deleted): hidden from boards and default search, read-only, and `restore_item` brings it back. Needs `confirm: true`: the archive cascades to the descendants that you can edit, and the answer lists what was archived and what stayed, and why. You can archive an item you created, or with `manage_<type>` on its board. `purge_task` (admin profile) deletes a task for good."
     )]
     pub async fn delete_item(
         &self,

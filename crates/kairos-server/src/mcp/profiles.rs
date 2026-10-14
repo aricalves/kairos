@@ -72,17 +72,27 @@ pub(super) enum Profile {
 
 impl Profile {
     /// The profile of the request: the query `profile` of the URL of
-    /// `/mcp`. No query is [`Profile::Work`]. An unknown value is an error
-    /// that names it.
+    /// `/mcp`. No query, or an empty value, is [`Profile::Work`]. The value
+    /// is read without regard to case or blanks (KAIROS-T-0465). An unknown
+    /// value, or `profile` more than one time, is an error that names it.
     pub(super) fn of(parts: Option<&Parts>) -> Result<Self, String> {
         let query = parts.and_then(|parts| parts.uri.query()).unwrap_or("");
-        let value = query
+        let values: Vec<&str> = query
             .split('&')
-            .filter_map(|pair| pair.split_once('='))
-            .find(|(key, _)| *key == "profile")
-            .map(|(_, value)| value);
-        match value {
-            None | Some("work") => Ok(Self::Work),
+            .filter_map(|pair| pair.split_once('=').or(Some((pair, ""))))
+            .filter(|(key, _)| *key == "profile")
+            .map(|(_, value)| value)
+            .collect();
+        if values.len() > 1 {
+            return Err(
+                "The URL has profile more than one time. Send one: /mcp?profile=admin.".into(),
+            );
+        }
+        let value = values
+            .first()
+            .map(|value| value.trim().to_ascii_lowercase());
+        match value.as_deref() {
+            None | Some("") | Some("work") => Ok(Self::Work),
             Some("admin") => Ok(Self::Admin),
             Some("all") => Ok(Self::All),
             Some(other) => Err(format!(
@@ -137,6 +147,26 @@ mod tests {
             Profile::of(Some(&parts("/mcp?profile=every")))
                 .unwrap_err()
                 .contains("every")
+        );
+        // KAIROS-T-0465: an empty value is the default; case and blanks do
+        // not matter; profile two times is refused.
+        assert_eq!(
+            Profile::of(Some(&parts("/mcp?profile="))),
+            Ok(Profile::Work)
+        );
+        assert_eq!(Profile::of(Some(&parts("/mcp?profile"))), Ok(Profile::Work));
+        assert_eq!(
+            Profile::of(Some(&parts("/mcp?profile=Admin"))),
+            Ok(Profile::Admin)
+        );
+        assert_eq!(
+            Profile::of(Some(&parts("/mcp?profile=ALL"))),
+            Ok(Profile::All)
+        );
+        assert!(
+            Profile::of(Some(&parts("/mcp?profile=admin&profile=all")))
+                .unwrap_err()
+                .contains("more than one time")
         );
     }
 }
