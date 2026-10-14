@@ -2288,14 +2288,16 @@ const NO_OWNER: &str = "No owner";
 
 /// The owner lanes of the cards: the reader (`me`, a user id) first, then
 /// the other owners by display name, then "No owner". A person has a lane
-/// when the person owns a card on the board.
+/// when the person owns a card on the board; "No owner" is a lane when a
+/// card has no owner (KAIROS-T-0463).
 fn owner_lanes(columns: &[ColumnModel], me: Option<&str>) -> Vec<OwnerLane> {
     let mut owners: Vec<&CardOwner> = Vec::new();
-    for owner in columns
-        .iter()
-        .flat_map(|column| column.cards.iter())
-        .filter_map(|card| card.owner.as_ref())
-    {
+    let mut unowned = false;
+    for card in columns.iter().flat_map(|column| column.cards.iter()) {
+        let Some(owner) = card.owner.as_ref() else {
+            unowned = true;
+            continue;
+        };
         if !owners.iter().any(|o| o.user_id == owner.user_id) {
             owners.push(owner);
         }
@@ -2314,11 +2316,13 @@ fn owner_lanes(columns: &[ColumnModel], me: Option<&str>) -> Vec<OwnerLane> {
             .then_with(|| a.label.to_lowercase().cmp(&b.label.to_lowercase()))
             .then_with(|| a.user_id.cmp(&b.user_id))
     });
-    lanes.push(OwnerLane {
-        user_id: None,
-        label: NO_OWNER.to_string(),
-        mine: false,
-    });
+    if unowned {
+        lanes.push(OwnerLane {
+            user_id: None,
+            label: NO_OWNER.to_string(),
+            mine: false,
+        });
+    }
     lanes
 }
 
@@ -4197,6 +4201,18 @@ mod tests {
                 mine: false,
             }]
         );
+        // KAIROS-T-0463: each card has an owner: no "No owner" lane.
+        let all_owned = vec![column_of(vec![
+            owned(EntityKind::Task, Some(("u-sam", "Sam"))),
+            owned(EntityKind::Task, Some(("u-robin", "Robin"))),
+        ])];
+        let names: Vec<String> = owner_lanes(&all_owned, None)
+            .into_iter()
+            .map(|lane| lane.label)
+            .collect();
+        assert_eq!(names, vec!["Robin", "Sam"]);
+        // And no card at all: no lane.
+        assert!(owner_lanes(&[column_of(vec![])], None).is_empty());
     }
 
     /// KAIROS-T-0416: an owner lane admits the cards of its owner; "No
