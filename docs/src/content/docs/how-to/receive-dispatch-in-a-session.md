@@ -90,7 +90,7 @@ A task that enters Todo arrives as:
 
 ```text
 <channel source="kairos-dispatch" event="task.entered_column" code="PLAT-T-0042"
-  board="platform-delivery" column="Todo" task_type="bug" work_class="support" rule_id="…">
+  board="platform-delivery" column="Todo" task_type="bug" work_class="support" agents_decide="true" rule_id="…">
 Kairos dispatched PLAT-T-0042: it entered Todo on the board platform-delivery (lane support). Read it with get_item.
 </channel>
 ```

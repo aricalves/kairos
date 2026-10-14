@@ -2001,7 +2001,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Set who decides the triage of intake (a task in the support lane) on a board. `agents_decide: false` (the default): an agent (agent key or service account) that moves intake into the planned lane or another column is refused with AGENT_TRIAGE_OFF and writes its proposal with `append_note`. `true`: the agent's move works and the activity log names it. A person's triage always works. Needs configure_boards; `list_dispatch_rules` shows it."
+        description = "Set who decides the triage of intake (a task in the support lane) on a board. `agents_decide: false` (the default): an agent (agent key or service account) that triages intake (a support-lane task in the entry column: into the planned lane, out of the entry column, to another board, or cancelled) is refused with AGENT_TRIAGE_OFF and writes its proposal with `append_note`. A task a person triaged out of the entry column moves as any other. `true`: the agent's move works and the activity log names it. A person's triage always works. Needs configure_boards; `list_dispatch_rules` shows it."
     )]
     pub async fn set_agent_triage(
         &self,
@@ -2920,10 +2920,18 @@ impl KairosMcp {
                 "manage_tasks",
                 &item,
             )?;
+            // KAIROS-T-0456: a move to another team is a triage of intake.
+            let triaged = crate::agent_triage::check(
+                conn,
+                &auth,
+                item.id,
+                crate::agent_triage::TriageMove::Board(target.id),
+            )?;
             crate::claims::note(conn, item.id, user)?;
             let from_board = board_by_ref(conn, &from_board_id.to_string())?;
             let moved = boards::move_task_with(conn, item.id, target.id, user, params.rename)
                 .map_err(map_board_error)?;
+            crate::agent_triage::record(conn, &auth, item.id, triaged)?;
             // KAIROS-T-0371: the entry column of the target over its limit.
             let moved_code = moved
                 .rename
@@ -3011,7 +3019,7 @@ impl KairosMcp {
     // content, and it must not fail on a stale version. REST and this tool
     // call one function (`crate::api::tasks::change_task_lane`).
     #[tool(
-        description = "Change the lane of a TASK: `work_class` is planned or support. Moving a support request to the planned backlog is a lane change. The task stays in its column. A lane the task already has changes nothing. You need `transition_items` on the board of the task; creating the task gives no right here. `create_item` sets the lane of a new task."
+        description = "Change the lane of a TASK: `work_class` is planned or support. Moving a support request to the planned backlog is a lane change. The task stays in its column. A lane the task already has changes nothing. You need `transition_items` on the board of the task; creating the task gives no right here. `create_item` sets the lane of a new task. An agent's move of intake to planned is refused with AGENT_TRIAGE_OFF while the board lets a person decide: write the proposal with `append_note`."
     )]
     pub async fn set_work_class(
         &self,
@@ -3332,7 +3340,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Move an item to another column on its board (`to_column` is a column name or UUID). An invalid move fails with the allowed target columns enumerated — pick one and retry. Needs `transition_items` on the board. The creator of the item gets no right to move it. A task that you move to Active gets your claim: it shows that you work on it. The claim ends when the task leaves Active. A move to Active by a service account gives no claim."
+        description = "Move an item to another column on its board (`to_column` is a column name or UUID). An invalid move fails with the allowed target columns enumerated — pick one and retry. Needs `transition_items` on the board. The creator of the item gets no right to move it. A task that you move to Active gets your claim: it shows that you work on it. The claim ends when the task leaves Active. A move to Active by a service account gives no claim. An agent's move of intake (a support-lane task in the entry column) is refused with AGENT_TRIAGE_OFF while the board lets a person decide: write the proposal with `append_note`."
     )]
     pub async fn transition_item(
         &self,
@@ -3369,9 +3377,10 @@ impl KairosMcp {
             )?;
             let columns = board_columns(conn, board_id)?;
             let to_column_id = resolve_column(&columns, &params.to_column)?;
+            let mut triaged = None;
             if item.item_type == ItemType::Task {
                 // KAIROS-T-0428: an agent's triage of intake.
-                crate::agent_triage::check(
+                triaged = crate::agent_triage::check(
                     conn,
                     &auth,
                     item.id,
@@ -3392,6 +3401,7 @@ impl KairosMcp {
                 ItemType::Document => unreachable!("documents have no board placement"),
             }
             .map_err(map_board_error)?;
+            crate::agent_triage::record(conn, &auth, item.id, triaged)?;
             // KAIROS-T-0371: a move into a column over its WIP limit.
             crate::claims::note_wip(conn, to_column_id, &item.short_code)?;
 
@@ -3829,7 +3839,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Cancel a TASK the team will not do, with a `reason`: it moves to the done column with the mark \"cancelled\", from any column (the transition rules do not apply), and its claim ends. Moving it out of done removes the mark. Needs `transition_items` on its board. An empty reason, or a task already done (TASK_DONE), is refused."
+        description = "Cancel a TASK the team will not do, with a `reason`: it moves to the done column with the mark \"cancelled\", from any column (the transition rules do not apply), and its claim ends. Moving it out of done removes the mark. Needs `transition_items` on its board. An empty reason, or a task already done (TASK_DONE), is refused. An agent's cancel of intake is refused with AGENT_TRIAGE_OFF while the board lets a person decide."
     )]
     pub async fn cancel_item(
         &self,
@@ -3848,8 +3858,16 @@ impl KairosMcp {
                 ))
                 .with_details(serde_json::json!({ "argument": "short_code" })));
             };
+            // KAIROS-T-0456: a cancel is a triage of intake (won't do).
+            let triaged = crate::agent_triage::check(
+                conn,
+                &auth,
+                item.id,
+                crate::agent_triage::TriageMove::Cancel,
+            )?;
             let cancelled =
                 crate::cancel::cancel(conn, &slug, item.id, board_id, &params.reason, user)?;
+            crate::agent_triage::record(conn, &auth, item.id, triaged)?;
             Ok(format!(
                 "Cancelled {}: {} -> {}.\nReason: {}\nTo undo the cancel, move the task out of \
                  the done column.",

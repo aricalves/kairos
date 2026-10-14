@@ -95,6 +95,7 @@ Codes an agent can receive, and what each means.
 | `NOT_BOARD_MEMBER` | A `hand_off_item` of a strategy or an initiative to a person who is not a member of the board of the item. |
 | `TASK_DONE` | A `cancel_item` of a task that is in a done column. |
 | `NO_DONE_COLUMN` | A `cancel_item` of a task whose board has no done column. |
+| `AGENT_TRIAGE_OFF` | An agent's triage of intake on a board that lets a person decide. Intake is a support-lane task in the entry column. Its triage is `set_work_class`, `transition_item`, `move_item` or `cancel_item`. Write the proposal with `append_note`. |
 
 **Each tool refuses an argument that it does not know.** Each tool has the
 rule of the routes of the REST API, the tools that read too. The tool does not
@@ -988,7 +989,8 @@ activity line. A lane the task already has changes nothing.
 
 Refuses: `NOT_FOUND` for an unknown short code or an archived task.
 `VALIDATION` when the item is not a task, and for an unknown `work_class`.
-`FORBIDDEN` without `transition_items`.
+`FORBIDDEN` without `transition_items`. `AGENT_TRIAGE_OFF` for an agent's
+move of intake to planned while the board lets a person decide the triage.
 
 ### The teams of an initiative or a strategy
 
@@ -1070,7 +1072,10 @@ Refuses: `NOT_FOUND` for an unknown short code or an archived item;
 `ITEM_NOT_ON_BOARD` for an item with no placement — documents always;
 `VALIDATION` for a column that is not on that board, listing the board's
 columns; `FORBIDDEN` without `transition_items`; `INVALID_TRANSITION` for a
-target outside the board's transition graph, enumerating the allowed targets.
+target outside the board's transition graph, enumerating the allowed targets;
+`AGENT_TRIAGE_OFF` for an agent's move of intake (a support-lane task in the
+entry column) while the board lets a person decide the triage. A task a
+person triaged out of the entry column moves as any other.
 
 ### `move_item`
 
@@ -1286,6 +1291,8 @@ Refuses:
 - `FORBIDDEN` without `transition_items`.
 - `TASK_DONE` for a task in a done column.
 - `NO_DONE_COLUMN` for a board with no done column.
+- `AGENT_TRIAGE_OFF` for an agent's cancel of intake (a support-lane task in
+  the entry column) while the board lets a person decide the triage.
 
 ## Relationships
 
@@ -2088,10 +2095,17 @@ another column.
 | `board` | string | yes | — | Slug or UUID. |
 | `agents_decide` | boolean | yes | — | `true`: an agent decides. `false`: an agent proposes, and a person decides. |
 
-An agent is a caller with an agent key, or a service account. With the
-setting off (the default), Kairos refuses an agent's triage move with
-`AGENT_TRIAGE_OFF`. The agent then writes its proposal with `append_note`:
-planned backlog or work now, and why. A person moves the task.
+An agent is a caller with an agent key, or a service account. Intake is a
+task in the support lane in the entry column of its board. Its triage is
+`set_work_class` to planned, `transition_item` out of the entry column,
+`move_item` to another board, or `cancel_item`. With the setting off (the
+default), Kairos refuses an agent's triage with `AGENT_TRIAGE_OFF`. The agent
+then writes its proposal with `append_note`: planned backlog, work now,
+another team, or won't do, and why. A person moves the task.
+
+Once a person has triaged the task out of the entry column, an agent moves it
+as any other task. The dispatch payload carries the setting as
+`board.agents_decide`.
 
 With the setting on, the agent's move works, and the activity log gets a line
 `agent_triage:` for it. A person's triage works in each case.

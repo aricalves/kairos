@@ -1,12 +1,14 @@
 //! Who decides the triage of intake (KAIROS-T-0428): a person, or also an
 //! agent when the board allows it.
 //!
-//! Intake is a task in the support lane: a request of another team, or
-//! support work. Triage decides it: into the planned lane (planned work), or
-//! claimed now in the support lane (into a column with claims), or put back
-//! in the entry column. A person reviews that decision. An agent proposes it
-//! with a note (`append_note`) and leaves the move to a person, unless the
-//! board setting `agents_decide` is on.
+//! Intake is a task in the support lane in the entry column of its board: a
+//! request of another team, or support work. Triage decides it: into the
+//! planned lane (planned work), or out of the entry column in the support
+//! lane (work now), or to the board of another team, or cancelled (won't
+//! do). A person reviews that decision. An agent proposes it with a note
+//! (`append_note`) and leaves the move to a person, unless the board
+//! setting `agents_decide` is on. Once a person has triaged the task out of
+//! the entry column, an agent moves it as any other task (KAIROS-T-0456).
 //!
 //! An agent is a caller with an agent key (the key of a person, used by
 //! their agent) or a service account. The check runs in the transaction of
@@ -31,7 +33,19 @@ pub(crate) enum TriageMove {
     Plan,
     /// Into another column.
     Column(Uuid),
+    /// To the board of another team.
+    Board(Uuid),
+    /// Cancelled: won't do.
+    Cancel,
 }
+
+/// A triage move that [`check`] let through. The caller writes the
+/// activity line with [`record`] once the move is done, so a move that the
+/// board refuses after the check (the transition graph, a WIP limit) leaves
+/// no line.
+#[derive(Debug)]
+#[must_use = "record the triage after the move"]
+pub(crate) struct Triaged(String);
 
 /// Whether the caller is an agent: an agent key, or a service account.
 pub(crate) fn is_agent(conn: &mut PgConnection, auth: &AuthContext) -> Result<bool, ApiError> {
@@ -109,15 +123,23 @@ struct TaskFacts {
 }
 
 /// Check a move of the task `task_id` by `auth`. A person, a task in the
-/// planned lane, or a move that is not triage passes. An agent's triage
-/// move passes only when the board allows it; then the activity log gets
-/// a line that names the agent.
+/// planned lane, or a move that is not triage passes with `None`. Triage
+/// is the decision on intake: a task in the support lane that is in the
+/// entry column of its board. A column move out of the entry column (or
+/// back into it), a cancel, and a move to another board are triage; a lane
+/// change to planned is triage from any column. A column move of a task
+/// that a person triaged out of the entry column is not: an agent moves
+/// its support work from Todo to Active and on to the done column.
+///
+/// An agent's triage passes only when the board allows it; then the
+/// caller gets `Some`, and writes the line of the activity log with
+/// [`record`] after the move.
 pub(crate) fn check(
     conn: &mut PgConnection,
     auth: &AuthContext,
     task_id: Uuid,
     triage: TriageMove,
-) -> Result<(), ApiError> {
+) -> Result<Option<Triaged>, ApiError> {
     let facts: TaskFacts = sql_query(
         "SELECT work_class = 'support' AS support, board_id, column_id FROM tasks WHERE id = $1",
     )
@@ -125,39 +147,63 @@ pub(crate) fn check(
     .get_result(conn)
     .map_err(ApiError::internal)?;
     if !facts.support {
-        return Ok(());
+        return Ok(None);
     }
-    if let TriageMove::Column(to) = triage
-        && to == facts.column_id
-    {
-        return Ok(());
+    let entry =
+        kairos_db::boards::entry_column(conn, facts.board_id).map_err(ApiError::internal)?;
+    let in_entry = entry == Some(facts.column_id);
+    let is_triage = match triage {
+        TriageMove::Plan => true,
+        TriageMove::Column(to) => to != facts.column_id && (in_entry || entry == Some(to)),
+        TriageMove::Board(_) | TriageMove::Cancel => in_entry,
+    };
+    if !is_triage {
+        return Ok(None);
     }
     if !is_agent(conn, auth)? {
-        return Ok(());
+        return Ok(None);
     }
     if !agents_decide(conn, facts.board_id)? {
         return Err(ApiError::new(
             axum::http::StatusCode::FORBIDDEN,
             "AGENT_TRIAGE_OFF",
             "This task is intake (support lane). On this board an agent proposes the triage \
-             and a person decides it: write the proposal (planned backlog or work now, and \
-             why) as a note with append_note, and leave the task. A person with \
-             configure_boards can let agents decide (agents_decide_triage).",
+             and a person decides it: write the proposal (planned backlog, work now, another \
+             team, or won't do, and why) as a note with append_note, and leave the task. A \
+             person with configure_boards can let agents decide: the MCP tool set_agent_triage \
+             (admin profile), `kairos boards dispatch agent-triage <board> --on`, or the Agent \
+             dispatch panel of the board.",
         )
-        .with_details(json!({ "board_id": facts.board_id, "setting": "agents_decide_triage" })));
+        .with_details(json!({ "board_id": facts.board_id, "setting": "agents_decide" })));
     }
     let what = match triage {
         TriageMove::Plan => "planned".to_string(),
         TriageMove::Column(to) => format!("column:{to}"),
+        TriageMove::Board(to) => format!("board:{to}"),
+        TriageMove::Cancel => "cancelled".to_string(),
     };
-    log(
-        conn,
-        auth.user_id,
-        ActivityAction::Update,
-        task_id,
-        "task",
-        format!("agent_triage:{what}"),
-    )
+    Ok(Some(Triaged(format!("agent_triage:{what}"))))
+}
+
+/// Write the line of the activity log for a triage that [`check`] let
+/// through, after the move.
+pub(crate) fn record(
+    conn: &mut PgConnection,
+    auth: &AuthContext,
+    task_id: Uuid,
+    triaged: Option<Triaged>,
+) -> Result<(), ApiError> {
+    match triaged {
+        Some(Triaged(details)) => log(
+            conn,
+            auth.user_id,
+            ActivityAction::Update,
+            task_id,
+            "task",
+            details,
+        ),
+        None => Ok(()),
+    }
 }
 
 /// The lane move of [`check`].

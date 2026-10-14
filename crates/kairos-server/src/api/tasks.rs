@@ -582,11 +582,15 @@ pub(crate) fn change_task_lane(
     // because a team controls its own plan (COLLIERY-T-0218).
     require_capability(conn, slug, Some(board_id), user, "transition_items")?;
     // KAIROS-T-0428: an agent's move of intake into the planned lane.
-    if let Some(triage) = crate::agent_triage::lane_move(work_class) {
-        crate::agent_triage::check(conn, auth, task_id, triage)?;
-    }
+    let triaged = match crate::agent_triage::lane_move(work_class) {
+        Some(triage) => crate::agent_triage::check(conn, auth, task_id, triage)?,
+        None => None,
+    };
     crate::claims::note(conn, task_id, user)?;
-    items::set_task_work_class(conn, task_id, work_class, user).map_err(map_item_error)
+    let task =
+        items::set_task_work_class(conn, task_id, work_class, user).map_err(map_item_error)?;
+    crate::agent_triage::record(conn, auth, task_id, triaged)?;
+    Ok(task)
 }
 
 /// Set or clear the link from a task to a repository: the ONE write path of
@@ -712,9 +716,17 @@ pub(crate) async fn move_task(
             // (COLLIERY-T-0218).
             require_capability(conn, &slug, Some(task.board_id), user, MANAGE)?;
             require_capability(conn, &slug, Some(target), user, MANAGE)?;
+            // KAIROS-T-0456: a move to another team is a triage of intake.
+            let triaged = crate::agent_triage::check(
+                conn,
+                &auth,
+                task.id,
+                crate::agent_triage::TriageMove::Board(target),
+            )?;
             crate::claims::note(conn, task.id, user)?;
             let moved = boards::move_task_with(conn, task.id, target, user, body.rename)
                 .map_err(map_board_error)?;
+            crate::agent_triage::record(conn, &auth, task.id, triaged)?;
             let code = moved.rename.map_or(short_code, |rename| rename.new_code);
             crate::claims::note_wip(conn, moved.column_id, &code)?;
             let moved = load(conn, &code, Liveness::LiveOnly)?.into_dto();
@@ -759,7 +771,7 @@ pub(crate) async fn transition_task(
             // because a team controls its own plan (COLLIERY-T-0218).
             require_capability(conn, &slug, Some(task.board_id), user, "transition_items")?;
             // KAIROS-T-0428: an agent's triage of intake.
-            crate::agent_triage::check(
+            let triaged = crate::agent_triage::check(
                 conn,
                 &auth,
                 task.id,
@@ -767,6 +779,7 @@ pub(crate) async fn transition_task(
             )?;
             crate::claims::note(conn, task.id, user)?;
             boards::transition_task(conn, task.id, to_column_id, user).map_err(map_board_error)?;
+            crate::agent_triage::record(conn, &auth, task.id, triaged)?;
             // KAIROS-T-0371: a move into a column over its WIP limit.
             crate::claims::note_wip(conn, to_column_id, &short_code)?;
             let task = load(conn, &short_code, Liveness::LiveOnly)?.into_dto();
@@ -900,7 +913,15 @@ pub(crate) async fn cancel_task(
         .blocking
         .run(&tenant.slug, move |conn| {
             let task = load(conn, &short_code, Liveness::LiveOnly)?;
+            // KAIROS-T-0456: a cancel is a triage of intake (won't do).
+            let triaged = crate::agent_triage::check(
+                conn,
+                &auth,
+                task.id,
+                crate::agent_triage::TriageMove::Cancel,
+            )?;
             crate::cancel::cancel(conn, &slug, task.id, task.board_id, &body.reason, user)?;
+            crate::agent_triage::record(conn, &auth, task.id, triaged)?;
             let task = load(conn, &task.short_code, Liveness::LiveOnly)?.into_dto();
             embed(conn, task)
         })
