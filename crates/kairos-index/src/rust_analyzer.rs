@@ -98,7 +98,7 @@ pub const PINS: &[Pin] = &[
 ];
 
 /// The target triple of this build.
-fn this_target() -> String {
+pub(crate) fn this_target() -> String {
     let os = match std::env::consts::OS {
         "macos" => "apple-darwin",
         "linux" => "unknown-linux-gnu",

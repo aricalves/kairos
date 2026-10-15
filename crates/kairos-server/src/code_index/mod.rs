@@ -185,7 +185,38 @@ pub struct CodeIndexService {
     /// `KAIROS_CODE_INDEX_MIN_REBUILD_SECS` (KAIROS-T-0334): the least time
     /// between 2 updates of one repository. 0: off.
     min_rebuild_secs: std::sync::atomic::AtomicU64,
+    /// The dependency cache of the SCIP runners (KAIROS-T-0474).
+    deps: DependencySettings,
 }
+
+/// The settings of the dependency cache of the SCIP runners of Go,
+/// TypeScript and Python (KAIROS-T-0474).
+#[derive(Debug, Clone)]
+pub struct DependencySettings {
+    /// `KAIROS_CODE_INDEX_DEPS_CAP_MB`: the cap of the total size of the
+    /// dependency caches.
+    pub cap_bytes: u64,
+    /// `KAIROS_CODE_INDEX_MIN_FREE_MB`: under this free space, the caches
+    /// are removed before an install.
+    pub min_free_bytes: u64,
+    /// `KAIROS_CODE_INDEX_DEPS_ENV`: more variables of the environment that
+    /// a dependency step gets.
+    pub pass_variables: Vec<String>,
+}
+
+impl Default for DependencySettings {
+    fn default() -> Self {
+        DependencySettings {
+            cap_bytes: 10 * 1024 * 1024 * 1024,
+            min_free_bytes: 5 * 1024 * 1024 * 1024,
+            pass_variables: Vec::new(),
+        }
+    }
+}
+
+/// The folder of the dependency caches in `KAIROS_CODE_INDEX_DIR`
+/// (KAIROS-T-0474).
+pub const DEPS_DIR: &str = "deps";
 
 impl std::fmt::Debug for CodeIndexService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -209,7 +240,14 @@ impl CodeIndexService {
             notes: Mutex::default(),
             instance: uuid::Uuid::new_v4(),
             min_rebuild_secs: std::sync::atomic::AtomicU64::new(0),
+            deps: DependencySettings::default(),
         }
+    }
+
+    /// The settings of the dependency cache (KAIROS-T-0474).
+    pub fn with_dependency_settings(mut self, deps: DependencySettings) -> Self {
+        self.deps = deps;
+        self
     }
 
     /// The least time between 2 updates of one repository
@@ -323,6 +361,29 @@ impl CodeIndexService {
                 download: false,
                 ..Default::default()
             })
+    }
+
+    /// The options of a build of `repo` of `tenant`: [`Self::build_options`],
+    /// and, once the tools are ready, the tools of Go, TypeScript and Python
+    /// in `tools/`, fetched on first need, with the dependency cache of the
+    /// repository in `deps/` (KAIROS-T-0474).
+    pub fn build_options_for(&self, tenant: &str, repo: &Repository) -> kairos_index::BuildOptions {
+        let mut options = self.build_options();
+        if self.build.get().is_some() {
+            options.scip.tools = kairos_index::languages::LanguageTools {
+                dir: Some(self.dir.join(TOOLS_DIR)),
+                fetch: true,
+                cache: Some(kairos_index::languages::DependencyCache {
+                    root: self.dir.join(DEPS_DIR),
+                    key: kairos_index::languages::cache_key(&[tenant, &repo.id.to_string()]),
+                    cap_bytes: self.deps.cap_bytes,
+                    min_free_bytes: self.deps.min_free_bytes,
+                }),
+                pass_variables: self.deps.pass_variables.clone(),
+                ..Default::default()
+            };
+        }
+        options
     }
 
     /// A service that fetches each repository from its `repo_url`.
@@ -1671,6 +1732,7 @@ pub(crate) async fn build_repository(
         let slug = repo.slug.clone();
         let handle = ctx.handle.clone();
         let sink = PoolSink::new(blocking, &tenant, repo.id);
+        let build = service.build_options_for(&tenant, &repo);
         tokio::task::spawn_blocking(move || -> Result<_, String> {
             let work = tempfile::Builder::new()
                 .prefix("kairos-code-index-")
@@ -1685,7 +1747,7 @@ pub(crate) async fn build_repository(
                     // The server runs SCIP for each push (COLLIERY-I-0264,
                     // decision 5 of 2026-10-01).
                     rust_edges: true,
-                    build: service.build_options(),
+                    build,
                     ..Default::default()
                 };
                 kairos_index::update_structure(&tree, &db, &options).map_err(|e| e.to_string())
@@ -1919,6 +1981,7 @@ pub(crate) async fn full_build_repository(
         let handle = ctx.handle.clone();
         let sink = PoolSink::new(blocking, tenant, repo.id);
         let (tenant, slug) = (tenant.to_string(), repo.slug.clone());
+        let build = service.build_options_for(&tenant, &repo);
         tokio::task::spawn_blocking(move || -> Result<_, String> {
             if let Some(parent) = db.parent() {
                 std::fs::create_dir_all(parent)
@@ -1934,7 +1997,7 @@ pub(crate) async fn full_build_repository(
                 git::checkout_tree(&clone, &head, &tree).map_err(|e| e.to_string())?;
                 let options = UpdateOptions {
                     rust_edges: true,
-                    build: service.build_options(),
+                    build,
                     ..Default::default()
                 };
                 match kairos_index::update_structure(&tree, &db, &options) {

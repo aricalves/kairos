@@ -359,6 +359,9 @@ the index after each push to the default branch.
 | `KAIROS_CODE_INDEX_POLL_SECS` | whole number | `300` | How often the sweep fetches each indexed repository and adds the build jobs. The sweep is a periodic job: one server runs it at each interval. `0` turns the builder off on that server. |
 | `KAIROS_CODE_INDEX_THREADS` | whole number, 1 or more | `4` | The number of CPU threads that the summary model of the builder uses. More threads make the summaries faster, but they take CPU from the other services on the host. `0` or a value that is not a number stops the start of the server. |
 | `KAIROS_CODE_INDEX_MIN_REBUILD_SECS` | whole number | `0` | The least time in seconds between 2 updates of one repository. `0` turns the limit off. On a slow host, a repository with many pushes then waits, and the other stale repositories get their updates. A value that is not a number stops the start of the server. |
+| `KAIROS_CODE_INDEX_DEPS_CAP_MB` | whole number | `10240` | The largest total size in MB of the dependency caches of the SCIP runners of Go, TypeScript and Python. After a run, the builder removes the caches of other repositories, oldest first, until the total is below this value. See [The tools of Go, TypeScript and Python](#the-tools-of-go-typescript-and-python). |
+| `KAIROS_CODE_INDEX_MIN_FREE_MB` | whole number | `5120` | The least free disk space in MB before a dependency install. When the free space is less, the builder removes the dependency caches first, oldest first. If the space is still less, the language gets its edges by name, and the run records a warning. |
+| `KAIROS_CODE_INDEX_DEPS_ENV` | comma-separated names | unset | More names of environment variables that a dependency install gets. An install gets only `PATH`, its cache folders and the variables in the list below, so no other secret of the server gets to a package install. |
 
 #### The providers of the summaries and the vectors
 
@@ -633,6 +636,70 @@ the image. The server unpacks rust-analyzer to `tools/rust-analyzer` and the
 Keep their names. Put them in `KAIROS_CODE_INDEX_DIR/tools/` before the
 start. The user of the server (uid 10001 in the image) must be able to write
 the folder. Then the server downloads nothing.
+
+#### The tools of Go, TypeScript and Python
+
+The builder runs a SCIP indexer for Go, TypeScript (with TSX and
+JavaScript) and Python. Then the edges and the uses of these languages are
+precise, as for Rust. The builder downloads the tools of a language into
+`KAIROS_CODE_INDEX_DIR/tools/` when a repository first needs that language.
+A repository with no file of a language never causes the download of its
+tools.
+
+| Language | Tools | Licences |
+|---|---|---|
+| Go | Go 1.27.2 (`https://go.dev/dl/`), scip-go 0.2.7 (`https://github.com/sourcegraph/scip-go/releases`) | BSD-3-Clause, Apache-2.0 |
+| TypeScript, TSX, JavaScript | Node.js 24.22.0 (`https://nodejs.org/dist/`), `@sourcegraph/scip-typescript` 0.4.0 (npm) | MIT, Apache-2.0 |
+| Python | Node.js 24.22.0, `@sourcegraph/scip-python` 0.6.6 (npm), CPython 3.13.16 of python-build-standalone 20261013 (`https://github.com/astral-sh/python-build-standalone/releases`) | MIT, MIT, PSF-2.0 (build scripts MPL-2.0) |
+
+- Each archive has a pinned sha256 for each platform (amd64 and arm64,
+  Linux and macOS). The pins are in `crates/kairos-index/src/languages.rs`.
+  scip-go has no build for macOS amd64.
+- npm installs scip-typescript and scip-python with `npm ci` from the lock
+  files in `crates/kairos-index/npm/`. npm checks the integrity of each
+  package.
+- The builder keeps the archives in `tools/` and unpacks each tool into
+  `tools/<tool>-<version>/`.
+- If a download fails, a file has an incorrect sha256, or the platform has
+  no pin, the language gets its edges by name, and the run records a
+  warning with the reason. The build continues. The server does not
+  replace a file with an incorrect checksum. Remove the file to download
+  it again.
+- **With no network:** put the archives in `tools/` with the names of their
+  URLs. The npm packages need access to the npm registry, or a registry
+  that `NPM_CONFIG_REGISTRY` gives.
+
+**The dependency cache.** The indexers give precise results only when the
+dependencies of the repository are installed. Before a run, the builder
+installs them: `go mod download` for Go, `npm ci` or `npm install` with
+`--ignore-scripts` for TypeScript, and a virtual environment with `pip
+install` for Python. It keeps them in `KAIROS_CODE_INDEX_DIR/deps/<tenant>/<repository id>/<language>/`:
+the Go module cache, the npm cache and the virtual environment.
+
+- `KAIROS_CODE_INDEX_DEPS_CAP_MB` is the largest total size of the caches.
+- When the free disk space is less than `KAIROS_CODE_INDEX_MIN_FREE_MB`,
+  the builder removes the caches before an install, oldest first.
+- If the install or the indexer fails, the language gets its edges by
+  name, and the run records a warning. A repository with no dependency file
+  (no `go.mod`, no `package.json`, no Python requirements) gets no install:
+  the indexer reads the sources only.
+
+**Private dependencies.** The builder keeps no new secrets. An install gets
+`PATH`, its cache folders, and these variables when the server has them:
+`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` (and lower case), `SSL_CERT_FILE`,
+`SSL_CERT_DIR`, `LANG`, `LC_ALL`, `TZ`, `GIT_CONFIG_COUNT`,
+`GIT_CONFIG_KEY_*`, `GIT_CONFIG_VALUE_*`, `GIT_ASKPASS`, `GOPRIVATE`,
+`GONOPROXY`, `GONOSUMDB`, `GONOSUMCHECK`, `GOPROXY`, `GOSUMDB`,
+`GOINSECURE`, `GOAUTH`, `NETRC`, `NODE_AUTH_TOKEN`, `NPM_TOKEN`,
+`NPM_CONFIG_*`, `npm_config_*`, `PIP_INDEX_URL`, `PIP_EXTRA_INDEX_URL`,
+`PIP_TRUSTED_HOST`, `PIP_CERT`, `GITHUB_TOKEN` and `GH_TOKEN`. Add more
+names with `KAIROS_CODE_INDEX_DEPS_ENV`.
+
+**A local run.** `kairos index` on a computer downloads no tools and
+installs no dependencies. It uses the tools on `PATH` (`go` and `scip-go`,
+`node` and `scip-typescript`, `scip-python` and `python3`) and the
+dependencies of the checkout. If a tool is not there, the language gets its
+edges by name, and the CLI shows a warning.
 
 ### Development
 

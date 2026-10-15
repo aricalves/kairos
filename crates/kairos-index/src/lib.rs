@@ -28,6 +28,7 @@ mod duplicates;
 mod edges;
 mod extract;
 pub mod hosted;
+pub mod languages;
 #[cfg(feature = "llama")]
 mod llama;
 mod parse_cache;

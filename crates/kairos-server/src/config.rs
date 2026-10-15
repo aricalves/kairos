@@ -231,6 +231,19 @@ pub struct AppConfig {
     /// 0: off. On a slow host, a repository that gets many pushes then waits
     /// while the other repositories are stale.
     pub code_index_min_rebuild_secs: u64,
+    /// `KAIROS_CODE_INDEX_DEPS_CAP_MB` — the cap of the total size of the
+    /// dependency caches of the SCIP runners of Go, TypeScript and Python
+    /// (KAIROS-T-0474). Default 10240 (10 GiB).
+    pub code_index_deps_cap_mb: u64,
+    /// `KAIROS_CODE_INDEX_MIN_FREE_MB` — under this free disk space, the
+    /// builder removes the dependency caches, oldest first, before an
+    /// install; if the space is still low, the language gets the edges by
+    /// name with a warning. Default 5120 (5 GiB).
+    pub code_index_min_free_mb: u64,
+    /// `KAIROS_CODE_INDEX_DEPS_ENV` — the names of more variables of the
+    /// environment that a dependency step gets, separated by commas
+    /// (KAIROS-T-0474). The step gets no other variable of the server.
+    pub code_index_deps_env: Vec<String>,
     /// `KAIROS_WEB_CLIENT_ID` — the public OAuth client id the SPA uses
     /// for its PKCE flow (KAIROS-T-0039, A-0010). Default `kairos-web`,
     /// matching the dev Dex fixture (`.angreal/dex/config.yaml`).
@@ -716,6 +729,17 @@ impl AppConfig {
             code_index_poll_secs: parse_num(&get, "KAIROS_CODE_INDEX_POLL_SECS", 300)?,
             code_index_threads,
             code_index_min_rebuild_secs: parse_num(&get, "KAIROS_CODE_INDEX_MIN_REBUILD_SECS", 0)?,
+            code_index_deps_cap_mb: parse_num(&get, "KAIROS_CODE_INDEX_DEPS_CAP_MB", 10240)?,
+            code_index_min_free_mb: parse_num(&get, "KAIROS_CODE_INDEX_MIN_FREE_MB", 5120)?,
+            code_index_deps_env: get("KAIROS_CODE_INDEX_DEPS_ENV")
+                .map(|v| {
+                    v.split(',')
+                        .map(str::trim)
+                        .filter(|n| !n.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
             web_client_id: get("KAIROS_WEB_CLIENT_ID").unwrap_or_else(|| "kairos-web".to_string()),
             api_bearer,
             web_client_secret: get("KAIROS_WEB_CLIENT_SECRET"),
@@ -1094,6 +1118,30 @@ mod tests {
                 "{value}: {err}"
             );
         }
+    }
+
+    // KAIROS-T-0474: the dependency cache of the SCIP runners.
+    #[test]
+    fn the_dependency_cache_settings_have_defaults() {
+        let config = AppConfig::from_lookup(lookup(MINIMAL)).expect("valid config");
+        assert_eq!(config.code_index_deps_cap_mb, 10240);
+        assert_eq!(config.code_index_min_free_mb, 5120);
+        assert!(config.code_index_deps_env.is_empty());
+        let mut vars = MINIMAL.to_vec();
+        vars.push(("KAIROS_CODE_INDEX_DEPS_CAP_MB", "512"));
+        vars.push(("KAIROS_CODE_INDEX_MIN_FREE_MB", "100"));
+        vars.push(("KAIROS_CODE_INDEX_DEPS_ENV", "CORP_TOKEN, ,GOFLAGS"));
+        let config = AppConfig::from_lookup(lookup(&vars)).expect("valid config");
+        assert_eq!(config.code_index_deps_cap_mb, 512);
+        assert_eq!(config.code_index_min_free_mb, 100);
+        assert_eq!(config.code_index_deps_env, ["CORP_TOKEN", "GOFLAGS"]);
+        let mut vars = MINIMAL.to_vec();
+        vars.push(("KAIROS_CODE_INDEX_DEPS_CAP_MB", "ten"));
+        let err = AppConfig::from_lookup(lookup(&vars)).expect_err("ten");
+        assert!(
+            err.to_string().contains("KAIROS_CODE_INDEX_DEPS_CAP_MB"),
+            "{err}"
+        );
     }
 
     #[test]

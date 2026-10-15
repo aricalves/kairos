@@ -225,6 +225,10 @@ pub struct ScipOptions {
     /// Runners that replace the built-in runner of the same name: an index
     /// file that a CI made, or a test runner.
     pub runners: Vec<Arc<dyn ScipRunner>>,
+    /// Where the tools of Go, TypeScript and Python are, whether a build
+    /// can fetch them, and the dependency cache (KAIROS-T-0474). Default:
+    /// the tools on `PATH`, no fetch and no dependency step.
+    pub tools: crate::languages::LanguageTools,
 }
 
 impl std::fmt::Debug for ScipOptions {
@@ -234,6 +238,7 @@ impl std::fmt::Debug for ScipOptions {
                 "runners",
                 &self.runners.iter().map(|r| r.name()).collect::<Vec<_>>(),
             )
+            .field("tools", &self.tools)
             .finish()
     }
 }

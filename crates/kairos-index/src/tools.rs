@@ -460,7 +460,7 @@ fn prepare_checked(
     })
 }
 
-fn io(path: &Path) -> impl Fn(std::io::Error) -> IndexError + '_ {
+pub(crate) fn io(path: &Path) -> impl Fn(std::io::Error) -> IndexError + '_ {
     move |source| IndexError::Io {
         path: path.to_path_buf(),
         source,
@@ -468,7 +468,7 @@ fn io(path: &Path) -> impl Fn(std::io::Error) -> IndexError + '_ {
 }
 
 /// The sha256 of the file at `path`, read in parts.
-fn sha256_of(path: &Path) -> Result<String, IndexError> {
+pub(crate) fn sha256_of(path: &Path) -> Result<String, IndexError> {
     let mut file = fs::File::open(path).map_err(io(path))?;
     let mut hasher = Sha256::new();
     std::io::copy(&mut file, &mut hasher).map_err(io(path))?;
@@ -476,7 +476,7 @@ fn sha256_of(path: &Path) -> Result<String, IndexError> {
 }
 
 /// Refuse a file whose sha256 is not `expected`.
-fn check_file(path: &Path, expected: &str) -> Result<(), IndexError> {
+pub(crate) fn check_file(path: &Path, expected: &str) -> Result<(), IndexError> {
     let found = sha256_of(path)?;
     if found != expected {
         return Err(IndexError::ToolChecksum {
@@ -490,7 +490,7 @@ fn check_file(path: &Path, expected: &str) -> Result<(), IndexError> {
 
 /// Download `d` to a file next to `path`, with its sha256 checked as it
 /// comes, then rename it to `path`.
-fn download(d: &Download, path: &Path) -> Result<(), IndexError> {
+pub(crate) fn download(d: &Download, path: &Path) -> Result<(), IndexError> {
     let dir = path.parent().unwrap_or(Path::new("."));
     let failed = |e: &dyn std::fmt::Display| IndexError::ToolDownload(format!("{}: {e}", d.url));
     let agent = ureq::Agent::config_builder()
@@ -575,7 +575,7 @@ fn unpack_component(archive: &Path, to: &Path) -> Result<(), IndexError> {
     Ok(())
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
