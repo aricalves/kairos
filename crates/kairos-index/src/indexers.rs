@@ -326,11 +326,20 @@ impl ScipRunner for TypeScriptRunner {
                 .arg("--output")
                 .arg(&out)
                 .current_dir(&dir);
-            if !dir.join("tsconfig.json").is_file() {
+            // `--infer-tsconfig` writes a tsconfig.json into the project:
+            // it is removed after the run, so a local run changes no file
+            // of the checkout.
+            let tsconfig = dir.join("tsconfig.json");
+            let inferred = !tsconfig.exists();
+            if inferred {
                 index.arg("--infer-tsconfig");
             }
             environment(&mut index, &self.tools, deps.as_deref(), &bins);
-            run_step(&mut index, "scip-typescript")?;
+            let ran = run_step(&mut index, "scip-typescript");
+            if inferred {
+                let _ = std::fs::remove_file(&tsconfig);
+            }
+            ran?;
             Ok(rebase(read_index(&out)?, project, proto::ENCODING_UTF16))
         });
         if let Some(cache) = &self.tools.cache {

@@ -326,3 +326,146 @@ fn a_tree_with_no_go_never_fetches_the_go_tools() {
         b"not go"
     );
 }
+
+// ---------------------------------------------------------------------------
+// TypeScript and JavaScript (KAIROS-T-0476)
+
+fn check_typescript(db: &Path, report: &BuildReport) {
+    assert!(
+        report
+            .scip_warnings
+            .iter()
+            .all(|w| w.language != "typescript"),
+        "{:?}",
+        report.scip_warnings
+    );
+    // 2 modules have a `format`; the import of main.ts names the one of b.ts.
+    assert_eq!(
+        edges_of(db, "run"),
+        [
+            (
+                s("Queue"),
+                s("certain"),
+                s("scip"),
+                Some(s("src/queue.ts:Queue"))
+            ),
+            (
+                s("Queue.push"),
+                s("certain"),
+                s("scip"),
+                Some(s("src/queue.ts:Queue.push"))
+            ),
+            (
+                s("b.format"),
+                s("certain"),
+                s("scip"),
+                Some(s("src/b.ts:format"))
+            ),
+        ]
+    );
+    let (coverage, uses) = uses_of(db, "format", "src/b.ts");
+    assert_eq!(coverage, kairos_index::Coverage::Full);
+    assert_eq!(
+        uses,
+        [
+            (s("import"), s("src/main.ts"), 1),
+            (s("call"), s("src/main.ts"), 7)
+        ]
+    );
+}
+
+fn check_javascript(db: &Path, report: &BuildReport) {
+    assert!(
+        report
+            .scip_warnings
+            .iter()
+            .all(|w| w.language != "typescript"),
+        "{:?}",
+        report.scip_warnings
+    );
+    assert_eq!(
+        edges_of(db, "main"),
+        [(
+            s("lib.helper"),
+            s("certain"),
+            s("scip"),
+            Some(s("lib.js:helper"))
+        )]
+    );
+}
+
+#[test]
+fn typescript_from_the_recorded_index_of_scip_typescript() {
+    let languages = &["typescript", "tsx", "javascript"];
+    let (_dir, db, report) = build("scip-ts", &recorded("typescript", languages, "ts.scip"));
+    check_typescript(&db, &report);
+    let (_dir, db, report) = build("scip-js", &recorded("typescript", languages, "js.scip"));
+    check_javascript(&db, &report);
+}
+
+#[test]
+fn typescript_with_no_index_has_name_edges() {
+    let mut options = quiet();
+    options
+        .scip
+        .runners
+        .push(Arc::new(kairos_index::MissingRunner {
+            name: "typescript",
+            languages: &["typescript", "tsx", "javascript"],
+            reason: "npm ci failed".into(),
+        }));
+    let (_dir, db, report) = build("scip-ts", &options);
+    assert_eq!(report.scip_warnings[0].reason, "npm ci failed");
+    assert!(
+        edges_of(&db, "run").contains(&(s("format"), s("possible"), s("name"), None)),
+        "{:?}",
+        edges_of(&db, "run")
+    );
+}
+
+#[test]
+fn typescript_with_scip_typescript() {
+    let cache = tempfile::tempdir().unwrap();
+    for (mode, options) in real_modes(&["node", "scip-typescript"], cache.path()) {
+        eprintln!("TypeScript, {mode}");
+        let (_dir, db, report) = build("scip-ts", &options);
+        check_typescript(&db, &report);
+        let (dir, db, report) = build("scip-js", &options);
+        check_javascript(&db, &report);
+        // The tsconfig.json that `--infer-tsconfig` writes is removed.
+        assert!(!dir.path().join("scip-js/tsconfig.json").exists());
+    }
+}
+
+/// KAIROS-T-0476: a server build whose `npm install` fails gets the edges by
+/// name and a warning. The dependency is a missing local archive, so npm
+/// fails with no network.
+#[test]
+fn typescript_install_failure_falls_back() {
+    let cache = tempfile::tempdir().unwrap();
+    for (mode, options) in real_modes(&["node", "scip-typescript"], cache.path()) {
+        if mode != "server" {
+            continue;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = copy("scip-ts", dir.path());
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"name":"t","dependencies":{"missing":"file:./does-not-exist.tgz"}}"#,
+        )
+        .unwrap();
+        let db = dir.path().join("index.sqlite");
+        let report = build_structure_with(&root, &db, &options).unwrap();
+        let warning = report
+            .scip_warnings
+            .iter()
+            .find(|w| w.language == "typescript")
+            .unwrap_or_else(|| panic!("{:?}", report.scip_warnings));
+        assert!(
+            warning.reason.contains("npm install failed"),
+            "{}",
+            warning.reason
+        );
+        assert!(edges_of(&db, "run").iter().all(|e| e.2 == "name"));
+    }
+}

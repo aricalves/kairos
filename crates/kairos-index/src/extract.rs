@@ -10,8 +10,8 @@ use sha2::{Digest, Sha256};
 use tree_sitter::{Node, Tree};
 
 use crate::calls::{
-    CallSite, Import, call_sites, go_package_and_imports, rust_macro_calls, rust_macro_ranges,
-    rust_use_ranges, terraform_modules,
+    CallSite, Import, call_sites, go_package_and_imports, import_ranges, rust_macro_calls,
+    rust_macro_ranges, rust_use_ranges, terraform_modules,
 };
 use crate::tokens;
 
@@ -136,7 +136,7 @@ pub fn extract(
             rust_macro_ranges(&tree),
         )
     } else {
-        (Vec::new(), Vec::new(), Vec::new())
+        (import_ranges(language, &tree), Vec::new(), Vec::new())
     };
     let (package, imports) = match language {
         "go" => go_package_and_imports(&tree, source),
