@@ -302,6 +302,7 @@ pub fn links_for_items(
         .inner_join(forge_connections::table.inner_join(repositories::table))
         .filter(item_links::item_id.eq_any(item_ids))
         .filter(item_links::state.eq_any(states))
+        .filter(item_links::kind.ne(LinkKind::Issue))
         .filter(forge_connections::deleted_at.is_null())
         .order(item_links::forge_updated_at.desc())
         .limit(limit)
@@ -335,6 +336,7 @@ pub fn links_for_connection_team(
         .inner_join(forge_connections::table.inner_join(repositories::table))
         .filter(repositories::team_id.eq(team_id))
         .filter(item_links::state.eq_any(states))
+        .filter(item_links::kind.ne(LinkKind::Issue))
         .filter(forge_connections::deleted_at.is_null())
         .order(item_links::forge_updated_at.desc())
         .limit(limit)
@@ -378,4 +380,144 @@ pub fn new_link(
         author,
         forge_updated_at,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Repository-level branches and pull requests (KAIROS-T-0480)
+// ---------------------------------------------------------------------------
+
+/// One branch or pull request of a repository, as the forge reported it
+/// (`forge_refs`). The webhook writes one for each event that the filter of
+/// the repository admits, with or without a short code.
+#[derive(Debug, Clone)]
+pub struct NewForgeRef {
+    pub repository_id: Uuid,
+    pub kind: LinkKind,
+    pub external_id: String,
+    pub title: String,
+    pub url: String,
+    pub state: LinkState,
+    pub author: String,
+    pub head_branch: String,
+    pub forge_updated_at: DateTime<Utc>,
+}
+
+/// Insert or advance one `forge_refs` row, ordering-safely: the row
+/// changes only when the event is at least as recent as the stored one
+/// (the guard of [`upsert_link`]). Returns `true` when the row was created
+/// or advanced.
+pub fn upsert_ref(conn: &mut PgConnection, row: NewForgeRef) -> Result<bool, ForgeError> {
+    // Sanctioned raw SQL (A-0009), for the same reason as `upsert_link`.
+    let affected = diesel::sql_query(
+        "INSERT INTO forge_refs
+             (repository_id, kind, external_id, title, url, state, author,
+              head_branch, forge_updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (repository_id, kind, external_id) DO UPDATE
+            SET title = EXCLUDED.title,
+                url = EXCLUDED.url,
+                state = EXCLUDED.state,
+                author = EXCLUDED.author,
+                head_branch = EXCLUDED.head_branch,
+                forge_updated_at = EXCLUDED.forge_updated_at,
+                updated_at = now()
+          WHERE forge_refs.forge_updated_at <= EXCLUDED.forge_updated_at",
+    )
+    .bind::<diesel::sql_types::Uuid, _>(row.repository_id)
+    .bind::<diesel::sql_types::Text, _>(row.kind)
+    .bind::<diesel::sql_types::Text, _>(row.external_id)
+    .bind::<diesel::sql_types::Text, _>(row.title)
+    .bind::<diesel::sql_types::Text, _>(row.url)
+    .bind::<diesel::sql_types::Text, _>(row.state)
+    .bind::<diesel::sql_types::Text, _>(row.author)
+    .bind::<diesel::sql_types::Text, _>(row.head_branch)
+    .bind::<diesel::sql_types::Timestamptz, _>(row.forge_updated_at)
+    .execute(conn)?;
+    Ok(affected > 0)
+}
+
+/// A `forge_refs` row with its repository and the live items linked to it
+/// (none: the row is not linked).
+#[derive(Debug, Clone, PartialEq, Eq, diesel::QueryableByName)]
+pub struct ForgeRefRow {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub kind: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub external_id: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub title: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub url: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub state: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub author: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub head_branch: String,
+    #[diesel(sql_type = diesel::sql_types::Timestamptz)]
+    pub forge_updated_at: DateTime<Utc>,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub forge: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub repo_full_name: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub repository_slug: String,
+    #[diesel(sql_type = diesel::sql_types::Array<diesel::sql_types::Text>)]
+    pub item_short_codes: Vec<String>,
+}
+
+/// The select list and joins of [`ForgeRefRow`]. `f` is `forge_refs`, `r`
+/// the live repository.
+const REF_SELECT: &str = "SELECT f.kind, f.external_id, f.title, f.url, f.state, f.author, \
+        f.head_branch, f.forge_updated_at, r.forge, r.repo_full_name, \
+        r.slug AS repository_slug, \
+        ARRAY(SELECT d.short_code FROM item_links l \
+                JOIN forge_connections c ON c.id = l.connection_id AND c.deleted_at IS NULL \
+                JOIN entity_directory d ON d.id = l.item_id AND d.deleted_at IS NULL \
+               WHERE c.repository_id = f.repository_id AND l.kind = f.kind \
+                 AND l.external_id = f.external_id \
+               ORDER BY d.short_code) AS item_short_codes \
+     FROM forge_refs f \
+     JOIN repositories r ON r.id = f.repository_id AND r.deleted_at IS NULL";
+
+/// The branches and pull requests of one repository in the given states,
+/// newest first, each with its linked items (KAIROS-T-0480).
+pub fn repository_refs(
+    conn: &mut PgConnection,
+    repository_id: Uuid,
+    states: &[&str],
+    limit: i64,
+) -> Result<Vec<ForgeRefRow>, ForgeError> {
+    Ok(diesel::sql_query(format!(
+        "{REF_SELECT} WHERE f.repository_id = $1 AND f.state = ANY($2) \
+         ORDER BY f.forge_updated_at DESC LIMIT $3"
+    ))
+    .bind::<diesel::sql_types::Uuid, _>(repository_id)
+    .bind::<diesel::sql_types::Array<diesel::sql_types::Text>, _>(
+        states.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+    )
+    .bind::<diesel::sql_types::BigInt, _>(limit)
+    .load(conn)?)
+}
+
+/// The branches and pull requests in the given states that are NOT linked
+/// to an item, in the repositories that the team owns, newest first
+/// (KAIROS-T-0480: the unlinked half of the team rollup).
+pub fn team_unlinked_refs(
+    conn: &mut PgConnection,
+    team_id: Uuid,
+    states: &[&str],
+    limit: i64,
+) -> Result<Vec<ForgeRefRow>, ForgeError> {
+    Ok(diesel::sql_query(format!(
+        "SELECT * FROM ({REF_SELECT} WHERE r.team_id = $1 AND f.state = ANY($2)) AS refs \
+         WHERE cardinality(refs.item_short_codes) = 0 \
+         ORDER BY refs.forge_updated_at DESC LIMIT $3"
+    ))
+    .bind::<diesel::sql_types::Uuid, _>(team_id)
+    .bind::<diesel::sql_types::Array<diesel::sql_types::Text>, _>(
+        states.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+    )
+    .bind::<diesel::sql_types::BigInt, _>(limit)
+    .load(conn)?)
 }

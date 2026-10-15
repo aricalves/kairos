@@ -346,6 +346,18 @@ pub fn open_by_key(conn: &mut PgConnection, dedupe_key: &str) -> QueryResult<Opt
     .optional()
 }
 
+/// The job with `dedupe_key` that was added last, in any state
+/// (KAIROS-T-0487: the last import of the issues of a repository).
+pub fn last_by_key(conn: &mut PgConnection, dedupe_key: &str) -> QueryResult<Option<Job>> {
+    sql_query(format!(
+        "SELECT {COLUMNS} FROM public.jobs WHERE dedupe_key = $1 \
+         ORDER BY created_at DESC, id DESC LIMIT 1"
+    ))
+    .bind::<Text, _>(dedupe_key)
+    .get_result(conn)
+    .optional()
+}
+
 /// Fail each job with `dedupe_key` that waits for a server, with `reason`
 /// in `last_error` and no more tries (KAIROS-T-0398): a `queued` job, and a
 /// `leased` job whose lease ran out (its server stopped, and a server takes

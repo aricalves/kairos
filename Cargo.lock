@@ -2557,6 +2557,7 @@ name = "kairos-core"
 version = "0.13.0"
 dependencies = [
  "chrono",
+ "regex",
  "serde",
  "serde_json",
  "sha2 0.10.9",

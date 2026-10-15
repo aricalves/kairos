@@ -43,6 +43,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/teams", get(list_teams).post(create_team))
         .route("/api/teams/by-slug/{slug}", get(get_team_by_slug))
         .route("/api/teams/{id}/links", get(list_team_links))
+        .route(
+            "/api/teams/{id}/unlinked-refs",
+            get(list_team_unlinked_refs),
+        )
         .route("/api/teams/{id}/work-documents", get(list_work_documents))
         .route(
             "/api/teams/{id}",
@@ -286,6 +290,54 @@ pub(crate) async fn list_team_links(
                     item_title: row.item_title,
                     forge_updated_at: row.forge_updated_at.to_rfc3339(),
                 })
+                .collect::<Vec<_>>())
+        })
+        .await?;
+    Ok(Json(rows))
+}
+
+/// The in-flight branches and pull requests with no linked item, in the
+/// repositories of the team (KAIROS-T-0480). This is the other half of the
+/// rollup of `/api/teams/{id}/links`. Open tenant-wide.
+#[utoipa::path(
+    get,
+    path = "/api/teams/{id}/unlinked-refs",
+    tag = "teams",
+    params(
+        ("id" = String, Path, description = "Team id (UUID)"),
+        TeamLinksQuery,
+    ),
+    responses(
+        (status = 200, description = "Branches and pull requests with no linked item, newest first", body = Vec<kairos_client::types_forge::ForgeRef>),
+        (status = 404, description = "Unknown team", body = kairos_client::types::ErrorEnvelope),
+    ),
+)]
+pub(crate) async fn list_team_unlinked_refs(
+    State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Path(id): Path<String>,
+    ApiQuery(query): ApiQuery<TeamLinksQuery>,
+) -> Result<Json<Vec<kairos_client::types_forge::ForgeRef>>, ApiError> {
+    let team_id = parse_uuid(&id, "id")?;
+    let states: Vec<String> = query
+        .state
+        .as_deref()
+        .unwrap_or("open,draft")
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let rows = state
+        .blocking
+        .run(&tenant.slug, move |conn| {
+            load_team(conn, team_id)?;
+            let refs: Vec<&str> = states.iter().map(String::as_str).collect();
+            let rows = kairos_db::forge::team_unlinked_refs(conn, team_id, &refs, limit)
+                .map_err(super::forge::map_error)?;
+            Ok(rows
+                .into_iter()
+                .map(super::repositories::ref_dto)
                 .collect::<Vec<_>>())
         })
         .await?;

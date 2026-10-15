@@ -1,0 +1,6 @@
+{
+  "ref": "robin/cleanup",
+  "ref_type": "branch",
+  "repository": { "full_name": "acme/payments-api", "html_url": "https://github.com/acme/payments-api" },
+  "sender": { "login": "robin" }
+}

@@ -1133,7 +1133,7 @@ pub fn team_link_rollup(
          JOIN repositories r ON r.id = c.repository_id \
          JOIN entity_directory d ON d.id = l.item_id AND d.deleted_at IS NULL \
          LEFT JOIN tasks t ON t.id = l.item_id AND t.deleted_at IS NULL \
-         WHERE l.state = ANY($3) \
+         WHERE l.state = ANY($3) AND l.kind <> 'issue' \
            AND (t.team_id = $1 OR d.board_id = $2 OR r.team_id = $1) \
          ORDER BY l.id, l.forge_updated_at DESC \
          LIMIT $4",
@@ -1193,7 +1193,7 @@ pub fn repository_link_rollup(
          JOIN forge_connections c ON c.id = l.connection_id AND c.deleted_at IS NULL \
          JOIN repositories r ON r.id = c.repository_id \
          JOIN entity_directory d ON d.id = l.item_id AND d.deleted_at IS NULL \
-         WHERE r.id = $1 AND l.state = ANY($2) \
+         WHERE r.id = $1 AND l.state = ANY($2) AND l.kind <> 'issue' \
          ORDER BY l.forge_updated_at DESC \
          LIMIT $3",
     )

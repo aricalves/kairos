@@ -260,6 +260,36 @@ diesel::table! {
 }
 
 diesel::table! {
+    forge_issue_intake (repository_id, issue_id) {
+        repository_id -> Uuid,
+        issue_id -> Text,
+        number -> Int8,
+        item_id -> Uuid,
+        url -> Text,
+        author -> Text,
+        source -> Text,
+        created_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
+    forge_refs (id) {
+        id -> Uuid,
+        repository_id -> Uuid,
+        kind -> Text,
+        external_id -> Text,
+        title -> Text,
+        url -> Text,
+        state -> Text,
+        author -> Text,
+        head_branch -> Text,
+        forge_updated_at -> Timestamptz,
+        created_at -> Timestamptz,
+        updated_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
     initiatives (id) {
         id -> Uuid,
         short_code -> Text,
@@ -469,6 +499,17 @@ diesel::table! {
         site_publish_id -> Nullable<Uuid>,
         default_branch_source -> Text,
         forge_branch -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
+    repository_forge_filters (repository_id, field) {
+        repository_id -> Uuid,
+        field -> Text,
+        include_pattern -> Text,
+        exclude_pattern -> Text,
+        updated_by -> Uuid,
+        updated_at -> Timestamptz,
     }
 }
 
@@ -711,6 +752,8 @@ diesel::joinable!(boards -> teams (team_id));
 diesel::joinable!(documents -> boards (board_id));
 diesel::joinable!(documents -> templates (template_id));
 diesel::joinable!(forge_connections -> repositories (repository_id));
+diesel::joinable!(forge_issue_intake -> repositories (repository_id));
+diesel::joinable!(forge_refs -> repositories (repository_id));
 diesel::joinable!(initiatives -> board_columns (column_id));
 diesel::joinable!(initiatives -> boards (board_id));
 diesel::joinable!(item_links -> forge_connections (connection_id));
@@ -719,6 +762,7 @@ diesel::joinable!(metadata_definition_scopes -> metadata_definitions (metadata_d
 diesel::joinable!(metadata_enum_options -> metadata_definitions (metadata_definition_id));
 diesel::joinable!(repositories -> teams (team_id));
 diesel::joinable!(repository_credentials -> repositories (repository_id));
+diesel::joinable!(repository_forge_filters -> repositories (repository_id));
 diesel::joinable!(strategies -> board_columns (column_id));
 diesel::joinable!(strategies -> boards (board_id));
 diesel::joinable!(structure_grants -> boards (board_id));
@@ -755,6 +799,8 @@ diesel::allow_tables_to_appear_in_same_query!(
     documents,
     edge_proposals,
     forge_connections,
+    forge_issue_intake,
+    forge_refs,
     initiatives,
     item_chunks,
     item_embeddings,
@@ -772,6 +818,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     org_read_tokens,
     repositories,
     repository_credentials,
+    repository_forge_filters,
     site_files,
     site_publishes,
     retired_codes,

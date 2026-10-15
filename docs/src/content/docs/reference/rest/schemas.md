@@ -1055,6 +1055,52 @@ The webhook wiring of one repository (KAIROS-T-0106 re-key: repo identity and ow
 | `id` | `string` | yes | Connection id (UUID) — also the webhook URL's last segment. |
 | `repository` | [`RepositoryRef`](#repositoryref) | yes | The repository this connection delivers for. |
 
+## ForgeFilterRule
+
+The two patterns of one field of the forge filter (KAIROS-T-0479). A pattern is a Rust regular expression of 512 bytes or fewer. It can match any part of the value: use `^` and `$` to match all of it. Kairos admits an event when the value matches `include` and does not match `exclude`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `exclude` | `string`, nullable | no | Default empty: exclude nothing. |
+| `include` | `string`, nullable | no | Default `.*` (everything). An empty pattern is the same as `.*`. |
+
+The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
+
+## ForgeFilters
+
+The forge filters of a repository, one rule per field (KAIROS-T-0479). Kairos reads `branch_name` for a branch; `pr_head_branch`, `pr_title` and `pr_author` for a pull request; `issue_title` and `issue_author` for an issue.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `branch_name` | [`ForgeFilterRule`](#forgefilterrule), nullable | no |  |
+| `issue_author` | [`ForgeFilterRule`](#forgefilterrule), nullable | no |  |
+| `issue_title` | [`ForgeFilterRule`](#forgefilterrule), nullable | no |  |
+| `pr_author` | [`ForgeFilterRule`](#forgefilterrule), nullable | no |  |
+| `pr_head_branch` | [`ForgeFilterRule`](#forgefilterrule), nullable | no |  |
+| `pr_title` | [`ForgeFilterRule`](#forgefilterrule), nullable | no |  |
+
+The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
+
+## ForgeRef
+
+One branch or pull request of a repository, as the forge reported it (KAIROS-T-0480). Kairos records each one that the forge filter of the repository admits, with or without a short code.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `author` | `string` | yes | The forge login of the author. |
+| `external_id` | `string` | yes | PR/MR number, or the branch name. |
+| `forge` | `string` | yes | `github|gitlab`. |
+| `forge_updated_at` | `string` | yes | RFC 3339. |
+| `head_branch` | `string` | yes | The head branch of a pull request, or the branch itself. |
+| `item_short_codes` | array of `string` | yes | The short codes of the live items that link to it. |
+| `kind` | `string` | yes | `branch|pull_request`. |
+| `linked` | `boolean` | yes | False when no item links to it: its branch name, title and body have no live short code. |
+| `repo_full_name` | `string` | yes | `owner/repo`. |
+| `repository` | `string` | yes | The slug of the repository in Kairos. |
+| `state` | `string` | yes | `open|merged|closed|draft`. Kairos closes a deleted branch. |
+| `title` | `string` | yes |  |
+| `url` | `string` | yes | Browser URL on the forge. |
+
 ## GraphEdge
 
 One typed directed edge between two returned nodes.
@@ -1178,6 +1224,35 @@ An initiative (Flight Level 2), as returned by `/api/initiatives`.
 | `updated_by` | `string` | yes | Last editor user id (UUID). |
 | `version` | `integer` | yes | Optimistic-concurrency version (KAIROS-A-0004). |
 
+## IssueImport
+
+An import of the open issues of a repository (KAIROS-T-0487). It is a job of the job queue. `POST` and `GET /api/repositories/{slug}/import-issues` give it.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `created_at` | `string` | yes | When the import was asked for (RFC 3339). |
+| `error` | `string`, nullable | no | Why the job failed, or why its last try stopped. |
+| `finished_at` | `string`, nullable | no | When the job ended (RFC 3339); `None` while it waits or runs. |
+| `job` | `string` | yes | The id of the job (UUID). |
+| `pages` | `integer` | yes | The pages of issues that the job took. |
+| `repository` | `string` | yes | The slug of the repository. |
+| `result` | [`IssueImportResult`](#issueimportresult) | yes | The counts so far; final when the job is `done`. |
+| `state` | `string` | yes | `queued`, `running`, `waiting` (for the rate limit of the forge), `done` or `failed`. |
+| `waiting_until` | `string`, nullable | no | While the job waits for the rate limit of the forge: the time it goes on (RFC 3339). |
+
+## IssueImportResult
+
+The counts of an import of the open issues (KAIROS-T-0483). The job writes them while it runs, and they stay after it ends (KAIROS-T-0487).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `filtered` | `integer` | yes | Issues that the forge filter does not admit. |
+| `imported` | `integer` | yes | Issues that became a task. |
+| `items` | array of `string` | yes | The short codes of the new tasks. |
+| `message` | `string` | yes | A sentence for a person. |
+| `not_taken` | `integer` | yes | Issues that no task could be made for; `message` says why. |
+| `skipped` | `integer` | yes | Issues that were taken before (by a webhook or an earlier import). |
+
 ## ItemImpactsResponse
 
 Response of `GET /api/{entity_type}/{short_code}/impacts`.
@@ -1199,7 +1274,7 @@ One branch or pull/merge request linked to a work item.
 | `forge_updated_at` | `string` | yes | The forge's own last-update time, RFC 3339. |
 | `id` | `string` | yes | Link id (UUID). |
 | `item_id` | `string` | yes | The linked work item (UUID). |
-| `kind` | `string` | yes | `branch|pull_request`. |
+| `kind` | `string` | yes | `branch|pull_request|issue`. `issue`: the issue that Kairos made the task from (KAIROS-T-0482). |
 | `repo_full_name` | `string` | yes | `owner/repo` (from the owning connection). |
 | `state` | `string` | yes | `open|merged|closed|draft`. |
 | `title` | `string` | yes |  |
@@ -1860,6 +1935,7 @@ One repository, as returned by `/api/repositories` (KAIROS-T-0106).
 | `description` | `string` | yes | Short "how to work here" blurb agents read before starting. |
 | `forge` | `string` | yes | `github|gitlab|other`. |
 | `forge_branch` | `string`, nullable | no | The default branch that the remote gave at the last fetch of the builder, or `None` before the first fetch (KAIROS-T-0430). |
+| `forge_filters` | [`ForgeFilters`](#forgefilters) | no | The forge filters of the repository (KAIROS-T-0479): the include and the exclude pattern of each field. Each field is present. |
 | `has_webhook` | `boolean` | yes | Whether a live webhook connection exists for it. |
 | `id` | `string` | yes | Repository id (UUID). |
 | `open_tasks` | `integer` | yes | Live tasks that link to this repository and are not in a done column, on all boards of all teams (COLLIERY-T-0219). |
@@ -2685,6 +2761,7 @@ Body of `PATCH /api/repositories/{slug}` — every field optional; `team` re-hom
 | `default_branch` | `string`, nullable | no | The form is that of `default_branch` in `CreateRepositoryRequest`. A value sets the branch by hand (KAIROS-T-0430): the builder indexes it, whatever the forge says. |
 | `default_branch_source` | [`DefaultBranchSource`](#defaultbranchsource), nullable | no |  |
 | `description` | `string`, nullable | no |  |
+| `forge_filters` | [`ForgeFilters`](#forgefilters), nullable | no |  |
 | `repo_url` | `string`, nullable | no | The form is that of `repo_url` in `CreateRepositoryRequest`. |
 | `site_enabled` | `boolean`, nullable | no | The site switch (KAIROS-T-0406). Off: a publish is refused, and the site is not served. |
 | `slug` | `string`, nullable | no |  |

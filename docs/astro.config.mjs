@@ -136,6 +136,7 @@ export default defineConfig({
 						),
 						page('explanation/finding-related-work', 'Finding related work'),
 						page('explanation/job-queue', 'The job queue'),
+						page('explanation/issues-from-a-forge', 'Issues from a forge'),
 					],
 				},
 			],

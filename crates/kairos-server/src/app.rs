@@ -135,6 +135,13 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
         config.public_url.clone(),
     )
     .register(&jobs);
+    // KAIROS-T-0487: the import of the open issues is a job of the queue.
+    crate::forge::import::IssueImportService::new(
+        blocking.clone(),
+        config.secrets_key.clone(),
+        config.writeback.api_url.clone(),
+    )
+    .register(&jobs);
     // KAIROS-T-0394: a worker serves no site, so it opens no store.
     let site_store = if config.role.serves_api() {
         site_store(&config, &jobs)?
@@ -330,6 +337,13 @@ pub fn state_with(config: AppConfig, pool: TenantPool, auth: Arc<Authenticator>)
         config.secrets_key.clone(),
         config.writeback.clone(),
         config.public_url.clone(),
+    )
+    .register(&jobs);
+    // KAIROS-T-0487: the import of the open issues is a job of the queue.
+    crate::forge::import::IssueImportService::new(
+        blocking.clone(),
+        config.secrets_key.clone(),
+        config.writeback.api_url.clone(),
     )
     .register(&jobs);
     let site_store = site_store(&config, &jobs).expect("the site store of a test config starts");

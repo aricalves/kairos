@@ -212,9 +212,14 @@ One repository in full. The output has these parts:
   stalls trips the breaker. Then the builder starts no build of the
   repository. `rebuild_code_index` resets it. See
   [Build the code index again](../../how-to/build-the-code-index-again/#the-breaker-of-a-repository).
+- `forge filters`: `default (admit everything)`, or each field whose include
+  or exclude pattern is not the default. See
+  [Connect a git forge](../../how-to/connect-a-git-forge/).
 - the team's description of how to work in the repository
 - the documents and the ADRs that impact the repository
 - the in-flight branches and pull requests, each with its work item
+- `## Not linked to an item`: the in-flight branches and pull requests that
+  the forge filter admits, with no item that links to them
 
 The delivery board is the board of the owner. A task that links to the
 repository can be on the board of any team. The output has no list of the
@@ -311,9 +316,12 @@ for the current owner team.
 | `code_index_build` | string | no | no change | `on` or `off`: the builder of the code index of the server, for this repository. |
 | `slug` | string | no | no change | The new slug. |
 | `team` | string | no | no change | The new owner team. Slug or UUID. |
+| `forge_filters` | object | no | no change | The forge filters (organization admin only). Keys: `branch_name`, `pr_head_branch`, `pr_title`, `pr_author`, `issue_title`, `issue_author`. Each value has `include` and `exclude`, Rust regular expressions of 512 bytes at most. Send only the fields and the patterns to change. |
 
 The call must have one or more of `description`, `default_branch`,
-`default_branch_source`, `repo_url`, `code_index_build`, `slug` and `team`.
+`default_branch_source`, `repo_url`, `code_index_build`, `slug`, `team` and
+`forge_filters`. The tool refuses an invalid or too long pattern with
+`VALIDATION`. The error names it (`forge_filters.pr_author.exclude`).
 Each checkout keeps the slug in `.claude/kairos.local.md`, and a new slug
 breaks that reference: run `/kairos:bootstrap` in the checkout again.
 

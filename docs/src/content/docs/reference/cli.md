@@ -1131,6 +1131,12 @@ command never prints the token. The line `index builder:` gives the setting
 - the how-to-work-here description
 - the documents and the ADRs that impact the repository
 - the in-flight branches and pull requests
+- `Not linked to an item:` the in-flight branches and pull requests with no
+  item that links to them
+
+The line `forge filters:` gives the forge filters of the repository. It is
+`default (admit everything)`, or each field with a pattern that is not the
+default.
 
 Each document or ADR is one line. The line has the short code, the lifecycle
 or the column, the title, and the kind of the item:
@@ -1186,6 +1192,8 @@ kairos repos update <REPOSITORY> [OPTIONS]
 | `--description <DESCRIPTION>` | string | unchanged | New description. |
 | `--code-index-build <ON\|OFF>` | `on` or `off` | unchanged | With `off`, the code index builder makes no index of the repository. Another value is refused. See [The base code index](../configuration/#stop-the-builder-for-one-repository). |
 | `--code-index-summaries <EMBEDDED\|HOSTED\|ORGANIZATION>` | `embedded`, `hosted` or `organization` | unchanged | With `organization`, the default summarizer of the organization decides. With `hosted`, the summaries of the repository come from the provider of the organization, and the code of each changed symbol leaves the host. Kairos refuses `hosted` when the organization has no hosted provider (`CODE_INDEX_NO_HOSTED_PROVIDER`). See [the providers](../configuration/#the-providers-of-the-summaries-and-the-vectors). |
+| `--include <FIELD=PATTERN>` | repeatable | unchanged | The include pattern of a forge filter field. Organization admin only. The fields are `branch_name`, `pr_head_branch`, `pr_title`, `pr_author`, `issue_title` and `issue_author`. See [Connect a git forge](../../how-to/connect-a-git-forge/#3-set-the-forge-filters). |
+| `--exclude <FIELD=PATTERN>` | repeatable | unchanged | The exclude pattern of a forge filter field. Organization admin only. An empty pattern excludes nothing. |
 
 Same permission gate as `create`. The rules of `--repo-url` and
 `--default-branch` are those of `create`. They apply to a value that is
@@ -1197,6 +1205,53 @@ nothing. The command prints this line:
 ```text
 Kairos did not change the repository payments-api. It has these values already.
 ```
+
+### `kairos repos import-issues`
+
+```
+kairos repos import-issues <REPOSITORY> [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<REPOSITORY>` | slug or UUID | required | The repository. |
+| `--wait` | flag | off | Wait until the import ends, then print its counts. |
+
+Organization admin only. Imports the open issues of the repository one time.
+The forge filter decides which issues Kairos takes. Each issue that it
+admits becomes a support task, as an opened issue does. The import skips an
+issue that Kairos took before.
+
+The repository must have a webhook connection and a read token with
+**Issues: read** (GitHub) or **read_api** (GitLab).
+
+The import is a job of the server. The command starts the job and prints
+it. When an import of the repository waits or runs, the command prints that
+import and starts no second one. With `--wait`, the command prints the
+counts and the short codes of the new tasks when the job ends:
+
+```text
+Import 0b6f3c1e-7a52-4d8e-9f10-2c4b5a6d7e8f of payments-api: done (1 page(s) read).
+Kairos imported 2 issue(s), skipped 1 taken before, and did not take 1 that the forge filter excludes.
+  PAY-T-0012
+  PAY-T-0013
+```
+
+### `kairos repos import-status`
+
+```
+kairos repos import-status <REPOSITORY> [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<REPOSITORY>` | slug or UUID | required | The repository. |
+
+Organization admin only. Prints the last import of the open issues of the
+repository. The state is `queued`, `running`, `waiting`, `done` or
+`failed`. The command also prints the pages that the import read, its
+counts, and the error of a failed import. The state `waiting` gives the
+time when the rate limit of the forge ends.
 
 ### `kairos repos delete`
 

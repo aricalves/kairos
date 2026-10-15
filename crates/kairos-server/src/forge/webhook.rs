@@ -23,8 +23,18 @@
 //!
 //! A non-2xx makes forges retry, and retry, and eventually disable the
 //! hook. So a delivery we understand but cannot act on — an event type we
-//! do not consume, a payload naming no live short code — is a successful
-//! no-op. Only authenticity failures reject.
+//! do not consume, an event that the forge filter of the repository does
+//! not admit — is a successful no-op. Only authenticity failures reject.
+//!
+//! # What a delivery writes (COLLIERY-I-0623)
+//!
+//! 1. The forge filter of the repository decides first (KAIROS-T-0479).
+//! 2. Each admitted branch and pull request is recorded for the repository
+//!    (`forge_refs`), with or without a short code (KAIROS-T-0480).
+//! 3. A live short code in it links it to that item (`item_links`), and a
+//!    linked pull request gets the write-back (KAIROS-T-0386).
+//!
+//! The forge system actor of the tenant is the actor (KAIROS-T-0481).
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
@@ -85,6 +95,105 @@ fn core_state(state: CoreState) -> LinkState {
         CoreState::Closed => LinkState::Closed,
         CoreState::Draft => LinkState::Draft,
     }
+}
+
+/// KAIROS-T-0482: an opened issue becomes one support task
+/// ([`crate::forge::intake`]). The connection is checked as for a link
+/// event; an unknown one is an authenticity failure.
+async fn ingest_issue(
+    state: &AppState,
+    tenant: String,
+    connection_uuid: Uuid,
+    forge: Forge,
+    org_id: Uuid,
+    issue: kairos_core::forge::ForgeIssue,
+) -> Response {
+    let slug = tenant.clone();
+    let result = state
+        .blocking
+        .run(&tenant, move |conn| {
+            let connection = match forge::load_connection(conn, connection_uuid) {
+                Ok(connection) => connection,
+                Err(ForgeError::ConnectionNotFound(_)) => return Ok(None),
+                Err(e) => return Err(crate::error::ApiError::internal(e)),
+            };
+            if connection.forge != forge {
+                return Ok(None);
+            }
+            let actor = kairos_db::forge_actor::ensure(conn, org_id)
+                .map_err(crate::error::ApiError::internal)?;
+            crate::forge::intake::take_issue(
+                conn,
+                &slug,
+                actor,
+                connection.repository_id,
+                connection.id,
+                &issue,
+                crate::forge::intake::Source::Webhook,
+            )
+            .map(Some)
+        })
+        .await;
+    use crate::forge::intake::Outcome;
+    match result {
+        Ok(Some(Outcome::Created(code))) => (
+            StatusCode::OK,
+            Json(json!({ "status": "issue taken", "links_written": 1, "item": code })),
+        )
+            .into_response(),
+        Ok(Some(Outcome::Duplicate)) => accepted("issue taken already", 0),
+        Ok(Some(Outcome::Filtered)) => accepted("filtered", 0),
+        Ok(Some(Outcome::NotRouted(reason))) => (
+            StatusCode::OK,
+            Json(json!({ "status": "issue not taken", "reason": reason, "links_written": 0 })),
+        )
+            .into_response(),
+        Ok(None) => rejected(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// What a verified delivery did.
+enum Ingested {
+    /// Recorded; this many item links were written or advanced.
+    Written(usize),
+    /// The filter of the repository does not admit it: nothing written.
+    Filtered,
+}
+
+/// One activity row for a delivery that changed something
+/// (KAIROS-T-0481): the forge actor, the repository, and what the forge
+/// said, with the login of its author.
+pub(crate) fn record_event(
+    conn: &mut diesel::pg::PgConnection,
+    actor: Uuid,
+    repository_id: Uuid,
+    event: &ForgeEvent,
+) -> Result<(), crate::error::ApiError> {
+    use diesel::prelude::*;
+    use kairos_db::models::enums::ActivityAction;
+    use kairos_db::models::graph::NewActivityLogEntry;
+    let author = if event.author.is_empty() {
+        String::new()
+    } else {
+        format!(" by {}", event.author)
+    };
+    diesel::insert_into(kairos_db::schema::activity_log::table)
+        .values(NewActivityLogEntry {
+            actor_id: actor,
+            action: ActivityAction::ForgeEvent,
+            entity_id: Some(repository_id),
+            entity_type: Some("repository".to_string()),
+            details: format!(
+                "{} {} {}{author}",
+                event.kind.as_str(),
+                event.external_id,
+                event.state.as_str()
+            ),
+        })
+        .execute(conn)
+        .map_err(crate::error::ApiError::internal)?;
+    Ok(())
 }
 
 /// Ingest one delivery.
@@ -153,9 +262,15 @@ pub(crate) async fn receive(
         Forge::Gitlab => kairos_core::forge::parse_gitlab(&event_type, raw),
         Forge::Other => None,
     };
-    let Some(event) = parsed else {
-        return accepted("event type not consumed", 0);
+    // KAIROS-T-0482: an opened issue. Other issue actions parse to `None`.
+    let issue = match (&parsed, forge) {
+        (None, Forge::Github) => kairos_core::forge::parse_github_issue(&event_type, raw),
+        (None, Forge::Gitlab) => kairos_core::forge::parse_gitlab_issue(&event_type, raw),
+        _ => None,
     };
+    if parsed.is_none() && issue.is_none() {
+        return accepted("event type not consumed", 0);
+    }
 
     // The slug is syntactically valid, but the tenant may not exist —
     // dispatching to a missing schema would 500 and leak the difference.
@@ -172,16 +287,23 @@ pub(crate) async fn receive(
                 .first(conn)
                 .optional()
                 .map_err(crate::error::ApiError::internal)?;
-            Ok(found.is_some())
+            Ok(found)
         })
         .await;
-    match tenant_exists {
-        Ok(true) => {}
-        Ok(false) => return rejected(),
+    let org_id = match tenant_exists {
+        Ok(Some(org_id)) => org_id,
+        Ok(None) => return rejected(),
         Err(e) => return e.into_response(),
-    }
+    };
 
     // ---- resolve + write --------------------------------------------------
+    let event = match (parsed, issue) {
+        (Some(event), _) => event,
+        (None, Some(issue)) => {
+            return ingest_issue(&state, tenant, connection_uuid, forge, org_id, issue).await;
+        }
+        (None, None) => return accepted("event type not consumed", 0),
+    };
     let codes = kairos_core::forge::extract_short_codes(&event.match_text);
     let result = state
         .blocking
@@ -196,6 +318,36 @@ pub(crate) async fn receive(
             if connection.forge != forge {
                 return Ok(None);
             }
+            // KAIROS-T-0481: the forge actor of the tenant acts for the
+            // forge, not the person who connected the repository.
+            let actor = kairos_db::forge_actor::ensure(conn, org_id)
+                .map_err(crate::error::ApiError::internal)?;
+
+            // KAIROS-T-0479/0480: the filter of the repository first. An
+            // event that it does not admit is not recorded and not linked.
+            let filter = kairos_db::forge_filters::filter(conn, connection.repository_id)
+                .map_err(crate::error::ApiError::internal)?;
+            if !filter.admits(&event) {
+                return Ok(Some(Ingested::Filtered));
+            }
+
+            // KAIROS-T-0480: record it for the repository, with or without a
+            // short code. Ordering-safe, like the links below.
+            let recorded = forge::upsert_ref(
+                conn,
+                kairos_db::forge::NewForgeRef {
+                    repository_id: connection.repository_id,
+                    kind: core_kind(event.kind),
+                    external_id: event.external_id.clone(),
+                    title: event.title.clone(),
+                    url: event.url.clone(),
+                    state: core_state(event.state),
+                    author: event.author.clone(),
+                    head_branch: event.head_branch.clone(),
+                    forge_updated_at: event.forge_updated_at,
+                },
+            )
+            .map_err(crate::error::ApiError::internal)?;
 
             let kind = core_kind(event.kind);
             let mut written = 0usize;
@@ -274,17 +426,22 @@ pub(crate) async fn receive(
                         short_code: short_code.clone(),
                         board_id: None,
                         column_id: None,
-                        actor: connection.created_by,
+                        actor,
                     },
                 )
                 .map_err(crate::error::ApiError::internal)?;
             }
-            Ok(Some(written))
+            if written > 0 || recorded {
+                record_event(conn, actor, connection.repository_id, &event)?;
+            }
+            Ok(Some(Ingested::Written(written)))
         })
         .await;
 
     match result {
-        Ok(Some(written)) => accepted("ingested", written),
+        Ok(Some(Ingested::Written(written))) => accepted("ingested", written),
+        // A 2xx: the forge must not retry an event that the filter drops.
+        Ok(Some(Ingested::Filtered)) => accepted("filtered", 0),
         // Unknown connection (or wrong forge for it) is an authenticity
         // failure, and must look like every other one.
         Ok(None) => rejected(),

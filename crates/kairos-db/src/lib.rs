@@ -22,6 +22,8 @@ pub mod embeddings;
 pub mod events;
 pub mod flow;
 pub mod forge;
+pub mod forge_actor;
+pub mod forge_filters;
 pub mod graph;
 pub mod impacts;
 pub mod item_owners;

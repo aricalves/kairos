@@ -71,6 +71,8 @@ pub mod kinds {
     pub const WEBHOOK_DELIVERY: &str = kairos_db::webhooks::JOB_KIND;
     /// A GitHub write-back of one pull request (KAIROS-T-0386).
     pub const GITHUB_WRITEBACK: &str = kairos_db::writeback::JOB_KIND;
+    /// The import of the open issues of a repository (KAIROS-T-0487).
+    pub const ISSUE_IMPORT: &str = crate::forge::import::KIND;
 }
 
 /// The priorities of the jobs (COLLIERY-I-0613): a higher one runs first.
@@ -89,6 +91,8 @@ pub mod priority {
     pub const WEBHOOK_DELIVERY: i32 = kairos_db::webhooks::JOB_PRIORITY;
     /// A GitHub write-back (KAIROS-T-0386).
     pub const GITHUB_WRITEBACK: i32 = kairos_db::writeback::JOB_PRIORITY;
+    /// The import of the open issues of a repository (KAIROS-T-0487).
+    pub const ISSUE_IMPORT: i32 = crate::forge::import::PRIORITY;
     /// A periodic pass.
     pub const PERIODIC: i32 = 10;
 }
@@ -132,6 +136,7 @@ impl Default for JobSettings {
                 (kinds::PERIODIC, 1),
                 (kinds::WEBHOOK_DELIVERY, 4),
                 (kinds::GITHUB_WRITEBACK, 2),
+                (kinds::ISSUE_IMPORT, 2),
             ]
             .into_iter()
             .map(|(kind, limit)| (kind.to_string(), limit))

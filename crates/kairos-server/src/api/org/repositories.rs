@@ -68,6 +68,125 @@ pub fn router() -> Router<AppState> {
                 .patch(update_repository)
                 .delete(delete_repository),
         )
+        .route(
+            "/api/repositories/{slug}/import-issues",
+            axum::routing::post(import_issues).get(issue_import),
+        )
+}
+
+/// Start the import of the open issues of a repository (KAIROS-T-0483).
+///
+/// Organization admin only. The import is a job of the job queue
+/// (KAIROS-T-0487).
+///
+/// Each open issue goes through the path of an opened-issue event. The
+/// forge filter decides. Then Kairos makes one support task for each issue
+/// id on the delivery board of the team. The import skips an issue that a
+/// webhook or an earlier import took.
+///
+/// The repository needs a live webhook connection, because the issue link
+/// hangs off it. It also needs a read token with Issues: read (GitHub) or
+/// `read_api` (GitLab).
+///
+/// The answer is the job, at once. While an import of the repository waits
+/// or runs, the answer is that import: one runs at a time. Read the counts
+/// with `GET /api/repositories/{slug}/import-issues`.
+#[utoipa::path(
+    post,
+    path = "/api/repositories/{slug}/import-issues",
+    tag = "repositories",
+    params(("slug" = String, Path, description = "Repository slug (or UUID)")),
+    responses(
+        (status = 202, description = "The import job: a new one, or the one that waits or runs", body = dto::IssueImport),
+        (status = 403, description = "Not an org admin", body = kairos_client::types::ErrorEnvelope),
+        (status = 404, description = "Unknown repository", body = kairos_client::types::ErrorEnvelope),
+        (status = 422, description = "The repository has no read token, no webhook connection, or the forge `other`", body = kairos_client::types::ErrorEnvelope),
+    ),
+)]
+pub(crate) async fn import_issues(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Extension(tenant): Extension<TenantContext>,
+    Path(slug): Path<String>,
+) -> Result<axum::response::Response, ApiError> {
+    use crate::forge::import;
+    use axum::response::IntoResponse;
+    let user = auth.user_id;
+    let tenant_slug = tenant.slug.clone();
+    let key = state.config.secrets_key.clone();
+    let github_api = state.config.writeback.api_url.clone();
+    let max_tries = state.config.jobs.max_tries;
+    let job = state
+        .blocking
+        .run(&tenant.slug, move |conn| {
+            require_capability(conn, &tenant_slug, None, user, "manage_teams")?;
+            let target = import::target(conn, &tenant_slug, &slug, key.as_ref(), &github_api)?;
+            let new = import::new_job(&tenant_slug, &target.repository, max_tries);
+            let dedupe_key = new.dedupe_key.clone().unwrap_or_default();
+            // The open job of the repository, or a new one. A job that ends
+            // between the two reads leaves room for a new one: look again.
+            for _ in 0..3 {
+                if let Some(job) =
+                    kairos_db::jobs::enqueue(conn, &new).map_err(ApiError::internal)?
+                {
+                    return Ok(job);
+                }
+                if let Some(job) =
+                    kairos_db::jobs::open_by_key(conn, &dedupe_key).map_err(ApiError::internal)?
+                {
+                    return Ok(job);
+                }
+            }
+            Err(ApiError::internal(
+                "the import job was neither added nor found",
+            ))
+        })
+        .await?;
+    state.jobs.wake();
+    Ok((StatusCode::ACCEPTED, Json(import::import_dto(&job))).into_response())
+}
+
+/// The last import of the open issues of a repository (KAIROS-T-0487).
+///
+/// Organization admin only. The answer gives the state of the import and
+/// its counts.
+#[utoipa::path(
+    get,
+    path = "/api/repositories/{slug}/import-issues",
+    tag = "repositories",
+    params(("slug" = String, Path, description = "Repository slug (or UUID)")),
+    responses(
+        (status = 200, description = "The last import", body = dto::IssueImport),
+        (status = 403, description = "Not an org admin", body = kairos_client::types::ErrorEnvelope),
+        (status = 404, description = "Unknown repository, or no import ran", body = kairos_client::types::ErrorEnvelope),
+    ),
+)]
+pub(crate) async fn issue_import(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Extension(tenant): Extension<TenantContext>,
+    Path(slug): Path<String>,
+) -> Result<Json<dto::IssueImport>, ApiError> {
+    let user = auth.user_id;
+    let tenant_slug = tenant.slug.clone();
+    let job = state
+        .blocking
+        .run(&tenant.slug, move |conn| {
+            require_capability(conn, &tenant_slug, None, user, "manage_teams")?;
+            let repository = repositories::resolve(conn, &slug).map_err(map_error)?;
+            let key = crate::forge::import::job_key(&tenant_slug, repository.id);
+            kairos_db::jobs::last_by_key(conn, &key)
+                .map_err(ApiError::internal)?
+                .ok_or_else(|| {
+                    ApiError::not_found(format!(
+                        "The repository {} has no import of open issues. Start one: POST \
+                         /api/repositories/{}/import-issues.",
+                        repository.slug, repository.slug
+                    ))
+                })
+        })
+        .await?;
+    Ok(Json(crate::forge::import::import_dto(&job)))
 }
 
 /// [`RepositoryError`] → HTTP.
@@ -312,13 +431,31 @@ pub(crate) fn change(
         && body.code_index_build.is_none()
         && body.code_index_summaries.is_none()
         && body.site_enabled.is_none()
+        && body
+            .forge_filters
+            .as_ref()
+            .is_none_or(dto::ForgeFilters::is_empty)
     {
         return Err(ApiError::validation(
             "The request has no field to change. Send one or more of slug, repo_url, \
              default_branch, default_branch_source, team, description, code_index_build, \
-             code_index_summaries and site_enabled.",
+             code_index_summaries, site_enabled and forge_filters.",
         ));
     }
+    // KAIROS-T-0479: the forge filters are set by an org admin only. The
+    // patterns are checked before anything is written.
+    let filter_changes = match body.forge_filters.as_ref().filter(|f| !f.is_empty()) {
+        Some(sent) => {
+            require_capability(conn, tenant_slug, None, user, "manage_teams")?;
+            let changes = filter_changes(conn, current.id, sent)?;
+            for (field, rule) in &changes {
+                kairos_core::forge_filter::validate(*field, rule)
+                    .map_err(|e| map_filter_error(e.into()))?;
+            }
+            changes
+        }
+        None => Vec::new(),
+    };
     // KAIROS-T-0430: a branch is set by hand, so it cannot also follow the
     // forge.
     if body.default_branch.is_some()
@@ -430,7 +567,23 @@ pub(crate) fn change(
     // transaction of the switch. The sweep adds no new job for a
     // repository that is off, and a build that runs now goes on.
     let turned_off = changes.code_index_build.as_deref() == Some("off");
-    let (repository, cancelled_builds) = if changed.is_empty() {
+    // KAIROS-T-0479: the forge filters, in the same transaction.
+    let filters_changed = if filter_changes.is_empty() {
+        false
+    } else {
+        let current_slug = current.slug.clone();
+        let current_id = current.id;
+        let names = crate::api::org::run_in_transaction(conn, |conn| {
+            kairos_db::forge_filters::set(conn, current_id, &current_slug, &filter_changes, user)
+                .map_err(map_filter_error)
+        })?;
+        !names.is_empty()
+    };
+    let mut changed = changed;
+    if filters_changed {
+        changed.push("forge_filters");
+    }
+    let (repository, cancelled_builds) = if changed.iter().all(|c| *c == "forge_filters") {
         (current, 0)
     } else {
         crate::api::org::run_in_transaction(conn, |conn| {
@@ -519,6 +672,8 @@ pub(crate) fn render(
     let publishers: Vec<Uuid> = live_sites.values().map(|p| p.principal_id).collect();
     let publisher_names = kairos_db::sites::names(conn, &publishers).map_err(ApiError::internal)?;
     let tenant = kairos_db::sites::tenant_slug(conn).map_err(ApiError::internal)?;
+    // KAIROS-T-0479: the forge filters of each repository.
+    let filters = kairos_db::forge_filters::stored_for(conn, &ids).map_err(ApiError::internal)?;
 
     rows.into_iter()
         .map(|repo| {
@@ -576,11 +731,98 @@ pub(crate) fn render(
                     None => dto::CodeIndexBreaker::default(),
                 },
                 site,
+                forge_filters: filters_dto(filters.get(&repo.id).map(Vec::as_slice).unwrap_or(&[])),
                 created_at: repo.created_at.to_rfc3339(),
                 updated_at: repo.updated_at.to_rfc3339(),
             })
         })
         .collect()
+}
+
+/// A `forge_refs` row as the DTO (KAIROS-T-0480).
+pub(crate) fn ref_dto(row: kairos_db::forge::ForgeRefRow) -> kairos_client::types_forge::ForgeRef {
+    kairos_client::types_forge::ForgeRef {
+        linked: !row.item_short_codes.is_empty(),
+        kind: row.kind,
+        external_id: row.external_id,
+        title: row.title,
+        url: row.url,
+        state: row.state,
+        author: row.author,
+        head_branch: row.head_branch,
+        forge: row.forge,
+        repo_full_name: row.repo_full_name,
+        repository: row.repository_slug,
+        item_short_codes: row.item_short_codes,
+        forge_updated_at: row.forge_updated_at.to_rfc3339(),
+    }
+}
+
+/// The forge filters of a repository as the DTO: every field, with the
+/// default where no row is stored (KAIROS-T-0479).
+pub(crate) fn filters_dto(
+    stored: &[(
+        kairos_core::forge_filter::FilterField,
+        kairos_core::forge_filter::FilterRule,
+    )],
+) -> dto::ForgeFilters {
+    let mut out = dto::ForgeFilters::default();
+    for field in kairos_core::forge_filter::FilterField::ALL {
+        let rule = stored
+            .iter()
+            .find(|(f, _)| *f == field)
+            .map(|(_, r)| r.clone())
+            .unwrap_or_default();
+        out.set(
+            field.as_str(),
+            dto::ForgeFilterRule {
+                include: Some(rule.include),
+                exclude: Some(rule.exclude),
+            },
+        );
+    }
+    out
+}
+
+/// The changes of the forge filters in a request, merged with the stored
+/// rules: a pattern that the request does not send stays.
+fn filter_changes(
+    conn: &mut PgConnection,
+    repository_id: Uuid,
+    sent: &dto::ForgeFilters,
+) -> Result<
+    Vec<(
+        kairos_core::forge_filter::FilterField,
+        kairos_core::forge_filter::FilterRule,
+    )>,
+    ApiError,
+> {
+    let current =
+        kairos_db::forge_filters::rules(conn, repository_id).map_err(ApiError::internal)?;
+    let mut out = Vec::new();
+    for (field, rule) in current {
+        if let Some(patch) = sent.get(field.as_str()) {
+            out.push((
+                field,
+                kairos_core::forge_filter::FilterRule {
+                    include: patch.include.clone().unwrap_or(rule.include),
+                    exclude: patch.exclude.clone().unwrap_or(rule.exclude),
+                },
+            ));
+        }
+    }
+    Ok(out)
+}
+
+/// A refused pattern → 422 that names it.
+fn map_filter_error(e: kairos_db::forge_filters::FilterStoreError) -> ApiError {
+    match e {
+        kairos_db::forge_filters::FilterStoreError::Pattern(e) => {
+            let field = format!("forge_filters.{}", e.name());
+            ApiError::validation(e.to_string()).with_details(json!({ "field": field }))
+        }
+        kairos_db::forge_filters::FilterStoreError::Database(e) => ApiError::internal(e),
+    }
 }
 
 fn render_one(conn: &mut PgConnection, repo: Repository) -> Result<dto::Repository, ApiError> {
@@ -761,10 +1003,18 @@ pub(crate) async fn get_repository(
                         forge_updated_at: row.forge_updated_at.to_rfc3339(),
                     })
                     .collect();
+            // KAIROS-T-0480: every admitted branch and pull request, linked
+            // or not.
+            let refs = kairos_db::forge::repository_refs(conn, repo_id, &["open", "draft"], 100)
+                .map_err(super::forge::map_error)?
+                .into_iter()
+                .map(ref_dto)
+                .collect();
             Ok(dto::RepositoryDetail {
                 repository: render_one(conn, repo)?,
                 connection_id,
                 in_flight,
+                refs,
                 impacted_by: impacted_by(conn, repo_id, query.include_deleted)?,
             })
         })

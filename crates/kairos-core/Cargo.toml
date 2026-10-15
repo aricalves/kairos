@@ -16,3 +16,5 @@ sha2 = { workspace = true }
 # COLLIERY-T-0267: the form of the URL of a repository. The crate is in the
 # tree already (reqwest), so the lockfile gets no new package.
 url = { workspace = true }
+# KAIROS-T-0479: the forge filters (forge_filter.rs).
+regex = { workspace = true }

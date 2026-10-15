@@ -16,6 +16,10 @@
 //! 6.  MCP session smoke over streamable HTTP (initialize →
 //!     notifications/initialized → whoami → board_items), mirroring the
 //!     tests/mcp.rs transport
+//! 7.  forge watching (COLLIERY-I-0623): synthetic signed GitHub
+//!     deliveries to a new repository — an unlinked PR is recorded, an
+//!     excluded author is filtered, and an opened issue lands as a support
+//!     task in the entry column of the team's delivery board
 //!
 //! Every step prints `[e2e] step N (name) ... ok`; the FIRST failure
 //! prints `[e2e] step N (name) FAILED: <cause>` to stderr and exits 1, so
@@ -264,6 +268,14 @@ async fn main() -> ExitCode {
     let initiative_board = board_id("initiatives");
     let delivery_board = board_id("platform-delivery");
     let delivery = or_fail(&step, client.get_board(&delivery_board).await);
+    // The entry column: the first by position (COLLIERY-I-0623, step 11).
+    let entry_column = delivery
+        .columns
+        .iter()
+        .min_by_key(|c| c.position)
+        .unwrap_or_else(|| step.fail("platform-delivery has no column"))
+        .id
+        .clone();
     let todo_column = delivery
         .columns
         .iter()
@@ -505,10 +517,204 @@ async fn main() -> ExitCode {
     );
     step.ok("initialize + whoami + board_items over streamable HTTP");
 
+    // --- 11: forge watching (COLLIERY-I-0623) ------------------------------------
+    let step = Step::start(11, "forge watching: unlinked PR, filter, issue intake");
+    forge_watching(&step, &client, &http, &delivery_board, &entry_column).await;
+
     println!(
         "[e2e] GUI leg: runs next as a separate `angreal test e2e` phase \
          (KAIROS-T-0045, Playwright over the Leptos GUI)"
     );
-    println!("[e2e] golden path PASSED (10/10 steps)");
+    println!("[e2e] golden path PASSED (11/11 steps)");
     ExitCode::SUCCESS
+}
+
+/// Step 11 (KAIROS-T-0484): synthetic signed deliveries of GitHub to a new
+/// repository of the team `platform`. The server needs
+/// `KAIROS_WEBHOOK_SIGNING_KEY` and `KAIROS_PUBLIC_URL` (the e2e task sets
+/// both). No request goes to a forge.
+async fn forge_watching(
+    step: &Step,
+    client: &KairosClient,
+    http: &reqwest::Client,
+    delivery_board: &str,
+    entry_column: &str,
+) {
+    use kairos_client::types_repositories::{
+        CreateRepositoryRequest, ForgeFilterRule, ForgeFilters, UpdateRepositoryRequest,
+    };
+    let repo = or_fail(
+        step,
+        client
+            .create_repository(&CreateRepositoryRequest {
+                slug: Some("e2e-forge".into()),
+                forge: "github".into(),
+                repo_full_name: "demo-org/e2e-forge".into(),
+                repo_url: "https://github.com/demo-org/e2e-forge".into(),
+                default_branch: None,
+                team: "platform".into(),
+                description: None,
+            })
+            .await,
+    );
+    let connection = or_fail(
+        step,
+        client
+            .create_forge_connection(&kairos_client::types_forge::CreateForgeConnectionRequest {
+                repository: repo.slug.clone(),
+            })
+            .await,
+    );
+    let mut filters = ForgeFilters::default();
+    filters.set(
+        "pr_author",
+        ForgeFilterRule {
+            include: None,
+            exclude: Some("^dependabot\\[bot\\]$".into()),
+        },
+    );
+    or_fail(
+        step,
+        client
+            .update_repository(
+                &repo.slug,
+                &UpdateRepositoryRequest {
+                    forge_filters: Some(filters),
+                    ..Default::default()
+                },
+            )
+            .await,
+    );
+    let deliver = |event: &'static str, body: Value| {
+        let url = connection.webhook_url.clone();
+        let secret = connection.webhook_secret.clone();
+        async move {
+            let body = body.to_string();
+            let signature = kairos_server::forge::auth::github_signature(&secret, body.as_bytes());
+            let response = or_fail(
+                step,
+                http.post(url)
+                    .header("x-github-event", event)
+                    .header("x-hub-signature-256", signature)
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .send()
+                    .await,
+            );
+            require(
+                step,
+                response.status() == 200,
+                &format!("{event} delivery HTTP {}", response.status()),
+            );
+            or_fail(step, response.json::<Value>().await)
+        }
+    };
+    let pr = |number: i64, author: &str| {
+        json!({
+            "action": "opened",
+            "repository": {
+                "full_name": "demo-org/e2e-forge",
+                "html_url": "https://github.com/demo-org/e2e-forge"
+            },
+            "sender": { "login": author },
+            "pull_request": {
+                "number": number, "state": "open", "merged": false, "draft": false,
+                "title": "Tidy the README", "body": "",
+                "html_url": format!("https://github.com/demo-org/e2e-forge/pull/{number}"),
+                "updated_at": "2026-10-01T10:00:00Z",
+                "user": { "login": author },
+                "head": { "ref": format!("{author}/readme-{number}") }
+            }
+        })
+    };
+
+    // An unlinked PR is recorded.
+    let answer = deliver("pull_request", pr(501, "robin")).await;
+    require(
+        step,
+        answer["status"] == "ingested",
+        &format!("unlinked PR: {answer}"),
+    );
+    let detail = or_fail(step, client.get_repository(&repo.slug).await);
+    require(
+        step,
+        detail
+            .refs
+            .iter()
+            .any(|r| r.external_id == "501" && !r.linked),
+        &format!("PR 501 is not recorded as not linked: {:?}", detail.refs),
+    );
+
+    // An excluded author is filtered.
+    let answer = deliver("pull_request", pr(502, "dependabot[bot]")).await;
+    require(
+        step,
+        answer["status"] == "filtered",
+        &format!("excluded author: {answer}"),
+    );
+    let detail = or_fail(step, client.get_repository(&repo.slug).await);
+    require(
+        step,
+        !detail.refs.iter().any(|r| r.external_id == "502"),
+        "PR 502 of an excluded author is recorded",
+    );
+
+    // An opened issue lands as a support task in the entry column.
+    let issue = json!({
+        "action": "opened",
+        "issue": {
+            "id": 9_000_001, "number": 7,
+            "title": "E2E: the export button does nothing",
+            "body": "Push Export. Nothing happens.",
+            "html_url": "https://github.com/demo-org/e2e-forge/issues/7",
+            "state": "open", "user": { "login": "sam" },
+            "created_at": "2026-10-01T10:00:00Z", "updated_at": "2026-10-01T10:00:00Z"
+        },
+        "repository": { "full_name": "demo-org/e2e-forge" },
+        "sender": { "login": "sam" }
+    });
+    let answer = deliver("issues", issue.clone()).await;
+    require(
+        step,
+        answer["status"] == "issue taken",
+        &format!("opened issue: {answer}"),
+    );
+    let code = answer["item"]
+        .as_str()
+        .unwrap_or_else(|| step.fail(format!("no item in {answer}")))
+        .to_string();
+    let task = or_fail(step, client.get_task(&code).await);
+    require(
+        step,
+        task.task_type == "support" && task.work_class == "support",
+        &format!(
+            "{code} is {} / {}, not support / support",
+            task.task_type, task.work_class
+        ),
+    );
+    require(
+        step,
+        task.board_id == delivery_board && task.column_id == entry_column,
+        &format!("{code} is not in the entry column of platform-delivery"),
+    );
+    let links = or_fail(
+        step,
+        client
+            .item_links(kairos_client::EntityKind::Task, &code)
+            .await,
+    );
+    require(
+        step,
+        links.iter().any(|l| l.kind == "issue" && l.author == "sam"),
+        &format!("{code} has no issue link: {links:?}"),
+    );
+    let answer = deliver("issues", issue).await;
+    require(
+        step,
+        answer["status"] == "issue taken already",
+        &format!("redelivered issue: {answer}"),
+    );
+    step.ok(format!(
+        "PR 501 recorded not linked; PR 502 filtered; issue #7 became {code} in the entry column"
+    ));
 }

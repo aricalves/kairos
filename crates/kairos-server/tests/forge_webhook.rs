@@ -64,6 +64,19 @@ fn rejection<T: std::fmt::Debug>(result: Result<T, kairos_client::Error>) -> kai
     }
 }
 
+/// One `forge_event` activity row with its actor (KAIROS-T-0481).
+#[derive(QueryableByName, Debug, Clone)]
+struct ForgeEventRow {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    display_name: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    kind: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    details: String,
+    #[diesel(sql_type = diesel::sql_types::Uuid)]
+    id: Uuid,
+}
+
 fn link_count(conn: &mut PgConnection) -> i64 {
     use kairos_db::schema::item_links::dsl;
     dsl::item_links
@@ -242,6 +255,67 @@ async fn forge_webhook_ingestion_against_live_stack() {
         link_state(&mut conn, task.id, "42").as_deref(),
         Some("open")
     );
+
+    // =======================================================================
+    // KAIROS-T-0481: the forge actor, not the person who connected the repo
+    // =======================================================================
+    let forge_events: Vec<ForgeEventRow> = sql_query(
+        "SELECT u.display_name, u.kind, a.details, u.id \
+           FROM org_acme.activity_log a JOIN public.users u ON u.id = a.actor_id \
+          WHERE a.action = 'forge_event' ORDER BY a.occurred_at",
+    )
+    .load(&mut conn)
+    .expect("forge events");
+    assert_eq!(forge_events.len(), 1, "{forge_events:?}");
+    let ForgeEventRow {
+        display_name: name,
+        kind,
+        details,
+        id: forge_actor,
+    } = forge_events[0].clone();
+    assert_eq!((name.as_str(), kind.as_str()), ("Forge", "system"));
+    assert_ne!(forge_actor, svc_id, "not the person who connected the repo");
+    assert_eq!(details, "pull_request 42 open by dylan");
+    // It is a member of the organization (the right of a request).
+    let member: i64 = organization_members::table
+        .filter(organization_members::user_id.eq(forge_actor))
+        .filter(organization_members::organization_id.eq(org_id))
+        .count()
+        .get_result(&mut conn)
+        .expect("membership");
+    assert_eq!(member, 1);
+    // It cannot have a password.
+    let refused = diesel::update(users::table.filter(users::id.eq(forge_actor)))
+        .set(users::password_hash.eq(Some("x")))
+        .execute(&mut conn)
+        .expect_err("a system actor has no password");
+    assert!(
+        refused.to_string().contains("users_system_has_no_password"),
+        "{refused}"
+    );
+    // It cannot hold an API key: the store refuses one...
+    let key = kairos_server::service_accounts::auth::generate_key("acme");
+    let new_key = kairos_db::api_keys::NewApiKey {
+        user_id: forge_actor,
+        name: "forge".into(),
+        token_hash: kairos_server::service_accounts::auth::hash_key(&key),
+        prefix: kairos_server::service_accounts::auth::display_prefix(&key),
+        created_by: svc_id,
+        expires_at: None,
+    };
+    assert!(kairos_db::api_keys::create_key(&mut conn, new_key.clone()).is_err());
+    // ...and a row written past the store does not authenticate.
+    diesel::insert_into(kairos_db::schema::api_keys::table)
+        .values(new_key)
+        .execute(&mut conn)
+        .expect("a raw key row");
+    let as_forge = http
+        .get(format!("{}/api/whoami", server.base_url))
+        .bearer_auth(&key)
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(as_forge.status(), 401, "the forge actor cannot log in");
 
     // =======================================================================
     // ORDERING SAFETY: merge, then replay the earlier "opened"
@@ -468,6 +542,226 @@ async fn forge_webhook_ingestion_against_live_stack() {
         link_state(&mut conn, task.id, "42"),
         None,
         "a PR edited to no longer mention the code drops its link"
+    );
+
+    // =======================================================================
+    // KAIROS-T-0480: every admitted branch and PR is recorded, linked or not
+    // =======================================================================
+    let send = |body: String, event: &'static str| {
+        let signature = github_signature(&secret, body.as_bytes());
+        deliver(hook_path.clone(), body, Some(signature), event)
+    };
+    let pr_by = |number: i64, title: &str, author: &str, state: &str, merged: bool, at: &str| {
+        json!({
+            "action": if merged { "closed" } else { state },
+            "repository": {
+                "full_name": "acme/payments-api",
+                "html_url": "https://github.com/acme/payments-api"
+            },
+            "sender": { "login": author },
+            "pull_request": {
+                "number": number, "state": state, "merged": merged, "draft": false,
+                "title": title, "body": "",
+                "html_url": format!("https://github.com/acme/payments-api/pull/{number}"),
+                "updated_at": at,
+                "user": { "login": author },
+                "head": { "ref": format!("{author}/work-{number}") }
+            }
+        })
+        .to_string()
+    };
+    // A PR with no short code: recorded, not linked.
+    let links_before = link_count(&mut conn);
+    let response = send(
+        pr_by(
+            77,
+            "Tidy the README",
+            "robin",
+            "open",
+            false,
+            "2026-09-02T10:00:00Z",
+        ),
+        "pull_request",
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(link_count(&mut conn), links_before, "no item to link");
+    let detail = svc.get_repository("payments-api").await.expect("detail");
+    let pr77 = detail
+        .refs
+        .iter()
+        .find(|r| r.kind == "pull_request" && r.external_id == "77")
+        .unwrap_or_else(|| panic!("PR 77 is recorded: {:?}", detail.refs));
+    assert!(!pr77.linked, "{pr77:?}");
+    assert!(pr77.item_short_codes.is_empty());
+    assert_eq!(pr77.author, "robin");
+    assert_eq!(pr77.head_branch, "robin/work-77");
+    assert_eq!(pr77.repository, "payments-api");
+    // The team that owns the repository sees it in its rollup.
+    let unlinked = svc
+        .team_unlinked_refs(&infra.id, None)
+        .await
+        .expect("team unlinked refs");
+    assert!(
+        unlinked.iter().any(|r| r.external_id == "77"),
+        "{unlinked:?}"
+    );
+    assert!(
+        unlinked.iter().all(|r| !r.linked),
+        "the rollup has only rows with no item"
+    );
+    // A PR that names the task is recorded AND linked.
+    let linked_pr = github_pr_n(78, &code, "open", false, "2026-09-02T10:00:00Z");
+    let response = send(linked_pr, "pull_request").await;
+    assert_eq!(response.status(), 200);
+    let detail = svc.get_repository("payments-api").await.expect("detail");
+    let pr78 = detail
+        .refs
+        .iter()
+        .find(|r| r.external_id == "78")
+        .expect("PR 78");
+    assert!(pr78.linked);
+    assert_eq!(pr78.item_short_codes, vec![code.clone()]);
+    assert!(
+        !svc.team_unlinked_refs(&infra.id, None)
+            .await
+            .expect("rollup")
+            .iter()
+            .any(|r| r.external_id == "78"),
+        "a linked PR is not in the unlinked rollup"
+    );
+
+    // Out of order: merged at 12:00, then the 10:00 "opened" again.
+    let response = send(
+        pr_by(
+            77,
+            "Tidy the README",
+            "robin",
+            "closed",
+            true,
+            "2026-09-02T12:00:00Z",
+        ),
+        "pull_request",
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    let response = send(
+        pr_by(
+            77,
+            "Tidy the README",
+            "robin",
+            "open",
+            false,
+            "2026-09-02T10:00:00Z",
+        ),
+        "pull_request",
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    let state: String = kairos_db::schema::forge_refs::table
+        .filter(kairos_db::schema::forge_refs::external_id.eq("77"))
+        .select(kairos_db::schema::forge_refs::state)
+        .first(&mut conn)
+        .expect("PR 77 row");
+    assert_eq!(
+        state, "merged",
+        "a redelivered 'opened' must not regress PR 77"
+    );
+    assert!(
+        !svc.get_repository("payments-api")
+            .await
+            .expect("detail")
+            .refs
+            .iter()
+            .any(|r| r.external_id == "77"),
+        "a merged PR is not in flight"
+    );
+
+    // A branch with no short code, then its deletion.
+    let branch = |event: &str| {
+        let _ = event;
+        json!({
+            "ref": "sam/spike", "ref_type": "branch",
+            "repository": {
+                "full_name": "acme/payments-api",
+                "html_url": "https://github.com/acme/payments-api"
+            },
+            "sender": { "login": "sam" }
+        })
+        .to_string()
+    };
+    assert_eq!(send(branch("create"), "create").await.status(), 200);
+    let detail = svc.get_repository("payments-api").await.expect("detail");
+    assert!(
+        detail
+            .refs
+            .iter()
+            .any(|r| r.kind == "branch" && r.external_id == "sam/spike" && !r.linked),
+        "{:?}",
+        detail.refs
+    );
+    assert_eq!(send(branch("delete"), "delete").await.status(), 200);
+    let detail = svc.get_repository("payments-api").await.expect("detail");
+    assert!(
+        !detail.refs.iter().any(|r| r.external_id == "sam/spike"),
+        "a deleted branch is closed, not in flight"
+    );
+
+    // The filter decides: an excluded author is not recorded.
+    let (status, body) = svc
+        .raw_request(
+            reqwest::Method::PATCH,
+            "/api/repositories/payments-api",
+            Some(&json!({"forge_filters": {"pr_author": {"exclude": "^dependabot\\[bot\\]$"}}})),
+        )
+        .await
+        .expect("PATCH");
+    assert_eq!(status, 200, "{body}");
+    let refs_before: i64 = kairos_db::schema::forge_refs::table
+        .count()
+        .get_result(&mut conn)
+        .expect("count");
+    let response = send(
+        pr_by(
+            80,
+            "Bump serde",
+            "dependabot[bot]",
+            "open",
+            false,
+            "2026-09-03T10:00:00Z",
+        ),
+        "pull_request",
+    )
+    .await;
+    assert_eq!(response.status(), 200, "a filtered event is still a 2xx");
+    let body: serde_json::Value = response.json().await.expect("json");
+    assert_eq!(body["status"], "filtered");
+    let refs_after: i64 = kairos_db::schema::forge_refs::table
+        .count()
+        .get_result(&mut conn)
+        .expect("count");
+    assert_eq!(refs_after, refs_before, "an excluded PR is not recorded");
+    // Even when it names a task: the filter comes first.
+    let excluded_linked = json!({
+        "action": "opened",
+        "repository": { "full_name": "acme/payments-api", "html_url": "https://github.com/acme/payments-api" },
+        "sender": { "login": "dependabot[bot]" },
+        "pull_request": {
+            "number": 81, "state": "open", "merged": false, "draft": false,
+            "title": format!("Bump for {code}"), "body": "",
+            "html_url": "https://github.com/acme/payments-api/pull/81",
+            "updated_at": "2026-09-03T10:00:00Z",
+            "user": { "login": "dependabot[bot]" },
+            "head": { "ref": "dependabot/cargo/serde" }
+        }
+    })
+    .to_string();
+    let links_before = link_count(&mut conn);
+    assert_eq!(send(excluded_linked, "pull_request").await.status(), 200);
+    assert_eq!(
+        link_count(&mut conn),
+        links_before,
+        "an excluded PR is not linked"
     );
 
     drop_scratch_db(&mut admin_conn, SCRATCH_DB);

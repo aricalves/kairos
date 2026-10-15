@@ -14,6 +14,7 @@
 pub(crate) mod api;
 pub(crate) mod code_index;
 pub(crate) mod documents;
+pub(crate) mod refs;
 pub(crate) mod site;
 
 use api::Repository;
@@ -76,6 +77,7 @@ mod tests {
             default_branch: "main".to_string(),
             default_branch_source: "forge".to_string(),
             forge_branch: None,
+            forge_filters: Default::default(),
             description: String::new(),
             team: RepositoryTeam {
                 id: team.0.to_string(),

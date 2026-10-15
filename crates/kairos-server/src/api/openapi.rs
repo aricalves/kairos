@@ -192,6 +192,8 @@ use crate::app::AppState;
         // Repositories (KAIROS-T-0106).
         crate::api::org::repositories::list_repositories,
         crate::api::org::repositories::get_repository,
+        crate::api::org::repositories::import_issues,
+        crate::api::org::repositories::issue_import,
         crate::api::org::repositories::create_repository,
         crate::api::org::repositories::update_repository,
         crate::api::org::repositories::delete_repository,
@@ -226,6 +228,7 @@ use crate::app::AppState;
         crate::api::org::teams::get_team_by_slug,
         crate::api::org::teams::list_work_documents,
         crate::api::org::teams::list_team_links,
+        crate::api::org::teams::list_team_unlinked_refs,
         crate::api::org::team_pages::list_pages,
         crate::api::org::team_pages::get_page,
         crate::api::org::team_pages::create_page,

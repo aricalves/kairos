@@ -6,5 +6,7 @@
 //! holds the parts that are NOT part of the authenticated `/api` surface.
 
 pub mod auth;
+pub mod import;
+pub mod intake;
 pub mod webhook;
 pub mod writeback;

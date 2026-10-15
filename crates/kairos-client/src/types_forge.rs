@@ -70,6 +70,39 @@ pub struct TeamLink {
     pub forge_updated_at: String,
 }
 
+/// One branch or pull request of a repository, as the forge reported it
+/// (KAIROS-T-0480). Kairos records each one that the forge filter of the
+/// repository admits, with or without a short code.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ForgeRef {
+    /// `branch|pull_request`.
+    pub kind: String,
+    /// PR/MR number, or the branch name.
+    pub external_id: String,
+    pub title: String,
+    /// Browser URL on the forge.
+    pub url: String,
+    /// `open|merged|closed|draft`. Kairos closes a deleted branch.
+    pub state: String,
+    /// The forge login of the author.
+    pub author: String,
+    /// The head branch of a pull request, or the branch itself.
+    pub head_branch: String,
+    /// `github|gitlab`.
+    pub forge: String,
+    /// `owner/repo`.
+    pub repo_full_name: String,
+    /// The slug of the repository in Kairos.
+    pub repository: String,
+    /// False when no item links to it: its branch name, title and body
+    /// have no live short code.
+    pub linked: bool,
+    /// The short codes of the live items that link to it.
+    pub item_short_codes: Vec<String>,
+    /// RFC 3339.
+    pub forge_updated_at: String,
+}
+
 /// One branch or pull/merge request linked to a work item.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ItemLink {
@@ -77,7 +110,7 @@ pub struct ItemLink {
     pub id: String,
     /// The linked work item (UUID).
     pub item_id: String,
-    /// `branch|pull_request`.
+    /// `branch|pull_request|issue`. `issue`: the issue that Kairos made the task from (KAIROS-T-0482).
     pub kind: String,
     /// PR/MR number, or the branch ref.
     pub external_id: String,

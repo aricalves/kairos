@@ -117,6 +117,30 @@ fn branch_edit<'a>(
 /// since COLLIERY-T-0265.
 const FORM_FIELDS: [&str; 4] = ["repo_full_name", "repo_url", "default_branch", "slug"];
 
+/// The fields of the forge filter form that have a refusal next to them
+/// (KAIROS-T-0479).
+const FILTER_FIELDS: [&str; 12] = [
+    "forge_filters.branch_name.include",
+    "forge_filters.branch_name.exclude",
+    "forge_filters.pr_head_branch.include",
+    "forge_filters.pr_head_branch.exclude",
+    "forge_filters.pr_title.include",
+    "forge_filters.pr_title.exclude",
+    "forge_filters.pr_author.include",
+    "forge_filters.pr_author.exclude",
+    "forge_filters.issue_title.include",
+    "forge_filters.issue_title.exclude",
+    "forge_filters.issue_author.include",
+    "forge_filters.issue_author.exclude",
+];
+
+/// What the forge filters do (KAIROS-T-0479).
+const FILTER_HINT: &str = "Forge filters (org admin): Kairos picks up a branch, a pull request or \
+                           an issue when each field matches the include pattern and does not \
+                           match the exclude pattern. A pattern is a regular expression, 512 \
+                           characters at most. The defaults are .* and empty. Example: exclude \
+                           ^dependabot\\[bot\\]$ on pr_author and issue_author.";
+
 /// The field of the read token form (COLLIERY-T-3105).
 const TOKEN_FIELDS: [&str; 1] = ["token"];
 
@@ -373,6 +397,18 @@ fn RepositoryRow(
     let edit_code_index_summaries = RwSignal::new(repo.code_index_summaries.clone());
     let code_index_summaries_summary = repo.code_index_summaries_summary();
     let edit_site = RwSignal::new(if repo.site.enabled { "on" } else { "off" }.to_string());
+    // KAIROS-T-0479: the two patterns of each forge filter field.
+    let forge_filters_summary = repo.forge_filters_summary();
+    let filter_inputs: Vec<(&'static str, RwSignal<String>, RwSignal<String>)> =
+        crate::pages::repositories::api::FORGE_FILTER_FIELDS
+            .iter()
+            .map(|field| {
+                let (include, exclude) = repo.forge_filter(field);
+                (*field, RwSignal::new(include), RwSignal::new(exclude))
+            })
+            .collect();
+    let filter_inputs = StoredValue::new(filter_inputs);
+    let filter_refused: RwSignal<Option<api::Refusal>> = RwSignal::new(None);
     let team_slugs = StoredValue::new(
         team_options
             .into_iter()
@@ -390,6 +426,7 @@ fn RepositoryRow(
     let repo_url = repo.repo_url.clone();
     let description = repo.description.clone();
     let documents_slug = repo.slug.clone();
+    let refs_slug = repo.slug.clone();
     let code_index_slug = repo.slug.clone();
     let owner_team_slug = repo.team.slug.clone();
     // COLLIERY-T-3105: the status of the read token, never the token. The
@@ -445,12 +482,68 @@ fn RepositoryRow(
                         code_index_build: Some(&c),
                         code_index_summaries: Some(&cs),
                         site_enabled: Some(site_on),
+                        forge_filters: None,
                     },
                 )
                 .await
                 .map(|_| ())
             },
         );
+    };
+    let on_save_filters = move |_| {
+        let reference = slug.get_value();
+        let filters: Vec<(&'static str, String, String)> = filter_inputs
+            .get_value()
+            .iter()
+            .map(|(field, include, exclude)| {
+                (*field, include.get_untracked(), exclude.get_untracked())
+            })
+            .collect();
+        run_form_mutation(
+            busy,
+            outcome,
+            reload,
+            filter_refused,
+            &FILTER_FIELDS,
+            format!("Kairos changed the forge filters of \"{reference}\"."),
+            async move {
+                api::update_repository(
+                    auth,
+                    &reference,
+                    api::RepositoryEdit {
+                        forge_filters: Some(&filters),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .map(|_| ())
+            },
+        );
+    };
+    // KAIROS-T-0483, KAIROS-T-0487: start the import of the open issues,
+    // a job of the server. The line under the row shows the job until it
+    // ends, then its counts.
+    let import_reload = RwSignal::new(0u32);
+    let on_import_issues = move |_| {
+        let reference = slug.get_value();
+        if busy.get_untracked() {
+            return;
+        }
+        busy.set(true);
+        leptos::task::spawn_local(async move {
+            let result = api::import_issues(auth, &reference).await;
+            busy.set(false);
+            match result {
+                Ok(import) => {
+                    outcome.set(Some(Ok(format!(
+                        "Kairos started the import of the open issues of \"{reference}\". {}",
+                        import.summary()
+                    ))));
+                    import_reload.update(|n| *n += 1);
+                }
+                Err(error) => outcome.set(Some(Err(error))),
+            }
+        });
     };
     let on_delete = move |_| {
         let reference = slug.get_value();
@@ -611,6 +704,9 @@ fn RepositoryRow(
                         <Button variant="default" size="xs" on_click=Callback::new(on_disconnect)>
                             "Disconnect"
                         </Button>
+                        <Button variant="default" size="xs" on_click=Callback::new(on_import_issues)>
+                            "Import open issues"
+                        </Button>
                     })}
                     <Button variant="default" size="xs"
                         on_click=Callback::new(move |_| editing.update(|open| *open = !*open))>
@@ -644,8 +740,15 @@ fn RepositoryRow(
             <Text dimmed=true size="xs" attr:data-testid="code-index-summaries-status">
                 {code_index_summaries_summary}
             </Text>
+            <Text dimmed=true size="xs" attr:data-testid="forge-filters-status">
+                {forge_filters_summary}
+            </Text>
+            {has_webhook.then(|| view! {
+                <IssueImportStatus slug=slug.get_value() reload=import_reload/>
+            })}
             <crate::pages::repositories::documents::RepositoryDocuments
                 slug=documents_slug/>
+            <crate::pages::repositories::refs::UnlinkedRefs slug=refs_slug/>
             <crate::pages::repositories::code_index::CodeIndexPanel
                 slug=code_index_slug owner_team=owner_team_slug/>
             <Show when=move || editing.get()>
@@ -705,6 +808,26 @@ fn RepositoryRow(
                         })}
                     </Group>
                     <Text dimmed=true size="xs">{TOKEN_HINT}</Text>
+                    <Stack gap="xs" attr:data-testid="forge-filters-form">
+                        {filter_inputs.get_value().into_iter().map(|(field, include, exclude)| {
+                            let include_error = refusal_for(filter_refused, filter_field(field, true));
+                            let exclude_error = refusal_for(filter_refused, filter_field(field, false));
+                            view! {
+                                <Group align="end" gap="sm" wrap=true attr:data-filter=field>
+                                    <TextInput label=format!("{field}: include") value=include
+                                        spellcheck=false error=include_error/>
+                                    <TextInput label=format!("{field}: exclude") value=exclude
+                                        spellcheck=false error=exclude_error/>
+                                </Group>
+                            }
+                        }).collect_view()}
+                        <Group gap="sm">
+                            <Button size="xs" on_click=Callback::new(on_save_filters)>
+                                "Update forge filters"
+                            </Button>
+                        </Group>
+                        <Text dimmed=true size="xs">{FILTER_HINT}</Text>
+                    </Stack>
                     {is_github.then(|| view! {
                         <Group align="end" gap="sm" wrap=true attr:data-testid="write-token-form">
                             <TextInput
@@ -734,8 +857,81 @@ fn RepositoryRow(
     }
 }
 
+/// The refusal name of one pattern of a forge filter field
+/// (KAIROS-T-0479): `forge_filters.<field>.<include|exclude>`.
+fn filter_field(field: &str, include: bool) -> &'static str {
+    let part = if include { "include" } else { "exclude" };
+    FILTER_FIELDS
+        .iter()
+        .find(|name| {
+            name.strip_prefix("forge_filters.")
+                .and_then(|rest| rest.strip_suffix(part))
+                .and_then(|rest| rest.strip_suffix('.'))
+                == Some(field)
+        })
+        .copied()
+        .unwrap_or("forge_filters")
+}
+
+/// The last import of the open issues of a repository (KAIROS-T-0487).
+/// While the job waits or runs, the line reads it again every 2 seconds.
+#[component]
+fn IssueImportStatus(
+    /// The slug of the repository.
+    #[prop(into)]
+    slug: String,
+    /// Read the import again when this changes.
+    reload: RwSignal<u32>,
+) -> impl IntoView {
+    let auth = use_auth();
+    let slug = StoredValue::new(slug);
+    let import = LocalResource::new(move || {
+        let _ = auth.token();
+        let _ = reload.get();
+        async move { api::issue_import(auth, &slug.get_value()).await }
+    });
+    Effect::new(move |_| {
+        if let Some(Ok(Some(found))) = import.get()
+            && found.open()
+        {
+            set_timeout(
+                move || reload.update(|n| *n += 1),
+                std::time::Duration::from_secs(2),
+            );
+        }
+    });
+    view! {
+        {move || match import.get() {
+            Some(Ok(Some(found))) => view! {
+                <Text dimmed=true size="xs" attr:data-testid="issue-import-status">
+                    {found.summary()}
+                </Text>
+            }.into_any(),
+            _ => ().into_any(),
+        }}
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// KAIROS-T-0479: each pattern has the refusal name that the server
+    /// gives.
+    #[test]
+    fn each_filter_pattern_has_its_refusal_name() {
+        assert_eq!(
+            super::filter_field("pr_author", false),
+            "forge_filters.pr_author.exclude"
+        );
+        assert_eq!(
+            super::filter_field("branch_name", true),
+            "forge_filters.branch_name.include"
+        );
+        for field in crate::pages::repositories::api::FORGE_FILTER_FIELDS {
+            assert_ne!(super::filter_field(field, true), "forge_filters");
+            assert_ne!(super::filter_field(field, false), "forge_filters");
+        }
+    }
+
     /// KAIROS-T-0329: the form sends the team that the select shows.
     #[test]
     fn the_form_sends_the_team_that_the_select_shows() {

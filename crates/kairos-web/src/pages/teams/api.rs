@@ -479,6 +479,16 @@ pub async fn team_links(auth: Auth, team_id: &str) -> Result<Vec<TeamLink>, ApiE
     get_json(auth, &format!("/api/teams/{team_id}/links")).await
 }
 
+/// `GET /api/teams/{id}/unlinked-refs` — the open branches and pull
+/// requests of the team's repositories that no item is linked to
+/// (KAIROS-T-0480); server-ordered newest first.
+pub async fn team_unlinked_refs(
+    auth: Auth,
+    team_id: &str,
+) -> Result<Vec<crate::pages::repositories::api::ForgeRef>, ApiError> {
+    get_json(auth, &format!("/api/teams/{team_id}/unlinked-refs")).await
+}
+
 /// The accent token for a team type pill (shared by directory, detail,
 /// and the admin teams table).
 pub fn team_type_color(team_type: &str) -> &'static str {

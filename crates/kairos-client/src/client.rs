@@ -1592,6 +1592,44 @@ impl KairosClient {
         self.get(&path).await
     }
 
+    /// `POST /api/repositories/{slug}/import-issues` — start the import of
+    /// the open issues of a repository (KAIROS-T-0483, org admin). The
+    /// answer is 202 with the job (KAIROS-T-0487): a new one, or the one
+    /// that waits or runs.
+    pub async fn import_issues(
+        &self,
+        reference: &str,
+    ) -> Result<crate::types_repositories::IssueImport, Error> {
+        let path = format!("/api/repositories/{reference}/import-issues");
+        self.execute(format!("POST {path}"), 202, self.http.post(self.url(&path)))
+            .await
+    }
+
+    /// `GET /api/repositories/{slug}/import-issues` — the last import of
+    /// the open issues of a repository (KAIROS-T-0487, org admin).
+    pub async fn issue_import(
+        &self,
+        reference: &str,
+    ) -> Result<crate::types_repositories::IssueImport, Error> {
+        self.get(&format!("/api/repositories/{reference}/import-issues"))
+            .await
+    }
+
+    /// `GET /api/teams/{id}/unlinked-refs` — the in-flight branches and
+    /// pull requests of the repositories of the team that no item is linked
+    /// to (KAIROS-T-0480). `states` defaults to open+draft server-side.
+    pub async fn team_unlinked_refs(
+        &self,
+        team_id: &str,
+        states: Option<&str>,
+    ) -> Result<Vec<crate::types_forge::ForgeRef>, Error> {
+        let path = match states {
+            Some(states) => format!("/api/teams/{team_id}/unlinked-refs?state={states}"),
+            None => format!("/api/teams/{team_id}/unlinked-refs"),
+        };
+        self.get(&path).await
+    }
+
     /// `GET /api/forge-connections` (KAIROS-T-0097).
     pub async fn list_forge_connections(
         &self,

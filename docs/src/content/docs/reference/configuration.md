@@ -822,6 +822,7 @@ the limits and what to watch, see [The job queue](../../explanation/job-queue/).
 | `KAIROS_JOB_LIMIT_PERIODIC` | whole number | `1` | The periodic passes that one server runs at the same time. |
 | `KAIROS_JOB_LIMIT_WEBHOOK_DELIVERY` | whole number | `4` | The webhook deliveries that one server sends at the same time. |
 | `KAIROS_JOB_LIMIT_GITHUB_WRITEBACK` | whole number | `2` | The GitHub write-backs that one server runs at the same time. |
+| `KAIROS_JOB_LIMIT_ISSUE_IMPORT` | whole number | `2` | The imports of open issues that one server runs at the same time. |
 
 ### Webhook deliveries
 
@@ -864,7 +865,7 @@ tried again. See [Turn on GitHub write-back](../../how-to/turn-on-github-write-b
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
-| `KAIROS_GITHUB_API_URL` | URL | `https://api.github.com` | The REST API of GitHub. For GitHub Enterprise Server, use `https://<host>/api/v3`. |
+| `KAIROS_GITHUB_API_URL` | URL | `https://api.github.com` | The REST API of GitHub, for the write-back and for the import of open issues. For GitHub Enterprise Server, use `https://<host>/api/v3`. The import of a GitLab repository uses the host of the URL of the repository. |
 
 Kairos seals the write token with `KAIROS_SECRETS_KEY`, as it seals the read
 token.

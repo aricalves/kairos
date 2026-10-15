@@ -69,7 +69,14 @@ pub struct NewApiKey {
 }
 
 /// Insert a new key row (connection must be tenant-pinned).
+///
+/// A system actor (KAIROS-T-0481) holds no key: the insert is refused.
 pub fn create_key(conn: &mut PgConnection, new: NewApiKey) -> QueryResult<ApiKey> {
+    if crate::forge_actor::is_system_user(conn, new.user_id)? {
+        return Err(diesel::result::Error::QueryBuilderError(
+            "a system actor holds no API key".into(),
+        ));
+    }
     diesel::insert_into(api_keys::table)
         .values(new)
         .returning(ApiKey::as_returning())

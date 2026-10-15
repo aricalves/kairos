@@ -201,6 +201,10 @@ pub struct Repository {
     /// The published site of the repository (KAIROS-T-0406).
     #[serde(default)]
     pub site: crate::types_sites::RepositorySite,
+    /// The forge filters of the repository (KAIROS-T-0479): the include
+    /// and the exclude pattern of each field. Each field is present.
+    #[serde(default)]
+    pub forge_filters: ForgeFilters,
     /// RFC 3339.
     pub created_at: String,
     /// RFC 3339.
@@ -248,6 +252,11 @@ pub struct RepositoryDetail {
     /// In-flight (`open`, `draft`) branches and pull requests on this
     /// repository, newest first, each with the work item it belongs to.
     pub in_flight: Vec<crate::types_forge::TeamLink>,
+    /// Every in-flight (`open`, `draft`) branch and pull request that the
+    /// forge filter admits, linked to an item or not (`linked`), newest
+    /// first (KAIROS-T-0480).
+    #[serde(default)]
+    pub refs: Vec<crate::types_forge::ForgeRef>,
     /// The documents and the ADRs that impact this repository
     /// (COLLIERY-T-0269): the documents first, by short code. Live items
     /// only, unless the request has `include_deleted=true`. Read them
@@ -335,6 +344,166 @@ pub struct UpdateRepositoryRequest {
     /// site is not served.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub site_enabled: Option<bool>,
+    /// The forge filters (KAIROS-T-0479). Org admin only. Send only the
+    /// fields and the patterns to change; the others stay. The server
+    /// refuses an invalid or too long pattern, and the error names it
+    /// (`forge_filters.<field>.<include|exclude>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forge_filters: Option<ForgeFilters>,
+}
+
+/// The counts of an import of the open issues (KAIROS-T-0483). The job
+/// writes them while it runs, and they stay after it ends (KAIROS-T-0487).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct IssueImportResult {
+    /// Issues that became a task.
+    pub imported: usize,
+    /// Issues that were taken before (by a webhook or an earlier import).
+    pub skipped: usize,
+    /// Issues that the forge filter does not admit.
+    pub filtered: usize,
+    /// Issues that no task could be made for; `message` says why.
+    pub not_taken: usize,
+    /// The short codes of the new tasks.
+    pub items: Vec<String>,
+    /// A sentence for a person.
+    pub message: String,
+}
+
+/// An import of the open issues of a repository (KAIROS-T-0487). It is a
+/// job of the job queue. `POST` and `GET
+/// /api/repositories/{slug}/import-issues` give it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct IssueImport {
+    /// The id of the job (UUID).
+    pub job: String,
+    /// The slug of the repository.
+    pub repository: String,
+    /// `queued`, `running`, `waiting` (for the rate limit of the forge),
+    /// `done` or `failed`.
+    pub state: String,
+    /// When the import was asked for (RFC 3339).
+    pub created_at: String,
+    /// When the job ended (RFC 3339); `None` while it waits or runs.
+    pub finished_at: Option<String>,
+    /// While the job waits for the rate limit of the forge: the time it
+    /// goes on (RFC 3339).
+    pub waiting_until: Option<String>,
+    /// The pages of issues that the job took.
+    pub pages: usize,
+    /// The counts so far; final when the job is `done`.
+    pub result: IssueImportResult,
+    /// Why the job failed, or why its last try stopped.
+    pub error: Option<String>,
+}
+
+/// The two patterns of one field of the forge filter (KAIROS-T-0479). A
+/// pattern is a Rust regular expression of 512 bytes or fewer. It can match
+/// any part of the value: use `^` and `$` to match all of it. Kairos admits
+/// an event when the value matches `include` and does not match `exclude`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ForgeFilterRule {
+    /// Default `.*` (everything). An empty pattern is the same as `.*`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include: Option<String>,
+    /// Default empty: exclude nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclude: Option<String>,
+}
+
+/// The forge filters of a repository, one rule per field (KAIROS-T-0479).
+/// Kairos reads `branch_name` for a branch; `pr_head_branch`, `pr_title`
+/// and `pr_author` for a pull request; `issue_title` and `issue_author` for
+/// an issue.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ForgeFilters {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_name: Option<ForgeFilterRule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_head_branch: Option<ForgeFilterRule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_title: Option<ForgeFilterRule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_author: Option<ForgeFilterRule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_title: Option<ForgeFilterRule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_author: Option<ForgeFilterRule>,
+}
+
+impl ForgeFilters {
+    /// The field names, in the order of the docs.
+    pub const FIELDS: [&'static str; 6] = [
+        "branch_name",
+        "pr_head_branch",
+        "pr_title",
+        "pr_author",
+        "issue_title",
+        "issue_author",
+    ];
+
+    /// The rule of a field by name.
+    pub fn get(&self, field: &str) -> Option<&ForgeFilterRule> {
+        match field {
+            "branch_name" => self.branch_name.as_ref(),
+            "pr_head_branch" => self.pr_head_branch.as_ref(),
+            "pr_title" => self.pr_title.as_ref(),
+            "pr_author" => self.pr_author.as_ref(),
+            "issue_title" => self.issue_title.as_ref(),
+            "issue_author" => self.issue_author.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Set the rule of a field by name. An unknown name changes nothing
+    /// and returns false.
+    pub fn set(&mut self, field: &str, rule: ForgeFilterRule) -> bool {
+        let slot = match field {
+            "branch_name" => &mut self.branch_name,
+            "pr_head_branch" => &mut self.pr_head_branch,
+            "pr_title" => &mut self.pr_title,
+            "pr_author" => &mut self.pr_author,
+            "issue_title" => &mut self.issue_title,
+            "issue_author" => &mut self.issue_author,
+            _ => return false,
+        };
+        *slot = Some(rule);
+        true
+    }
+
+    /// One line for a person: `default (admit everything)`, or each field
+    /// that differs from the default with its patterns.
+    pub fn summary(&self) -> String {
+        let parts: Vec<String> = Self::FIELDS
+            .iter()
+            .filter_map(|field| {
+                let rule = self.get(field)?;
+                let include = rule.include.as_deref().unwrap_or(".*");
+                let exclude = rule.exclude.as_deref().unwrap_or("");
+                let include_default = include.is_empty() || include == ".*";
+                match (include_default, exclude.is_empty()) {
+                    (true, true) => None,
+                    (true, false) => Some(format!("{field} exclude `{exclude}`")),
+                    (false, true) => Some(format!("{field} include `{include}`")),
+                    (false, false) => {
+                        Some(format!("{field} include `{include}` exclude `{exclude}`"))
+                    }
+                }
+            })
+            .collect();
+        if parts.is_empty() {
+            "default (admit everything)".to_string()
+        } else {
+            parts.join("; ")
+        }
+    }
+
+    /// Whether no field is set.
+    pub fn is_empty(&self) -> bool {
+        Self::FIELDS.iter().all(|f| self.get(f).is_none())
+    }
 }
 
 /// Where the default branch of a repository comes from (KAIROS-T-0430).

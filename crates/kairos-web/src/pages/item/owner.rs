@@ -511,6 +511,7 @@ mod tests {
             default_branch: "main".to_string(),
             default_branch_source: "forge".to_string(),
             forge_branch: None,
+            forge_filters: Default::default(),
             description: String::new(),
             team: RepositoryTeam {
                 id: "t-platform".to_string(),

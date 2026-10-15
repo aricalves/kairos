@@ -58,6 +58,9 @@ pub const USER_KIND_HUMAN: &str = "human";
 /// `users.kind` value for a service-account principal (KAIROS-A-0017): a
 /// machine identity authenticated by an API key, never by interactive login.
 pub const USER_KIND_SERVICE_ACCOUNT: &str = "service_account";
+/// `users.kind` value for a system actor (KAIROS-T-0481): the forge actor of
+/// a tenant. Not a login: no password, no OIDC login, no API key.
+pub const USER_KIND_SYSTEM: &str = "system";
 
 /// A user principal (`public.users`) — an OIDC-backed human
 /// (`kind = "human"`) or a service account (`kind = "service_account"`,
@@ -94,6 +97,11 @@ impl User {
     /// True when this principal is a service account (KAIROS-A-0017).
     pub fn is_service_account(&self) -> bool {
         self.kind == USER_KIND_SERVICE_ACCOUNT
+    }
+
+    /// True when this principal is a system actor (KAIROS-T-0481).
+    pub fn is_system(&self) -> bool {
+        self.kind == USER_KIND_SYSTEM
     }
 }
 

@@ -45,6 +45,22 @@ const CREDENTIALS_VERSION: &str = "20261003000001";
 /// (KAIROS-T-0385: `dispatch_rules`; KAIROS-T-0386: the GitHub write-back),
 /// newest first. Reverted and applied again as the credentials above.
 const LATER_DEPENDENTS: &[(&str, &str)] = &[
+    // KAIROS-T-0482: forge_issue_intake has a foreign key to repositories.
+    (
+        include_str!("../migrations/tenant/2026-10-15-000300_forge_issue_intake/down.sql"),
+        "20261015000300",
+    ),
+    // KAIROS-T-0480: forge_refs has a foreign key to repositories.
+    (
+        include_str!("../migrations/tenant/2026-10-15-000200_forge_refs/down.sql"),
+        "20261015000200",
+    ),
+    // KAIROS-T-0479: repository_forge_filters has a foreign key to
+    // repositories.
+    (
+        include_str!("../migrations/tenant/2026-10-15-000100_repository_forge_filters/down.sql"),
+        "20261015000100",
+    ),
     // KAIROS-T-0406: site_publishes has a foreign key to repositories.
     (
         include_str!("../migrations/tenant/2026-10-13-000001_repository_sites/down.sql"),
