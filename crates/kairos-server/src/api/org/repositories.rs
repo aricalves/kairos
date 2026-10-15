@@ -312,13 +312,31 @@ pub(crate) fn change(
         && body.code_index_build.is_none()
         && body.code_index_summaries.is_none()
         && body.site_enabled.is_none()
+        && body
+            .forge_filters
+            .as_ref()
+            .is_none_or(dto::ForgeFilters::is_empty)
     {
         return Err(ApiError::validation(
             "The request has no field to change. Send one or more of slug, repo_url, \
              default_branch, default_branch_source, team, description, code_index_build, \
-             code_index_summaries and site_enabled.",
+             code_index_summaries, site_enabled and forge_filters.",
         ));
     }
+    // KAIROS-T-0479: the forge filters are set by an org admin only. The
+    // patterns are checked before anything is written.
+    let filter_changes = match body.forge_filters.as_ref().filter(|f| !f.is_empty()) {
+        Some(sent) => {
+            require_capability(conn, tenant_slug, None, user, "manage_teams")?;
+            let changes = filter_changes(conn, current.id, sent)?;
+            for (field, rule) in &changes {
+                kairos_core::forge_filter::validate(*field, rule)
+                    .map_err(|e| map_filter_error(e.into()))?;
+            }
+            changes
+        }
+        None => Vec::new(),
+    };
     // KAIROS-T-0430: a branch is set by hand, so it cannot also follow the
     // forge.
     if body.default_branch.is_some()
@@ -430,7 +448,23 @@ pub(crate) fn change(
     // transaction of the switch. The sweep adds no new job for a
     // repository that is off, and a build that runs now goes on.
     let turned_off = changes.code_index_build.as_deref() == Some("off");
-    let (repository, cancelled_builds) = if changed.is_empty() {
+    // KAIROS-T-0479: the forge filters, in the same transaction.
+    let filters_changed = if filter_changes.is_empty() {
+        false
+    } else {
+        let current_slug = current.slug.clone();
+        let current_id = current.id;
+        let names = crate::api::org::run_in_transaction(conn, |conn| {
+            kairos_db::forge_filters::set(conn, current_id, &current_slug, &filter_changes, user)
+                .map_err(map_filter_error)
+        })?;
+        !names.is_empty()
+    };
+    let mut changed = changed;
+    if filters_changed {
+        changed.push("forge_filters");
+    }
+    let (repository, cancelled_builds) = if changed.iter().all(|c| *c == "forge_filters") {
         (current, 0)
     } else {
         crate::api::org::run_in_transaction(conn, |conn| {
@@ -519,6 +553,8 @@ pub(crate) fn render(
     let publishers: Vec<Uuid> = live_sites.values().map(|p| p.principal_id).collect();
     let publisher_names = kairos_db::sites::names(conn, &publishers).map_err(ApiError::internal)?;
     let tenant = kairos_db::sites::tenant_slug(conn).map_err(ApiError::internal)?;
+    // KAIROS-T-0479: the forge filters of each repository.
+    let filters = kairos_db::forge_filters::stored_for(conn, &ids).map_err(ApiError::internal)?;
 
     rows.into_iter()
         .map(|repo| {
@@ -576,11 +612,79 @@ pub(crate) fn render(
                     None => dto::CodeIndexBreaker::default(),
                 },
                 site,
+                forge_filters: filters_dto(filters.get(&repo.id).map(Vec::as_slice).unwrap_or(&[])),
                 created_at: repo.created_at.to_rfc3339(),
                 updated_at: repo.updated_at.to_rfc3339(),
             })
         })
         .collect()
+}
+
+/// The forge filters of a repository as the DTO: every field, with the
+/// default where no row is stored (KAIROS-T-0479).
+pub(crate) fn filters_dto(
+    stored: &[(
+        kairos_core::forge_filter::FilterField,
+        kairos_core::forge_filter::FilterRule,
+    )],
+) -> dto::ForgeFilters {
+    let mut out = dto::ForgeFilters::default();
+    for field in kairos_core::forge_filter::FilterField::ALL {
+        let rule = stored
+            .iter()
+            .find(|(f, _)| *f == field)
+            .map(|(_, r)| r.clone())
+            .unwrap_or_default();
+        out.set(
+            field.as_str(),
+            dto::ForgeFilterRule {
+                include: Some(rule.include),
+                exclude: Some(rule.exclude),
+            },
+        );
+    }
+    out
+}
+
+/// The changes of the forge filters in a request, merged with the stored
+/// rules: a pattern that the request does not send stays.
+fn filter_changes(
+    conn: &mut PgConnection,
+    repository_id: Uuid,
+    sent: &dto::ForgeFilters,
+) -> Result<
+    Vec<(
+        kairos_core::forge_filter::FilterField,
+        kairos_core::forge_filter::FilterRule,
+    )>,
+    ApiError,
+> {
+    let current =
+        kairos_db::forge_filters::rules(conn, repository_id).map_err(ApiError::internal)?;
+    let mut out = Vec::new();
+    for (field, rule) in current {
+        if let Some(patch) = sent.get(field.as_str()) {
+            out.push((
+                field,
+                kairos_core::forge_filter::FilterRule {
+                    include: patch.include.clone().unwrap_or(rule.include),
+                    exclude: patch.exclude.clone().unwrap_or(rule.exclude),
+                },
+            ));
+        }
+    }
+    Ok(out)
+}
+
+/// A refused pattern → 422 that names it.
+fn map_filter_error(e: kairos_db::forge_filters::FilterStoreError) -> ApiError {
+    match e {
+        kairos_db::forge_filters::FilterStoreError::Pattern(e) => {
+            let field = format!("forge_filters.{}", e.name());
+            ApiError::validation(e.to_string()).with_details(json!({ "field": field }))
+        }
+        kairos_db::forge_filters::FilterStoreError::Database(e) => ApiError::internal(e),
+    }
 }
 
 fn render_one(conn: &mut PgConnection, repo: Repository) -> Result<dto::Repository, ApiError> {

@@ -1012,6 +1012,32 @@ The webhook wiring of one repository (KAIROS-T-0106 re-key: repo identity and ow
 | `id` | `string` | yes | Connection id (UUID) — also the webhook URL's last segment. |
 | `repository` | [`RepositoryRef`](#repositoryref) | yes | The repository this connection delivers for. |
 
+## ForgeFilterRule
+
+The two patterns of one field of the forge filter (KAIROS-T-0479). A pattern is a Rust regular expression, 512 bytes at most, found anywhere in the value (anchor with `^` and `$`). An event is admitted when the value matches `include` and does not match `exclude`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `exclude` | `string`, nullable | no | Default empty: exclude nothing. |
+| `include` | `string`, nullable | no | Default `.*` (everything). An empty pattern is the same as `.*`. |
+
+The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
+
+## ForgeFilters
+
+The forge filters of a repository, one rule per field (KAIROS-T-0479). A branch is read on `branch_name`; a pull request on `pr_head_branch`, `pr_title` and `pr_author`; an issue on `issue_title` and `issue_author`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `branch_name` | [`ForgeFilterRule`](#forgefilterrule), nullable | no |  |
+| `issue_author` | [`ForgeFilterRule`](#forgefilterrule), nullable | no |  |
+| `issue_title` | [`ForgeFilterRule`](#forgefilterrule), nullable | no |  |
+| `pr_author` | [`ForgeFilterRule`](#forgefilterrule), nullable | no |  |
+| `pr_head_branch` | [`ForgeFilterRule`](#forgefilterrule), nullable | no |  |
+| `pr_title` | [`ForgeFilterRule`](#forgefilterrule), nullable | no |  |
+
+The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
+
 ## GraphEdge
 
 One typed directed edge between two returned nodes.
@@ -1817,6 +1843,7 @@ One repository, as returned by `/api/repositories` (KAIROS-T-0106).
 | `description` | `string` | yes | Short "how to work here" blurb agents read before starting. |
 | `forge` | `string` | yes | `github|gitlab|other`. |
 | `forge_branch` | `string`, nullable | no | The default branch that the remote gave at the last fetch of the builder, or `None` before the first fetch (KAIROS-T-0430). |
+| `forge_filters` | [`ForgeFilters`](#forgefilters) | no | The forge filters of the repository (KAIROS-T-0479): the include and the exclude pattern of each field. Each field is present. |
 | `has_webhook` | `boolean` | yes | Whether a live webhook connection exists for it. |
 | `id` | `string` | yes | Repository id (UUID). |
 | `open_tasks` | `integer` | yes | Live tasks that link to this repository and are not in a done column, on all boards of all teams (COLLIERY-T-0219). |
@@ -2642,6 +2669,7 @@ Body of `PATCH /api/repositories/{slug}` — every field optional; `team` re-hom
 | `default_branch` | `string`, nullable | no | The form is that of `default_branch` in `CreateRepositoryRequest`. A value sets the branch by hand (KAIROS-T-0430): the builder indexes it, whatever the forge says. |
 | `default_branch_source` | [`DefaultBranchSource`](#defaultbranchsource), nullable | no |  |
 | `description` | `string`, nullable | no |  |
+| `forge_filters` | [`ForgeFilters`](#forgefilters), nullable | no |  |
 | `repo_url` | `string`, nullable | no | The form is that of `repo_url` in `CreateRepositoryRequest`. |
 | `site_enabled` | `boolean`, nullable | no | The site switch (KAIROS-T-0406). Off: a publish is refused, and the site is not served. |
 | `slug` | `string`, nullable | no |  |

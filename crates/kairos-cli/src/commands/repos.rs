@@ -135,6 +135,17 @@ pub enum ReposCommand {
         /// (the default of the organization)
         #[arg(long = "code-index-summaries", value_name = "EMBEDDED|HOSTED|ORGANIZATION", value_parser = ["embedded", "hosted", "organization"])]
         code_index_summaries: Option<String>,
+        /// Set the include pattern of a forge filter field (org admin),
+        /// for example `--include pr_head_branch='^feature/'`. Fields:
+        /// branch_name, pr_head_branch, pr_title, pr_author, issue_title,
+        /// issue_author. Use it again for more fields
+        #[arg(long = "include", value_name = "FIELD=PATTERN")]
+        include: Vec<String>,
+        /// Set the exclude pattern of a forge filter field (org admin),
+        /// for example `--exclude 'pr_author=^dependabot\[bot\]$'`. An
+        /// empty pattern excludes nothing
+        #[arg(long = "exclude", value_name = "FIELD=PATTERN")]
+        exclude: Vec<String>,
         #[command(flatten)]
         common: Common,
     },
@@ -432,6 +443,46 @@ fn impacted_by_lines(items: &[ImpactingItem]) -> Vec<String> {
         .collect()
 }
 
+/// The `forge_filters` of `--include FIELD=PATTERN` and `--exclude
+/// FIELD=PATTERN` (KAIROS-T-0479), or `None` when neither is given. An
+/// unknown field is refused, and the error names it.
+fn forge_filters_arg(
+    include: &[String],
+    exclude: &[String],
+) -> Result<Option<kairos_client::types_repositories::ForgeFilters>, CliError> {
+    use kairos_client::types_repositories::{ForgeFilterRule, ForgeFilters};
+    if include.is_empty() && exclude.is_empty() {
+        return Ok(None);
+    }
+    let mut filters = ForgeFilters::default();
+    for (flag, values) in [("--include", include), ("--exclude", exclude)] {
+        for value in values {
+            let Some((field, pattern)) = value.split_once('=') else {
+                return Err(CliError::Failure(format!(
+                    "The value {value:?} of {flag} has no `=`. Write FIELD=PATTERN."
+                )));
+            };
+            if !ForgeFilters::FIELDS.contains(&field) {
+                return Err(CliError::Failure(format!(
+                    "The field {field:?} of {flag} is not a forge filter field. Use one of: {}.",
+                    ForgeFilters::FIELDS.join(", ")
+                )));
+            }
+            let mut rule = filters
+                .get(field)
+                .cloned()
+                .unwrap_or(ForgeFilterRule::default());
+            if flag == "--include" {
+                rule.include = Some(pattern.to_string());
+            } else {
+                rule.exclude = Some(pattern.to_string());
+            }
+            filters.set(field, rule);
+        }
+    }
+    Ok(Some(filters))
+}
+
 fn repo_table(repos: &[Repository]) -> Table {
     let mut table = Table::new(&[
         "SLUG",
@@ -525,6 +576,10 @@ impl ReposCommand {
                     detail.repository.code_index_summaries,
                     detail.repository.code_index_summaries_resolved
                 );
+                println!(
+                    "forge filters:  {}",
+                    detail.repository.forge_filters.summary()
+                );
                 println!("\nHow to work here:");
                 if detail.repository.description.trim().is_empty() {
                     println!("  (no description yet)");
@@ -600,6 +655,8 @@ impl ReposCommand {
                 description,
                 code_index_build,
                 code_index_summaries,
+                include,
+                exclude,
                 common,
             } => {
                 if slug.is_none()
@@ -610,14 +667,17 @@ impl ReposCommand {
                     && description.is_none()
                     && code_index_build.is_none()
                     && code_index_summaries.is_none()
+                    && include.is_empty()
+                    && exclude.is_empty()
                 {
                     return Err(CliError::Failure(
                         "The command has no change. Use --slug, --repo-url, --default-branch, \
-                         --follow-forge, --team, --description, --code-index-build or \
-                         --code-index-summaries."
+                         --follow-forge, --team, --description, --code-index-build, \
+                         --code-index-summaries, --include or --exclude."
                             .to_string(),
                     ));
                 }
+                let forge_filters = forge_filters_arg(&include, &exclude)?;
                 // clap accepts only on and off.
                 let code_index_build = code_index_build
                     .as_deref()
@@ -646,13 +706,16 @@ impl ReposCommand {
                             code_index_summaries,
                             // The site switch has its own command (KAIROS-T-0408).
                             site_enabled: None,
+                            forge_filters,
                         },
                     )
                     .await?;
                 if common.json {
                     return print_json(&repo);
                 }
-                if repo.updated_at == before.repository.updated_at {
+                if repo.updated_at == before.repository.updated_at
+                    && repo.forge_filters == before.repository.forge_filters
+                {
                     println!(
                         "Kairos did not change the repository {}. It has these values \
                          already.",
@@ -816,6 +879,30 @@ mod tests {
 
     /// COLLIERY-T-0269: the family of `link` and `unlink` comes from the
     /// type letter of the short code.
+    #[test]
+    fn forge_filter_flags_build_the_patch() {
+        let filters = forge_filters_arg(
+            &["pr_head_branch=^feature/".to_string()],
+            &[
+                "pr_author=dependabot\\[bot\\]".to_string(),
+                "pr_head_branch=wip".to_string(),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+        let head = filters.pr_head_branch.as_ref().unwrap();
+        assert_eq!(head.include.as_deref(), Some("^feature/"));
+        assert_eq!(head.exclude.as_deref(), Some("wip"));
+        let author = filters.pr_author.as_ref().unwrap();
+        assert_eq!(author.include, None);
+        assert_eq!(author.exclude.as_deref(), Some("dependabot\\[bot\\]"));
+        assert!(filters.issue_title.is_none());
+        assert!(forge_filters_arg(&[], &[]).unwrap().is_none());
+        let err = forge_filters_arg(&["issue_body=x".to_string()], &[]).unwrap_err();
+        assert!(err.to_string().contains("issue_body"), "{err}");
+        assert!(forge_filters_arg(&["pr_title".to_string()], &[]).is_err());
+    }
+
     #[test]
     fn the_family_comes_from_the_short_code() {
         assert_eq!(family_of("ACME-D-0001").unwrap(), EntityKind::Document);

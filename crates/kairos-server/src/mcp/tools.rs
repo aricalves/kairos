@@ -662,6 +662,55 @@ pub struct UpdateRepositoryParams {
     /// The new owner team, by slug or UUID (KAIROS-T-0443). You need the
     /// right on the old team and on the new team.
     pub team: Option<String>,
+    /// The forge filters (KAIROS-T-0479), org admin only: per field, an
+    /// `include` and an `exclude` Rust regular expression (512 bytes at
+    /// most). Fields: branch_name, pr_head_branch, pr_title, pr_author,
+    /// issue_title, issue_author. Send only what changes, for example
+    /// `{"pr_author": {"exclude": "^dependabot\\[bot\\]$"}}`.
+    pub forge_filters: Option<McpForgeFilters>,
+}
+
+/// One field of `forge_filters` (KAIROS-T-0479).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct McpForgeFilterRule {
+    /// The include pattern. Default `.*`.
+    pub include: Option<String>,
+    /// The exclude pattern. Default empty: exclude nothing.
+    pub exclude: Option<String>,
+}
+
+/// The `forge_filters` argument of `update_repository` (KAIROS-T-0479).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct McpForgeFilters {
+    pub branch_name: Option<McpForgeFilterRule>,
+    pub pr_head_branch: Option<McpForgeFilterRule>,
+    pub pr_title: Option<McpForgeFilterRule>,
+    pub pr_author: Option<McpForgeFilterRule>,
+    pub issue_title: Option<McpForgeFilterRule>,
+    pub issue_author: Option<McpForgeFilterRule>,
+}
+
+impl From<McpForgeFilters> for kairos_client::types_repositories::ForgeFilters {
+    fn from(value: McpForgeFilters) -> Self {
+        let rule = |r: Option<McpForgeFilterRule>| {
+            r.map(|r| kairos_client::types_repositories::ForgeFilterRule {
+                include: r.include,
+                exclude: r.exclude,
+            })
+        };
+        Self {
+            branch_name: rule(value.branch_name),
+            pr_head_branch: rule(value.pr_head_branch),
+            pr_title: rule(value.pr_title),
+            pr_author: rule(value.pr_author),
+            issue_title: rule(value.issue_title),
+            issue_author: rule(value.issue_author),
+        }
+    }
 }
 
 /// Parameters for `rebuild_code_index` (KAIROS-T-0332).
@@ -1423,7 +1472,7 @@ impl KairosMcp {
                 graph::repository_link_rollup(conn, repo_id, &["open", "draft"], 50)
                     .map_err(ApiError::internal)?;
             let mut out = format!(
-                "# Repository {} — {} {}\n- url: {}\n- default branch: {} ({})\n- owner team: {} ({})\n- owner's delivery board: {}\n- open tasks (all boards): {}\n- webhooks: {}\n- read token: {}\n- write-back: {}\n- code index build: {}\n- code index breaker: {}\n- code index summaries: {}\n",
+                "# Repository {} — {} {}\n- url: {}\n- default branch: {} ({})\n- owner team: {} ({})\n- owner's delivery board: {}\n- open tasks (all boards): {}\n- webhooks: {}\n- read token: {}\n- write-back: {}\n- code index build: {}\n- code index breaker: {}\n- code index summaries: {}\n- forge filters: {}\n",
                 rendered.slug,
                 rendered.forge,
                 rendered.repo_full_name,
@@ -1460,6 +1509,8 @@ impl KairosMcp {
                 } else {
                     rendered.code_index_summaries.to_string()
                 },
+                // KAIROS-T-0479: what the forge webhook picks up.
+                rendered.forge_filters.summary(),
             );
             // No line about "stale" tasks (COLLIERY-T-0219). It counted the
             // linked tasks on a board of a team that does not own the
@@ -3182,7 +3233,7 @@ impl KairosMcp {
     // COLLIERY-T-0267 the tool made the comparison, and the REST route
     // always wrote.
     #[tool(
-        description = "Change a repository of the directory: `description` (how to work in it; replaces the full text, so read it with `get_repository` first), `default_branch` (set by hand; the code index builder indexes it), `default_branch_source: forge` (follow the forge's default branch again; not with `default_branch`), `repo_url` (absolute http or https, no credentials), `code_index_build` (`on` or `off`; off cancels waiting builds), `slug` (breaks `.claude/kairos.local.md` in each checkout: run /kairos:bootstrap there), and the owner `team` (you need the right on both teams). Send one or more; a value it has already changes nothing. `repository` is a slug or UUID. Needs membership of the owner team, or the org admin role. `set_repository` links a task; `delete_repository` removes a repository."
+        description = "Change a repository of the directory: `description` (how to work in it; replaces the full text, so read it with `get_repository` first), `default_branch` (set by hand; the code index builder indexes it), `default_branch_source: forge` (follow the forge's default branch again; not with `default_branch`), `repo_url` (absolute http or https, no credentials), `code_index_build` (`on` or `off`; off cancels waiting builds), `slug` (breaks `.claude/kairos.local.md` in each checkout: run /kairos:bootstrap there), the owner `team` (you need the right on both teams), and `forge_filters` (org admin: include and exclude regex per field for the branches, pull requests and issues that the forge webhook picks up). Send one or more; a value it has already changes nothing. `repository` is a slug or UUID. Needs membership of the owner team, or the org admin role. `set_repository` links a task; `delete_repository` removes a repository."
     )]
     pub async fn update_repository(
         &self,
@@ -3202,11 +3253,12 @@ impl KairosMcp {
                 && params.code_index_build.is_none()
                 && params.slug.is_none()
                 && params.team.is_none()
+                && params.forge_filters.is_none()
             {
                 return Err(ApiError::validation(
                     "The call has nothing to change. Send one or more of these arguments: \
                      description, default_branch, default_branch_source, repo_url, \
-                     code_index_build, slug, team.",
+                     code_index_build, slug, team, forge_filters.",
                 ));
             }
             // KAIROS-T-0430: refuse an unknown value, and name it.
@@ -3256,6 +3308,7 @@ impl KairosMcp {
                     code_index_build,
                     slug: params.slug,
                     team: params.team,
+                    forge_filters: params.forge_filters.map(Into::into),
                     ..Default::default()
                 },
             )?;
@@ -3275,6 +3328,7 @@ impl KairosMcp {
                 "code_index_build",
                 "slug",
                 "team",
+                "forge_filters",
             ]
             .into_iter()
             .filter(|name| change.changed.contains(name))

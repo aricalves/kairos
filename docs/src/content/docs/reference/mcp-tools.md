@@ -311,9 +311,12 @@ for the current owner team.
 | `code_index_build` | string | no | no change | `on` or `off`: the builder of the code index of the server, for this repository. |
 | `slug` | string | no | no change | The new slug. |
 | `team` | string | no | no change | The new owner team. Slug or UUID. |
+| `forge_filters` | object | no | no change | The forge filters (organization admin only). Keys: `branch_name`, `pr_head_branch`, `pr_title`, `pr_author`, `issue_title`, `issue_author`. Each value has `include` and `exclude`, Rust regular expressions of 512 bytes at most. Send only the fields and the patterns to change. |
 
 The call must have one or more of `description`, `default_branch`,
-`default_branch_source`, `repo_url`, `code_index_build`, `slug` and `team`.
+`default_branch_source`, `repo_url`, `code_index_build`, `slug`, `team` and
+`forge_filters`. An invalid or too long pattern is refused with `VALIDATION`,
+and the error names it (`forge_filters.pr_author.exclude`).
 Each checkout keeps the slug in `.claude/kairos.local.md`, and a new slug
 breaks that reference: run `/kairos:bootstrap` in the checkout again.
 

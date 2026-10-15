@@ -2900,6 +2900,7 @@ async fn repository_tools_against_live_stack() {
             "default_branch",
             "default_branch_source",
             "description",
+            "forge_filters",
             "repo_url",
             "repository",
             "slug",
@@ -3405,7 +3406,7 @@ async fn repository_tools_against_live_stack() {
             text,
             "VALIDATION: The call has nothing to change. Send one or more of these \
              arguments: description, default_branch, default_branch_source, repo_url, \
-             code_index_build, slug, team."
+             code_index_build, slug, team, forge_filters."
         );
     }
     // The values that the repository has: a success that writes nothing.
@@ -3437,7 +3438,7 @@ async fn repository_tools_against_live_stack() {
             "VALIDATION: The call has the argument \"owner\". This tool does not \
              accept that argument. The arguments of this tool are: repository, \
              description, default_branch, default_branch_source, repo_url, \
-             code_index_build, slug, team."
+             code_index_build, slug, team, forge_filters."
         ),
         "{text}"
     );
@@ -3521,6 +3522,71 @@ async fn repository_tools_against_live_stack() {
     assert_eq!(
         text,
         "Updated repository acme-fidius: default_branch_source."
+    );
+
+    // --- KAIROS-T-0479: the forge filters, org admin only ------------------
+    let text = alice_session
+        .call_ok("get_repository", json!({"repository": "acme-fidius"}))
+        .await;
+    assert!(
+        text.contains("\n- forge filters: default (admit everything)\n"),
+        "{text}"
+    );
+    // A member of the owner team is not an org admin.
+    let text = alice_session
+        .call_err(
+            "update_repository",
+            json!({"repository": "acme-fidius",
+                   "forge_filters": {"pr_author": {"exclude": "^dependabot\\[bot\\]$"}}}),
+        )
+        .await;
+    assert!(text.starts_with("FORBIDDEN"), "{text}");
+    // An invalid pattern is refused, and named.
+    let text = svc_session
+        .call_err(
+            "update_repository",
+            json!({"repository": "acme-fidius",
+                   "forge_filters": {"issue_author": {"exclude": "dependabot[bot"}}}),
+        )
+        .await;
+    assert!(
+        text.starts_with("VALIDATION: The pattern issue_author.exclude is not a valid"),
+        "{text}"
+    );
+    // An unknown field of the filter is refused, and named.
+    let text = svc_session
+        .call_err(
+            "update_repository",
+            json!({"repository": "acme-fidius", "forge_filters": {"issue_body": {}}}),
+        )
+        .await;
+    assert!(text.contains("issue_body"), "{text}");
+    let text = svc_session
+        .call_ok(
+            "update_repository",
+            json!({"repository": "acme-fidius",
+                   "forge_filters": {"pr_author": {"exclude": "^dependabot\\[bot\\]$"}}}),
+        )
+        .await;
+    assert_eq!(text, "Updated repository acme-fidius: forge_filters.");
+    let text = alice_session
+        .call_ok("get_repository", json!({"repository": "acme-fidius"}))
+        .await;
+    assert!(
+        text.contains("\n- forge filters: pr_author exclude `^dependabot\\[bot\\]$`\n"),
+        "{text}"
+    );
+    // The same value again changes nothing.
+    let text = svc_session
+        .call_ok(
+            "update_repository",
+            json!({"repository": "acme-fidius",
+                   "forge_filters": {"pr_author": {"exclude": "^dependabot\\[bot\\]$"}}}),
+        )
+        .await;
+    assert_eq!(
+        text,
+        "No change to repository acme-fidius: it has these values already."
     );
 
     // --- KAIROS-T-0398: update_repository turns the code index builder off --

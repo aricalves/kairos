@@ -472,6 +472,17 @@ diesel::table! {
 }
 
 diesel::table! {
+    repository_forge_filters (repository_id, field) {
+        repository_id -> Uuid,
+        field -> Text,
+        include_pattern -> Text,
+        exclude_pattern -> Text,
+        updated_by -> Uuid,
+        updated_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
     site_files (publish_id, path) {
         publish_id -> Uuid,
         path -> Text,
@@ -718,6 +729,7 @@ diesel::joinable!(metadata_definition_scopes -> metadata_definitions (metadata_d
 diesel::joinable!(metadata_enum_options -> metadata_definitions (metadata_definition_id));
 diesel::joinable!(repositories -> teams (team_id));
 diesel::joinable!(repository_credentials -> repositories (repository_id));
+diesel::joinable!(repository_forge_filters -> repositories (repository_id));
 diesel::joinable!(strategies -> board_columns (column_id));
 diesel::joinable!(strategies -> boards (board_id));
 diesel::joinable!(structure_grants -> boards (board_id));
@@ -771,6 +783,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     org_read_tokens,
     repositories,
     repository_credentials,
+    repository_forge_filters,
     site_files,
     site_publishes,
     retired_codes,

@@ -838,6 +838,8 @@ pub struct RepositoryEdit<'a> {
     pub code_index_summaries: Option<&'a str>,
     /// The site switch (KAIROS-T-0408).
     pub site_enabled: Option<bool>,
+    /// The forge filters (KAIROS-T-0479): field → (include, exclude).
+    pub forge_filters: Option<&'a [(&'static str, String, String)]>,
 }
 
 /// `PATCH /api/repositories/{slug}` — every field optional; `team` re-homes.
@@ -865,6 +867,16 @@ pub async fn update_repository(
     }
     if let Some(on) = edit.site_enabled {
         body.insert("site_enabled".to_string(), Value::Bool(on));
+    }
+    if let Some(filters) = edit.forge_filters {
+        let mut map = serde_json::Map::new();
+        for (field, include, exclude) in filters {
+            map.insert(
+                field.to_string(),
+                json!({ "include": include, "exclude": exclude }),
+            );
+        }
+        body.insert("forge_filters".to_string(), Value::Object(map));
     }
     patch_json_refusal(
         auth,

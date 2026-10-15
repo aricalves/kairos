@@ -79,6 +79,9 @@ pub struct ForgeEvent {
     /// Everything short codes may appear in (branch name, title, body),
     /// concatenated so extraction has one input.
     pub match_text: String,
+    /// The branch: the head branch of a pull request, or the branch
+    /// itself (KAIROS-T-0479: the filter reads it).
+    pub head_branch: String,
     /// The repository the event came from (`owner/repo`), used to resolve
     /// the connection.
     pub repo_full_name: String,
@@ -109,6 +112,7 @@ pub fn parse_github(event_type: &str, body: &str) -> Option<ForgeEvent> {
                 kind: LinkKind::PullRequest,
                 external_id: number.to_string(),
                 match_text: format!("{branch} {title} {body_text}"),
+                head_branch: branch.to_string(),
                 title,
                 url: pr["html_url"].as_str().unwrap_or_default().to_string(),
                 state,
@@ -126,6 +130,7 @@ pub fn parse_github(event_type: &str, body: &str) -> Option<ForgeEvent> {
                 url: format!("{repo_url}/tree/{branch}"),
                 title: branch.clone(),
                 match_text: branch.clone(),
+                head_branch: branch.clone(),
                 external_id: branch,
                 state: LinkState::Open,
                 author: v["sender"]["login"]
@@ -164,6 +169,7 @@ pub fn parse_gitlab(event_type: &str, body: &str) -> Option<ForgeEvent> {
                 kind: LinkKind::PullRequest,
                 external_id: iid.to_string(),
                 match_text: format!("{branch} {title} {description}"),
+                head_branch: branch.to_string(),
                 title,
                 url: attrs["url"].as_str().unwrap_or_default().to_string(),
                 state,
@@ -184,6 +190,7 @@ pub fn parse_gitlab(event_type: &str, body: &str) -> Option<ForgeEvent> {
                 url: format!("{repo_url}/-/tree/{branch}"),
                 title: branch.clone(),
                 match_text: branch.clone(),
+                head_branch: branch.clone(),
                 external_id: branch,
                 state: LinkState::Open,
                 author: v["user_username"].as_str().unwrap_or_default().to_string(),

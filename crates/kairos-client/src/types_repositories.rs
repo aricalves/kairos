@@ -201,6 +201,10 @@ pub struct Repository {
     /// The published site of the repository (KAIROS-T-0406).
     #[serde(default)]
     pub site: crate::types_sites::RepositorySite,
+    /// The forge filters of the repository (KAIROS-T-0479): the include
+    /// and the exclude pattern of each field. Each field is present.
+    #[serde(default)]
+    pub forge_filters: ForgeFilters,
     /// RFC 3339.
     pub created_at: String,
     /// RFC 3339.
@@ -335,6 +339,121 @@ pub struct UpdateRepositoryRequest {
     /// site is not served.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub site_enabled: Option<bool>,
+    /// The forge filters (KAIROS-T-0479). Org admin only. Send only the
+    /// fields and the patterns to change; the others stay. An invalid or
+    /// too long pattern is refused, and the error names it
+    /// (`forge_filters.<field>.<include|exclude>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forge_filters: Option<ForgeFilters>,
+}
+
+/// The two patterns of one field of the forge filter (KAIROS-T-0479). A
+/// pattern is a Rust regular expression, 512 bytes at most, found anywhere
+/// in the value (anchor with `^` and `$`). An event is admitted when the
+/// value matches `include` and does not match `exclude`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ForgeFilterRule {
+    /// Default `.*` (everything). An empty pattern is the same as `.*`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include: Option<String>,
+    /// Default empty: exclude nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclude: Option<String>,
+}
+
+/// The forge filters of a repository, one rule per field (KAIROS-T-0479).
+/// A branch is read on `branch_name`; a pull request on `pr_head_branch`,
+/// `pr_title` and `pr_author`; an issue on `issue_title` and
+/// `issue_author`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ForgeFilters {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_name: Option<ForgeFilterRule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_head_branch: Option<ForgeFilterRule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_title: Option<ForgeFilterRule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_author: Option<ForgeFilterRule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_title: Option<ForgeFilterRule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_author: Option<ForgeFilterRule>,
+}
+
+impl ForgeFilters {
+    /// The field names, in the order of the docs.
+    pub const FIELDS: [&'static str; 6] = [
+        "branch_name",
+        "pr_head_branch",
+        "pr_title",
+        "pr_author",
+        "issue_title",
+        "issue_author",
+    ];
+
+    /// The rule of a field by name.
+    pub fn get(&self, field: &str) -> Option<&ForgeFilterRule> {
+        match field {
+            "branch_name" => self.branch_name.as_ref(),
+            "pr_head_branch" => self.pr_head_branch.as_ref(),
+            "pr_title" => self.pr_title.as_ref(),
+            "pr_author" => self.pr_author.as_ref(),
+            "issue_title" => self.issue_title.as_ref(),
+            "issue_author" => self.issue_author.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Set the rule of a field by name. An unknown name changes nothing
+    /// and returns false.
+    pub fn set(&mut self, field: &str, rule: ForgeFilterRule) -> bool {
+        let slot = match field {
+            "branch_name" => &mut self.branch_name,
+            "pr_head_branch" => &mut self.pr_head_branch,
+            "pr_title" => &mut self.pr_title,
+            "pr_author" => &mut self.pr_author,
+            "issue_title" => &mut self.issue_title,
+            "issue_author" => &mut self.issue_author,
+            _ => return false,
+        };
+        *slot = Some(rule);
+        true
+    }
+
+    /// One line for a person: `default (admit everything)`, or each field
+    /// that differs from the default with its patterns.
+    pub fn summary(&self) -> String {
+        let parts: Vec<String> = Self::FIELDS
+            .iter()
+            .filter_map(|field| {
+                let rule = self.get(field)?;
+                let include = rule.include.as_deref().unwrap_or(".*");
+                let exclude = rule.exclude.as_deref().unwrap_or("");
+                let include_default = include.is_empty() || include == ".*";
+                match (include_default, exclude.is_empty()) {
+                    (true, true) => None,
+                    (true, false) => Some(format!("{field} exclude `{exclude}`")),
+                    (false, true) => Some(format!("{field} include `{include}`")),
+                    (false, false) => {
+                        Some(format!("{field} include `{include}` exclude `{exclude}`"))
+                    }
+                }
+            })
+            .collect();
+        if parts.is_empty() {
+            "default (admit everything)".to_string()
+        } else {
+            parts.join("; ")
+        }
+    }
+
+    /// Whether no field is set.
+    pub fn is_empty(&self) -> bool {
+        Self::FIELDS.iter().all(|f| self.get(f).is_none())
+    }
 }
 
 /// Where the default branch of a repository comes from (KAIROS-T-0430).

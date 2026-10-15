@@ -82,7 +82,31 @@ pub struct Repository {
     /// The published site of the repository (KAIROS-T-0408).
     #[serde(default)]
     pub site: RepositorySite,
+    /// The forge filters (KAIROS-T-0479): field name → rule. An older
+    /// server does not send it: each field has the default.
+    #[serde(default)]
+    pub forge_filters: std::collections::BTreeMap<String, ForgeFilterRule>,
 }
+
+/// mirror of: `kairos_client::types_repositories::ForgeFilterRule`.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+pub struct ForgeFilterRule {
+    #[serde(default)]
+    pub include: Option<String>,
+    #[serde(default)]
+    pub exclude: Option<String>,
+}
+
+/// The fields of the forge filter, in the order of the docs
+/// (KAIROS-T-0479).
+pub const FORGE_FILTER_FIELDS: [&str; 6] = [
+    "branch_name",
+    "pr_head_branch",
+    "pr_title",
+    "pr_author",
+    "issue_title",
+    "issue_author",
+];
 
 /// mirror of: `kairos_client::types_repositories::CodeIndexBreaker`: the
 /// breaker of the code index builder of a repository (KAIROS-T-0399). A
@@ -192,6 +216,39 @@ impl Repository {
                 "Indexed branch: {branch}. Kairos reads the default branch of the forge at \
                  the next fetch."
             ),
+        }
+    }
+
+    /// The include and exclude pattern of a forge filter field, with the
+    /// defaults (KAIROS-T-0479).
+    pub fn forge_filter(&self, field: &str) -> (String, String) {
+        let rule = self.forge_filters.get(field).cloned().unwrap_or_default();
+        (
+            rule.include.unwrap_or_else(|| ".*".to_string()),
+            rule.exclude.unwrap_or_default(),
+        )
+    }
+
+    /// The text of the forge filters (KAIROS-T-0479). Pure, host-tested.
+    pub fn forge_filters_summary(&self) -> String {
+        let parts: Vec<String> = FORGE_FILTER_FIELDS
+            .iter()
+            .filter_map(|field| {
+                let (include, exclude) = self.forge_filter(field);
+                let include_default = include.is_empty() || include == ".*";
+                match (include_default, exclude.is_empty()) {
+                    (true, true) => None,
+                    (true, false) => Some(format!("{field} exclude {exclude}")),
+                    (false, true) => Some(format!("{field} include {include}")),
+                    (false, false) => Some(format!("{field} include {include}, exclude {exclude}")),
+                }
+            })
+            .collect();
+        if parts.is_empty() {
+            "Forge filters: the default. Kairos picks up each branch, pull request and issue."
+                .to_string()
+        } else {
+            format!("Forge filters: {}.", parts.join("; "))
         }
     }
 
@@ -471,6 +528,36 @@ mod tests {
         assert_eq!(
             with_token.credential.summary(),
             "Read token: set by Ada at 2026-10-03T00:00:00+00:00. Not checked."
+        );
+
+        // KAIROS-T-0479: an older server sends no forge filters: defaults.
+        assert_eq!(
+            bare.forge_filters_summary(),
+            "Forge filters: the default. Kairos picks up each branch, pull request and issue."
+        );
+        let filtered: Repository = serde_json::from_value(serde_json::json!({
+            "id": "r-4", "slug": "app", "forge": "github",
+            "repo_full_name": "acme/app", "repo_url": "https://github.com/acme/app",
+            "default_branch": "main",
+            "team": {"id": "t-1", "slug": "platform", "name": "Platform"},
+            "forge_filters": {
+                "branch_name": {"include": ".*", "exclude": ""},
+                "pr_author": {"include": ".*", "exclude": "^dependabot\\[bot\\]$"},
+                "issue_title": {"include": "^Bug", "exclude": ""}
+            }
+        }))
+        .expect("the forge filters decode");
+        assert_eq!(
+            filtered.forge_filter("pr_author"),
+            (".*".to_string(), "^dependabot\\[bot\\]$".to_string())
+        );
+        assert_eq!(
+            filtered.forge_filter("pr_title"),
+            (".*".to_string(), String::new())
+        );
+        assert_eq!(
+            filtered.forge_filters_summary(),
+            "Forge filters: pr_author exclude ^dependabot\\[bot\\]$; issue_title include ^Bug."
         );
 
         let embedded: RepositoryRef =
