@@ -2611,6 +2611,7 @@ dependencies = [
  "ignore",
  "kairos-embed",
  "kairos-narsil",
+ "libc",
  "llama-cpp-2",
  "prost",
  "reqwest 0.12.28",

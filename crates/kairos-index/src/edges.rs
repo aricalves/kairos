@@ -1138,7 +1138,15 @@ pub fn resolve(files: &[ParsedFile<'_>], scip: ScipEdges<'_>, go_modules: &[GoMo
                 let defs = definitions
                     .get(occ.symbol.as_str())
                     .map_or(&[][..], Vec::as_slice);
+                // A term at a call site is called too, outside Rust: a method
+                // of a Go interface, a function in a variable.
+                let at_call = !rust && call_starts.contains(&(i, byte));
                 let Some((name, short)) = scip::function_name(&descriptors, family(file.language))
+                    .or_else(|| {
+                        at_call
+                            .then(|| scip::term_name(&descriptors, family(file.language)))
+                            .flatten()
+                    })
                 else {
                     // A call of a class makes an object (Python, TypeScript,
                     // JavaScript): the reference is to the type.

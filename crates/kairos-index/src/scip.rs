@@ -830,7 +830,26 @@ fn read_name(chars: &[char], start: usize) -> Option<(String, usize)> {
 /// last part of a Python module), `queue.enqueue` (a TypeScript file with no
 /// extension). `None` if the symbol is not a function.
 pub fn function_name(descriptors: &[Descriptor], language: &str) -> Option<(String, String)> {
-    let (Descriptor::Method(name), rest) = descriptors.split_last()? else {
+    match descriptors.last()? {
+        Descriptor::Method(_) => owned_name(descriptors, language),
+        _ => None,
+    }
+}
+
+/// The name of a term symbol at a call site, as [`function_name`] gives
+/// it: a method of a Go interface (`Shape#Area.`), a function in a
+/// variable (`const f = () => …`). `None` if the symbol is not a term.
+pub fn term_name(descriptors: &[Descriptor], language: &str) -> Option<(String, String)> {
+    match descriptors.last()? {
+        Descriptor::Term(_) => owned_name(descriptors, language),
+        _ => None,
+    }
+}
+
+/// The name of the last descriptor, and the short name with its owner.
+fn owned_name(descriptors: &[Descriptor], language: &str) -> Option<(String, String)> {
+    let (last, rest) = descriptors.split_last()?;
+    let (Descriptor::Method(name) | Descriptor::Term(name)) = last else {
         return None;
     };
     let owner = rest

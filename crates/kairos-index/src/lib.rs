@@ -28,6 +28,7 @@ mod duplicates;
 mod edges;
 mod extract;
 pub mod hosted;
+mod indexers;
 pub mod languages;
 #[cfg(feature = "llama")]
 mod llama;
@@ -605,6 +606,12 @@ fn build(
                     });
                     if let Some(run) = &output.rust {
                         report.scip = Some(run.clone());
+                    }
+                    for reason in &output.warnings {
+                        report.scip_warnings.push(ScipWarning {
+                            language: runner.name().to_string(),
+                            reason: reason.clone(),
+                        });
                     }
                     scip_data.add(languages, output);
                 }

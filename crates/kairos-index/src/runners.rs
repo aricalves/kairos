@@ -67,6 +67,10 @@ pub struct ScipOutput {
     pub crates: Crates,
     /// The details of the rust-analyzer run (Rust only).
     pub rust: Option<ScipRun>,
+    /// The parts of the run that failed while others gave documents (a
+    /// project of the tree): each one is a warning of the build. Their files
+    /// get the edges by name.
+    pub warnings: Vec<String>,
 }
 
 /// Why a runner gave no index.
@@ -187,9 +191,14 @@ pub fn decode(bytes: &[u8]) -> Result<proto::Index, String> {
 pub(crate) fn runners(options: &crate::BuildOptions) -> Vec<Arc<dyn ScipRunner>> {
     let mut out: Vec<Arc<dyn ScipRunner>> = options.scip.runners.clone();
     let named: HashSet<&str> = out.iter().map(|r| r.name()).collect();
-    let builtin: Vec<Arc<dyn ScipRunner>> = vec![Arc::new(RustRunner {
-        options: options.clone(),
-    })];
+    let builtin: Vec<Arc<dyn ScipRunner>> = vec![
+        Arc::new(RustRunner {
+            options: options.clone(),
+        }),
+        Arc::new(crate::indexers::GoRunner::new(&options.scip)),
+        Arc::new(crate::indexers::TypeScriptRunner::new(&options.scip)),
+        Arc::new(crate::indexers::PythonRunner::new(&options.scip)),
+    ];
     out.extend(builtin.into_iter().filter(|r| !named.contains(r.name())));
     out
 }
@@ -215,6 +224,7 @@ impl ScipRunner for RustRunner {
             index,
             crates,
             rust: Some(run),
+            warnings: Vec::new(),
         })
     }
 }
@@ -433,7 +443,14 @@ pub(crate) mod tests {
         let report =
             build_structure_with(&repo, &dir.path().join("i.sqlite"), &with_runner(failing))
                 .unwrap();
-        assert!(report.scip_warnings.is_empty());
+        // No python warning; the Go file has no module, so Go falls back.
+        assert_eq!(
+            report.scip_warnings,
+            [ScipWarning {
+                language: "go".into(),
+                reason: "the Go files have no go.mod".into()
+            }]
+        );
     }
 
     /// KAIROS-T-0473: an update with no SCIP run keeps the SCIP edges of an

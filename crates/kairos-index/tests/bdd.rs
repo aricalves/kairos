@@ -82,15 +82,34 @@ struct IndexWorld {
 
 /// The rust-analyzer and the std source of the scenarios: those pinned in
 /// the cache, or `rust_analyzer` and `std_source`. The scenarios never
-/// download them.
+/// download them. The expected edges of the fixtures are those of the
+/// edges by name for Go, TypeScript and Python, so their SCIP runners are
+/// off, also on a computer that has their tools (`tests/scip_languages.rs`
+/// tests them, KAIROS-T-0473).
 fn build_options(rust_analyzer: Option<PathBuf>, std_source: Option<PathBuf>) -> BuildOptions {
-    BuildOptions {
+    let mut options = BuildOptions {
         rust_analyzer,
         std_source,
         sysroot: None,
         download: false,
         ..Default::default()
+    };
+    for (name, languages) in [
+        ("go", &["go"][..]),
+        ("typescript", &["typescript", "tsx", "javascript"][..]),
+        ("python", &["python"][..]),
+    ] {
+        let languages: &'static [&'static str] = languages;
+        options
+            .scip
+            .runners
+            .push(std::sync::Arc::new(kairos_index::MissingRunner {
+                name,
+                languages,
+                reason: "off in the scenarios".into(),
+            }));
     }
+    options
 }
 
 /// What an index holds, to compare before and after an update.

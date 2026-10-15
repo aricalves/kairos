@@ -207,16 +207,18 @@ fn join(file: &ParsedFile<'_>, byte: usize, descriptors: &[Descriptor]) -> Optio
         return Some((id, kind));
     }
     // A struct field has no symbol: the use goes to its type. An enum
-    // variant goes to its enum, as `other`.
+    // variant goes to its enum, as `other`. A method of a Go interface goes
+    // to its interface, as `call`.
     match (last, rest.last()) {
         (Descriptor::Term(_), Some(Descriptor::Type(owner))) => {
             let (id, owner_kind) = symbol_at(file, byte, owner.split('<').next()?)?;
             Some((
                 id,
-                if owner_kind == "enum" {
-                    "other"
-                } else {
-                    "field"
+                match owner_kind {
+                    "enum" => "other",
+                    // A term of a Go interface is a method (KAIROS-T-0475).
+                    "interface" => "call",
+                    _ => "field",
                 },
             ))
         }
