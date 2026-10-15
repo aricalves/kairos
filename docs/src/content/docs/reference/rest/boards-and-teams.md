@@ -989,6 +989,23 @@ Remove a member from a team. An organization admin, or
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Not an org admin, and no manage_structure on the organization |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown team or not a member |
 
+### `GET /api/teams/{id}/unlinked-refs`
+
+The in-flight branches and pull requests of the repositories that the
+team owns, that no item is linked to (KAIROS-T-0480): the other half of
+the rollup of `/api/teams/{id}/links`. Open tenant-wide.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `id` | path | yes | `string` | Team id (UUID) |
+| `state` | query | no | `string` | Comma-separated states; defaults to `open,draft` — the panel's question is "what is in flight", not merged history. |
+| `limit` | query | no | `integer` | Result cap (default 100). |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | array of [`ForgeRef`](../schemas/#forgeref) | Branches and pull requests with no linked item, newest first |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown team |
+
 ### `GET /api/teams/{id}/work-documents`
 
 The documents of the team (KAIROS-T-0084, KAIROS-T-0393). A board of

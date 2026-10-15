@@ -1592,6 +1592,21 @@ impl KairosClient {
         self.get(&path).await
     }
 
+    /// `GET /api/teams/{id}/unlinked-refs` — the in-flight branches and
+    /// pull requests of the repositories of the team that no item is linked
+    /// to (KAIROS-T-0480). `states` defaults to open+draft server-side.
+    pub async fn team_unlinked_refs(
+        &self,
+        team_id: &str,
+        states: Option<&str>,
+    ) -> Result<Vec<crate::types_forge::ForgeRef>, Error> {
+        let path = match states {
+            Some(states) => format!("/api/teams/{team_id}/unlinked-refs?state={states}"),
+            None => format!("/api/teams/{team_id}/unlinked-refs"),
+        };
+        self.get(&path).await
+    }
+
     /// `GET /api/forge-connections` (KAIROS-T-0097).
     pub async fn list_forge_connections(
         &self,

@@ -142,6 +142,27 @@ pub fn parse_github(event_type: &str, body: &str) -> Option<ForgeEvent> {
                 repo_full_name,
             })
         }
+        // Branch deletion (KAIROS-T-0480): the branch is closed. `delete`
+        // also fires for tags — only branches.
+        "delete" if v["ref_type"].as_str() == Some("branch") => {
+            let branch = v["ref"].as_str()?.to_string();
+            let repo_url = v["repository"]["html_url"].as_str().unwrap_or_default();
+            Some(ForgeEvent {
+                kind: LinkKind::Branch,
+                url: format!("{repo_url}/tree/{branch}"),
+                title: branch.clone(),
+                match_text: branch.clone(),
+                head_branch: branch.clone(),
+                external_id: branch,
+                state: LinkState::Closed,
+                author: v["sender"]["login"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                forge_updated_at: Utc::now(),
+                repo_full_name,
+            })
+        }
         _ => None,
     }
 }
@@ -185,6 +206,11 @@ pub fn parse_gitlab(event_type: &str, body: &str) -> Option<ForgeEvent> {
             // refs/heads/<branch>; tag pushes use refs/tags and are ignored.
             let branch = v["ref"].as_str()?.strip_prefix("refs/heads/")?.to_string();
             let repo_url = v["project"]["web_url"].as_str().unwrap_or_default();
+            // KAIROS-T-0480: a push whose `after` is all zeros deletes the
+            // branch.
+            let deleted = v["after"]
+                .as_str()
+                .is_some_and(|after| !after.is_empty() && after.bytes().all(|b| b == b'0'));
             Some(ForgeEvent {
                 kind: LinkKind::Branch,
                 url: format!("{repo_url}/-/tree/{branch}"),
@@ -192,7 +218,11 @@ pub fn parse_gitlab(event_type: &str, body: &str) -> Option<ForgeEvent> {
                 match_text: branch.clone(),
                 head_branch: branch.clone(),
                 external_id: branch,
-                state: LinkState::Open,
+                state: if deleted {
+                    LinkState::Closed
+                } else {
+                    LinkState::Open
+                },
                 author: v["user_username"].as_str().unwrap_or_default().to_string(),
                 forge_updated_at: Utc::now(),
                 repo_full_name,
@@ -408,7 +438,30 @@ mod tests {
         assert!(parse_github("pull_request", "not json").is_none());
     }
 
+    #[test]
+    fn github_branch_deletion_closes_the_branch() {
+        let event =
+            parse_github("delete", &fixture("github_delete_branch.json")).expect("branch deletion");
+        assert_eq!(event.kind, LinkKind::Branch);
+        assert_eq!(event.state, LinkState::Closed);
+        assert_eq!(event.external_id, "robin/cleanup");
+        assert_eq!(event.head_branch, "robin/cleanup");
+        assert_eq!(event.author, "robin");
+        // A tag deletion is ignored.
+        assert!(parse_github("delete", &fixture("github_create_tag.json")).is_none());
+    }
+
     // ---- GitLab -----------------------------------------------------------
+
+    #[test]
+    fn gitlab_push_that_deletes_a_branch_closes_it() {
+        let event =
+            parse_gitlab("Push Hook", &fixture("gitlab_push_delete.json")).expect("push event");
+        assert_eq!(event.state, LinkState::Closed);
+        assert_eq!(event.external_id, "sam/old-work");
+        let event = parse_gitlab("Push Hook", &fixture("gitlab_push.json")).expect("push event");
+        assert_eq!(event.state, LinkState::Open);
+    }
 
     #[test]
     fn gitlab_merge_request_opened() {

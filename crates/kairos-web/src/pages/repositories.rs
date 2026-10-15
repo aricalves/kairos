@@ -14,6 +14,7 @@
 pub(crate) mod api;
 pub(crate) mod code_index;
 pub(crate) mod documents;
+pub(crate) mod refs;
 pub(crate) mod site;
 
 use api::Repository;

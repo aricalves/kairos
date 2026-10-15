@@ -70,6 +70,39 @@ pub struct TeamLink {
     pub forge_updated_at: String,
 }
 
+/// One branch or pull request of a repository, as the forge reported it
+/// (KAIROS-T-0480). Kairos records each one that the forge filter of the
+/// repository admits, with or without a short code.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ForgeRef {
+    /// `branch|pull_request`.
+    pub kind: String,
+    /// PR/MR number, or the branch name.
+    pub external_id: String,
+    pub title: String,
+    /// Browser URL on the forge.
+    pub url: String,
+    /// `open|merged|closed|draft`. A deleted branch is `closed`.
+    pub state: String,
+    /// The forge login of the author.
+    pub author: String,
+    /// The head branch of a pull request, or the branch itself.
+    pub head_branch: String,
+    /// `github|gitlab`.
+    pub forge: String,
+    /// `owner/repo`.
+    pub repo_full_name: String,
+    /// The slug of the repository in Kairos.
+    pub repository: String,
+    /// False when no item is linked to it: no live short code in its
+    /// branch name, title or body.
+    pub linked: bool,
+    /// The short codes of the live items linked to it.
+    pub item_short_codes: Vec<String>,
+    /// RFC 3339.
+    pub forge_updated_at: String,
+}
+
 /// One branch or pull/merge request linked to a work item.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ItemLink {

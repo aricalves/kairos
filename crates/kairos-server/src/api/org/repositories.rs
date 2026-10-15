@@ -620,6 +620,25 @@ pub(crate) fn render(
         .collect()
 }
 
+/// A `forge_refs` row as the DTO (KAIROS-T-0480).
+pub(crate) fn ref_dto(row: kairos_db::forge::ForgeRefRow) -> kairos_client::types_forge::ForgeRef {
+    kairos_client::types_forge::ForgeRef {
+        linked: !row.item_short_codes.is_empty(),
+        kind: row.kind,
+        external_id: row.external_id,
+        title: row.title,
+        url: row.url,
+        state: row.state,
+        author: row.author,
+        head_branch: row.head_branch,
+        forge: row.forge,
+        repo_full_name: row.repo_full_name,
+        repository: row.repository_slug,
+        item_short_codes: row.item_short_codes,
+        forge_updated_at: row.forge_updated_at.to_rfc3339(),
+    }
+}
+
 /// The forge filters of a repository as the DTO: every field, with the
 /// default where no row is stored (KAIROS-T-0479).
 pub(crate) fn filters_dto(
@@ -865,10 +884,18 @@ pub(crate) async fn get_repository(
                         forge_updated_at: row.forge_updated_at.to_rfc3339(),
                     })
                     .collect();
+            // KAIROS-T-0480: every admitted branch and pull request, linked
+            // or not.
+            let refs = kairos_db::forge::repository_refs(conn, repo_id, &["open", "draft"], 100)
+                .map_err(super::forge::map_error)?
+                .into_iter()
+                .map(ref_dto)
+                .collect();
             Ok(dto::RepositoryDetail {
                 repository: render_one(conn, repo)?,
                 connection_id,
                 in_flight,
+                refs,
                 impacted_by: impacted_by(conn, repo_id, query.include_deleted)?,
             })
         })

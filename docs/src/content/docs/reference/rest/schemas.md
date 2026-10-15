@@ -1038,6 +1038,26 @@ The forge filters of a repository, one rule per field (KAIROS-T-0479). A branch 
 
 The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
 
+## ForgeRef
+
+One branch or pull request of a repository, as the forge reported it (KAIROS-T-0480). Kairos records each one that the forge filter of the repository admits, with or without a short code.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `author` | `string` | yes | The forge login of the author. |
+| `external_id` | `string` | yes | PR/MR number, or the branch name. |
+| `forge` | `string` | yes | `github|gitlab`. |
+| `forge_updated_at` | `string` | yes | RFC 3339. |
+| `head_branch` | `string` | yes | The head branch of a pull request, or the branch itself. |
+| `item_short_codes` | array of `string` | yes | The short codes of the live items linked to it. |
+| `kind` | `string` | yes | `branch|pull_request`. |
+| `linked` | `boolean` | yes | False when no item is linked to it: no live short code in its branch name, title or body. |
+| `repo_full_name` | `string` | yes | `owner/repo`. |
+| `repository` | `string` | yes | The slug of the repository in Kairos. |
+| `state` | `string` | yes | `open|merged|closed|draft`. A deleted branch is `closed`. |
+| `title` | `string` | yes |  |
+| `url` | `string` | yes | Browser URL on the forge. |
+
 ## GraphEdge
 
 One typed directed edge between two returned nodes.

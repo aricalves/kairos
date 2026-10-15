@@ -212,9 +212,14 @@ One repository in full. The output has these parts:
   stalls trips the breaker. Then the builder starts no build of the
   repository. `rebuild_code_index` resets it. See
   [Build the code index again](../../how-to/build-the-code-index-again/#the-breaker-of-a-repository).
+- `forge filters`: `default (admit everything)`, or each field whose include
+  or exclude pattern is not the default. See
+  [Connect a git forge](../../how-to/connect-a-git-forge/).
 - the team's description of how to work in the repository
 - the documents and the ADRs that impact the repository
 - the in-flight branches and pull requests, each with its work item
+- `## Not linked to an item`: the in-flight branches and pull requests that
+  the forge filter admits and that no item is linked to
 
 The delivery board is the board of the owner. A task that links to the
 repository can be on the board of any team. The output has no list of the

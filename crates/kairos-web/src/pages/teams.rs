@@ -137,6 +137,9 @@ struct TeamView {
     announcements: Vec<api::Announcement>,
     /// In-flight forge links across the team's work (KAIROS-T-0101).
     links: Vec<api::TeamLink>,
+    /// In-flight branches and pull requests of the team's repositories
+    /// that no item is linked to (KAIROS-T-0480).
+    unlinked: Vec<crate::pages::repositories::api::ForgeRef>,
     /// The repositories this team owns (KAIROS-T-0109, A-0019). Empty
     /// when the directory read failed — the panel degrades, the page
     /// does not (KAIROS-T-0114).
@@ -195,7 +198,17 @@ async fn load_team_view(
     let team = api::team_by_slug(auth, slug).await?;
     let team_id = team.id.as_str();
 
-    let (members, delivery_board, streams, items, pages, announcements, links, repositories) = join!(
+    let (
+        members,
+        delivery_board,
+        streams,
+        items,
+        pages,
+        announcements,
+        links,
+        repositories,
+        unlinked,
+    ) = join!(
         api::team_members(auth, team_id),
         load_delivery_board(auth, team.delivery_board_id.as_deref()),
         load_streams(auth, team_id),
@@ -204,6 +217,7 @@ async fn load_team_view(
         api::team_announcements(auth, team_id),
         api::team_links(auth, team_id),
         crate::pages::repositories::api::list_repositories(auth, Some(team_id)),
+        api::team_unlinked_refs(auth, team_id),
     );
     let members = members?;
     let delivery_board = delivery_board?;
@@ -213,6 +227,8 @@ async fn load_team_view(
     let announcements = announcements?;
     let links = links?;
     let repositories = repositories.unwrap_or_default();
+    // An older server has no route: no unlinked rows.
+    let unlinked = unlinked.unwrap_or_default();
 
     Ok(TeamView {
         team,
@@ -224,6 +240,7 @@ async fn load_team_view(
         announcements,
         links,
         repositories,
+        unlinked,
     })
 }
 
@@ -276,6 +293,7 @@ fn TeamBody(view_model: TeamView, on_changed: Callback<()>) -> impl IntoView {
         announcements,
         links,
         repositories,
+        unlinked,
     } = view_model;
     // KAIROS-T-0094: who may add a root-level page. Same rule and same source as
     // the announcement composer further down — org admin, or a member of THIS
@@ -410,6 +428,7 @@ fn TeamBody(view_model: TeamView, on_changed: Callback<()>) -> impl IntoView {
                                 let webhook = if repo.has_webhook { "webhooks" } else { "no webhooks" };
                                 let slug_attr = repo.slug.clone();
                                 let documents_slug = repo.slug.clone();
+                                let refs_slug = repo.slug.clone();
                                 let code_index_slug = repo.slug.clone();
                                 let owner_team_slug = repo.team.slug.clone();
                                 let site = repo.site.clone();
@@ -442,6 +461,9 @@ fn TeamBody(view_model: TeamView, on_changed: Callback<()>) -> impl IntoView {
                                         // about the repository.
                                         <crate::pages::repositories::documents::RepositoryDocuments
                                             slug=documents_slug/>
+                                        // KAIROS-T-0480: open work with no item.
+                                        <crate::pages::repositories::refs::UnlinkedRefs
+                                            slug=refs_slug/>
                                         <crate::pages::repositories::site::RepositorySiteLine site/>
                                         <crate::pages::repositories::code_index::CodeIndexPanel
                                             slug=code_index_slug owner_team=owner_team_slug/>
@@ -497,6 +519,15 @@ fn TeamBody(view_model: TeamView, on_changed: Callback<()>) -> impl IntoView {
                         </Stack>
                     }.into_any()
                 }}
+                // KAIROS-T-0480: open branches and pull requests with no item.
+                {(!unlinked.is_empty()).then(|| view! {
+                    <Stack gap="xs" attr:data-testid="team-unlinked-refs">
+                        <Text size="sm">"Not linked to an item"</Text>
+                        {unlinked.into_iter().map(|forge_ref| view! {
+                            <crate::pages::repositories::refs::ForgeRefRow forge_ref/>
+                        }).collect_view()}
+                    </Stack>
+                })}
             </Panel>
         </Stack>
     }
@@ -504,7 +535,7 @@ fn TeamBody(view_model: TeamView, on_changed: Callback<()>) -> impl IntoView {
 
 /// The accent for a forge link's state — same mapping as the item
 /// detail's Development panel (KAIROS-T-0100). Red stays reserved.
-fn link_state_color(state: &str) -> &'static str {
+pub(crate) fn link_state_color(state: &str) -> &'static str {
     use aurora_dark::tokens::token;
     match state {
         "open" => token::ICE,

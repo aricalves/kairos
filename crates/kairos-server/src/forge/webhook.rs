@@ -23,8 +23,18 @@
 //!
 //! A non-2xx makes forges retry, and retry, and eventually disable the
 //! hook. So a delivery we understand but cannot act on — an event type we
-//! do not consume, a payload naming no live short code — is a successful
-//! no-op. Only authenticity failures reject.
+//! do not consume, an event that the forge filter of the repository does
+//! not admit — is a successful no-op. Only authenticity failures reject.
+//!
+//! # What a delivery writes (COLLIERY-I-0623)
+//!
+//! 1. The forge filter of the repository decides first (KAIROS-T-0479).
+//! 2. Each admitted branch and pull request is recorded for the repository
+//!    (`forge_refs`), with or without a short code (KAIROS-T-0480).
+//! 3. A live short code in it links it to that item (`item_links`), and a
+//!    linked pull request gets the write-back (KAIROS-T-0386).
+//!
+//! The forge system actor of the tenant is the actor (KAIROS-T-0481).
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
@@ -85,6 +95,14 @@ fn core_state(state: CoreState) -> LinkState {
         CoreState::Closed => LinkState::Closed,
         CoreState::Draft => LinkState::Draft,
     }
+}
+
+/// What a verified delivery did.
+enum Ingested {
+    /// Recorded; this many item links were written or advanced.
+    Written(usize),
+    /// The filter of the repository does not admit it: nothing written.
+    Filtered,
 }
 
 /// One activity row for a delivery that changed something
@@ -236,6 +254,32 @@ pub(crate) async fn receive(
             let actor = kairos_db::forge_actor::ensure(conn, org_id)
                 .map_err(crate::error::ApiError::internal)?;
 
+            // KAIROS-T-0479/0480: the filter of the repository first. An
+            // event that it does not admit is not recorded and not linked.
+            let filter = kairos_db::forge_filters::filter(conn, connection.repository_id)
+                .map_err(crate::error::ApiError::internal)?;
+            if !filter.admits(&event) {
+                return Ok(Some(Ingested::Filtered));
+            }
+
+            // KAIROS-T-0480: record it for the repository, with or without a
+            // short code. Ordering-safe, like the links below.
+            let recorded = forge::upsert_ref(
+                conn,
+                kairos_db::forge::NewForgeRef {
+                    repository_id: connection.repository_id,
+                    kind: core_kind(event.kind),
+                    external_id: event.external_id.clone(),
+                    title: event.title.clone(),
+                    url: event.url.clone(),
+                    state: core_state(event.state),
+                    author: event.author.clone(),
+                    head_branch: event.head_branch.clone(),
+                    forge_updated_at: event.forge_updated_at,
+                },
+            )
+            .map_err(crate::error::ApiError::internal)?;
+
             let kind = core_kind(event.kind);
             let mut written = 0usize;
             let mut touched: Vec<(Uuid, String, kairos_core::short_code::ItemType)> = Vec::new();
@@ -318,15 +362,17 @@ pub(crate) async fn receive(
                 )
                 .map_err(crate::error::ApiError::internal)?;
             }
-            if written > 0 {
+            if written > 0 || recorded {
                 record_event(conn, actor, connection.repository_id, &event)?;
             }
-            Ok(Some(written))
+            Ok(Some(Ingested::Written(written)))
         })
         .await;
 
     match result {
-        Ok(Some(written)) => accepted("ingested", written),
+        Ok(Some(Ingested::Written(written))) => accepted("ingested", written),
+        // A 2xx: the forge must not retry an event that the filter drops.
+        Ok(Some(Ingested::Filtered)) => accepted("filtered", 0),
         // Unknown connection (or wrong forge for it) is an authenticity
         // failure, and must look like every other one.
         Ok(None) => rejected(),

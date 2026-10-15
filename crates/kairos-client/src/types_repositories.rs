@@ -252,6 +252,11 @@ pub struct RepositoryDetail {
     /// In-flight (`open`, `draft`) branches and pull requests on this
     /// repository, newest first, each with the work item it belongs to.
     pub in_flight: Vec<crate::types_forge::TeamLink>,
+    /// Every in-flight (`open`, `draft`) branch and pull request that the
+    /// forge filter admits, linked to an item or not (`linked`), newest
+    /// first (KAIROS-T-0480).
+    #[serde(default)]
+    pub refs: Vec<crate::types_forge::ForgeRef>,
     /// The documents and the ADRs that impact this repository
     /// (COLLIERY-T-0269): the documents first, by short code. Live items
     /// only, unless the request has `include_deleted=true`. Read them

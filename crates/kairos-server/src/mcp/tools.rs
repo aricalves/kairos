@@ -1438,7 +1438,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "One repository: owner team and its delivery board, open task count, default branch and where it comes from, the team's `description` of how to work in it (read it before working in an unfamiliar repository), the documents and ADRs that impact it (read them with `get_item` before planning), its open branches and pull requests with their items, and the lines read token, write-back, code index build and code index breaker (a tripped breaker stops builds until `rebuild_code_index` (admin profile)). `repository` is a slug or UUID; `include_deleted: true` adds archived documents and ADRs."
+        description = "One repository: owner team and its delivery board, open task count, default branch and where it comes from, the team's `description` of how to work in it (read it before working in an unfamiliar repository), the documents and ADRs that impact it (read them with `get_item` before planning), its open branches and pull requests with their items and those not linked to an item, the forge filters, and the lines read token, write-back, code index build and code index breaker (a tripped breaker stops builds until `rebuild_code_index` (admin profile)). `repository` is a slug or UUID; `include_deleted: true` adds archived documents and ADRs."
     )]
     pub async fn get_repository(
         &self,
@@ -1565,6 +1565,24 @@ impl KairosMcp {
                     link.item_short_code,
                     link.item_title,
                     link.url
+                ));
+            }
+            // KAIROS-T-0480: what is open and has no item. The forge filter
+            // decides what is recorded.
+            let unlinked: Vec<kairos_db::forge::ForgeRefRow> =
+                kairos_db::forge::repository_refs(conn, repo_id, &["open", "draft"], 50)
+                    .map_err(ApiError::internal)?
+                    .into_iter()
+                    .filter(|row| row.item_short_codes.is_empty())
+                    .collect();
+            out.push_str("\n## Not linked to an item\n");
+            if unlinked.is_empty() {
+                out.push_str("(none)\n");
+            }
+            for row in unlinked {
+                out.push_str(&format!(
+                    "- {} {} [{}] {} by {} ({})\n",
+                    row.kind, row.external_id, row.state, row.title, row.author, row.url
                 ));
             }
             Ok(out)

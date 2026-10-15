@@ -426,6 +426,7 @@ fn RepositoryRow(
     let repo_url = repo.repo_url.clone();
     let description = repo.description.clone();
     let documents_slug = repo.slug.clone();
+    let refs_slug = repo.slug.clone();
     let code_index_slug = repo.slug.clone();
     let owner_team_slug = repo.team.slug.clone();
     // COLLIERY-T-3105: the status of the read token, never the token. The
@@ -716,6 +717,7 @@ fn RepositoryRow(
             </Text>
             <crate::pages::repositories::documents::RepositoryDocuments
                 slug=documents_slug/>
+            <crate::pages::repositories::refs::UnlinkedRefs slug=refs_slug/>
             <crate::pages::repositories::code_index::CodeIndexPanel
                 slug=code_index_slug owner_team=owner_team_slug/>
             <Show when=move || editing.get()>

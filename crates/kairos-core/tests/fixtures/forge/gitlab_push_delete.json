@@ -1,0 +1,11 @@
+{
+  "object_kind": "push",
+  "ref": "refs/heads/sam/old-work",
+  "before": "4f1c2a9e0d6b8c3f5a7e9d1b2c4f6a8e0d2b4c6f",
+  "after": "0000000000000000000000000000000000000000",
+  "user_username": "sam",
+  "project": {
+    "path_with_namespace": "acme/portal-web",
+    "web_url": "https://gitlab.com/acme/portal-web"
+  }
+}

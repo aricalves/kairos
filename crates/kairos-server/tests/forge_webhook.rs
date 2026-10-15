@@ -544,5 +544,225 @@ async fn forge_webhook_ingestion_against_live_stack() {
         "a PR edited to no longer mention the code drops its link"
     );
 
+    // =======================================================================
+    // KAIROS-T-0480: every admitted branch and PR is recorded, linked or not
+    // =======================================================================
+    let send = |body: String, event: &'static str| {
+        let signature = github_signature(&secret, body.as_bytes());
+        deliver(hook_path.clone(), body, Some(signature), event)
+    };
+    let pr_by = |number: i64, title: &str, author: &str, state: &str, merged: bool, at: &str| {
+        json!({
+            "action": if merged { "closed" } else { state },
+            "repository": {
+                "full_name": "acme/payments-api",
+                "html_url": "https://github.com/acme/payments-api"
+            },
+            "sender": { "login": author },
+            "pull_request": {
+                "number": number, "state": state, "merged": merged, "draft": false,
+                "title": title, "body": "",
+                "html_url": format!("https://github.com/acme/payments-api/pull/{number}"),
+                "updated_at": at,
+                "user": { "login": author },
+                "head": { "ref": format!("{author}/work-{number}") }
+            }
+        })
+        .to_string()
+    };
+    // A PR with no short code: recorded, not linked.
+    let links_before = link_count(&mut conn);
+    let response = send(
+        pr_by(
+            77,
+            "Tidy the README",
+            "robin",
+            "open",
+            false,
+            "2026-09-02T10:00:00Z",
+        ),
+        "pull_request",
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(link_count(&mut conn), links_before, "no item to link");
+    let detail = svc.get_repository("payments-api").await.expect("detail");
+    let pr77 = detail
+        .refs
+        .iter()
+        .find(|r| r.kind == "pull_request" && r.external_id == "77")
+        .unwrap_or_else(|| panic!("PR 77 is recorded: {:?}", detail.refs));
+    assert!(!pr77.linked, "{pr77:?}");
+    assert!(pr77.item_short_codes.is_empty());
+    assert_eq!(pr77.author, "robin");
+    assert_eq!(pr77.head_branch, "robin/work-77");
+    assert_eq!(pr77.repository, "payments-api");
+    // The team that owns the repository sees it in its rollup.
+    let unlinked = svc
+        .team_unlinked_refs(&infra.id, None)
+        .await
+        .expect("team unlinked refs");
+    assert!(
+        unlinked.iter().any(|r| r.external_id == "77"),
+        "{unlinked:?}"
+    );
+    assert!(
+        unlinked.iter().all(|r| !r.linked),
+        "the rollup has only rows with no item"
+    );
+    // A PR that names the task is recorded AND linked.
+    let linked_pr = github_pr_n(78, &code, "open", false, "2026-09-02T10:00:00Z");
+    let response = send(linked_pr, "pull_request").await;
+    assert_eq!(response.status(), 200);
+    let detail = svc.get_repository("payments-api").await.expect("detail");
+    let pr78 = detail
+        .refs
+        .iter()
+        .find(|r| r.external_id == "78")
+        .expect("PR 78");
+    assert!(pr78.linked);
+    assert_eq!(pr78.item_short_codes, vec![code.clone()]);
+    assert!(
+        !svc.team_unlinked_refs(&infra.id, None)
+            .await
+            .expect("rollup")
+            .iter()
+            .any(|r| r.external_id == "78"),
+        "a linked PR is not in the unlinked rollup"
+    );
+
+    // Out of order: merged at 12:00, then the 10:00 "opened" again.
+    let response = send(
+        pr_by(
+            77,
+            "Tidy the README",
+            "robin",
+            "closed",
+            true,
+            "2026-09-02T12:00:00Z",
+        ),
+        "pull_request",
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    let response = send(
+        pr_by(
+            77,
+            "Tidy the README",
+            "robin",
+            "open",
+            false,
+            "2026-09-02T10:00:00Z",
+        ),
+        "pull_request",
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    let state: String = kairos_db::schema::forge_refs::table
+        .filter(kairos_db::schema::forge_refs::external_id.eq("77"))
+        .select(kairos_db::schema::forge_refs::state)
+        .first(&mut conn)
+        .expect("PR 77 row");
+    assert_eq!(
+        state, "merged",
+        "a redelivered 'opened' must not regress PR 77"
+    );
+    assert!(
+        !svc.get_repository("payments-api")
+            .await
+            .expect("detail")
+            .refs
+            .iter()
+            .any(|r| r.external_id == "77"),
+        "a merged PR is not in flight"
+    );
+
+    // A branch with no short code, then its deletion.
+    let branch = |event: &str| {
+        let _ = event;
+        json!({
+            "ref": "sam/spike", "ref_type": "branch",
+            "repository": {
+                "full_name": "acme/payments-api",
+                "html_url": "https://github.com/acme/payments-api"
+            },
+            "sender": { "login": "sam" }
+        })
+        .to_string()
+    };
+    assert_eq!(send(branch("create"), "create").await.status(), 200);
+    let detail = svc.get_repository("payments-api").await.expect("detail");
+    assert!(
+        detail
+            .refs
+            .iter()
+            .any(|r| r.kind == "branch" && r.external_id == "sam/spike" && !r.linked),
+        "{:?}",
+        detail.refs
+    );
+    assert_eq!(send(branch("delete"), "delete").await.status(), 200);
+    let detail = svc.get_repository("payments-api").await.expect("detail");
+    assert!(
+        !detail.refs.iter().any(|r| r.external_id == "sam/spike"),
+        "a deleted branch is closed, not in flight"
+    );
+
+    // The filter decides: an excluded author is not recorded.
+    let (status, body) = svc
+        .raw_request(
+            reqwest::Method::PATCH,
+            "/api/repositories/payments-api",
+            Some(&json!({"forge_filters": {"pr_author": {"exclude": "^dependabot\\[bot\\]$"}}})),
+        )
+        .await
+        .expect("PATCH");
+    assert_eq!(status, 200, "{body}");
+    let refs_before: i64 = kairos_db::schema::forge_refs::table
+        .count()
+        .get_result(&mut conn)
+        .expect("count");
+    let response = send(
+        pr_by(
+            80,
+            "Bump serde",
+            "dependabot[bot]",
+            "open",
+            false,
+            "2026-09-03T10:00:00Z",
+        ),
+        "pull_request",
+    )
+    .await;
+    assert_eq!(response.status(), 200, "a filtered event is still a 2xx");
+    let body: serde_json::Value = response.json().await.expect("json");
+    assert_eq!(body["status"], "filtered");
+    let refs_after: i64 = kairos_db::schema::forge_refs::table
+        .count()
+        .get_result(&mut conn)
+        .expect("count");
+    assert_eq!(refs_after, refs_before, "an excluded PR is not recorded");
+    // Even when it names a task: the filter comes first.
+    let excluded_linked = json!({
+        "action": "opened",
+        "repository": { "full_name": "acme/payments-api", "html_url": "https://github.com/acme/payments-api" },
+        "sender": { "login": "dependabot[bot]" },
+        "pull_request": {
+            "number": 81, "state": "open", "merged": false, "draft": false,
+            "title": format!("Bump for {code}"), "body": "",
+            "html_url": "https://github.com/acme/payments-api/pull/81",
+            "updated_at": "2026-09-03T10:00:00Z",
+            "user": { "login": "dependabot[bot]" },
+            "head": { "ref": "dependabot/cargo/serde" }
+        }
+    })
+    .to_string();
+    let links_before = link_count(&mut conn);
+    assert_eq!(send(excluded_linked, "pull_request").await.status(), 200);
+    assert_eq!(
+        link_count(&mut conn),
+        links_before,
+        "an excluded PR is not linked"
+    );
+
     drop_scratch_db(&mut admin_conn, SCRATCH_DB);
 }

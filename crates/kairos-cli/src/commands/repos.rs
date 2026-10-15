@@ -607,6 +607,18 @@ impl ReposCommand {
                         link.url
                     );
                 }
+                // KAIROS-T-0480: open branches and pull requests with no item.
+                println!("\nNot linked to an item:");
+                let unlinked: Vec<_> = detail.refs.iter().filter(|r| !r.linked).collect();
+                if unlinked.is_empty() {
+                    println!("  (none)");
+                }
+                for r in unlinked {
+                    println!(
+                        "  {} {} [{}] {} by {} ({})",
+                        r.kind, r.external_id, r.state, r.title, r.author, r.url
+                    );
+                }
                 Ok(())
             }
             Self::Create {

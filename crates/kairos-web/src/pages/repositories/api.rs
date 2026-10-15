@@ -408,6 +408,60 @@ pub async fn impacted_by(auth: Auth, slug: &str) -> Result<Vec<ImpactingItem>, A
     Ok(detail.impacted_by)
 }
 
+/// mirror of: `kairos_client::types_forge::ForgeRef` (KAIROS-T-0480): a
+/// branch or a pull request of a repository, linked to an item or not.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct ForgeRef {
+    /// `branch|pull_request`.
+    pub kind: String,
+    pub external_id: String,
+    pub title: String,
+    pub url: String,
+    /// `open|merged|closed|draft`.
+    pub state: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub forge: String,
+    #[serde(default)]
+    pub repo_full_name: String,
+    #[serde(default)]
+    pub linked: bool,
+    #[serde(default)]
+    pub item_short_codes: Vec<String>,
+}
+
+impl ForgeRef {
+    /// The label of the row: `#12 Title` for a pull request, the branch
+    /// name for a branch. Pure, host-tested.
+    pub fn label(&self) -> String {
+        if self.kind == "pull_request" {
+            format!("#{} {}", self.external_id, self.title)
+        } else {
+            self.title.clone()
+        }
+    }
+}
+
+/// mirror of: `kairos_client::types_repositories::RepositoryDetail`
+/// (partial — the branches and pull requests, KAIROS-T-0480).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct RepositoryRefs {
+    #[serde(default)]
+    refs: Vec<ForgeRef>,
+}
+
+/// `GET /api/repositories/{slug}` — the open branches and pull requests
+/// that no item is linked to (KAIROS-T-0480).
+pub async fn unlinked_refs(auth: Auth, slug: &str) -> Result<Vec<ForgeRef>, ApiError> {
+    let detail: RepositoryRefs = get_json(
+        auth,
+        &format!("/api/repositories/{}", crate::api::encode_component(slug)),
+    )
+    .await?;
+    Ok(detail.refs.into_iter().filter(|r| !r.linked).collect())
+}
+
 /// mirror of: `kairos_client::types_repositories::SetTaskRepositoryRequest`.
 #[derive(Debug, Serialize)]
 struct SetTaskRepositoryRequest<'a> {
@@ -564,6 +618,32 @@ mod tests {
             serde_json::from_value(serde_json::json!({"id": "r-1", "slug": "payments-api"}))
                 .expect("ref mirror decodes without repo_full_name");
         assert_eq!(embedded.repo_full_name, "");
+    }
+
+    /// KAIROS-T-0480: the branches and pull requests of a repository decode;
+    /// an older server sends none.
+    #[test]
+    fn the_refs_decode_server_shape() {
+        let detail: RepositoryRefs = serde_json::from_value(serde_json::json!({
+            "id": "r-1", "slug": "app", "refs": [
+                {"kind": "pull_request", "external_id": "7", "title": "Fix crash",
+                 "url": "https://github.com/acme/app/pull/7", "state": "open",
+                 "author": "robin", "head_branch": "fix", "forge": "github",
+                 "repo_full_name": "acme/app", "repository": "app", "linked": false,
+                 "item_short_codes": [], "forge_updated_at": "x"},
+                {"kind": "branch", "external_id": "sam/x", "title": "sam/x",
+                 "url": "u", "state": "open", "linked": true,
+                 "item_short_codes": ["APP-T-0001"]}
+            ]
+        }))
+        .expect("refs decode");
+        assert_eq!(detail.refs.len(), 2);
+        assert_eq!(detail.refs[0].label(), "#7 Fix crash");
+        assert_eq!(detail.refs[1].label(), "sam/x");
+        assert!(!detail.refs[0].linked && detail.refs[1].linked);
+        let old: RepositoryRefs =
+            serde_json::from_value(serde_json::json!({"id": "r-1"})).expect("no refs");
+        assert!(old.refs.is_empty());
     }
 
     /// COLLIERY-T-0269: the detail of a repository has the documents and
