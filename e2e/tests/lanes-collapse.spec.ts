@@ -47,7 +47,9 @@ test('lanes collapse: one row with counts, kept per board and grouping', async (
     await page.fill('#login', 'alice@kairos.test');
     await page.fill('#password', 'alice-password');
     await page.click('#submit-login');
-    await page.waitForURL((url) => url.pathname.startsWith('/boards'), { timeout: 30_000 });
+    await page.waitForURL((url) => url.pathname === '/' || url.pathname.startsWith('/boards'), {
+      timeout: 30_000,
+    });
   });
 
   let expanded = new Map<string, number>();
