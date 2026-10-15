@@ -457,6 +457,13 @@ async fn jit_upsert_user(pool: &TenantPool, claims: &TokenClaims) -> Result<User
         .await
         .optional()
         .map_err(ApiError::internal)?;
+    // KAIROS-T-0481: a system actor (the forge actor) is not a login. A token
+    // whose subject names one is refused, and the row is not changed.
+    if existing.as_ref().is_some_and(User::is_system) {
+        return Err(ApiError::unauthorized(
+            "The subject of the token is a system actor. A system actor cannot log in.",
+        ));
+    }
     // Whether a row for this subject exists, captured before the move below —
     // the adoption fallback must only run when there is none.
     let subject_is_known = existing.is_some();
@@ -504,6 +511,8 @@ async fn jit_upsert_user(pool: &TenantPool, claims: &TokenClaims) -> Result<User
     if !subject_is_known && claims.email_verified == Some(true) {
         let adoptable: Option<Uuid> = users::table
             .filter(users::email.eq(&email))
+            // KAIROS-T-0481: never adopt a system actor.
+            .filter(users::kind.ne(kairos_db::models::public::USER_KIND_SYSTEM))
             .order(users::created_at.asc())
             .select(users::id)
             .first(&mut conn)

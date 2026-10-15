@@ -153,6 +153,11 @@ pub async fn authenticate_api_key(
         .optional()
         .map_err(ApiError::internal)?;
     let user = user.ok_or_else(bad_key)?;
+    // KAIROS-T-0481: a system actor holds no key. A row that names one is
+    // refused like any bad key.
+    if user.is_system() {
+        return Err(bad_key());
+    }
 
     // Best-effort last-used stamp: never fail or block the request on it.
     let _ = diesel::update(api_keys::table.filter(api_keys::id.eq(row.id)))

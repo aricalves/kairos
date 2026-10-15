@@ -87,6 +87,41 @@ fn core_state(state: CoreState) -> LinkState {
     }
 }
 
+/// One activity row for a delivery that changed something
+/// (KAIROS-T-0481): the forge actor, the repository, and what the forge
+/// said, with the login of its author.
+pub(crate) fn record_event(
+    conn: &mut diesel::pg::PgConnection,
+    actor: Uuid,
+    repository_id: Uuid,
+    event: &ForgeEvent,
+) -> Result<(), crate::error::ApiError> {
+    use diesel::prelude::*;
+    use kairos_db::models::enums::ActivityAction;
+    use kairos_db::models::graph::NewActivityLogEntry;
+    let author = if event.author.is_empty() {
+        String::new()
+    } else {
+        format!(" by {}", event.author)
+    };
+    diesel::insert_into(kairos_db::schema::activity_log::table)
+        .values(NewActivityLogEntry {
+            actor_id: actor,
+            action: ActivityAction::ForgeEvent,
+            entity_id: Some(repository_id),
+            entity_type: Some("repository".to_string()),
+            details: format!(
+                "{} {} {}{author}",
+                event.kind.as_str(),
+                event.external_id,
+                event.state.as_str()
+            ),
+        })
+        .execute(conn)
+        .map_err(crate::error::ApiError::internal)?;
+    Ok(())
+}
+
 /// Ingest one delivery.
 pub(crate) async fn receive(
     State(state): State<AppState>,
@@ -172,14 +207,14 @@ pub(crate) async fn receive(
                 .first(conn)
                 .optional()
                 .map_err(crate::error::ApiError::internal)?;
-            Ok(found.is_some())
+            Ok(found)
         })
         .await;
-    match tenant_exists {
-        Ok(true) => {}
-        Ok(false) => return rejected(),
+    let org_id = match tenant_exists {
+        Ok(Some(org_id)) => org_id,
+        Ok(None) => return rejected(),
         Err(e) => return e.into_response(),
-    }
+    };
 
     // ---- resolve + write --------------------------------------------------
     let codes = kairos_core::forge::extract_short_codes(&event.match_text);
@@ -196,6 +231,10 @@ pub(crate) async fn receive(
             if connection.forge != forge {
                 return Ok(None);
             }
+            // KAIROS-T-0481: the forge actor of the tenant acts for the
+            // forge, not the person who connected the repository.
+            let actor = kairos_db::forge_actor::ensure(conn, org_id)
+                .map_err(crate::error::ApiError::internal)?;
 
             let kind = core_kind(event.kind);
             let mut written = 0usize;
@@ -274,10 +313,13 @@ pub(crate) async fn receive(
                         short_code: short_code.clone(),
                         board_id: None,
                         column_id: None,
-                        actor: connection.created_by,
+                        actor,
                     },
                 )
                 .map_err(crate::error::ApiError::internal)?;
+            }
+            if written > 0 {
+                record_event(conn, actor, connection.repository_id, &event)?;
             }
             Ok(Some(written))
         })

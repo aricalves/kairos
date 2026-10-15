@@ -64,6 +64,19 @@ fn rejection<T: std::fmt::Debug>(result: Result<T, kairos_client::Error>) -> kai
     }
 }
 
+/// One `forge_event` activity row with its actor (KAIROS-T-0481).
+#[derive(QueryableByName, Debug, Clone)]
+struct ForgeEventRow {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    display_name: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    kind: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    details: String,
+    #[diesel(sql_type = diesel::sql_types::Uuid)]
+    id: Uuid,
+}
+
 fn link_count(conn: &mut PgConnection) -> i64 {
     use kairos_db::schema::item_links::dsl;
     dsl::item_links
@@ -242,6 +255,67 @@ async fn forge_webhook_ingestion_against_live_stack() {
         link_state(&mut conn, task.id, "42").as_deref(),
         Some("open")
     );
+
+    // =======================================================================
+    // KAIROS-T-0481: the forge actor, not the person who connected the repo
+    // =======================================================================
+    let forge_events: Vec<ForgeEventRow> = sql_query(
+        "SELECT u.display_name, u.kind, a.details, u.id \
+           FROM org_acme.activity_log a JOIN public.users u ON u.id = a.actor_id \
+          WHERE a.action = 'forge_event' ORDER BY a.occurred_at",
+    )
+    .load(&mut conn)
+    .expect("forge events");
+    assert_eq!(forge_events.len(), 1, "{forge_events:?}");
+    let ForgeEventRow {
+        display_name: name,
+        kind,
+        details,
+        id: forge_actor,
+    } = forge_events[0].clone();
+    assert_eq!((name.as_str(), kind.as_str()), ("Forge", "system"));
+    assert_ne!(forge_actor, svc_id, "not the person who connected the repo");
+    assert_eq!(details, "pull_request 42 open by dylan");
+    // It is a member of the organization (the right of a request).
+    let member: i64 = organization_members::table
+        .filter(organization_members::user_id.eq(forge_actor))
+        .filter(organization_members::organization_id.eq(org_id))
+        .count()
+        .get_result(&mut conn)
+        .expect("membership");
+    assert_eq!(member, 1);
+    // It cannot have a password.
+    let refused = diesel::update(users::table.filter(users::id.eq(forge_actor)))
+        .set(users::password_hash.eq(Some("x")))
+        .execute(&mut conn)
+        .expect_err("a system actor has no password");
+    assert!(
+        refused.to_string().contains("users_system_has_no_password"),
+        "{refused}"
+    );
+    // It cannot hold an API key: the store refuses one...
+    let key = kairos_server::service_accounts::auth::generate_key("acme");
+    let new_key = kairos_db::api_keys::NewApiKey {
+        user_id: forge_actor,
+        name: "forge".into(),
+        token_hash: kairos_server::service_accounts::auth::hash_key(&key),
+        prefix: kairos_server::service_accounts::auth::display_prefix(&key),
+        created_by: svc_id,
+        expires_at: None,
+    };
+    assert!(kairos_db::api_keys::create_key(&mut conn, new_key.clone()).is_err());
+    // ...and a row written past the store does not authenticate.
+    diesel::insert_into(kairos_db::schema::api_keys::table)
+        .values(new_key)
+        .execute(&mut conn)
+        .expect("a raw key row");
+    let as_forge = http
+        .get(format!("{}/api/whoami", server.base_url))
+        .bearer_auth(&key)
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(as_forge.status(), 401, "the forge actor cannot log in");
 
     // =======================================================================
     // ORDERING SAFETY: merge, then replay the earlier "opened"

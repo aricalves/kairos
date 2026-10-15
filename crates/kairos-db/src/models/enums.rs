@@ -282,6 +282,7 @@ text_enum! {
         Publish => "publish",
         Unpublish => "unpublish",
         RetentionSweep => "retention_sweep",
+        ForgeEvent => "forge_event",
     }
 }
 
@@ -428,6 +429,7 @@ mod tests {
                 "publish",
                 "unpublish",
                 "retention_sweep",
+                "forge_event",
             ]
         );
     }
