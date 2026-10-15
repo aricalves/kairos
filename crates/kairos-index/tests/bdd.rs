@@ -1273,24 +1273,54 @@ fn a_wrong_binary(world: &mut IndexWorld) {
     world.extra.push(dir);
 }
 
-#[then("the build stops, and the error names the binary and the expected checksum")]
-fn the_build_stops(world: &mut IndexWorld) {
-    assert!(world.report.is_none(), "the build did not stop");
-    let error = world
-        .build_error
-        .as_deref()
-        .expect("the build gave no error");
-    let path = world.rust_analyzer.as_ref().expect("no binary");
+#[then(
+    "the build finishes with the Rust edges by name, and a Rust warning names the binary and the expected checksum"
+)]
+fn the_binary_falls_back(world: &mut IndexWorld) {
+    let path = world.rust_analyzer.clone().expect("no binary");
     let expected = rust_analyzer::pin()
         .expect("a pin for this platform")
         .binary_sha256;
+    rust_falls_back(world, &path, expected);
+}
+
+/// KAIROS-T-0485: the build finished, the Rust edges are by name, and the
+/// one warning is for Rust and names `path` and `checksum`.
+fn rust_falls_back(world: &IndexWorld, path: &Path, checksum: &str) {
+    let report = world.report.as_ref().unwrap_or_else(|| {
+        panic!(
+            "the build stopped: {}",
+            world.build_error.as_deref().unwrap_or_default()
+        )
+    });
+    assert!(report.scip.is_none(), "rust-analyzer ran");
+    let rust: Vec<_> = report
+        .scip_warnings
+        .iter()
+        .filter(|w| w.language == "rust")
+        .collect();
+    assert_eq!(rust.len(), 1, "{:?}", report.scip_warnings);
+    let reason = &rust[0].reason;
     assert!(
-        error.contains(&path.display().to_string()),
-        "the error does not name the binary: {error}"
+        reason.contains(&path.display().to_string()),
+        "the warning does not name the file: {reason}"
     );
     assert!(
-        error.contains(expected),
-        "the error does not name the checksum: {error}"
+        reason.contains(checksum),
+        "the warning does not name the checksum: {reason}"
+    );
+    let edges = world.edges();
+    let rust_edges: Vec<_> = edges
+        .iter()
+        .filter(|e| e.caller.file.ends_with(".rs"))
+        .collect();
+    assert!(
+        rust_edges.iter().any(|e| e.origin == "name"),
+        "no Rust edge by name"
+    );
+    assert!(
+        rust_edges.iter().all(|e| e.origin != "scip"),
+        "a Rust edge is from SCIP"
     );
 }
 
@@ -1443,22 +1473,12 @@ fn a_wrong_std_source(world: &mut IndexWorld) {
     world.extra.push(dir);
 }
 
-#[then("the build stops, and the error names the archive and the expected checksum")]
-fn the_build_stops_for_the_std_source(world: &mut IndexWorld) {
-    assert!(world.report.is_none(), "the build did not stop");
-    let error = world
-        .build_error
-        .as_deref()
-        .expect("the build gave no error");
-    let path = world.std_source.as_ref().expect("no archive");
-    assert!(
-        error.contains(&path.display().to_string()),
-        "the error does not name the archive: {error}"
-    );
-    assert!(
-        error.contains(rust_analyzer::RUST_SRC_SHA256),
-        "the error does not name the checksum: {error}"
-    );
+#[then(
+    "the build finishes with the Rust edges by name, and a Rust warning names the archive and the expected checksum"
+)]
+fn the_std_source_falls_back(world: &mut IndexWorld) {
+    let path = world.std_source.clone().expect("no archive");
+    rust_falls_back(world, &path, rust_analyzer::RUST_SRC_SHA256);
 }
 
 // --- Summaries ------------------------------------------------------------------

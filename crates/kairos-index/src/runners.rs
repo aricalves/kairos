@@ -12,9 +12,9 @@
 //! **A runner that fails.** When the tool of a runner is missing, or its
 //! dependency step or its run fails, its languages get the edges by name, as
 //! a build with no runner, and the build records a warning: the language and
-//! the reason ([`ScipWarning`]). The build goes on. The Rust runner is the
-//! exception: its errors stop the build, as before (its tools are pinned and
-//! checked, and a wrong tool is an error of the deployment).
+//! the reason ([`ScipWarning`]). The build goes on. Rust does the same
+//! (KAIROS-T-0485), but a rust-analyzer run that did not turn off the build
+//! still stops the build.
 //!
 //! **Paths.** A runner gives the documents of its index with paths from the
 //! root of the tree, and with a known position encoding.
@@ -219,13 +219,28 @@ impl ScipRunner for RustRunner {
         !input.files.is_empty() && input.root.join("Cargo.toml").is_file()
     }
     fn run(&self, input: &RunnerInput<'_>) -> Result<ScipOutput, RunnerFailure> {
-        let (run, index, crates) = crate::scip::run(input.root, &self.options)?;
+        let (run, index, crates) =
+            crate::scip::run(input.root, &self.options).map_err(rust_failure)?;
         Ok(ScipOutput {
             index,
             crates,
             rust: Some(run),
             warnings: Vec::new(),
         })
+    }
+}
+
+/// What a failed rust-analyzer run does to the build (KAIROS-T-0485). Rust
+/// falls back as the other languages do: a missing binary or std source, a
+/// wrong checksum, a failed download or a failed run gives Rust its edges
+/// by name and a warning. Only a run that did not turn off the build stops
+/// the build: then the guard against code of the repository failed, and an
+/// operator must see it.
+fn rust_failure(e: IndexError) -> RunnerFailure {
+    match e {
+        IndexError::BuildNotOff(_) => RunnerFailure::Fatal(e),
+        // The texts of the errors end with a full stop; a warning adds its own.
+        other => RunnerFailure::Fallback(other.to_string().trim_end_matches('.').to_string()),
     }
 }
 
@@ -488,5 +503,151 @@ pub(crate) mod tests {
             run_edges(&db),
             [("possible".to_string(), "name".to_string(), None, true)]
         );
+    }
+
+    /// A Cargo workspace with `run` in lib.rs, which calls the `load` of
+    /// a.rs; c.rs has another `load`.
+    fn rust_tree(dir: &Path) -> std::path::PathBuf {
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(
+            repo.join("Cargo.toml"),
+            "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            repo.join("src/lib.rs"),
+            "mod a;\nmod c;\n\npub fn run() -> i32 {\n    a::load()\n}\n",
+        )
+        .unwrap();
+        std::fs::write(repo.join("src/a.rs"), "pub fn load() -> i32 {\n    1\n}\n").unwrap();
+        std::fs::write(repo.join("src/c.rs"), "pub fn load() -> i32 {\n    2\n}\n").unwrap();
+        repo
+    }
+
+    fn rust_options(rust_analyzer: &Path) -> BuildOptions {
+        BuildOptions {
+            rust_analyzer: Some(rust_analyzer.to_path_buf()),
+            download: false,
+            ..Default::default()
+        }
+    }
+
+    /// KAIROS-T-0485: with no rust-analyzer, the build finishes, Rust has
+    /// its edges by name, and the run has a warning for Rust.
+    #[test]
+    fn a_missing_rust_analyzer_falls_back_with_a_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = rust_tree(dir.path());
+        let db = dir.path().join("index.sqlite");
+        let missing = dir.path().join("no-rust-analyzer");
+        let report = build_structure_with(&repo, &db, &rust_options(&missing)).unwrap();
+        assert_eq!(report.scip_warnings.len(), 1, "{report:?}");
+        assert_eq!(report.scip_warnings[0].language, "rust");
+        assert!(
+            report.scip_warnings[0]
+                .reason
+                .contains(&missing.display().to_string()),
+            "{report:?}"
+        );
+        assert!(report.scip.is_none());
+        assert!(report.scip_runs.is_empty());
+        let edges = run_edges(&db);
+        assert!(!edges.is_empty(), "run has no edge");
+        for (_, origin, _, pending) in &edges {
+            assert_eq!((origin.as_str(), *pending), ("name", false), "{edges:?}");
+        }
+    }
+
+    /// KAIROS-T-0485: a rust-analyzer binary with a wrong sha256 is refused,
+    /// and the build falls back with a warning that names the checksum.
+    #[test]
+    fn a_wrong_rust_analyzer_falls_back_with_a_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = rust_tree(dir.path());
+        let db = dir.path().join("index.sqlite");
+        let wrong = dir.path().join("rust-analyzer");
+        std::fs::write(&wrong, "#!/bin/sh\necho 'rust-analyzer 0.0.0'\n").unwrap();
+        let Ok(pin) = crate::rust_analyzer::pin() else {
+            return;
+        };
+        let report = build_structure_with(&repo, &db, &rust_options(&wrong)).unwrap();
+        assert_eq!(report.scip_warnings.len(), 1, "{report:?}");
+        assert_eq!(report.scip_warnings[0].language, "rust");
+        assert!(
+            report.scip_warnings[0].reason.contains(pin.binary_sha256),
+            "{report:?}"
+        );
+    }
+
+    /// KAIROS-T-0485: a Rust fallback does not stop the SCIP run of another
+    /// language.
+    #[test]
+    fn a_rust_fallback_keeps_the_scip_index_of_another_language() {
+        let dir = tempfile::tempdir().unwrap();
+        let (repo, file) = python_tree(dir.path());
+        let rust = rust_tree(&dir.path().join("r"));
+        for name in ["Cargo.toml", "src/lib.rs", "src/a.rs", "src/c.rs"] {
+            let to = repo.join(name);
+            std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+            std::fs::copy(rust.join(name), to).unwrap();
+        }
+        let db = dir.path().join("index.sqlite");
+        let mut options = rust_options(&dir.path().join("no-rust-analyzer"));
+        options.scip.runners.push(python_runner(&file));
+        let report = build_structure_with(&repo, &db, &options).unwrap();
+        let languages: Vec<&str> = report
+            .scip_warnings
+            .iter()
+            .map(|w| w.language.as_str())
+            .collect();
+        assert_eq!(languages, ["rust"]);
+        assert_eq!(report.scip_runs.len(), 1);
+        assert_eq!(report.scip_runs[0].language, "python");
+        let edges: Vec<(String, String)> = Index::open(&db)
+            .unwrap()
+            .edges()
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.caller.name == "run")
+            .map(|e| (e.caller.file, e.origin))
+            .collect();
+        assert!(edges.contains(&("b.py".into(), "scip".into())), "{edges:?}");
+        assert!(
+            edges.contains(&("src/lib.rs".into(), "name".into())),
+            "{edges:?}"
+        );
+    }
+
+    /// KAIROS-T-0485: the pinned rust-analyzer on a workspace whose
+    /// `cargo metadata` fails: the run fails, and Rust falls back. Skipped
+    /// when the pinned binary or std source is not on this computer.
+    #[test]
+    fn a_failing_rust_analyzer_run_falls_back_with_a_warning() {
+        let (Some(binary), Some(source)) = (
+            crate::rust_analyzer::binary_path(),
+            crate::rust_analyzer::std_source_archive_path(),
+        ) else {
+            return;
+        };
+        if !binary.is_file() || !source.is_file() {
+            eprintln!("skipped: no pinned rust-analyzer or std source");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let repo = rust_tree(dir.path());
+        std::fs::write(repo.join("Cargo.toml"), "[package]\nname = \n").unwrap();
+        let db = dir.path().join("index.sqlite");
+        let report = build_structure_with(&repo, &db, &rust_options(&binary)).unwrap();
+        assert_eq!(report.scip_warnings.len(), 1, "{report:?}");
+        assert_eq!(report.scip_warnings[0].language, "rust");
+        assert!(
+            report.scip_warnings[0].reason.contains("cargo metadata"),
+            "{report:?}"
+        );
+        assert!(report.scip.is_none());
+        let edges = run_edges(&db);
+        assert!(!edges.is_empty(), "run has no edge");
+        assert!(edges.iter().all(|e| e.1 == "name"), "{edges:?}");
     }
 }

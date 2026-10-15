@@ -1052,7 +1052,9 @@ symbol as `symbol` does.
   of the interface.
 - When the build did not run the indexer of a language (the tool is not
   there, or the install or the indexer failed), the index has the calls
-  only for that language. The result says so, and the build shows a
+  only for that language. This applies to Rust too. A missing
+  rust-analyzer or std source gives Rust its calls by name. A file with an
+  incorrect sha256 or a failed run does the same. The result says so, and the build shows a
   warning with the reason.
 - `kairos index update` with no `--rust-edges` (or `--scip`) keeps the uses
   of each file that did not change. A changed file has its calls only until

@@ -54,6 +54,11 @@ the usual reasons:
 - The free disk space is low. The builder removed the dependency caches,
   and the space is still less than `KAIROS_CODE_INDEX_MIN_FREE_MB`.
 - The indexer failed. The reason has the last lines of its output.
+- For Rust: the pinned rust-analyzer or the pinned std source is not
+  there or has an incorrect sha256, or `cargo metadata` or
+  `rust-analyzer scip` failed. Rust then has its edges by name, as the
+  other languages do. Only a rust-analyzer run that did not turn off the
+  build of the repository stops the build.
 
 ### The disk use of the builder
 
