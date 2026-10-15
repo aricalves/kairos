@@ -515,12 +515,12 @@ language = "go"
 lines = [11, 13]
 is_test = false
 
-# narsil gives each Go type declaration the kind type_alias, a struct too.
+# A Go struct and interface have their own kinds (KAIROS-T-0468).
 [[symbol]]
 file = "go/greet/greet.go"
 name = "Greeter"
 container = ""
-kind = "type_alias"
+kind = "struct"
 language = "go"
 lines = [16, 18]
 is_test = false
@@ -528,7 +528,7 @@ is_test = false
 [[symbol]]
 file = "go/greet/greet.go"
 name = "Greet"
-container = ""
+container = "Greeter"
 kind = "method"
 language = "go"
 lines = [21, 23]
@@ -542,6 +542,34 @@ kind = "function"
 language = "go"
 lines = [26, 31]
 is_test = false
+
+[[symbol]]
+file = "go/greet/greet.go"
+name = "Namer"
+container = ""
+kind = "interface"
+language = "go"
+lines = [34, 36]
+is_test = false
+
+[[symbol]]
+file = "go/greet/greet.go"
+name = "DefaultName"
+container = ""
+kind = "constant"
+language = "go"
+lines = [39, 39]
+is_test = false
+
+# A function that `go test` runs is a test (KAIROS-T-0468).
+[[symbol]]
+file = "go/greet/greet_test.go"
+name = "TestMessage"
+container = ""
+kind = "function"
+language = "go"
+lines = [5, 9]
+is_test = true
 
 # --- scripts/ (a repository rule can exclude it) ----------------------------
 

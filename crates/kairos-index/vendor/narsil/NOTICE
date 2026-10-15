@@ -36,3 +36,7 @@ Changes from upstream:
      function macro_text_calls, with no change to what it finds. kairos-index
      uses it for the calls in the text of a Rust macro invocation
      (COLLIERY-T-1851). Marked "KAIROS PATCH".
+  6. parser.rs: the Go query (KAIROS-T-0468) has each `type_spec` and
+     `type_alias` as its own definition, and the `const_spec` and `var_spec`
+     at the top level of a file. kairos-index gives a struct and an interface
+     their kinds and the receiver type of a method. Marked "KAIROS PATCH".

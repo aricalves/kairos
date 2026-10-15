@@ -86,6 +86,9 @@ pub fn extract(
     let tree = parsed.tree.ok_or_else(|| "no syntax tree".to_string())?;
 
     let mut symbols: Vec<Symbol> = parsed.symbols;
+    if language == "go" {
+        go_refine(&tree, &mut symbols, content);
+    }
     symbols.sort_by(|a, b| {
         (
             a.start_byte,
@@ -137,9 +140,13 @@ pub fn extract(
                 _ => (None, false),
             };
             let (token_vector, token_count) = token_vector.unzip();
+            let container = match node {
+                Some(node) if language == "go" && kind == "method" => go_receiver(node, source),
+                _ => None,
+            };
             Extracted {
                 name: s.name.clone(),
-                container: container_of(&symbols, s),
+                container: container.or_else(|| container_of(&symbols, s)),
                 kind,
                 start_line: s.start_line,
                 end_line: s.end_line,
@@ -148,7 +155,11 @@ pub fn extract(
                 signature: s.signature.clone(),
                 tree_hash,
                 is_test: test_file
-                    || (language == "rust" && node.is_some_and(|n| in_rust_test_code(n, source))),
+                    || (language == "rust" && node.is_some_and(|n| in_rust_test_code(n, source)))
+                    || (language == "go"
+                        && kind == "function"
+                        && path.ends_with("_test.go")
+                        && is_go_test_name(&s.name)),
                 token_vector,
                 token_count,
                 token_vector_made,
@@ -289,6 +300,102 @@ pub(crate) fn hash_text(language: &str, text: &[u8]) -> String {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The Go symbols as the index keeps them (KAIROS-T-0468). narsil gives
+/// each type spec the kind `type_alias`: a struct and an interface get their
+/// own kind here. A type, const or var spec that is alone in its declaration
+/// (`type S struct {…}`, not `type ( … )`) has the declaration as its span,
+/// so its signature starts with the keyword. Each name of `const A, B = 1,
+/// 2` is a symbol: the query gives the first only.
+fn go_refine(tree: &Tree, symbols: &mut Vec<Symbol>, content: &str) {
+    let mut more = Vec::new();
+    for s in symbols.iter() {
+        let Some(node) = definition_node(tree, s) else {
+            continue;
+        };
+        if matches!(node.kind(), "const_spec" | "var_spec") {
+            let mut cursor = node.walk();
+            for name in node
+                .children_by_field_name("name", &mut cursor)
+                .filter(|n| n.kind() == "identifier")
+                .skip(1)
+            {
+                more.push(Symbol {
+                    name: content[name.start_byte()..name.end_byte()].to_string(),
+                    ..s.clone()
+                });
+            }
+        }
+    }
+    symbols.extend(more);
+    for s in symbols.iter_mut() {
+        let Some(node) = definition_node(tree, s) else {
+            continue;
+        };
+        if node.kind() == "type_spec" {
+            match node.child_by_field_name("type").map(|t| t.kind()) {
+                Some("struct_type") => s.kind = SymbolKind::Struct,
+                Some("interface_type") => s.kind = SymbolKind::Interface,
+                _ => {}
+            }
+        }
+        if !matches!(
+            node.kind(),
+            "type_spec" | "type_alias" | "const_spec" | "var_spec"
+        ) {
+            continue;
+        }
+        let Some(declaration) = node.parent().filter(|p| {
+            p.kind().ends_with("_declaration") && {
+                let mut cursor = p.walk();
+                !p.children(&mut cursor).any(|c| c.kind() == "(")
+            }
+        }) else {
+            continue;
+        };
+        s.start_byte = declaration.start_byte();
+        s.start_line = declaration.start_position().row + 1;
+        let text = &content[declaration.start_byte()..declaration.end_byte()];
+        let first_line = text.find('\n').unwrap_or(text.len());
+        s.signature = Some(text[..text.floor_char_boundary(first_line.min(200))].to_string());
+    }
+}
+
+/// The receiver type of a Go method: `S` for `func (s *S[T]) m()`. Go keeps
+/// a method in the package of its type, so the name is enough.
+fn go_receiver(node: Node<'_>, source: &[u8]) -> Option<String> {
+    let receiver = node.child_by_field_name("receiver")?;
+    let mut cursor = receiver.walk();
+    let parameter = receiver
+        .named_children(&mut cursor)
+        .find(|n| n.kind() == "parameter_declaration")?;
+    let mut ty = parameter.child_by_field_name("type")?;
+    loop {
+        ty = match ty.kind() {
+            "pointer_type" => ty.named_child(0)?,
+            "generic_type" => ty.child_by_field_name("type")?,
+            "parenthesized_type" => ty.named_child(0)?,
+            "type_identifier" => {
+                return Some(
+                    String::from_utf8_lossy(&source[ty.start_byte()..ty.end_byte()]).into_owned(),
+                );
+            }
+            _ => return None,
+        };
+    }
+}
+
+/// Whether a Go function name is one that `go test` runs: `Test`,
+/// `Benchmark`, `Fuzz` or `Example`, alone or followed by a character that
+/// is not a lower-case letter (`TestLoad`, not `Testify`).
+fn is_go_test_name(name: &str) -> bool {
+    ["Test", "Benchmark", "Fuzz", "Example"]
+        .iter()
+        .any(|prefix| {
+            name.strip_prefix(prefix)
+                .is_some_and(|rest| !rest.starts_with(|c: char| c.is_lowercase()))
+        })
 }
 
 /// Whether a Rust item is test code: it, or an item that holds it, has a
@@ -437,6 +544,91 @@ mod tests {
                 ("async_case", true)
             ]
         );
+    }
+
+    /// KAIROS-T-0468: struct, interface, const and var are Go kinds.
+    #[test]
+    fn go_kinds_are_split() {
+        let code = "package p\n\nconst A, B = 1, 2\n\nconst (\n\tC = iota\n)\n\nvar X int\n\nvar (\n\tY = 1\n)\n\ntype S[T any] struct{ x T }\n\ntype I interface{ M() }\n\ntype N = int\n\ntype (\n\tK int\n)\n\nfunc f() {\n\tvar z int\n\t_ = z\n}\n";
+        let found: Vec<_> = symbols("p.go", code)
+            .into_iter()
+            .map(|s| {
+                (
+                    s.name,
+                    s.kind,
+                    s.start_line,
+                    s.signature.unwrap_or_default(),
+                )
+            })
+            .collect();
+        let found: Vec<_> = found
+            .iter()
+            .map(|(n, k, l, sig)| (n.as_str(), *k, *l, sig.as_str()))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("A", "constant", 3, "const A, B = 1, 2"),
+                ("B", "constant", 3, "const A, B = 1, 2"),
+                ("C", "constant", 6, "C = iota"),
+                ("X", "variable", 9, "var X int"),
+                ("Y", "variable", 12, "Y = 1"),
+                ("S", "struct", 15, "type S[T any] struct{ x T }"),
+                ("I", "interface", 17, "type I interface{ M() }"),
+                ("N", "type_alias", 19, "type N = int"),
+                ("K", "type_alias", 22, "K int"),
+                ("f", "function", 25, "func f() {"),
+            ]
+        );
+    }
+
+    /// KAIROS-T-0468: a Go method has its receiver type as its container.
+    #[test]
+    fn a_go_method_has_its_receiver_as_container() {
+        let code = "package p\n\nfunc (s *S[T]) M() {}\n\nfunc (n N) P() {}\n\nfunc (Q) R() {}\n";
+        let found: Vec<_> = symbols("p.go", code)
+            .into_iter()
+            .map(|s| (s.name, s.container))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("M".to_string(), Some("S".to_string())),
+                ("P".to_string(), Some("N".to_string())),
+                ("R".to_string(), Some("Q".to_string())),
+            ]
+        );
+    }
+
+    /// KAIROS-T-0468: the functions that `go test` runs are tests, in a
+    /// `_test.go` file only, also when no rule marks the file as a test.
+    #[test]
+    fn go_test_functions_are_marked() {
+        let code = "package p\n\nfunc TestLoad(t *testing.T) {}\nfunc Test(t *testing.T) {}\nfunc BenchmarkLoad(b *testing.B) {}\nfunc FuzzLoad(f *testing.F) {}\nfunc Example() {}\nfunc ExampleLoad_second() {}\nfunc Testify() {}\nfunc helper() {}\nfunc (s S) TestM() {}\n";
+        let marks = |path: &str| -> Vec<(String, bool)> {
+            symbols(path, code)
+                .into_iter()
+                .map(|s| (s.name, s.is_test))
+                .collect()
+        };
+        let expected = |test: bool| -> Vec<(String, bool)> {
+            [
+                ("TestLoad", test),
+                ("Test", test),
+                ("BenchmarkLoad", test),
+                ("FuzzLoad", test),
+                ("Example", test),
+                ("ExampleLoad_second", test),
+                ("Testify", false),
+                ("helper", false),
+                ("TestM", false),
+            ]
+            .iter()
+            .map(|(n, t)| (n.to_string(), *t))
+            .collect()
+        };
+        assert_eq!(marks("load_test.go"), expected(true));
+        assert_eq!(marks("load.go"), expected(false));
     }
 
     #[test]

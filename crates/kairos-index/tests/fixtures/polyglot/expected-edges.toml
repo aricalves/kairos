@@ -454,6 +454,18 @@ at = 27
 class = "external"
 external = "len"
 
+[[edge]]
+caller = { file = "go/greet/greet_test.go", name = "TestMessage", line = 5 }
+at = 6
+class = "certain"
+callee = { file = "go/greet/greet.go", name = "Message", line = 11 }
+
+[[edge]]
+caller = { file = "go/greet/greet_test.go", name = "TestMessage", line = 5 }
+at = 7
+class = "external"
+external = "t.Fatal"
+
 # --- Repeated code (COLLIERY-T-1857) -------------------------------------------
 
 [[edge]]

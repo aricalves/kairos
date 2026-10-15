@@ -29,3 +29,11 @@ func Title(name string) string {
 	}
 	return name
 }
+
+// Namer gives a name.
+type Namer interface {
+	Name() string
+}
+
+// DefaultName is the name when none is given.
+const DefaultName = "friend"

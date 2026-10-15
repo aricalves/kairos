@@ -4119,6 +4119,42 @@ fn lookup_by_line(world: &mut IndexWorld, name: String, line: u32, file: String)
     }
 }
 
+#[then(expr = "{string} gives the method of {string} at line {int} of {string}")]
+fn lookup_gives_the_method(
+    world: &mut IndexWorld,
+    name: String,
+    container: String,
+    line: u32,
+    file: String,
+) {
+    match world.index().lookup(&name, None, None).expect("look up") {
+        Lookup::Found(s) => assert_eq!(
+            (
+                s.kind.as_str(),
+                s.container.as_deref(),
+                s.start_line,
+                s.file.as_str()
+            ),
+            ("method", Some(container.as_str()), line, file.as_str())
+        ),
+        other => panic!("{name}: {other:?}"),
+    }
+}
+
+#[then(expr = "{string} with no file gives the function and the method as candidates")]
+fn lookup_lists_function_and_method(world: &mut IndexWorld, name: String) {
+    match world.index().lookup(&name, None, None).expect("look up") {
+        Lookup::Ambiguous(all) => {
+            let found: Vec<String> = all
+                .iter()
+                .map(|s| format!("{} {}", s.kind, s.qualified()))
+                .collect();
+            assert_eq!(found, ["function Greet", "method Greeter.Greet"]);
+        }
+        other => panic!("{name}: {other:?}"),
+    }
+}
+
 #[then(expr = "each candidate of {string}, given back as the name, gives that symbol")]
 fn candidates_given_back(world: &mut IndexWorld, name: String) {
     let index = world.index();

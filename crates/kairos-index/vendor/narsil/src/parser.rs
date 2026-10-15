@@ -150,7 +150,14 @@ impl LanguageParser {
                 symbol_query: r#"
                     (function_declaration name: (identifier) @function.name) @function.def
                     (method_declaration name: (field_identifier) @method.name) @method.def
-                    (type_declaration (type_spec name: (type_identifier) @type.name)) @type.def
+                    ; KAIROS PATCH (KAIROS-T-0468): each type spec is its own definition, a
+                    ; type alias too; const and var specs at the top level are symbols.
+                    ; kairos-index gives a struct or an interface its kind.
+                    (type_spec name: (type_identifier) @type.name) @type.def
+                    (type_alias name: (type_identifier) @type.name) @type.def
+                    (source_file (const_declaration (const_spec name: (identifier) @const.name) @const.def))
+                    (source_file (var_declaration (var_spec name: (identifier) @var.name) @var.def))
+                    (source_file (var_declaration (var_spec_list (var_spec name: (identifier) @var.name) @var.def)))
                 "#,
             },
         ];
