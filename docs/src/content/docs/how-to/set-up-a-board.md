@@ -133,6 +133,17 @@ Your lane is first, then the lanes of the other people by name, then
 off **Group by repository** (`?by_repo=1`), and the reverse. You cannot change the owner when you move a card
 to a different lane. You can move a card to a different column in its lane.
 
+## Collapse a lane
+
+To collapse a lane, click the arrow at the left of its name. The lane becomes
+one row: its name and the number of cards in each column. Click the arrow again
+to expand the lane. **Collapse all** and **Expand all** work on each lane on
+the board.
+
+This browser keeps the collapsed lanes for each board and each grouping. Other
+people and other browsers do not see them. When the browser does not let a page
+keep data, the lanes collapse until you leave the page.
+
 ## Set a WIP limit on a column
 
 A WIP limit is the most live items that a column should hold. For example, set 1
