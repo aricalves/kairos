@@ -166,12 +166,13 @@ work. REST: `GET /api/me/work`.
   Active or Blocked under an initiative that you own, claimed by anyone or by
   nobody. The tasks that one of these tasks blocks.
 
-Each item has a state: Todo, Active or Blocked. An item is Blocked when it has
-an open blocker or is in a column named Blocked. An open blocker is an item
-with a `blocks` edge to the item that is not in a done column. A strategy or
-an initiative in Active or Monitoring is Active. Each line gives the board,
-the column, the claimant or the owner, and why the item is in your work. The
-tool does not show an item in a done column.
+Each item has a state: Todo, Active or Blocked. An item with an open blocker
+has the state Blocked. An item in a column named Blocked has it too. An open
+blocker is an item with a `blocks` edge to the item that is not in a done
+column. A strategy or an initiative in Active or Monitoring is Active.
+
+Each line gives the board, the column, the claimant or the owner, and why the
+item is in your work. The tool does not show an item in a done column.
 
 ```text
 # Your work

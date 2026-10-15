@@ -539,12 +539,16 @@ archived: restore is per item, not a cascade.
 
 ### `kairos me`
 
-Your work, in two lanes: the initiatives that you own, and your tasks. Your
-tasks are the tasks that you or your agent keys claim, the tasks in Todo,
-Active or Blocked under an initiative that you own, and the tasks that one of
-these blocks. Each lane shows the items in three groups: Todo, Active and
-Blocked. An item is Blocked when it has an open blocker or is in a column
-named Blocked. The command does not show an item in a done column.
+Your work has two lanes: the initiatives that you own, and your tasks. Your
+tasks are:
+
+- the tasks that you or your agent keys claim;
+- the tasks in Todo, Active or Blocked under an initiative that you own;
+- the tasks that one of these tasks blocks.
+
+Each lane shows the items in three groups: Todo, Active and Blocked. An item
+with an open blocker goes in Blocked. An item in a column named Blocked goes
+there too. The command does not show an item in a done column.
 
 ```
 kairos me [--json]

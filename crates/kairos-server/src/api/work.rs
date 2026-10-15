@@ -83,12 +83,15 @@ pub(crate) fn work_for(
     })
 }
 
-/// The work of the caller (COLLIERY-I-0624). Initiatives: the strategies
-/// and the initiatives that the caller owns. Tasks: the tasks that the
-/// caller or an agent key of the caller has the claim on, the tasks in
-/// Todo, Active or Blocked under an initiative that the caller owns, and
-/// the tasks that one of these blocks. Each item has a state (`todo`,
-/// `active`, `blocked`) and its open blockers. No item is done.
+/// The work of the caller, in two lanes.
+///
+/// - Initiatives: the strategies and the initiatives that the caller owns.
+/// - Tasks: the claims of the caller and of the agent keys of the caller.
+///   The Todo, Active and Blocked tasks under an initiative of the caller.
+///   The tasks that one of these tasks blocks.
+///
+/// Each item has a state (`todo`, `active`, `blocked`) and its open
+/// blockers. The answer has no item in a done column.
 #[utoipa::path(
     get,
     path = "/api/me/work",
