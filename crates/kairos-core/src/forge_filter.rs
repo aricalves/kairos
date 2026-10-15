@@ -129,7 +129,7 @@ pub enum FilterError {
         len: usize,
     },
     #[error(
-        "The pattern {name} is not a valid regular expression: {reason}",
+        "The pattern {name} is not a valid regular expression ({reason}).",
         name = name(*field, *part)
     )]
     Invalid {

@@ -219,7 +219,7 @@ One repository in full. The output has these parts:
 - the documents and the ADRs that impact the repository
 - the in-flight branches and pull requests, each with its work item
 - `## Not linked to an item`: the in-flight branches and pull requests that
-  the forge filter admits and that no item is linked to
+  the forge filter admits, with no item that links to them
 
 The delivery board is the board of the owner. A task that links to the
 repository can be on the board of any team. The output has no list of the
@@ -320,8 +320,8 @@ for the current owner team.
 
 The call must have one or more of `description`, `default_branch`,
 `default_branch_source`, `repo_url`, `code_index_build`, `slug`, `team` and
-`forge_filters`. An invalid or too long pattern is refused with `VALIDATION`,
-and the error names it (`forge_filters.pr_author.exclude`).
+`forge_filters`. The tool refuses an invalid or too long pattern with
+`VALIDATION`. The error names it (`forge_filters.pr_author.exclude`).
 Each checkout keeps the slug in `.claude/kairos.local.md`, and a new slug
 breaks that reference: run `/kairos:bootstrap` in the checkout again.
 

@@ -815,7 +815,7 @@ fn RepositoryRow(
                         }).collect_view()}
                         <Group gap="sm">
                             <Button size="xs" on_click=Callback::new(on_save_filters)>
-                                "Save forge filters"
+                                "Update forge filters"
                             </Button>
                         </Group>
                         <Text dimmed=true size="xs">{FILTER_HINT}</Text>

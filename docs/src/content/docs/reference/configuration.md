@@ -778,7 +778,7 @@ tried again. See [Turn on GitHub write-back](../../how-to/turn-on-github-write-b
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
-| `KAIROS_GITHUB_API_URL` | URL | `https://api.github.com` | The REST API of GitHub. For GitHub Enterprise Server, use `https://<host>/api/v3`. |
+| `KAIROS_GITHUB_API_URL` | URL | `https://api.github.com` | The REST API of GitHub, for the write-back and for the import of open issues. For GitHub Enterprise Server, use `https://<host>/api/v3`. The import of a GitLab repository uses the host of the URL of the repository. |
 
 Kairos seals the write token with `KAIROS_SECRETS_KEY`, as it seals the read
 token.

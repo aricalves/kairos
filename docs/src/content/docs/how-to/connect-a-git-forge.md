@@ -2,9 +2,15 @@
 title: "Connect a git forge"
 ---
 
-Connect a GitHub or GitLab repository so that a branch or pull request naming a
-short code shows up on the work item, on the repository, and in the owning
-team's **In flight** panel.
+Connect a GitHub or GitLab repository. Then Kairos does these things:
+
+- It records each branch and pull request that the forge filter of the
+  repository admits. The repository and the **In flight** panel of the owner
+  team show them, with or without a short code.
+- It links a branch or a pull request that names a short code to that work
+  item.
+- It makes one support task from each opened issue that the filter admits
+  (KAIROS-A-0028).
 
 **Before you start:**
 
@@ -63,7 +69,7 @@ with forge `other` can own tasks but cannot be connected.
 | Payload URL | the returned `webhook_url` |
 | Content type | `application/json` |
 | Secret | the returned `webhook_secret` |
-| Events | **Pull requests** and **Branch or tag creation** |
+| Events | **Pull requests**, **Branch or tag creation**, **Branch or tag deletion** and **Issues** |
 
 **GitLab** — *Settings → Webhooks → Add new webhook*:
 
@@ -71,9 +77,56 @@ with forge `other` can own tasks but cannot be connected.
 |---|---|
 | URL | the returned `webhook_url` |
 | Secret token | the returned `webhook_secret` |
-| Triggers | **Merge request events** and **Push events** |
+| Triggers | **Merge request events**, **Push events** and **Issues events** |
 
-## 3. Use it
+Do not select the issues events if you do not want tasks from issues. Kairos
+reads no other event, and it answers each other event with `200`.
+
+## 3. Set the forge filters
+
+The forge filters decide which branches, pull requests and issues Kairos
+records. An organization admin sets them on each repository. Each field has
+one include pattern and one exclude pattern:
+
+| Field | Applies to |
+|---|---|
+| `branch_name` | a branch: its name |
+| `pr_head_branch` | a pull request: its head branch |
+| `pr_title` | a pull request: its title |
+| `pr_author` | a pull request: the login of its author |
+| `issue_title` | an issue: its title |
+| `issue_author` | an issue: the login of its author |
+
+Kairos admits an event when each field matches its include pattern. The
+field must also not match its exclude pattern. The include pattern is `.*`
+by default. The exclude pattern is empty by default, and an empty exclude
+pattern excludes nothing.
+
+A pattern is a Rust regular expression of 512 bytes or fewer. It can match
+any part of the value. Use `^` and `$` to match all of the value. Kairos
+refuses a pattern that is not correct or is too long. The error names the
+field (for example `forge_filters.pr_author.exclude`).
+
+Example: do not record the pull requests and the issues of Dependabot.
+
+```sh
+kairos repos update payments-api \
+  --exclude 'pr_author=^dependabot\[bot\]$' \
+  --exclude 'issue_author=^dependabot\[bot\]$'
+```
+
+Example: record only the branches that start with `feature/` or `fix/`.
+
+```sh
+kairos repos update payments-api --include 'branch_name=^(feature|fix)/'
+```
+
+You can also set the filters on the page *Admin → Repositories*: push Edit,
+then *Update forge filters*. The MCP tool `update_repository` sets them with
+the argument `forge_filters`. `kairos repos show payments-api` shows the
+filters.
+
+## 4. Use it
 
 Name the short code in the branch — the convention worth adopting team-wide —
 or in the PR title or description. All three of these link:
@@ -87,6 +140,54 @@ Fix login (PLATFORM-T-0001)
 The link appears when the branch is pushed or the PR is opened, and merging
 updates it live. Activity on a repository rolls up to its owning team's In
 flight panel even for work items that carry no team.
+
+Kairos also records a branch or a pull request with no short code. The In
+flight panel of the team and the repository show it under **Not linked to an
+item**. Kairos closes a deleted branch and removes it from the list.
+
+## 5. Take issues
+
+When the webhook has the issues events, each opened issue that the filter
+admits becomes one task:
+
+- the task type and the lane are `support`;
+- the task is in the entry column of the delivery board of the owner team of
+  the repository;
+- the system actor **Forge** creates it;
+- the task links to the issue: its URL, its number and the login of its
+  author.
+
+The board triages the task as it triages each request. A person decides, or
+an agent decides when the board lets agents decide. Kairos makes one task for one issue. A
+second delivery of the same event makes no second task.
+
+After that, Kairos does not sync the issue. A close, a reopen, an edit, a
+comment or a label on the forge does not change the task. Kairos writes
+nothing to the issue. Kairos does not take a GitLab confidential issue.
+
+### Import the open issues
+
+Kairos takes only the issues that people open after you add the issues
+events. To take the older open issues, import them one time:
+
+```sh
+kairos repos import-issues payments-api
+```
+
+Or push *Import open issues* on the page *Admin → Repositories*. An
+organization admin does this. The import uses the read token of the
+repository (see [Read a private repository](../read-a-private-repository/)).
+The token must have these permissions:
+
+- GitHub: **Issues: read** on the repository.
+- GitLab: the scope **read_api**.
+
+The import sends each open issue through the same path as an opened issue.
+The filter decides, then Kairos makes one task for each issue. The result gives the count of
+issues that it imported, that it skipped (taken before) and that the filter
+excludes. When you run the import again, it makes no new task for an issue
+that it took. When the forge rate limit stops the import, run it again
+later.
 
 ## Rotate the secret
 
@@ -112,11 +213,17 @@ webhook in the forge too, or it will keep delivering to a dead endpoint.
 ## Limits to expect
 
 - **A missing link is not evidence of a broken webhook.** Deliveries naming
-  short codes that do not exist here are accepted and ignored. Check the forge's
-  delivery log before you go looking at Kairos.
-- **Nothing is written back to the forge**, and **PR state never moves cards** —
-  so do not wire a column to a merge. Move cards from Kairos. (Why:
+  short codes that do not exist here are accepted and ignored. Kairos also
+  accepts and ignores an event that the forge filter excludes. Check the forge's
+  delivery log and the filters before you go looking at Kairos.
+- **PR state never moves cards** — so do not wire a column to a merge. Move
+  cards from Kairos. (Why:
   [Flight levels](../../explanation/flight-levels/#why-the-boards-are-configurable).)
+- **Kairos writes to a pull request only with a write token.** See
+  [Turn on GitHub write-back](../turn-on-github-write-back/). Kairos never
+  writes to an issue.
+- **An issue closed on the forge stays open in Kairos.** Close the task in
+  Kairos.
 - **Editing a short code out of a PR removes that link.** Re-add the code to get
   it back.
 - **Replays are safe.** A redelivered or out-of-order event cannot regress
@@ -129,4 +236,5 @@ webhook in the forge too, or it will keep delivering to a dead endpoint.
   their responses
 - [Events](../../reference/events/)
 - [Repositories as execution scope](../../explanation/repositories-as-execution-scope/)
+- [Issues from a forge](../../explanation/issues-from-a-forge/)
 - [Configuration](../../reference/configuration/#forge-webhooks)

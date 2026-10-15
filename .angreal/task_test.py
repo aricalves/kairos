@@ -737,6 +737,10 @@ def e2e(down=False):
             # the GUI leg too, and signs them with the secret of the target,
             # sealed with this key: the same key as the GUI server.
             "KAIROS_SECRETS_KEY": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+            # COLLIERY-I-0623 (KAIROS-T-0484): step 11 connects a repository
+            # and sends signed forge deliveries to this server.
+            "KAIROS_WEBHOOK_SIGNING_KEY": "e2e-webhook-signing-key",
+            "KAIROS_PUBLIC_URL": E2E_BASE_URL,
         })
         server = subprocess.Popen(
             [str(SERVER_BIN), "serve"],

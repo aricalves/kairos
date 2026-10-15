@@ -1014,7 +1014,7 @@ The webhook wiring of one repository (KAIROS-T-0106 re-key: repo identity and ow
 
 ## ForgeFilterRule
 
-The two patterns of one field of the forge filter (KAIROS-T-0479). A pattern is a Rust regular expression, 512 bytes at most, found anywhere in the value (anchor with `^` and `$`). An event is admitted when the value matches `include` and does not match `exclude`.
+The two patterns of one field of the forge filter (KAIROS-T-0479). A pattern is a Rust regular expression of 512 bytes or fewer. It can match any part of the value: use `^` and `$` to match all of it. Kairos admits an event when the value matches `include` and does not match `exclude`.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -1025,7 +1025,7 @@ The server refuses a body with a field that is not in this table ([Errors](../..
 
 ## ForgeFilters
 
-The forge filters of a repository, one rule per field (KAIROS-T-0479). A branch is read on `branch_name`; a pull request on `pr_head_branch`, `pr_title` and `pr_author`; an issue on `issue_title` and `issue_author`.
+The forge filters of a repository, one rule per field (KAIROS-T-0479). Kairos reads `branch_name` for a branch; `pr_head_branch`, `pr_title` and `pr_author` for a pull request; `issue_title` and `issue_author` for an issue.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -1049,12 +1049,12 @@ One branch or pull request of a repository, as the forge reported it (KAIROS-T-0
 | `forge` | `string` | yes | `github|gitlab`. |
 | `forge_updated_at` | `string` | yes | RFC 3339. |
 | `head_branch` | `string` | yes | The head branch of a pull request, or the branch itself. |
-| `item_short_codes` | array of `string` | yes | The short codes of the live items linked to it. |
+| `item_short_codes` | array of `string` | yes | The short codes of the live items that link to it. |
 | `kind` | `string` | yes | `branch|pull_request`. |
-| `linked` | `boolean` | yes | False when no item is linked to it: no live short code in its branch name, title or body. |
+| `linked` | `boolean` | yes | False when no item links to it: its branch name, title and body have no live short code. |
 | `repo_full_name` | `string` | yes | `owner/repo`. |
 | `repository` | `string` | yes | The slug of the repository in Kairos. |
-| `state` | `string` | yes | `open|merged|closed|draft`. A deleted branch is `closed`. |
+| `state` | `string` | yes | `open|merged|closed|draft`. Kairos closes a deleted branch. |
 | `title` | `string` | yes |  |
 | `url` | `string` | yes | Browser URL on the forge. |
 
@@ -1192,8 +1192,8 @@ The answer of `POST /api/repositories/{slug}/import-issues` (KAIROS-T-0483): wha
 | `imported` | `integer` | yes | Issues that became a task. |
 | `items` | array of `string` | yes | The short codes of the new tasks. |
 | `message` | `string` | yes | A sentence for a person. |
-| `not_taken` | `integer` | yes | Issues that no task could be made for; `message` says why. |
-| `skipped` | `integer` | yes | Issues that were taken before (by a webhook or an earlier import). |
+| `not_taken` | `integer` | yes | Issues that got no task; `message` says why. |
+| `skipped` | `integer` | yes | Issues that a webhook or an earlier import took before. |
 
 ## ItemImpactsResponse
 
@@ -1216,7 +1216,7 @@ One branch or pull/merge request linked to a work item.
 | `forge_updated_at` | `string` | yes | The forge's own last-update time, RFC 3339. |
 | `id` | `string` | yes | Link id (UUID). |
 | `item_id` | `string` | yes | The linked work item (UUID). |
-| `kind` | `string` | yes | `branch|pull_request|issue` (an issue: the issue that the task was made from, KAIROS-T-0482). |
+| `kind` | `string` | yes | `branch|pull_request|issue`. `issue`: the issue that Kairos made the task from (KAIROS-T-0482). |
 | `repo_full_name` | `string` | yes | `owner/repo` (from the owning connection). |
 | `state` | `string` | yes | `open|merged|closed|draft`. |
 | `title` | `string` | yes |  |

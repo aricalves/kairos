@@ -345,8 +345,8 @@ pub struct UpdateRepositoryRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub site_enabled: Option<bool>,
     /// The forge filters (KAIROS-T-0479). Org admin only. Send only the
-    /// fields and the patterns to change; the others stay. An invalid or
-    /// too long pattern is refused, and the error names it
+    /// fields and the patterns to change; the others stay. The server
+    /// refuses an invalid or too long pattern, and the error names it
     /// (`forge_filters.<field>.<include|exclude>`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forge_filters: Option<ForgeFilters>,
@@ -359,11 +359,11 @@ pub struct UpdateRepositoryRequest {
 pub struct IssueImportResult {
     /// Issues that became a task.
     pub imported: usize,
-    /// Issues that were taken before (by a webhook or an earlier import).
+    /// Issues that a webhook or an earlier import took before.
     pub skipped: usize,
     /// Issues that the forge filter does not admit.
     pub filtered: usize,
-    /// Issues that no task could be made for; `message` says why.
+    /// Issues that got no task; `message` says why.
     pub not_taken: usize,
     /// The short codes of the new tasks.
     pub items: Vec<String>,
@@ -375,9 +375,9 @@ pub struct IssueImportResult {
 }
 
 /// The two patterns of one field of the forge filter (KAIROS-T-0479). A
-/// pattern is a Rust regular expression, 512 bytes at most, found anywhere
-/// in the value (anchor with `^` and `$`). An event is admitted when the
-/// value matches `include` and does not match `exclude`.
+/// pattern is a Rust regular expression of 512 bytes or fewer. It can match
+/// any part of the value: use `^` and `$` to match all of it. Kairos admits
+/// an event when the value matches `include` and does not match `exclude`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ForgeFilterRule {
@@ -390,9 +390,9 @@ pub struct ForgeFilterRule {
 }
 
 /// The forge filters of a repository, one rule per field (KAIROS-T-0479).
-/// A branch is read on `branch_name`; a pull request on `pr_head_branch`,
-/// `pr_title` and `pr_author`; an issue on `issue_title` and
-/// `issue_author`.
+/// Kairos reads `branch_name` for a branch; `pr_head_branch`, `pr_title`
+/// and `pr_author` for a pull request; `issue_title` and `issue_author` for
+/// an issue.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ForgeFilters {

@@ -74,14 +74,17 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-/// Import the open issues of a repository once (KAIROS-T-0483, org admin).
+/// Import the open issues of a repository one time (KAIROS-T-0483,
+/// organization admin).
 ///
-/// Each open issue goes through the path of an opened-issue event: the
-/// forge filter, then one support task per issue id on the delivery board
-/// of the team. An issue that a webhook or an earlier import took is
-/// skipped, so a second run makes nothing. The repository needs a live
-/// webhook connection (the issue link hangs off it) and a read token with
-/// Issues: read (GitHub) or `read_api` (GitLab).
+/// Each open issue goes through the path of an opened-issue event. The
+/// forge filter decides. Then Kairos makes one support task per issue id
+/// on the delivery board of the team. The import skips an issue that a
+/// webhook or an earlier import took. So a second run makes nothing.
+///
+/// The repository needs a live webhook connection: the issue link uses it.
+/// It also needs a read token with Issues: read (GitHub) or `read_api`
+/// (GitLab).
 #[utoipa::path(
     post,
     path = "/api/repositories/{slug}/import-issues",

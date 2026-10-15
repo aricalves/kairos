@@ -296,9 +296,9 @@ pub(crate) async fn list_team_links(
     Ok(Json(rows))
 }
 
-/// The in-flight branches and pull requests of the repositories that the
-/// team owns, that no item is linked to (KAIROS-T-0480): the other half of
-/// the rollup of `/api/teams/{id}/links`. Open tenant-wide.
+/// The in-flight branches and pull requests with no linked item, in the
+/// repositories of the team (KAIROS-T-0480). This is the other half of the
+/// rollup of `/api/teams/{id}/links`. Open tenant-wide.
 #[utoipa::path(
     get,
     path = "/api/teams/{id}/unlinked-refs",

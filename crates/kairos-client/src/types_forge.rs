@@ -82,7 +82,7 @@ pub struct ForgeRef {
     pub title: String,
     /// Browser URL on the forge.
     pub url: String,
-    /// `open|merged|closed|draft`. A deleted branch is `closed`.
+    /// `open|merged|closed|draft`. Kairos closes a deleted branch.
     pub state: String,
     /// The forge login of the author.
     pub author: String,
@@ -94,10 +94,10 @@ pub struct ForgeRef {
     pub repo_full_name: String,
     /// The slug of the repository in Kairos.
     pub repository: String,
-    /// False when no item is linked to it: no live short code in its
-    /// branch name, title or body.
+    /// False when no item links to it: its branch name, title and body
+    /// have no live short code.
     pub linked: bool,
-    /// The short codes of the live items linked to it.
+    /// The short codes of the live items that link to it.
     pub item_short_codes: Vec<String>,
     /// RFC 3339.
     pub forge_updated_at: String,
@@ -110,7 +110,7 @@ pub struct ItemLink {
     pub id: String,
     /// The linked work item (UUID).
     pub item_id: String,
-    /// `branch|pull_request|issue` (an issue: the issue that the task was made from, KAIROS-T-0482).
+    /// `branch|pull_request|issue`. `issue`: the issue that Kairos made the task from (KAIROS-T-0482).
     pub kind: String,
     /// PR/MR number, or the branch ref.
     pub external_id: String,

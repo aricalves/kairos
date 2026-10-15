@@ -991,9 +991,9 @@ Remove a member from a team. An organization admin, or
 
 ### `GET /api/teams/{id}/unlinked-refs`
 
-The in-flight branches and pull requests of the repositories that the
-team owns, that no item is linked to (KAIROS-T-0480): the other half of
-the rollup of `/api/teams/{id}/links`. Open tenant-wide.
+The in-flight branches and pull requests with no linked item, in the
+repositories of the team (KAIROS-T-0480). This is the other half of the
+rollup of `/api/teams/{id}/links`. Open tenant-wide.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
