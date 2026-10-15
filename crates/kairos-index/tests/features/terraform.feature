@@ -63,3 +63,25 @@ Feature: Terraform in the code index
       """
       arn (infra/modules/bucket/outputs.tf:1)
       """
+
+  # KAIROS-T-0472: the module map shows what each Terraform folder declares
+  # and calls, with the field set of terraform-config-inspect.
+  Scenario: The module map shows the Terraform view of a folder
+    Given an index of the polyglot fixture with no summaries
+    Then the Terraform lines of the module "infra" are:
+      """
+      resources: aws_sns_topic (events)
+      data: aws_caller_identity (current)
+      module calls: store = ./modules/bucket, network = terraform-aws-modules/vpc/aws 5.0.0
+      variables: region
+      outputs: bucket_arn
+      calls: module.store > infra/modules/bucket, module.network > terraform-aws-modules/vpc/aws (remote)
+      """
+    And the Terraform lines of the module "infra/modules/bucket" are:
+      """
+      resources: aws_s3_bucket (this [count]), aws_sns_topic (events [for_each])
+      variables: name, owner
+      outputs: arn
+      called by: infra (module.store)
+      """
+    And the module "src" has no Terraform view

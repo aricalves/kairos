@@ -67,6 +67,7 @@ pub use llama::{LlamaModelFile, LlamaSummarizer, MAX_NEW_TOKENS};
 pub use query::{
     CallEdge, Callees, Counts, Coverage, External, FileInfo, Lookup, ModuleInfo, NoSymbolCallee,
     PathStep, Reference, References, SearchHit, SearchMode, SearchResult, SymbolInfo, SymbolSource,
+    TerraformFolder, TerraformModuleCall,
 };
 pub use rules::{Decision, Origin, RuleSet};
 pub use rust_analyzer::BuildOptions;

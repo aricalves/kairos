@@ -1032,6 +1032,31 @@ block that it names:
 - `count.index`, `each.key`, `self`, `path` and `terraform` are not
   references to a block.
 
+The tool `module_map` shows the Terraform blocks of each folder with
+Terraform code, before its files:
+
+```text
+## infra/modules/bucket
+resources: aws_s3_bucket (this [count]), aws_sns_topic (events [for_each])
+variables: name, owner
+outputs: arn
+called by: infra (module.store)
+```
+
+- `resources:` and `data:` give the managed resources and the data
+  resources, by type.
+- `module calls:` gives each `module` block with its `source` and its
+  `version`.
+- `[count]` and `[for_each]` mark a block that has `count` or `for_each`.
+  The tool does not calculate the count of the instances.
+- `called by:` gives the module calls of the checkout that call the folder.
+- A root folder has no `called by:` line. It has a `calls:` line with each
+  chain of module calls from it, for example
+  `module.store > infra/modules/bucket`. A module from a registry, from git
+  or from a URL has `(remote)`.
+
+A folder with no Terraform code shows its summary and its files only.
+
 ## Helm chart values
 
 `deploy/helm/kairos/values.yaml`. Most values under `config` become entries in a

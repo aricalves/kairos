@@ -466,7 +466,34 @@ fn terraform_symbols(
             }
             _ => continue,
         };
-        let symbol = Symbol { name, ..s.clone() };
+        // The facts of the module map (KAIROS-T-0472): the source and the
+        // version of a module call, and the `count` or `for_each` marker.
+        let mut facts = Vec::new();
+        if kind == "module" {
+            for key in ["source", "version"] {
+                if let Some(value) = terraform_attribute(block, content, key) {
+                    facts.push(format!("{key} = \"{value}\""));
+                }
+            }
+        }
+        if matches!(kind, "resource" | "data" | "module") {
+            for key in ["count", "for_each"] {
+                if terraform_has_attribute(block, content, key) {
+                    facts.push(key.to_string());
+                }
+            }
+        }
+        let signature = match (&s.signature, facts.is_empty()) {
+            (Some(first), false) if first.trim_end().ends_with('{') => {
+                Some(format!("{} {} }}", first.trim_end(), facts.join("; ")))
+            }
+            _ => s.signature.clone(),
+        };
+        let symbol = Symbol {
+            name,
+            signature,
+            ..s.clone()
+        };
         own.insert(
             (symbol.start_byte, symbol.end_byte, symbol.name.clone()),
             (kind, container),
@@ -506,6 +533,18 @@ pub(crate) fn terraform_attribute(block: Node<'_>, content: &str, key: &str) -> 
     let text = content[value.start_byte()..value.end_byte()].trim();
     (text.starts_with('"') && text.ends_with('"') && text.len() >= 2 && !text.contains("${"))
         .then(|| text[1..text.len() - 1].to_string())
+}
+
+/// Whether a Terraform block has the attribute `key`.
+fn terraform_has_attribute(block: Node<'_>, content: &str, key: &str) -> bool {
+    terraform_body(block).is_some_and(|body| {
+        let mut cursor = body.walk();
+        body.named_children(&mut cursor).any(|n| {
+            n.kind() == "attribute"
+                && n.named_child(0)
+                    .is_some_and(|k| &content[k.start_byte()..k.end_byte()] == key)
+        })
+    })
 }
 
 /// The body of a Terraform block, if it has one.
@@ -828,7 +867,12 @@ mod tests {
                     (20, 22),
                     "data \"aws_iam_policy\" \"p\" {"
                 ),
-                ("module.net", "module", (24, 26), "module \"net\" {"),
+                (
+                    "module.net",
+                    "module",
+                    (24, 26),
+                    "module \"net\" { source = \"./net\" }"
+                ),
                 ("id", "output", (28, 30), "output \"id\" {"),
                 ("aws", "provider", (32, 34), "provider \"aws\" {"),
             ]

@@ -118,7 +118,7 @@ fn folder_of(path: &str) -> &str {
 /// The folder of a local Terraform module source, from the folder of the
 /// module call: `./modules/bucket` from `infra` is `infra/modules/bucket`.
 /// `None` for a remote source (a registry, git or a URL).
-fn terraform_source_folder(here: &str, source: &str) -> Option<String> {
+pub(crate) fn terraform_source_folder(here: &str, source: &str) -> Option<String> {
     if !(source.starts_with("./") || source.starts_with("../")) {
         return None;
     }

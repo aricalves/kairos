@@ -3888,6 +3888,32 @@ fn the_callees_have_the_external(
     );
 }
 
+/// The module map entry of the folder `path`.
+fn map_module(world: &IndexWorld, path: &str) -> kairos_index::ModuleInfo {
+    world
+        .index()
+        .module_map(None)
+        .expect("read the module map")
+        .into_iter()
+        .find(|m| m.path == path)
+        .unwrap_or_else(|| panic!("{path} is not in the module map"))
+}
+
+#[then(expr = "the Terraform lines of the module {string} are:")]
+fn terraform_lines(world: &mut IndexWorld, path: String, step: &cucumber::gherkin::Step) {
+    let module = map_module(world, &path);
+    let terraform = module
+        .terraform
+        .unwrap_or_else(|| panic!("{path} has no Terraform view"));
+    assert_eq!(terraform.lines(), docstring_lines(step));
+}
+
+#[then(expr = "the module {string} has no Terraform view")]
+fn no_terraform_view(world: &mut IndexWorld, path: String) {
+    let module = map_module(world, &path);
+    assert_eq!(module.terraform, None, "{module:?}");
+}
+
 #[then("the results have test functions and functions that are not test code")]
 fn tests_and_others(world: &mut IndexWorld) {
     let hits = &world.search.as_ref().expect("no search ran").hits;
