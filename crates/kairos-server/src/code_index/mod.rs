@@ -187,6 +187,27 @@ pub struct CodeIndexService {
     min_rebuild_secs: std::sync::atomic::AtomicU64,
     /// The dependency cache of the SCIP runners (KAIROS-T-0474).
     deps: DependencySettings,
+    /// The last disk use of the tools and the caches, and when it was read
+    /// (KAIROS-T-0478).
+    disk: Mutex<Option<(Instant, kairos_client::types_code_index::CodeIndexDiskUse)>>,
+}
+
+/// How long a reading of the disk use is kept: a walk of the tools folder
+/// reads each file of the toolchains.
+const DISK_USE_TTL: Duration = Duration::from_secs(60);
+
+/// The language that uses a tool folder of `tools/`.
+fn tool_language(folder: &str) -> Option<&'static str> {
+    let name = folder.rsplit_once('-').map_or(folder, |(n, _)| n);
+    match name {
+        "go" | "scip-go" => Some("go"),
+        "scip-typescript" => Some("typescript"),
+        "node" => Some("typescript, python"),
+        "scip-python" | "python" => Some("python"),
+        "rust" | "rust-src" => Some("rust"),
+        _ if folder.starts_with("rust-analyzer") => Some("rust"),
+        _ => None,
+    }
 }
 
 /// The settings of the dependency cache of the SCIP runners of Go,
@@ -241,7 +262,74 @@ impl CodeIndexService {
             instance: uuid::Uuid::new_v4(),
             min_rebuild_secs: std::sync::atomic::AtomicU64::new(0),
             deps: DependencySettings::default(),
+            disk: Mutex::new(None),
         }
+    }
+
+    /// The disk use of the tools in `tools/` and of the dependency caches
+    /// in `deps/` (KAIROS-T-0478), read again after [`DISK_USE_TTL`].
+    pub fn disk_use(&self) -> kairos_client::types_code_index::CodeIndexDiskUse {
+        use kairos_client::types_code_index::{
+            CodeIndexCacheUse, CodeIndexDiskUse, CodeIndexToolUse,
+        };
+        let mut kept = self.disk.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, disk)) = kept.as_ref()
+            && at.elapsed() < DISK_USE_TTL
+        {
+            return disk.clone();
+        }
+        let tools_dir = self.dir.join(TOOLS_DIR);
+        let mut tools: Vec<CodeIndexToolUse> = kairos_index::languages::tool_usage(&tools_dir)
+            .into_iter()
+            .map(|(name, bytes)| CodeIndexToolUse {
+                language: tool_language(&name).map(str::to_string),
+                name,
+                bytes,
+            })
+            .collect();
+        // The rust-analyzer binary is a file, not a folder.
+        for tool in &mut tools {
+            if tool.name == "other" {
+                let ra = tools_dir.join("rust-analyzer");
+                let ra_bytes = std::fs::metadata(&ra).map(|m| m.len()).unwrap_or(0);
+                if ra_bytes > 0 && tool.bytes >= ra_bytes {
+                    tool.bytes -= ra_bytes;
+                }
+            }
+        }
+        if let Ok(meta) = std::fs::metadata(tools_dir.join("rust-analyzer")) {
+            tools.push(CodeIndexToolUse {
+                name: "rust-analyzer".into(),
+                language: Some("rust".into()),
+                bytes: meta.len(),
+            });
+        }
+        tools.sort_by(|a, b| a.name.cmp(&b.name));
+        let mut caches: std::collections::BTreeMap<String, (u32, u64)> = Default::default();
+        let entries = kairos_index::languages::caches(&self.dir.join(DEPS_DIR));
+        let caches_bytes = entries.iter().map(|e| e.bytes).sum();
+        for e in entries {
+            let language = e.path.rsplit('/').next().unwrap_or_default().to_string();
+            let c = caches.entry(language).or_default();
+            c.0 += 1;
+            c.1 += e.bytes;
+        }
+        let disk = CodeIndexDiskUse {
+            tools,
+            caches: caches
+                .into_iter()
+                .map(|(language, (repositories, bytes))| CodeIndexCacheUse {
+                    language,
+                    repositories,
+                    bytes,
+                })
+                .collect(),
+            caches_bytes,
+            caches_cap_bytes: self.deps.cap_bytes,
+            free_bytes: kairos_index::languages::free_bytes(&self.dir),
+        };
+        *kept = Some((Instant::now(), disk.clone()));
+        disk
     }
 
     /// The settings of the dependency cache (KAIROS-T-0474).
@@ -1305,6 +1393,23 @@ impl CodeIndexService {
 
 /// Store the index of `head` of `repo`, built by the builder.
 /// The counts of a run, from its report (KAIROS-T-0331).
+/// The SCIP warnings of a run as the run row keeps them (KAIROS-T-0478): a
+/// JSON array of `{"language", "reason"}`, or `None` with no warning. Each
+/// warning is in the log too.
+fn warnings_of(report: &UpdateReport) -> Option<String> {
+    let warnings = &report.build.scip_warnings;
+    for w in warnings {
+        tracing::warn!(
+            language = %w.language,
+            reason = %w.reason,
+            "code index build: no SCIP index for the language, its edges are by name"
+        );
+    }
+    (!warnings.is_empty())
+        .then(|| serde_json::to_string(warnings).ok())
+        .flatten()
+}
+
 fn counts_of(report: &UpdateReport) -> runs::Counts {
     let clamp = |n: usize| i32::try_from(n).unwrap_or(i32::MAX);
     runs::Counts {
@@ -1450,7 +1555,7 @@ async fn record_end(
     blocking: &BlockingTenantPool,
     tenant: &str,
     run: Option<uuid::Uuid>,
-    result: Result<(runs::Counts, String), &str>,
+    result: Result<(runs::Counts, String, Option<String>), &str>,
 ) {
     let Some(id) = run else { return };
     let result = result.map_err(str::to_owned);
@@ -1458,7 +1563,10 @@ async fn record_end(
         .run(tenant, move |conn| {
             crate::api::org::run_in_transaction(conn, |conn| {
                 let run = match &result {
-                    Ok((counts, model)) => runs::end_ok(conn, id, Some(*counts), Some(model)),
+                    Ok((counts, model, warnings)) => {
+                        runs::set_scip_warnings(conn, id, warnings.as_deref())
+                            .and_then(|()| runs::end_ok(conn, id, Some(*counts), Some(model)))
+                    }
                     Err(error) => runs::end_failed(conn, id, error),
                 }
                 .map_err(ApiError::internal)?;
@@ -1806,7 +1914,13 @@ pub(crate) async fn build_repository(
         record_end(blocking, tenant, run, Err(&note)).await;
         return done(outcome, note);
     }
-    record_end(blocking, tenant, run, Ok((counts_of(&report), model_name))).await;
+    record_end(
+        blocking,
+        tenant,
+        run,
+        Ok((counts_of(&report), model_name, warnings_of(&report))),
+    )
+    .await;
     remove_database(&db);
     outcome.report = Some(report);
     outcome.elapsed = started.elapsed();
@@ -2080,7 +2194,13 @@ pub(crate) async fn full_build_repository(
         record_end(blocking, tenant, run, Err(&note)).await;
         return done(outcome, note);
     }
-    record_end(blocking, tenant, run, Ok((counts_of(&report), model_name))).await;
+    record_end(
+        blocking,
+        tenant,
+        run,
+        Ok((counts_of(&report), model_name, warnings_of(&report))),
+    )
+    .await;
     remove_database(&db);
     outcome.report = Some(report);
     outcome.elapsed = started.elapsed();

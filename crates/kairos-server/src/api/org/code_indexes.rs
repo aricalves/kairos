@@ -150,6 +150,13 @@ pub(crate) fn build_dto_of(run: Build) -> dto::CodeIndexBuild {
         started_at: run.started_at.to_rfc3339(),
         finished_at: run.finished_at.map(|t| t.to_rfc3339()),
         model: run.model,
+        // A row that is not a valid list gives no warning: the row of a run
+        // is never refused for it.
+        scip_warnings: run
+            .scip_warnings
+            .as_deref()
+            .and_then(|text| serde_json::from_str(text).ok())
+            .unwrap_or_default(),
     }
 }
 
@@ -191,11 +198,22 @@ pub(crate) async fn list_code_index_builds(
             Ok((runs, total, builder))
         })
         .await?;
+    // KAIROS-T-0478: the disk use of the tools and the caches of this
+    // server, for an organization admin, off the async threads (a walk of
+    // the folders, kept a minute).
+    let admin = tenant.role == kairos_db::models::enums::OrgRole::Admin;
+    let disk = match state.code_index.clone().filter(|_| admin) {
+        Some(service) => tokio::task::spawn_blocking(move || service.disk_use())
+            .await
+            .ok(),
+        None => None,
+    };
     Ok(Json(dto::CodeIndexBuildList {
         items: runs.into_iter().map(build_dto_of).collect(),
         total,
         limit,
         builder,
+        disk,
     }))
 }
 

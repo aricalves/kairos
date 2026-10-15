@@ -73,6 +73,10 @@ pub struct Build {
     /// (KAIROS-T-0335): from the pool of the repository, or from the work
     /// file of a run that did not end.
     pub summaries_reused: Option<i32>,
+    /// The SCIP warnings of the run (KAIROS-T-0478): a JSON array of
+    /// `{"language", "reason"}`, one for each language that fell back to
+    /// the edges by name. None for a run with no warning.
+    pub scip_warnings: Option<String>,
 }
 
 #[derive(Insertable)]
@@ -152,6 +156,19 @@ pub fn end_ok(
         ))
         .returning(Build::as_select())
         .get_result(conn)
+}
+
+/// Record the SCIP warnings of a run (KAIROS-T-0478), as a JSON array.
+/// `None` clears them.
+pub fn set_scip_warnings(
+    conn: &mut PgConnection,
+    id: Uuid,
+    warnings: Option<&str>,
+) -> QueryResult<()> {
+    diesel::update(code_index_builds::table.find(id))
+        .set(code_index_builds::scip_warnings.eq(warnings))
+        .execute(conn)
+        .map(|_| ())
 }
 
 /// End a run as `failed`, with the text of the failure.

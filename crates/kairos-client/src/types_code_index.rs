@@ -121,6 +121,61 @@ pub struct CodeIndexBuild {
     /// (KAIROS-T-0341). None for a run that made none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Each language that had no SCIP index in the run, and why
+    /// (KAIROS-T-0478): its edges are by name. Empty when each SCIP indexer
+    /// of the run gave its index.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scip_warnings: Vec<CodeIndexScipWarning>,
+}
+
+/// A language of a run with no SCIP index (KAIROS-T-0478).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CodeIndexScipWarning {
+    /// `rust`, `go`, `typescript` or `python`.
+    pub language: String,
+    /// What failed: a missing tool, a download, a checksum, an install or
+    /// the indexer.
+    pub reason: String,
+}
+
+/// The disk use of the tools and of the dependency caches of the builder
+/// of the server that answers (KAIROS-T-0478).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CodeIndexDiskUse {
+    /// Each tool folder of `KAIROS_CODE_INDEX_DIR/tools/`, and the other
+    /// files there (the archives) as `other`.
+    pub tools: Vec<CodeIndexToolUse>,
+    /// The dependency caches of the repositories, by language.
+    pub caches: Vec<CodeIndexCacheUse>,
+    /// The total of the dependency caches, in bytes.
+    pub caches_bytes: u64,
+    /// The cap of the dependency caches, in bytes
+    /// (`KAIROS_CODE_INDEX_DEPS_CAP_MB`).
+    pub caches_cap_bytes: u64,
+    /// The free space of the disk of `KAIROS_CODE_INDEX_DIR`, in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub free_bytes: Option<u64>,
+}
+
+/// One tool folder and its disk use.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CodeIndexToolUse {
+    /// The folder: `go-1.27.2`, `node-24.22.0`, `rust-1.93.0`, … or `other`.
+    pub name: String,
+    /// The language that uses it: `rust`, `go`, `typescript`, `python`,
+    /// `typescript, python` (Node.js), or none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    pub bytes: u64,
+}
+
+/// The dependency caches of one language and their disk use.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CodeIndexCacheUse {
+    pub language: String,
+    /// The count of the repositories with a cache.
+    pub repositories: u32,
+    pub bytes: u64,
 }
 
 /// Query of `GET /api/repositories/{slug}/code-indexes/builds`.
@@ -148,6 +203,11 @@ pub struct CodeIndexBuildList {
     /// what to do.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub builder: Option<String>,
+    /// The disk use of the tools and the dependency caches of the builder of
+    /// the server that answers (KAIROS-T-0478). Only for an organization
+    /// admin; None when that server has no `KAIROS_CODE_INDEX_DIR`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk: Option<CodeIndexDiskUse>,
 }
 
 // ---- the provider settings of a tenant (KAIROS-T-0339) ---------------------
