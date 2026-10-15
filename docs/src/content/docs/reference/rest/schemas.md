@@ -1202,7 +1202,7 @@ One branch or pull/merge request linked to a work item.
 | `forge_updated_at` | `string` | yes | The forge's own last-update time, RFC 3339. |
 | `id` | `string` | yes | Link id (UUID). |
 | `item_id` | `string` | yes | The linked work item (UUID). |
-| `kind` | `string` | yes | `branch|pull_request`. |
+| `kind` | `string` | yes | `branch|pull_request|issue` (an issue: the issue that the task was made from, KAIROS-T-0482). |
 | `repo_full_name` | `string` | yes | `owner/repo` (from the owning connection). |
 | `state` | `string` | yes | `open|merged|closed|draft`. |
 | `title` | `string` | yes |  |

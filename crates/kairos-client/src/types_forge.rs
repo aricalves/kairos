@@ -110,7 +110,7 @@ pub struct ItemLink {
     pub id: String,
     /// The linked work item (UUID).
     pub item_id: String,
-    /// `branch|pull_request`.
+    /// `branch|pull_request|issue` (an issue: the issue that the task was made from, KAIROS-T-0482).
     pub kind: String,
     /// PR/MR number, or the branch ref.
     pub external_id: String,

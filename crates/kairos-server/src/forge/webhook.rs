@@ -97,6 +97,62 @@ fn core_state(state: CoreState) -> LinkState {
     }
 }
 
+/// KAIROS-T-0482: an opened issue becomes one support task
+/// ([`crate::forge::intake`]). The connection is checked as for a link
+/// event; an unknown one is an authenticity failure.
+async fn ingest_issue(
+    state: &AppState,
+    tenant: String,
+    connection_uuid: Uuid,
+    forge: Forge,
+    org_id: Uuid,
+    issue: kairos_core::forge::ForgeIssue,
+) -> Response {
+    let slug = tenant.clone();
+    let result = state
+        .blocking
+        .run(&tenant, move |conn| {
+            let connection = match forge::load_connection(conn, connection_uuid) {
+                Ok(connection) => connection,
+                Err(ForgeError::ConnectionNotFound(_)) => return Ok(None),
+                Err(e) => return Err(crate::error::ApiError::internal(e)),
+            };
+            if connection.forge != forge {
+                return Ok(None);
+            }
+            let actor = kairos_db::forge_actor::ensure(conn, org_id)
+                .map_err(crate::error::ApiError::internal)?;
+            crate::forge::intake::take_issue(
+                conn,
+                &slug,
+                actor,
+                connection.repository_id,
+                connection.id,
+                &issue,
+                crate::forge::intake::Source::Webhook,
+            )
+            .map(Some)
+        })
+        .await;
+    use crate::forge::intake::Outcome;
+    match result {
+        Ok(Some(Outcome::Created(code))) => (
+            StatusCode::OK,
+            Json(json!({ "status": "issue taken", "links_written": 1, "item": code })),
+        )
+            .into_response(),
+        Ok(Some(Outcome::Duplicate)) => accepted("issue taken already", 0),
+        Ok(Some(Outcome::Filtered)) => accepted("filtered", 0),
+        Ok(Some(Outcome::NotRouted(reason))) => (
+            StatusCode::OK,
+            Json(json!({ "status": "issue not taken", "reason": reason, "links_written": 0 })),
+        )
+            .into_response(),
+        Ok(None) => rejected(),
+        Err(e) => e.into_response(),
+    }
+}
+
 /// What a verified delivery did.
 enum Ingested {
     /// Recorded; this many item links were written or advanced.
@@ -206,9 +262,15 @@ pub(crate) async fn receive(
         Forge::Gitlab => kairos_core::forge::parse_gitlab(&event_type, raw),
         Forge::Other => None,
     };
-    let Some(event) = parsed else {
-        return accepted("event type not consumed", 0);
+    // KAIROS-T-0482: an opened issue. Other issue actions parse to `None`.
+    let issue = match (&parsed, forge) {
+        (None, Forge::Github) => kairos_core::forge::parse_github_issue(&event_type, raw),
+        (None, Forge::Gitlab) => kairos_core::forge::parse_gitlab_issue(&event_type, raw),
+        _ => None,
     };
+    if parsed.is_none() && issue.is_none() {
+        return accepted("event type not consumed", 0);
+    }
 
     // The slug is syntactically valid, but the tenant may not exist —
     // dispatching to a missing schema would 500 and leak the difference.
@@ -235,6 +297,13 @@ pub(crate) async fn receive(
     };
 
     // ---- resolve + write --------------------------------------------------
+    let event = match (parsed, issue) {
+        (Some(event), _) => event,
+        (None, Some(issue)) => {
+            return ingest_issue(&state, tenant, connection_uuid, forge, org_id, issue).await;
+        }
+        (None, None) => return accepted("event type not consumed", 0),
+    };
     let codes = kairos_core::forge::extract_short_codes(&event.match_text);
     let result = state
         .blocking

@@ -1,0 +1,23 @@
+{
+  "action": "reopened",
+  "issue": {
+    "id": 2401557001,
+    "number": 12,
+    "title": "Crash when the config file is empty",
+    "body": "Steps:\n1. Make an empty config file.\n2. Start the app.\n\nIt crashes.",
+    "html_url": "https://github.com/acme/payments-api/issues/12",
+    "state": "open",
+    "user": {
+      "login": "robin"
+    },
+    "created_at": "2026-09-05T09:00:00Z",
+    "updated_at": "2026-09-05T09:00:00Z"
+  },
+  "repository": {
+    "full_name": "acme/payments-api",
+    "html_url": "https://github.com/acme/payments-api"
+  },
+  "sender": {
+    "login": "robin"
+  }
+}

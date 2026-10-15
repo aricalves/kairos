@@ -1818,6 +1818,18 @@ fn RelationshipsPanel(family: Family, #[prop(into)] code: String) -> impl IntoVi
 /// The accent for a forge link's state (KAIROS-T-0100). Red stays
 /// reserved for violated/at-risk — a closed pull request is a normal
 /// outcome, not an error.
+/// The label of a row of the Development panel: `#12 Title` for a pull
+/// request, `Issue #12 Title (robin)` for an issue (KAIROS-T-0482), the
+/// branch name for a branch. Pure, host-tested.
+fn dev_link_label(kind: &str, external_id: &str, title: &str, author: &str) -> String {
+    match kind {
+        "pull_request" => format!("#{external_id} {title}"),
+        "issue" if author.is_empty() => format!("Issue #{external_id} {title}"),
+        "issue" => format!("Issue #{external_id} {title} ({author})"),
+        _ => title.to_string(),
+    }
+}
+
 fn link_state_color(state: &str) -> &'static str {
     match state {
         "open" => token::ICE,
@@ -1862,17 +1874,20 @@ fn DevelopmentPanel(family: Family, #[prop(into)] code: String) -> impl IntoView
                 let rows = links
                     .into_iter()
                     .map(|link| {
-                        let label = if link.kind == "pull_request" {
-                            format!("#{} {}", link.external_id, link.title)
+                        let label = dev_link_label(&link.kind, &link.external_id, &link.title, &link.author);
+                        // KAIROS-T-0482: an issue is not synced after intake,
+                        // so its pill says what it is, not a state.
+                        let pill = if link.kind == "issue" {
+                            "issue".to_string()
                         } else {
-                            link.title.clone()
+                            link.state.clone()
                         };
                         let repo = format!("{} · {}", link.forge, link.repo_full_name);
                         view! {
                             <Group justify="between" wrap=true>
                                 <Group gap="sm" wrap=true>
                                     <Pill color=link_state_color(&link.state)>
-                                        {link.state.clone()}
+                                        {pill}
                                     </Pill>
                                     // Leaves the app: open in a new tab and
                                     // sever the opener reference.
@@ -1886,7 +1901,7 @@ fn DevelopmentPanel(family: Family, #[prop(into)] code: String) -> impl IntoView
                     })
                     .collect_view();
                 view! {
-                    <Panel title="Development" caption="branches and pull requests">
+                    <Panel title="Development" caption="branches, pull requests and issues">
                         <Stack gap="xs">{rows}</Stack>
                     </Panel>
                 }
@@ -1988,6 +2003,27 @@ fn RelationshipGroupView(
 
 #[cfg(test)]
 mod tests {
+    /// KAIROS-T-0482: the Development panel names an issue and its author.
+    #[test]
+    fn development_link_labels() {
+        assert_eq!(
+            super::dev_link_label("pull_request", "7", "Fix", "robin"),
+            "#7 Fix"
+        );
+        assert_eq!(
+            super::dev_link_label("issue", "12", "Crash", "robin"),
+            "Issue #12 Crash (robin)"
+        );
+        assert_eq!(
+            super::dev_link_label("issue", "12", "Crash", ""),
+            "Issue #12 Crash"
+        );
+        assert_eq!(
+            super::dev_link_label("branch", "x", "sam/x", "sam"),
+            "sam/x"
+        );
+    }
+
     use super::*;
 
     /// KAIROS-T-0124 #2: the tab anchors always carry the code — an empty

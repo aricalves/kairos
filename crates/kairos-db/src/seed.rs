@@ -1113,6 +1113,9 @@ pub fn seed_demo(conn: &mut PgConnection, force: bool) -> Result<SeedDemoReport,
                 LinkKind::Branch => {
                     format!("https://{}/{}/tree/{external_id}", repo.0, repo.1)
                 }
+                LinkKind::Issue => {
+                    format!("https://{}/{}/issues/{external_id}", repo.0, repo.1)
+                }
             };
             crate::forge::upsert_link(
                 conn,

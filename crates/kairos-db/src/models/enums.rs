@@ -188,6 +188,8 @@ text_enum! {
     LinkKind {
         Branch => "branch",
         PullRequest => "pull_request",
+        // KAIROS-T-0482: the issue that a task was made from.
+        Issue => "issue",
     }
 }
 
@@ -367,7 +369,7 @@ mod tests {
 
     #[test]
     fn link_kind_round_trip_and_rejection() {
-        assert_text_enum!(LinkKind, ["branch", "pull_request"]);
+        assert_text_enum!(LinkKind, ["branch", "pull_request", "issue"]);
     }
 
     #[test]

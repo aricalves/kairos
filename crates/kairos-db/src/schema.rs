@@ -259,6 +259,19 @@ diesel::table! {
 }
 
 diesel::table! {
+    forge_issue_intake (repository_id, issue_id) {
+        repository_id -> Uuid,
+        issue_id -> Text,
+        number -> Int8,
+        item_id -> Uuid,
+        url -> Text,
+        author -> Text,
+        source -> Text,
+        created_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
     forge_refs (id) {
         id -> Uuid,
         repository_id -> Uuid,
@@ -738,6 +751,7 @@ diesel::joinable!(boards -> teams (team_id));
 diesel::joinable!(documents -> boards (board_id));
 diesel::joinable!(documents -> templates (template_id));
 diesel::joinable!(forge_connections -> repositories (repository_id));
+diesel::joinable!(forge_issue_intake -> repositories (repository_id));
 diesel::joinable!(forge_refs -> repositories (repository_id));
 diesel::joinable!(initiatives -> board_columns (column_id));
 diesel::joinable!(initiatives -> boards (board_id));
@@ -784,6 +798,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     documents,
     edge_proposals,
     forge_connections,
+    forge_issue_intake,
     forge_refs,
     initiatives,
     item_chunks,
