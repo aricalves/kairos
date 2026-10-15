@@ -879,7 +879,7 @@ impl CodeTools {
     }
 
     #[tool(
-        description = "The functions that call a symbol of this checkout. Give the symbol as for the tool `symbol`, with `file` and `line` when more than one symbol has the name. The result has the certain calls only, unless `possible` is true. A possible call is a call by a name that more than one function has: the result marks it. A call marked \"by name until the next SCIP run\" is in changed Rust code. For each use of the symbol, not only the calls, use `references`."
+        description = "The functions that call a symbol of this checkout. Give the symbol as for the tool `symbol`, with `file` and `line` when more than one symbol has the name. The result has the certain calls only, unless `possible` is true. A possible call is a call by a name that more than one function has: the result marks it. A call marked \"by name until the next SCIP run\" is in changed Rust code. For each use of the symbol, not only the calls, use `references`. In Terraform code, a reference (`var.x`, `local.x`, `module.z`, `data.t.n`, `t.n`) is a call from the block that holds it to the block that it names, and an argument of a module call is a call to the variable of the module."
     )]
     async fn callers(
         &self,
@@ -929,7 +929,7 @@ impl CodeTools {
     }
 
     #[tool(
-        description = "The functions of this checkout that a symbol calls, and the names outside the checkout that it calls. Give the symbol as for the tool `symbol`, with `file` and `line` when more than one symbol has the name. The result has the certain calls only, unless `possible` is true. A possible call has one line for each function with that name, and the result marks it."
+        description = "The functions of this checkout that a symbol calls, and the names outside the checkout that it calls. Give the symbol as for the tool `symbol`, with `file` and `line` when more than one symbol has the name. The result has the certain calls only, unless `possible` is true. A possible call has one line for each function with that name, and the result marks it. In Terraform code, a reference (`var.x`, `local.x`, `module.z`, `data.t.n`, `t.n`) is a call from the block that holds it to the block that it names, and an argument of a module call is a call to the variable of the module."
     )]
     async fn callees(
         &self,
@@ -1139,7 +1139,7 @@ impl CodeTools {
     }
 
     #[tool(
-        description = "The map of this checkout: each folder of source and test files, with its summary and its files, each file with its summary. Use it in place of .metis/code-index.md. `under` keeps the folders under one path."
+        description = "The map of this checkout: each folder of source and test files, with its summary and its files, each file with its summary. A folder of Terraform code also lists its managed resources by type, its data resources, its module calls with their sources, its variables and its outputs. `[count]` and `[for_each]` mark a block that has them. A folder that a module call of the checkout calls has a `called by:` line. A root folder has a `calls:` line with each chain of module calls. Use it in place of .metis/code-index.md. `under` keeps the folders under one path."
     )]
     async fn module_map(
         &self,
@@ -1163,6 +1163,11 @@ impl CodeTools {
             for m in &modules {
                 out.push_str(&format!("\n\n## {}\n", m.path));
                 out.push_str(m.summary.as_deref().unwrap_or("No summary."));
+                // The Terraform view of the folder (KAIROS-T-0472).
+                for line in m.terraform.iter().flat_map(|t| t.lines()) {
+                    out.push('\n');
+                    out.push_str(&line);
+                }
                 for f in &m.files {
                     out.push_str("\n- ");
                     out.push_str(&map_file_line(f));

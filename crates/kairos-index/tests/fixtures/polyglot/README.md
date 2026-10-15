@@ -39,3 +39,9 @@ The call-graph scenarios of COLLIERY-T-2531 use these files:
 - `src/routes.rs`: `dispatch` reaches `target` by 2 routes, for `path`.
 - `web/src/cents.ts`: `listCents` calls `centsOf`, and the 2 functions have
   the same job. A function and its callee are not a `same-idea` group.
+
+The Go code is in the module `example.com/polyglot` (`go.mod`).
+`go/cmd/hello/hello.go` calls `greet.Greet`, `greet.Message` and
+`loud.Message` (`go/shout`): each call goes to the package of its import, not
+to every function of that name (KAIROS-T-0469). `go/greet/greet_test.go` has a
+test function (KAIROS-T-0468).

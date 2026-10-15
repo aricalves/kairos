@@ -411,6 +411,24 @@ mod tests {
         check(f, Decision::Fixture, "fixture-dir");
     }
 
+    // KAIROS-T-0470: a long line in Terraform code is source; the modules
+    // that `terraform init` downloads are vendored.
+    #[test]
+    fn terraform_code_is_source_and_its_downloads_are_vendored() {
+        for path in ["infra/main.tf", "infra/prod.tfvars"] {
+            let f = File {
+                longest_line: 1_400,
+                ..file(path)
+            };
+            check(f, Decision::Source, FALLBACK_RULE);
+        }
+        check(
+            file("infra/.terraform/modules/vpc/main.tf"),
+            Decision::Vendored,
+            "vendored-dir",
+        );
+    }
+
     // Found on Kairos itself: the extension decides before the line length.
 
     #[test]

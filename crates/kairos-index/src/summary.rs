@@ -54,6 +54,10 @@ pub const SUMMARIZED_KINDS: &[&str] = &[
     "interface",
     "implementation",
     "constant",
+    // Terraform: a managed and a data resource (KAIROS-T-0470). A file of
+    // variables, outputs and module calls is a file of declarations.
+    "resource",
+    "data",
     // SQL (KAIROS-T-0350).
     "table",
     "index",
@@ -1173,6 +1177,9 @@ impl<'a> FileTexts<'a> {
 ///   level.
 /// - Go: the package comment; the `import` declarations. The `package` line
 ///   comes first when the file has one of these.
+/// - Terraform: the comment at the start of the file; the first line of each
+///   top-level block, and its `source`, `version`, `type` and `description`
+///   lines (KAIROS-T-0470).
 ///
 /// At most [`MAX_DECLARATION_LINES`] lines are kept.
 pub fn declaration_lines(text: &str, language: &str) -> Option<String> {
@@ -1182,6 +1189,7 @@ pub fn declaration_lines(text: &str, language: &str) -> Option<String> {
         "python" => python_declarations(&lines),
         "typescript" | "tsx" | "javascript" => script_declarations(&lines),
         "go" => go_declarations(&lines),
+        "terraform" => terraform_declarations(&lines),
         _ => return None,
     };
     if doc.is_empty() && declarations.is_empty() {
@@ -1390,6 +1398,50 @@ fn go_declarations(lines: &[&str]) -> (Vec<String>, Vec<String>) {
     }
     if !doc.is_empty() || !declarations.is_empty() {
         declarations.insert(0, lines[package].trim_end().to_string());
+    }
+    (doc, declarations)
+}
+
+fn terraform_declarations(lines: &[&str]) -> (Vec<String>, Vec<String>) {
+    let (mut doc, mut declarations) = (Vec::new(), Vec::new());
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i].trim_start();
+        if line.starts_with('#') || line.starts_with("//") {
+            doc.push(lines[i].trim_end().to_string());
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    let mut depth = 0i32;
+    for line in &lines[i..] {
+        let trimmed = line.trim();
+        let before = depth;
+        let mut quote = false;
+        for c in line.chars() {
+            match c {
+                '"' => quote = !quote,
+                '{' if !quote => depth += 1,
+                '}' if !quote => depth -= 1,
+                '#' if !quote => break,
+                _ => {}
+            }
+        }
+        let kept = match before {
+            // The first line of a top-level block, and its last line.
+            0 => depth > 0 || trimmed.ends_with('}') && !trimmed.starts_with('#'),
+            1 if depth == 0 => true,
+            1 => {
+                let key = trimmed.split('=').next().unwrap_or_default().trim();
+                trimmed.contains('=')
+                    && matches!(key, "source" | "version" | "type" | "description")
+            }
+            _ => false,
+        };
+        if kept {
+            declarations.push(line.trim_end().to_string());
+        }
     }
     (doc, declarations)
 }
@@ -1826,6 +1878,29 @@ mod tests {
         assert_eq!(declaration_lines("package greet\n", "go"), None);
     }
 
+    /// KAIROS-T-0470: a Terraform file of variables, outputs and module calls.
+    #[test]
+    fn a_terraform_file_gives_its_comment_and_its_blocks() {
+        let text = "# The inputs of the root module.\n\
+                    \n\
+                    variable \"region\" {\n  type    = string\n  default = \"us-east-1\"\n}\n\
+                    \n\
+                    variable \"name\" {}\n\
+                    \n\
+                    module \"store\" {\n  source = \"./modules/bucket\"\n  name   = \"x\"\n  tags   = { a = \"b\" }\n}\n";
+        assert_eq!(
+            declaration_lines(text, "terraform").as_deref(),
+            Some(
+                "# The inputs of the root module.\n\
+                 \n\
+                 variable \"region\" {\n  type    = string\n}\n\
+                 variable \"name\" {}\n\
+                 module \"store\" {\n  source = \"./modules/bucket\"\n}"
+            )
+        );
+        assert_eq!(declaration_lines("region = \"x\"\n", "terraform"), None);
+    }
+
     #[test]
     fn a_file_of_declarations_has_its_own_prompt() {
         let mut r = request(Level::File);
@@ -1969,6 +2044,11 @@ mod tests {
                 "export function total(items: Item[], sep = \"{\"): number {\n  return 0;\n}",
                 "typescript",
                 "export function total(items: Item[], sep = \"{\"): number",
+            ),
+            (
+                "resource \"aws_s3_bucket\" \"b\" {\n  bucket = \"${var.name}-{x}\"\n}",
+                "terraform",
+                "resource \"aws_s3_bucket\" \"b\"",
             ),
         ];
         for (code, language, want) in cases {

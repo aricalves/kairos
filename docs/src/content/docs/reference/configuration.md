@@ -992,6 +992,71 @@ The uses are part of the index since schema version 7. Kairos refuses an
 index of an earlier version. Run `kairos index --full`, or take a new base
 index from Kairos.
 
+### The code index: Terraform
+
+The index reads `.tf` and `.tfvars` files as the language `terraform`. Each
+top-level block gives a symbol. The name and the container of the symbol
+make the address that Terraform code uses:
+
+| Block | Kind | Name in the tools |
+|---|---|---|
+| `resource "aws_s3_bucket" "b"` | `resource` | `aws_s3_bucket.b` |
+| `data "aws_iam_policy" "p"` | `data` | `data.aws_iam_policy.p` |
+| `module "net"` | `module` | `module.net` |
+| `variable "region"` | `variable` | `var.region` |
+| each entry of a `locals` block | `local` | `local.name` |
+| `output "id"` | `output` | `id` |
+| `provider "aws"` | `provider` | `aws` |
+
+- A `terraform`, `moved`, `import` or `check` block gives no symbol.
+- A `.tfvars` file has no symbols.
+- The index does not read `.tf.json` files. They are JSON, and the HCL
+  grammar does not read JSON.
+- A resource and a data source get a summary. A file of variables, outputs
+  and module calls gets a summary from its first comment and its blocks.
+- The index does not read the `.terraform/` folder. `terraform init` puts
+  the downloaded modules there.
+
+The tools `callers`, `callees` and `path` use the references of the
+Terraform code. A reference is a call from the block that holds it to the
+block that it names:
+
+- `var.x`, `local.x`, `module.z`, `data.t.n` and `t.n` go to the block in
+  the same folder. Terraform reads one folder as one module. Thus a block
+  of the same name in a different folder is not a match.
+- `module.z.o` goes to the output `o` of the module that `module "z"`
+  calls. Each argument `x` of `module "z"` goes to the variable `x` of that
+  module. The `source` must be a local path (`./` or `../`). A module from a
+  registry, from git or from a URL is outside the checkout: its references
+  are external.
+- `count.index`, `each.key`, `self`, `path` and `terraform` are not
+  references to a block.
+
+The tool `module_map` shows the Terraform blocks of each folder with
+Terraform code, before its files:
+
+```text
+## infra/modules/bucket
+resources: aws_s3_bucket (this [count]), aws_sns_topic (events [for_each])
+variables: name, owner
+outputs: arn
+called by: infra (module.store)
+```
+
+- `resources:` and `data:` give the managed resources and the data
+  resources, by type.
+- `module calls:` gives each `module` block with its `source` and its
+  `version`.
+- `[count]` and `[for_each]` mark a block that has `count` or `for_each`.
+  The tool does not calculate the count of the instances.
+- `called by:` gives the module calls of the checkout that call the folder.
+- A root folder has no `called by:` line. It has a `calls:` line with each
+  chain of module calls from it, for example
+  `module.store > infra/modules/bucket`. A module from a registry, from git
+  or from a URL has `(remote)`.
+
+A folder with no Terraform code shows its summary and its files only.
+
 ## Helm chart values
 
 `deploy/helm/kairos/values.yaml`. Most values under `config` become entries in a

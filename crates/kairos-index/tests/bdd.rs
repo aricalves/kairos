@@ -768,6 +768,7 @@ fn each_symbol_is_complete(world: &mut IndexWorld) {
                 "tsx",
                 "javascript",
                 "go",
+                "terraform",
                 "sql"
             ]
             .contains(&s.language.as_str()),
@@ -1681,6 +1682,33 @@ fn map_file(world: &IndexWorld, path: &str) -> kairos_index::FileInfo {
         .flat_map(|m| m.files)
         .find(|f| f.path == path)
         .unwrap_or_else(|| panic!("{path} is not in the module map"))
+}
+
+#[then(expr = "the symbol {string} in {string} has a summary")]
+fn the_symbol_has_a_summary(world: &mut IndexWorld, qualified: String, file: String) {
+    let Lookup::Found(s) = world
+        .index()
+        .lookup(&qualified, Some(&file), None)
+        .expect("look up")
+    else {
+        panic!("no one symbol {qualified} in {file}");
+    };
+    assert!(s.summary.is_some(), "{s:?}");
+}
+
+#[then(expr = "the input to the summary of {string} is its declarations:")]
+fn file_summary_from_declarations(
+    world: &mut IndexWorld,
+    path: String,
+    step: &cucumber::gherkin::Step,
+) {
+    let requests = file_requests(world, &path);
+    assert_eq!(requests.len(), 1, "{:#?}", world.requests);
+    assert_eq!(requests[0].kind, kairos_index::DECLARATIONS_KIND);
+    assert_eq!(
+        requests[0].code.as_deref(),
+        step.docstring.as_deref().map(str::trim)
+    );
 }
 
 #[then("the input to the summary of src/lib.rs is its //! comment and its mod and use lines")]
@@ -3770,6 +3798,122 @@ fn search_the_code(world: &mut IndexWorld, query: String) {
     world.search = Some(found);
 }
 
+#[then(expr = "the module map lists {string} with {int} symbols")]
+fn module_map_lists(world: &mut IndexWorld, path: String, symbols: usize) {
+    let file = map_file(world, &path);
+    assert_eq!(file.symbols, symbols, "{file:?}");
+}
+
+#[then(expr = "a result is {string} in {string}")]
+fn a_result_is(world: &mut IndexWorld, qualified: String, file: String) {
+    let hits = &world.search.as_ref().expect("no search ran").hits;
+    assert!(
+        hits.iter()
+            .any(|h| h.symbol.qualified() == qualified && h.symbol.file == file),
+        "{qualified} in {file} is not a result: {:#?}",
+        hits.iter().map(|h| h.symbol.place()).collect::<Vec<_>>()
+    );
+}
+
+/// The one symbol `qualified` in `file`.
+fn one_symbol(world: &IndexWorld, qualified: &str, file: &str) -> kairos_index::SymbolInfo {
+    match world
+        .index()
+        .lookup(qualified, Some(file), None)
+        .expect("look up")
+    {
+        Lookup::Found(s) => s,
+        other => panic!("{qualified} in {file}: {other:?}"),
+    }
+}
+
+/// The lines of a docstring, with no empty line.
+fn docstring_lines(step: &cucumber::gherkin::Step) -> Vec<String> {
+    step.docstring
+        .as_deref()
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+#[then(expr = "the callees of {string} in {string} are:")]
+fn the_callees_are(
+    world: &mut IndexWorld,
+    qualified: String,
+    file: String,
+    step: &cucumber::gherkin::Step,
+) {
+    let s = one_symbol(world, &qualified, &file);
+    let callees = world.index().callees(s.id, false).expect("the callees");
+    let got: Vec<String> = callees
+        .edges
+        .iter()
+        .map(|e| format!("{} ({})", e.other.qualified(), e.other.place()))
+        .collect();
+    assert_eq!(got, docstring_lines(step));
+}
+
+#[then(expr = "the callers of {string} in {string} are:")]
+fn the_callers_are(
+    world: &mut IndexWorld,
+    qualified: String,
+    file: String,
+    step: &cucumber::gherkin::Step,
+) {
+    let s = one_symbol(world, &qualified, &file);
+    let callers = world.index().callers(s.id, false).expect("the callers");
+    let got: Vec<String> = callers
+        .iter()
+        .map(|e| format!("{} ({})", e.other.qualified(), e.other.place()))
+        .collect();
+    assert_eq!(got, docstring_lines(step));
+}
+
+#[then(expr = "the callees of {string} in {string} have the external {string}")]
+fn the_callees_have_the_external(
+    world: &mut IndexWorld,
+    qualified: String,
+    file: String,
+    external: String,
+) {
+    let s = one_symbol(world, &qualified, &file);
+    let callees = world.index().callees(s.id, false).expect("the callees");
+    assert!(
+        callees.externals.iter().any(|e| e.name == external),
+        "{:?}",
+        callees.externals
+    );
+}
+
+/// The module map entry of the folder `path`.
+fn map_module(world: &IndexWorld, path: &str) -> kairos_index::ModuleInfo {
+    world
+        .index()
+        .module_map(None)
+        .expect("read the module map")
+        .into_iter()
+        .find(|m| m.path == path)
+        .unwrap_or_else(|| panic!("{path} is not in the module map"))
+}
+
+#[then(expr = "the Terraform lines of the module {string} are:")]
+fn terraform_lines(world: &mut IndexWorld, path: String, step: &cucumber::gherkin::Step) {
+    let module = map_module(world, &path);
+    let terraform = module
+        .terraform
+        .unwrap_or_else(|| panic!("{path} has no Terraform view"));
+    assert_eq!(terraform.lines(), docstring_lines(step));
+}
+
+#[then(expr = "the module {string} has no Terraform view")]
+fn no_terraform_view(world: &mut IndexWorld, path: String) {
+    let module = map_module(world, &path);
+    assert_eq!(module.terraform, None, "{module:?}");
+}
+
 #[then("the results have test functions and functions that are not test code")]
 fn tests_and_others(world: &mut IndexWorld) {
     let hits = &world.search.as_ref().expect("no search ran").hits;
@@ -4116,6 +4260,42 @@ fn lookup_by_line(world: &mut IndexWorld, name: String, line: u32, file: String)
             assert_eq!((s.kind.as_str(), s.start_line), ("implementation", line))
         }
         other => panic!("{name} at {file}:{line}: {other:?}"),
+    }
+}
+
+#[then(expr = "{string} gives the method of {string} at line {int} of {string}")]
+fn lookup_gives_the_method(
+    world: &mut IndexWorld,
+    name: String,
+    container: String,
+    line: u32,
+    file: String,
+) {
+    match world.index().lookup(&name, None, None).expect("look up") {
+        Lookup::Found(s) => assert_eq!(
+            (
+                s.kind.as_str(),
+                s.container.as_deref(),
+                s.start_line,
+                s.file.as_str()
+            ),
+            ("method", Some(container.as_str()), line, file.as_str())
+        ),
+        other => panic!("{name}: {other:?}"),
+    }
+}
+
+#[then(expr = "{string} with no file gives the function and the method as candidates")]
+fn lookup_lists_function_and_method(world: &mut IndexWorld, name: String) {
+    match world.index().lookup(&name, None, None).expect("look up") {
+        Lookup::Ambiguous(all) => {
+            let found: Vec<String> = all
+                .iter()
+                .map(|s| format!("{} {}", s.kind, s.qualified()))
+                .collect();
+            assert_eq!(found, ["function Greet", "method Greeter.Greet"]);
+        }
+        other => panic!("{name}: {other:?}"),
     }
 }
 

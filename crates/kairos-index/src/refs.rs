@@ -440,6 +440,8 @@ mod tests {
             use_ranges: &[],
             macro_calls: &[],
             macro_ranges: &[],
+            package: None,
+            imports: &[],
         };
         let use_ranges = [(0, 13)];
         let main_file = ParsedFile {
@@ -451,6 +453,8 @@ mod tests {
             use_ranges: &use_ranges,
             macro_calls: &[],
             macro_ranges: &[],
+            package: None,
+            imports: &[],
         };
         let queue = format!("{P}Queue#");
         let items = format!("{P}Queue#items.");
@@ -577,6 +581,8 @@ mod tests {
             use_ranges: &[],
             macro_calls: &[],
             macro_ranges: &[],
+            package: None,
+            imports: &[],
         };
         let files = [
             file("src/a.rs", vec![sym(5, "f", "function", (0, 10))]),

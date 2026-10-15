@@ -593,6 +593,51 @@ fn module_map(world: &mut CliWorld) {
 
 // --- Then ---------------------------------------------------------------------
 
+// KAIROS-T-0472: the Terraform view of the module map. A folder with no
+// Terraform code has its summary and its files only.
+#[then("the Terraform module shows its resources and the root shows its module calls")]
+fn terraform_module_map(world: &mut CliWorld) {
+    let text = world.text();
+    let section = |path: &str| -> String {
+        let start = text
+            .find(&format!("## {path}\n"))
+            .unwrap_or_else(|| panic!("no section {path}: {text}"));
+        let rest = &text[start + 3..];
+        rest[..rest.find("\n## ").unwrap_or(rest.len())].to_string()
+    };
+    let bucket = section("infra/modules/bucket");
+    for line in [
+        "resources: aws_s3_bucket (this [count]), aws_sns_topic (events [for_each])",
+        "variables: name, owner",
+        "outputs: arn",
+        "called by: infra (module.store)",
+    ] {
+        assert!(bucket.contains(&format!("\n{line}\n")), "{line}: {bucket}");
+    }
+    let root = section("infra");
+    for line in [
+        "module calls: store = ./modules/bucket, network = terraform-aws-modules/vpc/aws 5.0.0",
+        "calls: module.store > infra/modules/bucket, module.network > terraform-aws-modules/vpc/aws (remote)",
+    ] {
+        assert!(root.contains(&format!("\n{line}\n")), "{line}: {root}");
+    }
+    let src = section("src");
+    let terraform = [
+        "resources:",
+        "data:",
+        "module calls:",
+        "variables:",
+        "outputs:",
+        "called by:",
+        "calls:",
+    ];
+    assert!(
+        !src.lines()
+            .any(|l| terraform.iter().any(|t| l.starts_with(t))),
+        "a folder with no Terraform code: {src}"
+    );
+}
+
 #[then("the status shows the count of files, symbols, edges and summaries")]
 fn status_counts(world: &mut CliWorld) {
     let index = world.index();
