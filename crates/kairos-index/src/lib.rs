@@ -28,10 +28,13 @@ mod duplicates;
 mod edges;
 mod extract;
 pub mod hosted;
+mod indexers;
+pub mod languages;
 #[cfg(feature = "llama")]
 mod llama;
 mod parse_cache;
 mod refs;
+pub mod runners;
 
 /// How long a connection to an index waits for the lock of another
 /// process (a build, an update, a fetch) before it fails: several agents
@@ -67,8 +70,13 @@ pub use llama::{LlamaModelFile, LlamaSummarizer, MAX_NEW_TOKENS};
 pub use query::{
     CallEdge, Callees, Counts, Coverage, External, FileInfo, Lookup, ModuleInfo, NoSymbolCallee,
     PathStep, Reference, References, SearchHit, SearchMode, SearchResult, SymbolInfo, SymbolSource,
+    TerraformFolder, TerraformModuleCall,
 };
 pub use rules::{Decision, Origin, RuleSet};
+pub use runners::{
+    IndexFileRunner, LanguageRun, MissingRunner, RunnerFailure, RunnerInput, SCIP_LANGUAGES,
+    ScipOptions, ScipOutput, ScipRunner, ScipWarning,
+};
 pub use rust_analyzer::BuildOptions;
 pub use schema::SCHEMA_VERSION;
 pub use summary::{
@@ -99,6 +107,11 @@ pub struct BuildReport {
     /// The `rust-analyzer scip` run, if the tree has a Cargo workspace at
     /// its root with Rust files to index.
     pub scip: Option<ScipRun>,
+    /// Each SCIP runner that gave an index (KAIROS-T-0473).
+    pub scip_runs: Vec<LanguageRun>,
+    /// Each language that had no SCIP index because its runner failed, and
+    /// why. Its files have the edges by name.
+    pub scip_warnings: Vec<ScipWarning>,
     /// The token vectors of the functions (COLLIERY-T-1857).
     pub token_vectors: TokenVectorStats,
     /// The uses of symbols that SCIP gave, or that the base kept
@@ -486,6 +499,8 @@ fn build(
         symbols: 0,
         edges: EdgeStats::default(),
         scip: None,
+        scip_runs: Vec::new(),
+        scip_warnings: Vec::new(),
         token_vectors: TokenVectorStats::default(),
         refs: 0,
     };
@@ -557,23 +572,77 @@ fn build(
 
     drop(cache);
 
-    // 2. The SCIP index of the Cargo workspace at the root, or the SCIP
-    // edges of the base indexes.
+    // 2. The SCIP index of each language that has a runner (KAIROS-T-0473),
+    // or the SCIP edges of the base indexes.
     let has_rust = prepared
         .iter()
         .any(|p| p.language == Some("rust") && p.found.is_some());
     let workspace = has_rust && root.join("Cargo.toml").is_file();
-    let scip_index = if let (true, Mode::Scip(options)) = (workspace, &mode) {
-        let (run, index, crates) = scip::run(root, options)?;
-        report.scip = Some(run);
-        Some((index, crates))
-    } else {
-        None
+    let mut scip_data = runners::ScipData::default();
+    let mut ran = false;
+    if let Mode::Scip(options) = &mode {
+        for runner in runners::runners(options) {
+            let languages = runner.languages();
+            let files: Vec<&str> = prepared
+                .iter()
+                .filter(|p| p.found.is_some() && p.language.is_some_and(|l| languages.contains(&l)))
+                .map(|p| p.rel)
+                .collect();
+            let input = runners::RunnerInput {
+                root,
+                files: &files,
+            };
+            if !runner.wanted(&input) {
+                continue;
+            }
+            let started = std::time::Instant::now();
+            match runner.run(&input) {
+                Ok(output) => {
+                    ran = true;
+                    report.scip_runs.push(LanguageRun {
+                        language: runner.name().to_string(),
+                        elapsed: started.elapsed(),
+                        documents: output.index.documents.len(),
+                    });
+                    if let Some(run) = &output.rust {
+                        report.scip = Some(run.clone());
+                    }
+                    for reason in &output.warnings {
+                        report.scip_warnings.push(ScipWarning {
+                            language: runner.name().to_string(),
+                            reason: reason.clone(),
+                        });
+                    }
+                    scip_data.add(languages, output);
+                }
+                Err(runners::RunnerFailure::Fatal(e)) => return Err(e),
+                Err(runners::RunnerFailure::Fallback(reason)) => {
+                    report.scip_warnings.push(ScipWarning {
+                        language: runner.name().to_string(),
+                        reason,
+                    })
+                }
+            }
+        }
+    }
+    // The languages whose changed code waits for a SCIP run: Rust in a Cargo
+    // workspace, and each other language that a base index has SCIP for.
+    let marked: HashSet<&str> = match &mode {
+        Mode::Keep(bases) => bases
+            .iter()
+            .flat_map(|b| b.scip_languages())
+            .filter(|l| *l != "rust")
+            .chain(workspace.then_some("rust"))
+            .collect(),
+        Mode::Scip(_) => HashSet::new(),
     };
-    let rust = match (&scip_index, &mode) {
-        (Some((index, crates)), _) => edges::RustEdges::Scip(index, crates),
-        (None, Mode::Keep(bases)) if workspace => edges::RustEdges::Base { bases, mark: true },
-        _ => edges::RustEdges::Names,
+    let scip_edges = match &mode {
+        _ if ran => edges::ScipEdges::Scip(&scip_data),
+        Mode::Keep(bases) => edges::ScipEdges::Base {
+            bases,
+            marked: &marked,
+        },
+        Mode::Scip(_) => edges::ScipEdges::Names,
     };
 
     // 3. Write the structure.
@@ -664,17 +733,36 @@ fn build(
                 use_ranges: &found.use_ranges,
                 macro_calls: &found.macro_calls,
                 macro_ranges: &found.macro_ranges,
+                package: found.package.as_deref(),
+                imports: &found.imports,
             });
             file_ids.push(file_id);
             hashes.push(p.file.content_hash.as_str());
         }
 
-        let resolved = edges::resolve(&parsed, rust);
+        // The Go modules: each go.mod of a folder whose files are parsed
+        // (KAIROS-T-0469).
+        let go_modules: Vec<edges::GoModule> = prepared
+            .iter()
+            .filter(|p| p.verdict.decision.is_parsed())
+            .filter_map(|p| {
+                let folder = match p.rel.rsplit_once('/') {
+                    Some((folder, "go.mod")) => folder,
+                    None if p.rel == "go.mod" => "",
+                    _ => return None,
+                };
+                edges::GoModule::read(folder, &p.file.text)
+            })
+            .collect();
+        let resolved = edges::resolve(&parsed, scip_edges, &go_modules);
         // The uses of each symbol (KAIROS-T-0419).
-        let source = match (&scip_index, &mode) {
-            (Some((index, crates)), _) => refs::Source::Scip(index, crates),
-            (None, Mode::Keep(bases)) => refs::Source::Base { bases, workspace },
-            _ => refs::Source::Nothing,
+        let source = match &mode {
+            _ if ran => refs::Source::Scip(&scip_data),
+            Mode::Keep(bases) => refs::Source::Base {
+                bases,
+                marked: &marked,
+            },
+            Mode::Scip(_) => refs::Source::Nothing,
         };
         let uses = refs::resolve(&parsed, &hashes, source);
         report.refs = uses.refs.len();

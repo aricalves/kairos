@@ -13,6 +13,12 @@
 //! The panel has `data-code-index-repo`, not `data-repo`: the row of the
 //! repository has `data-repo` already, and the e2e specs select it alone.
 //!
+//! A run with a SCIP warning (KAIROS-T-0478) has one line for each language
+//! that had no SCIP index, with the reason: its edges are by name. For an
+//! organization admin, the panel ends with the disk use of the builder of
+//! the server: the tools by language, the dependency caches and their cap,
+//! and the free space.
+//!
 //! The button "Build again" is for a person with the right to change the
 //! repository: an organization admin, or a member of the owner team
 //! ([`can_rebuild`]). It is off while a run is active. A refusal of the
@@ -70,6 +76,46 @@ pub struct CodeIndexBuild {
     /// `provider/model` of the summaries of the run.
     #[serde(default)]
     pub model: Option<String>,
+    /// The languages with no SCIP index in the run (KAIROS-T-0478).
+    #[serde(default)]
+    pub scip_warnings: Vec<ScipWarning>,
+}
+
+/// mirror of: `kairos_client::types_code_index::CodeIndexScipWarning`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct ScipWarning {
+    pub language: String,
+    pub reason: String,
+}
+
+/// mirror of: `kairos_client::types_code_index::CodeIndexDiskUse`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct DiskUse {
+    #[serde(default)]
+    pub tools: Vec<ToolUse>,
+    #[serde(default)]
+    pub caches: Vec<CacheUse>,
+    pub caches_bytes: u64,
+    pub caches_cap_bytes: u64,
+    #[serde(default)]
+    pub free_bytes: Option<u64>,
+}
+
+/// mirror of: `kairos_client::types_code_index::CodeIndexToolUse`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct ToolUse {
+    pub name: String,
+    #[serde(default)]
+    pub language: Option<String>,
+    pub bytes: u64,
+}
+
+/// mirror of: `kairos_client::types_code_index::CodeIndexCacheUse`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct CacheUse {
+    pub language: String,
+    pub repositories: u32,
+    pub bytes: u64,
 }
 
 /// mirror of: `kairos_client::types_code_index::CodeIndexBuildList`
@@ -81,6 +127,9 @@ pub struct CodeIndexBuildList {
     /// Set when no code index builder runs (KAIROS-T-0394).
     #[serde(default)]
     pub builder: Option<String>,
+    /// The disk use of the tools and the caches (KAIROS-T-0478).
+    #[serde(default)]
+    pub disk: Option<DiskUse>,
 }
 
 /// What the panel shows: the 2 reads.
@@ -139,9 +188,12 @@ pub(crate) fn short_commit(commit: &str) -> &str {
     &commit[..end]
 }
 
-/// A size in bytes as text: `2.1 MB`, `640 kB`, `12 B`. Pure, host-tested.
+/// A size in bytes as text: `1.4 GB`, `2.1 MB`, `640 kB`, `12 B`. Pure,
+/// host-tested.
 pub(crate) fn size_text(bytes: i64) -> String {
-    if bytes >= 1_000_000 {
+    if bytes >= 1_000_000_000 {
+        format!("{:.1} GB", bytes as f64 / 1_000_000_000.0)
+    } else if bytes >= 1_000_000 {
         format!("{:.1} MB", bytes as f64 / 1_000_000.0)
     } else if bytes >= 1_000 {
         format!("{} kB", bytes / 1_000)
@@ -178,6 +230,72 @@ pub(crate) fn run_line(run: &CodeIndexBuild) -> String {
         parts.push(model.clone());
     }
     parts.join(" · ")
+}
+
+/// The line of a SCIP warning of a run (KAIROS-T-0478). Pure, host-tested.
+pub(crate) fn warning_line(warning: &ScipWarning) -> String {
+    format!(
+        "No SCIP index for {}: {}. Its edges are by name.",
+        warning.language, warning.reason
+    )
+}
+
+fn size_of_u64(bytes: u64) -> String {
+    size_text(i64::try_from(bytes).unwrap_or(i64::MAX))
+}
+
+/// The lines of the disk use of the builder (KAIROS-T-0478): the tools by
+/// language, the dependency caches by language and their cap, and the free
+/// space. Pure, host-tested.
+pub(crate) fn disk_lines(disk: &DiskUse) -> Vec<String> {
+    let mut by_language: std::collections::BTreeMap<&str, (u64, Vec<&str>)> = Default::default();
+    for tool in &disk.tools {
+        let language = tool.language.as_deref().unwrap_or("other files");
+        let entry = by_language.entry(language).or_default();
+        entry.0 += tool.bytes;
+        if tool.name != "other" {
+            entry.1.push(&tool.name);
+        }
+    }
+    let mut lines: Vec<String> = by_language
+        .into_iter()
+        .map(|(language, (bytes, names))| {
+            if names.is_empty() {
+                format!("Tools, {language}: {}", size_of_u64(bytes))
+            } else {
+                format!(
+                    "Tools, {language}: {} ({})",
+                    size_of_u64(bytes),
+                    names.join(", ")
+                )
+            }
+        })
+        .collect();
+    let caches: Vec<String> = disk
+        .caches
+        .iter()
+        .map(|c| {
+            let repos = if c.repositories == 1 {
+                "1 repository".to_string()
+            } else {
+                format!("{} repositories", c.repositories)
+            };
+            format!("{} {} in {repos}", c.language, size_of_u64(c.bytes))
+        })
+        .collect();
+    let mut cache_line = format!(
+        "Dependency caches: {} of {}",
+        size_of_u64(disk.caches_bytes),
+        size_of_u64(disk.caches_cap_bytes)
+    );
+    if !caches.is_empty() {
+        cache_line.push_str(&format!(" ({})", caches.join(", ")));
+    }
+    lines.push(cache_line);
+    if let Some(free) = disk.free_bytes {
+        lines.push(format!("Free disk space: {}", size_of_u64(free)));
+    }
+    lines
 }
 
 /// The color of the pill of an outcome. Pure, host-tested.
@@ -312,6 +430,12 @@ pub fn CodeIndexPanel(
                         let runs = state.builds.items.clone();
                         let indexes = state.indexes.clone();
                         let builder = state.builds.builder.clone();
+                        // The disk use is for an organization admin.
+                        let is_admin = matches!(
+                            whoami.and_then(|me| me.get()),
+                            Some(Ok(me)) if me.organization.role == "admin"
+                        );
+                        let disk = state.builds.disk.clone().filter(|_| is_admin);
                         view! {
                             <Stack gap="xs">
                                 {builder.map(|note| view! {
@@ -345,6 +469,7 @@ pub fn CodeIndexPanel(
                                                 let outcome_attr = run.outcome.clone();
                                                 let outcome_text = run.outcome.clone();
                                                 let error = run.error.clone();
+                                                let warnings = run.scip_warnings.clone();
                                                 view! {
                                                     <Stack gap="xs" attr:data-run=run.id.clone() attr:data-outcome=outcome_attr>
                                                         <Group gap="sm" wrap=true>
@@ -354,12 +479,28 @@ pub fn CodeIndexPanel(
                                                         {error.map(|text| view! {
                                                             <Text size="xs" dimmed=true attr:data-testid="code-index-run-error">{text}</Text>
                                                         })}
+                                                        {warnings.into_iter().map(|w| {
+                                                            let language = w.language.clone();
+                                                            view! {
+                                                                <Text size="xs" attr:data-testid="code-index-run-warning" attr:data-language=language>
+                                                                    {warning_line(&w)}
+                                                                </Text>
+                                                            }
+                                                        }).collect_view()}
                                                     </Stack>
                                                 }
                                             }).collect_view()}
                                         </Stack>
                                     }.into_any()
                                 }}
+                                {disk.map(|disk| view! {
+                                    <Text size="xs" dimmed=true>"Disk use of the builder"</Text>
+                                    <Stack gap="xs" attr:data-testid="code-index-disk">
+                                        {disk_lines(&disk).into_iter().map(|line| view! {
+                                            <Text size="xs">{line}</Text>
+                                        }).collect_view()}
+                                    </Stack>
+                                })}
                                 {(count > 0).then(|| view! {
                                     <Text size="xs" dimmed=true>{format!("Indexed commits ({count})")}</Text>
                                     <Stack gap="xs" attr:data-testid="code-index-commits">
@@ -412,6 +553,43 @@ mod tests {
         assert!(can_rebuild(&me("member", &["platform"]), "platform"));
         assert!(!can_rebuild(&me("member", &["web"]), "platform"));
         assert!(!can_rebuild(&me("member", &[]), "platform"));
+    }
+
+    /// KAIROS-T-0478: a run with a SCIP warning, and the disk use, decode
+    /// and give their lines.
+    #[test]
+    fn the_warnings_and_the_disk_use_decode_and_read() {
+        let list: CodeIndexBuildList = serde_json::from_str(
+            r#"{"items":[{"id":"r1","trigger":"push","outcome":"ok","started_at":"t",
+                "scip_warnings":[{"language":"go","reason":"go mod download failed"}]}],
+               "total":1,"limit":5,
+               "disk":{"tools":[{"name":"go-1.27.2","language":"go","bytes":250000000},
+                                {"name":"scip-go-0.2.7","language":"go","bytes":13000000},
+                                {"name":"other","bytes":2000}],
+                       "caches":[{"language":"go","repositories":2,"bytes":120000000}],
+                       "caches_bytes":120000000,"caches_cap_bytes":10737418240,
+                       "free_bytes":70000000000}}"#,
+        )
+        .expect("a list");
+        let warning = &list.items[0].scip_warnings[0];
+        assert_eq!(
+            warning_line(warning),
+            "No SCIP index for go: go mod download failed. Its edges are by name."
+        );
+        assert_eq!(
+            disk_lines(list.disk.as_ref().unwrap()),
+            [
+                "Tools, go: 263.0 MB (go-1.27.2, scip-go-0.2.7)",
+                "Tools, other files: 2 kB",
+                "Dependency caches: 120.0 MB of 10.7 GB (go 120.0 MB in 2 repositories)",
+                "Free disk space: 70.0 GB",
+            ]
+        );
+        // A run of an older server has no warnings.
+        let old: CodeIndexBuild =
+            serde_json::from_str(r#"{"id":"r0","trigger":"push","outcome":"ok","started_at":"t"}"#)
+                .unwrap();
+        assert!(old.scip_warnings.is_empty());
     }
 
     #[test]

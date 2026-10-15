@@ -98,7 +98,7 @@ pub const PINS: &[Pin] = &[
 ];
 
 /// The target triple of this build.
-fn this_target() -> String {
+pub(crate) fn this_target() -> String {
     let os = match std::env::consts::OS {
         "macos" => "apple-darwin",
         "linux" => "unknown-linux-gnu",
@@ -159,6 +159,8 @@ pub struct BuildOptions {
     /// Download the pinned release and the pinned std source if they are
     /// not there. The tests turn this off.
     pub download: bool,
+    /// The SCIP runners of the other languages (KAIROS-T-0473).
+    pub scip: crate::runners::ScipOptions,
 }
 
 impl Default for BuildOptions {
@@ -168,6 +170,7 @@ impl Default for BuildOptions {
             std_source: None,
             sysroot: None,
             download: true,
+            scip: Default::default(),
         }
     }
 }
@@ -436,6 +439,7 @@ mod tests {
             std_source: None,
             sysroot: None,
             download: true,
+            ..Default::default()
         };
         let text = resolve(&options).unwrap_err().to_string();
         assert!(text.contains(&path.display().to_string()), "{text}");
@@ -451,6 +455,7 @@ mod tests {
             std_source: None,
             sysroot: None,
             download: true,
+            ..Default::default()
         };
         assert!(matches!(
             resolve(&options),
@@ -481,6 +486,7 @@ mod tests {
             std_source: Some(path.clone()),
             sysroot: None,
             download: true,
+            ..Default::default()
         };
         let text = resolve_std_source(&options).unwrap_err().to_string();
         assert!(text.contains(&path.display().to_string()), "{text}");
@@ -498,6 +504,7 @@ mod tests {
             std_source: Some(path.clone()),
             sysroot: None,
             download: true,
+            ..Default::default()
         };
         assert!(matches!(
             resolve_std_source(&options),

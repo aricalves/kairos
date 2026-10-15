@@ -921,6 +921,13 @@ impl ReposCommand {
                         "{:<25} {:<8} {:<8} {:<12} {:<9} {}",
                         run.started_at, run.trigger, run.outcome, commit, symbols, detail
                     );
+                    // KAIROS-T-0478: the languages with no SCIP index.
+                    for w in &run.scip_warnings {
+                        println!(
+                            "{:<25} warning: no SCIP index for {}: {}. Its edges are by name.",
+                            "", w.language, w.reason
+                        );
+                    }
                 }
                 if list.total > list.items.len() as i64 {
                     println!(

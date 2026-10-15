@@ -15,6 +15,17 @@
 //!   gets a `certain` name class only from a function whose container or
 //!   module matches the path. If none matches, the edge is `possible` with
 //!   the other functions of that name, or `external` (COLLIERY-T-2531).
+//! - **A Go call of an imported package** (`pkg.F`): the import path,
+//!   through the `go.mod` files of the repository, gives the folder of the
+//!   package; the edge goes to the function `F` there. A package outside
+//!   the modules of the repository is `external`. A plain Go call (`F()`)
+//!   goes to its own folder first (KAIROS-T-0469).
+//! - **A Terraform reference** (`var.x`, `local.x`, `module.z`, `data.t.n`,
+//!   `t.n`) goes to the block of that address in the same folder: the scope
+//!   of Terraform is the folder. `module.z.o` goes to the output `o` in the
+//!   folder of the local `source` of the module call `z`; an argument `x` of
+//!   the module call goes to its variable `x`. A remote source is `external`
+//!   (KAIROS-T-0471).
 //! - **A method call** (`x.f()`) never goes to the caller itself by name:
 //!   the receiver is not known, so a name gives no evidence of recursion.
 //! - **A SCIP definition with no symbol** (a function that a macro makes):
@@ -30,7 +41,8 @@ use std::collections::{HashMap, HashSet};
 
 use rusqlite::Connection;
 
-use crate::calls::CallSite;
+use crate::calls::{CallSite, Import};
+use crate::runners::ScipData;
 use crate::scip::{self, proto};
 use crate::{EdgeStats, IndexError};
 
@@ -58,6 +70,88 @@ pub struct ParsedFile<'a> {
     pub macro_calls: &'a [CallSite],
     /// The byte ranges of the Rust macro invocations (COLLIERY-T-2531).
     pub macro_ranges: &'a [(usize, usize)],
+    /// The package of a Go file (KAIROS-T-0469).
+    pub package: Option<&'a str>,
+    /// The imports of a Go file (KAIROS-T-0469), or the module calls of a
+    /// Terraform file with their sources (KAIROS-T-0471).
+    pub imports: &'a [Import],
+}
+
+/// A Go module of the repository, from a `go.mod` file (KAIROS-T-0469): the
+/// folder of the file (`""` at the root) and the module path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoModule {
+    pub folder: String,
+    pub path: String,
+}
+
+impl GoModule {
+    /// The module of the text of a `go.mod` file in `folder`.
+    pub fn read(folder: &str, text: &str) -> Option<GoModule> {
+        let path = text
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("module "))?
+            .split("//")
+            .next()?
+            .trim()
+            .trim_matches(['"', '`']);
+        (!path.is_empty()).then(|| GoModule {
+            folder: folder.to_string(),
+            path: path.to_string(),
+        })
+    }
+}
+
+/// What the name of an import of a Go file gives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GoPackage {
+    /// A package of a module of the repository: its folder.
+    Folder(String),
+    /// The standard library or a package of another module.
+    External,
+}
+
+/// The folder of a path: `""` for a file at the root.
+fn folder_of(path: &str) -> &str {
+    path.rsplit_once('/').map_or("", |(folder, _)| folder)
+}
+
+/// The folder of a local Terraform module source, from the folder of the
+/// module call: `./modules/bucket` from `infra` is `infra/modules/bucket`.
+/// `None` for a remote source (a registry, git or a URL).
+pub(crate) fn terraform_source_folder(here: &str, source: &str) -> Option<String> {
+    if !(source.starts_with("./") || source.starts_with("../")) {
+        return None;
+    }
+    let mut parts: Vec<&str> = here.split('/').filter(|p| !p.is_empty()).collect();
+    for part in source.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            part => parts.push(part),
+        }
+    }
+    Some(parts.join("/"))
+}
+
+/// The name that an import with no name gives, for a package outside the
+/// repository: the last part of the path, with no major version
+/// (`gopkg.in/yaml.v3` and `github.com/x/yaml/v3` give `yaml`).
+fn external_package_name(path: &str) -> &str {
+    let mut parts = path.rsplit('/');
+    let mut last = parts.next().unwrap_or(path);
+    if last.len() > 1 && last.starts_with('v') && last[1..].chars().all(|c| c.is_ascii_digit()) {
+        last = parts.next().unwrap_or(last);
+    }
+    let last = match last.rsplit_once(".v") {
+        Some((name, v)) if !v.is_empty() && v.chars().all(|c| c.is_ascii_digit()) => name,
+        _ => last,
+    };
+    last.strip_prefix("go-")
+        .or_else(|| last.strip_suffix("-go"))
+        .unwrap_or(last)
 }
 
 /// The place of a definition with no symbol: a function that a macro makes
@@ -88,17 +182,22 @@ pub struct NewEdge {
     pub target: Option<NewTarget>,
 }
 
-/// Where the Rust edges come from.
-pub enum RustEdges<'a> {
-    /// Name classes only: the tree has no Cargo workspace at its root.
+/// Where the edges of the languages with a SCIP runner come from
+/// (KAIROS-T-0473).
+pub enum ScipEdges<'a> {
+    /// Name classes only: no runner gave an index.
     Names,
-    /// A SCIP run of the workspace, and the crate of each file.
-    Scip(&'a proto::Index, &'a scip::Crates),
-    /// No SCIP run. A Rust function with the code of a function of a base
-    /// index, whose edges wait for no SCIP run, keeps its SCIP edges. The
-    /// other Rust functions get name classes, marked `scip_pending` if
-    /// `mark`.
-    Base { bases: &'a [BaseIndex], mark: bool },
+    /// The SCIP indexes of the build, the languages that they cover, and the
+    /// crate of each Rust file.
+    Scip(&'a ScipData),
+    /// No SCIP run. A function of a language in `marked`, with the code of
+    /// a function of a base index whose edges wait for no SCIP run, keeps its
+    /// SCIP edges. The other functions of those languages get name classes,
+    /// marked `scip_pending`.
+    Base {
+        bases: &'a [BaseIndex],
+        marked: &'a HashSet<&'a str>,
+    },
 }
 
 /// The edges of a build.
@@ -147,6 +246,8 @@ pub(crate) fn sym_keys<'a>(
 #[derive(Debug, Default)]
 pub struct BaseIndex {
     files: HashMap<String, BaseFile>,
+    /// The languages of the files with SCIP edges or SCIP uses.
+    languages: HashSet<String>,
     /// The SCIP references of its Rust files (KAIROS-T-0419).
     pub(crate) refs: crate::refs::BaseRefs,
 }
@@ -183,13 +284,37 @@ struct BaseEdge {
 }
 
 impl BaseIndex {
-    /// Read the Rust files of the index at `conn`: their symbols, their SCIP
-    /// edges and the call sites that SCIP resolved.
+    /// The languages that the base has SCIP data for.
+    pub fn scip_languages(&self) -> impl Iterator<Item = &str> {
+        self.languages.iter().map(String::as_str)
+    }
+
+    /// Read the files of the index at `conn` whose language had SCIP: their
+    /// symbols, their SCIP edges and the call sites that SCIP resolved. Rust
+    /// files are always read.
     pub fn read(conn: &Connection) -> Result<Self, IndexError> {
         let mut files: HashMap<String, BaseFile> = HashMap::new();
         let mut paths: HashMap<i64, String> = HashMap::new();
+        let languages: HashSet<String> = {
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT f.language FROM files f
+                 WHERE f.language IS NOT NULL
+                   AND (f.id IN (SELECT file_id FROM refs_files)
+                        OR f.id IN (SELECT s.file_id FROM edges e JOIN symbols s ON s.id = e.caller_id
+                                    WHERE e.origin = 'scip'))",
+            )?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            rows.collect::<Result<_, _>>()?
+        };
         {
-            let mut stmt = conn.prepare("SELECT id, path FROM files WHERE language = 'rust'")?;
+            let mut stmt = conn.prepare(
+                "SELECT id, path FROM files
+                 WHERE language = 'rust'
+                    OR language IN (SELECT DISTINCT f.language FROM refs_files r
+                                    JOIN files f ON f.id = r.file_id)
+                    OR id IN (SELECT s.file_id FROM edges e JOIN symbols s ON s.id = e.caller_id
+                              WHERE e.origin = 'scip')",
+            )?;
             let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
             for row in rows {
                 let (id, path) = row?;
@@ -246,7 +371,7 @@ impl BaseIndex {
                         e.scip_pending, t.path, e.target_line, e.target_macro
                  FROM edges e JOIN symbols c ON c.id = e.caller_id
                  LEFT JOIN files t ON t.id = e.target_file_id
-                 WHERE c.language = 'rust' AND (e.origin = 'scip' OR e.scip_pending = 1)",
+                 WHERE e.origin = 'scip' OR e.scip_pending = 1",
             )?;
             let rows = stmt.query_map([], |r| {
                 Ok((
@@ -312,7 +437,11 @@ impl BaseIndex {
             }
         }
         let refs = crate::refs::read_base(conn, &keys)?;
-        Ok(BaseIndex { files, refs })
+        Ok(BaseIndex {
+            files,
+            languages,
+            refs,
+        })
     }
 }
 
@@ -380,10 +509,13 @@ fn family(language: &str) -> &str {
 /// `macro_rules!` definition that holds it: a call in the body of a macro
 /// has the macro as its caller (KAIROS-T-0353).
 fn caller_at(file: &ParsedFile<'_>, byte: usize) -> Option<i64> {
+    let terraform = file.language == "terraform";
     file.symbols
         .iter()
         .filter(|s| {
-            (is_function(s.kind) || s.kind == "macro") && s.start_byte <= byte && byte < s.end_byte
+            (is_function(s.kind) || s.kind == "macro" || terraform)
+                && s.start_byte <= byte
+                && byte < s.end_byte
         })
         .min_by_key(|s| s.end_byte - s.start_byte)
         .map(|s| s.id)
@@ -452,12 +584,81 @@ struct Names<'a> {
     by_name: HashMap<(&'a str, &'a str), Vec<(usize, i64)>>,
     /// The module of each Rust file, by file index.
     modules: HashMap<usize, RustModule>,
+    /// The packages that the imports of each Go file name, by file index
+    /// and by the name in the code (KAIROS-T-0469).
+    go_imports: HashMap<usize, HashMap<String, GoPackage>>,
+    /// The Terraform blocks by folder, kind, container and name
+    /// (KAIROS-T-0471).
+    terraform: HashMap<TerraformKey<'a>, Vec<i64>>,
+    /// The source of each Terraform module call, by folder and name.
+    terraform_modules: HashMap<(&'a str, &'a str), &'a str>,
 }
 
+/// A Terraform block: its folder, its kind, its container and its name.
+type TerraformKey<'a> = (&'a str, &'a str, Option<&'a str>, &'a str);
+
 impl<'a> Names<'a> {
-    fn new(files: &'a [ParsedFile<'a>]) -> Self {
+    fn new(files: &'a [ParsedFile<'a>], go_modules: &[GoModule]) -> Self {
         let mut by_name: HashMap<(&str, &str), Vec<(usize, i64)>> = HashMap::new();
         let mut modules = HashMap::new();
+        // The package name of each Go folder, from its files (not the
+        // `_test` package of a test file).
+        let mut packages: HashMap<&str, &str> = HashMap::new();
+        for file in files.iter().filter(|f| f.language == "go") {
+            if let Some(package) = file.package.filter(|p| !p.ends_with("_test")) {
+                packages.entry(folder_of(file.path)).or_insert(package);
+            }
+        }
+        let mut go_imports: HashMap<usize, HashMap<String, GoPackage>> = HashMap::new();
+        for (i, file) in files.iter().enumerate() {
+            if file.language != "go" {
+                continue;
+            }
+            let mut names = HashMap::new();
+            for import in file.imports {
+                if matches!(import.name.as_deref(), Some("_" | ".")) {
+                    continue;
+                }
+                let module = go_modules
+                    .iter()
+                    .filter(|m| {
+                        import.path == m.path
+                            || import
+                                .path
+                                .strip_prefix(m.path.as_str())
+                                .is_some_and(|rest| rest.starts_with('/'))
+                    })
+                    .max_by_key(|m| m.path.len());
+                let (package, default_name) = match module {
+                    Some(m) => {
+                        let rest = import.path[m.path.len()..].trim_start_matches('/');
+                        let folder = match (m.folder.as_str(), rest) {
+                            ("", rest) => rest.to_string(),
+                            (folder, "") => folder.to_string(),
+                            (folder, rest) => format!("{folder}/{rest}"),
+                        };
+                        let name = packages
+                            .get(folder.as_str())
+                            .map(|p| p.to_string())
+                            .unwrap_or_else(|| {
+                                import
+                                    .path
+                                    .rsplit('/')
+                                    .next()
+                                    .unwrap_or_default()
+                                    .to_string()
+                            });
+                        (GoPackage::Folder(folder), name)
+                    }
+                    None => (
+                        GoPackage::External,
+                        external_package_name(&import.path).to_string(),
+                    ),
+                };
+                names.insert(import.name.clone().unwrap_or(default_name), package);
+            }
+            go_imports.insert(i, names);
+        }
         for (i, file) in files.iter().enumerate() {
             if file.language == "rust" {
                 modules.insert(i, rust_module(file.path));
@@ -471,10 +672,29 @@ impl<'a> Names<'a> {
                 }
             }
         }
+        let mut terraform: HashMap<TerraformKey<'a>, Vec<i64>> = HashMap::new();
+        let mut terraform_modules = HashMap::new();
+        for file in files.iter().filter(|f| f.language == "terraform") {
+            let folder = folder_of(file.path);
+            for s in &file.symbols {
+                terraform
+                    .entry((folder, s.kind, s.container.as_deref(), s.name.as_str()))
+                    .or_default()
+                    .push(s.id);
+            }
+            for import in file.imports {
+                if let Some(name) = &import.name {
+                    terraform_modules.insert((folder, name.as_str()), import.path.as_str());
+                }
+            }
+        }
         Names {
             files,
             by_name,
             modules,
+            go_imports,
+            terraform,
+            terraform_modules,
         }
     }
 
@@ -522,6 +742,71 @@ impl<'a> Names<'a> {
         }
     }
 
+    /// The edge of a Terraform reference from file `file` (KAIROS-T-0471).
+    fn terraform_edge(
+        &self,
+        file: usize,
+        caller_id: i64,
+        call: &CallSite,
+        stats: &mut EdgeStats,
+    ) -> NewEdge {
+        let here = folder_of(self.files[file].path);
+        // The folder of a module call of this folder: `None` when the call
+        // is not known or its source is remote.
+        let module_folder = |z: &str| {
+            self.terraform_modules
+                .get(&(here, z))
+                .and_then(|source| terraform_source_folder(here, source))
+        };
+        let find = |folder: &str, kind: &str, container: Option<&str>, name: &str| -> Vec<i64> {
+            self.terraform
+                .get(&(folder, kind, container, name))
+                .cloned()
+                .unwrap_or_default()
+        };
+        let parts: Vec<&str> = call.written.split('.').collect();
+        let found = match (call.module.as_deref(), parts.as_slice()) {
+            (Some(z), _) => module_folder(z)
+                .map(|f| find(&f, "variable", Some("var"), &call.name))
+                .unwrap_or_default(),
+            (None, ["var", x]) => find(here, "variable", Some("var"), x),
+            (None, ["local", x]) => find(here, "local", Some("local"), x),
+            (None, ["module", z]) => find(here, "module", Some("module"), z),
+            (None, ["module", z, o]) => module_folder(z)
+                .map(|f| find(&f, "output", None, o))
+                .unwrap_or_default(),
+            (None, ["data", t, n]) => find(here, "data", Some(&format!("data.{t}")), n),
+            (None, [t, n]) => find(here, "resource", Some(t), n),
+            _ => Vec::new(),
+        };
+        let (class, callee_id, candidates) = match found.as_slice() {
+            [] => {
+                stats.external_name += 1;
+                ("external", None, Vec::new())
+            }
+            [one] => {
+                stats.certain_name += 1;
+                ("certain", Some(*one), Vec::new())
+            }
+            many => {
+                stats.possible_name += 1;
+                ("possible", None, many.to_vec())
+            }
+        };
+        NewEdge {
+            caller_id,
+            callee_id,
+            callee_name: call.written.clone(),
+            class,
+            origin: "name",
+            line: call.line,
+            col: call.col,
+            candidates,
+            scip_pending: false,
+            target: None,
+        }
+    }
+
     /// The name class of a call of `name` from file `file`. A qualified Rust
     /// call (`a::f`) goes only to a function whose container or module
     /// matches its path. A method call (`x.f`) does not go to the caller
@@ -560,28 +845,64 @@ impl<'a> Names<'a> {
         } else {
             None
         };
-        let (chosen, unmatched) = match &qualifier {
-            Some(qualifier) => {
-                let caller = self.sym(file, caller_id);
-                let (matching, other): (Vec<Hit>, Vec<Hit>) = all
+        // A Go call `pkg.F` of an imported package (KAIROS-T-0469).
+        let go_package = (language == "go")
+            .then(|| written.strip_suffix(name)?.strip_suffix('.'))
+            .flatten()
+            .filter(|q| !q.contains('.'))
+            .and_then(|q| self.go_imports.get(&file)?.get(q));
+        let (chosen, unmatched) = match (&qualifier, go_package) {
+            (_, Some(GoPackage::External)) => (Vec::new(), Vec::new()),
+            (_, Some(GoPackage::Folder(folder))) => {
+                let chosen = all
                     .iter()
-                    .partition(|(f, id)| self.matches_path(qualifier, file, caller, *f, *id));
-                let other: Vec<i64> = other
-                    .into_iter()
-                    .map(|(_, id)| id)
-                    .filter(|id| *id != caller_id)
+                    .filter(|(f, id)| {
+                        let there = &self.files[*f];
+                        there.language == "go"
+                            && folder_of(there.path) == folder
+                            && self.sym(*f, *id).is_some_and(|s| s.kind == "function")
+                    })
+                    .map(|(_, id)| *id)
                     .collect();
-                (prefer_same_file(matching), other)
+                (chosen, Vec::new())
             }
-            None => {
-                let method_call = written.contains('.');
-                let pool: Vec<(usize, i64)> = all
+            // A plain Go call goes to its own package first: the folder.
+            (_, None) if language == "go" && !written.contains('.') => {
+                let here = folder_of(self.files[file].path);
+                let in_folder: Vec<(usize, i64)> = all
                     .iter()
                     .copied()
-                    .filter(|(_, id)| !(method_call && *id == caller_id))
+                    .filter(|(f, _)| folder_of(self.files[*f].path) == here)
                     .collect();
-                (prefer_same_file(pool), Vec::new())
+                if in_folder.is_empty() {
+                    (prefer_same_file(all.to_vec()), Vec::new())
+                } else {
+                    (prefer_same_file(in_folder), Vec::new())
+                }
             }
+            (qualifier, None) => match qualifier {
+                Some(qualifier) => {
+                    let caller = self.sym(file, caller_id);
+                    let (matching, other): (Vec<Hit>, Vec<Hit>) = all
+                        .iter()
+                        .partition(|(f, id)| self.matches_path(qualifier, file, caller, *f, *id));
+                    let other: Vec<i64> = other
+                        .into_iter()
+                        .map(|(_, id)| id)
+                        .filter(|id| *id != caller_id)
+                        .collect();
+                    (prefer_same_file(matching), other)
+                }
+                None => {
+                    let method_call = written.contains('.');
+                    let pool: Vec<(usize, i64)> = all
+                        .iter()
+                        .copied()
+                        .filter(|(_, id)| !(method_call && *id == caller_id))
+                        .collect();
+                    (prefer_same_file(pool), Vec::new())
+                }
+            },
         };
         let (class, callee_id, candidates) = match (chosen.as_slice(), unmatched.as_slice()) {
             ([], []) => {
@@ -696,13 +1017,13 @@ pub(crate) fn choose(
 }
 
 /// The edges of all parsed files, with the Rust edges from `rust`.
-pub fn resolve(files: &[ParsedFile<'_>], rust: RustEdges<'_>) -> Resolved {
+pub fn resolve(files: &[ParsedFile<'_>], scip: ScipEdges<'_>, go_modules: &[GoModule]) -> Resolved {
     let no_crates = scip::Crates::default();
-    let crates = match &rust {
-        RustEdges::Scip(_, c) => *c,
+    let crates = match &scip {
+        ScipEdges::Scip(data) => &data.crates,
         _ => &no_crates,
     };
-    let names = Names::new(files);
+    let names = Names::new(files, go_modules);
     let by_path: HashMap<&str, usize> =
         files.iter().enumerate().map(|(i, f)| (f.path, i)).collect();
     let starts: Vec<Vec<usize>> = files.iter().map(|f| line_starts(f.text)).collect();
@@ -710,14 +1031,14 @@ pub fn resolve(files: &[ParsedFile<'_>], rust: RustEdges<'_>) -> Resolved {
     let mut edges = Vec::new();
     let mut covered = Vec::new();
 
-    // The Rust documents of the SCIP index, by file, and the definition of
+    // The documents of the SCIP indexes, by file, and the definition of
     // each symbol.
     let mut scip_docs: HashMap<usize, &proto::Document> = HashMap::new();
     let mut definitions: HashMap<&str, Vec<(Option<usize>, usize)>> = HashMap::new();
-    if let RustEdges::Scip(index, _) = &rust {
-        for doc in &index.documents {
+    if let ScipEdges::Scip(data) = &scip {
+        for doc in &data.index.documents {
             let file = by_path.get(doc.relative_path.as_str()).copied();
-            if let Some(f) = file.filter(|&f| files[f].language == "rust") {
+            if let Some(f) = file.filter(|&f| data.covers(files[f].language)) {
                 scip_docs.insert(f, doc);
             }
             for occ in &doc.occurrences {
@@ -742,7 +1063,7 @@ pub fn resolve(files: &[ParsedFile<'_>], rust: RustEdges<'_>) -> Resolved {
     }
     // For a base index: the id of each symbol, by its key.
     let mut ids: HashMap<SymKey, i64> = HashMap::new();
-    if let RustEdges::Base { .. } = &rust {
+    if let ScipEdges::Base { .. } = &scip {
         for file in files {
             let keys = sym_keys(
                 file.path,
@@ -756,6 +1077,12 @@ pub fn resolve(files: &[ParsedFile<'_>], rust: RustEdges<'_>) -> Resolved {
         }
     }
     let mut joins: HashMap<(usize, usize), Option<i64>> = HashMap::new();
+    // The place of each call site, for the calls of a class.
+    let call_starts: HashSet<(usize, usize)> = files
+        .iter()
+        .enumerate()
+        .flat_map(|(i, f)| f.calls.iter().map(move |c| (i, c.start_byte)))
+        .collect();
 
     for (i, file) in files.iter().enumerate() {
         // The places that SCIP resolved: no name class goes there.
@@ -768,6 +1095,7 @@ pub fn resolve(files: &[ParsedFile<'_>], rust: RustEdges<'_>) -> Resolved {
         // function.
         let mut pending = false;
         if let Some(doc) = scip_docs.get(&i) {
+            let rust = file.language == "rust";
             for occ in &doc.occurrences {
                 if occ.range.len() < 3 {
                     continue;
@@ -781,7 +1109,14 @@ pub fn resolve(files: &[ParsedFile<'_>], rust: RustEdges<'_>) -> Resolved {
                 ) else {
                     continue;
                 };
-                resolved_at.insert(byte);
+                // Each reference of rust-analyzer resolves its place: a tuple
+                // struct or an enum variant gets no name class. In the other
+                // languages, only a place with a SCIP edge is resolved: a
+                // call of a value or of a type that SCIP does not join keeps
+                // its name class (KAIROS-T-0473).
+                if rust {
+                    resolved_at.insert(byte);
+                }
                 // An operator (`*`, `+`, a deref) is a reference to its trait
                 // method in newer rust-analyzer releases. It is not a call
                 // that the code writes, so it is not an edge.
@@ -791,19 +1126,73 @@ pub fn resolve(files: &[ParsedFile<'_>], rust: RustEdges<'_>) -> Resolved {
                 {
                     continue;
                 }
-                let Some((name, short)) = scip::descriptors(&occ.symbol)
-                    .as_deref()
-                    .and_then(scip::function_name)
-                else {
+                let Some(descriptors) = scip::descriptors(&occ.symbol) else {
                     continue;
                 };
                 let Some(caller_id) = caller_at(file, byte) else {
                     continue;
                 };
-                let (line, col) = (occ.range[0] as usize + 1, occ.range[1] as usize + 1);
+                let line = occ.range[0] as usize + 1;
+                // The column in bytes, whatever the encoding of the index.
+                let col = byte - starts[i][occ.range[0] as usize] + 1;
                 let defs = definitions
                     .get(occ.symbol.as_str())
                     .map_or(&[][..], Vec::as_slice);
+                // A term at a call site is called too, outside Rust: a method
+                // of a Go interface, a function in a variable.
+                let at_call = !rust && call_starts.contains(&(i, byte));
+                let Some((name, short)) = scip::function_name(&descriptors, family(file.language))
+                    .or_else(|| {
+                        at_call
+                            .then(|| scip::term_name(&descriptors, family(file.language)))
+                            .flatten()
+                    })
+                else {
+                    // A call of a class makes an object (Python, TypeScript,
+                    // JavaScript): the reference is to the type.
+                    if rust || !call_starts.contains(&(i, byte)) {
+                        continue;
+                    }
+                    let Some((type_name, short)) = scip::type_name(&descriptors) else {
+                        continue;
+                    };
+                    let Target::Indexed(def_file, def_byte) =
+                        choose(defs, file.path, files, crates)
+                    else {
+                        continue;
+                    };
+                    let callee = files[def_file]
+                        .symbols
+                        .iter()
+                        .filter(|s| {
+                            is_callable(files[def_file].language, s.kind)
+                                && s.name == type_name
+                                && s.start_byte <= def_byte
+                                && def_byte < s.end_byte
+                        })
+                        .min_by_key(|s| s.end_byte - s.start_byte)
+                        .map(|s| s.id);
+                    if let Some(callee_id) = callee {
+                        resolved_at.insert(byte);
+                        stats.certain_scip += 1;
+                        edges.push(NewEdge {
+                            caller_id,
+                            callee_id: Some(callee_id),
+                            callee_name: short,
+                            class: "certain",
+                            origin: "scip",
+                            line,
+                            col,
+                            candidates: Vec::new(),
+                            scip_pending: false,
+                            target: None,
+                        });
+                    }
+                    continue;
+                };
+                if !rust {
+                    resolved_at.insert(byte);
+                }
                 match choose(defs, file.path, files, crates) {
                     Target::Ambiguous => {
                         stats.scip_ambiguous += 1;
@@ -895,8 +1284,10 @@ pub fn resolve(files: &[ParsedFile<'_>], rust: RustEdges<'_>) -> Resolved {
                     }
                 }
             }
-        } else if let (RustEdges::Base { bases, mark }, "rust") = (&rust, file.language) {
-            pending = *mark;
+        } else if let ScipEdges::Base { bases, marked } = &scip
+            && marked.contains(file.language)
+        {
+            pending = true;
             let base_files: Vec<&BaseFile> = bases
                 .iter()
                 .filter_map(|b| b.files.get(file.path))
@@ -961,8 +1352,8 @@ pub fn resolve(files: &[ParsedFile<'_>], rust: RustEdges<'_>) -> Resolved {
                                     e.col,
                                     &mut stats,
                                 );
-                                edge.scip_pending = *mark;
-                                stats.pending += usize::from(*mark);
+                                edge.scip_pending = true;
+                                stats.pending += 1;
                                 edges.push(edge);
                                 continue;
                             }
@@ -985,8 +1376,8 @@ pub fn resolve(files: &[ParsedFile<'_>], rust: RustEdges<'_>) -> Resolved {
                                     e.col,
                                     &mut stats,
                                 );
-                                edge.scip_pending = *mark;
-                                stats.pending += usize::from(*mark);
+                                edge.scip_pending = true;
+                                stats.pending += 1;
                                 edges.push(edge);
                                 continue;
                             }
@@ -1025,6 +1416,10 @@ pub fn resolve(files: &[ParsedFile<'_>], rust: RustEdges<'_>) -> Resolved {
             };
             if file.language == "rust" {
                 stats.rust_unresolved += 1;
+            }
+            if file.language == "terraform" {
+                edges.push(names.terraform_edge(i, caller_id, call, &mut stats));
+                continue;
             }
             let mut edge = names.edge(
                 file.language,
@@ -1085,6 +1480,184 @@ pub fn resolve(files: &[ParsedFile<'_>], rust: RustEdges<'_>) -> Resolved {
 mod tests {
     use super::*;
 
+    /// KAIROS-T-0469: a Go call `pkg.F` goes to `F` in the folder of the
+    /// imported package; a package outside the module is external.
+    #[test]
+    fn a_go_call_goes_to_the_imported_package() {
+        let imports = [
+            Import {
+                name: None,
+                path: "example.com/m/a".into(),
+            },
+            Import {
+                name: Some("bee".into()),
+                path: "example.com/m/b".into(),
+            },
+            Import {
+                name: None,
+                path: "fmt".into(),
+            },
+            Import {
+                name: None,
+                path: "gopkg.in/yaml.v3".into(),
+            },
+        ];
+        let calls = [
+            call("F", "a.F", 5),
+            call("F", "bee.F", 6),
+            call("Println", "fmt.Println", 7),
+            call("Marshal", "yaml.Marshal", 8),
+            call("F", "x.F", 9),
+            call("G", "G", 10),
+        ];
+        let go = |path, symbols, calls, imports| ParsedFile {
+            path,
+            language: "go",
+            text: "",
+            symbols,
+            calls,
+            use_ranges: &[],
+            macro_calls: &[],
+            macro_ranges: &[],
+            package: None,
+            imports,
+        };
+        let files = [
+            go(
+                "cmd/main.go",
+                vec![sym(1, "main", "function", (0, 50))],
+                &calls[..],
+                &imports[..],
+            ),
+            go("a/a.go", vec![sym(2, "F", "function", (0, 9))], &[], &[]),
+            go(
+                "b/b.go",
+                vec![
+                    sym(3, "F", "function", (0, 9)),
+                    sym(4, "Marshal", "function", (10, 20)),
+                ],
+                &[],
+                &[],
+            ),
+            go("cmd/g.go", vec![sym(5, "G", "function", (0, 9))], &[], &[]),
+            go(
+                "other/g.go",
+                vec![sym(6, "G", "function", (0, 9))],
+                &[],
+                &[],
+            ),
+        ];
+        let modules =
+            [GoModule::read("", "// x\nmodule example.com/m // the root\n\ngo 1.22\n").unwrap()];
+        assert_eq!(modules[0].path, "example.com/m");
+        let Resolved { edges, .. } = resolve(&files, ScipEdges::Names, &modules);
+        let got: Vec<_> = edges
+            .iter()
+            .map(|e| {
+                (
+                    e.callee_name.as_str(),
+                    e.class,
+                    e.callee_id,
+                    e.candidates.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("a.F", "certain", Some(2), vec![]),
+                ("bee.F", "certain", Some(3), vec![]),
+                ("fmt.Println", "external", None, vec![]),
+                ("yaml.Marshal", "external", None, vec![]),
+                // A call on a value is name-matched, as before.
+                ("x.F", "possible", None, vec![2, 3]),
+                // A plain call goes to its own folder.
+                ("G", "certain", Some(5), vec![]),
+            ]
+        );
+    }
+
+    /// KAIROS-T-0471: a Terraform reference stays in its folder.
+    #[test]
+    fn a_terraform_reference_stays_in_its_folder() {
+        let mut topic_a = sym(1, "events", "resource", (0, 40));
+        topic_a.container = Some("aws_sns_topic".into());
+        let mut out_a = sym(2, "topic", "output", (50, 90));
+        out_a.container = None;
+        let mut topic_b = sym(3, "events", "resource", (0, 40));
+        topic_b.container = Some("aws_sns_topic".into());
+        let mut use_b = sym(4, "copy", "resource", (50, 90));
+        use_b.container = Some("aws_sns_topic".into());
+        let reference = |at| CallSite {
+            name: "events".into(),
+            written: "aws_sns_topic.events".into(),
+            start_byte: at,
+            end_byte: at + 6,
+            line: 1,
+            col: 1,
+            module: None,
+        };
+        let a_calls = [reference(60)];
+        let b_calls = [reference(60)];
+        let tf = |path, symbols, calls| ParsedFile {
+            path,
+            language: "terraform",
+            text: "",
+            symbols,
+            calls,
+            use_ranges: &[],
+            macro_calls: &[],
+            macro_ranges: &[],
+            package: None,
+            imports: &[],
+        };
+        let files = [
+            tf("a/main.tf", vec![topic_a, out_a], &a_calls[..]),
+            tf("b/main.tf", vec![topic_b, use_b], &b_calls[..]),
+        ];
+        let Resolved { edges, .. } = resolve(&files, ScipEdges::Names, &[]);
+        let got: Vec<_> = edges
+            .iter()
+            .map(|e| (e.caller_id, e.class, e.callee_id))
+            .collect();
+        assert_eq!(got, [(2, "certain", Some(1)), (4, "certain", Some(3))]);
+    }
+
+    #[test]
+    fn the_folder_of_a_terraform_module_source() {
+        assert_eq!(
+            terraform_source_folder("infra", "./modules/bucket").as_deref(),
+            Some("infra/modules/bucket")
+        );
+        assert_eq!(
+            terraform_source_folder("infra/live", "../modules/net/").as_deref(),
+            Some("infra/modules/net")
+        );
+        assert_eq!(terraform_source_folder("", "./m").as_deref(), Some("m"));
+        assert_eq!(terraform_source_folder("", "../m"), None);
+        assert_eq!(
+            terraform_source_folder("infra", "terraform-aws-modules/vpc/aws"),
+            None
+        );
+        assert_eq!(
+            terraform_source_folder("infra", "git::https://example.com/m.git"),
+            None
+        );
+    }
+
+    #[test]
+    fn the_name_of_an_external_go_package() {
+        for (path, name) in [
+            ("fmt", "fmt"),
+            ("net/http", "http"),
+            ("gopkg.in/yaml.v3", "yaml"),
+            ("github.com/x/yaml/v3", "yaml"),
+            ("github.com/mattn/go-sqlite3", "sqlite3"),
+        ] {
+            assert_eq!(external_package_name(path), name, "{path}");
+        }
+    }
+
     #[test]
     fn utf16_columns_become_bytes() {
         let text = "fn é() {}\nlet x = 1;\n";
@@ -1100,6 +1673,10 @@ mod tests {
         );
         assert_eq!(byte_offset(&starts, text, 1, 4, 1), Some(15));
         assert_eq!(byte_offset(&starts, text, 9, 0, 1), None);
+    }
+
+    fn rust_marked() -> HashSet<&'static str> {
+        HashSet::from(["rust"])
     }
 
     fn sym(id: i64, name: &str, kind: &'static str, span: (usize, usize)) -> Sym {
@@ -1124,6 +1701,7 @@ mod tests {
             end_byte: byte + name.len(),
             line: 1,
             col: byte + 1,
+            module: None,
         }
     }
 
@@ -1147,6 +1725,8 @@ mod tests {
                 use_ranges: &[],
                 macro_calls: &[],
                 macro_ranges: &[],
+                package: None,
+                imports: &[],
             },
             ParsedFile {
                 path: "b.go",
@@ -1160,6 +1740,8 @@ mod tests {
                 use_ranges: &[],
                 macro_calls: &[],
                 macro_ranges: &[],
+                package: None,
+                imports: &[],
             },
             ParsedFile {
                 path: "c.go",
@@ -1170,9 +1752,11 @@ mod tests {
                 use_ranges: &[],
                 macro_calls: &[],
                 macro_ranges: &[],
+                package: None,
+                imports: &[],
             },
         ];
-        let Resolved { edges, stats, .. } = resolve(&files, RustEdges::Names);
+        let Resolved { edges, stats, .. } = resolve(&files, ScipEdges::Names, &[]);
         let got: Vec<_> = edges
             .iter()
             .map(|e| {
@@ -1246,7 +1830,7 @@ mod tests {
         };
         BaseIndex {
             files: HashMap::from([("src/lib.rs".to_string(), file)]),
-            refs: Default::default(),
+            ..Default::default()
         }
     }
 
@@ -1260,6 +1844,8 @@ mod tests {
             use_ranges: &[],
             macro_calls: &[],
             macro_ranges: &[],
+            package: None,
+            imports: &[],
         }
     }
 
@@ -1282,10 +1868,11 @@ mod tests {
         let bases = [base()];
         let Resolved { edges, .. } = resolve(
             &files,
-            RustEdges::Base {
+            ScipEdges::Base {
                 bases: &bases,
-                mark: true,
+                marked: &rust_marked(),
             },
+            &[],
         );
         let got: Vec<_> = edges
             .iter()
@@ -1308,10 +1895,11 @@ mod tests {
         let bases = [base()];
         let Resolved { edges, .. } = resolve(
             &files,
-            RustEdges::Base {
+            ScipEdges::Base {
                 bases: &bases,
-                mark: true,
+                marked: &rust_marked(),
             },
+            &[],
         );
         let got: Vec<_> = edges
             .iter()
@@ -1369,7 +1957,7 @@ mod tests {
             file("crates/x-y/src/stack.rs", "", vec![new], &[]),
             file("crates/x-y/src/wrapper.rs", "", vec![get], &get_calls),
         ];
-        let Resolved { edges, .. } = resolve(&files, RustEdges::Names);
+        let Resolved { edges, .. } = resolve(&files, ScipEdges::Names, &[]);
         let got: Vec<_> = edges
             .iter()
             .map(|e| {
@@ -1448,7 +2036,7 @@ mod tests {
         };
         BaseIndex {
             files: HashMap::from([("src/lib.rs".to_string(), file)]),
-            refs: Default::default(),
+            ..Default::default()
         }
     }
 
@@ -1462,10 +2050,11 @@ mod tests {
             let files = [rust_file(text, vec![sym_like(&a)], &calls)];
             resolve(
                 &files,
-                RustEdges::Base {
+                ScipEdges::Base {
                     bases: &bases,
-                    mark: true,
+                    marked: &rust_marked(),
                 },
+                &[],
             )
             .edges
         };

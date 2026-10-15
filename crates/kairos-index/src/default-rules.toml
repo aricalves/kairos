@@ -51,7 +51,7 @@ path = ["**/book/**", "**/dist/**", "**/build/**", "**/target/**"]
 [[rule]]
 id = "vendored-dir"
 decision = "vendored"
-path = ["**/vendor/**", "**/third_party/**", "**/themes/*/**"]
+path = ["**/vendor/**", "**/third_party/**", "**/themes/*/**", "**/.terraform/**"]
 
 [[rule]]
 id = "minified"
@@ -96,7 +96,7 @@ size_over = 1048576
 id = "long-line"
 decision = "vendored"
 longest_line_over = 1000
-not_extension = ["rs", "py", "pyi", "ts", "tsx", "go"]
+not_extension = ["rs", "py", "pyi", "ts", "tsx", "go", "tf", "tfvars"]
 
 [[rule]]
 id = "tool-files"

@@ -359,6 +359,9 @@ the index after each push to the default branch.
 | `KAIROS_CODE_INDEX_POLL_SECS` | whole number | `300` | How often the sweep fetches each indexed repository and adds the build jobs. The sweep is a periodic job: one server runs it at each interval. `0` turns the builder off on that server. |
 | `KAIROS_CODE_INDEX_THREADS` | whole number, 1 or more | `4` | The number of CPU threads that the summary model of the builder uses. More threads make the summaries faster, but they take CPU from the other services on the host. `0` or a value that is not a number stops the start of the server. |
 | `KAIROS_CODE_INDEX_MIN_REBUILD_SECS` | whole number | `0` | The least time in seconds between 2 updates of one repository. `0` turns the limit off. On a slow host, a repository with many pushes then waits, and the other stale repositories get their updates. A value that is not a number stops the start of the server. |
+| `KAIROS_CODE_INDEX_DEPS_CAP_MB` | whole number | `10240` | The largest total size in MB of the dependency caches of the SCIP runners of Go, TypeScript and Python. After a run, the builder removes the caches of other repositories, oldest first, until the total is below this value. See [The tools of Go, TypeScript and Python](#the-tools-of-go-typescript-and-python). |
+| `KAIROS_CODE_INDEX_MIN_FREE_MB` | whole number | `5120` | The least free disk space in MB before a dependency install. When the free space is less, the builder removes the dependency caches first, oldest first. If the space is still less, the language gets its edges by name, and the run records a warning. |
+| `KAIROS_CODE_INDEX_DEPS_ENV` | comma-separated names | unset | More names of environment variables that a dependency install gets. An install gets only `PATH`, its cache folders and the variables in the list below, so no other secret of the server gets to a package install. |
 
 #### The providers of the summaries and the vectors
 
@@ -633,6 +636,89 @@ the image. The server unpacks rust-analyzer to `tools/rust-analyzer` and the
 Keep their names. Put them in `KAIROS_CODE_INDEX_DIR/tools/` before the
 start. The user of the server (uid 10001 in the image) must be able to write
 the folder. Then the server downloads nothing.
+
+#### The tools of Go, TypeScript and Python
+
+The builder runs a SCIP indexer for Go, TypeScript (with TSX and
+JavaScript) and Python. Then the edges and the uses of these languages are
+precise, as for Rust. The builder downloads the tools of a language into
+`KAIROS_CODE_INDEX_DIR/tools/` when a repository first needs that language.
+A repository with no file of a language never causes the download of its
+tools.
+
+| Language | Tools | Licences |
+|---|---|---|
+| Go | Go 1.27.2 (`https://go.dev/dl/`), scip-go 0.2.7 (`https://github.com/sourcegraph/scip-go/releases`) | BSD-3-Clause, Apache-2.0 |
+| TypeScript, TSX, JavaScript | Node.js 24.22.0 (`https://nodejs.org/dist/`), `@sourcegraph/scip-typescript` 0.4.0 (npm) | MIT, Apache-2.0 |
+| Python | Node.js 24.22.0, `@sourcegraph/scip-python` 0.6.6 (npm), CPython 3.13.16 of python-build-standalone 20261013 (`https://github.com/astral-sh/python-build-standalone/releases`) | MIT, MIT, PSF-2.0 (build scripts MPL-2.0) |
+| Python with `uv.lock` | uv 0.13.1 (`https://github.com/astral-sh/uv/releases`), only for a project with `uv.lock` | MIT or Apache-2.0 |
+
+- Each archive has a pinned sha256 for each platform (amd64 and arm64,
+  Linux and macOS). The pins are in `crates/kairos-index/src/languages.rs`.
+  scip-go has no build for macOS amd64.
+- npm installs scip-typescript and scip-python with `npm ci` from the lock
+  files in `crates/kairos-index/npm/`. npm checks the integrity of each
+  package.
+- The builder keeps the archives in `tools/` and unpacks each tool into
+  `tools/<tool>-<version>/`.
+- Sometimes a download fails, a file has an incorrect sha256, or the
+  platform has no pin. Then the language gets its edges by name. The run
+  records a warning with the reason. The build continues. The server does not
+  replace a file with an incorrect checksum. Remove the file to download
+  it again.
+- **With no network:** put the archives in `tools/` with the names of their
+  URLs. The npm packages need access to the npm registry, or a registry
+  that `NPM_CONFIG_REGISTRY` gives.
+
+**The dependency cache.** The indexers give precise results only with the
+dependencies of the repository. Before a run, the builder installs them:
+
+- Go: `go mod download`.
+- TypeScript: `npm ci` or `npm install`, with `--ignore-scripts`.
+- Python: a virtual environment with `pip install`.
+
+The builder keeps them in `KAIROS_CODE_INDEX_DIR/deps/<tenant>/<repository id>/<language>/`:
+the Go module cache, the npm cache and the virtual environment.
+
+- A Python project with `uv.lock` and `pyproject.toml` at the root installs
+  with `uv sync --frozen`. The builder downloads uv on first need. uv
+  installs the locked versions with the CPython of the builder. It
+  downloads no Python.
+- A Python project with no `uv.lock` installs with `pip install`: `-r`
+  for each `requirements*.txt` file, else `-e .`.
+
+- `KAIROS_CODE_INDEX_DEPS_CAP_MB` is the largest total size of the caches.
+- When the free disk space is less than `KAIROS_CODE_INDEX_MIN_FREE_MB`,
+  the builder removes the caches before an install, oldest first.
+- If the install or the indexer fails, the language gets its edges by
+  name. The run records a warning.
+- A repository with no dependency file gets no install. The indexer reads
+  the sources only. A dependency file is `go.mod`, `package.json` or a
+  Python requirements file.
+
+**Private dependencies.** The builder keeps no new secrets. An install gets
+`PATH` and its cache folders. It also gets these variables, if the server
+has them:
+
+- Network: `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` (and lower case),
+  `SSL_CERT_FILE`, `SSL_CERT_DIR`.
+- Locale: `LANG`, `LC_ALL`, `TZ`.
+- Git: `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_*`, `GIT_CONFIG_VALUE_*`,
+  `GIT_ASKPASS`, `NETRC`.
+- Go: `GOPRIVATE`, `GONOPROXY`, `GONOSUMDB`, `GONOSUMCHECK`, `GOPROXY`,
+  `GOSUMDB`, `GOINSECURE`, `GOAUTH`.
+- npm: `NODE_AUTH_TOKEN`, `NPM_TOKEN`, `NPM_CONFIG_*`, `npm_config_*`.
+- Python: `PIP_INDEX_URL`, `PIP_EXTRA_INDEX_URL`, `PIP_TRUSTED_HOST`,
+  `PIP_CERT`, `UV_INDEX_*`, `UV_DEFAULT_INDEX`, `UV_EXTRA_INDEX_URL`.
+- GitHub: `GITHUB_TOKEN`, `GH_TOKEN`.
+
+Add more names with `KAIROS_CODE_INDEX_DEPS_ENV`.
+
+**A local run.** `kairos index` on a computer downloads no tools and
+installs no dependencies. It uses the dependencies of the checkout. It
+uses these tools on `PATH`: `go` and `scip-go`, `node` and
+`scip-typescript`, `scip-python` and `python3`. If a tool is not there, the language gets its
+edges by name, and the CLI shows a warning.
 
 ### Development
 
@@ -979,12 +1065,20 @@ symbol as `symbol` does.
   `call`, `type`, `field`, `import` and `other` (a constant, a module or an
   enum variant). A use of a field of a struct is a use of the struct, with
   the kind `field`. The definition and `Self` are not uses.
-- For Python, TypeScript, JavaScript and Go, the index has the calls only.
-  The result says so.
-- `kairos index update` with no `--rust-edges` keeps the uses of each Rust
-  file that did not change. A changed Rust file has its calls only until
+- For Go, TypeScript, TSX, JavaScript and Python, the uses come from the
+  SCIP data of their indexers, if the build ran them (see [The tools of Go, TypeScript and Python](#the-tools-of-go-typescript-and-python)).
+  The kinds are the same. A use of a method of a Go interface is a `call`
+  of the interface.
+- When the build did not run the indexer of a language (the tool is not
+  there, or the install or the indexer failed), the index has the calls
+  only for that language. This applies to Rust too. A missing
+  rust-analyzer or std source gives Rust its calls by name. A file with an
+  incorrect sha256 or a failed run does the same. The result says so. The
+  build shows a warning with the reason.
+- `kairos index update` with no `--rust-edges` (or `--scip`) keeps the uses
+  of each file that did not change. A changed file has its calls only until
   the next SCIP run. The result gives the count of these files. Run
-  `kairos index update --rust-edges` to get all the uses again.
+  `kairos index update --scip` to get all the uses again.
 - The result shows the possible calls only when `possible` is true. A
   possible call is a call by a name that more than one function has.
 - `limit` is the most uses to show, from 1 to 1000. The default is 100.
@@ -992,6 +1086,71 @@ symbol as `symbol` does.
 The uses are part of the index since schema version 7. Kairos refuses an
 index of an earlier version. Run `kairos index --full`, or take a new base
 index from Kairos.
+
+### The code index: Terraform
+
+The index reads `.tf` and `.tfvars` files as the language `terraform`. Each
+top-level block gives a symbol. The name and the container of the symbol
+make the address that Terraform code uses:
+
+| Block | Kind | Name in the tools |
+|---|---|---|
+| `resource "aws_s3_bucket" "b"` | `resource` | `aws_s3_bucket.b` |
+| `data "aws_iam_policy" "p"` | `data` | `data.aws_iam_policy.p` |
+| `module "net"` | `module` | `module.net` |
+| `variable "region"` | `variable` | `var.region` |
+| each entry of a `locals` block | `local` | `local.name` |
+| `output "id"` | `output` | `id` |
+| `provider "aws"` | `provider` | `aws` |
+
+- A `terraform`, `moved`, `import` or `check` block gives no symbol.
+- A `.tfvars` file has no symbols.
+- The index does not read `.tf.json` files. They are JSON, and the HCL
+  grammar does not read JSON.
+- A resource and a data source get a summary. A file of variables, outputs
+  and module calls gets a summary from its first comment and its blocks.
+- The index does not read the `.terraform/` folder. `terraform init` puts
+  the downloaded modules there.
+
+The tools `callers`, `callees` and `path` use the references of the
+Terraform code. A reference is a call from the block that holds it to the
+block that it names:
+
+- `var.x`, `local.x`, `module.z`, `data.t.n` and `t.n` go to the block in
+  the same folder. Terraform reads one folder as one module. Thus a block
+  of the same name in a different folder is not a match.
+- `module.z.o` goes to the output `o` of the module that `module "z"`
+  calls. Each argument `x` of `module "z"` goes to the variable `x` of that
+  module. The `source` must be a local path (`./` or `../`). A module from a
+  registry, from git or from a URL is outside the checkout: its references
+  are external.
+- `count.index`, `each.key`, `self`, `path` and `terraform` are not
+  references to a block.
+
+The tool `module_map` shows the Terraform blocks of each folder with
+Terraform code, before its files:
+
+```text
+## infra/modules/bucket
+resources: aws_s3_bucket (this [count]), aws_sns_topic (events [for_each])
+variables: name, owner
+outputs: arn
+called by: infra (module.store)
+```
+
+- `resources:` and `data:` give the managed resources and the data
+  resources, by type.
+- `module calls:` gives each `module` block with its `source` and its
+  `version`.
+- `[count]` and `[for_each]` mark a block that has `count` or `for_each`.
+  The tool does not calculate the count of the instances.
+- `called by:` gives the module calls of the checkout that call the folder.
+- A root folder has no `called by:` line. It has a `calls:` line with each
+  chain of module calls from it, for example
+  `module.store > infra/modules/bucket`. A module from a registry, from git
+  or from a URL has `(remote)`.
+
+A folder with no Terraform code shows its summary and its files only.
 
 ## Helm chart values
 

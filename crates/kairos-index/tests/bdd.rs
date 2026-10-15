@@ -82,14 +82,34 @@ struct IndexWorld {
 
 /// The rust-analyzer and the std source of the scenarios: those pinned in
 /// the cache, or `rust_analyzer` and `std_source`. The scenarios never
-/// download them.
+/// download them. The expected edges of the fixtures are those of the
+/// edges by name for Go, TypeScript and Python, so their SCIP runners are
+/// off, also on a computer that has their tools (`tests/scip_languages.rs`
+/// tests them, KAIROS-T-0473).
 fn build_options(rust_analyzer: Option<PathBuf>, std_source: Option<PathBuf>) -> BuildOptions {
-    BuildOptions {
+    let mut options = BuildOptions {
         rust_analyzer,
         std_source,
         sysroot: None,
         download: false,
+        ..Default::default()
+    };
+    for (name, languages) in [
+        ("go", &["go"][..]),
+        ("typescript", &["typescript", "tsx", "javascript"][..]),
+        ("python", &["python"][..]),
+    ] {
+        let languages: &'static [&'static str] = languages;
+        options
+            .scip
+            .runners
+            .push(std::sync::Arc::new(kairos_index::MissingRunner {
+                name,
+                languages,
+                reason: "off in the scenarios".into(),
+            }));
     }
+    options
 }
 
 /// What an index holds, to compare before and after an update.
@@ -768,6 +788,7 @@ fn each_symbol_is_complete(world: &mut IndexWorld) {
                 "tsx",
                 "javascript",
                 "go",
+                "terraform",
                 "sql"
             ]
             .contains(&s.language.as_str()),
@@ -1252,24 +1273,54 @@ fn a_wrong_binary(world: &mut IndexWorld) {
     world.extra.push(dir);
 }
 
-#[then("the build stops, and the error names the binary and the expected checksum")]
-fn the_build_stops(world: &mut IndexWorld) {
-    assert!(world.report.is_none(), "the build did not stop");
-    let error = world
-        .build_error
-        .as_deref()
-        .expect("the build gave no error");
-    let path = world.rust_analyzer.as_ref().expect("no binary");
+#[then(
+    "the build finishes with the Rust edges by name, and a Rust warning names the binary and the expected checksum"
+)]
+fn the_binary_falls_back(world: &mut IndexWorld) {
+    let path = world.rust_analyzer.clone().expect("no binary");
     let expected = rust_analyzer::pin()
         .expect("a pin for this platform")
         .binary_sha256;
+    rust_falls_back(world, &path, expected);
+}
+
+/// KAIROS-T-0485: the build finished, the Rust edges are by name, and the
+/// one warning is for Rust and names `path` and `checksum`.
+fn rust_falls_back(world: &IndexWorld, path: &Path, checksum: &str) {
+    let report = world.report.as_ref().unwrap_or_else(|| {
+        panic!(
+            "the build stopped: {}",
+            world.build_error.as_deref().unwrap_or_default()
+        )
+    });
+    assert!(report.scip.is_none(), "rust-analyzer ran");
+    let rust: Vec<_> = report
+        .scip_warnings
+        .iter()
+        .filter(|w| w.language == "rust")
+        .collect();
+    assert_eq!(rust.len(), 1, "{:?}", report.scip_warnings);
+    let reason = &rust[0].reason;
     assert!(
-        error.contains(&path.display().to_string()),
-        "the error does not name the binary: {error}"
+        reason.contains(&path.display().to_string()),
+        "the warning does not name the file: {reason}"
     );
     assert!(
-        error.contains(expected),
-        "the error does not name the checksum: {error}"
+        reason.contains(checksum),
+        "the warning does not name the checksum: {reason}"
+    );
+    let edges = world.edges();
+    let rust_edges: Vec<_> = edges
+        .iter()
+        .filter(|e| e.caller.file.ends_with(".rs"))
+        .collect();
+    assert!(
+        rust_edges.iter().any(|e| e.origin == "name"),
+        "no Rust edge by name"
+    );
+    assert!(
+        rust_edges.iter().all(|e| e.origin != "scip"),
+        "a Rust edge is from SCIP"
     );
 }
 
@@ -1422,22 +1473,12 @@ fn a_wrong_std_source(world: &mut IndexWorld) {
     world.extra.push(dir);
 }
 
-#[then("the build stops, and the error names the archive and the expected checksum")]
-fn the_build_stops_for_the_std_source(world: &mut IndexWorld) {
-    assert!(world.report.is_none(), "the build did not stop");
-    let error = world
-        .build_error
-        .as_deref()
-        .expect("the build gave no error");
-    let path = world.std_source.as_ref().expect("no archive");
-    assert!(
-        error.contains(&path.display().to_string()),
-        "the error does not name the archive: {error}"
-    );
-    assert!(
-        error.contains(rust_analyzer::RUST_SRC_SHA256),
-        "the error does not name the checksum: {error}"
-    );
+#[then(
+    "the build finishes with the Rust edges by name, and a Rust warning names the archive and the expected checksum"
+)]
+fn the_std_source_falls_back(world: &mut IndexWorld) {
+    let path = world.std_source.clone().expect("no archive");
+    rust_falls_back(world, &path, rust_analyzer::RUST_SRC_SHA256);
 }
 
 // --- Summaries ------------------------------------------------------------------
@@ -1681,6 +1722,33 @@ fn map_file(world: &IndexWorld, path: &str) -> kairos_index::FileInfo {
         .flat_map(|m| m.files)
         .find(|f| f.path == path)
         .unwrap_or_else(|| panic!("{path} is not in the module map"))
+}
+
+#[then(expr = "the symbol {string} in {string} has a summary")]
+fn the_symbol_has_a_summary(world: &mut IndexWorld, qualified: String, file: String) {
+    let Lookup::Found(s) = world
+        .index()
+        .lookup(&qualified, Some(&file), None)
+        .expect("look up")
+    else {
+        panic!("no one symbol {qualified} in {file}");
+    };
+    assert!(s.summary.is_some(), "{s:?}");
+}
+
+#[then(expr = "the input to the summary of {string} is its declarations:")]
+fn file_summary_from_declarations(
+    world: &mut IndexWorld,
+    path: String,
+    step: &cucumber::gherkin::Step,
+) {
+    let requests = file_requests(world, &path);
+    assert_eq!(requests.len(), 1, "{:#?}", world.requests);
+    assert_eq!(requests[0].kind, kairos_index::DECLARATIONS_KIND);
+    assert_eq!(
+        requests[0].code.as_deref(),
+        step.docstring.as_deref().map(str::trim)
+    );
 }
 
 #[then("the input to the summary of src/lib.rs is its //! comment and its mod and use lines")]
@@ -3770,6 +3838,122 @@ fn search_the_code(world: &mut IndexWorld, query: String) {
     world.search = Some(found);
 }
 
+#[then(expr = "the module map lists {string} with {int} symbols")]
+fn module_map_lists(world: &mut IndexWorld, path: String, symbols: usize) {
+    let file = map_file(world, &path);
+    assert_eq!(file.symbols, symbols, "{file:?}");
+}
+
+#[then(expr = "a result is {string} in {string}")]
+fn a_result_is(world: &mut IndexWorld, qualified: String, file: String) {
+    let hits = &world.search.as_ref().expect("no search ran").hits;
+    assert!(
+        hits.iter()
+            .any(|h| h.symbol.qualified() == qualified && h.symbol.file == file),
+        "{qualified} in {file} is not a result: {:#?}",
+        hits.iter().map(|h| h.symbol.place()).collect::<Vec<_>>()
+    );
+}
+
+/// The one symbol `qualified` in `file`.
+fn one_symbol(world: &IndexWorld, qualified: &str, file: &str) -> kairos_index::SymbolInfo {
+    match world
+        .index()
+        .lookup(qualified, Some(file), None)
+        .expect("look up")
+    {
+        Lookup::Found(s) => s,
+        other => panic!("{qualified} in {file}: {other:?}"),
+    }
+}
+
+/// The lines of a docstring, with no empty line.
+fn docstring_lines(step: &cucumber::gherkin::Step) -> Vec<String> {
+    step.docstring
+        .as_deref()
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+#[then(expr = "the callees of {string} in {string} are:")]
+fn the_callees_are(
+    world: &mut IndexWorld,
+    qualified: String,
+    file: String,
+    step: &cucumber::gherkin::Step,
+) {
+    let s = one_symbol(world, &qualified, &file);
+    let callees = world.index().callees(s.id, false).expect("the callees");
+    let got: Vec<String> = callees
+        .edges
+        .iter()
+        .map(|e| format!("{} ({})", e.other.qualified(), e.other.place()))
+        .collect();
+    assert_eq!(got, docstring_lines(step));
+}
+
+#[then(expr = "the callers of {string} in {string} are:")]
+fn the_callers_are(
+    world: &mut IndexWorld,
+    qualified: String,
+    file: String,
+    step: &cucumber::gherkin::Step,
+) {
+    let s = one_symbol(world, &qualified, &file);
+    let callers = world.index().callers(s.id, false).expect("the callers");
+    let got: Vec<String> = callers
+        .iter()
+        .map(|e| format!("{} ({})", e.other.qualified(), e.other.place()))
+        .collect();
+    assert_eq!(got, docstring_lines(step));
+}
+
+#[then(expr = "the callees of {string} in {string} have the external {string}")]
+fn the_callees_have_the_external(
+    world: &mut IndexWorld,
+    qualified: String,
+    file: String,
+    external: String,
+) {
+    let s = one_symbol(world, &qualified, &file);
+    let callees = world.index().callees(s.id, false).expect("the callees");
+    assert!(
+        callees.externals.iter().any(|e| e.name == external),
+        "{:?}",
+        callees.externals
+    );
+}
+
+/// The module map entry of the folder `path`.
+fn map_module(world: &IndexWorld, path: &str) -> kairos_index::ModuleInfo {
+    world
+        .index()
+        .module_map(None)
+        .expect("read the module map")
+        .into_iter()
+        .find(|m| m.path == path)
+        .unwrap_or_else(|| panic!("{path} is not in the module map"))
+}
+
+#[then(expr = "the Terraform lines of the module {string} are:")]
+fn terraform_lines(world: &mut IndexWorld, path: String, step: &cucumber::gherkin::Step) {
+    let module = map_module(world, &path);
+    let terraform = module
+        .terraform
+        .unwrap_or_else(|| panic!("{path} has no Terraform view"));
+    assert_eq!(terraform.lines(), docstring_lines(step));
+}
+
+#[then(expr = "the module {string} has no Terraform view")]
+fn no_terraform_view(world: &mut IndexWorld, path: String) {
+    let module = map_module(world, &path);
+    assert_eq!(module.terraform, None, "{module:?}");
+}
+
 #[then("the results have test functions and functions that are not test code")]
 fn tests_and_others(world: &mut IndexWorld) {
     let hits = &world.search.as_ref().expect("no search ran").hits;
@@ -4116,6 +4300,42 @@ fn lookup_by_line(world: &mut IndexWorld, name: String, line: u32, file: String)
             assert_eq!((s.kind.as_str(), s.start_line), ("implementation", line))
         }
         other => panic!("{name} at {file}:{line}: {other:?}"),
+    }
+}
+
+#[then(expr = "{string} gives the method of {string} at line {int} of {string}")]
+fn lookup_gives_the_method(
+    world: &mut IndexWorld,
+    name: String,
+    container: String,
+    line: u32,
+    file: String,
+) {
+    match world.index().lookup(&name, None, None).expect("look up") {
+        Lookup::Found(s) => assert_eq!(
+            (
+                s.kind.as_str(),
+                s.container.as_deref(),
+                s.start_line,
+                s.file.as_str()
+            ),
+            ("method", Some(container.as_str()), line, file.as_str())
+        ),
+        other => panic!("{name}: {other:?}"),
+    }
+}
+
+#[then(expr = "{string} with no file gives the function and the method as candidates")]
+fn lookup_lists_function_and_method(world: &mut IndexWorld, name: String) {
+    match world.index().lookup(&name, None, None).expect("look up") {
+        Lookup::Ambiguous(all) => {
+            let found: Vec<String> = all
+                .iter()
+                .map(|s| format!("{} {}", s.kind, s.qualified()))
+                .collect();
+            assert_eq!(found, ["function Greet", "method Greeter.Greet"]);
+        }
+        other => panic!("{name}: {other:?}"),
     }
 }
 

@@ -170,13 +170,14 @@ pub struct Reference {
 /// What the index has for the uses of a symbol (KAIROS-T-0419).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Coverage {
-    /// Each use that SCIP gives: Rust, after a SCIP run.
+    /// Each use that SCIP gives: a language with a SCIP index (Rust, Go,
+    /// TypeScript, JavaScript, Python, KAIROS-T-0473), after a SCIP run.
     Full,
-    /// Rust, but this count of files changed after the last SCIP run: they
-    /// have their calls only.
+    /// A language with a SCIP index, but this count of its files changed
+    /// after the last SCIP run: they have their calls only.
     Pending(usize),
     /// The calls only: the language has no SCIP run, or the index has no
-    /// SCIP data.
+    /// SCIP data for it.
     CallsOnly,
 }
 
@@ -224,6 +225,226 @@ pub struct ModuleInfo {
     pub path: String,
     pub summary: Option<String>,
     pub files: Vec<FileInfo>,
+    /// The Terraform blocks of the folder, when it has Terraform code
+    /// (KAIROS-T-0472).
+    pub terraform: Option<TerraformFolder>,
+}
+
+/// The Terraform view of a folder (KAIROS-T-0472): the field set of
+/// terraform-config-inspect. Terraform reads one folder as one module.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TerraformFolder {
+    /// The managed resources: (type, names). A name has ` [count]` or
+    /// ` [for_each]` when the block has it.
+    pub resources: Vec<(String, Vec<String>)>,
+    /// The data resources: (type, names), marked as the resources.
+    pub data: Vec<(String, Vec<String>)>,
+    /// The module calls.
+    pub module_calls: Vec<TerraformModuleCall>,
+    pub variables: Vec<String>,
+    pub outputs: Vec<String>,
+    /// The module calls of the repository that call this folder:
+    /// `infra (module.store)`.
+    pub called_by: Vec<String>,
+    /// For a root folder (no module call of the repository calls it): each
+    /// chain of module calls from it, `module.store > infra/modules/bucket`.
+    pub calls: Vec<String>,
+}
+
+/// A `module` block.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TerraformModuleCall {
+    pub name: String,
+    pub source: Option<String>,
+    pub version: Option<String>,
+    /// The folder of a local source, from the root.
+    pub folder: Option<String>,
+    /// `count` or `for_each`, when the block has it.
+    pub marker: Option<String>,
+}
+
+impl TerraformFolder {
+    /// The lines of the folder in the module map, with no `- `.
+    pub fn lines(&self) -> Vec<String> {
+        let by_type = |groups: &[(String, Vec<String>)]| {
+            groups
+                .iter()
+                .map(|(ty, names)| format!("{ty} ({})", names.join(", ")))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mut out = Vec::new();
+        if !self.resources.is_empty() {
+            out.push(format!("resources: {}", by_type(&self.resources)));
+        }
+        if !self.data.is_empty() {
+            out.push(format!("data: {}", by_type(&self.data)));
+        }
+        if !self.module_calls.is_empty() {
+            let calls: Vec<String> = self
+                .module_calls
+                .iter()
+                .map(|m| {
+                    let mut text = format!(
+                        "{} = {}",
+                        m.name,
+                        m.source.as_deref().unwrap_or("(no source)")
+                    );
+                    if let Some(version) = &m.version {
+                        text.push_str(&format!(" {version}"));
+                    }
+                    if let Some(marker) = &m.marker {
+                        text.push_str(&format!(" [{marker}]"));
+                    }
+                    text
+                })
+                .collect();
+            out.push(format!("module calls: {}", calls.join(", ")));
+        }
+        if !self.variables.is_empty() {
+            out.push(format!("variables: {}", self.variables.join(", ")));
+        }
+        if !self.outputs.is_empty() {
+            out.push(format!("outputs: {}", self.outputs.join(", ")));
+        }
+        if !self.called_by.is_empty() {
+            out.push(format!("called by: {}", self.called_by.join(", ")));
+        }
+        if !self.calls.is_empty() {
+            out.push(format!("calls: {}", self.calls.join(", ")));
+        }
+        out
+    }
+}
+
+/// A Terraform symbol for the module map: its file, kind, container, name
+/// and signature.
+type TerraformRow = (String, String, Option<String>, String, Option<String>);
+
+/// The Terraform view of each folder with Terraform code, by folder (`.`
+/// for the root).
+fn terraform_folders(blocks: Vec<TerraformRow>) -> BTreeMap<String, TerraformFolder> {
+    // The value of `key = "…"` and the markers in a signature that
+    // `extract` wrote: `module "z" { source = "./m"; count }`.
+    fn facts(signature: Option<&str>) -> Vec<&str> {
+        signature
+            .and_then(|s| s.split_once("{ "))
+            .and_then(|(_, rest)| rest.strip_suffix(" }"))
+            .map(|rest| rest.split("; ").collect())
+            .unwrap_or_default()
+    }
+    fn value<'a>(facts: &[&'a str], key: &str) -> Option<&'a str> {
+        facts.iter().find_map(|f| {
+            f.strip_prefix(key)?
+                .strip_prefix(" = \"")?
+                .strip_suffix('"')
+        })
+    }
+    fn marker(facts: &[&str]) -> Option<String> {
+        facts
+            .iter()
+            .find(|f| matches!(**f, "count" | "for_each"))
+            .map(|f| f.to_string())
+    }
+    let mut folders: BTreeMap<String, TerraformFolder> = BTreeMap::new();
+    let mut groups: BTreeMap<(String, bool, String), Vec<String>> = BTreeMap::new();
+    for (path, kind, container, name, signature) in blocks {
+        let folder = match path.rsplit_once('/') {
+            Some((folder, _)) => folder.to_string(),
+            None => ".".to_string(),
+        };
+        let facts = facts(signature.as_deref());
+        let entry = folders.entry(folder.clone()).or_default();
+        let marked = |name: &str| match marker(&facts) {
+            Some(m) => format!("{name} [{m}]"),
+            None => name.to_string(),
+        };
+        match kind.as_str() {
+            "resource" | "data" => {
+                let ty = container.unwrap_or_default();
+                let ty = ty.strip_prefix("data.").unwrap_or(&ty).to_string();
+                groups
+                    .entry((folder, kind == "data", ty))
+                    .or_default()
+                    .push(marked(&name));
+            }
+            "module" => {
+                let source = value(&facts, "source").map(str::to_string);
+                let here = if folder == "." { "" } else { folder.as_str() };
+                entry.module_calls.push(TerraformModuleCall {
+                    folder: source
+                        .as_deref()
+                        .and_then(|s| crate::edges::terraform_source_folder(here, s))
+                        .map(|f| if f.is_empty() { ".".to_string() } else { f }),
+                    source,
+                    version: value(&facts, "version").map(str::to_string),
+                    marker: marker(&facts),
+                    name,
+                });
+            }
+            "variable" => entry.variables.push(name),
+            "output" => entry.outputs.push(name),
+            _ => {}
+        }
+    }
+    for ((folder, data, ty), names) in groups {
+        let entry = folders.entry(folder).or_default();
+        if data {
+            entry.data.push((ty, names));
+        } else {
+            entry.resources.push((ty, names));
+        }
+    }
+    // The callers of each folder, and the chains of calls from each root.
+    let calls: Vec<(String, TerraformModuleCall)> = folders
+        .iter()
+        .flat_map(|(f, t)| t.module_calls.iter().map(move |m| (f.clone(), m.clone())))
+        .collect();
+    for (from, call) in &calls {
+        if let Some(entry) = call.folder.as_ref().and_then(|f| folders.get_mut(f)) {
+            entry
+                .called_by
+                .push(format!("{from} (module.{})", call.name));
+        }
+    }
+    fn chains(
+        folder: &str,
+        folders: &BTreeMap<String, TerraformFolder>,
+        prefix: &str,
+        seen: &mut Vec<String>,
+        out: &mut Vec<String>,
+    ) {
+        let Some(t) = folders.get(folder) else {
+            return;
+        };
+        for call in &t.module_calls {
+            let target = match (&call.folder, &call.source) {
+                (Some(f), _) => f.clone(),
+                (None, Some(s)) => format!("{s} (remote)"),
+                (None, None) => "(no source)".to_string(),
+            };
+            let chain = format!("{prefix}module.{} > {target}", call.name);
+            out.push(chain.clone());
+            if let Some(f) = call.folder.as_ref().filter(|f| !seen.contains(f)) {
+                seen.push(f.clone());
+                chains(f, folders, &format!("{chain} > "), seen, out);
+                seen.pop();
+            }
+        }
+    }
+    let roots: Vec<String> = folders
+        .iter()
+        .filter(|(_, t)| t.called_by.is_empty() && !t.module_calls.is_empty())
+        .map(|(f, _)| f.clone())
+        .collect();
+    for root in roots {
+        let mut out = Vec::new();
+        chains(&root, &folders, "", &mut vec![root.clone()], &mut out);
+        if let Some(entry) = folders.get_mut(&root) {
+            entry.calls = out;
+        }
+    }
+    folders
 }
 
 /// A source file of a module.
@@ -641,15 +862,29 @@ impl Index {
         }
         uses.sort_by(|a, b| (&a.file, a.line, a.col).cmp(&(&b.file, b.line, b.col)));
 
-        let count = |sql: &str| -> Result<usize, IndexError> {
-            Ok(self.conn.query_row(sql, [], |r| r.get::<_, i64>(0))? as usize)
+        // The files of the language family of the target with SCIP uses
+        // (KAIROS-T-0473): TypeScript, TSX and JavaScript are one family.
+        let one = [target.language.as_str()];
+        let family: &[&str] = match target.language.as_str() {
+            "typescript" | "tsx" | "javascript" => &["typescript", "tsx", "javascript"],
+            _ => &one,
         };
-        let coverage = if target.language != "rust"
-            || count("SELECT count(*) FROM refs_files WHERE pending = 0")? == 0
-        {
+        let count = |pending: bool| -> Result<usize, IndexError> {
+            let mut n = 0;
+            for language in family {
+                n += self.conn.query_row(
+                    "SELECT count(*) FROM refs_files r JOIN files f ON f.id = r.file_id
+                     WHERE r.pending = ?1 AND f.language = ?2",
+                    params![pending, language],
+                    |r| r.get::<_, i64>(0),
+                )? as usize;
+            }
+            Ok(n)
+        };
+        let coverage = if count(false)? == 0 {
             Coverage::CallsOnly
         } else {
-            match count("SELECT count(*) FROM refs_files WHERE pending = 1")? {
+            match count(true)? {
                 0 => Coverage::Full,
                 n => Coverage::Pending(n),
             }
@@ -742,6 +977,19 @@ impl Index {
         let summaries: HashMap<String, String> = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<Result<_, _>>()?;
+        // The Terraform blocks of the source and test files (KAIROS-T-0472).
+        let mut stmt = self.conn.prepare(
+            "SELECT f.path, s.kind, s.container, s.name, s.signature
+             FROM symbols s JOIN files f ON f.id = s.file_id
+             WHERE s.language = 'terraform' AND f.decision IN ('source', 'test')
+             ORDER BY f.path, s.start_byte",
+        )?;
+        let blocks = stmt
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut terraform = terraform_folders(blocks);
         let mut modules: BTreeMap<String, Vec<FileInfo>> = BTreeMap::new();
         for (path, summary, symbols, is_test, declarations_only) in files {
             let folder = match path.rsplit_once('/') {
@@ -763,6 +1011,7 @@ impl Index {
             .into_iter()
             .map(|(path, files)| ModuleInfo {
                 summary: summaries.get(&path).cloned(),
+                terraform: terraform.remove(&path),
                 path,
                 files,
             })
@@ -1176,6 +1425,67 @@ impl Index {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// KAIROS-T-0472: the chains of module calls from a root folder, past
+    /// a nested call, with no loop.
+    #[test]
+    fn a_root_terraform_folder_has_its_chains_of_calls() {
+        let row = |path: &str, kind: &str, container: Option<&str>, name: &str, sig: &str| {
+            (
+                path.to_string(),
+                kind.to_string(),
+                container.map(str::to_string),
+                name.to_string(),
+                Some(sig.to_string()),
+            )
+        };
+        let folders = terraform_folders(vec![
+            row(
+                "main.tf",
+                "module",
+                Some("module"),
+                "app",
+                "module \"app\" { source = \"./app\"; for_each }",
+            ),
+            row(
+                "app/main.tf",
+                "module",
+                Some("module"),
+                "db",
+                "module \"db\" { source = \"../db\" }",
+            ),
+            row(
+                "db/main.tf",
+                "module",
+                Some("module"),
+                "back",
+                "module \"back\" { source = \"../app\" }",
+            ),
+            row(
+                "db/main.tf",
+                "data",
+                Some("data.aws_ami"),
+                "ubuntu",
+                "data \"aws_ami\" \"ubuntu\" {",
+            ),
+        ]);
+        let root = &folders["."];
+        assert_eq!(
+            root.calls,
+            [
+                "module.app > app",
+                "module.app > app > module.db > db",
+                "module.app > app > module.db > db > module.back > app",
+            ]
+        );
+        assert_eq!(root.lines()[0], "module calls: app = ./app [for_each]");
+        assert!(folders["app"].calls.is_empty());
+        assert_eq!(
+            folders["app"].called_by,
+            [". (module.app)", "db (module.back)"]
+        );
+        assert_eq!(folders["db"].lines()[0], "data: aws_ami (ubuntu)");
+    }
 
     /// KAIROS-T-0420: the source of a symbol, cut at the limit, and marked
     /// when the file changed after the index.

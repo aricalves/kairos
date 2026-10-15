@@ -83,6 +83,7 @@ Feature: The CLI and the code tools
     Given an index of the polyglot fixture
     When an agent calls module_map
     Then the result has each module with its summary and its files
+    And the Terraform module shows its resources and the root shows its module calls
 
   # COLLIERY-T-1857: repeated code, over MCP and from the CLI.
   Scenario: An agent finds repeated code

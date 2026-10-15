@@ -24,14 +24,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::IndexError;
-use crate::calls::CallSite;
+use crate::calls::{CallSite, Import};
 use crate::extract::{self, Extracted, FileExtract};
 use crate::schema::SCHEMA_VERSION;
 
 /// Change this number when the parse of a file gives a different result
 /// with no change to the crate version, for example in a branch that changes
 /// the extraction.
-const VERSION: u32 = 2;
+const VERSION: u32 = 4;
 
 /// The table of the cache. `CREATE ... IF NOT EXISTS`, because an index of
 /// the current schema version can be from before the cache.
@@ -73,6 +73,10 @@ struct Entry {
     use_ranges: Vec<(usize, usize)>,
     macro_calls: Vec<CallSite>,
     macro_ranges: Vec<(usize, usize)>,
+    #[serde(default)]
+    package: Option<String>,
+    #[serde(default)]
+    imports: Vec<Import>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -115,6 +119,8 @@ pub(crate) fn encode(found: &FileExtract) -> Result<Vec<u8>, IndexError> {
         use_ranges: found.use_ranges.clone(),
         macro_calls: found.macro_calls.clone(),
         macro_ranges: found.macro_ranges.clone(),
+        package: found.package.clone(),
+        imports: found.imports.clone(),
     };
     serde_json::to_vec(&entry).map_err(|e| IndexError::ParseCache(e.to_string()))
 }
@@ -157,6 +163,8 @@ pub(crate) fn decode(
         use_ranges: entry.use_ranges,
         macro_calls: entry.macro_calls,
         macro_ranges: entry.macro_ranges,
+        package: entry.package,
+        imports: entry.imports,
     })
 }
 

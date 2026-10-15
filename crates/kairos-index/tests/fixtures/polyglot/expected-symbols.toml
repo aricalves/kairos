@@ -515,12 +515,12 @@ language = "go"
 lines = [11, 13]
 is_test = false
 
-# narsil gives each Go type declaration the kind type_alias, a struct too.
+# A Go struct and interface have their own kinds (KAIROS-T-0468).
 [[symbol]]
 file = "go/greet/greet.go"
 name = "Greeter"
 container = ""
-kind = "type_alias"
+kind = "struct"
 language = "go"
 lines = [16, 18]
 is_test = false
@@ -528,7 +528,7 @@ is_test = false
 [[symbol]]
 file = "go/greet/greet.go"
 name = "Greet"
-container = ""
+container = "Greeter"
 kind = "method"
 language = "go"
 lines = [21, 23]
@@ -541,6 +541,174 @@ container = ""
 kind = "function"
 language = "go"
 lines = [26, 31]
+is_test = false
+
+[[symbol]]
+file = "go/greet/greet.go"
+name = "Namer"
+container = ""
+kind = "interface"
+language = "go"
+lines = [34, 36]
+is_test = false
+
+[[symbol]]
+file = "go/greet/greet.go"
+name = "DefaultName"
+container = ""
+kind = "constant"
+language = "go"
+lines = [39, 39]
+is_test = false
+
+[[symbol]]
+file = "go/shout/shout.go"
+name = "Message"
+container = ""
+kind = "function"
+language = "go"
+lines = [6, 8]
+is_test = false
+
+[[symbol]]
+file = "go/cmd/hello/hello.go"
+name = "Run"
+container = ""
+kind = "function"
+language = "go"
+lines = [11, 14]
+is_test = false
+
+# A function that `go test` runs is a test (KAIROS-T-0468).
+[[symbol]]
+file = "go/greet/greet_test.go"
+name = "TestMessage"
+container = ""
+kind = "function"
+language = "go"
+lines = [5, 9]
+is_test = true
+
+# --- Terraform (KAIROS-T-0470) ---------------------------------------------
+# The name and the container make the Terraform address: `var.region`,
+# `aws_sns_topic.events`, `data.aws_caller_identity.current`. The `.tfvars`
+# file has no symbols.
+
+[[symbol]]
+file = "infra/variables.tf"
+name = "region"
+container = "var"
+kind = "variable"
+language = "terraform"
+lines = [3, 6]
+is_test = false
+
+[[symbol]]
+file = "infra/main.tf"
+name = "aws"
+container = ""
+kind = "provider"
+language = "terraform"
+lines = [1, 3]
+is_test = false
+
+[[symbol]]
+file = "infra/main.tf"
+name = "name"
+container = "local"
+kind = "local"
+language = "terraform"
+lines = [6, 6]
+is_test = false
+
+[[symbol]]
+file = "infra/main.tf"
+name = "current"
+container = "data.aws_caller_identity"
+kind = "data"
+language = "terraform"
+lines = [9, 9]
+is_test = false
+
+[[symbol]]
+file = "infra/main.tf"
+name = "store"
+container = "module"
+kind = "module"
+language = "terraform"
+lines = [11, 15]
+is_test = false
+
+[[symbol]]
+file = "infra/main.tf"
+name = "network"
+container = "module"
+kind = "module"
+language = "terraform"
+lines = [17, 21]
+is_test = false
+
+[[symbol]]
+file = "infra/main.tf"
+name = "events"
+container = "aws_sns_topic"
+kind = "resource"
+language = "terraform"
+lines = [23, 25]
+is_test = false
+
+[[symbol]]
+file = "infra/main.tf"
+name = "bucket_arn"
+container = ""
+kind = "output"
+language = "terraform"
+lines = [27, 29]
+is_test = false
+
+[[symbol]]
+file = "infra/modules/bucket/main.tf"
+name = "this"
+container = "aws_s3_bucket"
+kind = "resource"
+language = "terraform"
+lines = [1, 5]
+is_test = false
+
+[[symbol]]
+file = "infra/modules/bucket/main.tf"
+name = "events"
+container = "aws_sns_topic"
+kind = "resource"
+language = "terraform"
+lines = [7, 10]
+is_test = false
+
+[[symbol]]
+file = "infra/modules/bucket/variables.tf"
+name = "name"
+container = "var"
+kind = "variable"
+language = "terraform"
+lines = [1, 4]
+is_test = false
+
+[[symbol]]
+file = "infra/modules/bucket/variables.tf"
+name = "owner"
+container = "var"
+kind = "variable"
+language = "terraform"
+lines = [6, 8]
+is_test = false
+
+[[symbol]]
+file = "infra/modules/bucket/outputs.tf"
+name = "arn"
+container = ""
+kind = "output"
+language = "terraform"
+lines = [1, 3]
 is_test = false
 
 # --- scripts/ (a repository rule can exclude it) ----------------------------

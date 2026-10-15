@@ -188,7 +188,12 @@ fn code_index_service(
         crate::code_index::CodeIndexService::from_repo_url(dir)
             .with_instance(instance)
             .with_secrets_key(config.secrets_key.clone())
-            .with_min_rebuild_secs(config.code_index_min_rebuild_secs),
+            .with_min_rebuild_secs(config.code_index_min_rebuild_secs)
+            .with_dependency_settings(crate::code_index::DependencySettings {
+                cap_bytes: config.code_index_deps_cap_mb.saturating_mul(1024 * 1024),
+                min_free_bytes: config.code_index_min_free_mb.saturating_mul(1024 * 1024),
+                pass_variables: config.code_index_deps_env.clone(),
+            }),
     ))
 }
 

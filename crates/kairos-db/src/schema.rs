@@ -139,6 +139,7 @@ diesel::table! {
         model -> Nullable<Text>,
         server_instance -> Nullable<Uuid>,
         summaries_reused -> Nullable<Int4>,
+        scip_warnings -> Nullable<Text>,
     }
 }
 

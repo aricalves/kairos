@@ -4017,3 +4017,71 @@ async fn the_builder_follows_the_head_of_the_forge_and_a_branch_set_by_hand_wins
     assert_eq!(pinned.default_branch, "trunk");
     assert_eq!(pinned.default_branch_source, DefaultBranchSource::Hand);
 }
+
+// KAIROS-T-0478: a language with no SCIP index is a warning on the run, and
+// the list of the runs gives an organization admin the disk use of the
+// builder.
+#[tokio::test]
+async fn a_run_records_its_scip_warnings_and_an_admin_sees_the_disk_use() {
+    // Given payments-api, a Python repository, a builder that did not
+    // prepare its tools (so the Python indexer is looked for on PATH, and
+    // the test has none there), and a Go tool folder
+    let w = World::new("kairos_code_index_t0478_warnings").await;
+    std::fs::create_dir_all(w.service.dir().join("tools/go-0.0.0")).unwrap();
+    std::fs::write(
+        w.service
+            .dir()
+            .join("tools/go-0.0.0/.kairos-index-unpacked"),
+        "x",
+    )
+    .unwrap();
+    std::fs::write(w.service.dir().join("tools/go-0.0.0/go"), vec![0u8; 4096]).unwrap();
+
+    // When the first-build lane runs
+    let outcomes = w.first_builds().await;
+    let report = outcomes
+        .iter()
+        .find(|o| o.repository == "payments-api")
+        .and_then(|o| o.report.as_ref())
+        .unwrap_or_else(|| panic!("{outcomes:?}"));
+
+    // Then the run is ok and has the warning of Python, with its reason
+    let python: Vec<_> = report
+        .build
+        .scip_warnings
+        .iter()
+        .filter(|w| w.language == "python")
+        .collect();
+    assert_eq!(python.len(), 1, "{:?}", report.build.scip_warnings);
+    let run = newest_run(&w, "payments-api").await;
+    assert_eq!(run.outcome, "ok");
+    assert_eq!(run.scip_warnings.len(), 1, "{run:?}");
+    assert_eq!(run.scip_warnings[0].language, "python");
+    assert_eq!(run.scip_warnings[0].reason, python[0].reason);
+
+    // And the organization admin sees the disk use of the tools by language
+    let admin = w
+        .svc
+        .list_code_index_builds("payments-api", Some(1))
+        .await
+        .expect("the runs");
+    let disk = admin.disk.expect("the disk use, for an admin");
+    let go = disk
+        .tools
+        .iter()
+        .find(|t| t.name == "go-0.0.0")
+        .unwrap_or_else(|| panic!("{disk:?}"));
+    assert_eq!(go.language.as_deref(), Some("go"));
+    assert!(go.bytes >= 4096, "{go:?}");
+    assert_eq!(disk.caches_bytes, 0);
+    assert!(disk.caches_cap_bytes > 0);
+
+    // And a member does not
+    let member = w
+        .bob
+        .list_code_index_builds("payments-api", Some(1))
+        .await
+        .expect("the runs");
+    assert!(member.disk.is_none());
+    assert_eq!(member.items[0].scip_warnings, run.scip_warnings);
+}
