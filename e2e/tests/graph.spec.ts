@@ -5,9 +5,9 @@
 //   1. REAL PKCE login via the Dex form
 //   2. platform-delivery board: the seeded blocks web renders dependency
 //      badges (neutral accents); a badge click lands on the item's graph
-//   3. the canvas: three fixed column headers, a focus node, at least one
-//      blocks arrow, lanes — and DETERMINISTIC positions across a reload
-//   4. +N expands in place (more nodes, no navigation)
+//   3. the canvas: a group box per parent, a focus node, columns by blocks,
+//      state colours, zoom — and DETERMINISTIC positions across a reload
+//   4. +N in a group header expands in place (more nodes, no navigation)
 //   5. refocus pushes history + extends the trail; browser back returns
 //   6. side panel lists the PRD (supports the sign-up initiative)
 //   7. WS live: an API writer transitions the focused task; the open
@@ -67,15 +67,46 @@ test('graph: badges → canvas → deterministic reload → expand → refocus/b
 
   // 3. Canvas shape + deterministic reload ----------------------------------
   let sampled: Array<{ code: string; x: string }> = [];
-  await test.step('canvas renders columns, focus, arrows — deterministically', async () => {
-    await expect(page.locator('.cl-dag__header', { hasText: 'Strategy' })).toBeVisible();
-    await expect(page.locator('.cl-dag__header', { hasText: 'Initiative' })).toBeVisible();
-    await expect(page.locator('.cl-dag__header', { hasText: 'Task' })).toBeVisible();
+  await test.step('canvas renders groups, focus, arrows by blocks — deterministically', async () => {
+    // KAIROS-T-0492: the parent is a group box with a header, not a column.
+    await expect(page.locator('.cl-dag__header')).toHaveCount(0);
+    await expect(page.locator('.kairos-graph__group').first()).toBeVisible();
+    await expect(
+      page.locator('.kairos-graph__header .kairos-graph__link', { hasText: 'Portal sign-up' }),
+    ).toBeVisible();
     await expect(focusNode(page)).toHaveAttribute('data-id', 'PLATFORM-T-0001');
     await expect(focusNode(page).locator('.cl-dag__sublabel')).toHaveText('PLATFORM-T-0001');
-    await expect(page.locator('svg.cl-dag path.cl-dag__edge').first()).toBeVisible();
-    await expect(page.locator('.cl-dag__lane').first()).toBeVisible();
+    // A straight arrow has no height, so Playwright calls it hidden: count it.
+    await expect(page.locator('svg.cl-dag path.cl-dag__edge[data-from="PLATFORM-T-0001"]')).toHaveCount(1);
     expect(await canvas(page).count()).toBeGreaterThanOrEqual(3);
+
+    // Layers come from blocks: the blocked task is one column right of its
+    // blocker; a sibling with no edge shares the column of the blocker.
+    const xOf = async (code: string) =>
+      Number(await nodeOf(page, code).locator('.cl-dag__box').getAttribute('x'));
+    const blockerX = await xOf('PLATFORM-T-0001');
+    expect(await xOf('PLATFORM-T-0002')).toBeGreaterThan(blockerX);
+    const ids = await page.locator('.cl-dag__node').evaluateAll((els) =>
+      els.map((el) => el.getAttribute('data-id') ?? ''),
+    );
+    const parallel = [];
+    for (const id of ids.filter((id) => id !== 'PLATFORM-T-0001' && id !== 'PLATFORM-T-0002')) {
+      if ((await xOf(id)) === blockerX) parallel.push(id);
+    }
+    expect(parallel.length).toBeGreaterThanOrEqual(1);
+
+    // Colour by state: the legend names the states on the canvas, and the
+    // Active focus has the active colour.
+    await expect(page.locator('.kairos-graph__state--active')).toBeVisible();
+    await expect(focusNode(page)).toHaveClass(/status-ice/);
+
+    // Zoom and pan: the buttons change the zoom, Fit returns.
+    const zoom = page.getByTestId('graph-zoom');
+    const fitted = await zoom.textContent();
+    await page.getByRole('button', { name: 'Zoom in' }).click();
+    await expect(zoom).not.toHaveText(fitted ?? '');
+    await page.getByRole('button', { name: 'Fit' }).click();
+    await expect(zoom).toHaveText(fitted ?? '');
 
     // Sample two node positions, reload (T-0071 restores the session),
     // and require identical geometry — the no-force-layout proof.
@@ -104,10 +135,9 @@ test('graph: badges → canvas → deterministic reload → expand → refocus/b
   // 4. +N expands in place ---------------------------------------------------
   await test.step('+N expands the neighborhood without navigating', async () => {
     const before = await canvas(page).count();
-    // Aurora 0.4.1: the "+N" badge is in the item of its node.
-    const item = page.locator('g.cl-dag__item[data-node]', { has: page.locator('.cl-dag__more') }).first();
-    const node = await item.getAttribute('data-node');
-    const more = page.locator(`[data-node="${node}"] .cl-dag__more`);
+    // KAIROS-T-0492: the strategy and the initiative are the header of the
+    // group, so their "+N" is in the header.
+    const more = page.locator('.kairos-graph__header .kairos-graph__more').first();
     await expect(more).toBeVisible();
     await more.click();
     await expect

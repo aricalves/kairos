@@ -11,6 +11,7 @@
 
 pub mod data;
 pub mod graph;
+pub mod graph_model;
 pub mod relationships;
 
 use aurora_dark::components::{
