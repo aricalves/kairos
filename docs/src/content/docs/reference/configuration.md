@@ -661,20 +661,23 @@ tools.
   package.
 - The builder keeps the archives in `tools/` and unpacks each tool into
   `tools/<tool>-<version>/`.
-- If a download fails, a file has an incorrect sha256, or the platform has
-  no pin, the language gets its edges by name, and the run records a
-  warning with the reason. The build continues. The server does not
+- Sometimes a download fails, a file has an incorrect sha256, or the
+  platform has no pin. Then the language gets its edges by name. The run
+  records a warning with the reason. The build continues. The server does not
   replace a file with an incorrect checksum. Remove the file to download
   it again.
 - **With no network:** put the archives in `tools/` with the names of their
   URLs. The npm packages need access to the npm registry, or a registry
   that `NPM_CONFIG_REGISTRY` gives.
 
-**The dependency cache.** The indexers give precise results only when the
-dependencies of the repository are installed. Before a run, the builder
-installs them: `go mod download` for Go, `npm ci` or `npm install` with
-`--ignore-scripts` for TypeScript, and a virtual environment with `pip
-install` for Python. It keeps them in `KAIROS_CODE_INDEX_DIR/deps/<tenant>/<repository id>/<language>/`:
+**The dependency cache.** The indexers give precise results only with the
+dependencies of the repository. Before a run, the builder installs them:
+
+- Go: `go mod download`.
+- TypeScript: `npm ci` or `npm install`, with `--ignore-scripts`.
+- Python: a virtual environment with `pip install`.
+
+The builder keeps them in `KAIROS_CODE_INDEX_DIR/deps/<tenant>/<repository id>/<language>/`:
 the Go module cache, the npm cache and the virtual environment.
 
 - A Python project with `uv.lock` and `pyproject.toml` at the root installs
@@ -688,26 +691,33 @@ the Go module cache, the npm cache and the virtual environment.
 - When the free disk space is less than `KAIROS_CODE_INDEX_MIN_FREE_MB`,
   the builder removes the caches before an install, oldest first.
 - If the install or the indexer fails, the language gets its edges by
-  name, and the run records a warning. A repository with no dependency file
-  (no `go.mod`, no `package.json`, no Python requirements) gets no install:
-  the indexer reads the sources only.
+  name. The run records a warning.
+- A repository with no dependency file gets no install. The indexer reads
+  the sources only. A dependency file is `go.mod`, `package.json` or a
+  Python requirements file.
 
 **Private dependencies.** The builder keeps no new secrets. An install gets
-`PATH`, its cache folders, and these variables when the server has them:
-`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` (and lower case), `SSL_CERT_FILE`,
-`SSL_CERT_DIR`, `LANG`, `LC_ALL`, `TZ`, `GIT_CONFIG_COUNT`,
-`GIT_CONFIG_KEY_*`, `GIT_CONFIG_VALUE_*`, `GIT_ASKPASS`, `GOPRIVATE`,
-`GONOPROXY`, `GONOSUMDB`, `GONOSUMCHECK`, `GOPROXY`, `GOSUMDB`,
-`GOINSECURE`, `GOAUTH`, `NETRC`, `NODE_AUTH_TOKEN`, `NPM_TOKEN`,
-`NPM_CONFIG_*`, `npm_config_*`, `PIP_INDEX_URL`, `PIP_EXTRA_INDEX_URL`,
-`PIP_TRUSTED_HOST`, `PIP_CERT`, `UV_INDEX_*`, `UV_DEFAULT_INDEX`,
-`UV_EXTRA_INDEX_URL`, `GITHUB_TOKEN` and `GH_TOKEN`. Add more
-names with `KAIROS_CODE_INDEX_DEPS_ENV`.
+`PATH` and its cache folders. It also gets these variables, if the server
+has them:
+
+- Network: `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` (and lower case),
+  `SSL_CERT_FILE`, `SSL_CERT_DIR`.
+- Locale: `LANG`, `LC_ALL`, `TZ`.
+- Git: `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_*`, `GIT_CONFIG_VALUE_*`,
+  `GIT_ASKPASS`, `NETRC`.
+- Go: `GOPRIVATE`, `GONOPROXY`, `GONOSUMDB`, `GONOSUMCHECK`, `GOPROXY`,
+  `GOSUMDB`, `GOINSECURE`, `GOAUTH`.
+- npm: `NODE_AUTH_TOKEN`, `NPM_TOKEN`, `NPM_CONFIG_*`, `npm_config_*`.
+- Python: `PIP_INDEX_URL`, `PIP_EXTRA_INDEX_URL`, `PIP_TRUSTED_HOST`,
+  `PIP_CERT`, `UV_INDEX_*`, `UV_DEFAULT_INDEX`, `UV_EXTRA_INDEX_URL`.
+- GitHub: `GITHUB_TOKEN`, `GH_TOKEN`.
+
+Add more names with `KAIROS_CODE_INDEX_DEPS_ENV`.
 
 **A local run.** `kairos index` on a computer downloads no tools and
-installs no dependencies. It uses the tools on `PATH` (`go` and `scip-go`,
-`node` and `scip-typescript`, `scip-python` and `python3`) and the
-dependencies of the checkout. If a tool is not there, the language gets its
+installs no dependencies. It uses the dependencies of the checkout. It
+uses these tools on `PATH`: `go` and `scip-go`, `node` and
+`scip-typescript`, `scip-python` and `python3`. If a tool is not there, the language gets its
 edges by name, and the CLI shows a warning.
 
 ### Development
@@ -1055,16 +1065,15 @@ symbol as `symbol` does.
   enum variant). A use of a field of a struct is a use of the struct, with
   the kind `field`. The definition and `Self` are not uses.
 - For Go, TypeScript, TSX, JavaScript and Python, the uses come from the
-  SCIP data of scip-go, scip-typescript and scip-python, when the build ran
-  them (see [The tools of Go, TypeScript and Python](#the-tools-of-go-typescript-and-python)).
+  SCIP data of their indexers, if the build ran them (see [The tools of Go, TypeScript and Python](#the-tools-of-go-typescript-and-python)).
   The kinds are the same. A use of a method of a Go interface is a `call`
   of the interface.
 - When the build did not run the indexer of a language (the tool is not
   there, or the install or the indexer failed), the index has the calls
   only for that language. This applies to Rust too. A missing
   rust-analyzer or std source gives Rust its calls by name. A file with an
-  incorrect sha256 or a failed run does the same. The result says so, and the build shows a
-  warning with the reason.
+  incorrect sha256 or a failed run does the same. The result says so. The
+  build shows a warning with the reason.
 - `kairos index update` with no `--rust-edges` (or `--scip`) keeps the uses
   of each file that did not change. A changed file has its calls only until
   the next SCIP run. The result gives the count of these files. Run

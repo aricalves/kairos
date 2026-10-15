@@ -29,11 +29,11 @@ when a run starts or ends. The REST route is
 
 ### The SCIP warnings of a run
 
-The builder runs a SCIP indexer for each language that has one: Rust, Go,
-TypeScript (with TSX and JavaScript) and Python. Then the edges and the
-uses of that language are precise. When the indexer of a language cannot
-run, the builder gives that language its edges by name, and the run
-records a warning with the language and the reason. The run is still `ok`.
+The builder runs a SCIP indexer for these languages: Rust, Go, TypeScript
+(with TSX and JavaScript) and Python. Then the edges and the uses of that
+language are precise. Sometimes the indexer of a language cannot run. Then
+that language gets its edges by name. The run records a warning with the
+language and the reason. The run is still `ok`.
 
 `kairos repos builds <slug>` shows each warning on a line under its run:
 
@@ -62,10 +62,10 @@ the usual reasons:
 
 ### The disk use of the builder
 
-An organization admin sees, at the end of the panel "Show code index", the
-disk use of the server that answers. The panel shows the tools by
-language, the dependency caches by language with their cap
-(`KAIROS_CODE_INDEX_DEPS_CAP_MB`), and the free disk space. The REST answer
+An organization admin sees the disk use of the server at the end of the
+panel "Show code index". The panel shows the tools by language and the
+free disk space. It also shows the dependency caches by language, with
+their cap (`KAIROS_CODE_INDEX_DEPS_CAP_MB`). The REST answer
 `GET /api/repositories/{slug}/code-indexes/builds` has these values in
 `disk`, and each run has its warnings in `scip_warnings`.
 
