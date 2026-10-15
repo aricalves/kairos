@@ -113,6 +113,24 @@ Request body (required): `application/json`, [`MarkNotificationsReadRequest`](..
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | An id is not a notification of the caller |
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Neither ids nor all, or both |
 
+### `GET /api/me/work`
+
+The work of the caller, in two lanes.
+
+- Initiatives: the strategies and the initiatives that the caller owns.
+- Tasks: the claims of the caller and of the agent keys of the caller.
+  The Todo, Active and Blocked tasks under an initiative of the caller.
+  The tasks that one of these tasks blocks.
+
+Each item has a state (`todo`, `active`, `blocked`) and its open
+blockers. The answer has no item in a done column.
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`MyWork`](../schemas/#mywork) | The two lanes of the work of the caller |
+| `401` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Missing/invalid token |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Not a member of the organization |
+
 ## service-accounts
 
 ### `GET /api/org/agent-keys`

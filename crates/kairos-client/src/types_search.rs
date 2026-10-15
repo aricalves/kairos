@@ -128,6 +128,21 @@ pub struct SearchFilter {
     /// `["priority"]`. An unknown slug is refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata_missing: Option<Vec<String>>,
+    /// Only the tasks that this person has the claim on (KAIROS-T-0488): a
+    /// user id, an email, a user name, or `me` for the caller. A claim that
+    /// an agent key of the person made counts. Other entity types are
+    /// excluded. An unknown person is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claimed_by: Option<String>,
+    /// Only the strategies and the initiatives that this person owns
+    /// (KAIROS-T-0488): a user id, an email, a user name, or `me`. Other
+    /// entity types are excluded. An unknown person is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owned_by: Option<String>,
+    /// Only the items that this person created (KAIROS-T-0488): a user id,
+    /// an email, a user name, or `me`. An unknown person is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
     /// Include archived (soft-deleted) items (default false). Composes with
     /// every other capability — `q` and `traverse` included since
     /// KAIROS-T-0157 — and is a complete request on its own. Archived hits

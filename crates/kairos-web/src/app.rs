@@ -74,7 +74,7 @@ pub fn App() -> impl IntoView {
                 <Route path=path!("/login") view=pages::LoginPage/>
                 <Route path=path!("/callback") view=pages::CallbackPage/>
                 <ParentRoute path=path!("") view=Shell>
-                    <Route path=path!("") view=|| view! { <Redirect path="/boards"/> }/>
+                    <Route path=path!("") view=pages::ForMePage/>
                     <Route path=path!("boards") view=pages::BoardsPage/>
                     <Route path=path!("boards/:board") view=pages::BoardPage/>
                     <Route path=path!("items/:code") view=pages::ItemPage/>
@@ -134,6 +134,9 @@ fn Shell() -> impl IntoView {
                 }.into_any())
                 header=Box::new(move || view! {
                     <Group justify="end" gap="sm">
+                        <span data-testid="for-me-link">
+                            <Button variant="subtle" size="xs" href="/">"For me"</Button>
+                        </span>
                         <pages::NotificationBell/>
                         <WhoamiBadge whoami/>
                         <ThemeToggle hyper=OFFER_HYPER/>

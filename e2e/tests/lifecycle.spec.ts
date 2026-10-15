@@ -25,9 +25,11 @@ test('document lifecycle: badge, free transitions, scoped picker', async ({
     await page.fill('#login', 'alice@kairos.test');
     await page.fill('#password', 'alice-password');
     await page.click('#submit-login');
-    await page.waitForURL((url) => url.pathname.startsWith('/boards'), {
+    await page.waitForURL((url) => url.pathname === '/' || url.pathname.startsWith('/boards'), {
       timeout: 30_000,
     });
+    // The landing page is For me; this spec works from the boards.
+    await page.goto('/boards');
   });
 
   // 2. Navigate to the seeded PRD --------------------------------------------

@@ -184,6 +184,18 @@ pub struct SearchFilter {
     /// `metadata_missing: ["priority"]`. An unknown slug is refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata_missing: Option<Vec<String>>,
+    /// Only the tasks that this user has the claim on (KAIROS-T-0488). A
+    /// claim that an agent key of the user made counts: the claim names the
+    /// person. Other entity types are excluded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claimed_by: Option<Uuid>,
+    /// Only the strategies and the initiatives that this user owns
+    /// (KAIROS-T-0488). Other entity types are excluded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owned_by: Option<Uuid>,
+    /// Only the items that this user created (KAIROS-T-0488).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<Uuid>,
     /// Include soft-deleted items (default false — soft-deleted are
     /// excluded everywhere by default).
     #[serde(default)]
@@ -216,6 +228,9 @@ impl SearchFilter {
             || self.updated_after.is_some()
             || self.updated_before.is_some()
             || self.metadata_missing.is_some()
+            || self.claimed_by.is_some()
+            || self.owned_by.is_some()
+            || self.created_by.is_some()
     }
 }
 
@@ -661,6 +676,28 @@ mod tests {
                 ..Default::default()
             };
             assert_eq!(validate(&request), Err(SearchValidationError::NoCapability));
+        }
+    }
+
+    /// KAIROS-T-0488: each filter by person is a whole question on its own.
+    #[test]
+    fn a_filter_by_person_alone_is_a_capability() {
+        let user = Uuid::nil();
+        for filter in [
+            SearchFilter {
+                claimed_by: Some(user),
+                ..Default::default()
+            },
+            SearchFilter {
+                owned_by: Some(user),
+                ..Default::default()
+            },
+            SearchFilter {
+                created_by: Some(user),
+                ..Default::default()
+            },
+        ] {
+            assert!(filter.is_constraining(), "{filter:?}");
         }
     }
 

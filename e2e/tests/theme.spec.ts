@@ -157,7 +157,7 @@ test('theme: follows the OS, the toggle switches and persists, pages use tokens 
     await page.fill('#login', 'alice@kairos.test');
     await page.fill('#password', 'alice-password');
     await page.click('#submit-login');
-    await page.waitForURL((url) => url.pathname.startsWith('/boards'), { timeout: 30_000 });
+    await page.waitForURL((url) => url.pathname === '/' || url.pathname.startsWith('/boards'), { timeout: 30_000 });
     await expect(toggle(page)).toBeVisible();
     // No choice yet: System is pressed, and the page has no data-theme.
     await expect(toggle(page).getByRole('button', { name: 'System', exact: true })).toHaveAttribute(

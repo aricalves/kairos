@@ -43,7 +43,7 @@ test('dialogs: the delete asks in a ConfirmDialog, and the report is a Modal', a
       await page.fill('#login', 'alice@kairos.test');
       await page.fill('#password', 'alice-password');
       await page.click('#submit-login');
-      await page.waitForURL((url) => url.pathname.startsWith('/boards'), { timeout: 30_000 });
+      await page.waitForURL((url) => url.pathname === '/' || url.pathname.startsWith('/boards'), { timeout: 30_000 });
       await page.goto(`/items/${code}`);
       await expect(page.locator('.kairos-editor')).toBeVisible({ timeout: 20_000 });
     });

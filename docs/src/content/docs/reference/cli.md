@@ -537,6 +537,27 @@ archived: restore is per item, not a cascade.
 
 ## Finding work
 
+### `kairos me`
+
+Your work has two lanes: the initiatives that you own, and your tasks. Your
+tasks are:
+
+- the tasks that you or your agent keys claim;
+- the tasks in Todo, Active or Blocked under an initiative that you own;
+- the tasks that one of these tasks blocks.
+
+Each lane shows the items in three groups: Todo, Active and Blocked. An item
+with an open blocker goes in Blocked. An item in a column named Blocked goes
+there too. The command does not show an item in a done column.
+
+```
+kairos me [--json]
+```
+
+Each row gives the code, the title, the board, the column, the claimant or
+the owner, and the open blockers. `--json` prints the answer of
+`GET /api/me/work`.
+
 ### `kairos search`
 
 One command, no subcommands. Covers full-text search and relationship traversal
@@ -566,6 +587,9 @@ Filters:
 | `--updated-before <RFC3339>` | RFC 3339 instant | none | Only items with a last change strictly before this instant. For the items with no change in 90 days, give the time 90 days ago. |
 | `--metadata-missing <SLUG>` | metadata-definition slug | none | Only items with no value for this definition, e.g. `--metadata-missing priority`. Repeatable. An unknown slug is refused. |
 | `--include-deleted` | flag | off | Include archived items. Composes with `--query` and `--from`; archived hits are marked in the output. |
+| `--claimed-by <PERSON>` | `me`, user id, email or user name | none | Only tasks that this person has the claim on. A claim of an agent key of the person counts. |
+| `--owned-by <PERSON>` | `me`, user id, email or user name | none | Only strategies and initiatives that this person owns. |
+| `--created-by <PERSON>` | `me`, user id, email or user name | none | Only items that this person created. |
 
 Traversal:
 

@@ -1306,6 +1306,12 @@ impl KairosClient {
         self.get("/api/me/notifications").await
     }
 
+    /// `GET /api/me/work` (KAIROS-T-0489): the work of the caller, in two
+    /// lanes (initiatives and tasks).
+    pub async fn my_work(&self) -> Result<crate::types_work::MyWork, Error> {
+        self.get("/api/me/work").await
+    }
+
     /// `POST /api/me/notifications/read` (KAIROS-T-0382): mark notifications
     /// of the caller read.
     pub async fn mark_notifications_read(

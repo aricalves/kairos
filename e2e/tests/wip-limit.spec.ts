@@ -20,7 +20,7 @@ async function login(page: Page): Promise<void> {
   await page.fill('#login', 'alice@kairos.test');
   await page.fill('#password', 'alice-password');
   await page.click('#submit-login');
-  await page.waitForURL((url) => url.pathname.startsWith('/boards'), { timeout: 30_000 });
+  await page.waitForURL((url) => url.pathname === '/' || url.pathname.startsWith('/boards'), { timeout: 30_000 });
 }
 
 test('a column has a WIP limit, and the board marks the column over it', async ({ page }) => {

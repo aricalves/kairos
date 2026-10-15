@@ -58,7 +58,8 @@
 //!    entity type — **bounded at 5 queries regardless of result size**
 //!    ([`SearchStats::hydration_queries`] proves it) — carrying the
 //!    structural filter predicates (`board_id`, `column_id`, `team_id`, `repository_id`,
-//!    `task_type`, `is_bucket`, `created_after`/`before`) and the
+//!    `task_type`, `is_bucket`, `created_after`/`before`, `created_by`, and
+//!    the subqueries of `claimed_by` and `owned_by`) and the
 //!    `deleted_at IS NULL` default. Filters on attributes a type does not
 //!    have exclude the type outright (e.g. `task_type` ⇒ tasks only,
 //!    `board_id` ⇒ no documents), so those types cost no query at all.
@@ -653,6 +654,15 @@ fn applicable_types(filter: Option<&SearchFilter>) -> Vec<ItemType> {
             // is_bucket is an initiative-level attribute.
             types.retain(|t| *t == ItemType::Initiative);
         }
+        if filter.claimed_by.is_some() {
+            // KAIROS-T-0488: only a task has a claim.
+            types.retain(|t| *t == ItemType::Task);
+        }
+        if filter.owned_by.is_some() {
+            // KAIROS-T-0488: only a strategy and an initiative have an
+            // owner.
+            types.retain(|t| matches!(t, ItemType::Strategy | ItemType::Initiative));
+        }
     }
     types
 }
@@ -695,6 +705,31 @@ fn impacting(
         .into_boxed()
 }
 
+/// The ids of the tasks that `user` has the claim on (KAIROS-T-0488), as a
+/// subquery of the hydration query of the tasks: no query more. A claim of
+/// an agent key of the user names the user, so it counts.
+fn claimed_by(
+    user: Uuid,
+) -> crate::schema::task_claims::BoxedQuery<'static, diesel::pg::Pg, SqlUuid> {
+    use crate::schema::task_claims::dsl;
+    dsl::task_claims
+        .filter(dsl::user_id.eq(user))
+        .select(dsl::task_id)
+        .into_boxed()
+}
+
+/// The ids of the strategies and the initiatives that `user` owns
+/// (KAIROS-T-0488), as a subquery: no query more.
+fn owned_by(
+    user: Uuid,
+) -> crate::schema::item_owners::BoxedQuery<'static, diesel::pg::Pg, SqlUuid> {
+    use crate::schema::item_owners::dsl;
+    dsl::item_owners
+        .filter(dsl::user_id.eq(user))
+        .select(dsl::item_id)
+        .into_boxed()
+}
+
 fn hydrate_strategies(
     conn: &mut PgConnection,
     ids: Option<Vec<Uuid>>,
@@ -728,6 +763,12 @@ fn hydrate_strategies(
         }
         if let Some(before) = filter.updated_before {
             query = query.filter(dsl::updated_at.lt(before));
+        }
+        if let Some(creator) = filter.created_by {
+            query = query.filter(dsl::created_by.eq(creator));
+        }
+        if let Some(owner) = filter.owned_by {
+            query = query.filter(dsl::id.eq_any(owned_by(owner)));
         }
     } else {
         query = query.filter(dsl::deleted_at.is_null());
@@ -775,6 +816,12 @@ fn hydrate_initiatives(
         }
         if let Some(before) = filter.updated_before {
             query = query.filter(dsl::updated_at.lt(before));
+        }
+        if let Some(creator) = filter.created_by {
+            query = query.filter(dsl::created_by.eq(creator));
+        }
+        if let Some(owner) = filter.owned_by {
+            query = query.filter(dsl::id.eq_any(owned_by(owner)));
         }
     } else {
         query = query.filter(dsl::deleted_at.is_null());
@@ -833,6 +880,12 @@ fn hydrate_tasks(
         if let Some(before) = filter.updated_before {
             query = query.filter(dsl::updated_at.lt(before));
         }
+        if let Some(creator) = filter.created_by {
+            query = query.filter(dsl::created_by.eq(creator));
+        }
+        if let Some(holder) = filter.claimed_by {
+            query = query.filter(dsl::id.eq_any(claimed_by(holder)));
+        }
     } else {
         query = query.filter(dsl::deleted_at.is_null());
     }
@@ -872,6 +925,9 @@ fn hydrate_documents(
         }
         if let Some(before) = filter.updated_before {
             query = query.filter(dsl::updated_at.lt(before));
+        }
+        if let Some(creator) = filter.created_by {
+            query = query.filter(dsl::created_by.eq(creator));
         }
     } else {
         query = query.filter(dsl::deleted_at.is_null());
@@ -918,6 +974,9 @@ fn hydrate_adrs(
         }
         if let Some(before) = filter.updated_before {
             query = query.filter(dsl::updated_at.lt(before));
+        }
+        if let Some(creator) = filter.created_by {
+            query = query.filter(dsl::created_by.eq(creator));
         }
     } else {
         query = query.filter(dsl::deleted_at.is_null());

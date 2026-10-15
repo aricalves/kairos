@@ -12,7 +12,7 @@ export async function login(page: Page, creds: Credentials): Promise<void> {
   await page.fill('#login', creds.email);
   await page.fill('#password', creds.password);
   await page.click('#submit-login');
-  await page.waitForURL((url) => url.pathname.startsWith('/boards'), { timeout: 30_000 });
+  await page.waitForURL((url) => url.pathname === '/' || url.pathname.startsWith('/boards'), { timeout: 30_000 });
 }
 
 export async function openBoard(page: Page, slug: string): Promise<void> {

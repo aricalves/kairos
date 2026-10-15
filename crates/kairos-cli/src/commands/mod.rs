@@ -9,6 +9,7 @@ pub mod dispatch;
 pub mod entities;
 pub mod grants;
 pub mod keys;
+pub mod me;
 pub mod members;
 pub mod meta;
 pub mod orgs;

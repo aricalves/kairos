@@ -58,7 +58,7 @@ test('board prefix: the admin GUI creates a board with a prefix and refuses a ba
     await page.fill('#login', 'alice@kairos.test');
     await page.fill('#password', 'alice-password');
     await page.click('#submit-login');
-    await page.waitForURL((url) => url.pathname.startsWith('/boards'), { timeout: 30_000 });
+    await page.waitForURL((url) => url.pathname === '/' || url.pathname.startsWith('/boards'), { timeout: 30_000 });
     await page.evaluate(() => {
       window.history.pushState({}, '', '/admin/boards');
       window.dispatchEvent(new PopStateEvent('popstate'));

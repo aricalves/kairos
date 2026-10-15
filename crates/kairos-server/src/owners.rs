@@ -70,7 +70,7 @@ impl OwnedDto for dto::Initiative {
     }
 }
 
-fn owner_dto(owner: &ItemOwner, names: &HashMap<Uuid, String>) -> dto::ItemOwner {
+pub(crate) fn owner_dto(owner: &ItemOwner, names: &HashMap<Uuid, String>) -> dto::ItemOwner {
     dto::ItemOwner {
         user_id: owner.user_id.to_string(),
         display_name: names

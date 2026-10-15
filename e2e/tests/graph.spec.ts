@@ -42,9 +42,11 @@ test('graph: badges → canvas → deterministic reload → expand → refocus/b
     await page.fill('#login', 'bob@kairos.test');
     await page.fill('#password', 'bob-password');
     await page.click('#submit-login');
-    await page.waitForURL((url) => url.pathname.startsWith('/boards'), {
+    await page.waitForURL((url) => url.pathname === '/' || url.pathname.startsWith('/boards'), {
       timeout: 30_000,
     });
+    // The landing page is For me; this spec works from the boards.
+    await page.goto('/boards');
   });
 
   // 2. Board badges + click-through ----------------------------------------

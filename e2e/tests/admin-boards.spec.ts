@@ -59,7 +59,7 @@ test('admin boards: the only delivery board of a team has no delete', async ({ p
     await page.fill('#login', 'alice@kairos.test');
     await page.fill('#password', 'alice-password');
     await page.click('#submit-login');
-    await page.waitForURL((url) => url.pathname.startsWith('/boards'), {
+    await page.waitForURL((url) => url.pathname === '/' || url.pathname.startsWith('/boards'), {
       timeout: 30_000,
     });
     await page.goto('/admin/boards');

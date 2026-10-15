@@ -298,7 +298,7 @@ pub fn add_header(headers: &mut axum::http::HeaderMap, warnings: &[Warning]) {
 }
 
 /// The claim DTO of a claim.
-fn claim_dto(claim: &TaskClaim, names: &HashMap<Uuid, String>) -> dto::TaskClaim {
+pub(crate) fn claim_dto(claim: &TaskClaim, names: &HashMap<Uuid, String>) -> dto::TaskClaim {
     dto::TaskClaim {
         user_id: claim.user_id.to_string(),
         display_name: names

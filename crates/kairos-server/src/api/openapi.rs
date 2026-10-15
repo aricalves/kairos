@@ -293,6 +293,8 @@ use crate::app::AppState;
         crate::api::notifications::update_notification_settings,
         crate::api::notifications::list_notifications,
         crate::api::notifications::mark_notifications_read,
+        // The work of a person (KAIROS-T-0489).
+        crate::api::work::get_my_work,
         // Local password login (KAIROS-T-0203). Documented unconditionally even
         // though the routes are mounted only when KAIROS_LOCAL_AUTH is on: the spec
         // is the API contract, and an operator reading it needs to know the
