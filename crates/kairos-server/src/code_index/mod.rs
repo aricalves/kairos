@@ -66,8 +66,16 @@
 //! summary, and goes back to the queue with no try counted. So a first
 //! build of hours does not stop the updates.
 //!
-//! A build reports progress for each summary call, each embedding batch,
-//! and while its structure step runs ([`STRUCTURE_STEP_LIMIT`]). With no
+//! A hosted summarizer sends at most `concurrency` requests at a time to
+//! its endpoint, for all the builds of the server together, and waits after
+//! a 429 or a 503 ([`kairos_index::rate`], KAIROS-T-0495). A summary that
+//! it still cannot make does not fail the build: the run counts it as
+//! missing (`summaries_missing`), and the next build makes it. A build that
+//! makes no summary at all, for a reason that is not the rate, fails.
+//!
+//! A build reports progress for each summary call, while a call waits for
+//! a permit or a back-off of the endpoint, for each embedding batch, and
+//! while its structure step runs ([`STRUCTURE_STEP_LIMIT`]). With no
 //! progress for the lease time, its server kills it, and a server takes the
 //! job again. A server that stops loses its leases, and another server
 //! takes those jobs when the leases run out.
@@ -190,6 +198,9 @@ pub struct CodeIndexService {
     /// The last disk use of the tools and the caches, and when it was read
     /// (KAIROS-T-0478).
     disk: Mutex<Option<(Instant, kairos_client::types_code_index::CodeIndexDiskUse)>>,
+    /// The waits of a hosted summarizer after a 429 (KAIROS-T-0495): the
+    /// default, or the short waits of a test.
+    summary_backoff: Mutex<kairos_index::rate::Backoff>,
 }
 
 /// How long a reading of the disk use is kept: a walk of the tools folder
@@ -263,6 +274,7 @@ impl CodeIndexService {
             min_rebuild_secs: std::sync::atomic::AtomicU64::new(0),
             deps: DependencySettings::default(),
             disk: Mutex::new(None),
+            summary_backoff: Mutex::default(),
         }
     }
 
@@ -343,6 +355,22 @@ impl CodeIndexService {
     pub fn with_min_rebuild_secs(self, secs: u64) -> Self {
         self.set_min_rebuild_secs(secs);
         self
+    }
+
+    /// Set the waits of a hosted summarizer after a 429 (KAIROS-T-0495). A
+    /// test gives short waits; the default is 2 s to 2 min, 6 tries.
+    pub fn set_summary_backoff(&self, backoff: kairos_index::rate::Backoff) {
+        *self
+            .summary_backoff
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = backoff;
+    }
+
+    fn summary_backoff(&self) -> kairos_index::rate::Backoff {
+        self.summary_backoff
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Change the time of [`Self::with_min_rebuild_secs`].
@@ -695,21 +723,43 @@ impl PoolSink {
 /// ([`PoolSink`], KAIROS-T-0378). A call of a build that was killed, or
 /// that must give its slot, fails with [`STOPPED`] or [`YIELDED`]: the
 /// summaries made before stay in the pool and in the work database.
+///
+/// The build reports progress while a call waits for a permit of the
+/// endpoint or for the back-off after a 429 (KAIROS-T-0495,
+/// [`Summarizer::heartbeat`]), so the watchdog does not kill it as a stall.
+/// A request in flight or a model that hangs reports none.
 struct ProgressSummarizer<'a> {
     inner: &'a mut dyn Summarizer,
     handle: &'a JobHandle,
     pool: &'a PoolSink,
+    /// Why the build stops: [`STOPPED`] or [`YIELDED`], once a check gave it.
+    halted: Option<String>,
 }
 
-impl ProgressSummarizer<'_> {
-    fn check(&self) -> Result<(), String> {
-        if !self.handle.progress() {
-            return Err(STOPPED.to_string());
+impl<'a> ProgressSummarizer<'a> {
+    fn new(inner: &'a mut dyn Summarizer, handle: &'a JobHandle, pool: &'a PoolSink) -> Self {
+        let beat = handle.clone();
+        inner.heartbeat(Arc::new(move || {
+            beat.progress();
+        }));
+        ProgressSummarizer {
+            inner,
+            handle,
+            pool,
+            halted: None,
         }
-        if self.handle.should_yield() {
-            return Err(YIELDED.to_string());
-        }
-        Ok(())
+    }
+
+    fn check(&mut self) -> Result<(), String> {
+        let why = if !self.handle.progress() {
+            STOPPED
+        } else if self.handle.should_yield() {
+            YIELDED
+        } else {
+            return Ok(());
+        };
+        self.halted = Some(why.to_string());
+        Err(why.to_string())
     }
 }
 
@@ -742,6 +792,10 @@ impl Summarizer for ProgressSummarizer<'_> {
         self.handle.progress();
         self.pool.write(&self.inner.model(), requests, &summaries);
         summaries
+    }
+
+    fn halted(&self) -> Option<String> {
+        self.halted.clone()
     }
 }
 
@@ -1006,6 +1060,7 @@ async fn models_for(
                     settings.concurrency.max(1) as usize,
                 );
                 config.api_key = secret;
+                config.backoff = service.summary_backoff();
                 Arc::new(HostedSummarizers { config })
             }
             "bedrock" => {
@@ -1048,6 +1103,7 @@ async fn models_for(
                 );
                 config.session_token = session_token;
                 config.endpoint = endpoint;
+                config.backoff = service.summary_backoff();
                 Arc::new(BedrockSummarizers { config })
             }
             other => {
@@ -1410,6 +1466,22 @@ fn warnings_of(report: &UpdateReport) -> Option<String> {
         .flatten()
 }
 
+/// Log the summaries that a build could not make (KAIROS-T-0495). The
+/// build ends ok; the next build makes them.
+fn log_missing(tenant: &str, slug: &str, report: &UpdateReport) {
+    if let Some(failure) = &report.summary.failure {
+        tracing::warn!(
+            tenant,
+            repository = slug,
+            missing = report.summary.missing(),
+            rate_limited = report.summary.rate_limited,
+            first = %failure.name,
+            error = %failure.message,
+            "code index build ended with missing summaries; the next build makes them"
+        );
+    }
+}
+
 fn counts_of(report: &UpdateReport) -> runs::Counts {
     let clamp = |n: usize| i32::try_from(n).unwrap_or(i32::MAX);
     runs::Counts {
@@ -1426,6 +1498,7 @@ fn counts_of(report: &UpdateReport) -> runs::Counts {
                 + report.summary.files.reused
                 + report.summary.modules.reused,
         ),
+        summaries_missing: clamp(report.summary.missing()),
     }
 }
 
@@ -1866,11 +1939,7 @@ pub(crate) async fn build_repository(
             } = models;
             let report = summarizers
                 .run(&mut |summarizer| {
-                    let mut summarizer = ProgressSummarizer {
-                        inner: summarizer,
-                        handle: &handle,
-                        pool: &sink,
-                    };
+                    let mut summarizer = ProgressSummarizer::new(summarizer, &handle, &sink);
                     let embedder = ProgressEmbedder {
                         inner: embedder.as_ref(),
                         handle: &handle,
@@ -1914,6 +1983,7 @@ pub(crate) async fn build_repository(
         record_end(blocking, tenant, run, Err(&note)).await;
         return done(outcome, note);
     }
+    log_missing(tenant, &repo.slug, &report);
     record_end(
         blocking,
         tenant,
@@ -2141,11 +2211,7 @@ pub(crate) async fn full_build_repository(
             } = models;
             let report = summarizers
                 .run(&mut |summarizer| {
-                    let mut summarizer = ProgressSummarizer {
-                        inner: summarizer,
-                        handle: &handle,
-                        pool: &sink,
-                    };
+                    let mut summarizer = ProgressSummarizer::new(summarizer, &handle, &sink);
                     let embedder = ProgressEmbedder {
                         inner: embedder.as_ref(),
                         handle: &handle,
@@ -2194,6 +2260,7 @@ pub(crate) async fn full_build_repository(
         record_end(blocking, tenant, run, Err(&note)).await;
         return done(outcome, note);
     }
+    log_missing(tenant, &repo.slug, &report);
     record_end(
         blocking,
         tenant,

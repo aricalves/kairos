@@ -77,6 +77,10 @@ pub struct Build {
     /// `{"language", "reason"}`, one for each language that fell back to
     /// the edges by name. None for a run with no warning.
     pub scip_warnings: Option<String>,
+    /// The summaries that the index of the run does not have
+    /// (KAIROS-T-0495): a summary call failed, or a child of the item has no
+    /// summary. The next build makes them. None for a run with no counts.
+    pub summaries_missing: Option<i32>,
 }
 
 #[derive(Insertable)]
@@ -99,6 +103,7 @@ pub struct Counts {
     pub edges: i32,
     pub summaries_made: i32,
     pub summaries_reused: i32,
+    pub summaries_missing: i32,
 }
 
 /// Start a run: a `running` row. `trigger` is one of [`TRIGGERS`].
@@ -152,6 +157,7 @@ pub fn end_ok(
             code_index_builds::edges.eq(counts.map(|c| c.edges)),
             code_index_builds::summaries_made.eq(counts.map(|c| c.summaries_made)),
             code_index_builds::summaries_reused.eq(counts.map(|c| c.summaries_reused)),
+            code_index_builds::summaries_missing.eq(counts.map(|c| c.summaries_missing)),
             code_index_builds::finished_at.eq(diesel::dsl::now),
         ))
         .returning(Build::as_select())

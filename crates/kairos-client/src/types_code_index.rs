@@ -108,6 +108,11 @@ pub struct CodeIndexBuild {
     /// file of a run that did not end.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summaries_reused: Option<i32>,
+    /// The summaries that the index of the run does not have
+    /// (KAIROS-T-0495): the provider refused a call for the rate, or another
+    /// call failed. The next build makes them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summaries_missing: Option<i32>,
     /// The user who asked for the run or sent the upload. None for the
     /// builder.
     #[serde(default, skip_serializing_if = "Option::is_none")]

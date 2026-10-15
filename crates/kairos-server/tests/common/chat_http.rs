@@ -4,9 +4,14 @@
 //! and the most requests in flight at one time, and gives one fixed
 //! summary for each prompt: "A hosted summary of `<name>`.", with the name
 //! from the first pair of backticks of the user prompt.
+//!
+//! KAIROS-T-0495: [`serve_refusing`] gives each leading 429 its own
+//! `Retry-After` (or none), and can answer 429 to each request until
+//! [`ChatHttp::stop_refusing`].
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::Router;
@@ -19,7 +24,10 @@ use serde_json::{Value, json};
 #[derive(Clone)]
 struct Shared {
     key: String,
-    fail_first: Arc<AtomicUsize>,
+    /// The leading 429s, each with its `Retry-After`.
+    refusals: Arc<Mutex<VecDeque<Option<String>>>>,
+    /// A 429 for each request while it is set.
+    always: Arc<AtomicBool>,
     requests: Arc<AtomicUsize>,
     in_flight: Arc<AtomicUsize>,
     max_in_flight: Arc<AtomicUsize>,
@@ -31,9 +39,16 @@ pub struct ChatHttp {
     pub base_url: String,
     requests: Arc<AtomicUsize>,
     max_in_flight: Arc<AtomicUsize>,
+    always: Arc<AtomicBool>,
 }
 
 impl ChatHttp {
+    /// Answer the next requests normally.
+    #[allow(dead_code)]
+    pub fn stop_refusing(&self) {
+        self.always.store(false, Ordering::SeqCst);
+    }
+
     /// The requests that reached the endpoint, the refused ones included.
     pub fn requests(&self) -> usize {
         self.requests.load(Ordering::SeqCst)
@@ -48,15 +63,29 @@ impl ChatHttp {
 /// Serve the fake endpoint. `key` is the bearer token it takes;
 /// `fail_first` requests get a 429 before the endpoint answers.
 pub async fn serve(key: &str, fail_first: usize) -> ChatHttp {
+    serve_refusing(key, vec![None; fail_first], false).await
+}
+
+/// Serve the fake endpoint: a 429 for each of `refusals`, with its
+/// `Retry-After` when it has one, then a 429 for each request while
+/// `always`.
+pub async fn serve_refusing(key: &str, refusals: Vec<Option<&str>>, always: bool) -> ChatHttp {
     let shared = Shared {
         key: key.to_string(),
-        fail_first: Arc::new(AtomicUsize::new(fail_first)),
+        refusals: Arc::new(Mutex::new(
+            refusals
+                .into_iter()
+                .map(|r| r.map(str::to_string))
+                .collect(),
+        )),
+        always: Arc::new(AtomicBool::new(always)),
         requests: Arc::new(AtomicUsize::new(0)),
         in_flight: Arc::new(AtomicUsize::new(0)),
         max_in_flight: Arc::new(AtomicUsize::new(0)),
     };
     let requests = shared.requests.clone();
     let max_in_flight = shared.max_in_flight.clone();
+    let always = shared.always.clone();
     let router = Router::new()
         .route("/v1/chat/completions", post(complete))
         .with_state(shared);
@@ -71,6 +100,7 @@ pub async fn serve(key: &str, fail_first: usize) -> ChatHttp {
         base_url: format!("http://{addr}/v1"),
         requests,
         max_in_flight,
+        always,
     }
 }
 
@@ -87,16 +117,19 @@ async fn complete(State(shared): State<Shared>, headers: HeaderMap, body: String
         )
             .into_response();
     }
-    if shared
-        .fail_first
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-        .is_ok()
-    {
-        return (
+    let refusal = shared.refusals.lock().unwrap().pop_front();
+    if refusal.is_some() || shared.always.load(Ordering::SeqCst) {
+        let mut response = (
             StatusCode::TOO_MANY_REQUESTS,
-            json!({"error": {"message": "slow down"}}).to_string(),
+            json!({"error": "too many concurrent requests"}).to_string(),
         )
             .into_response();
+        if let Some(value) = refusal.flatten() {
+            response
+                .headers_mut()
+                .insert("retry-after", value.parse().unwrap());
+        }
+        return response;
     }
     let now = shared.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
     shared.max_in_flight.fetch_max(now, Ordering::SeqCst);

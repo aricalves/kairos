@@ -244,6 +244,21 @@ pub trait Summarizer {
     fn summarize_many(&mut self, requests: &[SummaryRequest]) -> Vec<Result<String, String>> {
         requests.iter().map(|r| self.summarize(r)).collect()
     }
+
+    /// Give the summarizer a function to call while a request waits for
+    /// the provider: a permit or a back-off after a 429 (KAIROS-T-0495).
+    /// The builder reports the progress of its build there. A summarizer
+    /// that never waits does nothing with it.
+    fn heartbeat(&mut self, beat: crate::rate::Beat) {
+        let _ = beat;
+    }
+
+    /// Why the run must stop now, when it must (KAIROS-T-0495): the build
+    /// was stopped, or it gives its slot. A failed summary does not stop
+    /// the run; this does.
+    fn halted(&self) -> Option<String> {
+        None
+    }
 }
 
 /// A summarizer for tests: a fixed text for each input, with no model. It
@@ -343,6 +358,9 @@ pub struct LevelCount {
     /// Items that got no summary: a limit stopped the run, or a child has
     /// no summary.
     pub left: usize,
+    /// Items whose summary call failed (KAIROS-T-0495): the summary is
+    /// missing, and a later run makes it.
+    pub failed: usize,
 }
 
 /// What a summary run did.
@@ -356,6 +374,38 @@ pub struct SummaryReport {
     pub embed_elapsed: Duration,
     /// Each call of the summarizer, in order.
     pub calls: Vec<SummaryCall>,
+    /// The first summary call that failed (KAIROS-T-0495), when one did.
+    pub failure: Option<SummaryFailure>,
+    /// The failed calls that the provider refused for the rate.
+    pub rate_limited: usize,
+}
+
+/// A summary call that failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SummaryFailure {
+    /// The file and the symbol name, the file path or the folder path.
+    pub name: String,
+    pub message: String,
+}
+
+impl SummaryReport {
+    fn level_mut(&mut self, level: Level) -> &mut LevelCount {
+        match level {
+            Level::Symbol => &mut self.symbols,
+            Level::File => &mut self.files,
+            Level::Module => &mut self.modules,
+        }
+    }
+
+    /// The summaries that the index does not have (KAIROS-T-0495): the
+    /// failed calls, and the items that got no summary because a child has
+    /// none. A later run makes them, as the keys are not in the pool.
+    pub fn missing(&self) -> usize {
+        [self.symbols, self.files, self.modules]
+            .iter()
+            .map(|c| c.failed + c.left)
+            .sum()
+    }
 }
 
 /// One symbol row, as the summarizer needs it.
@@ -474,6 +524,9 @@ fn run(
     // 1. The symbols. The requests go to the summarizer in batches of its
     // concurrency (KAIROS-T-0341); a batch is written before the next.
     let mut pending: Vec<(SummaryRequest, String)> = Vec::new();
+    // The keys whose summary call failed (KAIROS-T-0495): their items get
+    // no summary key, and a later run makes them.
+    let mut failed: HashSet<String> = HashSet::new();
     let mut new_symbols = 0usize;
     let mut seen: HashSet<String> = HashSet::new();
     // The key of each symbol whose summary is in the pool.
@@ -528,13 +581,13 @@ fn run(
                 children: Vec::new(),
             };
             pending.push((request, format!("{}:{}", file.path, s.qualified())));
+            report.symbols.summarized += 1;
             if pending.len() >= summarizer.concurrency().max(1) {
-                flush(&conn, *summarizer, &mut pending, &mut report)?;
+                flush(&conn, *summarizer, &mut pending, &mut report, &mut failed)?;
             }
             seen.insert(key.clone());
             symbol_keys.insert(s.id, key);
             new_symbols += 1;
-            report.symbols.summarized += 1;
             continue;
         }
         let mut callees = Vec::new();
@@ -583,17 +636,18 @@ fn run(
             children: Vec::new(),
         };
         pending.push((request, format!("{}:{}", file.path, s.qualified())));
+        report.symbols.summarized += 1;
         if pending.len() >= summarizer.concurrency().max(1) {
-            flush(&conn, *summarizer, &mut pending, &mut report)?;
+            flush(&conn, *summarizer, &mut pending, &mut report, &mut failed)?;
         }
         seen.insert(key.clone());
         symbol_keys.insert(s.id, key);
         new_symbols += 1;
-        report.symbols.summarized += 1;
     }
     if let Some((summarizer, _)) = model.as_mut() {
-        flush(&conn, *summarizer, &mut pending, &mut report)?;
+        flush(&conn, *summarizer, &mut pending, &mut report, &mut failed)?;
     }
+    symbol_keys.retain(|_, key| !failed.contains(key));
 
     // 2. The files, from the summaries of their symbols. A file with no
     // symbol of a summarized kind, from its declarations (KAIROS-T-0425).
@@ -663,10 +717,10 @@ fn run(
             report.files.reused += 1;
         } else if let Some((summarizer, _)) = model.as_mut() {
             pending.push((request, f.path.clone()));
-            if pending.len() >= summarizer.concurrency().max(1) {
-                flush(&conn, *summarizer, &mut pending, &mut report)?;
-            }
             report.files.summarized += 1;
+            if pending.len() >= summarizer.concurrency().max(1) {
+                flush(&conn, *summarizer, &mut pending, &mut report, &mut failed)?;
+            }
         } else {
             report.files.left += 1;
             // A file of declarations with no summary in the pool does not
@@ -680,7 +734,12 @@ fn run(
         file_keys.insert(f.path.clone(), Some(key));
     }
     if let Some((summarizer, _)) = model.as_mut() {
-        flush(&conn, *summarizer, &mut pending, &mut report)?;
+        flush(&conn, *summarizer, &mut pending, &mut report, &mut failed)?;
+    }
+    for key in file_keys.values_mut() {
+        if key.as_ref().is_some_and(|k| failed.contains(k)) {
+            *key = None;
+        }
     }
 
     // 3. The modules: each folder of summarized files, from their summaries.
@@ -727,10 +786,10 @@ fn run(
                 children: lines,
             };
             pending.push((request, folder.clone()));
-            if pending.len() >= summarizer.concurrency().max(1) {
-                flush(&conn, *summarizer, &mut pending, &mut report)?;
-            }
             report.modules.summarized += 1;
+            if pending.len() >= summarizer.concurrency().max(1) {
+                flush(&conn, *summarizer, &mut pending, &mut report, &mut failed)?;
+            }
         } else {
             report.modules.left += 1;
             continue;
@@ -738,8 +797,9 @@ fn run(
         module_keys.push((folder.clone(), key));
     }
     if let Some((summarizer, _)) = model.as_mut() {
-        flush(&conn, *summarizer, &mut pending, &mut report)?;
+        flush(&conn, *summarizer, &mut pending, &mut report, &mut failed)?;
     }
+    module_keys.retain(|(_, key)| !failed.contains(key));
 
     // 4. Link the files and the modules in scope to their summaries.
     {
@@ -796,11 +856,19 @@ fn run(
 /// summary in the pool (KAIROS-T-0341). The summaries that came back are
 /// written before an error is returned, so a stopped run keeps its work.
 /// The batch is empty afterwards.
+///
+/// A failed call does not stop the run (KAIROS-T-0495): it is counted as
+/// `failed`, its key goes into `failed`, and the item has no summary. The
+/// run stops when the summarizer is halted, and when no call of the run has
+/// given a summary yet and none of the failed calls was refused for the
+/// rate: a wrong key or a wrong model fails each call, so the run fails at
+/// once, as before.
 fn flush(
     conn: &Connection,
     summarizer: &mut dyn Summarizer,
     pending: &mut Vec<(SummaryRequest, String)>,
     report: &mut SummaryReport,
+    failed: &mut HashSet<String>,
 ) -> Result<(), IndexError> {
     if pending.is_empty() {
         return Ok(());
@@ -811,22 +879,26 @@ fn flush(
     let elapsed = started.elapsed();
     let model = summarizer.model();
     let batch: Vec<(SummaryRequest, String)> = std::mem::take(pending);
-    let mut first_error = None;
     for ((request, name), result) in batch.into_iter().zip(results) {
-        let text = match result {
-            Ok(text) => text.trim().to_string(),
-            Err(message) => {
-                first_error.get_or_insert(IndexError::Summary { name, message });
+        let text = match result.map(|text| text.trim().to_string()) {
+            Ok(text) if !text.is_empty() => text,
+            failure => {
+                let message = failure
+                    .err()
+                    .unwrap_or_else(|| "the summary is empty".to_string());
+                let count = report.level_mut(request.level);
+                count.summarized = count.summarized.saturating_sub(1);
+                count.failed += 1;
+                if crate::rate::is_rate_limited(&message) {
+                    report.rate_limited += 1;
+                }
+                report
+                    .failure
+                    .get_or_insert(SummaryFailure { name, message });
+                failed.insert(request.key);
                 continue;
             }
         };
-        if text.is_empty() {
-            first_error.get_or_insert(IndexError::Summary {
-                name,
-                message: "the summary is empty".into(),
-            });
-            continue;
-        }
         conn.execute(
             "INSERT INTO summaries (key, level, summary, model) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT (key) DO NOTHING",
@@ -840,10 +912,16 @@ fn flush(
             summary: text,
         });
     }
-    match first_error {
-        Some(error) => Err(error),
-        None => Ok(()),
+    if let Some(why) = summarizer.halted() {
+        return Err(IndexError::Stopped(why));
     }
+    if report.calls.is_empty()
+        && report.rate_limited == 0
+        && let Some(SummaryFailure { name, message }) = report.failure.clone()
+    {
+        return Err(IndexError::Summary { name, message });
+    }
+    Ok(())
 }
 
 /// The key of a symbol summary: the hash of the model, of the tree hash of
@@ -1695,7 +1773,8 @@ mod tests {
             LevelCount {
                 summarized: 1,
                 reused: 0,
-                left: 1
+                left: 1,
+                failed: 0
             }
         );
         assert_eq!(
@@ -1703,7 +1782,8 @@ mod tests {
             LevelCount {
                 summarized: 0,
                 reused: 0,
-                left: 1
+                left: 1,
+                failed: 0
             }
         );
 
@@ -1713,7 +1793,8 @@ mod tests {
             LevelCount {
                 summarized: 1,
                 reused: 1,
-                left: 0
+                left: 0,
+                failed: 0
             }
         );
         assert_eq!(report.files.summarized, 1);
@@ -1723,6 +1804,144 @@ mod tests {
         let report = summarize(&repo, &db, &mut fake, &embed, &limited).unwrap();
         assert!(report.calls.is_empty());
         assert_eq!(report.vectors, 0);
+    }
+
+    /// A summarizer whose answer for each request is given by `answer`
+    /// (KAIROS-T-0495).
+    struct Scripted<F: FnMut(&SummaryRequest) -> Result<String, String>> {
+        answer: F,
+        halted: Option<String>,
+    }
+
+    impl<F: FnMut(&SummaryRequest) -> Result<String, String>> Summarizer for Scripted<F> {
+        fn model(&self) -> String {
+            "fake/fixed".into()
+        }
+
+        fn summarize(&mut self, request: &SummaryRequest) -> Result<String, String> {
+            (self.answer)(request)
+        }
+
+        fn halted(&self) -> Option<String> {
+            self.halted.clone()
+        }
+    }
+
+    fn rate_error() -> String {
+        format!("x answered 429 (6 tries; {})", crate::rate::RATE_LIMITED)
+    }
+
+    #[test]
+    fn a_failed_summary_is_missing_and_the_next_run_makes_it() {
+        let (_dir, repo, db) = small_index();
+        let embed = kairos_embed::DeterministicProvider::default();
+        // The summary of `two` is refused for the rate; the others come.
+        let mut first = Scripted {
+            answer: |r: &SummaryRequest| {
+                if r.name == "two" {
+                    Err(rate_error())
+                } else {
+                    Ok(format!("About {}.", r.name))
+                }
+            },
+            halted: None,
+        };
+        let options = SummarizeOptions::default();
+        let report = summarize(&repo, &db, &mut first, &embed, &options).unwrap();
+        assert_eq!(
+            report.symbols,
+            LevelCount {
+                summarized: 1,
+                reused: 0,
+                left: 0,
+                failed: 1
+            }
+        );
+        assert_eq!(report.files.left, 1, "the file waits for `two`");
+        assert_eq!(report.modules.left, 1);
+        assert_eq!(report.missing(), 3);
+        assert_eq!(report.rate_limited, 1);
+        assert_eq!(report.failure.as_ref().unwrap().name, "src/lib.rs:two");
+        let conn = Connection::open(&db).unwrap();
+        let without: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM symbols WHERE name = 'two' AND summary_key IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(without, 1, "the symbol has no key of a missing summary");
+
+        // The next run makes the missing summaries only.
+        let mut fake = FakeSummarizer::default();
+        let report = summarize(&repo, &db, &mut fake, &embed, &options).unwrap();
+        assert_eq!(report.symbols.summarized, 1);
+        assert_eq!(report.symbols.reused, 1);
+        assert_eq!(report.files.summarized, 1);
+        assert_eq!(report.modules.summarized, 1);
+        assert_eq!(report.missing(), 0);
+    }
+
+    #[test]
+    fn a_run_refused_for_the_rate_at_each_call_ends_with_all_missing() {
+        let (_dir, repo, db) = small_index();
+        let embed = kairos_embed::DeterministicProvider::default();
+        let mut refused = Scripted {
+            answer: |_: &SummaryRequest| Err(rate_error()),
+            halted: None,
+        };
+        let report = summarize(
+            &repo,
+            &db,
+            &mut refused,
+            &embed,
+            &SummarizeOptions::default(),
+        )
+        .unwrap();
+        assert!(report.calls.is_empty());
+        assert_eq!(report.symbols.failed, 2);
+        assert_eq!(report.missing(), 4);
+    }
+
+    #[test]
+    fn a_run_whose_each_call_fails_for_another_reason_fails() {
+        let (_dir, repo, db) = small_index();
+        let embed = kairos_embed::DeterministicProvider::default();
+        let mut wrong_key = Scripted {
+            answer: |_: &SummaryRequest| Err("x answered 401 Unauthorized".to_string()),
+            halted: None,
+        };
+        let error = summarize(
+            &repo,
+            &db,
+            &mut wrong_key,
+            &embed,
+            &SummarizeOptions::default(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&error, IndexError::Summary { message, .. } if message.contains("401")),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_halted_summarizer_stops_the_run() {
+        let (_dir, repo, db) = small_index();
+        let embed = kairos_embed::DeterministicProvider::default();
+        let mut stopped = Scripted {
+            answer: |_: &SummaryRequest| Err("stopped".to_string()),
+            halted: Some("the build was stopped".to_string()),
+        };
+        let error = summarize(
+            &repo,
+            &db,
+            &mut stopped,
+            &embed,
+            &SummarizeOptions::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(error, IndexError::Stopped(_)), "{error}");
     }
 
     #[test]
@@ -2009,7 +2228,8 @@ mod tests {
             LevelCount {
                 summarized: 0,
                 reused: 1,
-                left: 1
+                left: 1,
+                failed: 0
             }
         );
         assert_eq!(report.modules.reused, 1);

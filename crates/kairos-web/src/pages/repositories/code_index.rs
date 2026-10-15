@@ -79,6 +79,10 @@ pub struct CodeIndexBuild {
     /// The languages with no SCIP index in the run (KAIROS-T-0478).
     #[serde(default)]
     pub scip_warnings: Vec<ScipWarning>,
+    /// The summaries that the index of the run does not have
+    /// (KAIROS-T-0495). The next build makes them.
+    #[serde(default)]
+    pub summaries_missing: Option<i32>,
 }
 
 /// mirror of: `kairos_client::types_code_index::CodeIndexScipWarning`.
@@ -215,8 +219,9 @@ pub(crate) fn index_line(index: &CodeIndex) -> String {
     )
 }
 
-/// One line for a run: the trigger, when it started, its commit and the
-/// symbols of the index it wrote. The outcome is the pill next to it, and
+/// One line for a run: the trigger, when it started, its commit, the
+/// symbols of the index it wrote, the model and the summaries that the
+/// index does not have (KAIROS-T-0495). The outcome is the pill next to it, and
 /// the error text is its own line. Pure, host-tested.
 pub(crate) fn run_line(run: &CodeIndexBuild) -> String {
     let mut parts = vec![run.trigger.clone(), run.started_at.clone()];
@@ -228,6 +233,9 @@ pub(crate) fn run_line(run: &CodeIndexBuild) -> String {
     }
     if let Some(model) = &run.model {
         parts.push(model.clone());
+    }
+    if let Some(missing) = run.summaries_missing.filter(|n| *n > 0) {
+        parts.push(format!("{missing} summaries missing"));
     }
     parts.join(" · ")
 }
@@ -634,6 +642,16 @@ mod tests {
         assert_eq!(
             run_line(&list.items[1]),
             "request · 2026-10-07T05:00:00+00:00"
+        );
+        // KAIROS-T-0495: a run with missing summaries says how many.
+        let missing: CodeIndexBuild = serde_json::from_str(
+            r#"{"id":"r2","trigger":"first","outcome":"ok","started_at":"t","symbols":10,
+                "model":"ollama-cloud/m","summaries_missing":7}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            run_line(&missing),
+            "first · t · 10 symbols · ollama-cloud/m · 7 summaries missing"
         );
         let state = CodeIndexState {
             indexes: vec![index],
