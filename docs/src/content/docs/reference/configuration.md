@@ -736,6 +736,7 @@ the limits and what to watch, see [The job queue](../../explanation/job-queue/).
 | `KAIROS_JOB_LIMIT_PERIODIC` | whole number | `1` | The periodic passes that one server runs at the same time. |
 | `KAIROS_JOB_LIMIT_WEBHOOK_DELIVERY` | whole number | `4` | The webhook deliveries that one server sends at the same time. |
 | `KAIROS_JOB_LIMIT_GITHUB_WRITEBACK` | whole number | `2` | The GitHub write-backs that one server runs at the same time. |
+| `KAIROS_JOB_LIMIT_ISSUE_IMPORT` | whole number | `2` | The imports of open issues that one server runs at the same time. |
 
 ### Webhook deliveries
 

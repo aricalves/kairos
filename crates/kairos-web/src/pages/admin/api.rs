@@ -694,6 +694,28 @@ pub async fn delete_definition(auth: Auth, definition_id: &str) -> Result<Value,
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_import_says_its_state() {
+        let mut import = super::IssueImport {
+            state: "waiting".into(),
+            waiting_until: Some("2026-10-15T04:00:00+00:00".into()),
+            pages: 3,
+            result: super::IssueImportResult {
+                message: "Kairos imported 297 issue(s).".into(),
+            },
+            error: None,
+        };
+        assert!(import.open());
+        assert!(import.summary().contains("rate limit"));
+        assert!(import.summary().contains("2026-10-15T04:00:00"));
+        import.state = "done".into();
+        assert!(!import.open());
+        assert!(import.summary().contains("done. Kairos imported 297"));
+        import.state = "failed".into();
+        import.error = Some("GitHub refused the read token.".into());
+        assert!(import.summary().contains("GitHub refused"));
+    }
+
     use super::*;
 
     /// `BoardDetail` decodes the wire shape: board fields flattened at the
@@ -893,14 +915,70 @@ pub struct IssueImportResult {
     pub message: String,
 }
 
-/// `POST /api/repositories/{slug}/import-issues` — import the open issues
-/// once (org admin, KAIROS-T-0483).
-pub async fn import_issues(auth: Auth, reference: &str) -> Result<IssueImportResult, ApiError> {
+/// mirror of: `kairos_client::types_repositories::IssueImport` (partial,
+/// KAIROS-T-0487): an import of the open issues, a job of the server.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct IssueImport {
+    pub state: String,
+    pub waiting_until: Option<String>,
+    pub pages: usize,
+    pub result: IssueImportResult,
+    pub error: Option<String>,
+}
+
+impl IssueImport {
+    /// True while the job waits or runs.
+    pub fn open(&self) -> bool {
+        matches!(self.state.as_str(), "queued" | "running" | "waiting")
+    }
+
+    /// The line of the page. Pure, host-tested.
+    pub fn summary(&self) -> String {
+        match self.state.as_str() {
+            "queued" => "Import of open issues: queued.".to_string(),
+            "running" => format!(
+                "Import of open issues: running, {} page(s) read. {}",
+                self.pages, self.result.message
+            ),
+            "waiting" => format!(
+                "Import of open issues: waiting for the rate limit of the forge until {}. {}",
+                self.waiting_until.as_deref().unwrap_or("later"),
+                self.result.message
+            ),
+            "failed" => format!(
+                "Import of open issues: failed. {} {}",
+                self.error.as_deref().unwrap_or(""),
+                self.result.message
+            ),
+            _ => format!("Import of open issues: done. {}", self.result.message),
+        }
+    }
+}
+
+/// `POST /api/repositories/{slug}/import-issues` — start the import of the
+/// open issues (org admin, KAIROS-T-0483); the answer is the job
+/// (KAIROS-T-0487).
+pub async fn import_issues(auth: Auth, reference: &str) -> Result<IssueImport, ApiError> {
     crate::api::post_empty(
         auth,
         &format!("/api/repositories/{reference}/import-issues"),
     )
     .await
+}
+
+/// `GET /api/repositories/{slug}/import-issues` — the last import of the
+/// open issues (KAIROS-T-0487); `None` when no import ran (404).
+pub async fn issue_import(auth: Auth, reference: &str) -> Result<Option<IssueImport>, ApiError> {
+    match get_json(
+        auth,
+        &format!("/api/repositories/{reference}/import-issues"),
+    )
+    .await
+    {
+        Ok(import) => Ok(Some(import)),
+        Err(ApiError::Http { status: 404, .. }) => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 /// `DELETE /api/repositories/{slug}` (409 while referenced).

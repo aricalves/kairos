@@ -1181,19 +1181,34 @@ An initiative (Flight Level 2), as returned by `/api/initiatives`.
 | `updated_by` | `string` | yes | Last editor user id (UUID). |
 | `version` | `integer` | yes | Optimistic-concurrency version (KAIROS-A-0004). |
 
-## IssueImportResult
+## IssueImport
 
-The answer of `POST /api/repositories/{slug}/import-issues` (KAIROS-T-0483): what the import of the open issues did. Each issue goes through the same path as an opened-issue event.
+An import of the open issues of a repository (KAIROS-T-0487). It is a job of the job queue. `POST` and `GET /api/repositories/{slug}/import-issues` give it.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `complete` | `boolean` | yes | False: the import stopped before the last page (the rate limit of the forge, or the page limit). Run it again: it skips what it took. |
+| `created_at` | `string` | yes | When the import was asked for (RFC 3339). |
+| `error` | `string`, nullable | no | Why the job failed, or why its last try stopped. |
+| `finished_at` | `string`, nullable | no | When the job ended (RFC 3339); `None` while it waits or runs. |
+| `job` | `string` | yes | The id of the job (UUID). |
+| `pages` | `integer` | yes | The pages of issues that the job took. |
+| `repository` | `string` | yes | The slug of the repository. |
+| `result` | [`IssueImportResult`](#issueimportresult) | yes | The counts so far; final when the job is `done`. |
+| `state` | `string` | yes | `queued`, `running`, `waiting` (for the rate limit of the forge), `done` or `failed`. |
+| `waiting_until` | `string`, nullable | no | While the job waits for the rate limit of the forge: the time it goes on (RFC 3339). |
+
+## IssueImportResult
+
+The counts of an import of the open issues (KAIROS-T-0483). The job writes them while it runs, and they stay after it ends (KAIROS-T-0487).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
 | `filtered` | `integer` | yes | Issues that the forge filter does not admit. |
 | `imported` | `integer` | yes | Issues that became a task. |
 | `items` | array of `string` | yes | The short codes of the new tasks. |
 | `message` | `string` | yes | A sentence for a person. |
-| `not_taken` | `integer` | yes | Issues that got no task; `message` says why. |
-| `skipped` | `integer` | yes | Issues that a webhook or an earlier import took before. |
+| `not_taken` | `integer` | yes | Issues that no task could be made for; `message` says why. |
+| `skipped` | `integer` | yes | Issues that were taken before (by a webhook or an earlier import). |
 
 ## ItemImpactsResponse
 

@@ -153,8 +153,21 @@ pub enum ReposCommand {
     /// becomes a support task on the delivery board of the team, as an
     /// opened issue does. A second run skips what the first took. Needs the
     /// webhook connection and a read token with Issues: read (GitHub) or
-    /// read_api (GitLab)
+    /// read_api (GitLab). The import is a job of the server: the command
+    /// starts it and shows it. While an import of the repository waits or
+    /// runs, the command shows that import
     ImportIssues {
+        /// Repository slug (or UUID)
+        repository: String,
+        /// Wait until the import ends, then show its counts
+        #[arg(long)]
+        wait: bool,
+        #[command(flatten)]
+        common: Common,
+    },
+    /// Show the last import of the open issues of a repository (org admin):
+    /// its state, and its counts
+    ImportStatus {
         /// Repository slug (or UUID)
         repository: String,
         #[command(flatten)]
@@ -752,16 +765,30 @@ impl ReposCommand {
                 );
                 Ok(())
             }
-            Self::ImportIssues { repository, common } => {
+            Self::ImportIssues {
+                repository,
+                wait,
+                common,
+            } => {
                 let client = client(&common)?;
-                let result = client.import_issues(&repository).await?;
+                let mut import = client.import_issues(&repository).await?;
+                while wait && !matches!(import.state.as_str(), "done" | "failed") {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    import = client.issue_import(&repository).await?;
+                }
                 if common.json {
-                    return print_json(&result);
+                    return print_json(&import);
                 }
-                println!("{}", result.message);
-                for code in &result.items {
-                    println!("  {code}");
+                print_import(&import);
+                Ok(())
+            }
+            Self::ImportStatus { repository, common } => {
+                let client = client(&common)?;
+                let import = client.issue_import(&repository).await?;
+                if common.json {
+                    return print_json(&import);
                 }
+                print_import(&import);
                 Ok(())
             }
             Self::Delete {
@@ -905,6 +932,27 @@ impl ReposCommand {
                 Ok(())
             }
         }
+    }
+}
+
+/// Show an import of the open issues (KAIROS-T-0487).
+fn print_import(import: &kairos_client::types_repositories::IssueImport) {
+    let state = match (import.state.as_str(), &import.waiting_until) {
+        ("waiting", Some(until)) => {
+            format!("waiting for the rate limit of the forge until {until}")
+        }
+        (state, _) => state.to_string(),
+    };
+    println!(
+        "Import {} of {}: {state} ({} page(s) read).",
+        import.job, import.repository, import.pages
+    );
+    println!("{}", import.result.message);
+    if let Some(error) = &import.error {
+        println!("Error: {error}");
+    }
+    for code in &import.result.items {
+        println!("  {code}");
     }
 }
 

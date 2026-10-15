@@ -1215,6 +1215,7 @@ kairos repos import-issues <REPOSITORY> [OPTIONS]
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
 | `<REPOSITORY>` | slug or UUID | required | The repository. |
+| `--wait` | flag | off | Wait until the import ends, then print its counts. |
 
 Organization admin only. Imports the open issues of the repository one time.
 The forge filter decides which issues Kairos takes. Each issue that it
@@ -1222,14 +1223,35 @@ admits becomes a support task, as an opened issue does. The import skips an
 issue that Kairos took before.
 
 The repository must have a webhook connection and a read token with
-**Issues: read** (GitHub) or **read_api** (GitLab). The command prints the
-counts and the short codes of the new tasks:
+**Issues: read** (GitHub) or **read_api** (GitLab).
+
+The import is a job of the server. The command starts the job and prints
+it. When an import of the repository waits or runs, the command prints that
+import and starts no second one. With `--wait`, the command prints the
+counts and the short codes of the new tasks when the job ends:
 
 ```text
+Import 0b6f3c1e-7a52-4d8e-9f10-2c4b5a6d7e8f of payments-api: done (1 page(s) read).
 Kairos imported 2 issue(s), skipped 1 taken before, and did not take 1 that the forge filter excludes.
   PAY-T-0012
   PAY-T-0013
 ```
+
+### `kairos repos import-status`
+
+```
+kairos repos import-status <REPOSITORY> [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<REPOSITORY>` | slug or UUID | required | The repository. |
+
+Organization admin only. Prints the last import of the open issues of the
+repository. The state is `queued`, `running`, `waiting`, `done` or
+`failed`. The command also prints the pages that the import read, its
+counts, and the error of a failed import. The state `waiting` gives the
+time when the rate limit of the forge ends.
 
 ### `kairos repos delete`
 

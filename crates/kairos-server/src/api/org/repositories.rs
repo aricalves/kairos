@@ -70,32 +70,37 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/api/repositories/{slug}/import-issues",
-            axum::routing::post(import_issues),
+            axum::routing::post(import_issues).get(issue_import),
         )
 }
 
-/// Import the open issues of a repository one time (KAIROS-T-0483,
-/// organization admin).
+/// Start the import of the open issues of a repository (KAIROS-T-0483).
+///
+/// Organization admin only. The import is a job of the job queue
+/// (KAIROS-T-0487).
 ///
 /// Each open issue goes through the path of an opened-issue event. The
-/// forge filter decides. Then Kairos makes one support task per issue id
-/// on the delivery board of the team. The import skips an issue that a
-/// webhook or an earlier import took. So a second run makes nothing.
+/// forge filter decides. Then Kairos makes one support task for each issue
+/// id on the delivery board of the team. The import skips an issue that a
+/// webhook or an earlier import took.
 ///
-/// The repository needs a live webhook connection: the issue link uses it.
-/// It also needs a read token with Issues: read (GitHub) or `read_api`
-/// (GitLab).
+/// The repository needs a live webhook connection, because the issue link
+/// hangs off it. It also needs a read token with Issues: read (GitHub) or
+/// `read_api` (GitLab).
+///
+/// The answer is the job, at once. While an import of the repository waits
+/// or runs, the answer is that import: one runs at a time. Read the counts
+/// with `GET /api/repositories/{slug}/import-issues`.
 #[utoipa::path(
     post,
     path = "/api/repositories/{slug}/import-issues",
     tag = "repositories",
     params(("slug" = String, Path, description = "Repository slug (or UUID)")),
     responses(
-        (status = 200, description = "What the import did", body = dto::IssueImportResult),
+        (status = 202, description = "The import job: a new one, or the one that waits or runs", body = dto::IssueImport),
         (status = 403, description = "Not an org admin", body = kairos_client::types::ErrorEnvelope),
         (status = 404, description = "Unknown repository", body = kairos_client::types::ErrorEnvelope),
         (status = 422, description = "The repository has no read token, no webhook connection, or the forge `other`", body = kairos_client::types::ErrorEnvelope),
-        (status = 502, description = "The forge refused the token, or the list failed", body = kairos_client::types::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn import_issues(
@@ -103,140 +108,85 @@ pub(crate) async fn import_issues(
     Extension(auth): Extension<AuthContext>,
     Extension(tenant): Extension<TenantContext>,
     Path(slug): Path<String>,
-) -> Result<Json<dto::IssueImportResult>, ApiError> {
-    use crate::forge::import::{ListError, list_open_issues};
-    use crate::forge::intake::{Outcome, Source, take_issue};
+) -> Result<axum::response::Response, ApiError> {
+    use crate::forge::import;
+    use axum::response::IntoResponse;
     let user = auth.user_id;
     let tenant_slug = tenant.slug.clone();
     let key = state.config.secrets_key.clone();
     let github_api = state.config.writeback.api_url.clone();
-    // The gate, the repository, the connection and the token first.
-    let (repository, connection_id, token, api_base) = state
+    let max_tries = state.config.jobs.max_tries;
+    let job = state
+        .blocking
+        .run(&tenant.slug, move |conn| {
+            require_capability(conn, &tenant_slug, None, user, "manage_teams")?;
+            let target = import::target(conn, &tenant_slug, &slug, key.as_ref(), &github_api)?;
+            let new = import::new_job(&tenant_slug, &target.repository, max_tries);
+            let dedupe_key = new.dedupe_key.clone().unwrap_or_default();
+            // The open job of the repository, or a new one. A job that ends
+            // between the two reads leaves room for a new one: look again.
+            for _ in 0..3 {
+                if let Some(job) =
+                    kairos_db::jobs::enqueue(conn, &new).map_err(ApiError::internal)?
+                {
+                    return Ok(job);
+                }
+                if let Some(job) =
+                    kairos_db::jobs::open_by_key(conn, &dedupe_key).map_err(ApiError::internal)?
+                {
+                    return Ok(job);
+                }
+            }
+            Err(ApiError::internal(
+                "the import job was neither added nor found",
+            ))
+        })
+        .await?;
+    state.jobs.wake();
+    Ok((StatusCode::ACCEPTED, Json(import::import_dto(&job))).into_response())
+}
+
+/// The last import of the open issues of a repository (KAIROS-T-0487).
+///
+/// Organization admin only. The answer gives the state of the import and
+/// its counts.
+#[utoipa::path(
+    get,
+    path = "/api/repositories/{slug}/import-issues",
+    tag = "repositories",
+    params(("slug" = String, Path, description = "Repository slug (or UUID)")),
+    responses(
+        (status = 200, description = "The last import", body = dto::IssueImport),
+        (status = 403, description = "Not an org admin", body = kairos_client::types::ErrorEnvelope),
+        (status = 404, description = "Unknown repository, or no import ran", body = kairos_client::types::ErrorEnvelope),
+    ),
+)]
+pub(crate) async fn issue_import(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Extension(tenant): Extension<TenantContext>,
+    Path(slug): Path<String>,
+) -> Result<Json<dto::IssueImport>, ApiError> {
+    let user = auth.user_id;
+    let tenant_slug = tenant.slug.clone();
+    let job = state
         .blocking
         .run(&tenant.slug, move |conn| {
             require_capability(conn, &tenant_slug, None, user, "manage_teams")?;
             let repository = repositories::resolve(conn, &slug).map_err(map_error)?;
-            if matches!(repository.forge, Forge::Other) {
-                return Err(ApiError::validation(format!(
-                    "The repository {} has the forge `other`. Only a github repository or a \
-                     gitlab repository has issues to import.",
-                    repository.slug
-                )));
-            }
-            let connection = kairos_db::forge::find_connection_for_repository(conn, repository.id)
-                .map_err(super::forge::map_error)?
+            let key = crate::forge::import::job_key(&tenant_slug, repository.id);
+            kairos_db::jobs::last_by_key(conn, &key)
+                .map_err(ApiError::internal)?
                 .ok_or_else(|| {
-                    ApiError::validation(format!(
-                        "The repository {} has no webhook connection. Connect the webhook \
-                             first (Admin, Repositories, Connect webhook), with the Issues \
-                             event, then import.",
-                        repository.slug
+                    ApiError::not_found(format!(
+                        "The repository {} has no import of open issues. Start one: POST \
+                         /api/repositories/{}/import-issues.",
+                        repository.slug, repository.slug
                     ))
-                })?;
-            let (token, _) =
-                crate::credentials::fetch_token(conn, &tenant_slug, &repository, key.as_ref())
-                    .map_err(crate::credentials::token_refusal)?;
-            let token = token.ok_or_else(|| {
-                let permission = match repository.forge {
-                    Forge::Gitlab => "read_api",
-                    _ => "Issues: read",
-                };
-                ApiError::validation(format!(
-                    "The repository {} has no read token. Set the read token of the repository \
-                     (Admin, Repositories, or `kairos repos credential set`) with {permission}, \
-                     then import.",
-                    repository.slug
-                ))
-                .with_details(json!({ "field": "token" }))
-            })?;
-            let api_base = match repository.forge {
-                Forge::Gitlab => crate::forge::import::gitlab_api_base(&repository.repo_url)
-                    .ok_or_else(|| {
-                        ApiError::validation(format!(
-                            "The URL of the repository {} has no host.",
-                            repository.slug
-                        ))
-                    })?,
-                _ => github_api,
-            };
-            Ok((repository, connection.id, token, api_base))
+                })
         })
         .await?;
-    // The list, outside the database.
-    let listing = list_open_issues(
-        repository.forge,
-        &api_base,
-        &repository.repo_full_name,
-        token.expose(),
-    )
-    .await
-    .map_err(|e| match e {
-        ListError::Refused(message) => {
-            ApiError::new(StatusCode::BAD_GATEWAY, "FORGE_REFUSED", message)
-        }
-        ListError::Failed(message) => {
-            ApiError::new(StatusCode::BAD_GATEWAY, "FORGE_FAILED", message)
-        }
-    })?;
-    // Each issue through the path of an event.
-    let tenant_slug = tenant.slug.clone();
-    let org_slug = tenant.slug.clone();
-    let repository_id = repository.id;
-    let result = state
-        .blocking
-        .run(&tenant.slug, move |conn| {
-            let actor = kairos_db::forge_actor::ensure_for_slug(conn, &org_slug)
-                .map_err(ApiError::internal)?;
-            let mut result = dto::IssueImportResult {
-                complete: listing.stopped.is_none(),
-                ..Default::default()
-            };
-            let mut reasons: Vec<String> = Vec::new();
-            for issue in &listing.issues {
-                match take_issue(
-                    conn,
-                    &tenant_slug,
-                    actor,
-                    repository_id,
-                    connection_id,
-                    issue,
-                    Source::Import,
-                )? {
-                    Outcome::Created(code) => {
-                        result.imported += 1;
-                        result.items.push(code);
-                    }
-                    Outcome::Duplicate => result.skipped += 1,
-                    Outcome::Filtered => result.filtered += 1,
-                    Outcome::NotRouted(reason) => {
-                        result.not_taken += 1;
-                        if !reasons.contains(&reason) {
-                            reasons.push(reason);
-                        }
-                    }
-                }
-            }
-            let mut message = format!(
-                "Kairos imported {} issue(s), skipped {} taken before, and did not take {} \
-                 that the forge filter excludes.",
-                result.imported, result.skipped, result.filtered
-            );
-            if result.not_taken > 0 {
-                message.push_str(&format!(
-                    " {} issue(s) got no task: {}",
-                    result.not_taken,
-                    reasons.join(" ")
-                ));
-            }
-            if let Some(stopped) = &listing.stopped {
-                message.push(' ');
-                message.push_str(stopped);
-            }
-            result.message = message;
-            Ok(result)
-        })
-        .await?;
-    Ok(Json(result))
+    Ok(Json(crate::forge::import::import_dto(&job)))
 }
 
 /// [`RepositoryError`] → HTTP.

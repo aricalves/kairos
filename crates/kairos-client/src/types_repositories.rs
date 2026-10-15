@@ -352,26 +352,49 @@ pub struct UpdateRepositoryRequest {
     pub forge_filters: Option<ForgeFilters>,
 }
 
-/// The answer of `POST /api/repositories/{slug}/import-issues`
-/// (KAIROS-T-0483): what the import of the open issues did. Each issue goes
-/// through the same path as an opened-issue event.
+/// The counts of an import of the open issues (KAIROS-T-0483). The job
+/// writes them while it runs, and they stay after it ends (KAIROS-T-0487).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct IssueImportResult {
     /// Issues that became a task.
     pub imported: usize,
-    /// Issues that a webhook or an earlier import took before.
+    /// Issues that were taken before (by a webhook or an earlier import).
     pub skipped: usize,
     /// Issues that the forge filter does not admit.
     pub filtered: usize,
-    /// Issues that got no task; `message` says why.
+    /// Issues that no task could be made for; `message` says why.
     pub not_taken: usize,
     /// The short codes of the new tasks.
     pub items: Vec<String>,
-    /// False: the import stopped before the last page (the rate limit of
-    /// the forge, or the page limit). Run it again: it skips what it took.
-    pub complete: bool,
     /// A sentence for a person.
     pub message: String,
+}
+
+/// An import of the open issues of a repository (KAIROS-T-0487). It is a
+/// job of the job queue. `POST` and `GET
+/// /api/repositories/{slug}/import-issues` give it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct IssueImport {
+    /// The id of the job (UUID).
+    pub job: String,
+    /// The slug of the repository.
+    pub repository: String,
+    /// `queued`, `running`, `waiting` (for the rate limit of the forge),
+    /// `done` or `failed`.
+    pub state: String,
+    /// When the import was asked for (RFC 3339).
+    pub created_at: String,
+    /// When the job ended (RFC 3339); `None` while it waits or runs.
+    pub finished_at: Option<String>,
+    /// While the job waits for the rate limit of the forge: the time it
+    /// goes on (RFC 3339).
+    pub waiting_until: Option<String>,
+    /// The pages of issues that the job took.
+    pub pages: usize,
+    /// The counts so far; final when the job is `done`.
+    pub result: IssueImportResult,
+    /// Why the job failed, or why its last try stopped.
+    pub error: Option<String>,
 }
 
 /// The two patterns of one field of the forge filter (KAIROS-T-0479). A

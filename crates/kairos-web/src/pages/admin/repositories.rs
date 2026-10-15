@@ -520,8 +520,10 @@ fn RepositoryRow(
             },
         );
     };
-    // KAIROS-T-0483: import the open issues once; the outcome is the
-    // sentence of the server.
+    // KAIROS-T-0483, KAIROS-T-0487: start the import of the open issues,
+    // a job of the server. The line under the row shows the job until it
+    // ends, then its counts.
+    let import_reload = RwSignal::new(0u32);
     let on_import_issues = move |_| {
         let reference = slug.get_value();
         if busy.get_untracked() {
@@ -532,9 +534,12 @@ fn RepositoryRow(
             let result = api::import_issues(auth, &reference).await;
             busy.set(false);
             match result {
-                Ok(done) => {
-                    outcome.set(Some(Ok(done.message)));
-                    reload.update(|n| *n += 1);
+                Ok(import) => {
+                    outcome.set(Some(Ok(format!(
+                        "Kairos started the import of the open issues of \"{reference}\". {}",
+                        import.summary()
+                    ))));
+                    import_reload.update(|n| *n += 1);
                 }
                 Err(error) => outcome.set(Some(Err(error))),
             }
@@ -738,6 +743,9 @@ fn RepositoryRow(
             <Text dimmed=true size="xs" attr:data-testid="forge-filters-status">
                 {forge_filters_summary}
             </Text>
+            {has_webhook.then(|| view! {
+                <IssueImportStatus slug=slug.get_value() reload=import_reload/>
+            })}
             <crate::pages::repositories::documents::RepositoryDocuments
                 slug=documents_slug/>
             <crate::pages::repositories::refs::UnlinkedRefs slug=refs_slug/>
@@ -863,6 +871,45 @@ fn filter_field(field: &str, include: bool) -> &'static str {
         })
         .copied()
         .unwrap_or("forge_filters")
+}
+
+/// The last import of the open issues of a repository (KAIROS-T-0487).
+/// While the job waits or runs, the line reads it again every 2 seconds.
+#[component]
+fn IssueImportStatus(
+    /// The slug of the repository.
+    #[prop(into)]
+    slug: String,
+    /// Read the import again when this changes.
+    reload: RwSignal<u32>,
+) -> impl IntoView {
+    let auth = use_auth();
+    let slug = StoredValue::new(slug);
+    let import = LocalResource::new(move || {
+        let _ = auth.token();
+        let _ = reload.get();
+        async move { api::issue_import(auth, &slug.get_value()).await }
+    });
+    Effect::new(move |_| {
+        if let Some(Ok(Some(found))) = import.get()
+            && found.open()
+        {
+            set_timeout(
+                move || reload.update(|n| *n += 1),
+                std::time::Duration::from_secs(2),
+            );
+        }
+    });
+    view! {
+        {move || match import.get() {
+            Some(Ok(Some(found))) => view! {
+                <Text dimmed=true size="xs" attr:data-testid="issue-import-status">
+                    {found.summary()}
+                </Text>
+            }.into_any(),
+            _ => ().into_any(),
+        }}
+    }
 }
 
 #[cfg(test)]

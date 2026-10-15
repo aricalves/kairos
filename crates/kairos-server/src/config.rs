@@ -801,6 +801,7 @@ fn parse_jobs(
         ("KAIROS_JOB_LIMIT_PERIODIC", kinds::PERIODIC),
         ("KAIROS_JOB_LIMIT_WEBHOOK_DELIVERY", kinds::WEBHOOK_DELIVERY),
         ("KAIROS_JOB_LIMIT_GITHUB_WRITEBACK", kinds::GITHUB_WRITEBACK),
+        ("KAIROS_JOB_LIMIT_ISSUE_IMPORT", kinds::ISSUE_IMPORT),
     ] {
         let default = settings.limit(kind);
         let limit: usize = parse_num(get, var, default)?;

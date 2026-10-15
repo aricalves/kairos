@@ -305,19 +305,12 @@ token removed.
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown repository, or the repository has no token |
 | `409` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The stored token does not decrypt with the key of the deployment |
 
-### `POST /api/repositories/{slug}/import-issues`
+### `GET /api/repositories/{slug}/import-issues`
 
-Import the open issues of a repository one time (KAIROS-T-0483,
-organization admin).
+The last import of the open issues of a repository (KAIROS-T-0487).
 
-Each open issue goes through the path of an opened-issue event. The
-forge filter decides. Then Kairos makes one support task per issue id
-on the delivery board of the team. The import skips an issue that a
-webhook or an earlier import took. So a second run makes nothing.
-
-The repository needs a live webhook connection: the issue link uses it.
-It also needs a read token with Issues: read (GitHub) or `read_api`
-(GitLab).
+Organization admin only. The answer gives the state of the import and
+its counts.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
@@ -325,11 +318,40 @@ It also needs a read token with Issues: read (GitHub) or `read_api`
 
 | Response | Body | Meaning |
 |---|---|---|
-| `200` | [`IssueImportResult`](../schemas/#issueimportresult) | What the import did |
+| `200` | [`IssueImport`](../schemas/#issueimport) | The last import |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Not an org admin |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown repository, or no import ran |
+
+### `POST /api/repositories/{slug}/import-issues`
+
+Start the import of the open issues of a repository (KAIROS-T-0483).
+
+Organization admin only. The import is a job of the job queue
+(KAIROS-T-0487).
+
+Each open issue goes through the path of an opened-issue event. The
+forge filter decides. Then Kairos makes one support task for each issue
+id on the delivery board of the team. The import skips an issue that a
+webhook or an earlier import took.
+
+The repository needs a live webhook connection, because the issue link
+hangs off it. It also needs a read token with Issues: read (GitHub) or
+`read_api` (GitLab).
+
+The answer is the job, at once. While an import of the repository waits
+or runs, the answer is that import: one runs at a time. Read the counts
+with `GET /api/repositories/{slug}/import-issues`.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `slug` | path | yes | `string` | Repository slug (or UUID) |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `202` | [`IssueImport`](../schemas/#issueimport) | The import job: a new one, or the one that waits or runs |
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Not an org admin |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown repository |
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The repository has no read token, no webhook connection, or the forge `other` |
-| `502` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The forge refused the token, or the list failed |
 
 ### `PUT /api/repositories/{slug}/site`
 

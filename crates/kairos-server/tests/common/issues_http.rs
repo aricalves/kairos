@@ -6,7 +6,8 @@
 //! - `GET /api/v4/projects/{id}/issues` (GitLab).
 //!
 //! [`IssuesHttp::refuse`] answers 401; [`IssuesHttp::rate_limit_at`]
-//! answers 403 with `x-ratelimit-remaining: 0` from that page on.
+//! answers 403 with `x-ratelimit-remaining: 0` and an `x-ratelimit-reset`
+//! one second ahead for that page, a number of times (KAIROS-T-0487).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -35,6 +36,10 @@ struct Inner {
     refuse: AtomicBool,
     /// 0: no rate limit.
     rate_limit_at: AtomicUsize,
+    /// The rate-limit answers that are left.
+    rate_limit_times: AtomicUsize,
+    /// When set, each answer waits for this many milliseconds.
+    delay_ms: AtomicUsize,
 }
 
 /// A running fake API.
@@ -58,8 +63,14 @@ impl IssuesHttp {
     pub fn refuse(&self, on: bool) {
         self.inner.refuse.store(on, Ordering::SeqCst);
     }
-    pub fn rate_limit_at(&self, page: usize) {
+    /// Answer the rate limit for `page`, `times` times; then the page.
+    pub fn rate_limit_at(&self, page: usize, times: usize) {
         self.inner.rate_limit_at.store(page, Ordering::SeqCst);
+        self.inner.rate_limit_times.store(times, Ordering::SeqCst);
+    }
+    /// Wait `ms` milliseconds before each answer.
+    pub fn delay(&self, ms: usize) {
+        self.inner.delay_ms.store(ms, Ordering::SeqCst);
     }
 }
 
@@ -107,10 +118,24 @@ fn answer(
     }
     let limit = inner.rate_limit_at.load(Ordering::SeqCst);
     let page_no: usize = query.get("page").and_then(|v| v.parse().ok()).unwrap_or(1);
-    if limit > 0 && page_no >= limit {
+    if limit > 0
+        && page_no == limit
+        && inner
+            .rate_limit_times
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+    {
+        let reset = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs()
+            + 1;
         return (
             StatusCode::FORBIDDEN,
-            [("x-ratelimit-remaining", "0")],
+            [
+                ("x-ratelimit-remaining", "0".to_string()),
+                ("x-ratelimit-reset", reset.to_string()),
+            ],
             axum::Json(json!({"message": "API rate limit exceeded"})),
         )
             .into_response();
@@ -124,6 +149,8 @@ async fn github(
     headers: HeaderMap,
     Query(query): Query<HashMap<String, String>>,
 ) -> Response {
+    let delay = inner.delay_ms.load(Ordering::SeqCst) as u64;
+    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
     let rows = inner.github.lock().unwrap().clone();
     answer(&inner, &uri, &headers, &query, rows)
 }

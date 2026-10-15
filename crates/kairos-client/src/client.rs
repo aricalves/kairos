@@ -1592,13 +1592,26 @@ impl KairosClient {
         self.get(&path).await
     }
 
-    /// `POST /api/repositories/{slug}/import-issues` — import the open
-    /// issues of a repository once (KAIROS-T-0483, org admin).
+    /// `POST /api/repositories/{slug}/import-issues` — start the import of
+    /// the open issues of a repository (KAIROS-T-0483, org admin). The
+    /// answer is 202 with the job (KAIROS-T-0487): a new one, or the one
+    /// that waits or runs.
     pub async fn import_issues(
         &self,
         reference: &str,
-    ) -> Result<crate::types_repositories::IssueImportResult, Error> {
-        self.post_empty(&format!("/api/repositories/{reference}/import-issues"))
+    ) -> Result<crate::types_repositories::IssueImport, Error> {
+        let path = format!("/api/repositories/{reference}/import-issues");
+        self.execute(format!("POST {path}"), 202, self.http.post(self.url(&path)))
+            .await
+    }
+
+    /// `GET /api/repositories/{slug}/import-issues` — the last import of
+    /// the open issues of a repository (KAIROS-T-0487, org admin).
+    pub async fn issue_import(
+        &self,
+        reference: &str,
+    ) -> Result<crate::types_repositories::IssueImport, Error> {
+        self.get(&format!("/api/repositories/{reference}/import-issues"))
             .await
     }
 

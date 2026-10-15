@@ -171,7 +171,7 @@ Kairos takes only the issues that people open after you add the issues
 events. To take the older open issues, import them one time:
 
 ```sh
-kairos repos import-issues payments-api
+kairos repos import-issues payments-api --wait
 ```
 
 Or push *Import open issues* on the page *Admin → Repositories*. An
@@ -186,8 +186,22 @@ The import sends each open issue through the same path as an opened issue.
 The filter decides, then Kairos makes one task for each issue. The result gives the count of
 issues that it imported, that it skipped (taken before) and that the filter
 excludes. When you run the import again, it makes no new task for an issue
-that it took. When the forge rate limit stops the import, run it again
-later.
+that it took.
+
+The import is a job of the server, so a large repository does not stop the
+request. The command and the button start the job and come back at once.
+One import of a repository runs at a time: when you start an import while
+one waits or runs, you get that import. To see the state and the counts:
+
+```sh
+kairos repos import-status payments-api
+```
+
+The page *Admin → Repositories* shows the last import under the repository.
+When the forge gives its rate limit, the import waits until the time that
+the forge gives, and then continues. The state is then `waiting`. When the
+forge refuses the token, the import fails, and the error names the
+permission.
 
 ## Rotate the secret
 
