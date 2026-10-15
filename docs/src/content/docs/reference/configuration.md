@@ -382,7 +382,7 @@ REST route is `PUT /api/org/code-index-settings`. Each member can read it.
 | `vectors.base_url` | URL | none | The base URL of the embeddings endpoint, for `remote`. |
 | `vectors.model` | text | none | The model name of the embeddings, for `remote`. |
 | `vectors.secret` | text | none | The API key of the embeddings endpoint. A local Ollama needs none. |
-| `concurrency` | 1 to 32 | `4` | The requests that a hosted summarizer sends at a time. |
+| `concurrency` | 1 to 32 | `4` | The most requests that a server sends at a time to the summary endpoint (the URL and the model), for all its builds together. |
 | `default_summaries` | `embedded`, `hosted` | `embedded` | The summarizer of each repository that follows the organization. `hosted` needs a hosted `summary.provider`. A write that does not give it keeps the stored value. |
 
 Kairos keeps each secret encrypted with `KAIROS_SECRETS_KEY`, as it keeps
@@ -418,10 +418,29 @@ when the organization has no hosted provider. A repository from before
 When the summarizer is the embedded model, the code of the repository stays
 on the host.
 
-For a repository on a hosted provider, the builder sends `concurrency`
-requests at a time. After a 429 or a 5xx, it tries the request again, 3
-tries in all. A hosted build does not hold the CPU of the host for its
-summaries. So it does not wait for the builds of the embedded model.
+For a repository on a hosted provider, a server sends `concurrency`
+requests at a time to the endpoint. The limit is for all the builds of
+the server together, not for each build. A hosted build does not hold the
+CPU of the host for its summaries. So it does not wait for the builds of
+the embedded model.
+
+When the provider answers 429 or 503, the builder waits and tries the
+request again, 6 tries in all:
+
+- When the answer has a `Retry-After` header, the builder waits that time.
+  The longest wait is 5 minutes.
+- Else the first wait is 2 seconds. Each next wait is 2 times longer, to 2
+  minutes at most.
+
+After another 5xx, or when no answer comes, the builder tries the request
+again, 3 tries in all. While a request waits, the build reports progress,
+so the watchdog does not stop the job as stalled.
+
+A summary that the builder cannot make does not stop the build. The build
+stores the index with the structure and the summaries that it made. The
+run shows the number of missing summaries. The next build of the
+repository makes them. When the build makes no summary and no answer was a
+429 or a 503, the build fails. For example, the key is wrong.
 
 Each run records the model that wrote its summaries. See it with `kairos
 repos builds <slug>`, or in the panel of the repository. The image

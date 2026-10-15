@@ -367,6 +367,11 @@ impl World {
             // repository, and the secret of a hosted provider (KAIROS-T-0341).
             .with_secrets_key(Some(key.clone())),
         );
+        // KAIROS-T-0495: a 429 waits for no time in the tests.
+        service.set_summary_backoff(kairos_index::rate::Backoff {
+            sleep: Arc::new(|_, _: &dyn Fn()| ()),
+            ..Default::default()
+        });
 
         let http = reqwest::Client::new();
         let svc_token = user_token(&http, "svc").await;
@@ -2347,6 +2352,181 @@ async fn a_hosted_endpoint_that_refuses_the_key_fails_the_run_and_the_next_repos
         .find(|o| o.repository == "platform-infra")
         .expect("platform-infra");
     assert!(embedded.report.is_some(), "{embedded:?}");
+}
+
+// ===========================================================================
+// KAIROS-T-0495: a 429 waits, a missing summary does not fail the build, and
+// one cap of requests for each endpoint
+// ===========================================================================
+
+/// A back-off that records its waits and does not sleep.
+fn recorded_backoff() -> (
+    kairos_index::rate::Backoff,
+    Arc<Mutex<Vec<std::time::Duration>>>,
+) {
+    let waits = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&waits);
+    let backoff = kairos_index::rate::Backoff {
+        sleep: Arc::new(move |d, _: &dyn Fn()| seen.lock().unwrap().push(d)),
+        ..Default::default()
+    };
+    (backoff, waits)
+}
+
+#[tokio::test]
+async fn a_429_with_and_without_retry_after_waits_and_the_build_ends_ok() {
+    // Given an endpoint that answers 429 with Retry-After 3, then 429 with
+    // none, then a summary, one request at a time
+    let w = World::new("kairos_code_index_t0495_backoff").await;
+    let chat =
+        common::chat_http::serve_refusing("ollama_t0495_key", vec![Some("3"), None], false).await;
+    w.svc
+        .put_code_index_settings(&hosted_settings(&chat.base_url, "ollama_t0495_key", 1))
+        .await
+        .expect("the provider");
+    opt_in(&w, "payments-api").await;
+    let (backoff, waits) = recorded_backoff();
+    w.service.set_summary_backoff(backoff);
+
+    // When the first build runs
+    let outcomes = w.first_builds().await;
+    let hosted = &outcomes[0];
+    let report = hosted
+        .report
+        .as_ref()
+        .unwrap_or_else(|| panic!("{hosted:?}"));
+
+    // Then it waited 3 s (the Retry-After) and 4 s (the 2nd refusal), and
+    // each summary was made
+    assert_eq!(
+        *waits.lock().unwrap(),
+        [3, 4].map(std::time::Duration::from_secs)
+    );
+    assert_eq!(chat.requests(), report.summary.calls.len() + 2);
+    let run = newest_run(&w, "payments-api").await;
+    assert_eq!(run.outcome, "ok", "{run:?}");
+    assert_eq!(run.summaries_missing, Some(0));
+    assert!(run.summaries_made.unwrap_or(0) > 0, "{run:?}");
+}
+
+#[tokio::test]
+async fn an_endpoint_that_always_answers_429_gives_an_ok_build_with_missing_summaries() {
+    // Given an endpoint that answers 429 to each request
+    let w = World::new("kairos_code_index_t0495_always").await;
+    let chat = common::chat_http::serve_refusing("ollama_t0495_key", Vec::new(), true).await;
+    w.svc
+        .put_code_index_settings(&hosted_settings(&chat.base_url, "ollama_t0495_key", 2))
+        .await
+        .expect("the provider");
+    opt_in(&w, "payments-api").await;
+
+    // When the first build runs
+    let outcomes = w.first_builds().await;
+    let hosted = &outcomes[0];
+    let report = hosted
+        .report
+        .as_ref()
+        .unwrap_or_else(|| panic!("{hosted:?}"));
+
+    // Then the build ends ok with the structure and no summary, and the run
+    // says how many are missing; each request was tried 6 times
+    assert!(report.summary.calls.is_empty(), "{report:?}");
+    let missing = report.summary.missing();
+    assert!(missing > 0, "{report:?}");
+    let failed =
+        report.summary.symbols.failed + report.summary.files.failed + report.summary.modules.failed;
+    assert_eq!(chat.requests(), failed * 6);
+    let run = newest_run(&w, "payments-api").await;
+    assert_eq!(run.outcome, "ok", "{run:?}");
+    assert_eq!(run.summaries_made, Some(0));
+    assert_eq!(run.summaries_missing, Some(missing as i32));
+    assert!(
+        run.symbols.unwrap_or(0) > 0,
+        "the structure is stored: {run:?}"
+    );
+
+    // When the endpoint answers again and a person asks for a build
+    chat.stop_refusing();
+    w.bob
+        .rebuild_code_index("payments-api")
+        .await
+        .expect("202 with the run");
+    let outcomes = w.requested_builds().await;
+    assert!(outcomes[0].report.is_some(), "{outcomes:?}");
+
+    // Then the next build makes the missing summaries
+    let run = newest_run(&w, "payments-api").await;
+    assert_eq!(run.outcome, "ok", "{run:?}");
+    assert_eq!(run.summaries_missing, Some(0), "{run:?}");
+    assert_eq!(run.summaries_made, Some(missing as i32), "{run:?}");
+}
+
+#[tokio::test]
+async fn a_back_off_longer_than_the_lease_does_not_stall_the_build() {
+    // Given an index of A, a push of B, and an endpoint whose first answer
+    // is a 429 with Retry-After 4: longer than the lease of 3 s
+    const DB: &str = "kairos_code_index_t0495_lease";
+    let w = World::new(DB).await;
+    let a = w.a.clone();
+    w.bob
+        .upload_code_index("payments-api", &a, Some("main"), w.index(&a))
+        .await
+        .expect("the index of A");
+    commit_extra(&w.git);
+    let chat = common::chat_http::serve_refusing("ollama_t0495_key", vec![Some("4")], false).await;
+    let mut config = kairos_index::hosted::HostedConfig::new(
+        "ollama-cloud",
+        &chat.base_url,
+        "fake-model-lease",
+        1,
+    );
+    config.api_key = Some("ollama_t0495_key".into());
+    let url = with_database(&common::admin_database_url(), DB);
+    let (worker, outcomes) = build_worker(
+        kairos_server::blocking::BlockingTenantPool::new(&url, 4),
+        &w.service,
+        Arc::new(kairos_server::code_index::HostedSummarizers { config }),
+        quick_jobs(),
+    );
+
+    // When the worker runs the update, which waits 4 s (the real sleep)
+    kairos_server::code_index::enqueue_updates(&w.state.blocking, &w.service, &worker).await;
+    worker.drain().await;
+
+    // Then the wait reported progress: the build ended ok on its first try
+    assert_eq!(reports(&outcomes), 1);
+    let run = newest_run(&w, "payments-api").await;
+    assert_eq!(run.outcome, "ok", "{run:?}");
+    assert_eq!(run.summaries_missing, Some(0), "{run:?}");
+}
+
+#[tokio::test]
+async fn two_builds_on_one_endpoint_share_its_cap() {
+    // Given 2 repositories on one endpoint with a concurrency of 1 (the
+    // worker runs the 2 builds at the same time)
+    let w = World::new("kairos_code_index_t0495_cap").await;
+    let chat = common::chat_http::serve("ollama_t0495_key", 0).await;
+    w.svc
+        .put_code_index_settings(&hosted_settings(&chat.base_url, "ollama_t0495_key", 1))
+        .await
+        .expect("the provider");
+    let infra = w.work().join("platform-infra");
+    std::fs::create_dir_all(&infra).expect("the folder of platform-infra");
+    repository_at_a(&infra);
+    w.bob
+        .create_repository(&repository("platform-infra"))
+        .await
+        .expect("platform-infra");
+    opt_in(&w, "payments-api").await;
+    opt_in(&w, "platform-infra").await;
+
+    // When both first builds run
+    let outcomes = w.first_builds().await;
+    assert_eq!(outcomes.len(), 2, "{outcomes:?}");
+    assert!(outcomes.iter().all(|o| o.report.is_some()), "{outcomes:?}");
+
+    // Then one request was in flight at a time, for both builds together
+    assert_eq!(chat.max_in_flight(), 1);
 }
 
 #[tokio::test]

@@ -678,14 +678,25 @@ fn print_summaries(outcome: summaries::Outcome) {
             mcp::plural(r.modules.left, "module", "modules"),
         ),
         #[cfg(feature = "llama")]
-        summaries::Outcome::Made(r, elapsed) => println!(
-            "Summaries: {} symbols, {} files and {} modules made, {} reused, in {:.1} s.",
-            r.symbols.summarized,
-            r.files.summarized,
-            r.modules.summarized,
-            r.symbols.reused + r.files.reused + r.modules.reused,
-            elapsed.as_secs_f64()
-        ),
+        summaries::Outcome::Made(r, elapsed) => {
+            println!(
+                "Summaries: {} symbols, {} files and {} modules made, {} reused, in {:.1} s.",
+                r.symbols.summarized,
+                r.files.summarized,
+                r.modules.summarized,
+                r.symbols.reused + r.files.reused + r.modules.reused,
+                elapsed.as_secs_f64()
+            );
+            // KAIROS-T-0495: a failed summary does not stop the build.
+            if let Some(failure) = &r.failure {
+                println!(
+                    "Missing summaries: {}. The next build makes them. First error: {}: {}",
+                    r.missing(),
+                    failure.name,
+                    failure.message
+                );
+            }
+        }
     }
 }
 

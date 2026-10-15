@@ -917,6 +917,10 @@ impl ReposCommand {
                     if let Some(model) = &run.model {
                         detail.push_str(&format!(" · {model}"));
                     }
+                    // KAIROS-T-0495: the next build makes them.
+                    if let Some(missing) = run.summaries_missing.filter(|n| *n > 0) {
+                        detail.push_str(&format!(" · {missing} summaries missing"));
+                    }
                     println!(
                         "{:<25} {:<8} {:<8} {:<12} {:<9} {}",
                         run.started_at, run.trigger, run.outcome, commit, symbols, detail

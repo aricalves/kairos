@@ -422,6 +422,7 @@ One run of the code index builder (KAIROS-T-0331). The trigger says what started
 | `scip_warnings` | array of [`CodeIndexScipWarning`](#codeindexscipwarning) | no | Each language that had no SCIP index in the run, and why (KAIROS-T-0478): its edges are by name. Empty when each SCIP indexer of the run gave its index. |
 | `started_at` | `string` | yes | When the run started, RFC 3339. |
 | `summaries_made` | `integer`, nullable | no | The summaries that the run made with the model. |
+| `summaries_missing` | `integer`, nullable | no | The summaries that the index of the run does not have (KAIROS-T-0495): the provider refused a call for the rate, or another call failed. The next build makes them. |
 | `summaries_reused` | `integer`, nullable | no | The summaries that the run reused with no model call (KAIROS-T-0335): from the pool of the repository, or from the work file of a run that did not end. |
 | `symbols` | `integer`, nullable | no |  |
 | `trigger` | `string` | yes | `push`, `first`, `request` or `upload`. |

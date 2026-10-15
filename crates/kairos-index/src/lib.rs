@@ -33,6 +33,7 @@ pub mod languages;
 #[cfg(feature = "llama")]
 mod llama;
 mod parse_cache;
+pub mod rate;
 mod refs;
 pub mod runners;
 
@@ -81,8 +82,8 @@ pub use rust_analyzer::BuildOptions;
 pub use schema::SCHEMA_VERSION;
 pub use summary::{
     DECLARATIONS_KIND, FakeSummarizer, Level, LevelCount, MODEL_FILE_NAME, SUMMARIZED_KINDS,
-    SYSTEM_PROMPT, SummarizeOptions, Summarizer, SummaryCall, SummaryReport, SummaryRequest,
-    declaration_lines, link, model_path, summarize, vector_model_name,
+    SYSTEM_PROMPT, SummarizeOptions, Summarizer, SummaryCall, SummaryFailure, SummaryReport,
+    SummaryRequest, declaration_lines, link, model_path, summarize, vector_model_name,
 };
 
 /// The index of a checkout, from its root (COLLIERY-T-1852). A build does not
@@ -342,6 +343,8 @@ pub enum IndexError {
     BuildNotOff(String),
     #[error("The summarizer gave no summary for {name}: {message}.")]
     Summary { name: String, message: String },
+    #[error("The summary run stopped: {0}.")]
+    Stopped(String),
     #[error("The file {0} changed after the build of the structure. Build the structure again.")]
     Changed(String),
     #[error("The summary pool has vectors of the model {pool}. This run uses {run}.")]

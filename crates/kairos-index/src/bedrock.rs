@@ -6,7 +6,10 @@
 //! /model/{modelId}/converse` with the system prompt, the user prompt and
 //! `inferenceConfig { maxTokens, temperature: 0 }`. The answer is
 //! `output.message.content[0].text`. A throttle (`ThrottlingException`, a
-//! 429 or a 5xx) is tried again as the hosted chat client does.
+//! 429 or a 503) waits and is tried again, and the `concurrency` caps the
+//! requests in flight to the model from this process, as for the hosted
+//! chat client ([`crate::rate`], KAIROS-T-0495). Another 5xx is tried 3
+//! times.
 //!
 //! The signature follows the AWS documentation: the canonical request
 //! (method, URI, query, the canonical headers `content-type`, `host`,
@@ -17,7 +20,8 @@
 //! the unit test checks it against the worked example of the AWS
 //! documentation.
 
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
@@ -25,6 +29,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::hosted::in_parallel;
+use crate::rate::{Attempt, Backoff, Beat, Limit, limit_for, parse_retry_after, send};
 use crate::summary::{SYSTEM_PROMPT, Summarizer, SummaryRequest};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -45,6 +50,8 @@ pub struct BedrockConfig {
     /// Another endpoint than `https://bedrock-runtime.{region}.amazonaws.com`:
     /// a test server. The signature still names `region`.
     pub endpoint: Option<String>,
+    /// The waits after a throttle (KAIROS-T-0495).
+    pub backoff: Backoff,
 }
 
 impl BedrockConfig {
@@ -66,19 +73,23 @@ impl BedrockConfig {
             concurrency: concurrency.max(1),
             timeout: Duration::from_secs(120),
             endpoint: None,
+            backoff: Backoff::default(),
         }
     }
 }
 
 /// The most tokens of one summary.
 const MAX_TOKENS: u32 = 400;
-const TRIES: usize = 3;
-const PAUSES: [Duration; 2] = [Duration::from_millis(500), Duration::from_millis(2_000)];
 
 /// Summaries from Bedrock.
 pub struct Bedrock {
     client: reqwest::blocking::Client,
     config: BedrockConfig,
+    /// The cap of requests in flight to the model, shared by each client of
+    /// the model in this process.
+    limit: Arc<Limit>,
+    /// The progress of the build, while a request waits (KAIROS-T-0495).
+    beat: Option<Beat>,
 }
 
 #[derive(Deserialize)]
@@ -212,7 +223,17 @@ impl Bedrock {
             .timeout(config.timeout)
             .build()
             .map_err(|e| format!("the HTTP client did not start: {e}"))?;
-        Ok(Bedrock { client, config })
+        let endpoint = config.endpoint.as_deref().unwrap_or(&config.region);
+        let limit = limit_for(
+            &format!("bedrock|{endpoint}|{}", config.model_id),
+            config.concurrency,
+        );
+        Ok(Bedrock {
+            client,
+            config,
+            limit,
+            beat: None,
+        })
     }
 
     /// The scheme and host of the endpoint.
@@ -244,86 +265,98 @@ impl Bedrock {
             "inferenceConfig": {"maxTokens": MAX_TOKENS, "temperature": 0},
         })
         .to_string();
-        let mut last = String::new();
-        for attempt in 0..TRIES {
-            if attempt > 0 {
-                std::thread::sleep(PAUSES[(attempt - 1).min(PAUSES.len() - 1)]);
-            }
-            let signed = sign(&SignInput {
-                method: "POST",
-                host: &host,
-                path: &path,
-                query: "",
-                content_type: "application/json",
-                body: body.as_bytes(),
-                region: &self.config.region,
-                service: "bedrock",
-                access_key_id: &self.config.access_key_id,
-                secret_access_key: &self.config.secret_access_key,
-                session_token: self.config.session_token.as_deref(),
-                at: Utc::now(),
-            });
-            let mut req = self
-                .client
-                .post(&url)
-                .header("content-type", "application/json")
-                .header("host", &host)
-                .header("x-amz-date", &signed.amz_date)
-                .header("authorization", &signed.authorization)
-                .body(body.clone());
-            if let Some(token) = &self.config.session_token {
-                req = req.header("x-amz-security-token", token);
-            }
-            let response = match req.send() {
-                Ok(response) => response,
-                Err(e) => {
-                    last = format!("{url}: {e}");
-                    continue;
+        send(
+            &self.limit,
+            &self.config.backoff,
+            self.beat.as_ref(),
+            || {
+                let signed = sign(&SignInput {
+                    method: "POST",
+                    host: &host,
+                    path: &path,
+                    query: "",
+                    content_type: "application/json",
+                    body: body.as_bytes(),
+                    region: &self.config.region,
+                    service: "bedrock",
+                    access_key_id: &self.config.access_key_id,
+                    secret_access_key: &self.config.secret_access_key,
+                    session_token: self.config.session_token.as_deref(),
+                    at: Utc::now(),
+                });
+                let mut req = self
+                    .client
+                    .post(&url)
+                    .header("content-type", "application/json")
+                    .header("host", &host)
+                    .header("x-amz-date", &signed.amz_date)
+                    .header("authorization", &signed.authorization)
+                    .body(body.clone());
+                if let Some(token) = &self.config.session_token {
+                    req = req.header("x-amz-security-token", token);
                 }
-            };
-            let status = response.status();
-            if !status.is_success() {
-                // Bedrock names the error in the header x-amzn-ErrorType and
-                // gives a message in the body.
-                let error_type = response
-                    .headers()
-                    .get("x-amzn-errortype")
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("")
-                    .to_string();
-                let text = response.text().unwrap_or_default();
-                let first = text.lines().next().unwrap_or("").to_string();
-                let throttled = status.as_u16() == 429
-                    || status.is_server_error()
-                    || error_type.contains("Throttling")
-                    || text.contains("ThrottlingException");
-                last = if error_type.is_empty() {
-                    format!("{url} answered {status}: {first}")
-                } else {
-                    format!("{url} answered {status} {error_type}: {first}")
+                let response = match req.send() {
+                    Ok(response) => response,
+                    Err(e) => return Attempt::Failed(format!("{url}: {e}")),
                 };
-                if throttled {
-                    continue;
+                let status = response.status();
+                if !status.is_success() {
+                    // Bedrock names the error in the header x-amzn-ErrorType and
+                    // gives a message in the body.
+                    let error_type = response
+                        .headers()
+                        .get("x-amzn-errortype")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
+                    let retry_after = response
+                        .headers()
+                        .get(reqwest::header::RETRY_AFTER)
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| parse_retry_after(v, SystemTime::now()));
+                    let text = response.text().unwrap_or_default();
+                    let first = text.lines().next().unwrap_or("").to_string();
+                    let throttled = matches!(status.as_u16(), 429 | 503)
+                        || error_type.contains("Throttling")
+                        || text.contains("ThrottlingException");
+                    let message = if error_type.is_empty() {
+                        format!("{url} answered {status}: {first}")
+                    } else {
+                        format!("{url} answered {status} {error_type}: {first}")
+                    };
+                    return if throttled {
+                        Attempt::Limited {
+                            message,
+                            retry_after,
+                        }
+                    } else if status.is_server_error() {
+                        Attempt::Failed(message)
+                    } else {
+                        Attempt::Done(Err(message))
+                    };
                 }
-                return Err(last);
-            }
-            let parsed: ConverseResponse = response
-                .json()
-                .map_err(|e| format!("{url}: the answer is not a Converse response: {e}"))?;
-            let content = parsed
-                .output
-                .message
-                .content
-                .into_iter()
-                .map(|b| b.text)
-                .collect::<Vec<_>>()
-                .join("");
-            if content.trim().is_empty() {
-                return Err(format!("{url}: the answer has no text"));
-            }
-            return Ok(content);
-        }
-        Err(format!("{last} ({TRIES} tries)"))
+                let parsed: ConverseResponse = match response.json() {
+                    Ok(parsed) => parsed,
+                    Err(e) => {
+                        return Attempt::Done(Err(format!(
+                            "{url}: the answer is not a Converse response: {e}"
+                        )));
+                    }
+                };
+                let content = parsed
+                    .output
+                    .message
+                    .content
+                    .into_iter()
+                    .map(|b| b.text)
+                    .collect::<Vec<_>>()
+                    .join("");
+                if content.trim().is_empty() {
+                    return Attempt::Done(Err(format!("{url}: the answer has no text")));
+                }
+                Attempt::Done(Ok(content))
+            },
+        )
     }
 }
 
@@ -338,6 +371,10 @@ impl Summarizer for Bedrock {
 
     fn concurrency(&self) -> usize {
         self.config.concurrency.max(1)
+    }
+
+    fn heartbeat(&mut self, beat: Beat) {
+        self.beat = Some(beat);
     }
 
     fn summarize_many(&mut self, requests: &[SummaryRequest]) -> Vec<Result<String, String>> {
