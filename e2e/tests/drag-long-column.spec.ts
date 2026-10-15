@@ -79,9 +79,11 @@ test('drag and drop: a card at the bottom of a long column moves with no scroll,
       await page.fill('#login', 'alice@kairos.test');
       await page.fill('#password', 'alice-password');
       await page.click('#submit-login');
-      await page.waitForURL((url) => url.pathname.startsWith('/boards'), {
+      await page.waitForURL((url) => url.pathname === '/' || url.pathname.startsWith('/boards'), {
         timeout: 30_000,
       });
+      // The landing page is For me; this spec works from the boards.
+      await page.goto('/boards');
       await page.locator('.kairos-board-tile', { hasText: 'Web Delivery' }).click();
       await page.waitForURL(/\/boards\/web-delivery/);
       await expect(

@@ -69,7 +69,7 @@ async function signIn(browser: Browser, name: string): Promise<Page> {
   await page.fill('#login', `${name}@kairos.test`);
   await page.fill('#password', `${name}-password`);
   await page.click('#submit-login');
-  await page.waitForURL((url) => url.pathname.startsWith('/boards'), { timeout: 30_000 });
+  await page.waitForURL((url) => url.pathname === '/' || url.pathname.startsWith('/boards'), { timeout: 30_000 });
   // The header shows the name when `whoami` resolved. Each "is not there"
   // assertion below is made after this, so that a button that is absent
   // is absent by the rule and not because the page does not know the

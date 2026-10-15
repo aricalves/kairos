@@ -142,9 +142,11 @@ test('graph-done: a completed blocker on a different board changes the card and 
       await page.fill('#login', 'bob@kairos.test');
       await page.fill('#password', 'bob-password');
       await page.click('#submit-login');
-      await page.waitForURL((url) => url.pathname.startsWith('/boards'), {
+      await page.waitForURL((url) => url.pathname === '/' || url.pathname.startsWith('/boards'), {
         timeout: 30_000,
       });
+      // The landing page is For me; this spec works from the boards.
+      await page.goto('/boards');
     });
 
     const card = page.locator('article.kairos-card', { hasText: `T-0233 waiting ${RUN}` });

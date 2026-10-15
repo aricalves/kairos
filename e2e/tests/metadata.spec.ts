@@ -29,9 +29,11 @@ test('metadata: add a field via the picker, save, edit stamped', async ({
   await page.fill('#login', 'alice@kairos.test');
   await page.fill('#password', 'alice-password');
   await page.click('#submit-login');
-  await page.waitForURL((url) => url.pathname.startsWith('/boards'), {
+  await page.waitForURL((url) => url.pathname === '/' || url.pathname.startsWith('/boards'), {
     timeout: 30_000,
   });
+  // The landing page is For me; this spec works from the boards.
+  await page.goto('/boards');
 
   await page.locator('.kairos-board-tile', { hasText: 'Platform Delivery' }).click();
   await page.waitForURL(/\/boards\/platform-delivery/);

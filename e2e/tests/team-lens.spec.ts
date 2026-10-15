@@ -42,9 +42,11 @@ test('team lens: bob → my teams → roster/board/stream → directory → acti
     await page.fill('#login', 'bob@kairos.test');
     await page.fill('#password', 'bob-password');
     await page.click('#submit-login');
-    await page.waitForURL((url) => url.pathname.startsWith('/boards'), {
+    await page.waitForURL((url) => url.pathname === '/' || url.pathname.startsWith('/boards'), {
       timeout: 30_000,
     });
+    // The landing page is For me; this spec works from the boards.
+    await page.goto('/boards');
     const header = page.locator('.cl-appshell__header');
     await expect(header.getByText('bob', { exact: true })).toBeVisible();
     await expect(header.locator('.cl-pill', { hasText: 'member' })).toBeVisible();

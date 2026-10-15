@@ -330,6 +330,11 @@ pub use agent_keys::AgentKeysPage;
 mod notifications;
 pub use notifications::{NotificationBell, NotificationsPage};
 
+// The work of the signed-in person at `/` (KAIROS-T-0490): the
+// initiatives and the tasks, in Todo, Active and Blocked.
+mod for_me;
+pub use for_me::ForMePage;
+
 /// Router fallback.
 #[component]
 pub fn NotFoundPage() -> impl IntoView {

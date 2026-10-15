@@ -22,7 +22,7 @@ async function login(page: Page, email: string, password: string): Promise<void>
   await page.fill('#login', email);
   await page.fill('#password', password);
   await page.click('#submit-login');
-  await page.waitForURL((url) => url.pathname.startsWith('/boards'), { timeout: 30_000 });
+  await page.waitForURL((url) => url.pathname === '/' || url.pathname.startsWith('/boards'), { timeout: 30_000 });
 }
 
 test('pages in the web app: the switches and the links', async ({ page }) => {
