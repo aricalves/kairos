@@ -469,3 +469,105 @@ fn typescript_install_failure_falls_back() {
         assert!(edges_of(&db, "run").iter().all(|e| e.2 == "name"));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Python (KAIROS-T-0477)
+
+fn check_python(db: &Path, report: &BuildReport) {
+    assert!(
+        report.scip_warnings.iter().all(|w| w.language != "python"),
+        "{:?}",
+        report.scip_warnings
+    );
+    // `store` is a Store: the call goes to Store.save, not to Cache.save.
+    assert_eq!(
+        edges_of(db, "run"),
+        [(
+            s("Store.save"),
+            s("certain"),
+            s("scip"),
+            Some(s("models.py:Store.save"))
+        )]
+    );
+    let (coverage, uses) = uses_of(db, "Store", "models.py");
+    assert_eq!(coverage, kairos_index::Coverage::Full);
+    assert_eq!(
+        uses,
+        [(s("import"), s("app.py"), 1), (s("type"), s("app.py"), 4)]
+    );
+}
+
+#[test]
+fn python_from_the_recorded_index_of_scip_python() {
+    let (_dir, db, report) = build(
+        "scip-python",
+        &recorded("python", &["python"], "python.scip"),
+    );
+    check_python(&db, &report);
+}
+
+#[test]
+fn python_with_no_index_has_name_edges() {
+    let mut options = quiet();
+    options
+        .scip
+        .runners
+        .push(Arc::new(kairos_index::MissingRunner {
+            name: "python",
+            languages: &["python"],
+            reason: "pip install failed".into(),
+        }));
+    let (_dir, db, report) = build("scip-python", &options);
+    assert_eq!(report.scip_warnings[0].reason, "pip install failed");
+    assert_eq!(
+        edges_of(&db, "run"),
+        [(s("store.save"), s("possible"), s("name"), None)]
+    );
+}
+
+/// The fixture has no dependency file: scip-python reads the sources only.
+#[test]
+fn python_with_scip_python() {
+    let cache = tempfile::tempdir().unwrap();
+    for (mode, options) in real_modes(&["node", "scip-python", "python3"], cache.path()) {
+        eprintln!("Python, {mode}");
+        let (_dir, db, report) = build("scip-python", &options);
+        check_python(&db, &report);
+    }
+}
+
+/// KAIROS-T-0477: a server build whose `pip install` fails gets the edges
+/// by name and a warning. The requirement is a missing local wheel, so pip
+/// fails with no network.
+#[test]
+fn python_install_failure_falls_back() {
+    let cache = tempfile::tempdir().unwrap();
+    for (mode, options) in real_modes(&["node", "scip-python", "python3"], cache.path()) {
+        if mode != "server" {
+            continue;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = copy("scip-python", dir.path());
+        std::fs::write(
+            root.join("requirements.txt"),
+            "./does-not-exist-1.0-py3-none-any.whl\n",
+        )
+        .unwrap();
+        let db = dir.path().join("index.sqlite");
+        let report = build_structure_with(&root, &db, &options).unwrap();
+        let warning = report
+            .scip_warnings
+            .iter()
+            .find(|w| w.language == "python")
+            .unwrap_or_else(|| panic!("{:?}", report.scip_warnings));
+        assert!(
+            warning.reason.contains("pip install failed"),
+            "{}",
+            warning.reason
+        );
+        assert_eq!(
+            edges_of(&db, "run"),
+            [(s("store.save"), s("possible"), s("name"), None)]
+        );
+    }
+}

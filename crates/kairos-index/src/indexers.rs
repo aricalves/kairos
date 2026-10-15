@@ -489,6 +489,8 @@ impl ScipRunner for PythonRunner {
         index
             .args(["index", ".", "--quiet", "--project-name"])
             .arg(&name)
+            // With no version, scip-python 0.6.6 stops on the first module.
+            .args(["--project-version", "0"])
             .arg("--output")
             .arg(&out)
             .current_dir(input.root);

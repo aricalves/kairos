@@ -1045,12 +1045,19 @@ symbol as `symbol` does.
   `call`, `type`, `field`, `import` and `other` (a constant, a module or an
   enum variant). A use of a field of a struct is a use of the struct, with
   the kind `field`. The definition and `Self` are not uses.
-- For Python, TypeScript, JavaScript and Go, the index has the calls only.
-  The result says so.
-- `kairos index update` with no `--rust-edges` keeps the uses of each Rust
-  file that did not change. A changed Rust file has its calls only until
+- For Go, TypeScript, TSX, JavaScript and Python, the uses come from the
+  SCIP data of scip-go, scip-typescript and scip-python, when the build ran
+  them (see [The tools of Go, TypeScript and Python](#the-tools-of-go-typescript-and-python)).
+  The kinds are the same. A use of a method of a Go interface is a `call`
+  of the interface.
+- When the build did not run the indexer of a language (the tool is not
+  there, or the install or the indexer failed), the index has the calls
+  only for that language. The result says so, and the build shows a
+  warning with the reason.
+- `kairos index update` with no `--rust-edges` (or `--scip`) keeps the uses
+  of each file that did not change. A changed file has its calls only until
   the next SCIP run. The result gives the count of these files. Run
-  `kairos index update --rust-edges` to get all the uses again.
+  `kairos index update --scip` to get all the uses again.
 - The result shows the possible calls only when `possible` is true. A
   possible call is a call by a name that more than one function has.
 - `limit` is the most uses to show, from 1 to 1000. The default is 100.
