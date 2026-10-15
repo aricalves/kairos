@@ -138,8 +138,8 @@ pub struct CodeIndexScipWarning {
     pub reason: String,
 }
 
-/// The disk use of the tools and of the dependency caches of the builder
-/// of the server that answers (KAIROS-T-0478).
+/// The disk use of the builder of this server: its tools and its
+/// dependency caches (KAIROS-T-0478).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CodeIndexDiskUse {
     /// Each tool folder of `KAIROS_CODE_INDEX_DIR/tools/`, and the other

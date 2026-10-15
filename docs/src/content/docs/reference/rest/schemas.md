@@ -450,7 +450,7 @@ The dependency caches of one language and their disk use.
 
 ## CodeIndexDiskUse
 
-The disk use of the tools and of the dependency caches of the builder of the server that answers (KAIROS-T-0478).
+The disk use of the builder of this server: its tools and its dependency caches (KAIROS-T-0478).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
