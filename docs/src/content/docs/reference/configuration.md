@@ -651,6 +651,7 @@ tools.
 | Go | Go 1.27.2 (`https://go.dev/dl/`), scip-go 0.2.7 (`https://github.com/sourcegraph/scip-go/releases`) | BSD-3-Clause, Apache-2.0 |
 | TypeScript, TSX, JavaScript | Node.js 24.22.0 (`https://nodejs.org/dist/`), `@sourcegraph/scip-typescript` 0.4.0 (npm) | MIT, Apache-2.0 |
 | Python | Node.js 24.22.0, `@sourcegraph/scip-python` 0.6.6 (npm), CPython 3.13.16 of python-build-standalone 20261013 (`https://github.com/astral-sh/python-build-standalone/releases`) | MIT, MIT, PSF-2.0 (build scripts MPL-2.0) |
+| Python with `uv.lock` | uv 0.13.1 (`https://github.com/astral-sh/uv/releases`), only for a project with `uv.lock` | MIT or Apache-2.0 |
 
 - Each archive has a pinned sha256 for each platform (amd64 and arm64,
   Linux and macOS). The pins are in `crates/kairos-index/src/languages.rs`.
@@ -676,6 +677,13 @@ installs them: `go mod download` for Go, `npm ci` or `npm install` with
 install` for Python. It keeps them in `KAIROS_CODE_INDEX_DIR/deps/<tenant>/<repository id>/<language>/`:
 the Go module cache, the npm cache and the virtual environment.
 
+- A Python project with `uv.lock` and `pyproject.toml` at the root installs
+  with `uv sync --frozen`. The builder downloads uv on first need. uv
+  installs the locked versions with the CPython of the builder. It
+  downloads no Python.
+- A Python project with no `uv.lock` installs with `pip install`: `-r`
+  for each `requirements*.txt` file, else `-e .`.
+
 - `KAIROS_CODE_INDEX_DEPS_CAP_MB` is the largest total size of the caches.
 - When the free disk space is less than `KAIROS_CODE_INDEX_MIN_FREE_MB`,
   the builder removes the caches before an install, oldest first.
@@ -692,7 +700,8 @@ the Go module cache, the npm cache and the virtual environment.
 `GONOPROXY`, `GONOSUMDB`, `GONOSUMCHECK`, `GOPROXY`, `GOSUMDB`,
 `GOINSECURE`, `GOAUTH`, `NETRC`, `NODE_AUTH_TOKEN`, `NPM_TOKEN`,
 `NPM_CONFIG_*`, `npm_config_*`, `PIP_INDEX_URL`, `PIP_EXTRA_INDEX_URL`,
-`PIP_TRUSTED_HOST`, `PIP_CERT`, `GITHUB_TOKEN` and `GH_TOKEN`. Add more
+`PIP_TRUSTED_HOST`, `PIP_CERT`, `UV_INDEX_*`, `UV_DEFAULT_INDEX`,
+`UV_EXTRA_INDEX_URL`, `GITHUB_TOKEN` and `GH_TOKEN`. Add more
 names with `KAIROS_CODE_INDEX_DEPS_ENV`.
 
 **A local run.** `kairos index` on a computer downloads no tools and

@@ -10,6 +10,7 @@
 //! | go         | the Go toolchain, scip-go               |
 //! | typescript | Node.js, scip-typescript (npm)          |
 //! | python     | Node.js, scip-python (npm), CPython     |
+//! | uv         | uv, for a Python project with `uv.lock` |
 //!
 //! Each archive has a pinned version and sha256 for each platform (amd64 and
 //! arm64, Linux and macOS). A file with a wrong sha256 is refused, and the
@@ -65,6 +66,9 @@ pub const SCIP_PYTHON_VERSION: &str = "0.6.6";
 pub const PYTHON_VERSION: &str = "3.13.16";
 /// The python-build-standalone release tag.
 pub const PYTHON_BUILD: &str = "20261013";
+/// The uv release (github.com/astral-sh/uv, MIT or Apache-2.0), for a
+/// Python project with `uv.lock` (KAIROS-T-0486).
+pub const UV_VERSION: &str = "0.13.1";
 
 /// The variables of the environment that a dependency step gets, with
 /// `PATH` and the cache folders. Each name that ends with `_` is a prefix.
@@ -101,6 +105,9 @@ pub const PASSED_VARIABLES: &[&str] = &[
     "PIP_EXTRA_INDEX_URL",
     "PIP_TRUSTED_HOST",
     "PIP_CERT",
+    "UV_INDEX_",
+    "UV_DEFAULT_INDEX",
+    "UV_EXTRA_INDEX_URL",
     "GITHUB_TOKEN",
     "GH_TOKEN",
 ];
@@ -237,12 +244,33 @@ const PYTHON_PINS: &[(&str, &str)] = &[
     ),
 ];
 
+/// The sha256 of the uv archives, by target triple, from the `.sha256`
+/// files of the release.
+const UV_PINS: &[(&str, &str)] = &[
+    (
+        "aarch64-apple-darwin",
+        "cfe454573412ff7380d15fc7dae5997ab53ffce72fce0a78e91ddbc84001acd2",
+    ),
+    (
+        "aarch64-unknown-linux-gnu",
+        "9041c73c99fdc5892cf128140beb354eca9231d502068cc36e6cb53a8e59ad14",
+    ),
+    (
+        "x86_64-apple-darwin",
+        "bb7b805bdcf3d0bc8c74ceb94569e6b3e8aa35bd492acdbb9d46bf46d9d4ff6b",
+    ),
+    (
+        "x86_64-unknown-linux-gnu",
+        "eadd9d27c134ab5ac1ffd4473b97a741407f3ea238288f03121fc4deddf90220",
+    ),
+];
+
 fn pin(pins: &[(&str, &'static str)], key: &str) -> Option<&'static str> {
     pins.iter().find(|(k, _)| *k == key).map(|(_, sha)| *sha)
 }
 
-/// The pinned components of `language` (`go`, `typescript`, `python`) for
-/// this platform. A component with no pin for the platform has no source.
+/// The pinned components of `language` (`go`, `typescript`, `python`, and
+/// `uv` for a Python project with `uv.lock`) for this platform. A component with no pin for the platform has no source.
 pub fn pinned(language: &str) -> Vec<Component> {
     let (os, go_arch, node_arch, triple) = platform();
     let archive = |url: String, sha: Option<&str>, strip| {
@@ -318,6 +346,17 @@ pub fn pinned(language: &str) -> Vec<Component> {
                 ),
             },
         ],
+        "uv" => vec![Component {
+            name: "uv",
+            version: UV_VERSION,
+            source: archive(
+                format!(
+                    "https://github.com/astral-sh/uv/releases/download/{UV_VERSION}/uv-{triple}.tar.gz"
+                ),
+                pin(UV_PINS, &triple),
+                1,
+            ),
+        }],
         _ => Vec::new(),
     }
 }
@@ -748,7 +787,7 @@ pub fn on_path(program: &str) -> Option<PathBuf> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -763,7 +802,11 @@ mod tests {
         ] {
             assert!(pin(PYTHON_PINS, target).is_some(), "{target}");
         }
-        for lang in ["go", "typescript", "python"] {
+        for (target, sha) in UV_PINS {
+            assert_eq!(sha.len(), 64, "{target}");
+            assert!(pin(PYTHON_PINS, target).is_some(), "{target}");
+        }
+        for lang in ["go", "typescript", "python", "uv"] {
             let components = pinned(lang);
             assert!(!components.is_empty());
             for c in components {
@@ -776,7 +819,11 @@ mod tests {
         assert!(pinned("terraform").is_empty());
     }
 
-    fn fake_archive(dir: &Path, name: &str, files: &[(&str, &str)]) -> (PathBuf, String) {
+    pub(crate) fn fake_archive(
+        dir: &Path,
+        name: &str,
+        files: &[(&str, &str)],
+    ) -> (PathBuf, String) {
         let path = dir.join(name);
         let file = fs::File::create(&path).unwrap();
         let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(

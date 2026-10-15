@@ -571,3 +571,48 @@ fn python_install_failure_falls_back() {
         );
     }
 }
+
+/// KAIROS-T-0486: a server build of a project with `uv.lock` installs its
+/// dependencies with `uv sync --frozen`: the fixture's dependency is a wheel
+/// in the fixture, so the install needs no network. The edges are the
+/// same as with no install.
+#[test]
+fn python_with_uv_lock_installs_with_uv() {
+    let cache = tempfile::tempdir().unwrap();
+    for (mode, options) in real_modes(&["node", "scip-python", "python3"], cache.path()) {
+        if mode != "server" {
+            continue;
+        }
+        let (_dir, db, report) = build("scip-python-uv", &options);
+        check_python(&db, &report);
+        let python = cache.path().join("test/repository/python");
+        let venv = std::fs::read_dir(&python)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("venv-")
+            })
+            .unwrap_or_else(|| panic!("no venv in {}", python.display()));
+        let config = std::fs::read_to_string(venv.join("pyvenv.cfg")).unwrap();
+        assert!(
+            config.contains("uv = "),
+            "uv did not make the venv: {config}"
+        );
+        let site = std::fs::read_dir(venv.join("lib"))
+            .unwrap()
+            .flatten()
+            .next()
+            .unwrap()
+            .path()
+            .join("site-packages");
+        assert!(
+            site.join("helper/__init__.py").is_file(),
+            "helper is not installed"
+        );
+        assert!(python.join("uv").is_dir(), "uv kept no cache");
+    }
+}

@@ -372,9 +372,45 @@ fn python_dependency_files(root: &Path) -> Vec<(String, Vec<u8>)> {
     out
 }
 
+/// How the dependencies of a Python project at the root are installed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PythonInstall {
+    /// `uv sync --frozen`: the project has `uv.lock` and `pyproject.toml`
+    /// (KAIROS-T-0486).
+    Uv,
+    /// `pip install -r` each of these `requirements*.txt` files.
+    Requirements(Vec<String>),
+    /// `pip install -e .`: the project has `pyproject.toml` or `setup.py`.
+    Editable,
+    /// No dependency file: an empty environment.
+    Nothing,
+}
+
+/// The install of the project of `files` ([`python_dependency_files`]).
+fn python_install(files: &[(String, Vec<u8>)]) -> PythonInstall {
+    let has = |name: &str| files.iter().any(|(n, _)| n == name);
+    if has("uv.lock") && has("pyproject.toml") {
+        return PythonInstall::Uv;
+    }
+    let requirements: Vec<String> = files
+        .iter()
+        .map(|(n, _)| n)
+        .filter(|n| n.starts_with("requirements"))
+        .cloned()
+        .collect();
+    if !requirements.is_empty() {
+        PythonInstall::Requirements(requirements)
+    } else if has("pyproject.toml") || has("setup.py") {
+        PythonInstall::Editable
+    } else {
+        PythonInstall::Nothing
+    }
+}
+
 /// scip-python on the tree (KAIROS-T-0477). On a server build, the
-/// dependencies of the project go into a virtual environment of the cache,
-/// from its `requirements*.txt` files, else its `pyproject.toml` (or
+/// dependencies of the project go into a virtual environment of the cache:
+/// with `uv sync --frozen` when the project has `uv.lock` (KAIROS-T-0486),
+/// else from its `requirements*.txt` files, else its `pyproject.toml` (or
 /// `setup.py`) as an editable install. With no dependency file, scip-python
 /// reads the sources only.
 pub struct PythonRunner {
@@ -411,38 +447,63 @@ impl PythonRunner {
             }
         }
         let bins = [bin_of(python)];
+        let install = python_install(&files);
+        if install == PythonInstall::Uv {
+            self.uv_sync(root, python, deps, &venv)?;
+            std::fs::write(&done, b"").map_err(|e| e.to_string())?;
+            return Ok(venv.join("bin"));
+        }
         let mut make = Command::new(python);
         make.args(["-m", "venv"]).arg(&venv);
         environment(&mut make, &self.tools, Some(deps), &bins);
         run_step(&mut make, "python -m venv")?;
         let pip = venv.join("bin/pip");
-        let requirements: Vec<&String> = files
-            .iter()
-            .map(|(n, _)| n)
-            .filter(|n| n.starts_with("requirements"))
-            .collect();
-        let mut install = Command::new(&pip);
-        install.args(["install", "--disable-pip-version-check", "--no-input"]);
-        if !requirements.is_empty() {
-            for r in requirements {
-                install.arg("-r").arg(root.join(r));
+        let mut command = Command::new(&pip);
+        command.args(["install", "--disable-pip-version-check", "--no-input"]);
+        match install {
+            PythonInstall::Requirements(requirements) => {
+                for r in requirements {
+                    command.arg("-r").arg(root.join(r));
+                }
             }
-        } else if files
-            .iter()
-            .any(|(n, _)| matches!(n.as_str(), "pyproject.toml" | "setup.py"))
-        {
-            install.arg("-e").arg(root);
-        } else {
-            // No dependency file: an empty environment.
-            std::fs::write(&done, b"").map_err(|e| e.to_string())?;
-            return Ok(venv.join("bin"));
+            PythonInstall::Editable => {
+                command.arg("-e").arg(root);
+            }
+            PythonInstall::Nothing | PythonInstall::Uv => {
+                std::fs::write(&done, b"").map_err(|e| e.to_string())?;
+                return Ok(venv.join("bin"));
+            }
         }
-        install.current_dir(root);
-        environment(&mut install, &self.tools, Some(deps), &[venv.join("bin")]);
-        install.env("PIP_CACHE_DIR", deps.join("pip"));
-        run_step(&mut install, "pip install")?;
+        command.current_dir(root);
+        environment(&mut command, &self.tools, Some(deps), &[venv.join("bin")]);
+        command.env("PIP_CACHE_DIR", deps.join("pip"));
+        run_step(&mut command, "pip install")?;
         std::fs::write(&done, b"").map_err(|e| e.to_string())?;
         Ok(venv.join("bin"))
+    }
+
+    /// `uv sync --frozen` of the project at `root` into `venv`, with the
+    /// Python of the runner (KAIROS-T-0486). uv is fetched on first need. It
+    /// installs the locked versions only, downloads no Python, and keeps its
+    /// cache in `deps/uv`.
+    fn uv_sync(&self, root: &Path, python: &Path, deps: &Path, venv: &Path) -> Result<(), String> {
+        let uv = match self.tools.prepare("uv")? {
+            Some(map) => map
+                .get("uv")
+                .map(|dir| dir.join("uv"))
+                .filter(|p| p.exists())
+                .ok_or_else(|| "uv has no uv".to_string())?,
+            None => on_path("uv").ok_or_else(|| "uv is not on PATH".to_string())?,
+        };
+        let mut sync = Command::new(&uv);
+        sync.args(["sync", "--frozen", "--no-progress", "--python"])
+            .arg(python)
+            .current_dir(root);
+        environment(&mut sync, &self.tools, Some(deps), &[bin_of(python)]);
+        sync.env("UV_PROJECT_ENVIRONMENT", venv)
+            .env("UV_PYTHON_DOWNLOADS", "never")
+            .env("UV_CACHE_DIR", deps.join("uv"));
+        run_step(&mut sync, "uv sync").map(|_| ())
     }
 }
 
@@ -514,6 +575,8 @@ impl ScipRunner for PythonRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::languages::{Component, DependencyCache, Source};
+    use crate::tools::Download;
 
     #[test]
     fn the_projects_of_a_tree_are_the_outer_folders_with_a_marker() {
@@ -568,5 +631,229 @@ mod tests {
             panic!("not a fallback");
         };
         assert_eq!(reason, "kairos-no-such-program-0475 is not on PATH");
+    }
+
+    fn dependency_files(names: &[&str]) -> Vec<(String, Vec<u8>)> {
+        names.iter().map(|n| (n.to_string(), Vec::new())).collect()
+    }
+
+    /// KAIROS-T-0486: a project with `uv.lock` and `pyproject.toml` installs
+    /// with uv; the others keep the pip install of KAIROS-T-0477.
+    #[test]
+    fn the_python_install_follows_the_dependency_files() {
+        let plan = |files: &[&str]| python_install(&dependency_files(files));
+        assert_eq!(plan(&["pyproject.toml", "uv.lock"]), PythonInstall::Uv);
+        assert_eq!(
+            plan(&["pyproject.toml", "requirements.txt", "uv.lock"]),
+            PythonInstall::Uv
+        );
+        assert_eq!(
+            plan(&["requirements-dev.txt", "requirements.txt"]),
+            PythonInstall::Requirements(vec![
+                "requirements-dev.txt".into(),
+                "requirements.txt".into()
+            ])
+        );
+        assert_eq!(plan(&["pyproject.toml"]), PythonInstall::Editable);
+        assert_eq!(plan(&["setup.py"]), PythonInstall::Editable);
+        // uv needs the pyproject.toml of the lock.
+        assert_eq!(plan(&["uv.lock"]), PythonInstall::Nothing);
+        assert_eq!(plan(&[]), PythonInstall::Nothing);
+    }
+
+    /// A fake `python3`: `-m venv <dir>` makes `<dir>/bin/pip`, which
+    /// writes its arguments to `<dir>/pip.args`.
+    const FAKE_PYTHON: &str = "#!/bin/sh\n\
+        if [ \"$1\" = \"-m\" ] && [ \"$2\" = \"venv\" ]; then\n\
+          mkdir -p \"$3/bin\"\n\
+          printf '#!/bin/sh\\necho \"$@\" > \"%s/pip.args\"\\n' \"$3\" > \"$3/bin/pip\"\n\
+          chmod +x \"$3/bin/pip\"\n\
+        fi\n";
+
+    /// A fake `uv` that writes its arguments and the environment folder,
+    /// then makes the environment.
+    const FAKE_UV: &str = "#!/bin/sh\n\
+        mkdir -p \"$UV_PROJECT_ENVIRONMENT/bin\"\n\
+        echo \"$@\" > \"$UV_PROJECT_ENVIRONMENT/uv.args\"\n\
+        echo \"$UV_PYTHON_DOWNLOADS $UV_CACHE_DIR\" > \"$UV_PROJECT_ENVIRONMENT/uv.env\"\n";
+
+    const FAILING_UV: &str = "#!/bin/sh\necho 'the lock file needs to be updated' >&2\nexit 2\n";
+
+    /// A component of `name` from a fake archive in the tools folder.
+    fn fake_component(dir: &Path, name: &'static str, files: &[(&str, &str)]) -> Component {
+        let file = format!("{name}-fake.tar.gz");
+        let (_, sha) = crate::languages::tests::fake_archive(dir, &file, files);
+        Component {
+            name,
+            version: "0.0.0",
+            source: Some(Source::Archive {
+                download: Download::new(format!("http://127.0.0.1:1/{file}"), sha),
+                strip: 0,
+            }),
+        }
+    }
+
+    /// The fake tools of the Python runner, and a dependency cache, in
+    /// `dir`. node fails, so scip-python fails after the install.
+    fn fake_python_tools(dir: &Path, uv: &str) -> LanguageTools {
+        let tools = dir.join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        LanguageTools {
+            dir: Some(tools.clone()),
+            fetch: true,
+            overrides: vec![
+                fake_component(&tools, "node", &[("bin/node", "#!/bin/sh\nexit 1\n")]),
+                fake_component(
+                    &tools,
+                    "scip-python",
+                    &[("node_modules/@sourcegraph/scip-python/index.js", "")],
+                ),
+                fake_component(&tools, "python", &[("bin/python3", FAKE_PYTHON)]),
+                fake_component(&tools, "uv", &[("uv", uv)]),
+            ],
+            cache: Some(DependencyCache {
+                root: dir.join("deps"),
+                key: "t/r".into(),
+                cap_bytes: u64::MAX,
+                min_free_bytes: 0,
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn python_project(dir: &Path, files: &[&str]) -> PathBuf {
+        let root = dir.join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("app.py"), "def run():\n    return 1\n").unwrap();
+        for f in files {
+            std::fs::write(root.join(f), "").unwrap();
+        }
+        root
+    }
+
+    /// The one venv of the cache.
+    fn venv_of(dir: &Path) -> PathBuf {
+        let python = dir.join("deps/t/r/python");
+        std::fs::read_dir(&python)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("venv-")
+            })
+            .unwrap_or_else(|| panic!("no venv in {}", python.display()))
+    }
+
+    fn tool_folders(dir: &Path) -> Vec<String> {
+        let mut out: Vec<String> = std::fs::read_dir(dir.join("tools"))
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| !n.starts_with('.'))
+            .collect();
+        out.sort();
+        out
+    }
+
+    fn run_python(dir: &Path, root: &Path, tools: LanguageTools) -> crate::BuildReport {
+        let mut options = crate::BuildOptions {
+            download: false,
+            ..Default::default()
+        };
+        options.scip.tools = tools;
+        crate::build_structure_with(root, &dir.join("index.sqlite"), &options).unwrap()
+    }
+
+    /// KAIROS-T-0486: with `uv.lock`, the server build fetches uv and runs
+    /// `uv sync --frozen` into the venv of the cache, with the fetched
+    /// Python and no Python download.
+    #[test]
+    fn a_uv_lock_installs_with_uv() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = python_project(dir.path(), &["pyproject.toml", "uv.lock"]);
+        run_python(dir.path(), &root, fake_python_tools(dir.path(), FAKE_UV));
+        let venv = venv_of(dir.path());
+        let args = std::fs::read_to_string(venv.join("uv.args")).unwrap();
+        assert!(args.starts_with("sync --frozen"), "{args}");
+        assert!(
+            args.contains(&format!(
+                "--python {}",
+                dir.path().join("tools/python-0.0.0/bin/python3").display()
+            )),
+            "{args}"
+        );
+        let env = std::fs::read_to_string(venv.join("uv.env")).unwrap();
+        assert!(env.starts_with("never "), "{env}");
+        assert!(env.contains("deps/t/r/python/uv"), "{env}");
+        assert!(!venv.join("pip.args").exists());
+        assert!(venv.join(".kairos-installed").is_file());
+        assert_eq!(
+            tool_folders(dir.path()),
+            [
+                "node-0.0.0",
+                "python-0.0.0",
+                "scip-python-0.0.0",
+                "uv-0.0.0"
+            ]
+        );
+    }
+
+    /// KAIROS-T-0486: a failed `uv sync` is the fallback with a warning.
+    #[test]
+    fn a_failed_uv_sync_falls_back_with_a_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = python_project(dir.path(), &["pyproject.toml", "uv.lock"]);
+        let report = run_python(dir.path(), &root, fake_python_tools(dir.path(), FAILING_UV));
+        let python: Vec<_> = report
+            .scip_warnings
+            .iter()
+            .filter(|w| w.language == "python")
+            .collect();
+        assert_eq!(python.len(), 1, "{:?}", report.scip_warnings);
+        assert!(
+            python[0].reason.starts_with("uv sync failed"),
+            "{}",
+            python[0].reason
+        );
+        assert!(
+            python[0]
+                .reason
+                .contains("the lock file needs to be updated"),
+            "{}",
+            python[0].reason
+        );
+        let python = dir.path().join("deps/t/r/python");
+        assert!(
+            std::fs::read_dir(&python)
+                .unwrap()
+                .flatten()
+                .all(|e| !e.path().join(".kairos-installed").exists()),
+            "an environment is marked as installed"
+        );
+    }
+
+    /// KAIROS-T-0486: with only `requirements.txt`, pip installs, and uv is
+    /// never fetched.
+    #[test]
+    fn requirements_alone_install_with_pip() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = python_project(dir.path(), &["requirements.txt"]);
+        run_python(dir.path(), &root, fake_python_tools(dir.path(), FAKE_UV));
+        let venv = venv_of(dir.path());
+        let args = std::fs::read_to_string(venv.join("pip.args")).unwrap();
+        assert!(args.starts_with("install "), "{args}");
+        assert!(
+            args.contains(&format!("-r {}", root.join("requirements.txt").display())),
+            "{args}"
+        );
+        assert!(!venv.join("uv.args").exists());
+        assert_eq!(
+            tool_folders(dir.path()),
+            ["node-0.0.0", "python-0.0.0", "scip-python-0.0.0"]
+        );
     }
 }

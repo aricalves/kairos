@@ -203,7 +203,7 @@ fn tool_language(folder: &str) -> Option<&'static str> {
         "go" | "scip-go" => Some("go"),
         "scip-typescript" => Some("typescript"),
         "node" => Some("typescript, python"),
-        "scip-python" | "python" => Some("python"),
+        "scip-python" | "python" | "uv" => Some("python"),
         "rust" | "rust-src" => Some("rust"),
         _ if folder.starts_with("rust-analyzer") => Some("rust"),
         _ => None,
@@ -2310,5 +2310,14 @@ mod tests {
         let summarizers = llama_summarizers(&tools, 6);
         assert_eq!(summarizers.model, PathBuf::from("/tools/model.gguf"));
         assert_eq!(summarizers.threads, 6);
+    }
+
+    /// KAIROS-T-0486: the uv folder counts for Python in the disk use.
+    #[test]
+    fn each_tool_folder_has_its_language() {
+        assert_eq!(tool_language("uv-0.13.1"), Some("python"));
+        assert_eq!(tool_language("python-3.13.16"), Some("python"));
+        assert_eq!(tool_language("scip-go-0.2.7"), Some("go"));
+        assert_eq!(tool_language("other"), None);
     }
 }

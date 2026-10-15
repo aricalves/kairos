@@ -48,8 +48,8 @@ the usual reasons:
   incorrect sha256, or the platform has no pinned build. Look at the files
   in `KAIROS_CODE_INDEX_DIR/tools/`.
 - The install of the dependencies failed (`go mod download`, `npm ci` or
-  `npm install`, `pip install`). A private dependency needs a token in the
-  environment of the server. See
+  `npm install`, `pip install`, `uv sync`). A private dependency needs a
+  token in the environment of the server. See
   [The tools of Go, TypeScript and Python](../../reference/configuration/#the-tools-of-go-typescript-and-python).
 - The free disk space is low. The builder removed the dependency caches,
   and the space is still less than `KAIROS_CODE_INDEX_MIN_FREE_MB`.
