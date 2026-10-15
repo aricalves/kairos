@@ -387,6 +387,25 @@ Documents (`D`) and ADRs (`A`) carry short codes but are not flight levels.
 
 See [Flight levels](../../explanation/flight-levels/).
 
+## graph view
+
+The picture of the work around one item: its `blocks` edges, its parent and
+its siblings. Open it from the Graph tab of an item.
+
+- A task is one column right of each task that blocks it. Serial work is a row.
+  Tasks with no edge between them are in one column: they can go in parallel.
+- The tasks of an initiative are in a box. The header of the box names the
+  initiative and its strategy.
+- The colour of an item is its state: todo, active, blocked or done.
+- An open blocker is a heavy arrow. An edge that does not count is a dashed
+  arrow.
+- When a task has more than 5 siblings with no edge to it, the rest fold into
+  `+N`.
+- Documents and ADRs are in the side panel, not on the canvas.
+
+To zoom, use the buttons, or hold Ctrl or Cmd and turn the wheel. To pan, drag
+the background, or use the arrow keys.
+
 ## impacts
 
 The relationship from a document or an ADR to a repository. It says what the

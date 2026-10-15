@@ -64,4 +64,6 @@ web-sys = { workspace = true, features = [
     "Element",
     # The team tree keeps its open folders across re-renders (KAIROS-T-0437)
     "HtmlDetailsElement",
+    # The graph zooms at the pointer (KAIROS-T-0492)
+    "DomRect",
 ] }
