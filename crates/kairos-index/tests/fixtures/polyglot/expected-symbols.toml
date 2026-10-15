@@ -561,6 +561,24 @@ language = "go"
 lines = [39, 39]
 is_test = false
 
+[[symbol]]
+file = "go/shout/shout.go"
+name = "Message"
+container = ""
+kind = "function"
+language = "go"
+lines = [6, 8]
+is_test = false
+
+[[symbol]]
+file = "go/cmd/hello/hello.go"
+name = "Run"
+container = ""
+kind = "function"
+language = "go"
+lines = [11, 14]
+is_test = false
+
 # A function that `go test` runs is a test (KAIROS-T-0468).
 [[symbol]]
 file = "go/greet/greet_test.go"

@@ -9,7 +9,10 @@ use kairos_narsil::symbols::{Symbol, SymbolKind};
 use sha2::{Digest, Sha256};
 use tree_sitter::{Node, Tree};
 
-use crate::calls::{CallSite, call_sites, rust_macro_calls, rust_macro_ranges, rust_use_ranges};
+use crate::calls::{
+    CallSite, Import, call_sites, go_package_and_imports, rust_macro_calls, rust_macro_ranges,
+    rust_use_ranges,
+};
 use crate::tokens;
 
 /// The language of a file, from its extension: the languages of the index
@@ -63,6 +66,10 @@ pub struct FileExtract {
     pub macro_calls: Vec<CallSite>,
     /// The byte ranges of the Rust macro invocations (COLLIERY-T-2531).
     pub macro_ranges: Vec<(usize, usize)>,
+    /// The package of a Go file (KAIROS-T-0469).
+    pub package: Option<String>,
+    /// The imports of a Go file (KAIROS-T-0469).
+    pub imports: Vec<Import>,
 }
 
 /// Parse `content` and return its symbols in source order, and its call
@@ -121,6 +128,11 @@ pub fn extract(
     } else {
         (Vec::new(), Vec::new(), Vec::new())
     };
+    let (package, imports) = if language == "go" {
+        go_package_and_imports(&tree, source)
+    } else {
+        (None, Vec::new())
+    };
     let symbols: Vec<Extracted> = symbols
         .iter()
         .map(|s| {
@@ -172,6 +184,8 @@ pub fn extract(
         use_ranges,
         macro_calls,
         macro_ranges,
+        package,
+        imports,
     })
 }
 

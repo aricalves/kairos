@@ -19,6 +19,64 @@ pub struct CallSite {
     pub col: usize,
 }
 
+/// An import of a file (KAIROS-T-0469): the name that the code gives it, if
+/// any (`g` in `import g "example.com/m/greet"`, `.` or `_`), and its path.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Import {
+    pub name: Option<String>,
+    pub path: String,
+}
+
+/// The package name and the imports of a Go file, from its top level.
+pub fn go_package_and_imports(tree: &Tree, source: &[u8]) -> (Option<String>, Vec<Import>) {
+    let text =
+        |n: Node<'_>| String::from_utf8_lossy(&source[n.start_byte()..n.end_byte()]).into_owned();
+    let root = tree.root_node();
+    let mut package = None;
+    let mut imports = Vec::new();
+    let mut cursor = root.walk();
+    for node in root.named_children(&mut cursor) {
+        match node.kind() {
+            "package_clause" => {
+                let mut c = node.walk();
+                package = node
+                    .named_children(&mut c)
+                    .find(|n| n.kind() == "package_identifier")
+                    .map(text);
+            }
+            "import_declaration" => {
+                let mut specs = Vec::new();
+                let mut c = node.walk();
+                for child in node.named_children(&mut c) {
+                    match child.kind() {
+                        "import_spec" => specs.push(child),
+                        "import_spec_list" => {
+                            let mut l = child.walk();
+                            specs.extend(
+                                child
+                                    .named_children(&mut l)
+                                    .filter(|n| n.kind() == "import_spec"),
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+                for spec in specs {
+                    let Some(path) = spec.child_by_field_name("path") else {
+                        continue;
+                    };
+                    imports.push(Import {
+                        name: spec.child_by_field_name("name").map(text),
+                        path: text(path).trim_matches(['"', '`']).to_string(),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    (package, imports)
+}
+
 /// The call sites of a file, in source order. `language` is a name that
 /// `extract::language_of` gives. A Rust macro call is not a call site: its
 /// arguments are tokens for tree-sitter. SCIP resolves the calls in a macro
@@ -366,6 +424,30 @@ mod tests {
         assert_eq!(
             sites("a.go", "go", code),
             own(&[("Println", "fmt.Println", 3), ("g", "g", 3)])
+        );
+    }
+
+    /// KAIROS-T-0469: the package and the imports of a Go file.
+    #[test]
+    fn go_package_and_imports_are_read() {
+        let parser = LanguageParser::new().unwrap();
+        let code = "package main\n\nimport \"fmt\"\n\nimport (\n\tg \"example.com/m/greet\"\n\t. \"strings\"\n\t_ \"embed\"\n\t`os`\n)\n";
+        let tree = parser.parse_to_tree(Path::new("a.go"), code).unwrap();
+        let (package, imports) = go_package_and_imports(&tree, code.as_bytes());
+        assert_eq!(package.as_deref(), Some("main"));
+        let got: Vec<(Option<&str>, &str)> = imports
+            .iter()
+            .map(|i| (i.name.as_deref(), i.path.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (None, "fmt"),
+                (Some("g"), "example.com/m/greet"),
+                (Some("."), "strings"),
+                (Some("_"), "embed"),
+                (None, "os"),
+            ]
         );
     }
 

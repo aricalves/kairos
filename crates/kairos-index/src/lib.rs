@@ -664,12 +664,28 @@ fn build(
                 use_ranges: &found.use_ranges,
                 macro_calls: &found.macro_calls,
                 macro_ranges: &found.macro_ranges,
+                package: found.package.as_deref(),
+                imports: &found.imports,
             });
             file_ids.push(file_id);
             hashes.push(p.file.content_hash.as_str());
         }
 
-        let resolved = edges::resolve(&parsed, rust);
+        // The Go modules: each go.mod of a folder whose files are parsed
+        // (KAIROS-T-0469).
+        let go_modules: Vec<edges::GoModule> = prepared
+            .iter()
+            .filter(|p| p.verdict.decision.is_parsed())
+            .filter_map(|p| {
+                let folder = match p.rel.rsplit_once('/') {
+                    Some((folder, "go.mod")) => folder,
+                    None if p.rel == "go.mod" => "",
+                    _ => return None,
+                };
+                edges::GoModule::read(folder, &p.file.text)
+            })
+            .collect();
+        let resolved = edges::resolve(&parsed, rust, &go_modules);
         // The uses of each symbol (KAIROS-T-0419).
         let source = match (&scip_index, &mode) {
             (Some((index, crates)), _) => refs::Source::Scip(index, crates),

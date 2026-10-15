@@ -454,6 +454,39 @@ at = 27
 class = "external"
 external = "len"
 
+# A Go call `pkg.F` goes to the imported package, through go.mod
+# (KAIROS-T-0469): greet.Message and loud.Message are 2 functions Message,
+# and greet.Greet is the function, not the method Greeter.Greet.
+[[edge]]
+caller = { file = "go/cmd/hello/hello.go", name = "Run", line = 11 }
+at = 12
+class = "certain"
+callee = { file = "go/greet/greet.go", name = "Greet", line = 6 }
+
+[[edge]]
+caller = { file = "go/cmd/hello/hello.go", name = "Run", line = 11 }
+at = 12
+class = "certain"
+callee = { file = "go/shout/shout.go", name = "Message", line = 6 }
+
+[[edge]]
+caller = { file = "go/cmd/hello/hello.go", name = "Run", line = 11 }
+at = 13
+class = "external"
+external = "fmt.Println"
+
+[[edge]]
+caller = { file = "go/cmd/hello/hello.go", name = "Run", line = 11 }
+at = 13
+class = "certain"
+callee = { file = "go/greet/greet.go", name = "Message", line = 11 }
+
+[[edge]]
+caller = { file = "go/shout/shout.go", name = "Message", line = 6 }
+at = 7
+class = "external"
+external = "strings.ToUpper"
+
 [[edge]]
 caller = { file = "go/greet/greet_test.go", name = "TestMessage", line = 5 }
 at = 6

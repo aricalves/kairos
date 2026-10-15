@@ -15,6 +15,11 @@
 //!   gets a `certain` name class only from a function whose container or
 //!   module matches the path. If none matches, the edge is `possible` with
 //!   the other functions of that name, or `external` (COLLIERY-T-2531).
+//! - **A Go call of an imported package** (`pkg.F`): the import path,
+//!   through the `go.mod` files of the repository, gives the folder of the
+//!   package; the edge goes to the function `F` there. A package outside
+//!   the modules of the repository is `external`. A plain Go call (`F()`)
+//!   goes to its own folder first (KAIROS-T-0469).
 //! - **A method call** (`x.f()`) never goes to the caller itself by name:
 //!   the receiver is not known, so a name gives no evidence of recursion.
 //! - **A SCIP definition with no symbol** (a function that a macro makes):
@@ -30,7 +35,7 @@ use std::collections::{HashMap, HashSet};
 
 use rusqlite::Connection;
 
-use crate::calls::CallSite;
+use crate::calls::{CallSite, Import};
 use crate::scip::{self, proto};
 use crate::{EdgeStats, IndexError};
 
@@ -58,6 +63,67 @@ pub struct ParsedFile<'a> {
     pub macro_calls: &'a [CallSite],
     /// The byte ranges of the Rust macro invocations (COLLIERY-T-2531).
     pub macro_ranges: &'a [(usize, usize)],
+    /// The package of a Go file (KAIROS-T-0469).
+    pub package: Option<&'a str>,
+    /// The imports of a Go file (KAIROS-T-0469).
+    pub imports: &'a [Import],
+}
+
+/// A Go module of the repository, from a `go.mod` file (KAIROS-T-0469): the
+/// folder of the file (`""` at the root) and the module path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoModule {
+    pub folder: String,
+    pub path: String,
+}
+
+impl GoModule {
+    /// The module of the text of a `go.mod` file in `folder`.
+    pub fn read(folder: &str, text: &str) -> Option<GoModule> {
+        let path = text
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("module "))?
+            .split("//")
+            .next()?
+            .trim()
+            .trim_matches(['"', '`']);
+        (!path.is_empty()).then(|| GoModule {
+            folder: folder.to_string(),
+            path: path.to_string(),
+        })
+    }
+}
+
+/// What the name of an import of a Go file gives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GoPackage {
+    /// A package of a module of the repository: its folder.
+    Folder(String),
+    /// The standard library or a package of another module.
+    External,
+}
+
+/// The folder of a path: `""` for a file at the root.
+fn folder_of(path: &str) -> &str {
+    path.rsplit_once('/').map_or("", |(folder, _)| folder)
+}
+
+/// The name that an import with no name gives, for a package outside the
+/// repository: the last part of the path, with no major version
+/// (`gopkg.in/yaml.v3` and `github.com/x/yaml/v3` give `yaml`).
+fn external_package_name(path: &str) -> &str {
+    let mut parts = path.rsplit('/');
+    let mut last = parts.next().unwrap_or(path);
+    if last.len() > 1 && last.starts_with('v') && last[1..].chars().all(|c| c.is_ascii_digit()) {
+        last = parts.next().unwrap_or(last);
+    }
+    let last = match last.rsplit_once(".v") {
+        Some((name, v)) if !v.is_empty() && v.chars().all(|c| c.is_ascii_digit()) => name,
+        _ => last,
+    };
+    last.strip_prefix("go-")
+        .or_else(|| last.strip_suffix("-go"))
+        .unwrap_or(last)
 }
 
 /// The place of a definition with no symbol: a function that a macro makes
@@ -452,12 +518,73 @@ struct Names<'a> {
     by_name: HashMap<(&'a str, &'a str), Vec<(usize, i64)>>,
     /// The module of each Rust file, by file index.
     modules: HashMap<usize, RustModule>,
+    /// The packages that the imports of each Go file name, by file index
+    /// and by the name in the code (KAIROS-T-0469).
+    go_imports: HashMap<usize, HashMap<String, GoPackage>>,
 }
 
 impl<'a> Names<'a> {
-    fn new(files: &'a [ParsedFile<'a>]) -> Self {
+    fn new(files: &'a [ParsedFile<'a>], go_modules: &[GoModule]) -> Self {
         let mut by_name: HashMap<(&str, &str), Vec<(usize, i64)>> = HashMap::new();
         let mut modules = HashMap::new();
+        // The package name of each Go folder, from its files (not the
+        // `_test` package of a test file).
+        let mut packages: HashMap<&str, &str> = HashMap::new();
+        for file in files.iter().filter(|f| f.language == "go") {
+            if let Some(package) = file.package.filter(|p| !p.ends_with("_test")) {
+                packages.entry(folder_of(file.path)).or_insert(package);
+            }
+        }
+        let mut go_imports: HashMap<usize, HashMap<String, GoPackage>> = HashMap::new();
+        for (i, file) in files.iter().enumerate() {
+            if file.language != "go" {
+                continue;
+            }
+            let mut names = HashMap::new();
+            for import in file.imports {
+                if matches!(import.name.as_deref(), Some("_" | ".")) {
+                    continue;
+                }
+                let module = go_modules
+                    .iter()
+                    .filter(|m| {
+                        import.path == m.path
+                            || import
+                                .path
+                                .strip_prefix(m.path.as_str())
+                                .is_some_and(|rest| rest.starts_with('/'))
+                    })
+                    .max_by_key(|m| m.path.len());
+                let (package, default_name) = match module {
+                    Some(m) => {
+                        let rest = import.path[m.path.len()..].trim_start_matches('/');
+                        let folder = match (m.folder.as_str(), rest) {
+                            ("", rest) => rest.to_string(),
+                            (folder, "") => folder.to_string(),
+                            (folder, rest) => format!("{folder}/{rest}"),
+                        };
+                        let name = packages
+                            .get(folder.as_str())
+                            .map(|p| p.to_string())
+                            .unwrap_or_else(|| {
+                                import
+                                    .path
+                                    .rsplit('/')
+                                    .next()
+                                    .unwrap_or_default()
+                                    .to_string()
+                            });
+                        (GoPackage::Folder(folder), name)
+                    }
+                    None => (
+                        GoPackage::External,
+                        external_package_name(&import.path).to_string(),
+                    ),
+                };
+                names.insert(import.name.clone().unwrap_or(default_name), package);
+            }
+            go_imports.insert(i, names);
+        }
         for (i, file) in files.iter().enumerate() {
             if file.language == "rust" {
                 modules.insert(i, rust_module(file.path));
@@ -475,6 +602,7 @@ impl<'a> Names<'a> {
             files,
             by_name,
             modules,
+            go_imports,
         }
     }
 
@@ -560,28 +688,64 @@ impl<'a> Names<'a> {
         } else {
             None
         };
-        let (chosen, unmatched) = match &qualifier {
-            Some(qualifier) => {
-                let caller = self.sym(file, caller_id);
-                let (matching, other): (Vec<Hit>, Vec<Hit>) = all
+        // A Go call `pkg.F` of an imported package (KAIROS-T-0469).
+        let go_package = (language == "go")
+            .then(|| written.strip_suffix(name)?.strip_suffix('.'))
+            .flatten()
+            .filter(|q| !q.contains('.'))
+            .and_then(|q| self.go_imports.get(&file)?.get(q));
+        let (chosen, unmatched) = match (&qualifier, go_package) {
+            (_, Some(GoPackage::External)) => (Vec::new(), Vec::new()),
+            (_, Some(GoPackage::Folder(folder))) => {
+                let chosen = all
                     .iter()
-                    .partition(|(f, id)| self.matches_path(qualifier, file, caller, *f, *id));
-                let other: Vec<i64> = other
-                    .into_iter()
-                    .map(|(_, id)| id)
-                    .filter(|id| *id != caller_id)
+                    .filter(|(f, id)| {
+                        let there = &self.files[*f];
+                        there.language == "go"
+                            && folder_of(there.path) == folder
+                            && self.sym(*f, *id).is_some_and(|s| s.kind == "function")
+                    })
+                    .map(|(_, id)| *id)
                     .collect();
-                (prefer_same_file(matching), other)
+                (chosen, Vec::new())
             }
-            None => {
-                let method_call = written.contains('.');
-                let pool: Vec<(usize, i64)> = all
+            // A plain Go call goes to its own package first: the folder.
+            (_, None) if language == "go" && !written.contains('.') => {
+                let here = folder_of(self.files[file].path);
+                let in_folder: Vec<(usize, i64)> = all
                     .iter()
                     .copied()
-                    .filter(|(_, id)| !(method_call && *id == caller_id))
+                    .filter(|(f, _)| folder_of(self.files[*f].path) == here)
                     .collect();
-                (prefer_same_file(pool), Vec::new())
+                if in_folder.is_empty() {
+                    (prefer_same_file(all.to_vec()), Vec::new())
+                } else {
+                    (prefer_same_file(in_folder), Vec::new())
+                }
             }
+            (qualifier, None) => match qualifier {
+                Some(qualifier) => {
+                    let caller = self.sym(file, caller_id);
+                    let (matching, other): (Vec<Hit>, Vec<Hit>) = all
+                        .iter()
+                        .partition(|(f, id)| self.matches_path(qualifier, file, caller, *f, *id));
+                    let other: Vec<i64> = other
+                        .into_iter()
+                        .map(|(_, id)| id)
+                        .filter(|id| *id != caller_id)
+                        .collect();
+                    (prefer_same_file(matching), other)
+                }
+                None => {
+                    let method_call = written.contains('.');
+                    let pool: Vec<(usize, i64)> = all
+                        .iter()
+                        .copied()
+                        .filter(|(_, id)| !(method_call && *id == caller_id))
+                        .collect();
+                    (prefer_same_file(pool), Vec::new())
+                }
+            },
         };
         let (class, callee_id, candidates) = match (chosen.as_slice(), unmatched.as_slice()) {
             ([], []) => {
@@ -696,13 +860,13 @@ pub(crate) fn choose(
 }
 
 /// The edges of all parsed files, with the Rust edges from `rust`.
-pub fn resolve(files: &[ParsedFile<'_>], rust: RustEdges<'_>) -> Resolved {
+pub fn resolve(files: &[ParsedFile<'_>], rust: RustEdges<'_>, go_modules: &[GoModule]) -> Resolved {
     let no_crates = scip::Crates::default();
     let crates = match &rust {
         RustEdges::Scip(_, c) => *c,
         _ => &no_crates,
     };
-    let names = Names::new(files);
+    let names = Names::new(files, go_modules);
     let by_path: HashMap<&str, usize> =
         files.iter().enumerate().map(|(i, f)| (f.path, i)).collect();
     let starts: Vec<Vec<usize>> = files.iter().map(|f| line_starts(f.text)).collect();
@@ -1085,6 +1249,116 @@ pub fn resolve(files: &[ParsedFile<'_>], rust: RustEdges<'_>) -> Resolved {
 mod tests {
     use super::*;
 
+    /// KAIROS-T-0469: a Go call `pkg.F` goes to `F` in the folder of the
+    /// imported package; a package outside the module is external.
+    #[test]
+    fn a_go_call_goes_to_the_imported_package() {
+        let imports = [
+            Import {
+                name: None,
+                path: "example.com/m/a".into(),
+            },
+            Import {
+                name: Some("bee".into()),
+                path: "example.com/m/b".into(),
+            },
+            Import {
+                name: None,
+                path: "fmt".into(),
+            },
+            Import {
+                name: None,
+                path: "gopkg.in/yaml.v3".into(),
+            },
+        ];
+        let calls = [
+            call("F", "a.F", 5),
+            call("F", "bee.F", 6),
+            call("Println", "fmt.Println", 7),
+            call("Marshal", "yaml.Marshal", 8),
+            call("F", "x.F", 9),
+            call("G", "G", 10),
+        ];
+        let go = |path, symbols, calls, imports| ParsedFile {
+            path,
+            language: "go",
+            text: "",
+            symbols,
+            calls,
+            use_ranges: &[],
+            macro_calls: &[],
+            macro_ranges: &[],
+            package: None,
+            imports,
+        };
+        let files = [
+            go(
+                "cmd/main.go",
+                vec![sym(1, "main", "function", (0, 50))],
+                &calls[..],
+                &imports[..],
+            ),
+            go("a/a.go", vec![sym(2, "F", "function", (0, 9))], &[], &[]),
+            go(
+                "b/b.go",
+                vec![
+                    sym(3, "F", "function", (0, 9)),
+                    sym(4, "Marshal", "function", (10, 20)),
+                ],
+                &[],
+                &[],
+            ),
+            go("cmd/g.go", vec![sym(5, "G", "function", (0, 9))], &[], &[]),
+            go(
+                "other/g.go",
+                vec![sym(6, "G", "function", (0, 9))],
+                &[],
+                &[],
+            ),
+        ];
+        let modules =
+            [GoModule::read("", "// x\nmodule example.com/m // the root\n\ngo 1.22\n").unwrap()];
+        assert_eq!(modules[0].path, "example.com/m");
+        let Resolved { edges, .. } = resolve(&files, RustEdges::Names, &modules);
+        let got: Vec<_> = edges
+            .iter()
+            .map(|e| {
+                (
+                    e.callee_name.as_str(),
+                    e.class,
+                    e.callee_id,
+                    e.candidates.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("a.F", "certain", Some(2), vec![]),
+                ("bee.F", "certain", Some(3), vec![]),
+                ("fmt.Println", "external", None, vec![]),
+                ("yaml.Marshal", "external", None, vec![]),
+                // A call on a value is name-matched, as before.
+                ("x.F", "possible", None, vec![2, 3]),
+                // A plain call goes to its own folder.
+                ("G", "certain", Some(5), vec![]),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_name_of_an_external_go_package() {
+        for (path, name) in [
+            ("fmt", "fmt"),
+            ("net/http", "http"),
+            ("gopkg.in/yaml.v3", "yaml"),
+            ("github.com/x/yaml/v3", "yaml"),
+            ("github.com/mattn/go-sqlite3", "sqlite3"),
+        ] {
+            assert_eq!(external_package_name(path), name, "{path}");
+        }
+    }
+
     #[test]
     fn utf16_columns_become_bytes() {
         let text = "fn é() {}\nlet x = 1;\n";
@@ -1147,6 +1421,8 @@ mod tests {
                 use_ranges: &[],
                 macro_calls: &[],
                 macro_ranges: &[],
+                package: None,
+                imports: &[],
             },
             ParsedFile {
                 path: "b.go",
@@ -1160,6 +1436,8 @@ mod tests {
                 use_ranges: &[],
                 macro_calls: &[],
                 macro_ranges: &[],
+                package: None,
+                imports: &[],
             },
             ParsedFile {
                 path: "c.go",
@@ -1170,9 +1448,11 @@ mod tests {
                 use_ranges: &[],
                 macro_calls: &[],
                 macro_ranges: &[],
+                package: None,
+                imports: &[],
             },
         ];
-        let Resolved { edges, stats, .. } = resolve(&files, RustEdges::Names);
+        let Resolved { edges, stats, .. } = resolve(&files, RustEdges::Names, &[]);
         let got: Vec<_> = edges
             .iter()
             .map(|e| {
@@ -1260,6 +1540,8 @@ mod tests {
             use_ranges: &[],
             macro_calls: &[],
             macro_ranges: &[],
+            package: None,
+            imports: &[],
         }
     }
 
@@ -1286,6 +1568,7 @@ mod tests {
                 bases: &bases,
                 mark: true,
             },
+            &[],
         );
         let got: Vec<_> = edges
             .iter()
@@ -1312,6 +1595,7 @@ mod tests {
                 bases: &bases,
                 mark: true,
             },
+            &[],
         );
         let got: Vec<_> = edges
             .iter()
@@ -1369,7 +1653,7 @@ mod tests {
             file("crates/x-y/src/stack.rs", "", vec![new], &[]),
             file("crates/x-y/src/wrapper.rs", "", vec![get], &get_calls),
         ];
-        let Resolved { edges, .. } = resolve(&files, RustEdges::Names);
+        let Resolved { edges, .. } = resolve(&files, RustEdges::Names, &[]);
         let got: Vec<_> = edges
             .iter()
             .map(|e| {
@@ -1466,6 +1750,7 @@ mod tests {
                     bases: &bases,
                     mark: true,
                 },
+                &[],
             )
             .edges
         };
