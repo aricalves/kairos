@@ -144,6 +144,10 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Your work: the initiatives you own, and the tasks you or your agent
+    /// keys claim, the tasks under your initiatives, and the tasks these
+    /// block (Todo, Active, Blocked)
+    Me(Box<commands::me::MeArgs>),
     /// Organization info for your credentials
     #[command(subcommand)]
     Orgs(OrgsCommand),
@@ -253,6 +257,7 @@ async fn dispatch(command: Command) -> Result<(), CliError> {
         } => login(&url, issuer.as_deref(), tenant, client_id, bearer).await,
         Command::Logout { url } => logout(url.as_deref()).await,
         Command::Whoami { url, tenant, json } => whoami(url.as_deref(), tenant, json).await,
+        Command::Me(args) => (*args).run().await,
         Command::Orgs(command) => command.run().await,
         Command::Boards(command) => command.run().await,
         Command::Strategies(command) => command.run().await,

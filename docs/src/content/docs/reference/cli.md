@@ -537,6 +537,23 @@ archived: restore is per item, not a cascade.
 
 ## Finding work
 
+### `kairos me`
+
+Your work, in two lanes: the initiatives that you own, and your tasks. Your
+tasks are the tasks that you or your agent keys claim, the tasks in Todo,
+Active or Blocked under an initiative that you own, and the tasks that one of
+these blocks. Each lane shows the items in three groups: Todo, Active and
+Blocked. An item is Blocked when it has an open blocker or is in a column
+named Blocked. The command does not show an item in a done column.
+
+```
+kairos me [--json]
+```
+
+Each row gives the code, the title, the board, the column, the claimant or
+the owner, and the open blockers. `--json` prints the answer of
+`GET /api/me/work`.
+
 ### `kairos search`
 
 One command, no subcommands. Covers full-text search and relationship traversal

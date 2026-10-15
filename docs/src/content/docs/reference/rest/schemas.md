@@ -1627,6 +1627,15 @@ Body of `POST /api/tasks/{short_code}/move` (KAIROS-I-0012): the delivery board 
 
 The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
 
+## MyWork
+
+`GET /api/me/work` response: the two lanes of the work of the caller.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `initiatives` | array of [`WorkItem`](#workitem) | yes | The strategies and the initiatives that the caller owns, by short code. |
+| `tasks` | array of [`WorkItem`](#workitem) | yes | The tasks that the caller (or an agent key of the caller) has the claim on; the tasks in Todo, Active or Blocked under an initiative that the caller owns; and the tasks that one of these blocks. By short code. |
+
 ## NearestCodeIndex
 
 The answer to `GET /api/repositories/{slug}/code-indexes/nearest`.
@@ -2931,4 +2940,42 @@ A webhook target of a board: a URL. Kairos sends signed deliveries to it. The se
 | `id` | `string` | yes |  |
 | `name` | `string` | yes |  |
 | `url` | `string` | yes | The URL. A person who cannot configure the board gets it with no query and no fragment. |
+
+## WorkBlocker
+
+An open blocker of an item of the work.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `short_code` | `string` | yes |  |
+| `title` | `string` | yes |  |
+
+## WorkBoard
+
+The board of an item of the work.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | `string` | yes | Board id (UUID). |
+| `name` | `string` | yes |  |
+| `slug` | `string` | yes |  |
+
+## WorkItem
+
+One item of the work. No item is in a done column.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `blockers` | array of [`WorkBlocker`](#workblocker) | no | The open blockers: the items, not in a done column, with a `blocks` edge to this item. |
+| `board` | [`WorkBoard`](#workboard) | yes | The board of the item. |
+| `claim` | [`TaskClaim`](#taskclaim), nullable | no |  |
+| `column_id` | `string` | yes | The column of the item: id (UUID) and name. |
+| `column_name` | `string` | yes |  |
+| `entity_type` | `string` | yes | `strategy`, `initiative` or `task`. |
+| `id` | `string` | yes | Entity id (UUID). |
+| `owner` | [`ItemOwner`](#itemowner), nullable | no |  |
+| `reasons` | array of `string` | yes | Why the item is in the work: `owned`, `claimed`, `under_my_initiative`, `blocked_by_my_work`. |
+| `short_code` | `string` | yes |  |
+| `state` | `string` | yes | `todo`, `active` or `blocked`. Blocked: the item has an open blocker, or it is in a column named Blocked. |
+| `title` | `string` | yes |  |
 

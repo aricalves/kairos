@@ -3,8 +3,8 @@ title: "MCP tools"
 ---
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-sixty-seven tools. A drift gate in the test suite
-asserts that `tools/list` returns these sixty-seven and no others. The same
+sixty-eight tools. A drift gate in the test suite
+asserts that `tools/list` returns these sixty-eight and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -31,7 +31,7 @@ not the rights. Kairos refuses an unknown profile, and the refusal names it.
 
 The work tools:
 
-- items: `whoami`, `my_boards`, `board_items`, `search`, `get_item`,
+- items: `whoami`, `my_boards`, `my_work`, `board_items`, `search`, `get_item`,
   `get_history`, `related_work`, `create_item`, `edit_item`, `update_item`,
   `transition_item`, `move_item`, `append_note`, `set_metadata`;
 - links and fields: `link_items`, `unlink_items`, `propose_edge`,
@@ -155,6 +155,45 @@ these include `manage_adrs`.
 | `level` | string | no | all levels | One of `strategy`, `initiative`, `delivery`, `adr`. |
 
 Refuses: `VALIDATION` for a `level` outside that vocabulary.
+
+### `my_work`
+
+Your work, in two lanes. The web page at `/` and `kairos me` show the same
+work. REST: `GET /api/me/work`.
+
+- Initiatives: the strategies and the initiatives that you own.
+- Tasks: the tasks that you or your agent keys claim. The tasks in Todo,
+  Active or Blocked under an initiative that you own, claimed by anyone or by
+  nobody. The tasks that one of these tasks blocks.
+
+Each item has a state: Todo, Active or Blocked. An item is Blocked when it has
+an open blocker or is in a column named Blocked. An open blocker is an item
+with a `blocks` edge to the item that is not in a done column. A strategy or
+an initiative in Active or Monitoring is Active. Each line gives the board,
+the column, the claimant or the owner, and why the item is in your work. The
+tool does not show an item in a done column.
+
+```text
+# Your work
+
+## Initiatives (1)
+
+### Active
+- ACME-I-0003 — Checkout (initiatives / Active; owner: Robin) [owned]
+
+## Tasks (2)
+
+### Active
+- WEB-T-0012 — Card form (web / Active; claimed by Robin (agent)) [claimed]
+
+### Blocked
+- WEB-T-0013 — Receipt (web / Todo; no claim) [under_my_initiative, blocked_by_my_work]
+  blocked by WEB-T-0012 — Card form
+```
+
+No arguments.
+
+Refuses: an unknown argument, and names it.
 
 ### `list_repositories`
 

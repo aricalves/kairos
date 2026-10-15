@@ -8,6 +8,14 @@
 //! - An unknown person is refused, and the answer names the field and the
 //!   reference.
 //!
+//! KAIROS-T-0489: `GET /api/me/work` and the MCP tool `my_work`.
+//!
+//! - A fixture with my claims, my agent's claim, an initiative I own with
+//!   unclaimed Todo tasks, and a blocked task gives the right lanes and
+//!   states.
+//! - Unclaimed Todo tasks not under my initiatives do not show.
+//! - Done items do not show.
+//!
 //! Runs against the LIVE compose stack (`angreal services up`). Each test
 //! owns a scratch database.
 
@@ -141,7 +149,6 @@ struct World {
     /// The columns of the delivery board, by name.
     columns: HashMap<String, String>,
     /// The columns of the initiatives board, by name.
-    #[allow(dead_code)]
     initiative_columns: HashMap<String, String>,
     /// The scratch database: it goes away with the world.
     _scratch: common::ScratchConn,
@@ -324,7 +331,6 @@ impl World {
     }
 
     /// Move the initiative through `path` (column names), by svc.
-    #[allow(dead_code)]
     async fn walk_initiative(&self, code: &str, path: &[&str]) {
         for name in path {
             self.svc
@@ -355,7 +361,6 @@ impl World {
     }
 
     /// A `relationship` edge from `source` to `target`, by svc.
-    #[allow(dead_code)]
     async fn link(&self, source: &str, target: &str, relationship: &str) {
         self.svc
             .create_relationship(&CreateRelationshipRequest {
@@ -545,4 +550,187 @@ async fn search_finds_the_items_of_a_person() {
         .await;
     assert!(error, "an unknown field is refused: {text}");
     assert!(text.contains("claimed"), "{text}");
+}
+
+/// The item of `code` in the lane, or a panic that names the lane.
+fn item<'a>(
+    lane: &'a [kairos_client::types_work::WorkItem],
+    code: &str,
+) -> &'a kairos_client::types_work::WorkItem {
+    lane.iter()
+        .find(|i| i.short_code == code)
+        .unwrap_or_else(|| panic!("{code} is not in {lane:?}"))
+}
+
+fn lane_codes(lane: &[kairos_client::types_work::WorkItem]) -> BTreeSet<String> {
+    lane.iter().map(|i| i.short_code.clone()).collect()
+}
+
+#[tokio::test]
+async fn my_work_gives_the_lanes_and_the_states() {
+    let (world, _conn) = World::new("kairos_for_me_work_t0489_test").await;
+    let w = &world;
+    let to_active = ["Design", "Ready", "Decompose", "Active"];
+
+    // --- Initiatives: alice owns three, one of them done; bob owns one.
+    let active_initiative = w.initiative("Checkout").await;
+    let new_initiative = w.initiative("Discovery work").await;
+    let done_initiative = w.initiative("Finished").await;
+    let bobs_initiative = w.initiative("Bob's").await;
+    for code in [&active_initiative, &new_initiative, &done_initiative] {
+        w.own(&w.alice_token, code).await;
+    }
+    let bob_token = {
+        let http = reqwest::Client::new();
+        common::user_token(&http, "bob").await
+    };
+    w.own(&bob_token, &bobs_initiative).await;
+    w.walk_initiative(&active_initiative, &to_active).await;
+    w.walk_initiative(&done_initiative, &to_active).await;
+    w.walk_initiative(&done_initiative, &["Monitoring", "Completed"])
+        .await;
+
+    // --- Tasks.
+    let mine = w.task(&w.alice, "Mine").await;
+    w.walk(&w.alice, &mine, &["Todo", "Active"]).await;
+    let agents = w.task(&w.alice, "Agent's").await;
+    w.walk(&w.agent, &agents, &["Todo", "Active"]).await;
+    let blocker = w.task(&w.bob, "Blocker of the agent's task").await;
+    w.walk(&w.bob, &blocker, &["Todo"]).await;
+    w.link(&blocker, &agents, "blocks").await;
+
+    let free = w.task(&w.bob, "Free under Checkout").await;
+    w.walk(&w.bob, &free, &["Todo"]).await;
+    let bobs_under = w.task(&w.bob, "Bob's under Checkout").await;
+    w.walk(&w.bob, &bobs_under, &["Todo", "Active"]).await;
+    let backlog_under = w.task(&w.bob, "Backlog under Checkout").await;
+    let done_under = w.task(&w.bob, "Done under Checkout").await;
+    w.walk(&w.bob, &done_under, &["Todo", "Active", "Completed"])
+        .await;
+    let column_blocked = w.task(&w.bob, "In the Blocked column").await;
+    w.walk(&w.bob, &column_blocked, &["Todo", "Blocked"]).await;
+    for code in [
+        &free,
+        &bobs_under,
+        &backlog_under,
+        &done_under,
+        &column_blocked,
+    ] {
+        w.link(&active_initiative, code, "parent").await;
+    }
+    // A done blocker does not block.
+    let done_blocker = w.task(&w.bob, "Done blocker").await;
+    w.link(&done_blocker, &free, "blocks").await;
+    w.walk(&w.bob, &done_blocker, &["Todo", "Active", "Completed"])
+        .await;
+
+    // Not alice's: unclaimed in Todo under bob's initiative.
+    let stranger = w.task(&w.bob, "Under bob's initiative").await;
+    w.walk(&w.bob, &stranger, &["Todo"]).await;
+    w.link(&bobs_initiative, &stranger, "parent").await;
+    // A task that mine blocks, in Backlog.
+    let waits = w.task(&w.bob, "Waits for mine").await;
+    w.link(&mine, &waits, "blocks").await;
+
+    // --- REST, by alice and by her agent key: the same work.
+    let work = w.alice.my_work().await.expect("my work");
+    assert_eq!(w.agent.my_work().await.expect("agent's work"), work);
+
+    assert_eq!(
+        lane_codes(&work.initiatives),
+        set(&[&active_initiative, &new_initiative]),
+        "the done initiative and bob's do not show"
+    );
+    let checkout = item(&work.initiatives, &active_initiative);
+    assert_eq!(checkout.state, "active");
+    assert_eq!(checkout.entity_type, "initiative");
+    assert_eq!(checkout.reasons, vec!["owned".to_string()]);
+    assert_eq!(
+        checkout.owner.as_ref().map(|o| o.user_id.clone()),
+        Some(w.alice_id.to_string())
+    );
+    assert_eq!(item(&work.initiatives, &new_initiative).state, "todo");
+
+    assert_eq!(
+        lane_codes(&work.tasks),
+        set(&[&mine, &agents, &free, &bobs_under, &column_blocked, &waits]),
+        "backlog, done, stranger and blocker do not show"
+    );
+    let t = item(&work.tasks, &mine);
+    assert_eq!(
+        (t.state.as_str(), t.reasons.clone()),
+        ("active", vec!["claimed".to_string()])
+    );
+    let claim = t.claim.as_ref().expect("claim");
+    assert_eq!(claim.user_id, w.alice_id.to_string());
+    assert!(!claim.agent);
+    assert_eq!(t.board.id, w.board);
+    assert_eq!(t.board.slug, "web-delivery");
+    assert_eq!(t.column_name, "Active");
+
+    let t = item(&work.tasks, &agents);
+    assert_eq!(t.state, "blocked", "an open blocker blocks: {t:?}");
+    assert!(t.claim.as_ref().expect("claim").agent);
+    assert_eq!(
+        t.blockers
+            .iter()
+            .map(|b| b.short_code.clone())
+            .collect::<Vec<_>>(),
+        vec![blocker.clone()]
+    );
+
+    let t = item(&work.tasks, &free);
+    assert_eq!(t.state, "todo");
+    assert_eq!(t.reasons, vec!["under_my_initiative".to_string()]);
+    assert!(t.claim.is_none());
+    assert!(t.blockers.is_empty(), "a done blocker is not open: {t:?}");
+
+    let t = item(&work.tasks, &bobs_under);
+    assert_eq!(t.state, "active");
+    assert_eq!(
+        t.claim.as_ref().map(|c| c.user_id.clone()),
+        Some(w.bob_id.to_string())
+    );
+
+    let t = item(&work.tasks, &column_blocked);
+    assert_eq!(t.state, "blocked", "the Blocked column blocks");
+    assert!(t.blockers.is_empty());
+
+    let t = item(&work.tasks, &waits);
+    assert_eq!(t.state, "blocked");
+    assert_eq!(t.reasons, vec!["blocked_by_my_work".to_string()]);
+    assert_eq!(t.column_name, "Backlog");
+    assert_eq!(t.blockers[0].short_code, mine);
+
+    // --- bob: his initiative, his claim, and the stranger under it.
+    let bobs = w.bob.my_work().await.expect("bob's work");
+    assert_eq!(lane_codes(&bobs.initiatives), set(&[&bobs_initiative]));
+    assert_eq!(lane_codes(&bobs.tasks), set(&[&bobs_under, &stranger]));
+
+    // --- svc owns nothing and claims nothing.
+    let none = w.svc.my_work().await.expect("svc's work");
+    assert!(
+        none.initiatives.is_empty() && none.tasks.is_empty(),
+        "{none:?}"
+    );
+
+    // --- MCP `my_work`, with the agent key.
+    let mut mcp = Mcp::connect(&w.server.base_url, &w.agent_key).await;
+    let (text, error) = mcp.call("my_work", json!({})).await;
+    assert!(!error, "{text}");
+    assert!(text.starts_with("# Your work"), "{text}");
+    assert!(text.contains("## Initiatives (2)"), "{text}");
+    assert!(text.contains("## Tasks (6)"), "{text}");
+    assert!(text.contains(&format!("  blocked by {blocker} ")), "{text}");
+    assert!(text.contains("(agent)"), "{text}");
+    for absent in [&done_initiative, &backlog_under, &done_under, &stranger] {
+        assert!(!text.contains(absent.as_str()), "{absent}: {text}");
+    }
+    let todo = text.find("### Todo").expect("Todo");
+    let active = text.rfind("### Active").expect("Active");
+    let blocked = text.rfind("### Blocked").expect("Blocked");
+    assert!(todo < active && active < blocked, "{text}");
+    let (text, error) = mcp.call("my_work", json!({"who": "me"})).await;
+    assert!(error, "an unknown argument is refused: {text}");
+    assert!(text.contains("who"), "{text}");
 }

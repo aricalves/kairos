@@ -522,6 +522,12 @@ pub struct EditItemParams {
 #[serde(deny_unknown_fields)]
 pub struct GetEventsParams {}
 
+/// `my_work` has no arguments (KAIROS-T-0489).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct MyWorkParams {}
+
 /// Parameters for `mark_events_read` (KAIROS-T-0382): `ids`, or `all: true`.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -2879,6 +2885,24 @@ impl KairosMcp {
                 "Appended a note to {} (version {version}).",
                 item.short_code
             ))
+        })
+        .await
+    }
+
+    // KAIROS-T-0489: the work of the person of the key.
+    #[tool(
+        description = "Your work, in two lanes. Initiatives: the strategies and initiatives you own. Tasks: the tasks you or your agent keys claim, the Todo, Active and Blocked tasks under initiatives you own (claimed by anyone or nobody), and the tasks these block. Each item has a state (Todo, Active, Blocked), its board and column, its claimant or owner, and its open blockers. Done items are not shown. `search` with `claimed_by`, `owned_by` or `created_by` finds more."
+    )]
+    pub async fn my_work(
+        &self,
+        Parameters(MyWorkParams {}): Parameters<MyWorkParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        self.run_tool(&tenant, move |conn| {
+            let work = crate::api::work::work_for(conn, user)?;
+            Ok(crate::api::work::render_text(&work))
         })
         .await
     }

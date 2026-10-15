@@ -30,6 +30,8 @@ pub mod types_notifications;
 
 pub mod types_events;
 
+pub mod types_work;
+
 pub use client::{EntityKind, KairosClient, StaticToken, TokenProvider};
 pub use error::Error;
 pub use ws::EventStream;
