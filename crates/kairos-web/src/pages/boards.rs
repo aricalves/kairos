@@ -1555,6 +1555,12 @@ fn BoardBody(
     });
     let group_by_repo = Memo::new(move |_| grouping.get() == Grouping::Repository);
     let group_by_owner = Memo::new(move |_| grouping.get() == Grouping::Owner);
+    // KAIROS-T-0491: the collapsed lanes, kept in this browser for each
+    // board and grouping.
+    let collapse_storage_key =
+        Memo::new(move |_| board_id.with_value(|id| collapse_key(id, grouping.get())));
+    let lane_collapse = LaneCollapse::new(collapse_storage_key);
+    provide_context(lane_collapse);
     // The lens row renders whenever the board has repositories OR a lens
     // query param is set (so a stale/odd URL always has a visible "clear");
     // the group-by toggle renders when grouping is meaningful (>1 repo) OR
@@ -1978,7 +1984,57 @@ fn BoardBody(
                 }
                 .into_any()
             };
+            // KAIROS-T-0491: the ids of the lanes on screen, for "Collapse
+            // all" and "Expand all".
+            let shown_lane_ids = move || -> Vec<String> {
+                match grouping.get() {
+                    Grouping::Owner => owner_lane_list.with(|list| {
+                        list.iter()
+                            .map(|l| lane_id(None, &GroupLane::Owner(l.user_id.clone())))
+                            .collect()
+                    }),
+                    Grouping::Repository if is_delivery => lanes.with(|keys| {
+                        keys.iter()
+                            .map(|key| {
+                                let group = match key {
+                                    Some(slug) => GroupLane::Slug(slug.clone()),
+                                    None => GroupLane::Unbound,
+                                };
+                                lane_id(None, &group)
+                            })
+                            .collect()
+                    }),
+                    _ if is_delivery => [LANE_SUPPORT, LANE_PLANNED]
+                        .iter()
+                        .map(|lane| lane_id(Some(lane), &GroupLane::Any))
+                        .collect(),
+                    _ => Vec::new(),
+                }
+            };
+            let lane_actions = move || (!shown_lane_ids().is_empty()).then(|| view! {
+                <div class="kairos-board__lane-actions">
+                    <Group gap="xs">
+                        <Button
+                            variant="subtle"
+                            size="xs"
+                            on_click=Callback::new(move |_| lane_collapse.set_all(&shown_lane_ids(), true))
+                            attr:data-testid="collapse-all-lanes"
+                        >
+                            "Collapse all"
+                        </Button>
+                        <Button
+                            variant="subtle"
+                            size="xs"
+                            on_click=Callback::new(move |_| lane_collapse.set_all(&shown_lane_ids(), false))
+                            attr:data-testid="expand-all-lanes"
+                        >
+                            "Expand all"
+                        </Button>
+                    </Group>
+                </div>
+            });
             view! {
+                {lane_actions}
                 <div class="kairos-board__lanes" style=lanes_style>{lanes_view}</div>
             }
         }
@@ -2103,21 +2159,33 @@ fn LaneSection(
                 .count()
         })
     });
+    let id = lane_id(Some(lane), &GroupLane::Any);
+    let collapsed = lane_collapsed(id.clone());
+    let id_attr = id.clone();
     view! {
         <section
             class="kairos-board__lane"
             class:kairos-board__lane--support=(lane == LANE_SUPPORT)
             class:kairos-board__lane--planned=(lane == LANE_PLANNED)
             class:kairos-board__lane--empty=move || count.get() == 0
+            class:kairos-board__lane--collapsed=collapsed
+            data-lane-id=id_attr
         >
             <header class="kairos-board__lane-head">
                 <Group gap="xs">
+                    <LaneToggle id=id label/>
                     <Pill color=color>{label}</Pill>
                     <Text dimmed=true size="xs">{move || count.get().to_string()}</Text>
                     <Text dimmed=true size="xs">{caption}</Text>
                 </Group>
             </header>
-            <LaneColumns lane=Some(lane) group=GroupLane::Any columns drag powers on_changed on_error/>
+            {move || if collapsed.get() {
+                view! { <LaneSummary lane=Some(lane) group=GroupLane::Any columns/> }.into_any()
+            } else {
+                view! {
+                    <LaneColumns lane=Some(lane) group=GroupLane::Any columns drag powers on_changed on_error/>
+                }.into_any()
+            }}
         </section>
     }
 }
@@ -2144,6 +2212,160 @@ impl GroupLane {
             GroupLane::Unbound => card.repository.is_none(),
             GroupLane::Owner(owner) => owner_key(card) == owner.as_deref(),
         }
+    }
+}
+
+/// Does a lane show this card? `lane` is the Support/Planned lane of a
+/// delivery board (`None`: every work class); `group` narrows by
+/// repository or owner. The columns and the collapsed row of a lane both
+/// use it, so their counts agree (KAIROS-T-0491).
+fn lane_admits(card: &CardModel, lane: Option<&str>, group: &GroupLane) -> bool {
+    group.admits(card)
+        && match lane {
+            None => true,
+            Some(lane) => card_lane(card.work_class.as_deref()) == lane,
+        }
+}
+
+// ---------------------------------------------------------------------------
+// Collapsed lanes (KAIROS-T-0491) — pure, host-tested
+// ---------------------------------------------------------------------------
+
+/// The id of a lane in the collapsed set: `support` or `planned`,
+/// `repo:<slug>` (`repo:` with no repository), `owner:<user id>`
+/// (`owner:` with no owner).
+fn lane_id(lane: Option<&str>, group: &GroupLane) -> String {
+    match group {
+        GroupLane::Any => lane.unwrap_or("all").to_string(),
+        GroupLane::Slug(slug) => format!("repo:{slug}"),
+        GroupLane::Unbound => "repo:".to_string(),
+        GroupLane::Owner(owner) => format!("owner:{}", owner.as_deref().unwrap_or_default()),
+    }
+}
+
+/// The name of a grouping in the storage key.
+fn grouping_name(grouping: Grouping) -> &'static str {
+    match grouping {
+        Grouping::Level => "level",
+        Grouping::Repository => "repository",
+        Grouping::Owner => "owner",
+    }
+}
+
+/// The localStorage key of the collapsed lanes of one board and grouping.
+fn collapse_key(board_id: &str, grouping: Grouping) -> String {
+    format!(
+        "kairos.lanes.collapsed.{board_id}.{}",
+        grouping_name(grouping)
+    )
+}
+
+/// The collapsed set from its stored text: one lane id on each line. A
+/// missing or empty value is an empty set.
+fn parse_collapsed(raw: Option<&str>) -> std::collections::BTreeSet<String> {
+    raw.unwrap_or_default()
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// The stored text of a collapsed set.
+fn serialize_collapsed(set: &std::collections::BTreeSet<String>) -> String {
+    set.iter().cloned().collect::<Vec<_>>().join("\n")
+}
+
+/// The card count of a lane in each column, in column order: the row of a
+/// collapsed lane.
+fn lane_counts(
+    columns: &[ColumnModel],
+    lane: Option<&str>,
+    group: &GroupLane,
+) -> Vec<(String, usize)> {
+    columns
+        .iter()
+        .map(|column| {
+            let count = column
+                .cards
+                .iter()
+                .filter(|card| lane_admits(card, lane, group))
+                .count();
+            (column.name.clone(), count)
+        })
+        .collect()
+}
+
+/// The collapsed lanes of the board, for the grouping on screen. The state
+/// lives in this browser (localStorage). Each read and write handles a
+/// failure: without storage the lanes collapse for this page only.
+#[derive(Clone, Copy)]
+struct LaneCollapse {
+    collapsed: RwSignal<std::collections::BTreeSet<String>>,
+    key: Memo<String>,
+}
+
+/// The localStorage of the window, when the browser gives it.
+fn local_storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok().flatten()
+}
+
+impl LaneCollapse {
+    fn new(key: Memo<String>) -> Self {
+        let collapsed = RwSignal::new(Self::load(&key.get_untracked()));
+        // A different grouping has its own set.
+        Effect::new(move |previous: Option<String>| {
+            let current = key.get();
+            if previous.is_some_and(|p| p != current) {
+                collapsed.set(Self::load(&current));
+            }
+            current
+        });
+        Self { collapsed, key }
+    }
+
+    fn load(key: &str) -> std::collections::BTreeSet<String> {
+        let raw = local_storage().and_then(|storage| storage.get_item(key).ok().flatten());
+        parse_collapsed(raw.as_deref())
+    }
+
+    fn save(&self) {
+        let Some(storage) = local_storage() else {
+            return;
+        };
+        let key = self.key.get_untracked();
+        let set = self.collapsed.get_untracked();
+        let _ = if set.is_empty() {
+            storage.remove_item(&key)
+        } else {
+            storage.set_item(&key, &serialize_collapsed(&set))
+        };
+    }
+
+    fn is_collapsed(&self, id: &str) -> bool {
+        self.collapsed.with(|set| set.contains(id))
+    }
+
+    fn toggle(&self, id: &str) {
+        self.collapsed.update(|set| {
+            if !set.remove(id) {
+                set.insert(id.to_string());
+            }
+        });
+        self.save();
+    }
+
+    /// Collapse (`on`) or expand each of `ids`.
+    fn set_all(&self, ids: &[String], on: bool) {
+        self.collapsed.update(|set| {
+            for id in ids {
+                if on {
+                    set.insert(id.clone());
+                } else {
+                    set.remove(id);
+                }
+            }
+        });
+        self.save();
     }
 }
 
@@ -2362,21 +2584,34 @@ fn OwnerLaneSection(
     } else {
         token::MUTED
     };
+    let id = lane_id(None, &group);
+    let collapsed = lane_collapsed(id.clone());
+    let id_attr = id.clone();
+    let group = StoredValue::new(group);
     view! {
         <section
             class="kairos-board__lane kairos-board__lane--owner"
             class:kairos-board__lane--empty=move || count.get() == 0
+            class:kairos-board__lane--collapsed=collapsed
+            data-lane-id=id_attr
             data-owner-lane=attr
             data-owner-name=name
             data-owner-mine=lane.mine.to_string()
         >
             <header class="kairos-board__lane-head">
                 <Group gap="xs">
+                    <LaneToggle id=id label=lane.label.clone()/>
                     <Pill color=color>{lane.label}</Pill>
                     <Text dimmed=true size="xs">{move || count.get().to_string()}</Text>
                 </Group>
             </header>
-            <LaneColumns lane=None group columns drag powers on_changed on_error/>
+            {move || if collapsed.get() {
+                view! { <LaneSummary lane=None group=group.get_value() columns/> }.into_any()
+            } else {
+                view! {
+                    <LaneColumns lane=None group=group.get_value() columns drag powers on_changed on_error/>
+                }.into_any()
+            }}
         </section>
     }
 }
@@ -2409,20 +2644,92 @@ fn RepoLaneSection(
     });
     let label = repo.clone().unwrap_or_else(|| "No repository".to_string());
     let attr = repo.clone().unwrap_or_default();
+    let id = lane_id(None, &lane);
+    let collapsed = lane_collapsed(id.clone());
+    let id_attr = id.clone();
+    let lane = StoredValue::new(lane);
     view! {
         <section
             class="kairos-board__lane kairos-board__lane--repo"
             class:kairos-board__lane--empty=move || count.get() == 0
+            class:kairos-board__lane--collapsed=collapsed
+            data-lane-id=id_attr
             data-repo-lane=attr
         >
             <header class="kairos-board__lane-head">
                 <Group gap="xs">
+                    <LaneToggle id=id label=label.clone()/>
                     <Pill color=token::ICE>{label}</Pill>
                     <Text dimmed=true size="xs">{move || count.get().to_string()}</Text>
                 </Group>
             </header>
-            <LaneColumns lane=None group=lane columns drag powers on_changed on_error/>
+            {move || if collapsed.get() {
+                view! { <LaneSummary lane=None group=lane.get_value() columns/> }.into_any()
+            } else {
+                view! {
+                    <LaneColumns lane=None group=lane.get_value() columns drag powers on_changed on_error/>
+                }.into_any()
+            }}
         </section>
+    }
+}
+
+/// Whether the lane `id` is collapsed (KAIROS-T-0491). Without a
+/// [`LaneCollapse`] in the context, no lane is collapsed.
+fn lane_collapsed(id: String) -> Memo<bool> {
+    let collapse = use_context::<LaneCollapse>();
+    Memo::new(move |_| collapse.is_some_and(|c| c.is_collapsed(&id)))
+}
+
+/// The collapse toggle of a lane head (KAIROS-T-0491): a button with
+/// `aria-expanded`, so a keyboard and a screen reader can work it.
+#[component]
+fn LaneToggle(id: String, #[prop(into)] label: String) -> impl IntoView {
+    let collapse = use_context::<LaneCollapse>();
+    let collapsed = lane_collapsed(id.clone());
+    let id = StoredValue::new(id);
+    let label = StoredValue::new(label);
+    view! {
+        <button
+            type="button"
+            class="kairos-board__lane-toggle"
+            data-testid="lane-toggle"
+            aria-expanded=move || (!collapsed.get()).to_string()
+            aria-label=move || {
+                let verb = if collapsed.get() { "Expand" } else { "Collapse" };
+                format!("{verb} the lane {}", label.get_value())
+            }
+            on:click=move |_| {
+                if let Some(collapse) = collapse {
+                    collapse.toggle(&id.get_value());
+                }
+            }
+        >
+            <span aria-hidden="true">{move || if collapsed.get() { "▸" } else { "▾" }}</span>
+        </button>
+    }
+}
+
+/// A collapsed lane (KAIROS-T-0491): one row with the card count of the
+/// lane in each column.
+#[component]
+fn LaneSummary(
+    lane: Option<&'static str>,
+    group: GroupLane,
+    columns: Memo<Vec<ColumnModel>>,
+) -> impl IntoView {
+    let counts = Memo::new(move |_| columns.with(|columns| lane_counts(columns, lane, &group)));
+    view! {
+        <div class="kairos-board__summary" data-testid="lane-summary">
+            {move || counts.get().into_iter().map(|(name, count)| { let column = name.clone(); view! {
+                <div class="kairos-board__summary-cell" data-column=column>
+                    <Text dimmed=true size="xs">{name}</Text>
+                    <span class="kairos-board__summary-count" data-testid="lane-summary-count">
+                        {count.to_string()}
+                    </span>
+                </div>
+            }}).collect_view()}
+        </div>
     }
 }
 
@@ -2463,13 +2770,7 @@ fn LaneColumns(
                                 .map(|c| {
                                     c.cards
                                         .iter()
-                                        .filter(|card| group.with_value(|g| g.admits(card)))
-                                        .filter(|card| match lane {
-                                            None => true,
-                                            Some(lane) => {
-                                                card_lane(card.work_class.as_deref()) == lane
-                                            }
-                                        })
+                                        .filter(|card| group.with_value(|g| lane_admits(card, lane, g)))
                                         .cloned()
                                         .collect::<Vec<CardModel>>()
                                 })
@@ -4497,5 +4798,103 @@ mod tests {
             Some("Team not found")
         );
         assert_eq!(bands[0].groups[0].1.len(), 1);
+    }
+
+    /// KAIROS-T-0491: each lane has its own id, and the ids of two groupings
+    /// do not meet.
+    #[test]
+    fn each_lane_has_an_id() {
+        assert_eq!(lane_id(Some(LANE_SUPPORT), &GroupLane::Any), "support");
+        assert_eq!(lane_id(Some(LANE_PLANNED), &GroupLane::Any), "planned");
+        assert_eq!(lane_id(None, &GroupLane::Slug("web".into())), "repo:web");
+        assert_eq!(lane_id(None, &GroupLane::Unbound), "repo:");
+        assert_eq!(
+            lane_id(None, &GroupLane::Owner(Some("u-sam".into()))),
+            "owner:u-sam"
+        );
+        assert_eq!(lane_id(None, &GroupLane::Owner(None)), "owner:");
+    }
+
+    /// KAIROS-T-0491: the key names the board and the grouping, so another
+    /// board, or another grouping, has its own set.
+    #[test]
+    fn the_collapse_key_is_per_board_and_grouping() {
+        let a = collapse_key("b-1", Grouping::Level);
+        assert_eq!(a, "kairos.lanes.collapsed.b-1.level");
+        assert_ne!(a, collapse_key("b-2", Grouping::Level));
+        assert_ne!(a, collapse_key("b-1", Grouping::Owner));
+        assert_ne!(
+            collapse_key("b-1", Grouping::Repository),
+            collapse_key("b-1", Grouping::Owner)
+        );
+    }
+
+    /// KAIROS-T-0491: the stored text goes back to the same set; a missing
+    /// or a bad value is an empty set.
+    #[test]
+    fn the_collapsed_set_round_trips() {
+        let set: std::collections::BTreeSet<String> = [
+            "support".to_string(),
+            "repo:".to_string(),
+            "owner:u-1".to_string(),
+        ]
+        .into();
+        assert_eq!(parse_collapsed(Some(&serialize_collapsed(&set))), set);
+        assert!(parse_collapsed(None).is_empty());
+        assert!(parse_collapsed(Some("")).is_empty());
+        assert!(parse_collapsed(Some("\n\n")).is_empty());
+    }
+
+    /// KAIROS-T-0491: the collapsed row counts the cards that the lane
+    /// shows in each column, with the filter of the columns.
+    #[test]
+    fn the_collapsed_row_counts_the_cards_of_the_lane() {
+        let support = |repo: Option<&str>| CardModel {
+            work_class: Some(LANE_SUPPORT.into()),
+            ..card(EntityKind::Task, repo)
+        };
+        let planned = |repo: Option<&str>| CardModel {
+            work_class: Some(LANE_PLANNED.into()),
+            ..card(EntityKind::Task, repo)
+        };
+        let mut todo = column_of(vec![
+            support(Some("web")),
+            planned(None),
+            planned(Some("web")),
+        ]);
+        todo.name = "Todo".into();
+        let mut active = column_of(vec![planned(Some("api"))]);
+        active.name = "Active".into();
+        let columns = vec![todo, active];
+        assert_eq!(
+            lane_counts(&columns, Some(LANE_PLANNED), &GroupLane::Any),
+            vec![("Todo".to_string(), 2), ("Active".to_string(), 1)]
+        );
+        assert_eq!(
+            lane_counts(&columns, Some(LANE_SUPPORT), &GroupLane::Any),
+            vec![("Todo".to_string(), 1), ("Active".to_string(), 0)]
+        );
+        assert_eq!(
+            lane_counts(&columns, None, &GroupLane::Slug("web".into())),
+            vec![("Todo".to_string(), 2), ("Active".to_string(), 0)]
+        );
+        assert_eq!(
+            lane_counts(&columns, None, &GroupLane::Unbound),
+            vec![("Todo".to_string(), 1), ("Active".to_string(), 0)]
+        );
+        // The same predicate as the columns of the lane.
+        for column in &columns {
+            let shown = column
+                .cards
+                .iter()
+                .filter(|c| lane_admits(c, Some(LANE_PLANNED), &GroupLane::Any))
+                .count();
+            let counted = lane_counts(
+                std::slice::from_ref(column),
+                Some(LANE_PLANNED),
+                &GroupLane::Any,
+            );
+            assert_eq!(counted[0].1, shown);
+        }
     }
 }

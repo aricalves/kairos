@@ -3,14 +3,16 @@
 //! item depend on, what does it feed into, and where does it sit?"* —
 //! replacing the five stacked panels the UAT called "a grab bag".
 //!
-//! Rendering rules (survey-backed, recorded in the initiative):
-//! - Strategy | Initiative | Task as FIXED layered columns; the Aurora
-//!   [`Dag`] (COLLIERY-T-1836) owns the layout (a pure, deterministic
-//!   function) and the interaction: click selects (here: refocuses),
-//!   double click or Enter on the focus opens the item, hover dims all but
-//!   the edges of a node. This module maps the subgraph to its data
-//!   ([`canvas_data`], unit-tested);
-//! - `parent` is containment (lane bands), never an arrow;
+//! Rendering rules (COLLIERY-I-0626: the graph shows work dependencies):
+//! - layers come from `blocks` (KAIROS-T-0492): a chain reads left to
+//!   right, tasks with no edge between them stack in one column. The
+//!   Aurora [`Dag`] (COLLIERY-T-1836) owns the layout (a pure,
+//!   deterministic function) and the interaction: click selects (here:
+//!   refocuses), double click or Enter on the focus opens the item, hover
+//!   dims all but the edges of a node. [`graph_model`] maps the subgraph
+//!   to its data (unit-tested);
+//! - `parent` is a group box with a header, never an arrow or a layer;
+//!   colour is the state of the item; zoom and pan move the stage;
 //! - `blocks` is the ONLY drawn arrow, in two styles (COLLIERY-T-0233):
 //!   an open blocker, and a resolved one, where an end of the edge is in
 //!   a done column (the COLLIERY-T-0214 rule). The legend names both;
@@ -33,191 +35,16 @@ use aurora_dark::tokens::{ApiError, token};
 use leptos::prelude::*;
 use leptos_router::hooks::{use_navigate, use_query_map};
 
-use aurora_dark::graph::{Align, Dag, DagEdge, DagLane, DagNode, EdgeStyle, Hue};
+use aurora_dark::graph::{Dag, DagLegend};
+use aurora_dark::graph_layout::layout;
 
+use super::graph_model::{
+    self, CanvasData, GroupBox, NODE_H, canvas_data, edge_styles, fit_scale, group_boxes,
+    layout_options, zoom_at,
+};
 use super::{RELATIONSHIPS, data, entity_color};
 use crate::api;
 use crate::auth::use_auth;
-
-/// The canvas layer of an entity type (Strategy | Initiative | Task, the
-/// fixed columns); documents/ADRs return `None` and render in the side
-/// panel instead.
-fn layer_of(entity_type: &str) -> Option<usize> {
-    match entity_type {
-        "strategy" => Some(0),
-        "initiative" => Some(1),
-        "task" => Some(2),
-        _ => None,
-    }
-}
-
-/// The hue of a canvas node: the same meaning as [`entity_color`].
-fn hue_of(entity_type: &str) -> Hue {
-    match entity_type {
-        "strategy" => Hue::Violet,
-        "initiative" => Hue::Ice,
-        "task" => Hue::Teal,
-        _ => Hue::Muted,
-    }
-}
-
-/// The size of a node box. Three lines: title, short code, column.
-const NODE_W: f64 = 220.0;
-const NODE_H: f64 = 58.0;
-
-/// The name of the edge style of an open `blocks` arrow.
-const OPEN: &str = "open";
-/// The name of the edge style of a resolved `blocks` arrow.
-const RESOLVED: &str = "resolved";
-
-/// The two styles of a `blocks` arrow (COLLIERY-T-0233). The dash carries
-/// the difference for a reader who cannot see the colour. Red stays
-/// unused (reserved for violated/at-risk by convention).
-fn edge_styles() -> Vec<EdgeStyle> {
-    vec![
-        EdgeStyle::new(OPEN, "Open blocker", Hue::Gold),
-        EdgeStyle::new(
-            RESOLVED,
-            "Resolved: one end is in a done column",
-            Hue::Muted,
-        )
-        .dashed(),
-    ]
-}
-
-/// What the canvas draws: the product data for the Aurora [`Dag`].
-#[derive(Debug, Clone, PartialEq)]
-struct CanvasData {
-    nodes: Vec<DagNode>,
-    edges: Vec<DagEdge>,
-    lanes: Vec<DagLane>,
-}
-
-/// Map the merged subgraph onto the canvas (pure, so it is unit-tested):
-///
-/// - only strategy/initiative/task nodes; the node id is the SHORT CODE,
-///   so the callbacks give back the code and `data-id` is stable;
-/// - `parent` (source = parent) is containment: a node has ONE lane, the
-///   on-canvas parent in the previous layer with the lowest short code;
-/// - `blocks` is the only arrow, open or resolved (COLLIERY-T-0233);
-/// - `+N` = degree minus EVERY fetched incident edge (the full merged set
-///   — side-panel material counts as fetched, so a badge always promises
-///   an expansion that adds something).
-fn canvas_data(nodes: &[data::GraphNode], edges: &[data::GraphEdge], focus: &str) -> CanvasData {
-    use std::collections::{BTreeSet, HashMap};
-
-    let mut fetched_incident: HashMap<&str, i64> = HashMap::new();
-    for edge in edges {
-        *fetched_incident.entry(edge.source_id.as_str()).or_default() += 1;
-        *fetched_incident.entry(edge.target_id.as_str()).or_default() += 1;
-    }
-    // Canvas nodes by wire id: (node, layer).
-    let on_canvas: HashMap<&str, (&data::GraphNode, usize)> = nodes
-        .iter()
-        .filter_map(|node| Some((node.id.as_str(), (node, layer_of(&node.entity_type)?))))
-        .collect();
-
-    // The lane of each node: its lowest-code parent one layer up.
-    let mut lane_of: HashMap<&str, &str> = HashMap::new();
-    for edge in edges.iter().filter(|e| e.relationship == "parent") {
-        let (Some(&(parent, parent_layer)), Some(&(child, child_layer))) = (
-            on_canvas.get(edge.source_id.as_str()),
-            on_canvas.get(edge.target_id.as_str()),
-        ) else {
-            continue;
-        };
-        if parent_layer + 1 != child_layer {
-            continue;
-        }
-        let entry = lane_of
-            .entry(child.id.as_str())
-            .or_insert(parent.short_code.as_str());
-        if parent.short_code.as_str() < *entry {
-            *entry = parent.short_code.as_str();
-        }
-    }
-    let lanes: Vec<DagLane> = lane_of
-        .values()
-        .copied()
-        .collect::<BTreeSet<&str>>()
-        .into_iter()
-        .map(|parent| DagLane::new(parent, parent).anchor(parent))
-        .collect();
-
-    let mut dag_nodes: Vec<DagNode> = nodes
-        .iter()
-        .filter_map(|node| {
-            let (_, layer) = on_canvas.get(node.id.as_str())?;
-            let put_away = node.archived_at.is_some();
-            let hidden =
-                (node.degree - fetched_incident.get(node.id.as_str()).copied().unwrap_or(0)).max(0);
-            // The old hover text: "put away" never "archived" — for a
-            // document the status is the editorial lifecycle, which has
-            // its own unrelated "archived" (KAIROS-T-0163).
-            let mut tooltip = format!("{} — {}", node.title, node.status);
-            if node.done {
-                tooltip.push_str(" — done");
-            }
-            if put_away {
-                tooltip.push_str(" — put away");
-            }
-            let mut dag = DagNode::new(node.short_code.clone(), node.title.clone())
-                .sublabel(node.short_code.clone())
-                .detail(node.status.clone())
-                .kind(node.entity_type.clone())
-                .layer(*layer)
-                .status(hue_of(&node.entity_type))
-                .sort_key(node.short_code.clone())
-                .current(node.short_code == focus)
-                .tooltip(tooltip)
-                .more(u32::try_from(hidden).unwrap_or(u32::MAX));
-            if let Some(parent) = lane_of.get(node.id.as_str()) {
-                dag = dag.lane(*parent);
-            }
-            // The first mark sits at the right end: "put away", then "done".
-            if put_away {
-                dag = dag.archived(true).mark("put away", Hue::Gold);
-            }
-            if node.done {
-                dag = dag.done(true).mark("done", Hue::Ok);
-            }
-            Some(dag)
-        })
-        .collect();
-    dag_nodes.sort_by(|a, b| a.id.cmp(&b.id));
-
-    let dag_edges = edges
-        .iter()
-        .filter(|edge| edge.relationship == "blocks")
-        .filter_map(|edge| {
-            let (source, _) = on_canvas.get(edge.source_id.as_str())?;
-            let (target, _) = on_canvas.get(edge.target_id.as_str())?;
-            let edge = DagEdge::new(source.short_code.clone(), target.short_code.clone());
-            Some(if blocks_resolved(nodes, &source.id, &target.id) {
-                edge.style(RESOLVED)
-                    .label("Resolved: one end is in a done column. This edge does not block.")
-            } else {
-                edge.style(OPEN).label("Open blocker")
-            })
-        })
-        .collect();
-
-    CanvasData {
-        nodes: dag_nodes,
-        edges: dag_edges,
-        lanes,
-    }
-}
-
-/// Whether a `blocks` arrow is resolved (COLLIERY-T-0233): an end of the
-/// edge is in a done column, so the edge is history and not a blocker
-/// (the COLLIERY-T-0214 rule, which the board counts follow). An end
-/// that is not in the node set counts as not done.
-fn blocks_resolved(nodes: &[data::GraphNode], source_id: &str, target_id: &str) -> bool {
-    nodes
-        .iter()
-        .any(|node| node.done && (node.id == source_id || node.id == target_id))
-}
 
 /// One row of the supporting-material side panel.
 #[derive(Clone, Debug, PartialEq)]
@@ -258,6 +85,10 @@ pub fn GraphView(#[prop(into)] short_code: String) -> impl IntoView {
         async move { data::item_graph(auth, &code, None).await }
     });
     let expansions = RwSignal::new(Vec::<data::GraphResponse>::new());
+    // KAIROS-T-0492: show the folded siblings of the focus.
+    let unfold = RwSignal::new(false);
+    // Zoom and pan live here, so a live refetch keeps them.
+    let view_state = ViewState::new();
     let merged = Memo::new(move |_| {
         base.get().and_then(|result| result.ok()).map(|response| {
             let mut nodes = response.nodes;
@@ -360,10 +191,15 @@ pub fn GraphView(#[prop(into)] short_code: String) -> impl IntoView {
             Some((nodes, edges)) => {
                 // ---- canvas data (Aurora `Dag` owns layout + interaction) --
                 let focus_code = code.get_value();
-                let canvas = canvas_data(&nodes, &edges, &focus_code);
-                let by_id = move |id: &str| nodes.iter().find(|n| n.id == id).cloned();
+                let canvas = canvas_data(&nodes, &edges, &focus_code, unfold.get());
+                let by_id = |id: &str| nodes.iter().find(|n| n.id == id).cloned();
+                let is_work = |entity_type: &str| {
+                    matches!(entity_type, "strategy" | "initiative" | "task")
+                };
 
-                // ---- side panel rows (supports/informs/supersedes) ---------
+                // ---- side panel rows ---------------------------------------
+                // supports/informs/supersedes, and the `blocks` edges with an
+                // end that is a group header (not a node).
                 let mut panel_rows: Vec<PanelRow> = Vec::new();
                 for edge in edges
                     .iter()
@@ -374,15 +210,28 @@ pub fn GraphView(#[prop(into)] short_code: String) -> impl IntoView {
                     else {
                         continue;
                     };
-                    // Show the NON-canvas end (doc/ADR material), labeled
-                    // with direction relative to the canvas item.
-                    let (anchor, other, arrow) = if layer_of(&target.entity_type).is_none() {
+                    // Show the document/ADR end, labeled with direction
+                    // relative to the work item.
+                    let (anchor, other, arrow) = if !is_work(&target.entity_type) {
                         (source, target, "→")
                     } else {
                         (target, source, "←")
                     };
                     panel_rows.push(PanelRow {
                         direction: format!("{} {arrow} {}", anchor.short_code, edge.relationship),
+                        entity_type: other.entity_type.clone(),
+                        short_code: other.short_code.clone(),
+                        title: other.title.clone(),
+                        status: other.status.clone(),
+                        archived_at: other.archived_at.clone(),
+                    });
+                }
+                for (source, target) in &canvas.off_canvas_blocks {
+                    let Some(other) = nodes.iter().find(|n| &n.short_code == source) else {
+                        continue;
+                    };
+                    panel_rows.push(PanelRow {
+                        direction: format!("{target} ← blocks"),
                         entity_type: other.entity_type.clone(),
                         short_code: other.short_code.clone(),
                         title: other.title.clone(),
@@ -434,13 +283,9 @@ pub fn GraphView(#[prop(into)] short_code: String) -> impl IntoView {
                 });
 
                 // ---- canvas ------------------------------------------------
-                let CanvasData { nodes: dag_nodes, edges: dag_edges, lanes: dag_lanes } = canvas;
                 let focus_for_select = focus_code.clone();
-                let refocus = refocus.clone();
-                let selected = Signal::derive({
-                    let focus = focus_code.clone();
-                    move || Some(focus.clone())
-                });
+                let refocus_node = refocus.clone();
+                let refocus_group = refocus.clone();
                 let open_item = {
                     let navigate = use_navigate();
                     move |target: String| navigate(&format!("/items/{target}"), Default::default())
@@ -450,48 +295,33 @@ pub fn GraphView(#[prop(into)] short_code: String) -> impl IntoView {
                     <Stack gap="md">
                         {trail_chips}
                         <Panel
-                            title="Flight-level graph"
-                            caption="A band holds the children of a parent. An arrow shows a \
-                                     block. Click a box to move the focus to it. Double-click a \
-                                     box to open the item. Click +N to show more linked items."
+                            title="Work graph"
+                            caption="An arrow shows a block: work goes from left to right. \
+                                     Items in one column can go in parallel. A box holds the \
+                                     tasks of a parent. Click an item to move the focus to it. \
+                                     Double-click an item to open it. Click +N to show more \
+                                     items."
                         >
-                            <div class="kairos-graph" data-testid="item-graph">
-                                <Dag
-                                    nodes=dag_nodes
-                                    edges=dag_edges
-                                    lanes=dag_lanes
-                                    layers=vec![
-                                        "Strategy".to_string(),
-                                        "Initiative".to_string(),
-                                        "Task".to_string(),
-                                    ]
-                                    styles=edge_styles()
-                                    legend=true
-                                    align=Align::Start
-                                    node_w=NODE_W
-                                    node_h=NODE_H
-                                    label="Flight-level graph"
-                                    // KAIROS-T-0326 (Aurora 0.4.1): a stable id, so the
-                                    // marker of a style is `kairos-graph-arrow-<style>`;
-                                    // and a select refocuses the graph, so a click waits
-                                    // for a possible second click that opens the item.
-                                    id="kairos-graph"
-                                    defer_select=true
-                                    selected=selected
-                                    on_select=Callback::new(move |target: String| {
-                                        if target != focus_for_select {
-                                            refocus(target);
-                                        }
-                                    })
-                                    on_open=Callback::new(open_item)
-                                    on_more=Callback::new(move |target: String| expand(target))
-                                />
-                            </div>
+                            <WorkCanvas
+                                canvas=canvas
+                                focus=focus_code.clone()
+                                view_state=view_state
+                                unfold=unfold
+                                on_select=Callback::new(move |target: String| {
+                                    if target != focus_for_select {
+                                        refocus_node(target);
+                                    }
+                                })
+                                on_group=Callback::new(move |target: String| refocus_group(target))
+                                on_open=Callback::new(open_item)
+                                on_more=Callback::new(move |target: String| expand(target))
+                            />
                         </Panel>
                         {(!panel_rows.is_empty()).then(|| view! {
                             <Panel
                                 title="Supporting material"
-                                caption="documents & ADRs — supports · informs · supersedes"
+                                caption="documents & ADRs — supports · informs · supersedes; \
+                                         blocks to or from a group"
                             >
                                 <Stack gap="xs">
                                     {panel_rows.into_iter().map(|row| {
@@ -533,6 +363,501 @@ pub fn GraphView(#[prop(into)] short_code: String) -> impl IntoView {
                 }.into_any()
             }
         }}
+    }
+}
+
+/// Zoom and pan of the canvas (KAIROS-T-0492). The graph view owns it, so
+/// a live refetch keeps it.
+#[derive(Clone, Copy)]
+struct ViewState {
+    scale: RwSignal<f64>,
+    pan: RwSignal<(f64, f64)>,
+    /// The zoom of the first fit. It sets the height of the viewport.
+    fit: RwSignal<f64>,
+    fitted: RwSignal<bool>,
+}
+
+impl ViewState {
+    fn new() -> Self {
+        Self {
+            scale: RwSignal::new(1.0),
+            pan: RwSignal::new((0.0, 0.0)),
+            fit: RwSignal::new(1.0),
+            fitted: RwSignal::new(false),
+        }
+    }
+}
+
+/// The width of one character of a group header (10px mono).
+const HEADER_CHAR_W: f64 = 6.1;
+/// One zoom step.
+const ZOOM_STEP: f64 = 1.2;
+/// One pan step of an arrow key, in pixels.
+const PAN_STEP: f64 = 48.0;
+
+/// `text` cut to `max` characters, with an ellipsis.
+fn clip(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        text.to_string()
+    } else {
+        let cut: String = text.chars().take(max.saturating_sub(1)).collect();
+        format!("{cut}…")
+    }
+}
+
+/// A keyboard press that works a link or a button: Enter or Space.
+fn activates(ev: &leptos::ev::KeyboardEvent) -> bool {
+    matches!(ev.key().as_str(), "Enter" | " " | "Spacebar")
+}
+
+/// A link in the header of a group: it moves the focus to the item.
+fn header_link(
+    x: f64,
+    y: f64,
+    text: String,
+    code: String,
+    on_group: Callback<String>,
+) -> impl IntoView {
+    let key_code = code.clone();
+    view! {
+        <text
+            class="kairos-graph__link"
+            x=x
+            y=y
+            role="link"
+            tabindex="0"
+            data-code=code.clone()
+            on:click=move |_| on_group.run(code.clone())
+            on:keydown=move |ev: leptos::ev::KeyboardEvent| {
+                if activates(&ev) {
+                    ev.prevent_default();
+                    on_group.run(key_code.clone());
+                }
+            }
+        >
+            {text}
+        </text>
+    }
+}
+
+/// A button in the header of a group (SVG text, keyboard ready).
+fn header_button(
+    x: f64,
+    y: f64,
+    class: &'static str,
+    text: Signal<String>,
+    aria: Signal<String>,
+    on_press: Callback<()>,
+) -> impl IntoView {
+    view! {
+        <text
+            class=format!("kairos-graph__link {class}")
+            x=x
+            y=y
+            text-anchor="end"
+            role="button"
+            tabindex="0"
+            aria-label=aria
+            on:click=move |_| on_press.run(())
+            on:keydown=move |ev: leptos::ev::KeyboardEvent| {
+                if activates(&ev) {
+                    ev.prevent_default();
+                    on_press.run(());
+                }
+            }
+        >
+            {text}
+        </text>
+    }
+}
+
+/// The header of a group box: the strategy (when there is one), the parent,
+/// the toggle of the folded siblings, and the `+N` of the neighbours that
+/// are not fetched.
+fn group_header(
+    b: GroupBox,
+    group: graph_model::Group,
+    unfold: RwSignal<bool>,
+    on_group: Callback<String>,
+    on_more: Callback<String>,
+) -> impl IntoView {
+    let y = b.y - 4.0;
+    let mut right = b.x + b.w - 6.0;
+    let mut x = b.x + 6.0;
+
+    let more = (group.more > 0).then(|| {
+        let n = group.more;
+        let label = format!("+{n}");
+        let at = right;
+        right -= (label.chars().count() + 2) as f64 * HEADER_CHAR_W;
+        let codes = group.expand.clone();
+        header_button(
+            at,
+            y,
+            "kairos-graph__more",
+            Signal::stored(label),
+            Signal::stored(format!("Show {n} more linked items")),
+            Callback::new(move |_| {
+                for code in &codes {
+                    on_more.run(code.clone());
+                }
+            }),
+        )
+    });
+    let toggle = (group.folded > 0).then(|| {
+        let n = group.folded;
+        let at = right;
+        right -= 13.0 * HEADER_CHAR_W;
+        header_button(
+            at,
+            y,
+            "kairos-graph__fold",
+            Signal::derive(move || {
+                if unfold.get() {
+                    "fewer tasks".to_string()
+                } else {
+                    format!("+{n} tasks")
+                }
+            }),
+            Signal::derive(move || {
+                if unfold.get() {
+                    format!("Hide {n} sibling tasks")
+                } else {
+                    format!("Show {n} more sibling tasks")
+                }
+            }),
+            Callback::new(move |_| unfold.update(|u| *u = !*u)),
+        )
+    });
+    let strategy = group.strategy.clone().map(|(code, _)| {
+        let at = x;
+        let width = code.chars().count() as f64 * HEADER_CHAR_W;
+        x += width + 3.0 * HEADER_CHAR_W;
+        view! {
+            {header_link(at, y, code.clone(), code, on_group)}
+            <text class="kairos-graph__sep" x=at + width + HEADER_CHAR_W y=y>"›"</text>
+        }
+    });
+    let room = ((right - x) / HEADER_CHAR_W).floor().max(4.0) as usize;
+    let label = clip(&format!("{} {}", group.code, group.title), room);
+    let main = header_link(x, y, label, group.code.clone(), on_group);
+    let class = if group.current {
+        "kairos-graph__header kairos-graph__header--current"
+    } else {
+        "kairos-graph__header"
+    };
+    view! {
+        <g class=class data-group=group.code.clone() data-kind=group.entity_type.clone()>
+            {strategy}
+            {main}
+            {toggle}
+            {more}
+        </g>
+    }
+}
+
+/// The canvas (KAIROS-T-0492): the Aurora [`Dag`] with no fixed layers,
+/// so `blocks` sets the columns; the group boxes under it and their
+/// headers over it; all three in a stage that zooms and pans.
+#[component]
+fn WorkCanvas(
+    canvas: CanvasData,
+    #[prop(into)] focus: String,
+    view_state: ViewState,
+    unfold: RwSignal<bool>,
+    on_select: Callback<String>,
+    on_group: Callback<String>,
+    on_open: Callback<String>,
+    on_more: Callback<String>,
+) -> impl IntoView {
+    use wasm_bindgen::JsCast;
+
+    let CanvasData {
+        nodes,
+        edges,
+        lanes,
+        groups,
+        states,
+        ..
+    } = canvas;
+    // The same options as the `Dag`, so the boxes fit its nodes.
+    let opts = layout_options();
+    let geometry = layout(&nodes, &edges, &lanes, &[], &opts);
+    let boxes = group_boxes(&geometry, &nodes);
+    let (width, height) = (geometry.width, geometry.height);
+    let used_styles: Vec<_> = edge_styles()
+        .into_iter()
+        .filter(|s| edges.iter().any(|e| e.style == s.name))
+        .collect();
+    let group_of = |code: &str| groups.iter().find(|g| g.code == code).cloned();
+
+    let rects = boxes
+        .iter()
+        .map(|b| {
+            let class = if group_of(&b.code).is_some_and(|g| g.current) {
+                "kairos-graph__group kairos-graph__group--current"
+            } else {
+                "kairos-graph__group"
+            };
+            view! {
+                <rect
+                    class=class
+                    data-group=b.code.clone()
+                    x=b.x
+                    y=b.y
+                    width=b.w
+                    height=b.h
+                    rx="10"
+                />
+            }
+        })
+        .collect_view();
+    let headers = boxes
+        .iter()
+        .filter(|b| b.header)
+        .filter_map(|b| {
+            Some(group_header(
+                b.clone(),
+                group_of(&b.code)?,
+                unfold,
+                on_group,
+                on_more,
+            ))
+        })
+        .collect_view();
+    let state_legend = states
+        .iter()
+        .map(|state| {
+            let label = state.label();
+            view! {
+                <span class=format!("kairos-graph__state kairos-graph__state--{label}")>
+                    {label}
+                </span>
+            }
+        })
+        .collect_view();
+
+    // ---- zoom and pan ----------------------------------------------------
+    let vs = view_state;
+    let viewport = NodeRef::<leptos::html::Div>::new();
+    // The first fit, when the viewport has a width.
+    Effect::new(move |_| {
+        if vs.fitted.get_untracked() {
+            return;
+        }
+        if let Some(el) = viewport.get() {
+            let fit = fit_scale(width, f64::from(el.client_width()));
+            vs.fit.set(fit);
+            vs.scale.set(fit);
+            vs.pan.set((0.0, 0.0));
+            vs.fitted.set(true);
+        }
+    });
+    let zoom_by = move |factor: f64, at: Option<(f64, f64)>| {
+        let at = at.unwrap_or_else(|| {
+            viewport
+                .get_untracked()
+                .map(|el| {
+                    (
+                        f64::from(el.client_width()) / 2.0,
+                        f64::from(el.client_height()) / 2.0,
+                    )
+                })
+                .unwrap_or_default()
+        });
+        let (scale, pan) = zoom_at(vs.scale.get_untracked(), vs.pan.get_untracked(), factor, at);
+        vs.scale.set(scale);
+        vs.pan.set(pan);
+    };
+    let fit = move || {
+        vs.scale.set(vs.fit.get_untracked());
+        vs.pan.set((0.0, 0.0));
+    };
+    let pan_by = move |dx: f64, dy: f64| {
+        vs.pan.update(|(x, y)| {
+            *x += dx;
+            *y += dy;
+        })
+    };
+    // Ctrl or Cmd and the wheel (a pinch on a trackpad) zoom at the pointer;
+    // the wheel alone scrolls the page.
+    let on_wheel = move |ev: leptos::ev::WheelEvent| {
+        if !(ev.ctrl_key() || ev.meta_key()) {
+            return;
+        }
+        ev.prevent_default();
+        let Some(el) = viewport.get_untracked() else {
+            return;
+        };
+        let rect = el.get_bounding_client_rect();
+        let at = (
+            f64::from(ev.client_x()) - rect.left(),
+            f64::from(ev.client_y()) - rect.top(),
+        );
+        let factor = if ev.delta_y() < 0.0 { 1.1 } else { 1.0 / 1.1 };
+        zoom_by(factor, Some(at));
+    };
+    // A drag on the background pans. A press on an item or a link does not.
+    let drag = StoredValue::new(None::<(f64, f64, (f64, f64))>);
+    let on_pointerdown = move |ev: leptos::ev::PointerEvent| {
+        if ev.button() != 0 {
+            return;
+        }
+        let on_control = ev
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+            .and_then(|el| {
+                el.closest(".cl-dag__item, .kairos-graph__link")
+                    .ok()
+                    .flatten()
+            })
+            .is_some();
+        if on_control {
+            return;
+        }
+        drag.set_value(Some((
+            f64::from(ev.client_x()),
+            f64::from(ev.client_y()),
+            vs.pan.get_untracked(),
+        )));
+        if let Some(el) = viewport.get_untracked() {
+            let _ = el.set_pointer_capture(ev.pointer_id());
+        }
+    };
+    let on_pointermove = move |ev: leptos::ev::PointerEvent| {
+        if let Some((x0, y0, (px, py))) = drag.get_value() {
+            vs.pan.set((
+                px + f64::from(ev.client_x()) - x0,
+                py + f64::from(ev.client_y()) - y0,
+            ));
+        }
+    };
+    let end_drag = move |_: leptos::ev::PointerEvent| drag.set_value(None);
+    let on_keydown = move |ev: leptos::ev::KeyboardEvent| {
+        let handled = match ev.key().as_str() {
+            "ArrowLeft" => {
+                pan_by(PAN_STEP, 0.0);
+                true
+            }
+            "ArrowRight" => {
+                pan_by(-PAN_STEP, 0.0);
+                true
+            }
+            "ArrowUp" => {
+                pan_by(0.0, PAN_STEP);
+                true
+            }
+            "ArrowDown" => {
+                pan_by(0.0, -PAN_STEP);
+                true
+            }
+            "+" | "=" => {
+                zoom_by(ZOOM_STEP, None);
+                true
+            }
+            "-" | "_" => {
+                zoom_by(1.0 / ZOOM_STEP, None);
+                true
+            }
+            "0" => {
+                fit();
+                true
+            }
+            _ => false,
+        };
+        if handled {
+            ev.prevent_default();
+        }
+    };
+
+    let selected = Signal::derive({
+        let focus = focus.clone();
+        move || Some(focus.clone())
+    });
+    let view_box = format!("0 0 {width} {height}");
+    view! {
+        <div class="kairos-graph" data-testid="item-graph">
+            <div class="kairos-graph__toolbar">
+                <div class="kairos-graph__legend" aria-label="States">{state_legend}</div>
+                {(!used_styles.is_empty()).then(|| view! { <DagLegend styles=used_styles/> })}
+                <Group gap="xs">
+                    <Button variant="default" size="xs" on_click=Callback::new(move |_| zoom_by(1.0 / ZOOM_STEP, None))>
+                        "Zoom out"
+                    </Button>
+                    <span class="kairos-graph__zoom cl-mono" data-testid="graph-zoom">
+                        {move || format!("{:.0}%", vs.scale.get() * 100.0)}
+                    </span>
+                    <Button variant="default" size="xs" on_click=Callback::new(move |_| zoom_by(ZOOM_STEP, None))>
+                        "Zoom in"
+                    </Button>
+                    <Button variant="default" size="xs" on_click=Callback::new(move |_| fit())>
+                        "Fit"
+                    </Button>
+                </Group>
+            </div>
+            <div
+                class="kairos-graph__viewport"
+                node_ref=viewport
+                tabindex="0"
+                aria-label="Work graph. Arrow keys pan, plus and minus zoom, 0 fits."
+                style:height=move || format!("{:.0}px", (height * vs.fit.get()).max(NODE_H * 3.0) + 2.0)
+                on:wheel=on_wheel
+                on:pointerdown=on_pointerdown
+                on:pointermove=on_pointermove
+                on:pointerup=end_drag
+                on:pointercancel=end_drag
+                on:keydown=on_keydown
+            >
+                <div
+                    class="kairos-graph__stage"
+                    style:width=format!("{width}px")
+                    style:height=format!("{height}px")
+                    style:transform=move || {
+                        let (x, y) = vs.pan.get();
+                        format!("translate({x}px, {y}px) scale({})", vs.scale.get())
+                    }
+                >
+                    <svg
+                        class="kairos-graph__underlay"
+                        width=width
+                        height=height
+                        viewBox=view_box.clone()
+                        aria-hidden="true"
+                    >
+                        {rects}
+                    </svg>
+                    <Dag
+                        nodes=nodes
+                        edges=edges
+                        lanes=lanes
+                        styles=edge_styles()
+                        options=opts
+                        fit=false
+                        label="Work graph"
+                        // KAIROS-T-0326 (Aurora 0.4.1): a stable id, so the
+                        // marker of a style is `kairos-graph-arrow-<style>`;
+                        // and a select refocuses the graph, so a click waits
+                        // for a possible second click that opens the item.
+                        id="kairos-graph"
+                        defer_select=true
+                        selected=selected
+                        on_select=on_select
+                        on_open=on_open
+                        on_more=on_more
+                    />
+                    <svg
+                        class="kairos-graph__overlay"
+                        width=width
+                        height=height
+                        viewBox=view_box
+                        role="group"
+                        aria-label="Groups"
+                    >
+                        {headers}
+                    </svg>
+                </div>
+            </div>
+        </div>
     }
 }
 
@@ -724,6 +1049,7 @@ fn ManagePanel(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use graph_model::blocks_resolved;
 
     fn node(id: &str, done: bool) -> data::GraphNode {
         data::GraphNode {
@@ -754,102 +1080,9 @@ mod tests {
         assert!(!blocks_resolved(&nodes, "open", "absent"), "unknown end");
     }
 
-    fn typed(id: &str, entity_type: &str) -> data::GraphNode {
-        data::GraphNode {
-            short_code: id.to_string(),
-            entity_type: entity_type.to_string(),
-            title: format!("title {id}"),
-            status: "Active".to_string(),
-            ..node(id, false)
-        }
-    }
-
-    fn edge(source: &str, target: &str, relationship: &str) -> data::GraphEdge {
-        data::GraphEdge {
-            source_id: source.to_string(),
-            target_id: target.to_string(),
-            relationship: relationship.to_string(),
-            depth: 1,
-        }
-    }
-
-    /// COLLIERY-T-1836: a node has ONE lane — of its parents one layer up,
-    /// the one with the lowest short code. A parent two layers up, and a
-    /// document, give no lane; the document is not on the canvas.
     #[test]
-    fn a_node_has_one_lane_the_lowest_parent_code() {
-        let nodes = vec![
-            typed("A-S-1", "strategy"),
-            typed("A-I-2", "initiative"),
-            typed("A-I-1", "initiative"),
-            typed("A-T-1", "task"),
-            typed("A-T-2", "task"),
-            typed("A-D-1", "document"),
-        ];
-        let edges = vec![
-            edge("A-I-2", "A-T-1", "parent"),
-            edge("A-I-1", "A-T-1", "parent"),
-            edge("A-S-1", "A-T-2", "parent"),
-            edge("A-S-1", "A-I-2", "parent"),
-            edge("A-D-1", "A-I-1", "supports"),
-        ];
-        let canvas = canvas_data(&nodes, &edges, "A-T-1");
-        let lane = |id: &str| {
-            canvas
-                .nodes
-                .iter()
-                .find(|n| n.id == id)
-                .and_then(|n| n.lane.clone())
-        };
-        assert_eq!(lane("A-T-1").as_deref(), Some("A-I-1"));
-        assert_eq!(lane("A-T-2"), None, "a parent two layers up is no lane");
-        assert_eq!(lane("A-I-2").as_deref(), Some("A-S-1"));
-        let lanes: Vec<&str> = canvas.lanes.iter().map(|l| l.id.as_str()).collect();
-        assert_eq!(lanes, vec!["A-I-1", "A-S-1"]);
-        assert!(canvas.nodes.iter().all(|n| n.id != "A-D-1"), "no documents");
-        assert!(canvas.edges.is_empty(), "parent and supports draw no arrow");
-        let focus: Vec<&str> = canvas
-            .nodes
-            .iter()
-            .filter(|n| n.current)
-            .map(|n| n.id.as_str())
-            .collect();
-        assert_eq!(focus, vec!["A-T-1"]);
-    }
-
-    /// Blocks arrows get the open or the resolved style; marks, the
-    /// archived flag and `+N` come from the wire node; the node order does
-    /// not depend on the input order.
-    #[test]
-    fn blocks_styles_marks_and_more() {
-        let mut done = typed("A-T-1", "task");
-        done.done = true;
-        done.archived_at = Some("2026-01-01T00:00:00Z".to_string());
-        let mut open = typed("A-T-2", "task");
-        open.degree = 4;
-        let nodes = vec![open, done, typed("A-T-3", "task")];
-        let edges = vec![
-            edge("A-T-1", "A-T-2", "blocks"),
-            edge("A-T-3", "A-T-2", "blocks"),
-        ];
-        let canvas = canvas_data(&nodes, &edges, "A-T-2");
-        let styles: Vec<(&str, &str)> = canvas
-            .edges
-            .iter()
-            .map(|e| (e.from.as_str(), e.style.as_str()))
-            .collect();
-        assert_eq!(styles, vec![("A-T-1", RESOLVED), ("A-T-3", OPEN)]);
-        let ids: Vec<&str> = canvas.nodes.iter().map(|n| n.id.as_str()).collect();
-        assert_eq!(ids, vec!["A-T-1", "A-T-2", "A-T-3"]);
-        let first = &canvas.nodes[0];
-        assert!(first.archived && first.done);
-        let marks: Vec<&str> = first.marks.iter().map(|m| m.label.as_str()).collect();
-        assert_eq!(marks, vec!["put away", "done"]);
-        assert_eq!(canvas.nodes[1].more, 2, "degree 4 minus 2 fetched edges");
-        assert_eq!(canvas.nodes[2].more, 0);
-
-        let mut reversed = nodes.clone();
-        reversed.reverse();
-        assert_eq!(canvas_data(&reversed, &edges, "A-T-2").nodes, canvas.nodes);
+    fn clip_keeps_short_text_and_cuts_long_text() {
+        assert_eq!(clip("abc", 5), "abc");
+        assert_eq!(clip("abcdef", 4), "abc…");
     }
 }

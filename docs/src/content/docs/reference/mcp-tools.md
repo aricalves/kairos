@@ -1369,6 +1369,10 @@ can also edit an item with `manage_<type>` on its authorization board.
 A `supports` edge to a document gives no right on the document. See
 [The `supports` edge of a document](../capabilities/#the-supports-edge-of-a-document).
 
+When you split work into tasks, add a `blocks` edge from each blocker to each
+task that waits. Give no edge to tasks that can go in parallel. The
+graph view shows serial work as a row and parallel work in one column.
+
 A `blocks` edge counts only while the items at both ends can move. Complete
 work does not block, and nothing blocks complete work. The edge stops counting
 when the item at either end is in a done column. The edge stays, and `get_item`

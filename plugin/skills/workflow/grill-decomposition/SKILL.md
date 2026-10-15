@@ -32,6 +32,7 @@ Ask across the whole set. Name each task by its short code, never by its place i
 2. **Order and risk.** Which task removes the most doubt? Recommend that it goes first. Then check each `blocks` edge:
    - Is it real, or only a result of how the work was cut?
    - Is an edge missing? For example, task B uses a table that task A adds. If no edge goes from A to B, propose it.
+   - Tasks that can go in parallel get no edge. The graph view shows them in one column, and serial work as a row.
    - `/kairos:ralph-initiative` follows these edges. A wrong edge gives a wrong sequence, and a missing edge can run a task before its blocker.
 3. **Done criteria.** For each acceptance criterion: can the Ralph loop show it with a command and its output, with no person? `implement` needs evidence for each criterion before it moves a task to Completed. "Works well" or "is clean" cannot be shown.
    - Propose a replacement that names a command and its output. Examples: a test that passes, a status code, a file that exists. Read [ACCEPTANCE-CRITERIA.md](../triage/ACCEPTANCE-CRITERIA.md) first.
@@ -51,7 +52,7 @@ When an answer settles, write it at once, before the next question:
 - **A split or a new task:** `create_item` with `item_type: task`, `parent: <initiative>`, `board: <the board of the other tasks of the initiative>`, and `repository` when it has code. Use the task body template of `/kairos:decompose`. Name the task by the short code in the result from then on.
 - **A merge:** move the text into one task with `edit_item`, then cut the other.
 - **A cut task:** `cancel_item` with the reason. The task goes to the done column, marked Cancelled, and the reason stays on it. If the work comes back later, it is a new task.
-- **An edge:** `link_items` or `unlink_items` with `relationship: blocks`, from the blocker to the blocked task.
+- **An edge:** `link_items` or `unlink_items` with `relationship: blocks`, from the blocker to the blocked task. A new task from a split gets a `blocks` edge when it must wait for a task, and no edge when it can go in parallel.
 - **A repository:** `set_repository`.
 - **A manual check:** `edit_item` on the task to remove it, and on the initiative to add it under `## Manual checks`.
 

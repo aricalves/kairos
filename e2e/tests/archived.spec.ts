@@ -453,10 +453,10 @@ test('an archived neighbour is marked in the panel and on the canvas', async ({
   await test.step('the graph draws it, marked', async () => {
     await page.goto(`/search/relationships/${parent.short_code}`);
     // COLLIERY-T-1836: the Aurora `Dag`; a node's `data-id` is its code.
-    await expect(page.locator('.cl-dag__node--current')).toHaveAttribute(
-      'data-id',
-      parent.short_code,
-    );
+    // KAIROS-T-0492: the initiative is the header of the group of its task.
+    await expect(
+      page.locator(`.kairos-graph__header--current[data-group="${parent.short_code}"]`),
+    ).toHaveCount(1);
     const putAway = page.locator(
       `.cl-dag__node--archived[data-id="${child.short_code}"]`,
     );

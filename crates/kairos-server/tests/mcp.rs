@@ -2926,6 +2926,17 @@ async fn repository_tools_against_live_stack() {
             assert!(description.contains(needed), "{name} lacks {needed:?}");
         }
     }
+    // KAIROS-T-0493: an agent that splits work sets `blocks` edges, so the
+    // graph shows serial and parallel work.
+    for name in ["create_item", "link_items"] {
+        let description = tool(name)["description"]
+            .as_str()
+            .expect("description")
+            .to_string();
+        for needed in ["`blocks`", "parallel"] {
+            assert!(description.contains(needed), "{name} lacks {needed:?}");
+        }
+    }
     // KAIROS-T-0443: one tool removes a repository: delete_repository.
     let removers: Vec<&str> = tools
         .iter()
