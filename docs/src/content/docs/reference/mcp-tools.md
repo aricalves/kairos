@@ -701,6 +701,9 @@ are compact and grouped by type.
 | `updated_after` | RFC 3339 string | no | — | Items with a last change strictly after. |
 | `updated_before` | RFC 3339 string | no | — | Items with a last change strictly before. Must be later than `updated_after`. For the items with no change in 90 days, send the time 90 days ago. |
 | `metadata_missing` | array of string | no | — | Items with no value for each of these metadata-definition slugs. Must not be empty, and each slug must name a definition. |
+| `claimed_by` | string | no | — | Tasks that this person has the claim on. A claim that an agent key of the person made counts. Send `me`, a user id, an email or a user name. |
+| `owned_by` | string | no | — | Strategies and initiatives that this person owns. Send `me`, a user id, an email or a user name. |
+| `created_by` | string | no | — | Items that this person created. Send `me`, a user id, an email or a user name. |
 | `include_deleted` | boolean | no | `false` | Include archived items, marked `[archived]`. Composes with everything, `q` and `traverse` included, and counts on its own as a constraining filter. |
 
 `filter.repository` gives three types of item:
@@ -744,7 +747,8 @@ repository, so `impacts` is not a value of `relationships`. Use
 Refuses: `VALIDATION` for a blank `q`, an empty enum array, a blank metadata
 key, an inverted date range, an empty `metadata_missing` or a slug in it that
 names no definition, `board` with `board_id`, `team` with `team_id`, an
-unknown `board` or `team`, a
+unknown `board` or `team`, a person in `claimed_by`, `owned_by` or
+`created_by` that is not a member of the organization, a
 missing `traverse.depth`, a `depth` of 0 or above 10, an empty
 `relationships`, a request with no query, no constraining filter and no
 traversal, or an unknown `filter.repository`. `NOT_FOUND` for a `traverse.from`

@@ -394,6 +394,15 @@ pub struct SearchFilterParams {
     /// Only items with NO value for each of these metadata definitions
     /// (slugs), e.g. ["priority"]. An unknown slug is refused.
     pub metadata_missing: Option<Vec<String>>,
+    /// Only the tasks that this person has the claim on, also through an
+    /// agent key: `me`, a user id, an email or a user name.
+    pub claimed_by: Option<String>,
+    /// Only the strategies and the initiatives that this person owns: `me`,
+    /// a user id, an email or a user name.
+    pub owned_by: Option<String>,
+    /// Only the items that this person created: `me`, a user id, an email
+    /// or a user name.
+    pub created_by: Option<String>,
     /// Include archived (soft-deleted) items (default false). Composes with
     /// everything, `q` and `traverse` included; archived hits come back
     /// marked `[archived]`.
@@ -2656,14 +2665,15 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Search items: full-text `q`, a structured `filter` (types, board, column, team, repository, task_type, metadata, metadata_missing, updated_before, updated_after) and a graph `traverse`, in any mix; at least one. Board and team take a slug or UUID. \"Untouched for 90 days\" is `updated_before` = now minus 90 days; \"bugs without a priority\" is `{entity_type: [task], task_type: [bug], metadata_missing: [priority]}`. `filter.repository` gives the tasks linked to it and the documents and ADRs that impact it. Compact results by type; `get_item` gives the content."
+        description = "Search items: full-text `q`, a structured `filter` (types, board, column, team, repository, task_type, metadata, metadata_missing, updated_before, updated_after, claimed_by, owned_by, created_by) and a graph `traverse`, in any mix; at least one. Board and team take a slug or UUID. claimed_by, owned_by and created_by take `me`, a user id, an email or a user name; a claim by an agent key counts for its person. \"Untouched for 90 days\" is `updated_before` = now minus 90 days; \"bugs without a priority\" is `{entity_type: [task], task_type: [bug], metadata_missing: [priority]}`. `filter.repository` gives the tasks linked to it and the documents and ADRs that impact it. Compact results by type; `get_item` gives the content."
     )]
     pub async fn search(
         &self,
         Parameters(params): Parameters<SearchParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let (_, tenant) = Self::caller(&context)?;
+        let (auth, tenant) = Self::caller(&context)?;
+        let (slug, caller) = (tenant.slug.clone(), auth.user_id);
         let mut request = match search_to_core(&params) {
             Ok(request) => request,
             Err(e) => return Ok(tool_error(e)),
@@ -2674,6 +2684,13 @@ impl KairosMcp {
                 (f.board.clone(), f.board_id.is_some()),
                 (f.team.clone(), f.team_id.is_some()),
             )
+            .map(|refs| {
+                refs.with_people(
+                    f.claimed_by.clone(),
+                    f.owned_by.clone(),
+                    f.created_by.clone(),
+                )
+            })
         }) {
             None => crate::api::search::FilterRefs::default(),
             Some(Ok(refs)) => refs,
@@ -2690,7 +2707,7 @@ impl KairosMcp {
             // board and team need a conn to resolve, so they join the core
             // filter here — then validate.
             if !refs.is_empty() {
-                refs.resolve_into(conn, &mut request)?;
+                refs.resolve_into(conn, &slug, caller, &mut request)?;
                 core_search::validate(&request).map_err(|e| ApiError::validation(e.to_string()))?;
             }
             let results = search::execute_search(conn, &request).map_err(map_search_error)?;
@@ -7233,6 +7250,10 @@ fn search_to_core(params: &SearchParams) -> Result<core_search::SearchRequest, A
                     .map(|v| timestamp_field(v, "filter.updated_before"))
                     .transpose()?,
                 metadata_missing: filter.metadata_missing.clone(),
+                // Resolved inside the tool, with a conn (KAIROS-T-0488).
+                claimed_by: None,
+                owned_by: None,
+                created_by: None,
                 include_deleted: filter.include_deleted,
             })
         })

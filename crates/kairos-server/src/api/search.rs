@@ -49,6 +49,7 @@ use crate::app::AppState;
 use crate::body::ApiJson;
 use crate::error::ApiError;
 use crate::input::ApiQuery;
+use crate::middleware::auth::AuthContext;
 use crate::middleware::tenant::TenantContext;
 
 pub fn router() -> Router<AppState> {
@@ -170,6 +171,7 @@ pub(crate) struct RelatedQuery {
 )]
 pub(crate) async fn search(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Extension(tenant): Extension<TenantContext>,
     ApiJson(body): ApiJson<serde_json::Value>,
 ) -> Result<Json<dto_search::SearchResponse>, ApiError> {
@@ -180,6 +182,7 @@ pub(crate) async fn search(
         .map_err(|e| crate::body::shape_error(StatusCode::BAD_REQUEST, &e.to_string()))?;
     let mut core = to_core(&request)?;
     let refs = FilterRefs::of(request.filter.as_ref())?;
+    let (slug, caller) = (tenant.slug.clone(), auth.user_id);
     // Validate before dispatching to the blocking pool: an invalid request
     // never costs a connection checkout. A filter carrying only
     // `repository` becomes constraining once resolved, so that case is
@@ -193,7 +196,7 @@ pub(crate) async fn search(
         .blocking
         .run(&tenant.slug, move |conn| {
             if !refs.is_empty() {
-                refs.resolve_into(conn, &mut core)?;
+                refs.resolve_into(conn, &slug, caller, &mut core)?;
                 core_search::validate(&core).map_err(map_validation_error)?;
             }
             let mut response = execute_search(conn, &core)
@@ -217,13 +220,18 @@ pub(crate) async fn search(
 // ---------------------------------------------------------------------------
 
 /// The references of a search filter that resolve with a connection: the
-/// repository (KAIROS-T-0115), and the board and the team by slug or UUID
-/// (KAIROS-T-0368). The REST route and the MCP tool share them.
+/// repository (KAIROS-T-0115), the board and the team by slug or UUID
+/// (KAIROS-T-0368), and the persons of `claimed_by`, `owned_by` and
+/// `created_by` (KAIROS-T-0488). The REST route and the MCP tool share
+/// them.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct FilterRefs {
     pub repository: Option<String>,
     pub board: Option<String>,
     pub team: Option<String>,
+    pub claimed_by: Option<String>,
+    pub owned_by: Option<String>,
+    pub created_by: Option<String>,
 }
 
 impl FilterRefs {
@@ -233,11 +241,30 @@ impl FilterRefs {
         let Some(filter) = filter else {
             return Ok(Self::default());
         };
-        Self::new(
+        Ok(Self::new(
             filter.repository.clone(),
             (filter.board.clone(), filter.board_id.is_some()),
             (filter.team.clone(), filter.team_id.is_some()),
-        )
+        )?
+        .with_people(
+            filter.claimed_by.clone(),
+            filter.owned_by.clone(),
+            filter.created_by.clone(),
+        ))
+    }
+
+    /// The persons of `claimed_by`, `owned_by` and `created_by`
+    /// (KAIROS-T-0488): each a user id, an email, a user name, or `me`.
+    pub(crate) fn with_people(
+        mut self,
+        claimed_by: Option<String>,
+        owned_by: Option<String>,
+        created_by: Option<String>,
+    ) -> Self {
+        self.claimed_by = claimed_by;
+        self.owned_by = owned_by;
+        self.created_by = created_by;
+        self
     }
 
     /// From the values; each pair is the slug-or-UUID reference and
@@ -263,23 +290,61 @@ impl FilterRefs {
             repository,
             board: board.0,
             team: team.0,
+            ..Default::default()
         })
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.repository.is_none() && self.board.is_none() && self.team.is_none()
+        self.repository.is_none()
+            && self.board.is_none()
+            && self.team.is_none()
+            && self.claimed_by.is_none()
+            && self.owned_by.is_none()
+            && self.created_by.is_none()
     }
 
     /// Resolve each reference and put its id in the core filter. A board
     /// or a team that does not resolve is a `VALIDATION` refusal that
     /// names the field.
+    ///
+    /// A person is `me` (the caller: `caller`, also for an agent key) or a
+    /// member of the organization `slug` by user id, email or user name.
     pub(crate) fn resolve_into(
         &self,
         conn: &mut diesel::pg::PgConnection,
+        slug: &str,
+        caller: Uuid,
         core: &mut core_search::SearchRequest,
     ) -> Result<(), ApiError> {
         use diesel::prelude::*;
         let filter = core.filter.get_or_insert_with(Default::default);
+        if let Some(reference) = self.claimed_by.as_deref() {
+            filter.claimed_by = Some(resolve_member(
+                conn,
+                slug,
+                caller,
+                reference,
+                "filter.claimed_by",
+            )?);
+        }
+        if let Some(reference) = self.owned_by.as_deref() {
+            filter.owned_by = Some(resolve_member(
+                conn,
+                slug,
+                caller,
+                reference,
+                "filter.owned_by",
+            )?);
+        }
+        if let Some(reference) = self.created_by.as_deref() {
+            filter.created_by = Some(resolve_member(
+                conn,
+                slug,
+                caller,
+                reference,
+                "filter.created_by",
+            )?);
+        }
         if let Some(reference) = self.repository.as_deref() {
             let repo = kairos_db::repositories::resolve(conn, reference)
                 .map_err(crate::api::tasks::map_repository_error)?;
@@ -337,6 +402,62 @@ impl FilterRefs {
         }
         Ok(())
     }
+}
+
+/// The member that `reference` names (KAIROS-T-0488): `me` is the caller;
+/// else a user id, an email or a user name of a member of the organization
+/// `slug`. A person and a service account both count. A reference that
+/// names no member is a `VALIDATION` refusal that names the field and the
+/// reference.
+pub(crate) fn resolve_member(
+    conn: &mut diesel::pg::PgConnection,
+    slug: &str,
+    caller: Uuid,
+    reference: &str,
+    field: &str,
+) -> Result<Uuid, ApiError> {
+    use diesel::prelude::*;
+    use kairos_db::schema::users;
+    let reference = reference.trim();
+    if reference.eq_ignore_ascii_case("me") {
+        return Ok(caller);
+    }
+    let found: Option<Uuid> = if let Ok(id) = reference.parse::<Uuid>() {
+        users::table
+            .filter(users::id.eq(id))
+            .select(users::id)
+            .first(conn)
+            .optional()
+    } else if reference.contains('@') {
+        users::table
+            .filter(users::email.eq(reference))
+            .select(users::id)
+            .first(conn)
+            .optional()
+    } else {
+        users::table
+            .filter(users::user_name.eq(reference))
+            .select(users::id)
+            .first(conn)
+            .optional()
+    }
+    .map_err(ApiError::internal)?;
+    let member = match found {
+        Some(id) => kairos_db::abac::is_org_member(conn, slug, id)
+            .map_err(ApiError::internal)?
+            .then_some(id),
+        None => None,
+    };
+    member.ok_or_else(|| {
+        field_invalid(
+            field,
+            format!(
+                "No member of the organization has the id, the email or the user name \
+                 {reference:?} of {field}. Send me, or a member of the organization."
+            ),
+        )
+        .with_details(json!({ "field": field, "person": reference }))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -491,6 +612,11 @@ fn filter_to_core(
             .map(|v| timestamp_field(v, "filter.updated_before"))
             .transpose()?,
         metadata_missing: filter.metadata_missing.clone(),
+        // `claimed_by`, `owned_by` and `created_by` name a person and need
+        // a connection to resolve; the handler injects them (KAIROS-T-0488).
+        claimed_by: None,
+        owned_by: None,
+        created_by: None,
         include_deleted: filter.include_deleted,
     })
 }

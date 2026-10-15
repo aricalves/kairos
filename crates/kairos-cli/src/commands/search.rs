@@ -74,6 +74,18 @@ pub struct SearchArgs {
     /// --from, and archived hits are marked
     #[arg(long)]
     pub include_deleted: bool,
+    /// Only tasks that this person has the claim on, also through an
+    /// agent key: a user id, an email, a user name or `me`
+    #[arg(long, value_name = "PERSON")]
+    pub claimed_by: Option<String>,
+    /// Only strategies and initiatives that this person owns: a user id,
+    /// an email, a user name or `me`
+    #[arg(long, value_name = "PERSON")]
+    pub owned_by: Option<String>,
+    /// Only items that this person created: a user id, an email, a user
+    /// name or `me`
+    #[arg(long, value_name = "PERSON")]
+    pub created_by: Option<String>,
     /// Traverse: starting entity's short code
     #[arg(long, value_name = "SHORT_CODE", conflicts_with = "from_id")]
     pub from: Option<String>,
@@ -129,6 +141,9 @@ impl SearchArgs {
             || self.after.is_some()
             || self.before.is_some()
             || self.include_deleted
+            || self.claimed_by.is_some()
+            || self.owned_by.is_some()
+            || self.created_by.is_some()
             || self.from.is_some()
             || self.from_id.is_some()
             || !self.relationships.is_empty()
@@ -186,6 +201,9 @@ impl SearchArgs {
             || self.updated_after.is_some()
             || self.updated_before.is_some()
             || !self.metadata_missing.is_empty()
+            || self.claimed_by.is_some()
+            || self.owned_by.is_some()
+            || self.created_by.is_some()
             || self.include_deleted;
         let filter = has_filter.then(|| SearchFilter {
             entity_type: non_empty(&self.entity_type),
@@ -204,6 +222,9 @@ impl SearchArgs {
             updated_after: self.updated_after.clone(),
             updated_before: self.updated_before.clone(),
             metadata_missing: non_empty(&self.metadata_missing),
+            claimed_by: self.claimed_by.clone(),
+            owned_by: self.owned_by.clone(),
+            created_by: self.created_by.clone(),
             include_deleted: self.include_deleted,
         });
 
@@ -404,6 +425,26 @@ mod tests {
         );
         assert_eq!(request.limit, Some(10));
         assert!(request.traverse.is_none());
+    }
+
+    /// KAIROS-T-0488: the person flags are filters on their own, and go
+    /// to the body as given.
+    #[test]
+    fn person_flags_compose_the_filter() {
+        let args = SearchArgs {
+            claimed_by: Some("me".into()),
+            owned_by: Some("robin".into()),
+            created_by: Some("sam@example.test".into()),
+            ..Default::default()
+        };
+        let filter = args
+            .build_request()
+            .expect("builds")
+            .filter
+            .expect("filter");
+        assert_eq!(filter.claimed_by.as_deref(), Some("me"));
+        assert_eq!(filter.owned_by.as_deref(), Some("robin"));
+        assert_eq!(filter.created_by.as_deref(), Some("sam@example.test"));
     }
 
     /// Traversal flags: anchored by --from, direction defaults to

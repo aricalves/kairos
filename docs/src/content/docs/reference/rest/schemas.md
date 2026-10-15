@@ -2071,14 +2071,17 @@ The `filter` capability. Fields are AND with each other; array values are OR wit
 |---|---|---|---|
 | `board` | `string`, nullable | no | Restrict to items on this board, by slug or UUID (KAIROS-T-0368). Not with `board_id`. |
 | `board_id` | `string`, nullable | no | Restrict to items on this board (UUID; excludes documents, which do not live on boards). Not with `board`. |
+| `claimed_by` | `string`, nullable | no | Only the tasks that this person has the claim on (KAIROS-T-0488): a user id, an email, a user name, or `me` for the caller. A claim that an agent key of the person made counts. Other entity types are excluded. An unknown person is refused. |
 | `column_id` | `string`, nullable | no | Restrict to items in this board column (UUID; excludes documents). |
 | `created_after` | `string`, nullable | no | Only items created strictly after this instant (RFC 3339). |
 | `created_before` | `string`, nullable | no | Only items created strictly before this instant (RFC 3339). |
+| `created_by` | `string`, nullable | no | Only the items that this person created (KAIROS-T-0488): a user id, an email, a user name, or `me`. An unknown person is refused. |
 | `entity_type` | `array`, nullable | no | Restrict to these entity types (`strategy|initiative|task|document|adr`). |
 | `include_deleted` | `boolean` | no | Include archived (soft-deleted) items (default false). Composes with every other capability — `q` and `traverse` included since KAIROS-T-0157 — and is a complete request on its own. Archived hits are served with `archived_at` set (KAIROS-A-0020). |
 | `is_bucket` | `boolean`, nullable | no | Restrict to (non-)bucket initiatives (initiative-level attribute; other entity types are excluded). |
 | `metadata` | `object`, nullable | no | Metadata conditions keyed by definition slug; string values support trailing-`*` globs (e.g. `"component": "auth*"`). All entries must match (AND). |
 | `metadata_missing` | `array`, nullable | no | Only items with NO value for each of these metadata definitions, by slug (KAIROS-T-0368): "bugs without a priority" is `["priority"]`. An unknown slug is refused. |
+| `owned_by` | `string`, nullable | no | Only the strategies and the initiatives that this person owns (KAIROS-T-0488): a user id, an email, a user name, or `me`. Other entity types are excluded. An unknown person is refused. |
 | `repository` | `string`, nullable | no | Restrict to the items of this repository (slug or UUID of a live repository — KAIROS-T-0115 made every repository reference on the wire the same shape; the old name `repository_id` is refused, COLLIERY-T-0259). The items of a repository are the tasks that link to it, and the documents and the ADRs that impact it (COLLIERY-T-0269). Strategies and initiatives are excluded. With `team_id`, `task_type` or `work_class`, only tasks match. |
 | `task_type` | `array`, nullable | no | Restrict to tasks of these types (`task|bug|tech_debt|support`; excludes non-task entities). |
 | `team` | `string`, nullable | no | Restrict to tasks of this team, by slug or UUID (KAIROS-T-0368). Not with `team_id`. |
