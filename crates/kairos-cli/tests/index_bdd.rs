@@ -303,6 +303,7 @@ impl CliWorld {
             std_source: None,
             sysroot: None,
             download: false,
+            ..Default::default()
         };
         build_structure_with(&root, &db, &options).unwrap_or_else(|e| panic!("{e}"));
         summarize(

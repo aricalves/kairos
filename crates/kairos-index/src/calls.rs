@@ -276,11 +276,26 @@ pub fn terraform_modules(tree: &Tree, source: &[u8]) -> Vec<Import> {
 /// The byte ranges of the Rust `use` declarations of a file. A SCIP
 /// reference in one of them is not a call.
 pub fn rust_use_ranges(tree: &Tree) -> Vec<(usize, usize)> {
+    import_ranges("rust", tree)
+}
+
+/// The byte ranges of the imports of a file: `use` in Rust, `import` and
+/// `from … import` in Python, `import` in TypeScript and JavaScript,
+/// `import` in Go. A SCIP reference in one of them is a use of the kind
+/// `import` (KAIROS-T-0476).
+pub fn import_ranges(language: &str, tree: &Tree) -> Vec<(usize, usize)> {
+    let kinds: &[&str] = match language {
+        "rust" => &["use_declaration"],
+        "python" => &["import_statement", "import_from_statement"],
+        "typescript" | "tsx" | "javascript" => &["import_statement"],
+        "go" => &["import_declaration"],
+        _ => return Vec::new(),
+    };
     let mut out = Vec::new();
     let mut cursor = tree.walk();
     let mut stack = vec![tree.root_node()];
     while let Some(node) = stack.pop() {
-        if node.kind() == "use_declaration" {
+        if kinds.contains(&node.kind()) {
             out.push((node.start_byte(), node.end_byte()));
             continue;
         }

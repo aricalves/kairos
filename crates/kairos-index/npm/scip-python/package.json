@@ -1,0 +1,7 @@
+{
+  "name": "kairos-scip-python",
+  "private": true,
+  "dependencies": {
+    "@sourcegraph/scip-python": "0.6.6"
+  }
+}

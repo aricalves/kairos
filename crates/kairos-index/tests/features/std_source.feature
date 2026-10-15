@@ -15,10 +15,11 @@ Feature: The latest rust-analyzer with a pinned std source
     When I build the index
     Then rust-analyzer reads the pinned std source, and the log shows its path
 
+  # KAIROS-T-0485: a refused archive is a fallback with a warning.
   Scenario: The pinned std source is checked
     Given a std source archive whose sha256 is not the pinned value
     When I build the index
-    Then the build stops, and the error names the archive and the expected checksum
+    Then the build finishes with the Rust edges by name, and a Rust warning names the archive and the expected checksum
 
   # This replaces the scenario of the same name of COLLIERY-T-1858.
   Scenario: The SCIP run still builds nothing

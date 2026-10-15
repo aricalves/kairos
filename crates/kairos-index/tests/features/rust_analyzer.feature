@@ -11,7 +11,9 @@ Feature: A pinned rust-analyzer
     Then no target is left out
     And each call from the 3 test crates to the shared module is a "certain" edge from SCIP
 
+  # KAIROS-T-0485: a refused binary is a fallback with a warning, as for the
+  # other languages.
   Scenario: The pinned binary is checked
     Given a rust-analyzer binary whose sha256 is not the pinned value
     When I build the index
-    Then the build stops, and the error names the binary and the expected checksum
+    Then the build finishes with the Rust edges by name, and a Rust warning names the binary and the expected checksum

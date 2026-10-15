@@ -1,0 +1,7 @@
+{
+  "name": "kairos-scip-typescript",
+  "private": true,
+  "dependencies": {
+    "@sourcegraph/scip-typescript": "0.4.0"
+  }
+}

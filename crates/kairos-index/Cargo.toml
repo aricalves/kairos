@@ -43,6 +43,8 @@ flate2 = "1"
 # The pinned std source (COLLIERY-T-1860) is a .tar.gz from
 # static.rust-lang.org.
 tar = "0.4"
+# The free space of the disk, for the dependency cache (KAIROS-T-0474).
+libc = "0.2"
 # The vectors of the summaries: the trait and the deterministic provider.
 # The caller gives the provider; the local model (bge-small-en-v1.5) is the
 # `local` feature of kairos-embed, which the server already builds.

@@ -27,6 +27,50 @@ shows the newest index, the last runs and the indexed commits. It updates
 when a run starts or ends. The REST route is
 `GET /api/repositories/{slug}/code-indexes/builds`.
 
+### The SCIP warnings of a run
+
+The builder runs a SCIP indexer for these languages: Rust, Go, TypeScript
+(with TSX and JavaScript) and Python. Then the edges and the uses of that
+language are precise. Sometimes the indexer of a language cannot run. Then
+that language gets its edges by name. The run records a warning with the
+language and the reason. The run is still `ok`.
+
+`kairos repos builds <slug>` shows each warning on a line under its run:
+
+```text
+warning: no SCIP index for go: go mod download failed (exit status: 1): …. Its edges are by name.
+```
+
+The panel "Show code index" shows the same line under the run. These are
+the usual reasons:
+
+- The tool is not there: a download failed, a downloaded file has an
+  incorrect sha256, or the platform has no pinned build. Look at the files
+  in `KAIROS_CODE_INDEX_DIR/tools/`.
+- The install of the dependencies failed (`go mod download`, `npm ci` or
+  `npm install`, `pip install`, `uv sync`). A private dependency needs a
+  token in the environment of the server. See
+  [The tools of Go, TypeScript and Python](../../reference/configuration/#the-tools-of-go-typescript-and-python).
+- The free disk space is low. The builder removed the dependency caches,
+  and the space is still less than `KAIROS_CODE_INDEX_MIN_FREE_MB`.
+- The indexer failed. The reason has the last lines of its output.
+- For Rust: the pinned rust-analyzer or the pinned std source is not
+  there or has an incorrect sha256, or `cargo metadata` or
+  `rust-analyzer scip` failed. Rust then has its edges by name, as the
+  other languages do. Only a rust-analyzer run that did not turn off the
+  build of the repository stops the build.
+
+### The disk use of the builder
+
+An organization admin sees the disk use of the server at the end of the
+panel "Show code index". The panel shows the tools by language and the
+free disk space. It also shows the dependency caches by language, with
+their cap (`KAIROS_CODE_INDEX_DEPS_CAP_MB`). The REST answer
+`GET /api/repositories/{slug}/code-indexes/builds` has these values in
+`disk`, and each run has its warnings in `scip_warnings`.
+
+### A run that stopped
+
 A run can have the text "The server stopped during the run". Then no build
 job of the repository had that run any more. The next run of the repository
 replaces it. When a server stops during a build, another server takes the

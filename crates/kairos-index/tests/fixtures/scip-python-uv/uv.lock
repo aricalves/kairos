@@ -1,0 +1,22 @@
+version = 1
+revision = 5
+requires-python = ">=3.10"
+
+[[package]]
+name = "helper"
+version = "0.1.0"
+source = { path = "wheels/helper-0.1.0-py3-none-any.whl" }
+wheels = [
+    { filename = "helper-0.1.0-py3-none-any.whl", hash = "sha256:df78dd4df38346b1b03d72a064dd36bcec0c373bb6b6a652504ced772ecf3ea1" },
+]
+
+[[package]]
+name = "shop"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "helper" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "helper", path = "wheels/helper-0.1.0-py3-none-any.whl" }]

@@ -419,6 +419,7 @@ One run of the code index builder (KAIROS-T-0331). The trigger says what started
 | `outcome` | `string` | yes | `running`, `ok` or `failed`. |
 | `ref` | `string`, nullable | no | The branch that the run indexed, if known. |
 | `requested_by` | `string`, nullable | no | The user who asked for the run or sent the upload. None for the builder. |
+| `scip_warnings` | array of [`CodeIndexScipWarning`](#codeindexscipwarning) | no | Each language that had no SCIP index in the run, and why (KAIROS-T-0478): its edges are by name. Empty when each SCIP indexer of the run gave its index. |
 | `started_at` | `string` | yes | When the run started, RFC 3339. |
 | `summaries_made` | `integer`, nullable | no | The summaries that the run made with the model. |
 | `summaries_reused` | `integer`, nullable | no | The summaries that the run reused with no model call (KAIROS-T-0335): from the pool of the repository, or from the work file of a run that did not end. |
@@ -432,9 +433,41 @@ The answer to `GET /api/repositories/{slug}/code-indexes/builds`.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `builder` | `string`, nullable | no | Set when no code index builder runs for the deployment (KAIROS-T-0394): the server has the role `api`, and no server with the role `worker` ran the new-commits sweep lately. The text says what to do. |
+| `disk` | [`CodeIndexDiskUse`](#codeindexdiskuse), nullable | no |  |
 | `items` | array of [`CodeIndexBuild`](#codeindexbuild) | yes | The runs, newest first. |
 | `limit` | `integer` | yes | The limit that the answer used. |
 | `total` | `integer` | yes | The runs of the repository, with those not in `items`. |
+
+## CodeIndexCacheUse
+
+The dependency caches of one language and their disk use.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `bytes` | `integer` | yes |  |
+| `language` | `string` | yes |  |
+| `repositories` | `integer` | yes | The count of the repositories with a cache. |
+
+## CodeIndexDiskUse
+
+The disk use of the builder of this server: its tools and its dependency caches (KAIROS-T-0478).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `caches` | array of [`CodeIndexCacheUse`](#codeindexcacheuse) | yes | The dependency caches of the repositories, by language. |
+| `caches_bytes` | `integer` | yes | The total of the dependency caches, in bytes. |
+| `caches_cap_bytes` | `integer` | yes | The cap of the dependency caches, in bytes (`KAIROS_CODE_INDEX_DEPS_CAP_MB`). |
+| `free_bytes` | `integer`, nullable | no | The free space of the disk of `KAIROS_CODE_INDEX_DIR`, in bytes. |
+| `tools` | array of [`CodeIndexToolUse`](#codeindextooluse) | yes | Each tool folder of `KAIROS_CODE_INDEX_DIR/tools/`, and the other files there (the archives) as `other`. |
+
+## CodeIndexScipWarning
+
+A language of a run with no SCIP index (KAIROS-T-0478).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `language` | `string` | yes | `rust`, `go`, `typescript` or `python`. |
+| `reason` | `string` | yes | What failed: a missing tool, a download, a checksum, an install or the indexer. |
 
 ## CodeIndexSettings
 
@@ -457,6 +490,16 @@ The answer to `GET /api/org/code-index-settings`.
 Where the summaries of the code index of a repository are made (KAIROS-T-0340).
 
 One of: `embedded`, `hosted`, `organization`
+
+## CodeIndexToolUse
+
+One tool folder and its disk use.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `bytes` | `integer` | yes |  |
+| `language` | `string`, nullable | no | The language that uses it: `rust`, `go`, `typescript`, `python`, `typescript, python` (Node.js), or none. |
+| `name` | `string` | yes | The folder: `go-1.27.2`, `node-24.22.0`, `rust-1.93.0`, … or `other`. |
 
 ## CodeSequence
 
