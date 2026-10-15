@@ -11,7 +11,7 @@ use tree_sitter::{Node, Tree};
 
 use crate::calls::{
     CallSite, Import, call_sites, go_package_and_imports, rust_macro_calls, rust_macro_ranges,
-    rust_use_ranges,
+    rust_use_ranges, terraform_modules,
 };
 use crate::tokens;
 
@@ -70,7 +70,8 @@ pub struct FileExtract {
     pub macro_ranges: Vec<(usize, usize)>,
     /// The package of a Go file (KAIROS-T-0469).
     pub package: Option<String>,
-    /// The imports of a Go file (KAIROS-T-0469).
+    /// The imports of a Go file (KAIROS-T-0469), or the module calls of a
+    /// Terraform file with their sources (KAIROS-T-0471).
     pub imports: Vec<Import>,
 }
 
@@ -137,10 +138,10 @@ pub fn extract(
     } else {
         (Vec::new(), Vec::new(), Vec::new())
     };
-    let (package, imports) = if language == "go" {
-        go_package_and_imports(&tree, source)
-    } else {
-        (None, Vec::new())
+    let (package, imports) = match language {
+        "go" => go_package_and_imports(&tree, source),
+        "terraform" => (None, terraform_modules(&tree, source)),
+        _ => (None, Vec::new()),
     };
     let symbols: Vec<Extracted> = symbols
         .iter()
@@ -489,6 +490,22 @@ pub(crate) fn terraform_labels(block: Node<'_>, content: &str) -> Vec<String> {
                 .to_string()
         })
         .collect()
+}
+
+/// The text of the string attribute `key` of a Terraform block:
+/// `./modules/bucket` for `source = "./modules/bucket"`.
+pub(crate) fn terraform_attribute(block: Node<'_>, content: &str, key: &str) -> Option<String> {
+    let body = terraform_body(block)?;
+    let mut cursor = body.walk();
+    let attribute = body.named_children(&mut cursor).find(|n| {
+        n.kind() == "attribute"
+            && n.named_child(0)
+                .is_some_and(|k| &content[k.start_byte()..k.end_byte()] == key)
+    })?;
+    let value = attribute.named_child(1)?;
+    let text = content[value.start_byte()..value.end_byte()].trim();
+    (text.starts_with('"') && text.ends_with('"') && text.len() >= 2 && !text.contains("${"))
+        .then(|| text[1..text.len() - 1].to_string())
 }
 
 /// The body of a Terraform block, if it has one.

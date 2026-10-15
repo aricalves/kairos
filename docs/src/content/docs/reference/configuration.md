@@ -1017,6 +1017,21 @@ make the address that Terraform code uses:
 - The index does not read the `.terraform/` folder. `terraform init` puts
   the downloaded modules there.
 
+The tools `callers`, `callees` and `path` use the references of the
+Terraform code. A reference is a call from the block that holds it to the
+block that it names:
+
+- `var.x`, `local.x`, `module.z`, `data.t.n` and `t.n` go to the block in
+  the same folder. Terraform reads one folder as one module. Thus a block
+  of the same name in a different folder is not a match.
+- `module.z.o` goes to the output `o` of the module that `module "z"`
+  calls. Each argument `x` of `module "z"` goes to the variable `x` of that
+  module. The `source` must be a local path (`./` or `../`). A module from a
+  registry, from git or from a URL is outside the checkout: its references
+  are external.
+- `count.index`, `each.key`, `self`, `path` and `terraform` are not
+  references to a block.
+
 ## Helm chart values
 
 `deploy/helm/kairos/values.yaml`. Most values under `config` become entries in a

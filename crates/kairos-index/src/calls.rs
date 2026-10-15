@@ -17,6 +17,10 @@ pub struct CallSite {
     /// The place of the called name, from 1. The column counts bytes.
     pub line: usize,
     pub col: usize,
+    /// An argument of a Terraform module call: the name of the module call
+    /// (`store`), whose folder has the variable (KAIROS-T-0471).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
 }
 
 /// An import of a file (KAIROS-T-0469): the name that the code gives it, if
@@ -82,6 +86,9 @@ pub fn go_package_and_imports(tree: &Tree, source: &[u8]) -> (Option<String>, Ve
 /// arguments are tokens for tree-sitter. SCIP resolves the calls in a macro
 /// that it expands, and [`rust_macro_calls`] finds the others in the text.
 pub fn call_sites(language: &str, tree: &Tree, source: &[u8]) -> Vec<CallSite> {
+    if language == "terraform" {
+        return terraform_references(tree, source);
+    }
     let mut out = Vec::new();
     let mut cursor = tree.walk();
     let mut stack = vec![tree.root_node()];
@@ -92,6 +99,176 @@ pub fn call_sites(language: &str, tree: &Tree, source: &[u8]) -> Vec<CallSite> {
         // Children in reverse, so that the stack gives source order.
         let children: Vec<Node<'_>> = node.children(&mut cursor).collect();
         stack.extend(children.into_iter().rev());
+    }
+    out
+}
+
+/// The arguments of a Terraform `module` block that are not variables of
+/// the module.
+const TERRAFORM_META_ARGUMENTS: &[&str] = &[
+    "source",
+    "version",
+    "count",
+    "for_each",
+    "providers",
+    "depends_on",
+];
+
+/// The roots of a Terraform reference that name no block of the folder.
+const TERRAFORM_NOT_BLOCKS: &[&str] = &["each", "count", "self", "path", "terraform"];
+
+/// The references of a Terraform file, in source order (KAIROS-T-0471):
+///
+/// - `var.x`, `local.x`: the name `x`;
+/// - `module.z` gives `z`, `module.z.o` the output `o` of the module;
+/// - `data.t.n`: the name `n`;
+/// - `t.n` with a `_` in `t` (`aws_s3_bucket.b`): the resource `n`;
+/// - each argument `x = …` of a `module "z"` block: the variable `x` of the
+///   module, with `module` set to `z`.
+///
+/// Each reference is a call site, inside expressions and `${…}` templates
+/// alike. `written` is the address (`module.z.o`, `data.t.n`), with no
+/// index or splat.
+pub fn terraform_references(tree: &Tree, source: &[u8]) -> Vec<CallSite> {
+    let text =
+        |n: Node<'_>| String::from_utf8_lossy(&source[n.start_byte()..n.end_byte()]).into_owned();
+    let at = |name: &str, written: String, node: Node<'_>, module: Option<String>| CallSite {
+        name: name.to_string(),
+        written,
+        start_byte: node.start_byte(),
+        end_byte: node.end_byte(),
+        line: node.start_position().row + 1,
+        col: node.start_position().column + 1,
+        module,
+    };
+    let mut out = Vec::new();
+    // The arguments of the module calls.
+    let root = tree.root_node();
+    let mut cursor = root.walk();
+    for body in root
+        .named_children(&mut cursor)
+        .filter(|n| n.kind() == "body")
+    {
+        let mut c = body.walk();
+        for block in body.named_children(&mut c).filter(|n| n.kind() == "block") {
+            if block.named_child(0).map(text).as_deref() != Some("module") {
+                continue;
+            }
+            let Some(name) =
+                crate::extract::terraform_labels(block, &String::from_utf8_lossy(source))
+                    .into_iter()
+                    .next()
+            else {
+                continue;
+            };
+            let Some(block_body) = crate::extract::terraform_body(block) else {
+                continue;
+            };
+            let mut a = block_body.walk();
+            for attribute in block_body
+                .named_children(&mut a)
+                .filter(|n| n.kind() == "attribute")
+            {
+                let Some(key) = attribute.named_child(0) else {
+                    continue;
+                };
+                let key_text = text(key);
+                if TERRAFORM_META_ARGUMENTS.contains(&key_text.as_str()) {
+                    continue;
+                }
+                out.push(at(
+                    &key_text,
+                    format!("var.{key_text}"),
+                    key,
+                    Some(name.clone()),
+                ));
+            }
+        }
+    }
+    // The references in the expressions.
+    let mut stack = vec![root];
+    let mut walk = tree.walk();
+    while let Some(node) = stack.pop() {
+        if node.kind() == "expression" {
+            let mut c = node.walk();
+            let mut children = node.named_children(&mut c);
+            if let Some(root_name) = children
+                .next()
+                .filter(|n| n.kind() == "variable_expr")
+                .and_then(|n| n.named_child(0))
+            {
+                // The attribute names after the root, past an index or a
+                // splat, up to the first other node.
+                let parts: Vec<Node<'_>> = children
+                    .filter(|n| n.kind() == "get_attr")
+                    .filter_map(|n| n.named_child(0))
+                    .collect();
+                let root_text = text(root_name);
+                let part = |i: usize| parts.get(i).map(|n| (text(*n), *n));
+                let site = match (root_text.as_str(), part(0), part(1)) {
+                    ("var" | "local", Some((x, n)), _) => {
+                        Some((x.clone(), format!("{root_text}.{x}"), n))
+                    }
+                    ("module", Some((z, _)), Some((o, n))) => {
+                        Some((o.clone(), format!("module.{z}.{o}"), n))
+                    }
+                    ("module", Some((z, n)), None) => Some((z.clone(), format!("module.{z}"), n)),
+                    ("data", Some((t, _)), Some((x, n))) => {
+                        Some((x.clone(), format!("data.{t}.{x}"), n))
+                    }
+                    (t, Some((x, n)), _)
+                        if t.contains('_') && !TERRAFORM_NOT_BLOCKS.contains(&t) =>
+                    {
+                        Some((x.clone(), format!("{t}.{x}"), n))
+                    }
+                    _ => None,
+                };
+                if let Some((name, written, n)) = site {
+                    out.push(at(&name, written, n, None));
+                }
+            }
+        }
+        let children: Vec<Node<'_>> = node.children(&mut walk).collect();
+        stack.extend(children.into_iter().rev());
+    }
+    out.sort_by_key(|c| c.start_byte);
+    out
+}
+
+/// The module calls of a Terraform file: the name of each `module` block
+/// and its `source` (KAIROS-T-0471).
+pub fn terraform_modules(tree: &Tree, source: &[u8]) -> Vec<Import> {
+    let content = String::from_utf8_lossy(source);
+    let root = tree.root_node();
+    let mut out = Vec::new();
+    let mut cursor = root.walk();
+    for body in root
+        .named_children(&mut cursor)
+        .filter(|n| n.kind() == "body")
+    {
+        let mut c = body.walk();
+        for block in body.named_children(&mut c).filter(|n| n.kind() == "block") {
+            if block
+                .named_child(0)
+                .map(|n| &content[n.start_byte()..n.end_byte()])
+                != Some("module")
+            {
+                continue;
+            }
+            let Some(name) = crate::extract::terraform_labels(block, &content)
+                .into_iter()
+                .next()
+            else {
+                continue;
+            };
+            let Some(path) = crate::extract::terraform_attribute(block, &content, "source") else {
+                continue;
+            };
+            out.push(Import {
+                name: Some(name),
+                path,
+            });
+        }
     }
     out
 }
@@ -236,6 +413,7 @@ fn text_calls(
             end_byte: byte + name.len(),
             line,
             col: byte - starts[line - 1] + 1,
+            module: None,
         });
     }
 }
@@ -362,6 +540,7 @@ fn site(name: Node<'_>, call: Node<'_>, source: &[u8]) -> CallSite {
         end_byte: name.end_byte(),
         line: name.start_position().row + 1,
         col: name.start_position().column + 1,
+        module: None,
     }
 }
 
@@ -448,6 +627,41 @@ mod tests {
                 (Some("_"), "embed"),
                 (None, "os"),
             ]
+        );
+    }
+
+    /// KAIROS-T-0471: the references of a Terraform file.
+    #[test]
+    fn terraform_references_are_call_sites() {
+        let code = "module \"store\" {\n  source = \"./modules/bucket\"\n  count  = 1\n  name   = local.name\n}\n\nresource \"aws_s3_bucket\" \"b\" {\n  bucket = \"${var.prefix}-${data.aws_caller_identity.me.account_id}\"\n  arn    = aws_iam_role.r[0].arn\n  out    = module.store[0].arn\n  all    = module.store\n  list   = [for s in var.items : s.name]\n  key    = each.key\n  n      = count.index\n  p      = path.module\n}\n";
+        let parser = LanguageParser::new().unwrap();
+        let tree = parser.parse_to_tree(Path::new("main.tf"), code).unwrap();
+        let got: Vec<(String, String, usize, Option<String>)> =
+            call_sites("terraform", &tree, code.as_bytes())
+                .into_iter()
+                .map(|c| (c.name, c.written, c.line, c.module))
+                .collect();
+        let want: Vec<(String, String, usize, Option<String>)> = [
+            ("name", "var.name", 4, Some("store")),
+            ("name", "local.name", 4, None),
+            ("prefix", "var.prefix", 8, None),
+            ("me", "data.aws_caller_identity.me", 8, None),
+            ("r", "aws_iam_role.r", 9, None),
+            ("arn", "module.store.arn", 10, None),
+            ("store", "module.store", 11, None),
+            ("items", "var.items", 12, None),
+        ]
+        .into_iter()
+        .map(|(n, w, l, m)| (n.to_string(), w.to_string(), l, m.map(str::to_string)))
+        .collect();
+        assert_eq!(got, want);
+        let modules = terraform_modules(&tree, code.as_bytes());
+        assert_eq!(
+            modules,
+            [Import {
+                name: Some("store".into()),
+                path: "./modules/bucket".into()
+            }]
         );
     }
 

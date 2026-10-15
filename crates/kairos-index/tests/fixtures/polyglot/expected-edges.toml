@@ -499,6 +499,97 @@ at = 7
 class = "external"
 external = "t.Fatal"
 
+# --- Terraform (KAIROS-T-0471) ----------------------------------------------
+# A reference is an edge from the block that holds it to the block that it
+# names, in the same folder. An argument of a module call goes to the
+# variable of the module, `module.store.arn` to its output; the arguments of
+# the registry module `network` are external. The 2 `aws_sns_topic.events`
+# are in 2 folders: neither is matched from the other.
+
+[[edge]]
+caller = { file = "infra/main.tf", name = "aws", line = 1 }
+at = 2
+class = "certain"
+callee = { file = "infra/variables.tf", name = "region", line = 3 }
+
+[[edge]]
+caller = { file = "infra/main.tf", name = "name", line = 6 }
+at = 6
+class = "certain"
+callee = { file = "infra/variables.tf", name = "region", line = 3 }
+
+[[edge]]
+caller = { file = "infra/main.tf", name = "store", line = 11 }
+at = 13
+class = "certain"
+callee = { file = "infra/modules/bucket/variables.tf", name = "name", line = 1 }
+
+[[edge]]
+caller = { file = "infra/main.tf", name = "store", line = 11 }
+at = 13
+class = "certain"
+callee = { file = "infra/main.tf", name = "name", line = 6 }
+
+[[edge]]
+caller = { file = "infra/main.tf", name = "store", line = 11 }
+at = 14
+class = "certain"
+callee = { file = "infra/modules/bucket/variables.tf", name = "owner", line = 6 }
+
+[[edge]]
+caller = { file = "infra/main.tf", name = "store", line = 11 }
+at = 14
+class = "certain"
+callee = { file = "infra/main.tf", name = "current", line = 9 }
+
+[[edge]]
+caller = { file = "infra/main.tf", name = "network", line = 17 }
+at = 20
+class = "external"
+external = "var.name"
+
+[[edge]]
+caller = { file = "infra/main.tf", name = "network", line = 17 }
+at = 20
+class = "certain"
+callee = { file = "infra/main.tf", name = "name", line = 6 }
+
+[[edge]]
+caller = { file = "infra/main.tf", name = "events", line = 23 }
+at = 24
+class = "certain"
+callee = { file = "infra/main.tf", name = "name", line = 6 }
+
+[[edge]]
+caller = { file = "infra/main.tf", name = "bucket_arn", line = 27 }
+at = 28
+class = "certain"
+callee = { file = "infra/modules/bucket/outputs.tf", name = "arn", line = 1 }
+
+[[edge]]
+caller = { file = "infra/modules/bucket/main.tf", name = "this", line = 1 }
+at = 3
+class = "certain"
+callee = { file = "infra/modules/bucket/variables.tf", name = "name", line = 1 }
+
+[[edge]]
+caller = { file = "infra/modules/bucket/main.tf", name = "this", line = 1 }
+at = 4
+class = "certain"
+callee = { file = "infra/modules/bucket/variables.tf", name = "owner", line = 6 }
+
+[[edge]]
+caller = { file = "infra/modules/bucket/main.tf", name = "events", line = 7 }
+at = 9
+class = "certain"
+callee = { file = "infra/modules/bucket/variables.tf", name = "name", line = 1 }
+
+[[edge]]
+caller = { file = "infra/modules/bucket/outputs.tf", name = "arn", line = 1 }
+at = 2
+class = "certain"
+callee = { file = "infra/modules/bucket/main.tf", name = "this", line = 1 }
+
 # --- Repeated code (COLLIERY-T-1857) -------------------------------------------
 
 [[edge]]

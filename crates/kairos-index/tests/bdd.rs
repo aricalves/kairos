@@ -3815,6 +3815,79 @@ fn a_result_is(world: &mut IndexWorld, qualified: String, file: String) {
     );
 }
 
+/// The one symbol `qualified` in `file`.
+fn one_symbol(world: &IndexWorld, qualified: &str, file: &str) -> kairos_index::SymbolInfo {
+    match world
+        .index()
+        .lookup(qualified, Some(file), None)
+        .expect("look up")
+    {
+        Lookup::Found(s) => s,
+        other => panic!("{qualified} in {file}: {other:?}"),
+    }
+}
+
+/// The lines of a docstring, with no empty line.
+fn docstring_lines(step: &cucumber::gherkin::Step) -> Vec<String> {
+    step.docstring
+        .as_deref()
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+#[then(expr = "the callees of {string} in {string} are:")]
+fn the_callees_are(
+    world: &mut IndexWorld,
+    qualified: String,
+    file: String,
+    step: &cucumber::gherkin::Step,
+) {
+    let s = one_symbol(world, &qualified, &file);
+    let callees = world.index().callees(s.id, false).expect("the callees");
+    let got: Vec<String> = callees
+        .edges
+        .iter()
+        .map(|e| format!("{} ({})", e.other.qualified(), e.other.place()))
+        .collect();
+    assert_eq!(got, docstring_lines(step));
+}
+
+#[then(expr = "the callers of {string} in {string} are:")]
+fn the_callers_are(
+    world: &mut IndexWorld,
+    qualified: String,
+    file: String,
+    step: &cucumber::gherkin::Step,
+) {
+    let s = one_symbol(world, &qualified, &file);
+    let callers = world.index().callers(s.id, false).expect("the callers");
+    let got: Vec<String> = callers
+        .iter()
+        .map(|e| format!("{} ({})", e.other.qualified(), e.other.place()))
+        .collect();
+    assert_eq!(got, docstring_lines(step));
+}
+
+#[then(expr = "the callees of {string} in {string} have the external {string}")]
+fn the_callees_have_the_external(
+    world: &mut IndexWorld,
+    qualified: String,
+    file: String,
+    external: String,
+) {
+    let s = one_symbol(world, &qualified, &file);
+    let callees = world.index().callees(s.id, false).expect("the callees");
+    assert!(
+        callees.externals.iter().any(|e| e.name == external),
+        "{:?}",
+        callees.externals
+    );
+}
+
 #[then("the results have test functions and functions that are not test code")]
 fn tests_and_others(world: &mut IndexWorld) {
     let hits = &world.search.as_ref().expect("no search ran").hits;

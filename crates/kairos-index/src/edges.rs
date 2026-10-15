@@ -20,6 +20,12 @@
 //!   package; the edge goes to the function `F` there. A package outside
 //!   the modules of the repository is `external`. A plain Go call (`F()`)
 //!   goes to its own folder first (KAIROS-T-0469).
+//! - **A Terraform reference** (`var.x`, `local.x`, `module.z`, `data.t.n`,
+//!   `t.n`) goes to the block of that address in the same folder: the scope
+//!   of Terraform is the folder. `module.z.o` goes to the output `o` in the
+//!   folder of the local `source` of the module call `z`; an argument `x` of
+//!   the module call goes to its variable `x`. A remote source is `external`
+//!   (KAIROS-T-0471).
 //! - **A method call** (`x.f()`) never goes to the caller itself by name:
 //!   the receiver is not known, so a name gives no evidence of recursion.
 //! - **A SCIP definition with no symbol** (a function that a macro makes):
@@ -65,7 +71,8 @@ pub struct ParsedFile<'a> {
     pub macro_ranges: &'a [(usize, usize)],
     /// The package of a Go file (KAIROS-T-0469).
     pub package: Option<&'a str>,
-    /// The imports of a Go file (KAIROS-T-0469).
+    /// The imports of a Go file (KAIROS-T-0469), or the module calls of a
+    /// Terraform file with their sources (KAIROS-T-0471).
     pub imports: &'a [Import],
 }
 
@@ -106,6 +113,26 @@ enum GoPackage {
 /// The folder of a path: `""` for a file at the root.
 fn folder_of(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(folder, _)| folder)
+}
+
+/// The folder of a local Terraform module source, from the folder of the
+/// module call: `./modules/bucket` from `infra` is `infra/modules/bucket`.
+/// `None` for a remote source (a registry, git or a URL).
+fn terraform_source_folder(here: &str, source: &str) -> Option<String> {
+    if !(source.starts_with("./") || source.starts_with("../")) {
+        return None;
+    }
+    let mut parts: Vec<&str> = here.split('/').filter(|p| !p.is_empty()).collect();
+    for part in source.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            part => parts.push(part),
+        }
+    }
+    Some(parts.join("/"))
 }
 
 /// The name that an import with no name gives, for a package outside the
@@ -446,10 +473,13 @@ fn family(language: &str) -> &str {
 /// `macro_rules!` definition that holds it: a call in the body of a macro
 /// has the macro as its caller (KAIROS-T-0353).
 fn caller_at(file: &ParsedFile<'_>, byte: usize) -> Option<i64> {
+    let terraform = file.language == "terraform";
     file.symbols
         .iter()
         .filter(|s| {
-            (is_function(s.kind) || s.kind == "macro") && s.start_byte <= byte && byte < s.end_byte
+            (is_function(s.kind) || s.kind == "macro" || terraform)
+                && s.start_byte <= byte
+                && byte < s.end_byte
         })
         .min_by_key(|s| s.end_byte - s.start_byte)
         .map(|s| s.id)
@@ -521,7 +551,15 @@ struct Names<'a> {
     /// The packages that the imports of each Go file name, by file index
     /// and by the name in the code (KAIROS-T-0469).
     go_imports: HashMap<usize, HashMap<String, GoPackage>>,
+    /// The Terraform blocks by folder, kind, container and name
+    /// (KAIROS-T-0471).
+    terraform: HashMap<TerraformKey<'a>, Vec<i64>>,
+    /// The source of each Terraform module call, by folder and name.
+    terraform_modules: HashMap<(&'a str, &'a str), &'a str>,
 }
+
+/// A Terraform block: its folder, its kind, its container and its name.
+type TerraformKey<'a> = (&'a str, &'a str, Option<&'a str>, &'a str);
 
 impl<'a> Names<'a> {
     fn new(files: &'a [ParsedFile<'a>], go_modules: &[GoModule]) -> Self {
@@ -598,11 +636,29 @@ impl<'a> Names<'a> {
                 }
             }
         }
+        let mut terraform: HashMap<TerraformKey<'a>, Vec<i64>> = HashMap::new();
+        let mut terraform_modules = HashMap::new();
+        for file in files.iter().filter(|f| f.language == "terraform") {
+            let folder = folder_of(file.path);
+            for s in &file.symbols {
+                terraform
+                    .entry((folder, s.kind, s.container.as_deref(), s.name.as_str()))
+                    .or_default()
+                    .push(s.id);
+            }
+            for import in file.imports {
+                if let Some(name) = &import.name {
+                    terraform_modules.insert((folder, name.as_str()), import.path.as_str());
+                }
+            }
+        }
         Names {
             files,
             by_name,
             modules,
             go_imports,
+            terraform,
+            terraform_modules,
         }
     }
 
@@ -647,6 +703,71 @@ impl<'a> Names<'a> {
                     || there.modules.last().is_some_and(|m| m == part)
                     || (there.modules.is_empty() && there.crate_name.as_deref() == Some(part))
             }
+        }
+    }
+
+    /// The edge of a Terraform reference from file `file` (KAIROS-T-0471).
+    fn terraform_edge(
+        &self,
+        file: usize,
+        caller_id: i64,
+        call: &CallSite,
+        stats: &mut EdgeStats,
+    ) -> NewEdge {
+        let here = folder_of(self.files[file].path);
+        // The folder of a module call of this folder: `None` when the call
+        // is not known or its source is remote.
+        let module_folder = |z: &str| {
+            self.terraform_modules
+                .get(&(here, z))
+                .and_then(|source| terraform_source_folder(here, source))
+        };
+        let find = |folder: &str, kind: &str, container: Option<&str>, name: &str| -> Vec<i64> {
+            self.terraform
+                .get(&(folder, kind, container, name))
+                .cloned()
+                .unwrap_or_default()
+        };
+        let parts: Vec<&str> = call.written.split('.').collect();
+        let found = match (call.module.as_deref(), parts.as_slice()) {
+            (Some(z), _) => module_folder(z)
+                .map(|f| find(&f, "variable", Some("var"), &call.name))
+                .unwrap_or_default(),
+            (None, ["var", x]) => find(here, "variable", Some("var"), x),
+            (None, ["local", x]) => find(here, "local", Some("local"), x),
+            (None, ["module", z]) => find(here, "module", Some("module"), z),
+            (None, ["module", z, o]) => module_folder(z)
+                .map(|f| find(&f, "output", None, o))
+                .unwrap_or_default(),
+            (None, ["data", t, n]) => find(here, "data", Some(&format!("data.{t}")), n),
+            (None, [t, n]) => find(here, "resource", Some(t), n),
+            _ => Vec::new(),
+        };
+        let (class, callee_id, candidates) = match found.as_slice() {
+            [] => {
+                stats.external_name += 1;
+                ("external", None, Vec::new())
+            }
+            [one] => {
+                stats.certain_name += 1;
+                ("certain", Some(*one), Vec::new())
+            }
+            many => {
+                stats.possible_name += 1;
+                ("possible", None, many.to_vec())
+            }
+        };
+        NewEdge {
+            caller_id,
+            callee_id,
+            callee_name: call.written.clone(),
+            class,
+            origin: "name",
+            line: call.line,
+            col: call.col,
+            candidates,
+            scip_pending: false,
+            target: None,
         }
     }
 
@@ -1190,6 +1311,10 @@ pub fn resolve(files: &[ParsedFile<'_>], rust: RustEdges<'_>, go_modules: &[GoMo
             if file.language == "rust" {
                 stats.rust_unresolved += 1;
             }
+            if file.language == "terraform" {
+                edges.push(names.terraform_edge(i, caller_id, call, &mut stats));
+                continue;
+            }
             let mut edge = names.edge(
                 file.language,
                 i,
@@ -1346,6 +1471,74 @@ mod tests {
         );
     }
 
+    /// KAIROS-T-0471: a Terraform reference stays in its folder.
+    #[test]
+    fn a_terraform_reference_stays_in_its_folder() {
+        let mut topic_a = sym(1, "events", "resource", (0, 40));
+        topic_a.container = Some("aws_sns_topic".into());
+        let mut out_a = sym(2, "topic", "output", (50, 90));
+        out_a.container = None;
+        let mut topic_b = sym(3, "events", "resource", (0, 40));
+        topic_b.container = Some("aws_sns_topic".into());
+        let mut use_b = sym(4, "copy", "resource", (50, 90));
+        use_b.container = Some("aws_sns_topic".into());
+        let reference = |at| CallSite {
+            name: "events".into(),
+            written: "aws_sns_topic.events".into(),
+            start_byte: at,
+            end_byte: at + 6,
+            line: 1,
+            col: 1,
+            module: None,
+        };
+        let a_calls = [reference(60)];
+        let b_calls = [reference(60)];
+        let tf = |path, symbols, calls| ParsedFile {
+            path,
+            language: "terraform",
+            text: "",
+            symbols,
+            calls,
+            use_ranges: &[],
+            macro_calls: &[],
+            macro_ranges: &[],
+            package: None,
+            imports: &[],
+        };
+        let files = [
+            tf("a/main.tf", vec![topic_a, out_a], &a_calls[..]),
+            tf("b/main.tf", vec![topic_b, use_b], &b_calls[..]),
+        ];
+        let Resolved { edges, .. } = resolve(&files, RustEdges::Names, &[]);
+        let got: Vec<_> = edges
+            .iter()
+            .map(|e| (e.caller_id, e.class, e.callee_id))
+            .collect();
+        assert_eq!(got, [(2, "certain", Some(1)), (4, "certain", Some(3))]);
+    }
+
+    #[test]
+    fn the_folder_of_a_terraform_module_source() {
+        assert_eq!(
+            terraform_source_folder("infra", "./modules/bucket").as_deref(),
+            Some("infra/modules/bucket")
+        );
+        assert_eq!(
+            terraform_source_folder("infra/live", "../modules/net/").as_deref(),
+            Some("infra/modules/net")
+        );
+        assert_eq!(terraform_source_folder("", "./m").as_deref(), Some("m"));
+        assert_eq!(terraform_source_folder("", "../m"), None);
+        assert_eq!(
+            terraform_source_folder("infra", "terraform-aws-modules/vpc/aws"),
+            None
+        );
+        assert_eq!(
+            terraform_source_folder("infra", "git::https://example.com/m.git"),
+            None
+        );
+    }
+
     #[test]
     fn the_name_of_an_external_go_package() {
         for (path, name) in [
@@ -1398,6 +1591,7 @@ mod tests {
             end_byte: byte + name.len(),
             line: 1,
             col: byte + 1,
+            module: None,
         }
     }
 
