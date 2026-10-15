@@ -35,6 +35,8 @@ The task item is your **working memory**. Every few significant steps, `append_n
 
 To find code, use the code tools of the `kairos-code` MCP server before you read files: `module_map`, `code_search`, `callers` and `callees` (and `symbol`, `references` and `path`). Then read only the files that they name.
 
+When you split the task, or add a task for work that you find, link the tasks with `blocks` when one must wait for the other. Give no edge to tasks that can go in parallel. Say the order in each task.
+
 Use the `tdd` skill at pre-agreed seams where possible. Run the repo's fast checks — formatter, typecheck, single test files — as you go; the full suite once at the end.
 
 ## The completion gate

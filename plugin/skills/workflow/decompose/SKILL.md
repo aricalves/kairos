@@ -51,6 +51,8 @@ Publish in dependency order — blockers first — so every blocking edge names 
 
 - `create_item(item_type: task, board: <delivery board>, repository: <slug>, parent: <initiative short code>, title: ..., content: ...)` using the **Task body template** (omit `repository` when the task has no code). The `parent` edge links the task to its initiative — the body carries no parent section.
 - For each of its blockers: `link_items(source: <blocker short code>, target: <this task's short code>, relationship: blocks)`.
+- Add a `blocks` edge only when a task must wait for another task. Give no edge to tasks that can go in parallel. The graph view shows serial work as a row and parallel work in one column.
+- Write the order in the `## Order` section of the task.
 
 Columns and blocking edges are native to Kairos — new tasks go to the entry column of the board, and that's where they belong; leave them for the team to pull. The initiative itself stays untouched: decompose only adds children.
 
@@ -82,6 +84,10 @@ A **wide refactor** is one mechanical change — rename a column, retype a share
 A concise description of this vertical slice. Describe the end-to-end behavior, not layer-by-layer implementation.
 
 Avoid specific file paths or code snippets — they go stale fast. Exception: if a prototype produced code that encodes a decision more precisely than prose can (state machine, reducer, schema, type shape), add a context pointer to where that prototype code lives rather than inlining it.
+
+## Order
+
+Blocked by: the short codes of the tasks that must complete first. Or: "none, this task can go in parallel".
 
 ## Acceptance criteria
 

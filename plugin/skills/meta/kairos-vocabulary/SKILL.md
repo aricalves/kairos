@@ -46,6 +46,7 @@ A proposal, a decomposition draft and a grill session talk about work before it 
 
 - Work that belongs together is the children of one initiative (the `parent` edge). That is the group. Do not make up "workstream A", "batch 2" or "the migration epic".
 - An order between tasks is a `blocks` edge from the first task to the second. Do not write "phase 1" or "batch 2". `/kairos:ralph-initiative` follows the `blocks` edges, so an order in text only is an order that nothing follows.
+- Tasks that can go in parallel get no edge. The graph view lays out work by the `blocks` edges: serial work in a row, parallel work in one column.
 - A group that is real and lasts is an initiative. Propose one.
 - "Vertical slice" is the shape of a cut. It is not a name. A slice becomes a task, and its name is the short code of that task.
 

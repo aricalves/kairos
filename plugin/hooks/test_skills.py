@@ -126,6 +126,37 @@ class KairosVocabulary(unittest.TestCase):
 
 
 
+class BlocksEdgesWhenWorkSplits(unittest.TestCase):
+    """KAIROS-T-0493: a skill that splits work sets a `blocks` edge for each
+    task that must wait, and no edge between parallel tasks, so the graph
+    view shows serial and parallel work."""
+
+    SKILLS_THAT_SPLIT = (
+        "workflow/decompose",
+        "workflow/grill-decomposition",
+        "workflow/implement",
+        "meta/kairos-vocabulary",
+    )
+
+    def test_each_skill_that_splits_work_names_the_rule(self):
+        for rel in self.SKILLS_THAT_SPLIT:
+            with self.subTest(skill=rel):
+                text = read(os.path.join(SKILLS, rel, "SKILL.md"))
+                self.assertIn("`blocks`", text)
+                self.assertIn("parallel", text)
+                self.assertIn("no edge", text)
+
+    def test_decompose_writes_the_order_in_the_task(self):
+        text = read(os.path.join(SKILLS, "workflow", "decompose", "SKILL.md"))
+        template = text.split("<task-template>", 1)[1].split("</task-template>", 1)[0]
+        self.assertIn("## Order", template)
+        self.assertIn("can go in parallel", template)
+        step5 = text.split("### 5.", 1)[1].split("## Reference", 1)[0]
+        self.assertIn("graph view", step5)
+
+
+
+
 class GrillInitiative(unittest.TestCase):
     """COLLIERY-T-1864."""
 
