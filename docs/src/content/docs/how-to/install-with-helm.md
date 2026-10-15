@@ -2,7 +2,7 @@
 title: "Install Kairos on Kubernetes with Helm"
 ---
 
-Get a Kairos 0.13.0 deployment serving on a cluster you already run.
+Get a Kairos 0.14.0 deployment serving on a cluster you already run.
 
 **Before you start**, have all four:
 
@@ -123,7 +123,7 @@ mounts the Swagger UI at `/api/docs`.
 
 ```sh
 helm install kairos oci://ghcr.io/colliery-io/charts/kairos \
-  --version 0.13.0 -f my-values.yaml
+  --version 0.14.0 -f my-values.yaml
 ```
 
 `--version` is not optional in practice: the chart publishes no floating tag.
@@ -190,6 +190,28 @@ Three changes of 0.13 show after the upgrade. They apply to Compose too.
 - Every repository follows the default branch of its forge now. The next
   fetch replaces a branch that a person set by hand in 0.12. Set it again
   with `kairos repos update <slug> --default-branch <branch>`.
+
+### From 0.13 to 0.14
+
+These changes of 0.14 show after the upgrade. They apply to Compose too.
+
+- Six migrations run. One gives each tenant a "Forge" system user. The
+  others add forge filters, forge refs, issue intake and two run columns.
+- The forge webhook records every branch and pull request now, also with no
+  short code. Set a filter on a repository to record fewer.
+- To take issues, add the Issues event to the GitHub webhook. On GitLab, add
+  Issue events. The import of open issues needs Issues: read on the read
+  token. On GitLab it needs `read_api`.
+- The code index builder downloads the SCIP tools of Go, TypeScript and
+  Python when a repository first needs them. Each language takes a few
+  hundred MB in `KAIROS_CODE_INDEX_DIR/tools/`.
+- The dependency caches grow to `KAIROS_CODE_INDEX_DEPS_CAP_MB` (10 GiB by
+  default). On a small disk, set a lower cap before the upgrade.
+- `concurrency` of the summary model is now one limit for each server, not
+  for each build. A rate limit makes a build wait, and a missing summary
+  does not stop the build.
+- After login, the browser opens the "For me" page at `/`. The boards are at
+  `/boards`.
 
 ## Trying it out without a database
 

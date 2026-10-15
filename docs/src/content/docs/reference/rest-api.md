@@ -7,7 +7,7 @@ title: "REST API"
      file disagrees with the spec. To change it, change the
      `#[utoipa::path]` annotation on the handler. -->
 
-OpenAPI 3.1.0, Kairos 0.13.0. 145 paths, 244 schemas.
+OpenAPI 3.1.0, Kairos 0.14.0. 145 paths, 244 schemas.
 
 Every endpoint is served under the tenant resolved from the request host and requires a bearer token; see [Configuration](../configuration/) for how a deployment resolves both. The live spec is at `/api/openapi.json`.
 
