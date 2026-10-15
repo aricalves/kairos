@@ -40,3 +40,8 @@ Changes from upstream:
      `type_alias` as its own definition, and the `const_spec` and `var_spec`
      at the top level of a file. kairos-index gives a struct and an interface
      their kinds and the receiver type of a method. Marked "KAIROS PATCH".
+  7. parser.rs and Cargo.toml: a Terraform language (KAIROS-T-0470), with
+     tree-sitter-hcl 1.1.0 (Apache-2.0, github.com/tree-sitter-grammars/
+     tree-sitter-hcl), for `.tf` and `.tfvars`. Its query gives each
+     top-level block; kairos-index gives the kinds and the names. Marked
+     "KAIROS PATCH".

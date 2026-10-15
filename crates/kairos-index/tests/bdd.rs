@@ -768,6 +768,7 @@ fn each_symbol_is_complete(world: &mut IndexWorld) {
                 "tsx",
                 "javascript",
                 "go",
+                "terraform",
                 "sql"
             ]
             .contains(&s.language.as_str()),
@@ -1681,6 +1682,33 @@ fn map_file(world: &IndexWorld, path: &str) -> kairos_index::FileInfo {
         .flat_map(|m| m.files)
         .find(|f| f.path == path)
         .unwrap_or_else(|| panic!("{path} is not in the module map"))
+}
+
+#[then(expr = "the symbol {string} in {string} has a summary")]
+fn the_symbol_has_a_summary(world: &mut IndexWorld, qualified: String, file: String) {
+    let Lookup::Found(s) = world
+        .index()
+        .lookup(&qualified, Some(&file), None)
+        .expect("look up")
+    else {
+        panic!("no one symbol {qualified} in {file}");
+    };
+    assert!(s.summary.is_some(), "{s:?}");
+}
+
+#[then(expr = "the input to the summary of {string} is its declarations:")]
+fn file_summary_from_declarations(
+    world: &mut IndexWorld,
+    path: String,
+    step: &cucumber::gherkin::Step,
+) {
+    let requests = file_requests(world, &path);
+    assert_eq!(requests.len(), 1, "{:#?}", world.requests);
+    assert_eq!(requests[0].kind, kairos_index::DECLARATIONS_KIND);
+    assert_eq!(
+        requests[0].code.as_deref(),
+        step.docstring.as_deref().map(str::trim)
+    );
 }
 
 #[then("the input to the summary of src/lib.rs is its //! comment and its mod and use lines")]
@@ -3768,6 +3796,23 @@ fn search_the_code(world: &mut IndexWorld, query: String) {
         .search(&query, None, 50)
         .unwrap_or_else(|e| panic!("{e}"));
     world.search = Some(found);
+}
+
+#[then(expr = "the module map lists {string} with {int} symbols")]
+fn module_map_lists(world: &mut IndexWorld, path: String, symbols: usize) {
+    let file = map_file(world, &path);
+    assert_eq!(file.symbols, symbols, "{file:?}");
+}
+
+#[then(expr = "a result is {string} in {string}")]
+fn a_result_is(world: &mut IndexWorld, qualified: String, file: String) {
+    let hits = &world.search.as_ref().expect("no search ran").hits;
+    assert!(
+        hits.iter()
+            .any(|h| h.symbol.qualified() == qualified && h.symbol.file == file),
+        "{qualified} in {file} is not a result: {:#?}",
+        hits.iter().map(|h| h.symbol.place()).collect::<Vec<_>>()
+    );
 }
 
 #[then("the results have test functions and functions that are not test code")]

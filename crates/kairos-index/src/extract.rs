@@ -16,9 +16,10 @@ use crate::calls::{
 use crate::tokens;
 
 /// The language of a file, from its extension: the languages of the index
-/// (Rust, Python, TypeScript, JavaScript, Go, with the names that narsil
-/// uses) and SQL
-/// (KAIROS-T-0350, read by [`crate::sql`]).
+/// (Rust, Python, TypeScript, JavaScript, Go, Terraform, with the names that
+/// narsil uses) and SQL
+/// (KAIROS-T-0350, read by [`crate::sql`]). A `.tf.json` file is JSON: it
+/// has no language (KAIROS-T-0470).
 pub fn language_of(path: &str) -> Option<&'static str> {
     let ext = path.rsplit_once('.')?.1;
     match ext {
@@ -28,6 +29,7 @@ pub fn language_of(path: &str) -> Option<&'static str> {
         "tsx" => Some("tsx"),
         "js" | "mjs" | "cjs" | "jsx" => Some("javascript"),
         "go" => Some("go"),
+        "tf" | "tfvars" => Some("terraform"),
         "sql" => Some("sql"),
         _ => None,
     }
@@ -96,6 +98,13 @@ pub fn extract(
     if language == "go" {
         go_refine(&tree, &mut symbols, content);
     }
+    // The kind and the container of each Terraform symbol, by its span and
+    // its name (KAIROS-T-0470).
+    let mut terraform: HashMap<(usize, usize, String), (&'static str, Option<String>)> =
+        HashMap::new();
+    if language == "terraform" {
+        symbols = terraform_symbols(&tree, &symbols, content, &mut terraform);
+    }
     symbols.sort_by(|a, b| {
         (
             a.start_byte,
@@ -137,7 +146,8 @@ pub fn extract(
         .iter()
         .map(|s| {
             let node = definition_node(&tree, s);
-            let kind = kind_name(&s.kind);
+            let own = terraform.get(&(s.start_byte, s.end_byte, s.name.clone()));
+            let kind = own.map_or_else(|| kind_name(&s.kind), |(kind, _)| *kind);
             let tree_hash = node.map_or_else(
                 || hash_text(language, &source[s.start_byte..s.end_byte]),
                 |node| tree_hash(language, node, source),
@@ -153,12 +163,17 @@ pub fn extract(
             };
             let (token_vector, token_count) = token_vector.unzip();
             let container = match node {
+                _ if own.is_some() => own.and_then(|(_, c)| c.clone()),
                 Some(node) if language == "go" && kind == "method" => go_receiver(node, source),
                 _ => None,
             };
             Extracted {
                 name: s.name.clone(),
-                container: container.or_else(|| container_of(&symbols, s)),
+                container: if own.is_some() {
+                    container
+                } else {
+                    container.or_else(|| container_of(&symbols, s))
+                },
                 kind,
                 start_line: s.start_line,
                 end_line: s.end_line,
@@ -216,12 +231,19 @@ pub fn kind_name(kind: &SymbolKind) -> &'static str {
 
 /// The kind of a name that [`kind_name`] gives.
 pub fn kind_from_name(name: &str) -> Option<&'static str> {
-    const KINDS: [&str; 23] = [
+    const KINDS: [&str; 28] = [
         // The kinds of a SQL file (KAIROS-T-0350).
         "table",
         "index",
         "view",
         "trigger",
+        // The kinds of a Terraform file (KAIROS-T-0470); a module call is
+        // a `module`, a variable a `variable`.
+        "resource",
+        "data",
+        "output",
+        "local",
+        "provider",
         "struct",
         "class",
         "enum",
@@ -374,6 +396,107 @@ fn go_refine(tree: &Tree, symbols: &mut Vec<Symbol>, content: &str) {
         let first_line = text.find('\n').unwrap_or(text.len());
         s.signature = Some(text[..text.floor_char_boundary(first_line.min(200))].to_string());
     }
+}
+
+/// The Terraform symbols of the top-level blocks that narsil gives
+/// (KAIROS-T-0470), with the kind and the container of each in `own`. The
+/// name and the container make the address that Terraform code uses:
+///
+/// - `resource "aws_s3_bucket" "b"`: `b` in `aws_s3_bucket`, a `resource`;
+/// - `data "aws_iam_policy" "p"`: `p` in `data.aws_iam_policy`, a `data`;
+/// - `module "net"`: `net` in `module`, a `module`;
+/// - `variable "region"`: `region` in `var`, a `variable`;
+/// - each entry `name = …` of a `locals` block: `name` in `local`, a `local`;
+/// - `output "id"`: `id`, an `output`; `provider "aws"`: `aws`, a `provider`.
+///
+/// The other blocks (`terraform`, `moved`, `import`, `check`) give none.
+fn terraform_symbols(
+    tree: &Tree,
+    symbols: &[Symbol],
+    content: &str,
+    own: &mut HashMap<(usize, usize, String), (&'static str, Option<String>)>,
+) -> Vec<Symbol> {
+    let mut out = Vec::new();
+    for s in symbols {
+        let Some(block) = definition_node(tree, s) else {
+            continue;
+        };
+        let labels = terraform_labels(block, content);
+        let label = |i: usize| labels.get(i).cloned();
+        let (name, kind, container) = match (s.name.as_str(), label(0), label(1)) {
+            ("resource", Some(ty), Some(name)) => (name, "resource", Some(ty)),
+            ("data", Some(ty), Some(name)) => (name, "data", Some(format!("data.{ty}"))),
+            ("module", Some(name), _) => (name, "module", Some("module".to_string())),
+            ("variable", Some(name), _) => (name, "variable", Some("var".to_string())),
+            ("output", Some(name), _) => (name, "output", None),
+            ("provider", Some(name), _) => (name, "provider", None),
+            ("locals", _, _) => {
+                let Some(body) = terraform_body(block) else {
+                    continue;
+                };
+                let mut cursor = body.walk();
+                for attribute in body
+                    .named_children(&mut cursor)
+                    .filter(|n| n.kind() == "attribute")
+                {
+                    let Some(key) = attribute.named_child(0) else {
+                        continue;
+                    };
+                    let text = &content[attribute.start_byte()..attribute.end_byte()];
+                    let first_line = text.find('\n').unwrap_or(text.len());
+                    let local = Symbol {
+                        name: content[key.start_byte()..key.end_byte()].to_string(),
+                        start_line: attribute.start_position().row + 1,
+                        end_line: attribute.end_position().row + 1,
+                        start_byte: attribute.start_byte(),
+                        end_byte: attribute.end_byte(),
+                        signature: Some(
+                            text[..text.floor_char_boundary(first_line.min(200))].to_string(),
+                        ),
+                        ..s.clone()
+                    };
+                    own.insert(
+                        (local.start_byte, local.end_byte, local.name.clone()),
+                        ("local", Some("local".to_string())),
+                    );
+                    out.push(local);
+                }
+                continue;
+            }
+            _ => continue,
+        };
+        let symbol = Symbol { name, ..s.clone() };
+        own.insert(
+            (symbol.start_byte, symbol.end_byte, symbol.name.clone()),
+            (kind, container),
+        );
+        out.push(symbol);
+    }
+    out
+}
+
+/// The labels of a Terraform block: `["aws_s3_bucket", "b"]` for
+/// `resource "aws_s3_bucket" "b" {`.
+pub(crate) fn terraform_labels(block: Node<'_>, content: &str) -> Vec<String> {
+    let mut cursor = block.walk();
+    block
+        .named_children(&mut cursor)
+        .skip(1)
+        .take_while(|n| matches!(n.kind(), "string_lit" | "identifier"))
+        .map(|n| {
+            content[n.start_byte()..n.end_byte()]
+                .trim_matches('"')
+                .to_string()
+        })
+        .collect()
+}
+
+/// The body of a Terraform block, if it has one.
+pub(crate) fn terraform_body(block: Node<'_>) -> Option<Node<'_>> {
+    let mut cursor = block.walk();
+    block
+        .named_children(&mut cursor)
+        .find(|n| n.kind() == "body")
 }
 
 /// The receiver type of a Go method: `S` for `func (s *S[T]) m()`. Go keeps
@@ -643,6 +766,59 @@ mod tests {
         };
         assert_eq!(marks("load_test.go"), expected(true));
         assert_eq!(marks("load.go"), expected(false));
+    }
+
+    /// KAIROS-T-0470: the symbols of a Terraform file.
+    #[test]
+    fn terraform_blocks_are_symbols() {
+        let code = "terraform {\n  required_version = \">= 1.5\"\n}\n\nvariable \"region\" {\n  default = \"us-east-1\"\n}\n\nlocals {\n  name = \"app-${var.region}\"\n  tags = {\n    env = local.name\n  }\n}\n\nresource \"aws_s3_bucket\" \"b\" {\n  bucket = local.name\n}\n\ndata \"aws_iam_policy\" \"p\" {\n  name = \"x\"\n}\n\nmodule \"net\" {\n  source = \"./net\"\n}\n\noutput \"id\" {\n  value = module.net.id\n}\n\nprovider \"aws\" {\n  region = var.region\n}\n";
+        let found: Vec<_> = symbols("main.tf", code)
+            .into_iter()
+            .map(|s| {
+                (
+                    s.container
+                        .map_or(s.name.clone(), |c| format!("{c}.{}", s.name)),
+                    s.kind,
+                    (s.start_line, s.end_line),
+                    s.signature.unwrap_or_default(),
+                )
+            })
+            .collect();
+        let found: Vec<_> = found
+            .iter()
+            .map(|(n, k, l, sig)| (n.as_str(), *k, *l, sig.as_str()))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("var.region", "variable", (5, 7), "variable \"region\" {"),
+                (
+                    "local.name",
+                    "local",
+                    (10, 10),
+                    "name = \"app-${var.region}\""
+                ),
+                ("local.tags", "local", (11, 13), "tags = {"),
+                (
+                    "aws_s3_bucket.b",
+                    "resource",
+                    (16, 18),
+                    "resource \"aws_s3_bucket\" \"b\" {"
+                ),
+                (
+                    "data.aws_iam_policy.p",
+                    "data",
+                    (20, 22),
+                    "data \"aws_iam_policy\" \"p\" {"
+                ),
+                ("module.net", "module", (24, 26), "module \"net\" {"),
+                ("id", "output", (28, 30), "output \"id\" {"),
+                ("aws", "provider", (32, 34), "provider \"aws\" {"),
+            ]
+        );
+        assert_eq!(language_of("prod.tfvars"), Some("terraform"));
+        assert_eq!(language_of("main.tf.json"), None);
+        assert!(symbols("prod.tfvars", "region = \"eu-west-1\"\n").is_empty());
     }
 
     #[test]

@@ -160,6 +160,17 @@ impl LanguageParser {
                     (source_file (var_declaration (var_spec_list (var_spec name: (identifier) @var.name) @var.def)))
                 "#,
             },
+            // KAIROS PATCH: Terraform, with tree-sitter-hcl (KAIROS-T-0470). Each
+            // top-level block, by its type; kairos-index gives the kind and the
+            // name from the labels.
+            LanguageConfig {
+                name: "terraform".to_string(),
+                language: tree_sitter_hcl::LANGUAGE.into(),
+                extensions: vec!["tf", "tfvars"],
+                symbol_query: r#"
+                    (config_file (body (block . (identifier) @block.name) @block.def))
+                "#,
+            },
         ];
 
         // Wrap configs in lazy wrappers (queries compiled on first use, not during init)

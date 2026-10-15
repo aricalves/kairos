@@ -992,6 +992,31 @@ The uses are part of the index since schema version 7. Kairos refuses an
 index of an earlier version. Run `kairos index --full`, or take a new base
 index from Kairos.
 
+### The code index: Terraform
+
+The index reads `.tf` and `.tfvars` files as the language `terraform`. Each
+top-level block gives a symbol. The name and the container of the symbol
+make the address that Terraform code uses:
+
+| Block | Kind | Name in the tools |
+|---|---|---|
+| `resource "aws_s3_bucket" "b"` | `resource` | `aws_s3_bucket.b` |
+| `data "aws_iam_policy" "p"` | `data` | `data.aws_iam_policy.p` |
+| `module "net"` | `module` | `module.net` |
+| `variable "region"` | `variable` | `var.region` |
+| each entry of a `locals` block | `local` | `local.name` |
+| `output "id"` | `output` | `id` |
+| `provider "aws"` | `provider` | `aws` |
+
+- A `terraform`, `moved`, `import` or `check` block gives no symbol.
+- A `.tfvars` file has no symbols.
+- The index does not read `.tf.json` files. They are JSON, and the HCL
+  grammar does not read JSON.
+- A resource and a data source get a summary. A file of variables, outputs
+  and module calls gets a summary from its first comment and its blocks.
+- The index does not read the `.terraform/` folder. `terraform init` puts
+  the downloaded modules there.
+
 ## Helm chart values
 
 `deploy/helm/kairos/values.yaml`. Most values under `config` become entries in a
