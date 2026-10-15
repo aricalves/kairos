@@ -14,8 +14,11 @@
 //! - **An update with no SCIP run** keeps the uses of each Rust file whose
 //!   content did not change, while their symbols are there. A changed Rust
 //!   file has no uses until the next SCIP run: it is marked `pending`.
-//! - **The other languages** have no SCIP run. Their uses are the calls of
-//!   the edges, by name (see [`crate::query`]).
+//! - **The other languages with a SCIP runner** (Go, TypeScript, TSX,
+//!   JavaScript, Python, KAIROS-T-0473) get their uses from their SCIP index
+//!   the same way, when the runner gave one. A language with no SCIP index
+//!   in the build has the calls of the edges as its uses, by name (see
+//!   [`crate::query`]).
 
 use std::collections::{HashMap, HashSet};
 
@@ -25,6 +28,7 @@ use crate::IndexError;
 use crate::edges::{
     BaseIndex, ParsedFile, SymKey, Target, byte_offset, choose, is_name_char, line_starts, sym_keys,
 };
+use crate::runners::{SCIP_LANGUAGES, ScipData};
 use crate::scip::{self, Descriptor, proto};
 
 /// The SCIP role `Import`.
@@ -55,16 +59,17 @@ pub struct Resolved {
 
 /// Where the uses come from.
 pub enum Source<'a> {
-    /// No SCIP data: the tree has no Cargo workspace at its root.
+    /// No SCIP data: no runner gave an index.
     Nothing,
-    /// A SCIP run of the workspace, and the crate of each file.
-    Scip(&'a proto::Index, &'a scip::Crates),
-    /// The uses of base indexes, for the files that did not change.
-    /// `workspace`: the tree has a Cargo workspace, so a new Rust file waits
-    /// for a SCIP run.
+    /// The SCIP indexes of the build, the languages that they cover, and the
+    /// crate of each Rust file.
+    Scip(&'a ScipData),
+    /// The uses of base indexes, for the files that did not change. A new
+    /// file of a language in `marked` waits for a SCIP run (Rust in a Cargo
+    /// workspace, and each language that a base has SCIP for).
     Base {
         bases: &'a [BaseIndex],
-        workspace: bool,
+        marked: &'a HashSet<&'a str>,
     },
 }
 
@@ -237,12 +242,13 @@ fn is_self(text: &str, byte: usize) -> bool {
 pub fn resolve(files: &[ParsedFile<'_>], hashes: &[&str], source: Source<'_>) -> Resolved {
     match source {
         Source::Nothing => Resolved::default(),
-        Source::Scip(index, crates) => from_scip(files, index, crates),
-        Source::Base { bases, workspace } => from_base(files, hashes, bases, workspace),
+        Source::Scip(data) => from_scip(files, data),
+        Source::Base { bases, marked } => from_base(files, hashes, bases, marked),
     }
 }
 
-fn from_scip(files: &[ParsedFile<'_>], index: &proto::Index, crates: &scip::Crates) -> Resolved {
+fn from_scip(files: &[ParsedFile<'_>], data: &ScipData) -> Resolved {
+    let (index, crates) = (&data.index, &data.crates);
     let by_path: HashMap<&str, usize> =
         files.iter().enumerate().map(|(i, f)| (f.path, i)).collect();
     let starts: Vec<Vec<usize>> = files.iter().map(|f| line_starts(f.text)).collect();
@@ -250,7 +256,7 @@ fn from_scip(files: &[ParsedFile<'_>], index: &proto::Index, crates: &scip::Crat
     let mut definitions: HashMap<&str, Vec<(Option<usize>, usize)>> = HashMap::new();
     for doc in &index.documents {
         let file = by_path.get(doc.relative_path.as_str()).copied();
-        if let Some(f) = file.filter(|&f| files[f].language == "rust") {
+        if let Some(f) = file.filter(|&f| data.covers(files[f].language)) {
             docs.push((f, doc));
         }
         for occ in &doc.occurrences {
@@ -339,7 +345,7 @@ fn from_base(
     files: &[ParsedFile<'_>],
     hashes: &[&str],
     bases: &[BaseIndex],
-    workspace: bool,
+    marked: &HashSet<&str>,
 ) -> Resolved {
     let mut ids: HashMap<SymKey, i64> = HashMap::new();
     for file in files {
@@ -355,7 +361,7 @@ fn from_base(
     }
     let mut out = Resolved::default();
     for (i, file) in files.iter().enumerate() {
-        if file.language != "rust" {
+        if !SCIP_LANGUAGES.contains(&file.language) {
             continue;
         }
         let known: Vec<&BaseFile> = bases
@@ -365,7 +371,7 @@ fn from_base(
         let Some(same) = known.iter().find(|b| b.content_hash == hashes[i]) else {
             // A changed file, or a new file of the workspace: no uses until
             // the next SCIP run.
-            if !known.is_empty() || workspace {
+            if !known.is_empty() || marked.contains(file.language) {
                 out.files.push((i, true));
             }
             continue;
@@ -493,8 +499,12 @@ mod tests {
             ],
         };
         let files = [lib_file, main_file];
-        let crates = scip::Crates::default();
-        let out = resolve(&files, &["a", "b"], Source::Scip(&index, &crates));
+        let data = ScipData {
+            index,
+            crates: scip::Crates::default(),
+            languages: HashSet::from(["rust"]),
+        };
+        let out = resolve(&files, &["a", "b"], Source::Scip(&data));
         assert_eq!(out.files, [(0, false), (1, false)]);
         let got: Vec<(usize, i64, Option<i64>, usize, &str)> = out
             .refs
@@ -594,7 +604,7 @@ mod tests {
             &["same", "new", "x"],
             Source::Base {
                 bases: std::slice::from_ref(&base),
-                workspace: false,
+                marked: &HashSet::new(),
             },
         );
         assert_eq!(out.files, [(0, false), (1, true)]);

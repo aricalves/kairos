@@ -89,6 +89,7 @@ fn build_options(rust_analyzer: Option<PathBuf>, std_source: Option<PathBuf>) ->
         std_source,
         sysroot: None,
         download: false,
+        ..Default::default()
     }
 }
 

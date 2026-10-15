@@ -6,7 +6,10 @@
 //! - `kairos index update` builds the structure again from the tree and
 //!   summarizes only what changed. It keeps the Rust edges of the index for
 //!   each function whose code did not change, and runs no SCIP unless
-//!   `--rust-edges` is given. With `--link-only`, it runs no model: it links
+//!   `--rust-edges` (or `--scip`) is given. A SCIP run covers each language
+//!   whose indexer is on the computer: rust-analyzer, scip-go,
+//!   scip-typescript and scip-python (KAIROS-T-0473). A language whose
+//!   indexer is missing or fails gets its edges by name, with a warning. With `--link-only`, it runs no model: it links
 //!   the summaries of the pool and makes no new ones (COLLIERY-T-2529, the
 //!   background update of the plugin). It starts from the nearest base index in
 //!   Kairos when the checkout has no index, or when the base is nearer to
@@ -96,8 +99,8 @@ pub enum IndexCommand {
     Update {
         #[command(flatten)]
         root: RootArg,
-        /// Run rust-analyzer again for the Rust edges of the changed code
-        #[arg(long)]
+        /// Run the SCIP indexers again (rust-analyzer, scip-go, scip-typescript, scip-python) for the precise edges of the changed code
+        #[arg(long, visible_alias = "scip")]
         rust_edges: bool,
         /// Run no model: link the summaries of the pool and make no new ones
         #[arg(long)]
@@ -638,6 +641,20 @@ fn print_structure(report: &BuildReport, started: Instant) {
             e.kept_scip, e.pending
         ),
         None => {}
+    }
+    for run in report.scip_runs.iter().filter(|r| r.language != "rust") {
+        println!(
+            "{} edges: from SCIP, {} files, in {:.1} s.",
+            run.language,
+            run.documents,
+            run.elapsed.as_secs_f64()
+        );
+    }
+    for w in &report.scip_warnings {
+        println!(
+            "Warning: no SCIP index for {}: {}. Its edges are by name.",
+            w.language, w.reason
+        );
     }
     println!(
         "Token vectors: {} made, {} reused from the index.",

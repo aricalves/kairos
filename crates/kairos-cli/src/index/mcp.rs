@@ -633,15 +633,31 @@ pub(super) fn references_text(
     }
     match found.coverage {
         Coverage::Full => {}
-        Coverage::Pending(n) => out.push_str(&format!(
+        Coverage::Pending(n) if s.language == "rust" => out.push_str(&format!(
             " {} after the last SCIP run: in them, the result has the calls only. Run \
              `kairos index update --rust-edges` to get all the uses.",
             plural(n, "Rust file changed", "Rust files changed")
+        )),
+        Coverage::Pending(n) => out.push_str(&format!(
+            " {} after the last SCIP run: in them, the result has the calls only. Run \
+             `kairos index update --scip` to get all the uses.",
+            plural(
+                n,
+                &format!("{} file changed", s.language),
+                &format!("{} files changed", s.language)
+            )
         )),
         Coverage::CallsOnly if s.language == "rust" => out.push_str(
             " The index has no SCIP data for the Rust files, so the result has the calls only. \
              A build in a Cargo workspace runs SCIP.",
         ),
+        Coverage::CallsOnly if kairos_index::SCIP_LANGUAGES.contains(&s.language.as_str()) => out
+            .push_str(&format!(
+                " For {0} code, the index has the calls only: the uses as a type, a field or an \
+                 import are not in the result. A build runs SCIP for {0} code when the SCIP \
+                 indexer of the language is there (see the warnings of the build).",
+                s.language
+            )),
         Coverage::CallsOnly => out.push_str(&format!(
             " For {} code, the index has the calls only: the uses as a type, a field or an \
              import are not in the result.",
@@ -879,7 +895,7 @@ impl CodeTools {
     }
 
     #[tool(
-        description = "The functions that call a symbol of this checkout. Give the symbol as for the tool `symbol`, with `file` and `line` when more than one symbol has the name. The result has the certain calls only, unless `possible` is true. A possible call is a call by a name that more than one function has: the result marks it. A call marked \"by name until the next SCIP run\" is in changed Rust code. For each use of the symbol, not only the calls, use `references`. In Terraform code, a reference (`var.x`, `local.x`, `module.z`, `data.t.n`, `t.n`) is a call from the block that holds it to the block that it names, and an argument of a module call is a call to the variable of the module."
+        description = "The functions that call a symbol of this checkout. Give the symbol as for the tool `symbol`, with `file` and `line` when more than one symbol has the name. The result has the certain calls only, unless `possible` is true. A possible call is a call by a name that more than one function has: the result marks it. A call marked \"by name until the next SCIP run\" is in changed code of a language with SCIP (Rust, Go, TypeScript, JavaScript, Python). For each use of the symbol, not only the calls, use `references`. In Terraform code, a reference (`var.x`, `local.x`, `module.z`, `data.t.n`, `t.n`) is a call from the block that holds it to the block that it names, and an argument of a module call is a call to the variable of the module."
     )]
     async fn callers(
         &self,

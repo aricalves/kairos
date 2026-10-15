@@ -170,13 +170,14 @@ pub struct Reference {
 /// What the index has for the uses of a symbol (KAIROS-T-0419).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Coverage {
-    /// Each use that SCIP gives: Rust, after a SCIP run.
+    /// Each use that SCIP gives: a language with a SCIP index (Rust, Go,
+    /// TypeScript, JavaScript, Python, KAIROS-T-0473), after a SCIP run.
     Full,
-    /// Rust, but this count of files changed after the last SCIP run: they
-    /// have their calls only.
+    /// A language with a SCIP index, but this count of its files changed
+    /// after the last SCIP run: they have their calls only.
     Pending(usize),
     /// The calls only: the language has no SCIP run, or the index has no
-    /// SCIP data.
+    /// SCIP data for it.
     CallsOnly,
 }
 
@@ -861,15 +862,29 @@ impl Index {
         }
         uses.sort_by(|a, b| (&a.file, a.line, a.col).cmp(&(&b.file, b.line, b.col)));
 
-        let count = |sql: &str| -> Result<usize, IndexError> {
-            Ok(self.conn.query_row(sql, [], |r| r.get::<_, i64>(0))? as usize)
+        // The files of the language family of the target with SCIP uses
+        // (KAIROS-T-0473): TypeScript, TSX and JavaScript are one family.
+        let one = [target.language.as_str()];
+        let family: &[&str] = match target.language.as_str() {
+            "typescript" | "tsx" | "javascript" => &["typescript", "tsx", "javascript"],
+            _ => &one,
         };
-        let coverage = if target.language != "rust"
-            || count("SELECT count(*) FROM refs_files WHERE pending = 0")? == 0
-        {
+        let count = |pending: bool| -> Result<usize, IndexError> {
+            let mut n = 0;
+            for language in family {
+                n += self.conn.query_row(
+                    "SELECT count(*) FROM refs_files r JOIN files f ON f.id = r.file_id
+                     WHERE r.pending = ?1 AND f.language = ?2",
+                    params![pending, language],
+                    |r| r.get::<_, i64>(0),
+                )? as usize;
+            }
+            Ok(n)
+        };
+        let coverage = if count(false)? == 0 {
             Coverage::CallsOnly
         } else {
-            match count("SELECT count(*) FROM refs_files WHERE pending = 1")? {
+            match count(true)? {
                 0 => Coverage::Full,
                 n => Coverage::Pending(n),
             }

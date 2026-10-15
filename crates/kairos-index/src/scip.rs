@@ -824,9 +824,12 @@ fn read_name(chars: &[char], start: usize) -> Option<(String, usize)> {
 }
 
 /// The method name of a function symbol and a short name for it: the type
-/// or module that holds it, then the name (`Vec::push`, `mem::swap`,
-/// `Shape::area`). `None` if the symbol is not a function.
-pub fn function_name(descriptors: &[Descriptor]) -> Option<(String, String)> {
+/// or module that holds it, then the name. In Rust, `Vec::push`,
+/// `mem::swap`, `Shape::area`; in the other languages `Cart.total`,
+/// `greet.Hello` (the last part of a Go package path), `report.load` (the
+/// last part of a Python module), `queue.enqueue` (a TypeScript file with no
+/// extension). `None` if the symbol is not a function.
+pub fn function_name(descriptors: &[Descriptor], language: &str) -> Option<(String, String)> {
     let (Descriptor::Method(name), rest) = descriptors.split_last()? else {
         return None;
     };
@@ -838,16 +841,47 @@ pub fn function_name(descriptors: &[Descriptor]) -> Option<(String, String)> {
             (Descriptor::Type(t), Some(Descriptor::TypeParameter(self_type))) if t == "impl" => {
                 Some(self_type.clone())
             }
-            (Descriptor::Type(t) | Descriptor::Namespace(t), _) => Some(t.clone()),
+            (Descriptor::Type(t), _) => Some(t.clone()),
+            (Descriptor::Namespace(t), _) if language == "rust" => Some(t.clone()),
+            (Descriptor::Namespace(t), _) => Some(module_name(t, language).to_string()),
             _ => None,
         })
         .map(|owner| owner.split('<').next().unwrap_or_default().to_string())
         .filter(|owner| !owner.is_empty());
+    let separator = if language == "rust" { "::" } else { "." };
     let short = match owner {
-        Some(owner) => format!("{owner}::{name}"),
+        Some(owner) => format!("{owner}{separator}{name}"),
         None => name.clone(),
     };
     Some((name.clone(), short))
+}
+
+/// The short name of a module namespace of a SCIP symbol that is not Rust.
+fn module_name<'a>(namespace: &'a str, language: &str) -> &'a str {
+    let last = namespace.rsplit('/').next().unwrap_or(namespace);
+    match language {
+        "python" => last.rsplit('.').next().unwrap_or(last),
+        "typescript" | "tsx" | "javascript" => [
+            ".d.ts", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs",
+        ]
+        .iter()
+        .find_map(|ext| last.strip_suffix(ext))
+        .unwrap_or(last),
+        _ => last,
+    }
+}
+
+/// The name of a type symbol, for a call that makes an object (`Report()`,
+/// `new Queue()`): the name and the same name as the short name. `None` if
+/// the symbol is not a type.
+pub fn type_name(descriptors: &[Descriptor]) -> Option<(String, String)> {
+    match descriptors.last()? {
+        Descriptor::Type(name) => {
+            let name = name.split('<').next().unwrap_or(name).to_string();
+            Some((name.clone(), name))
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -941,7 +975,7 @@ mod tests {
     }
 
     fn short(symbol: &str) -> Option<String> {
-        function_name(&descriptors(symbol)?).map(|(_, s)| s)
+        function_name(&descriptors(symbol)?, "rust").map(|(_, s)| s)
     }
 
     #[test]
@@ -976,6 +1010,52 @@ mod tests {
         for (symbol, want) in cases {
             assert_eq!(short(symbol).as_deref(), Some(want), "{symbol}");
         }
+    }
+
+    /// KAIROS-T-0473: the short names of the symbols of scip-go,
+    /// scip-typescript and scip-python.
+    #[test]
+    fn function_names_of_other_indexers() {
+        let cases = [
+            (
+                "scip-go gomod example.com/m v1.0.0 `example.com/m/greet`/Hello().",
+                "go",
+                "greet.Hello",
+            ),
+            (
+                "scip-go gomod example.com/m v1.0.0 `example.com/m/greet`/Greeter#Greet().",
+                "go",
+                "Greeter.Greet",
+            ),
+            (
+                "scip-typescript npm web 1.0.0 src/`queue.ts`/enqueue().",
+                "typescript",
+                "queue.enqueue",
+            ),
+            (
+                "scip-typescript npm web 1.0.0 src/`queue.ts`/Queue#push().",
+                "typescript",
+                "Queue.push",
+            ),
+            (
+                "scip-python python polyglot 0.1.0 `polyglot.report`/load().",
+                "python",
+                "report.load",
+            ),
+            (
+                "scip-python python polyglot 0.1.0 `polyglot.report`/Report#render().",
+                "python",
+                "Report.render",
+            ),
+        ];
+        for (symbol, language, want) in cases {
+            let got = function_name(&descriptors(symbol).unwrap(), language).map(|(_, s)| s);
+            assert_eq!(got.as_deref(), Some(want), "{symbol}");
+        }
+        let class =
+            descriptors("scip-python python polyglot 0.1.0 `polyglot.report`/Report#").unwrap();
+        assert_eq!(function_name(&class, "python"), None);
+        assert_eq!(type_name(&class), Some(("Report".into(), "Report".into())));
     }
 
     #[test]

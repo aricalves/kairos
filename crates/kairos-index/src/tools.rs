@@ -213,6 +213,7 @@ impl Tools {
             std_source: Some(self.rust_src.clone()),
             sysroot: Some(self.sysroot.clone()),
             download: false,
+            ..Default::default()
         }
     }
 }
