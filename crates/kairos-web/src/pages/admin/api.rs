@@ -886,6 +886,23 @@ pub async fn update_repository(
     .await
 }
 
+/// mirror of: `kairos_client::types_repositories::IssueImportResult`
+/// (partial — the sentence for the page, KAIROS-T-0483).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct IssueImportResult {
+    pub message: String,
+}
+
+/// `POST /api/repositories/{slug}/import-issues` — import the open issues
+/// once (org admin, KAIROS-T-0483).
+pub async fn import_issues(auth: Auth, reference: &str) -> Result<IssueImportResult, ApiError> {
+    crate::api::post_empty(
+        auth,
+        &format!("/api/repositories/{reference}/import-issues"),
+    )
+    .await
+}
+
 /// `DELETE /api/repositories/{slug}` (409 while referenced).
 pub async fn delete_repository(auth: Auth, reference: &str) -> Result<Value, ApiError> {
     delete_json(auth, &format!("/api/repositories/{reference}")).await

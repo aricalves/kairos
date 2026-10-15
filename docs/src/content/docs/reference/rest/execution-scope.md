@@ -305,6 +305,29 @@ token removed.
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown repository, or the repository has no token |
 | `409` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The stored token does not decrypt with the key of the deployment |
 
+### `POST /api/repositories/{slug}/import-issues`
+
+Import the open issues of a repository once (KAIROS-T-0483, org admin).
+
+Each open issue goes through the path of an opened-issue event: the
+forge filter, then one support task per issue id on the delivery board
+of the team. An issue that a webhook or an earlier import took is
+skipped, so a second run makes nothing. The repository needs a live
+webhook connection (the issue link hangs off it) and a read token with
+Issues: read (GitHub) or `read_api` (GitLab).
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `slug` | path | yes | `string` | Repository slug (or UUID) |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`IssueImportResult`](../schemas/#issueimportresult) | What the import did |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Not an org admin |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown repository |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The repository has no read token, no webhook connection, or the forge `other` |
+| `502` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The forge refused the token, or the list failed |
+
 ### `PUT /api/repositories/{slug}/site`
 
 Publish the built site of a repository: one `.tar.gz` of the build

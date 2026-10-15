@@ -149,6 +149,17 @@ pub enum ReposCommand {
         #[command(flatten)]
         common: Common,
     },
+    /// Import the open issues of a repository once (org admin). Each one
+    /// becomes a support task on the delivery board of the team, as an
+    /// opened issue does. A second run skips what the first took. Needs the
+    /// webhook connection and a read token with Issues: read (GitHub) or
+    /// read_api (GitLab)
+    ImportIssues {
+        /// Repository slug (or UUID)
+        repository: String,
+        #[command(flatten)]
+        common: Common,
+    },
     /// Remove a repository (org admin; refused while tasks or a webhook
     /// connection reference it; requires --confirm)
     Delete {
@@ -739,6 +750,18 @@ impl ReposCommand {
                     "Kairos changed the repository {} (owner: {}).",
                     repo.slug, repo.team.slug
                 );
+                Ok(())
+            }
+            Self::ImportIssues { repository, common } => {
+                let client = client(&common)?;
+                let result = client.import_issues(&repository).await?;
+                if common.json {
+                    return print_json(&result);
+                }
+                println!("{}", result.message);
+                for code in &result.items {
+                    println!("  {code}");
+                }
                 Ok(())
             }
             Self::Delete {

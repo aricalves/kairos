@@ -16,6 +16,7 @@ pub mod embed_http;
 pub mod git_http;
 pub mod github_http;
 pub mod hook_http;
+pub mod issues_http;
 #[path = "../../../kairos-db/tests/common/scratch.rs"]
 pub mod scratch;
 

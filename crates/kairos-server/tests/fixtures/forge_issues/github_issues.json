@@ -1,0 +1,36 @@
+[
+  {
+    "id": 2401557001,
+    "number": 12,
+    "title": "Crash when the config file is empty",
+    "body": "Steps:\n1. Make an empty config file.\n2. Start the app.\n\nIt crashes.",
+    "html_url": "https://github.com/acme/payments-api/issues/12",
+    "state": "open",
+    "user": { "login": "robin" },
+    "created_at": "2026-09-05T09:00:00Z",
+    "updated_at": "2026-09-05T09:00:00Z"
+  },
+  {
+    "id": 2401557050,
+    "number": 14,
+    "title": "Add a dark theme",
+    "body": "A pull request; the list of issues of GitHub has them too.",
+    "html_url": "https://github.com/acme/payments-api/pull/14",
+    "state": "open",
+    "user": { "login": "sam" },
+    "pull_request": { "url": "https://api.github.com/repos/acme/payments-api/pulls/14" },
+    "created_at": "2026-09-06T09:00:00Z",
+    "updated_at": "2026-09-06T09:00:00Z"
+  },
+  {
+    "id": 2401557060,
+    "number": 15,
+    "title": "Dependency dashboard",
+    "body": "This issue lists the updates.",
+    "html_url": "https://github.com/acme/payments-api/issues/15",
+    "state": "open",
+    "user": { "login": "dependabot[bot]" },
+    "created_at": "2026-09-06T10:00:00Z",
+    "updated_at": "2026-09-06T10:00:00Z"
+  }
+]

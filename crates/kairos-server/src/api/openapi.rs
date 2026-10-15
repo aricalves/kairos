@@ -192,6 +192,7 @@ use crate::app::AppState;
         // Repositories (KAIROS-T-0106).
         crate::api::org::repositories::list_repositories,
         crate::api::org::repositories::get_repository,
+        crate::api::org::repositories::import_issues,
         crate::api::org::repositories::create_repository,
         crate::api::org::repositories::update_repository,
         crate::api::org::repositories::delete_repository,

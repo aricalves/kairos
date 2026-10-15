@@ -520,6 +520,26 @@ fn RepositoryRow(
             },
         );
     };
+    // KAIROS-T-0483: import the open issues once; the outcome is the
+    // sentence of the server.
+    let on_import_issues = move |_| {
+        let reference = slug.get_value();
+        if busy.get_untracked() {
+            return;
+        }
+        busy.set(true);
+        leptos::task::spawn_local(async move {
+            let result = api::import_issues(auth, &reference).await;
+            busy.set(false);
+            match result {
+                Ok(done) => {
+                    outcome.set(Some(Ok(done.message)));
+                    reload.update(|n| *n += 1);
+                }
+                Err(error) => outcome.set(Some(Err(error))),
+            }
+        });
+    };
     let on_delete = move |_| {
         let reference = slug.get_value();
         run_mutation(
@@ -678,6 +698,9 @@ fn RepositoryRow(
                     {has_webhook.then(|| view! {
                         <Button variant="default" size="xs" on_click=Callback::new(on_disconnect)>
                             "Disconnect"
+                        </Button>
+                        <Button variant="default" size="xs" on_click=Callback::new(on_import_issues)>
+                            "Import open issues"
                         </Button>
                     })}
                     <Button variant="default" size="xs"

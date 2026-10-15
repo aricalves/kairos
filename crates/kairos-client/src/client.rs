@@ -1592,6 +1592,16 @@ impl KairosClient {
         self.get(&path).await
     }
 
+    /// `POST /api/repositories/{slug}/import-issues` — import the open
+    /// issues of a repository once (KAIROS-T-0483, org admin).
+    pub async fn import_issues(
+        &self,
+        reference: &str,
+    ) -> Result<crate::types_repositories::IssueImportResult, Error> {
+        self.post_empty(&format!("/api/repositories/{reference}/import-issues"))
+            .await
+    }
+
     /// `GET /api/teams/{id}/unlinked-refs` — the in-flight branches and
     /// pull requests of the repositories of the team that no item is linked
     /// to (KAIROS-T-0480). `states` defaults to open+draft server-side.

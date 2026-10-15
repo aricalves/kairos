@@ -352,6 +352,28 @@ pub struct UpdateRepositoryRequest {
     pub forge_filters: Option<ForgeFilters>,
 }
 
+/// The answer of `POST /api/repositories/{slug}/import-issues`
+/// (KAIROS-T-0483): what the import of the open issues did. Each issue goes
+/// through the same path as an opened-issue event.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct IssueImportResult {
+    /// Issues that became a task.
+    pub imported: usize,
+    /// Issues that were taken before (by a webhook or an earlier import).
+    pub skipped: usize,
+    /// Issues that the forge filter does not admit.
+    pub filtered: usize,
+    /// Issues that no task could be made for; `message` says why.
+    pub not_taken: usize,
+    /// The short codes of the new tasks.
+    pub items: Vec<String>,
+    /// False: the import stopped before the last page (the rate limit of
+    /// the forge, or the page limit). Run it again: it skips what it took.
+    pub complete: bool,
+    /// A sentence for a person.
+    pub message: String,
+}
+
 /// The two patterns of one field of the forge filter (KAIROS-T-0479). A
 /// pattern is a Rust regular expression, 512 bytes at most, found anywhere
 /// in the value (anchor with `^` and `$`). An event is admitted when the

@@ -1181,6 +1181,20 @@ An initiative (Flight Level 2), as returned by `/api/initiatives`.
 | `updated_by` | `string` | yes | Last editor user id (UUID). |
 | `version` | `integer` | yes | Optimistic-concurrency version (KAIROS-A-0004). |
 
+## IssueImportResult
+
+The answer of `POST /api/repositories/{slug}/import-issues` (KAIROS-T-0483): what the import of the open issues did. Each issue goes through the same path as an opened-issue event.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `complete` | `boolean` | yes | False: the import stopped before the last page (the rate limit of the forge, or the page limit). Run it again: it skips what it took. |
+| `filtered` | `integer` | yes | Issues that the forge filter does not admit. |
+| `imported` | `integer` | yes | Issues that became a task. |
+| `items` | array of `string` | yes | The short codes of the new tasks. |
+| `message` | `string` | yes | A sentence for a person. |
+| `not_taken` | `integer` | yes | Issues that no task could be made for; `message` says why. |
+| `skipped` | `integer` | yes | Issues that were taken before (by a webhook or an earlier import). |
+
 ## ItemImpactsResponse
 
 Response of `GET /api/{entity_type}/{short_code}/impacts`.
