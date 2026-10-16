@@ -476,7 +476,7 @@ class Wiring(unittest.TestCase):
         starts = [
             hook["command"]
             for entry in hooks["SessionStart"]
-            if entry.get("matcher") == "*"
+            if entry.get("matcher") == "startup|clear"  # KAIROS-T-0525: not on a compaction
             for hook in entry["hooks"]
         ]
         self.assertIn('"${CLAUDE_PLUGIN_ROOT}/plugin/hooks/index_update.py" start', starts)

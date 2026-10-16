@@ -417,3 +417,14 @@ class Record(ActiveWorkCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WiringAndRulesAfterACompaction(ActiveWorkCase):
+    """KAIROS-T-0525: the compaction gives the wiring summary (from the
+    file, no probe) and the Kairos rules again."""
+
+    def test_the_context_has_the_wiring_and_the_rules(self):
+        _, context = self.compact()
+        self.assertIn("Kairos wiring for this repo", context)
+        self.assertIn("status: not probed after a compaction", context)
+        self.assertIn("Kairos rules (once per session", context)

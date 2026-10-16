@@ -27,6 +27,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 import sys
 import urllib.request
 
@@ -61,10 +62,24 @@ def read_frontmatter(path):
     return values
 
 
-def probe(url):
+class Budget:
+    """One time budget for every probe of a session start (KAIROS-T-0525):
+    each probe gets what is left of it, never less than `floor`, so three
+    slow probes cannot add up past the timeout of the hook."""
+
+    def __init__(self, seconds=3.0, floor=0.2, clock=time.monotonic):
+        self.deadline = clock() + seconds
+        self.floor = floor
+        self.clock = clock
+
+    def left(self):
+        return max(self.floor, self.deadline - self.clock())
+
+
+def probe(url, timeout=3):
     """Unauthenticated reachability check; returns a short status note."""
     try:
-        with urllib.request.urlopen(url + "/healthz", timeout=3) as response:
+        with urllib.request.urlopen(url + "/healthz", timeout=timeout) as response:
             if response.status == 200:
                 return "deployment reachable"
             return f"deployment answered /healthz with HTTP {response.status}"
@@ -120,23 +135,23 @@ def live_state_hint(values):
     )
 
 
-def server_version(url):
+def server_version(url, timeout=3):
     """The version of the server (`GET /version`, open), or None."""
     try:
-        with urllib.request.urlopen(url + "/version", timeout=3) as response:
+        with urllib.request.urlopen(url + "/version", timeout=timeout) as response:
             return json.load(response).get("version")
     except Exception:
         return None
 
 
-def cli_version():
+def cli_version(timeout=3):
     """The version of the `kairos` CLI on PATH, or None."""
     binary = shutil.which("kairos")
     if not binary:
         return None
     try:
         out = subprocess.run(
-            [binary, "--version"], capture_output=True, text=True, timeout=3
+            [binary, "--version"], capture_output=True, text=True, timeout=timeout
         ).stdout
     except Exception:
         return None
@@ -203,8 +218,23 @@ def build_context(values, status, note=None):
     return "\n".join(lines)
 
 
+def rules_at_start(values, session):
+    """The Kairos rules for the start of a wired session, and the marker
+    that keeps the PreToolUse hook silent after (KAIROS-T-0525). Empty when
+    the marker was there already or the session id is not usable."""
+    import kairos_rules  # here, not at the top: kairos_rules imports this module
+
+    if not kairos_rules.mark(session):
+        return ""
+    return kairos_rules.build_context(values.get("deployment_url", ""))
+
+
 def main():
-    sys.stdin.read()  # consume the hook input; nothing in it is needed
+    try:
+        payload = json.loads(sys.stdin.read() or "null")
+    except ValueError:
+        payload = None
+    session = payload.get("session_id") if isinstance(payload, dict) else None
     project_dir = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
     config_path = os.path.join(project_dir, ".claude", "kairos.local.md")
     if not os.path.isfile(config_path):
@@ -212,17 +242,22 @@ def main():
 
     values = read_frontmatter(config_path)
     deployment = values.get("deployment_url", "")
-    status = probe(deployment) if deployment else "no deployment_url configured"
+    budget = Budget()
+    status = probe(deployment, budget.left()) if deployment else "no deployment_url configured"
     server = None
     if deployment and "NOT reachable" not in status:
-        server = server_version(deployment)
-    note = cli_note(cli_version(), server, plugin_version())
+        server = server_version(deployment, budget.left())
+    note = cli_note(cli_version(budget.left()), server, plugin_version())
 
+    context = build_context(values, status, note)
+    rules = rules_at_start(values, session)
+    if rules:
+        context = context + "\n\n" + rules
     json.dump(
         {
             "hookSpecificOutput": {
                 "hookEventName": "SessionStart",
-                "additionalContext": build_context(values, status, note),
+                "additionalContext": context,
             }
         },
         sys.stdout,

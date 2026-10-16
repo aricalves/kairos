@@ -216,3 +216,82 @@ class CliNote(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RulesAtTheStart(unittest.TestCase):
+    """KAIROS-T-0525: a wired session gets the Kairos rules at its start,
+    the marker keeps the PreToolUse hook silent after, and the SessionStart
+    hooks of the wiring run on startup and clear, not on a compaction."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project = os.path.join(self.tmp.name, "project")
+        os.makedirs(os.path.join(self.project, ".claude"))
+        self.rules_dir = os.path.join(self.tmp.name, "rules")
+        with open(os.path.join(self.project, ".claude", "kairos.local.md"), "w") as handle:
+            handle.write(
+                "---\ndeployment_url: http://127.0.0.1:9\ntenant: acme\n"
+                "repository: payments-api\nteam_board: platform\n---\n"
+            )
+        self.env = dict(
+            os.environ,
+            CLAUDE_PROJECT_DIR=self.project,
+            KAIROS_RULES_STATE_DIR=self.rules_dir,
+            PATH="/nonexistent",  # no kairos on PATH: no CLI probe
+        )
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_hook(self, session="session-0525"):
+        import json
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, os.path.join(HERE, "session_start.py")],
+            input=json.dumps({"session_id": session, "hook_event_name": "SessionStart", "source": "startup"}),
+            capture_output=True,
+            text=True,
+            env=self.env,
+            cwd=self.project,
+            check=False,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+
+    def test_the_rules_come_with_the_wiring_and_the_marker_is_written(self):
+        context = self.run_hook()
+        self.assertIn("Kairos wiring for this repo", context)
+        self.assertIn("Kairos rules (once per session", context)
+        self.assertIn("http://127.0.0.1:9/items/COLLIERY-I-0627", context)
+        self.assertTrue(
+            any(name.startswith("session-0525-") for name in os.listdir(self.rules_dir)),
+            "the marker of the session is written",
+        )
+        # The second start of the same session (a resume) gives the wiring only.
+        context = self.run_hook()
+        self.assertIn("Kairos wiring for this repo", context)
+        self.assertNotIn("Kairos rules (once per session", context)
+
+    def test_the_budget_is_shared_and_never_below_the_floor(self):
+        clock = [100.0]
+        budget = session_start.Budget(seconds=3.0, floor=0.2, clock=lambda: clock[0])
+        self.assertAlmostEqual(budget.left(), 3.0)
+        clock[0] = 102.5
+        self.assertAlmostEqual(budget.left(), 0.5)
+        clock[0] = 110.0
+        self.assertAlmostEqual(budget.left(), 0.2)
+
+    def test_the_wiring_hooks_run_on_startup_and_clear_only(self):
+        import json
+
+        with open(os.path.join(os.path.dirname(HERE), "hooks", "hooks.json")) as handle:
+            hooks = json.load(handle)["hooks"]["SessionStart"]
+        by_matcher = {entry["matcher"]: [hook["command"] for hook in entry["hooks"]] for entry in hooks}
+        self.assertIn("startup|clear", by_matcher)
+        self.assertTrue(any("session_start.py" in command for command in by_matcher["startup|clear"]))
+        self.assertTrue(any("index_update.py" in command for command in by_matcher["startup|clear"]))
+        self.assertTrue(any("active_work.py" in command for command in by_matcher["compact"]))
+        self.assertNotIn("*", by_matcher)

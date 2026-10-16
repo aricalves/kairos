@@ -52,6 +52,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import ralph  # noqa: E402  (the Ralph state: read_state, state_dir)
+import kairos_rules  # noqa: E402
 import session_start  # noqa: E402  (the wiring: read_frontmatter)
 
 TASK_CODE = re.compile(r"^[A-Z][A-Z0-9]*-T-[0-9]+$")
@@ -470,6 +471,11 @@ def cmd_compact(payload):
         return
     values = session_start.read_frontmatter(config_path)
     context = build_context(values, read_record(session), session)
+    # KAIROS-T-0525: the wiring summary again, from the file and with no
+    # probe, and the rules again; the compaction keeps neither.
+    wiring = session_start.build_context(values, "not probed after a compaction")
+    rules = kairos_rules.build_context(values.get("deployment_url", ""))
+    context = "\n\n".join([context, wiring, rules])
     sys.stdout.write(
         json.dumps(
             {
