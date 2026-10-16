@@ -373,7 +373,8 @@ A target outside the board's transition graph is rejected with 422
 name and id. Not available on `documents`.
 
 A task that a person moves to Active gets the [claim](../glossary/#claim) of the
-person. `tasks get` shows it in the field `claim`.
+person. `tasks get` shows it in the field `claim`. A task with a live state
+(`kairos state`) shows it in the field `state`.
 
 ### `tasks move`
 
@@ -458,6 +459,35 @@ task already has changes nothing. The command prints one of these lines:
 ```text
 Moved ACME-T-0001 to the planned lane (was support).
 ACME-T-0001 is already in the planned lane: nothing changed.
+```
+
+### `state`
+
+```
+kairos state <SHORT_CODE> [--branch <BRANCH>] [--commit <COMMIT>] [--pushed] [--pr <URL>] [--next <TEXT>] [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<SHORT_CODE>` | string | required | The task's short code. |
+| `--branch <BRANCH>` | string | none | The branch of the work. |
+| `--commit <COMMIT>` | string | none | The last commit (a hash or a short hash). |
+| `--pushed` | flag | off | The last commit is pushed. |
+| `--pr <URL>` | string | none | The URL of the PR. |
+| `--next <TEXT>` | string | none | What comes next. |
+
+Writes the live state of a task: one current line, separate from the notes.
+The write replaces the whole state: send each option each time. Kairos
+clears an option that you do not send. Send at least one option. The state
+is not content: the write makes no new version of the task.
+
+The edit rule applies, as for `note`: the creator of the task, or
+`manage_tasks` on its board. `tasks get` shows the state in the field
+`state`. The board card and the item page of the GUI show it too. The
+command prints one line:
+
+```text
+State of ACME-T-0001: branch acme-t-0001 at abc1234, pushed, PR https://github.com/acme/app/pull/12. Next: Wait for CI. (updated 2026-10-15 by Robin)
 ```
 
 ### `documents move`

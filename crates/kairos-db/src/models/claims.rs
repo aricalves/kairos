@@ -56,3 +56,38 @@ pub struct NewTaskCancellation {
     pub cancelled_by: Uuid,
     pub reason: String,
 }
+
+/// The live state of a task (`task_state`, KAIROS-T-0506): the branch,
+/// the last commit, pushed or not, the PR, the next step, and who wrote it
+/// when. One row for each task at most. The rules are in
+/// [`crate::task_state`].
+#[derive(Debug, Clone, PartialEq, Eq, Queryable, Selectable, Identifiable)]
+#[diesel(table_name = crate::schema::task_state)]
+#[diesel(primary_key(task_id))]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+pub struct TaskState {
+    pub task_id: Uuid,
+    pub branch: Option<String>,
+    pub commit: Option<String>,
+    pub pushed: bool,
+    pub pr_url: Option<String>,
+    pub next_step: Option<String>,
+    pub updated_at: DateTime<Utc>,
+    /// The person or the service account that wrote the state
+    /// (`public.users.id`).
+    pub updated_by: Uuid,
+}
+
+/// Insert or replace for [`TaskState`]. `updated_at` is `now()`.
+#[derive(Debug, Clone, Insertable, AsChangeset)]
+#[diesel(table_name = crate::schema::task_state)]
+#[diesel(treat_none_as_null = true)]
+pub struct NewTaskState {
+    pub task_id: Uuid,
+    pub branch: Option<String>,
+    pub commit: Option<String>,
+    pub pushed: bool,
+    pub pr_url: Option<String>,
+    pub next_step: Option<String>,
+    pub updated_by: Uuid,
+}

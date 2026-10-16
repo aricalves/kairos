@@ -85,8 +85,8 @@ const TENANT: &str = "acme";
 
 /// How many tools `tools/list` returns, and the word the reference pages
 /// use for that number (COLLIERY-T-0220, COLLIERY-T-0266).
-const TOOL_COUNT: usize = 68;
-const TOOL_COUNT_WORD: &str = "sixty-eight";
+const TOOL_COUNT: usize = 69;
+const TOOL_COUNT_WORD: &str = "sixty-nine";
 
 /// Every request carries a real `Host` header and the tenant resolves from
 /// its subdomain against the configured base domain — the S-0006 REQ-1.2
@@ -666,6 +666,8 @@ async fn mcp_endpoint_against_live_stack() {
         "grant_capability",
         // KAIROS-T-0367: a note in one call, with no version and no anchor.
         "append_note",
+        // KAIROS-T-0506: the live state of a task.
+        "set_state",
         // KAIROS-T-0368: the scales and the templates, for triage.
         "list_metadata_definitions",
         "list_templates",
@@ -760,6 +762,7 @@ async fn mcp_endpoint_against_live_stack() {
             "unlink_items",
             "propose_edge",
             "append_note",
+            "set_state",
             "set_metadata",
             "set_repository",
             "set_work_class",
@@ -1919,6 +1922,80 @@ async fn mcp_endpoint_against_live_stack() {
     assert!(
         text.contains("): The filer adds a note.\n"),
         "the first line of the note: {text}"
+    );
+    // KAIROS-T-0506: the live state of a task. The creator writes it; the
+    // write replaces the whole state; get_item and board_items show it.
+    let text = bob_session
+        .call_ok(
+            "set_state",
+            json!({
+                "short_code": filed,
+                "branch": "fix-refunds",
+                "commit": "abc1234",
+                "pushed": true,
+                "pr_url": "https://example.com/pr/12",
+                "next_step": "Wait for CI"
+            }),
+        )
+        .await;
+    assert!(
+        text.starts_with(&format!(
+            "State of {filed}: branch fix-refunds at abc1234, pushed, PR https://example.com/pr/12. Next: Wait for CI. (updated just now by bob)"
+        )),
+        "{text}"
+    );
+    let text = session
+        .call_ok("get_item", json!({"short_code": filed}))
+        .await;
+    assert!(
+        text.contains(
+            "\n- state: branch fix-refunds at abc1234, pushed, PR https://example.com/pr/12. Next: Wait for CI. (updated just now by bob)\n"
+        ),
+        "{text}"
+    );
+    let text = session
+        .call_ok("board_items", json!({"board": "platform-delivery"}))
+        .await;
+    assert!(
+        text.contains(&format!("- {filed} [task"))
+            && text.contains("[state: branch fix-refunds; next: Wait for CI]"),
+        "{text}"
+    );
+    let text = bob_session
+        .call_ok(
+            "set_state",
+            json!({"short_code": filed, "next_step": "Rebase on main"}),
+        )
+        .await;
+    assert!(
+        text.starts_with(&format!(
+            "State of {filed}: Next: Rebase on main. (updated just now by bob)"
+        )),
+        "a write replaces the whole state: {text}"
+    );
+    let text = bob_session
+        .call_err("set_state", json!({"short_code": filed}))
+        .await;
+    assert!(
+        text.contains("VALIDATION") && text.contains("at least one"),
+        "{text}"
+    );
+    let text = bob_session
+        .call_err("set_state", json!({"short_code": filed, "sha": "x"}))
+        .await;
+    assert!(
+        text.contains("VALIDATION") && text.contains("\"sha\""),
+        "{text}"
+    );
+    let text = bob_session
+        .call_err(
+            "set_state",
+            json!({"short_code": unbound_code, "next_step": "not his"}),
+        )
+        .await;
+    assert!(
+        text.contains("FORBIDDEN") && text.contains("manage_tasks"),
+        "{text}"
     );
     let text = bob_session
         .call_err("append_note", json!({"short_code": filed, "text": "  "}))

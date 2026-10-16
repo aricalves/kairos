@@ -166,6 +166,64 @@ pub struct Task {
     /// only: a response of an older server has no `cancellation`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancellation: Option<TaskCancellation>,
+    /// The live state of the task (KAIROS-T-0506): branch, last commit,
+    /// pushed, PR, next step, and who wrote it when. Absent when the task
+    /// has no state. Present on the task endpoints and the board items.
+    /// The default is for the client only: a response of an older server
+    /// has no `state`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<TaskState>,
+}
+
+/// The live state of a task (KAIROS-T-0506): one current state, separate
+/// from the append-only notes. An agent writes it after each push and
+/// before each stop. A write replaces the whole state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct TaskState {
+    /// The branch of the work.
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// The last commit (a hash or a short hash).
+    #[serde(default)]
+    pub commit: Option<String>,
+    /// True when the last commit is pushed.
+    #[serde(default)]
+    pub pushed: bool,
+    /// The URL of the PR.
+    #[serde(default)]
+    pub pr_url: Option<String>,
+    /// What comes next.
+    #[serde(default)]
+    pub next_step: Option<String>,
+    /// RFC 3339.
+    pub updated_at: String,
+    /// The user id (UUID) of who wrote the state.
+    pub updated_by: String,
+    /// The display name of who wrote the state.
+    pub updated_by_name: String,
+}
+
+/// Body of `PUT /api/tasks/{short_code}/state` (KAIROS-T-0506). Each field
+/// is optional. The write replaces the whole state: Kairos clears a field
+/// that you do not send. At least one field must have a value.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetTaskStateRequest {
+    /// The branch of the work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// The last commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// True when the last commit is pushed. Default false.
+    #[serde(default)]
+    pub pushed: bool,
+    /// The URL of the PR.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
+    /// What comes next.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_step: Option<String>,
 }
 
 /// The cancel mark of a task (KAIROS-T-0362). A cancel moves the task to

@@ -192,6 +192,30 @@ pub struct ItemDetail {
     /// older server.
     #[serde(default)]
     pub owner: Option<Owner>,
+    /// The live state of a task (KAIROS-T-0506). `None` for a task with
+    /// no state, for the other families, and from an older server.
+    #[serde(default)]
+    pub state: Option<State>,
+}
+
+/// mirror of: `kairos_client::types::TaskState`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct State {
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub commit: Option<String>,
+    #[serde(default)]
+    pub pushed: bool,
+    #[serde(default)]
+    pub pr_url: Option<String>,
+    #[serde(default)]
+    pub next_step: Option<String>,
+    /// RFC 3339.
+    #[serde(default)]
+    pub updated_at: String,
+    #[serde(default)]
+    pub updated_by_name: String,
 }
 
 /// mirror of: `kairos_client::types::ItemOwner`.

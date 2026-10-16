@@ -52,6 +52,7 @@ pub mod site_content;
 pub mod sites;
 pub mod task_cancellations;
 pub mod task_claims;
+pub mod task_state;
 pub mod team_pages;
 pub mod tenant;
 pub mod tls;

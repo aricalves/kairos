@@ -606,6 +606,30 @@ pub struct SetWorkClassParams {
     pub work_class: String,
 }
 
+/// Parameters for `set_state` (KAIROS-T-0506).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct SetStateParams {
+    /// The short code of the task (e.g. "ACME-T-0012").
+    pub short_code: String,
+    /// The branch of the work.
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// The last commit (a hash or a short hash).
+    #[serde(default)]
+    pub commit: Option<String>,
+    /// True when the last commit is pushed. Default false.
+    #[serde(default)]
+    pub pushed: Option<bool>,
+    /// The URL of the PR.
+    #[serde(default)]
+    pub pr_url: Option<String>,
+    /// What comes next.
+    #[serde(default)]
+    pub next_step: Option<String>,
+}
+
 /// Parameters for `set_team` and `clear_team` (KAIROS-T-0321).
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -1845,6 +1869,8 @@ impl KairosMcp {
             // KAIROS-T-0362: the cancelled tasks, one query.
             let cancelled = kairos_db::task_cancellations::marks_of(conn, &item_ids)
                 .map_err(ApiError::internal)?;
+            // KAIROS-T-0506: the live states of the tasks, two queries.
+            let states = crate::task_state::state_dtos(conn, &item_ids)?;
             // KAIROS-T-0368: with `details`, the metadata of the cards, one
             // query.
             let details = params.details.unwrap_or(false);
@@ -1895,7 +1921,7 @@ impl KairosMcp {
                     // tell put-away work from live work will pick one up
                     // and start on it (KAIROS-A-0020 rule 2).
                     out.push_str(&format!(
-                        "- {} [{}] {}{}{}{}{}{}{}{}\n",
+                        "- {} [{}] {}{}{}{}{}{}{}{}{}\n",
                         item.short_code,
                         item.kind,
                         item.title,
@@ -1929,6 +1955,10 @@ impl KairosMcp {
                         blocks
                             .get(&item.id)
                             .map(|counts| blocks_marker(*counts))
+                            .unwrap_or_default(),
+                        states
+                            .get(&item.id)
+                            .map(crate::task_state::state_tag)
                             .unwrap_or_default(),
                         if item.archived { " [archived]" } else { "" },
                         if details {
@@ -2413,6 +2443,8 @@ impl KairosMcp {
             // KAIROS-T-0362: the cancel mark and its reason.
             if item.item_type == ItemType::Task {
                 out.push_str(&crate::cancel::cancel_text(conn, item.id)?);
+                // KAIROS-T-0506: the live state of the task.
+                out.push_str(&crate::task_state::state_line(conn, item.id)?);
             }
             // KAIROS-T-0411: the owner of a strategy or an initiative, in
             // each column and in the archive.
@@ -3182,6 +3214,43 @@ impl KairosMcp {
                     updated.short_code, updated.work_class, before
                 )
             })
+        })
+        .await
+    }
+
+    // KAIROS-T-0506: the live state of a task.
+    #[tool(
+        description = "Write the live state of a TASK: `branch`, `commit`, `pushed`, `pr_url`, `next_step` (each optional; send at least one). The write replaces the whole state: send every field each time. The state is not a note: it is one current line that `get_item`, `board_items` and the card show, with who wrote it when. Write it after each commit, each push, a PR, and before you stop. The edit rule applies: the creator of the task, or `manage_tasks` on its board."
+    )]
+    pub async fn set_state(
+        &self,
+        Parameters(params): Parameters<SetStateParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
+            if item.item_type != ItemType::Task {
+                return Err(ApiError::validation(format!(
+                    "The {} {} is not a task. set_state applies to tasks only.",
+                    item.item_type, item.short_code
+                )));
+            }
+            let body = kairos_client::types::SetTaskStateRequest {
+                branch: params.branch,
+                commit: params.commit,
+                pushed: params.pushed.unwrap_or(false),
+                pr_url: params.pr_url,
+                next_step: params.next_step,
+            };
+            let state = crate::task_state::write_state(conn, &slug, user, item.id, &body)?;
+            Ok(format!(
+                "State of {}: {}",
+                item.short_code,
+                crate::task_state::state_text(&state, chrono::Utc::now())
+            ))
         })
         .await
     }

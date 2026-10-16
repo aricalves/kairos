@@ -3,8 +3,8 @@ title: "MCP tools"
 ---
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-sixty-eight tools. A drift gate in the test suite
-asserts that `tools/list` returns these sixty-eight and no others. The same
+sixty-nine tools. A drift gate in the test suite
+asserts that `tools/list` returns these sixty-nine and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -22,7 +22,7 @@ organization.
 
 | URL | Profile | Tools |
 |---|---|---|
-| `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory, claims, notifications, the scales and templates, team pages to read: 37 tools. |
+| `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory, claims, notifications, the scales and templates, team pages to read: 38 tools. |
 | `/mcp?profile=admin` | admin | Teams, boards, columns and transitions, grants, metadata definitions and templates, dispatch rules and agent triage, the writes of team pages, org read tokens, delete and rebuild of repositories, board flow, purge: the other 30 tools. |
 | `/mcp?profile=all` | all | Each tool. |
 
@@ -33,7 +33,7 @@ The work tools:
 
 - items: `whoami`, `my_boards`, `my_work`, `board_items`, `search`, `get_item`,
   `get_history`, `related_work`, `create_item`, `edit_item`, `update_item`,
-  `transition_item`, `move_item`, `append_note`, `set_metadata`;
+  `transition_item`, `move_item`, `append_note`, `set_state`, `set_metadata`;
 - links and fields: `link_items`, `unlink_items`, `propose_edge`,
   `set_repository`, `set_work_class`, `set_team`, `clear_team`;
 - the end of an item: `cancel_item`, `delete_item`, `restore_item`,
@@ -494,6 +494,9 @@ A strategy or an initiative with an [owner](../glossary/#owner) carries
 
 A [cancelled](../glossary/#cancel) task carries `[cancelled]`.
 
+A task with a [state](#set_state) carries `[state: branch x; next: …]`: its
+branch and its next step, the ones with a value.
+
 A column with a WIP limit shows its live count against the limit after its
 name: `## Active (2) [WIP 2/3]`. A column with more live items than its limit
 shows `[WIP 4/3, over the limit]`. The count is of the whole column, not of the
@@ -603,6 +606,13 @@ cancelled it and the reason:
 
 ```text
 - cancelled: 2026-10-09T10:00:00Z by Robin. Reason: The customer does not need it.
+```
+
+A task with a [state](#set_state) has the line `state`. It gives the fields
+with a value, the next step, and who wrote it when:
+
+```text
+- state: branch acme-t-0012 at abc1234, pushed, PR https://github.com/acme/app/pull/12. Next: Wait for CI. (updated 5 min ago by Robin)
 ```
 
 An initiative or a strategy has the line `teams` in the section of the
@@ -1059,6 +1069,40 @@ Refuses: `NOT_FOUND` for an unknown short code or an archived task.
 `VALIDATION` when the item is not a task, and for an unknown `work_class`.
 `FORBIDDEN` without `transition_items`. `AGENT_TRIAGE_OFF` for an agent's
 move of intake to planned while the board lets a person decide the triage.
+
+### `set_state`
+
+Writes the live state of a task: the branch, the last commit, pushed or
+not, the PR, the next step. The state is one current line, separate from
+the notes. `get_item`, `board_items` and the card of the task show it, with
+who wrote it when. Write it after each commit, each push, a PR, and before
+you stop.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `short_code` | string | yes | — | The short code of the task. |
+| `branch` | string | no | — | The branch of the work. |
+| `commit` | string | no | — | The last commit (a hash or a short hash). |
+| `pushed` | boolean | no | `false` | True when the last commit is pushed. |
+| `pr_url` | string | no | — | The URL of the PR. |
+| `next_step` | string | no | — | What comes next. |
+
+The write replaces the whole state: send each field each time. Kairos
+clears a field that you do not send. Send at least one field. The state is
+not content: the write makes no new version of the task. The state stays
+when the task reaches a done column.
+
+The edit rule applies, as for `append_note`: the creator of the task, or
+`manage_tasks` on its board. The rule is that of
+`PUT /api/tasks/{short_code}/state`. The result is one line:
+
+```text
+State of ACME-T-0012: branch acme-t-0012 at abc1234, pushed, PR https://github.com/acme/app/pull/12. Next: Wait for CI. (updated just now by Robin)
+```
+
+Refuses: `NOT_FOUND` for an unknown short code or an archived task.
+`VALIDATION` when the item is not a task, when no field has a value, and
+for an unknown argument. `FORBIDDEN` by the edit rule.
 
 ### The teams of an initiative or a strategy
 

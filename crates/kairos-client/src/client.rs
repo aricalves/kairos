@@ -29,8 +29,8 @@ use crate::types::{
     Adr, AppendNoteRequest, AppendNoteResponse, CascadePreviewResponse, CreateAdrRequest,
     CreateDocumentRequest, CreateInitiativeRequest, CreateStrategyRequest, CreateTaskRequest,
     DeleteResponse, Document, ErrorEnvelope, ImpactListQuery, Initiative, ListEnvelope, ListQuery,
-    Pagination, RestoreResponse, SetDocumentBoardRequest, SetLifecycleRequest, SetWorkClassRequest,
-    Strategy, Task, TransitionRequest, UpdateContentRequest,
+    Pagination, RestoreResponse, SetDocumentBoardRequest, SetLifecycleRequest, SetTaskStateRequest,
+    SetWorkClassRequest, Strategy, Task, TransitionRequest, UpdateContentRequest,
 };
 use crate::types_auth::{DeploymentConfig, LoginRequest, LoginResponse};
 use crate::types_meta::{
@@ -570,6 +570,17 @@ impl KairosClient {
             },
         )
         .await
+    }
+
+    /// `PUT /api/tasks/{short_code}/state` — write the live state of a task
+    /// (KAIROS-T-0506). The write replaces the whole state.
+    pub async fn set_task_state(
+        &self,
+        short_code: &str,
+        state: &SetTaskStateRequest,
+    ) -> Result<Task, Error> {
+        self.put_ok(&format!("/api/tasks/{short_code}/state"), state)
+            .await
     }
 
     /// `POST /api/tasks/{short_code}/hand-off` — give the claim of a task

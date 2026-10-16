@@ -2319,6 +2319,20 @@ Body of `PUT /api/tasks/{short_code}/repository` — set the repository the task
 
 The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
 
+## SetTaskStateRequest
+
+Body of `PUT /api/tasks/{short_code}/state` (KAIROS-T-0506). Each field is optional. The write replaces the whole state: Kairos clears a field that you do not send. At least one field must have a value.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `branch` | `string`, nullable | no | The branch of the work. |
+| `commit` | `string`, nullable | no | The last commit. |
+| `next_step` | `string`, nullable | no | What comes next. |
+| `pr_url` | `string`, nullable | no | The URL of the PR. |
+| `pushed` | `boolean` | no | True when the last commit is pushed. Default false. |
+
+The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
+
 ## SetWorkClassRequest
 
 transitions â the board rules engine is never consulted.
@@ -2420,6 +2434,7 @@ A task/bug/tech-debt item (Flight Level 1), as returned by `/api/tasks`.
 | `repository` | [`RepositoryRef`](#repositoryref), nullable | no |  |
 | `repository_id` | `string`, nullable | no | The repository this task is issued against (UUID), if bound (KAIROS-T-0104, A-0019). |
 | `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-T-{NNNN}`). |
+| `state` | [`TaskState`](#taskstate), nullable | no |  |
 | `task_type` | `string` | yes | `task|bug|tech_debt|support`. |
 | `team_id` | `string`, nullable | no | Owning team (UUID), if assigned. |
 | `title` | `string` | yes |  |
@@ -2449,6 +2464,21 @@ The claim of a task (KAIROS-T-0359, KAIROS-A-0024): the person who has the task 
 | `claimed_at` | `string` | yes | RFC 3339. |
 | `display_name` | `string` | yes | The display name of the person. |
 | `user_id` | `string` | yes | The person (UUID). |
+
+## TaskState
+
+The live state of a task (KAIROS-T-0506): one current state, separate from the append-only notes. An agent writes it after each push and before each stop. A write replaces the whole state.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `branch` | `string`, nullable | no | The branch of the work. |
+| `commit` | `string`, nullable | no | The last commit (a hash or a short hash). |
+| `next_step` | `string`, nullable | no | What comes next. |
+| `pr_url` | `string`, nullable | no | The URL of the PR. |
+| `pushed` | `boolean` | no | True when the last commit is pushed. |
+| `updated_at` | `string` | yes | RFC 3339. |
+| `updated_by` | `string` | yes | The user id (UUID) of who wrote the state. |
+| `updated_by_name` | `string` | yes | The display name of who wrote the state. |
 
 ## Team
 

@@ -597,6 +597,13 @@ impl EntityView for Task {
                     },
                 ),
             ),
+            // KAIROS-T-0506: the live state of the task.
+            (
+                "state",
+                self.state
+                    .as_ref()
+                    .map_or_else(|| "-".to_string(), crate::commands::state::state_text),
+            ),
             ("version", self.version.to_string()),
             ("created", self.created_at.clone()),
             ("updated", self.updated_at.clone()),

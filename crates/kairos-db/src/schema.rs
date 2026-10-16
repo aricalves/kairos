@@ -630,6 +630,19 @@ diesel::table! {
 }
 
 diesel::table! {
+    task_state (task_id) {
+        task_id -> Uuid,
+        branch -> Nullable<Text>,
+        commit -> Nullable<Text>,
+        pushed -> Bool,
+        pr_url -> Nullable<Text>,
+        next_step -> Nullable<Text>,
+        updated_at -> Timestamptz,
+        updated_by -> Uuid,
+    }
+}
+
+diesel::table! {
     tasks (id) {
         id -> Uuid,
         short_code -> Text,
@@ -769,6 +782,7 @@ diesel::joinable!(strategies -> boards (board_id));
 diesel::joinable!(structure_grants -> boards (board_id));
 diesel::joinable!(task_cancellations -> tasks (task_id));
 diesel::joinable!(task_claims -> tasks (task_id));
+diesel::joinable!(task_state -> tasks (task_id));
 diesel::joinable!(tasks -> board_columns (column_id));
 diesel::joinable!(tasks -> boards (board_id));
 diesel::joinable!(tasks -> repositories (repository_id));
@@ -829,6 +843,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     structure_grants,
     task_cancellations,
     task_claims,
+    task_state,
     tasks,
     team_announcements,
     team_delivery_streams,
