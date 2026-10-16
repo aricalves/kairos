@@ -11,7 +11,7 @@ plugin/
 │   ├── review/       # architecture-review, diataxis-review
 │   └── meta/         # kairos (router), kairos-vocabulary, grill-me, grilling, handoff, writing-great-skills, bootstrap
 ├── references/       # rendered review specs (see below)
-└── hooks/            # SessionStart context injection, the Ralph loop (Stop hook), the active work after a compaction, the code index
+└── hooks/            # SessionStart context injection, the Ralph loop (Stop hook), the active work after a compaction, the code index, the Kairos rules once per session, the git guard, the memory reminder
 ```
 
 Shipped (KAIROS-T-0027..T-0034): all four buckets plus the SessionStart hook.

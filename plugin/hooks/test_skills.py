@@ -257,6 +257,35 @@ class RemainingWorkLivesOnTheItems(unittest.TestCase):
         self.assertIn("order of their edges", text)
 
 
+class RecordThisDecision(unittest.TestCase):
+    """KAIROS-T-0503 (COLLIERY-I-0628): domain-modeling drafts an ADR from
+    the conversation, and implement asks at the end of a task."""
+
+    def test_domain_modeling_has_the_path(self):
+        text = read(os.path.join(SKILLS, "engineering", "domain-modeling", "SKILL.md"))
+        section = text.split("## Record this decision", 1)[1]
+        for phrase in (
+            "`my_boards`",
+            "`create_item`",
+            "`item_type: adr`",
+            "`parent:",
+            "`impacts`",
+            "`supersedes`",
+            "context",
+            "consequences",
+            "ADR-FORMAT.md",
+        ):
+            self.assertIn(phrase, section)
+
+    def test_implement_asks_before_completed(self):
+        text = read(os.path.join(SKILLS, "workflow", "implement", "SKILL.md"))
+        gate = text.split("## The completion gate", 1)[1].split("## Blocked", 1)[0]
+        self.assertIn("did this work decide anything an ADR or the spec should hold?", gate)
+        self.assertIn("Record this decision", gate)
+        self.assertIn("`domain-modeling`", gate)
+        self.assertIn("No decision to record.", gate)
+
+
 class GrillInitiative(unittest.TestCase):
     """COLLIERY-T-1864."""
 

@@ -61,6 +61,8 @@ The task transitions Active → Completed **only** when all of these hold, with 
 
 The closing note lists what stays "not checked" (a manual check, a live run, a claim without evidence).
 
+Before Completed, ask: did this work decide anything an ADR or the spec should hold? A behaviour change, a rule, a boundary. Yes: record it with the "Record this decision" path of the `domain-modeling` skill (an ADR with `parent` this task, `impacts` the repository), and write its short code in the closing note. No: say so in the closing note ("No decision to record."). A decision in a note or in local memory only is lost to the next session.
+
 Then review the diff (the `code-review` skill), commit to the current branch, and `transition_item` to **Completed**. When the work needs a change from a DIFFERENT team (an API to add, a client to update), send a request to that team. The recipe is [CROSS-TEAM-FILING.md](CROSS-TEAM-FILING.md): `create_item` (`board: <the delivery board of that team>`, `parent: <this task's initiative>`), then `link_items blocks` from the request to this task.
 
 ## Blocked
