@@ -87,7 +87,6 @@ def _acquire_trunk():
     return str(local_trunk) if local_trunk.exists() else None
 
 
-@web()
 def _check_wasm_budget():
     """Compare the release .wasm with crates/kairos-web/wasm-size-budget.
 
@@ -114,6 +113,7 @@ def _check_wasm_budget():
     return code
 
 
+@web()
 @angreal.command(
     name="build",
     about="build the Leptos CSR bundle (trunk) into crates/kairos-web/dist",
