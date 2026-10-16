@@ -33,6 +33,7 @@ mod item_owner;
 pub(crate) use kairos_markdown as markdown;
 mod metadata;
 mod owner;
+mod state;
 mod teams;
 
 use aurora_dark::components::{
@@ -60,6 +61,7 @@ use external::ExternalRefsPanel;
 use item_owner::OwnerPanel;
 use metadata::MetadataPanel;
 use owner::{ImpactsPanel, OwnerBoardPanel};
+use state::StatePanel;
 use teams::TeamsPanel;
 // The dialog of a repository gives a document to a board with the rule of
 // the owner panel (COLLIERY-T-0269).
@@ -266,6 +268,7 @@ fn ItemLoaded(
     let task_column = item.column_id.clone();
     let claim_column = item.column_id.clone();
     let task_claim = item.claim.clone();
+    let task_state = item.state.clone();
     let item_owner = item.owner.clone();
     let lane = item.work_class.clone();
     let repository = item.repository.as_ref().map(|r| r.slug.clone());
@@ -424,6 +427,10 @@ fn ItemLoaded(
                 {(family == Family::Task).then(|| view! {
                     <ClaimPanel code=short_code.clone() claim=task_claim board
                         column_id=claim_column archived on_moved/>
+                })}
+                // KAIROS-T-0506: the live state of a task.
+                {(family == Family::Task).then(|| view! {
+                    <StatePanel state=task_state/>
                 })}
                 {matches!(family, Family::Document | Family::Adr).then(|| view! {
                     <ImpactsPanel family code=short_code.clone() impacts board

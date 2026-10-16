@@ -50,6 +50,10 @@ pub fn router() -> Router<AppState> {
             "/api/tasks/{short_code}/repository",
             axum::routing::put(set_repository),
         )
+        .route(
+            "/api/tasks/{short_code}/state",
+            axum::routing::put(set_state),
+        )
 }
 
 pub(crate) use kairos_db::repositories::TaskRoute;
@@ -249,11 +253,14 @@ fn load(conn: &mut PgConnection, short_code: &str, liveness: Liveness) -> Result
 }
 
 /// The task DTO of a response, with the repository, the claim
-/// (KAIROS-T-0359) and the cancel mark (KAIROS-T-0362) embedded.
+/// (KAIROS-T-0359), the cancel mark (KAIROS-T-0362) and the live state
+/// (KAIROS-T-0506) embedded.
 fn embed(conn: &mut PgConnection, task: dto::Task) -> Result<dto::Task, ApiError> {
     let task = attach_repository(conn, task).map_err(ApiError::internal)?;
     let mut task = crate::claims::attach_claim(conn, task).map_err(ApiError::internal)?;
     crate::cancel::attach_cancellations(conn, std::slice::from_mut(&mut task))
+        .map_err(ApiError::internal)?;
+    crate::task_state::attach_states(conn, std::slice::from_mut(&mut task))
         .map_err(ApiError::internal)?;
     Ok(task)
 }
@@ -308,6 +315,7 @@ pub(crate) async fn list_tasks(
             attach_repositories(conn, &mut items).map_err(ApiError::internal)?;
             crate::claims::attach_claims(conn, &mut items).map_err(ApiError::internal)?;
             crate::cancel::attach_cancellations(conn, &mut items).map_err(ApiError::internal)?;
+            crate::task_state::attach_states(conn, &mut items).map_err(ApiError::internal)?;
             Ok(dto::ListEnvelope {
                 items,
                 total,
@@ -664,6 +672,44 @@ pub(crate) async fn set_repository(
             require_item_edit(conn, &slug, user, task.id, ItemType::Task)?;
             let updated = link_task_to_repository(conn, task.id, body.repository.as_deref(), user)?;
             embed(conn, updated.into_dto())
+        })
+        .await?;
+    Ok(Json(updated))
+}
+
+/// Write the live state of a task (KAIROS-T-0506): branch, last commit,
+/// pushed, PR, next step. One state for each task; the write replaces it.
+/// Kairos clears a field that you do not send. The state is not content:
+/// no new version of the task. The edit rule applies: the creator of the
+/// task, or `manage_tasks` on its board.
+#[utoipa::path(
+    put,
+    path = "/api/tasks/{short_code}/state",
+    tag = "tasks",
+    params(("short_code" = String, Path, description = "Task short code")),
+    request_body = dto::SetTaskStateRequest,
+    responses(
+        (status = 200, description = "The task, with its state", body = dto::Task),
+        (status = 403, description = "Refused by the edit rule: the caller did not create the task and lacks manage_tasks", body = dto::ErrorEnvelope),
+        (status = 404, description = "Unknown short code, or the task is archived", body = dto::ErrorEnvelope),
+        (status = 422, description = "No field has a value, or the body has an unknown field", body = dto::ErrorEnvelope),
+    ),
+)]
+pub(crate) async fn set_state(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Extension(tenant): Extension<TenantContext>,
+    Path(short_code): Path<String>,
+    ApiJson(body): ApiJson<dto::SetTaskStateRequest>,
+) -> Result<Json<dto::Task>, ApiError> {
+    let user = auth.user_id;
+    let slug = tenant.slug.clone();
+    let updated = state
+        .blocking
+        .run(&tenant.slug, move |conn| {
+            let task = load(conn, &short_code, Liveness::LiveOnly)?;
+            crate::task_state::write_state(conn, &slug, user, task.id, &body)?;
+            embed(conn, task.into_dto())
         })
         .await?;
     Ok(Json(updated))

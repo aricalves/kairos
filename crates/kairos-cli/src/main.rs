@@ -148,6 +148,9 @@ enum Command {
     /// keys claim, the tasks under your initiatives, and the tasks these
     /// block (Todo, Active, Blocked)
     Me(Box<commands::me::MeArgs>),
+    /// Write the live state of a task: branch, commit, pushed, PR, next
+    /// step (the write replaces the whole state)
+    State(Box<commands::state::StateArgs>),
     /// Organization info for your credentials
     #[command(subcommand)]
     Orgs(OrgsCommand),
@@ -262,6 +265,7 @@ async fn dispatch(command: Command) -> Result<(), CliError> {
         Command::Logout { url } => logout(url.as_deref()).await,
         Command::Whoami { url, tenant, json } => whoami(url.as_deref(), tenant, json).await,
         Command::Me(args) => (*args).run().await,
+        Command::State(args) => (*args).run().await,
         Command::Orgs(command) => command.run().await,
         Command::Boards(command) => command.run().await,
         Command::Strategies(command) => command.run().await,
@@ -1120,6 +1124,38 @@ mod tests {
             Cli::try_parse_from(["kairos", "tasks", "cancel", "ACME-T-0001"]).is_err(),
             "a cancel needs --reason"
         );
+        // KAIROS-T-0506: the live state of a task.
+        let cli = Cli::try_parse_from([
+            "kairos",
+            "state",
+            "ACME-T-0001",
+            "--branch",
+            "acme-t-0001",
+            "--commit",
+            "abc1234",
+            "--pushed",
+            "--pr",
+            "https://example.com/pr/1",
+            "--next",
+            "Wait for CI",
+        ])
+        .expect("state parses");
+        match cli.command {
+            Command::State(args) => {
+                assert_eq!(args.branch.as_deref(), Some("acme-t-0001"));
+                assert_eq!(args.commit.as_deref(), Some("abc1234"));
+                assert!(args.pushed);
+                assert_eq!(args.pr_url.as_deref(), Some("https://example.com/pr/1"));
+                assert_eq!(args.next_step.as_deref(), Some("Wait for CI"));
+            }
+            _ => panic!("expected state"),
+        }
+        let cli = Cli::try_parse_from(["kairos", "state", "ACME-T-0001", "--next", "Rebase"])
+            .expect("state with one field parses");
+        match cli.command {
+            Command::State(args) => assert!(!args.pushed && args.branch.is_none()),
+            _ => panic!("expected state"),
+        }
         let cli = Cli::try_parse_from(["kairos", "tasks", "purge", "ACME-T-0001", "--confirm"])
             .expect("tasks purge parses");
         match cli.command {

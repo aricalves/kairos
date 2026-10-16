@@ -100,6 +100,8 @@ impl IntoDto<dto::Task> for Task {
             // [`crate::cancel::attach_cancellations`] fills it
             // (KAIROS-T-0362).
             cancellation: None,
+            // [`crate::task_state::attach_states`] fills it (KAIROS-T-0506).
+            state: None,
         }
     }
 }

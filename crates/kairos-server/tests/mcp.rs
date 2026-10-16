@@ -85,8 +85,8 @@ const TENANT: &str = "acme";
 
 /// How many tools `tools/list` returns, and the word the reference pages
 /// use for that number (COLLIERY-T-0220, COLLIERY-T-0266).
-const TOOL_COUNT: usize = 68;
-const TOOL_COUNT_WORD: &str = "sixty-eight";
+const TOOL_COUNT: usize = 70;
+const TOOL_COUNT_WORD: &str = "seventy";
 
 /// Every request carries a real `Host` header and the tenant resolves from
 /// its subdomain against the configured base domain — the S-0006 REQ-1.2
@@ -666,6 +666,10 @@ async fn mcp_endpoint_against_live_stack() {
         "grant_capability",
         // KAIROS-T-0367: a note in one call, with no version and no anchor.
         "append_note",
+        // KAIROS-T-0505: a note becomes a draft ADR or document.
+        "promote_note",
+        // KAIROS-T-0506: the live state of a task.
+        "set_state",
         // KAIROS-T-0368: the scales and the templates, for triage.
         "list_metadata_definitions",
         "list_templates",
@@ -760,6 +764,8 @@ async fn mcp_endpoint_against_live_stack() {
             "unlink_items",
             "propose_edge",
             "append_note",
+            "promote_note",
+            "set_state",
             "set_metadata",
             "set_repository",
             "set_work_class",
@@ -1899,16 +1905,181 @@ async fn mcp_endpoint_against_live_stack() {
         )
         .await;
     assert!(
-        text.contains(&format!("Appended a note to {filed} (version 4).")),
+        text.contains(&format!("Appended note n-1 to {filed} (version 4).")),
         "{text}"
     );
     let text = session
         .call_ok("get_item", json!({"short_code": filed}))
         .await;
     assert!(
-        text.contains("edited again by the filer\n\n## Note (")
+        text.contains("edited again by the filer\n\n## Note n-1 (")
             && text.contains(")\n\nThe filer adds a note."),
-        "the note is at the end, under a dated heading: {text}"
+        "the note is at the end, under a dated heading with its id: {text}"
+    );
+    // KAIROS-T-0504: get_item lists the notes with their ids, before the content.
+    let notes_at = text.find("\n## Notes\n- n-1 (").expect("a Notes section");
+    assert!(
+        notes_at < text.find("\n## Content\n").expect("content"),
+        "{text}"
+    );
+    assert!(
+        text.contains("): The filer adds a note.\n"),
+        "the first line of the note: {text}"
+    );
+    // KAIROS-T-0506: the live state of a task. The creator writes it; the
+    // write replaces the whole state; get_item and board_items show it.
+    let text = bob_session
+        .call_ok(
+            "set_state",
+            json!({
+                "short_code": filed,
+                "branch": "fix-refunds",
+                "commit": "abc1234",
+                "pushed": true,
+                "pr_url": "https://example.com/pr/12",
+                "next_step": "Wait for CI"
+            }),
+        )
+        .await;
+    assert!(
+        text.starts_with(&format!(
+            "State of {filed}: branch fix-refunds at abc1234, pushed, PR https://example.com/pr/12. Next: Wait for CI. (updated just now by bob)"
+        )),
+        "{text}"
+    );
+    let text = session
+        .call_ok("get_item", json!({"short_code": filed}))
+        .await;
+    assert!(
+        text.contains(
+            "\n- state: branch fix-refunds at abc1234, pushed, PR https://example.com/pr/12. Next: Wait for CI. (updated just now by bob)\n"
+        ),
+        "{text}"
+    );
+    let text = session
+        .call_ok("board_items", json!({"board": "platform-delivery"}))
+        .await;
+    assert!(
+        text.contains(&format!("- {filed} [task"))
+            && text.contains("[state: branch fix-refunds; next: Wait for CI]"),
+        "{text}"
+    );
+    let text = bob_session
+        .call_ok(
+            "set_state",
+            json!({"short_code": filed, "next_step": "Rebase on main"}),
+        )
+        .await;
+    assert!(
+        text.starts_with(&format!(
+            "State of {filed}: Next: Rebase on main. (updated just now by bob)"
+        )),
+        "a write replaces the whole state: {text}"
+    );
+    let text = bob_session
+        .call_err("set_state", json!({"short_code": filed}))
+        .await;
+    assert!(
+        text.contains("VALIDATION") && text.contains("at least one"),
+        "{text}"
+    );
+    let text = bob_session
+        .call_err("set_state", json!({"short_code": filed, "sha": "x"}))
+        .await;
+    assert!(
+        text.contains("VALIDATION") && text.contains("\"sha\""),
+        "{text}"
+    );
+    let text = bob_session
+        .call_err(
+            "set_state",
+            json!({"short_code": unbound_code, "next_step": "not his"}),
+        )
+        .await;
+    assert!(
+        text.contains("FORBIDDEN") && text.contains("manage_tasks"),
+        "{text}"
+    );
+    // KAIROS-T-0505: a note becomes a draft ADR or document. alice holds
+    // manage_adrs on the ADR board and manage_tasks on the delivery board.
+    let text = session
+        .call_ok(
+            "promote_note",
+            json!({
+                "short_code": filed,
+                "note_id": "n-1",
+                "kind": "adr",
+                "board": "adrs",
+                "title": "Keep the filer's idea"
+            }),
+        )
+        .await;
+    let promoted_adr = extract_code(&text, "ACME-A-");
+    assert!(
+        text.starts_with(&format!(
+            "Promoted note n-1 on {filed} to the draft adr {promoted_adr}. {promoted_adr} supports {filed}. The note has the line \"Promoted to {promoted_adr}.\""
+        )),
+        "{text}"
+    );
+    let text = session
+        .call_ok("get_item", json!({"short_code": promoted_adr}))
+        .await;
+    assert!(
+        text.contains("Keep the filer's idea")
+            && text.contains(&format!(
+                "The filer adds a note.\n\nFrom note n-1 on {filed} (bob, "
+            ))
+            && text.contains(&format!("supports: {filed}")),
+        "{text}"
+    );
+    let text = session
+        .call_ok("get_item", json!({"short_code": filed}))
+        .await;
+    assert!(
+        text.contains(&format!(
+            "The filer adds a note.\n\nPromoted to {promoted_adr}."
+        )),
+        "{text}"
+    );
+    let text = session
+        .call_ok(
+            "promote_note",
+            json!({"short_code": filed, "note_id": "n-1", "kind": "document", "board": "platform-delivery"}),
+        )
+        .await;
+    let promoted_doc = extract_code(&text, "ACME-D-");
+    assert!(
+        text.contains(&format!(
+            "to the draft document {promoted_doc}. {promoted_doc} supports {filed}."
+        )),
+        "{text}"
+    );
+    let text = session
+        .call_err(
+            "promote_note",
+            json!({"short_code": filed, "note_id": "n-7", "kind": "adr", "board": "adrs"}),
+        )
+        .await;
+    assert!(text.contains("NOT_FOUND") && text.contains("n-1"), "{text}");
+    let text = session
+        .call_err(
+            "promote_note",
+            json!({"short_code": filed, "note_id": "n-1", "kind": "spec", "board": "adrs"}),
+        )
+        .await;
+    assert!(
+        text.contains("VALIDATION") && text.contains("document"),
+        "{text}"
+    );
+    let text = bob_session
+        .call_err(
+            "promote_note",
+            json!({"short_code": filed, "note_id": "n-1", "kind": "adr", "board": "adrs"}),
+        )
+        .await;
+    assert!(
+        text.contains("FORBIDDEN") && text.contains("manage_adrs"),
+        "{text}"
     );
     let text = bob_session
         .call_err("append_note", json!({"short_code": filed, "text": "  "}))

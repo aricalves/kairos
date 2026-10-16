@@ -13,8 +13,8 @@ use kairos_client::EntityKind;
 use kairos_client::types::{
     Adr, AppendNoteResponse, CreateAdrRequest, CreateDocumentRequest, CreateInitiativeRequest,
     CreateStrategyRequest, CreateTaskRequest, DeleteResponse, Document, ImpactListQuery,
-    Initiative, ListEnvelope, ListQuery, Pagination, RestoreResponse, Strategy, Task,
-    UpdateContentRequest,
+    Initiative, ListEnvelope, ListQuery, Pagination, PromoteNoteRequest, PromoteNoteResponse,
+    RestoreResponse, Strategy, Task, UpdateContentRequest,
 };
 use kairos_client::types_repositories::Impact;
 
@@ -160,6 +160,28 @@ pub struct NoteArgs {
     /// The markdown text of the note
     #[arg(long)]
     pub text: String,
+    #[command(flatten)]
+    pub common: Common,
+}
+
+/// Arguments of `promote-note` (KAIROS-T-0505): turn a note into a draft
+/// ADR or document.
+#[derive(Args, Debug)]
+pub struct PromoteNoteArgs {
+    /// The item's short code (e.g. ACME-T-0001)
+    pub short_code: String,
+    /// The id of the note, as `get` lists it (e.g. n-3)
+    pub note_id: String,
+    /// What the note becomes: adr or document
+    #[arg(long, value_parser = ["adr", "document"])]
+    pub kind: String,
+    /// The board that gets the new item (slug or UUID): an ADR board for
+    /// an ADR, the owner board for a document
+    #[arg(long, value_name = "BOARD")]
+    pub board: String,
+    /// The title of the new item (default: the first line of the note)
+    #[arg(long)]
+    pub title: Option<String>,
     #[command(flatten)]
     pub common: Common,
 }
@@ -597,6 +619,13 @@ impl EntityView for Task {
                     },
                 ),
             ),
+            // KAIROS-T-0506: the live state of the task.
+            (
+                "state",
+                self.state
+                    .as_ref()
+                    .map_or_else(|| "-".to_string(), crate::commands::state::state_text),
+            ),
             ("version", self.version.to_string()),
             ("created", self.created_at.clone()),
             ("updated", self.updated_at.clone()),
@@ -895,14 +924,34 @@ fn document_moved_line(short_code: &str, before: &str, after: &str) -> String {
     }
 }
 
+/// `promote-note` output (KAIROS-T-0505): the new item and its edge.
+pub fn emit_promoted(common: &Common, response: &PromoteNoteResponse) -> Result<(), CliError> {
+    if common.json {
+        return print_json(response);
+    }
+    let edge = if response.supports {
+        format!(
+            " {} supports {}.",
+            response.promoted_to, response.short_code
+        )
+    } else {
+        String::new()
+    };
+    println!(
+        "Kairos promoted note {} on {} to the draft {} {}.{edge}",
+        response.note_id, response.short_code, response.kind, response.promoted_to
+    );
+    Ok(())
+}
+
 /// `note` output (KAIROS-T-0367): the new version.
 pub fn emit_noted(common: &Common, response: &AppendNoteResponse) -> Result<(), CliError> {
     if common.json {
         return print_json(response);
     }
     println!(
-        "Kairos appended a note to {} (version {}).",
-        response.short_code, response.version
+        "Kairos appended note {} to {} (version {}).",
+        response.note_id, response.short_code, response.version
     );
     Ok(())
 }
@@ -1238,6 +1287,10 @@ macro_rules! entity_family_cli {
                                       "'s content, under a heading with the date ",
                                       "and your name (no version needed)"))]
             Note(NoteArgs),
+            #[command(about = concat!("Turn a note of a ", $noun,
+                                      " into a draft ADR or document, linked to the ",
+                                      $noun), name = "promote-note")]
+            PromoteNote(PromoteNoteArgs),
             $(
             #[command(about = concat!("Move a ", $noun, " to another board column ",
                                       "(an invalid move lists the allowed targets)"))]
@@ -1324,6 +1377,18 @@ macro_rules! entity_family_cli {
                         let response =
                             client.append_note($kind, &args.short_code, &args.text).await?;
                         emit_noted(&args.common, &response)
+                    }
+                    Self::PromoteNote(args) => {
+                        let client = client(&args.common)?;
+                        let request = PromoteNoteRequest {
+                            kind: args.kind.clone(),
+                            board: args.board.clone(),
+                            title: args.title.clone(),
+                        };
+                        let response = client
+                            .promote_note($kind, &args.short_code, &args.note_id, &request)
+                            .await?;
+                        emit_promoted(&args.common, &response)
                     }
                     $(
                     Self::$transition_variant(args) => {

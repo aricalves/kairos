@@ -3,8 +3,8 @@ title: "MCP tools"
 ---
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-sixty-eight tools. A drift gate in the test suite
-asserts that `tools/list` returns these sixty-eight and no others. The same
+seventy tools. A drift gate in the test suite
+asserts that `tools/list` returns these seventy and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -22,7 +22,7 @@ organization.
 
 | URL | Profile | Tools |
 |---|---|---|
-| `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory, claims, notifications, the scales and templates, team pages to read: 37 tools. |
+| `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory, claims, notifications, the scales and templates, team pages to read: 40 tools. |
 | `/mcp?profile=admin` | admin | Teams, boards, columns and transitions, grants, metadata definitions and templates, dispatch rules and agent triage, the writes of team pages, org read tokens, delete and rebuild of repositories, board flow, purge: the other 30 tools. |
 | `/mcp?profile=all` | all | Each tool. |
 
@@ -33,7 +33,8 @@ The work tools:
 
 - items: `whoami`, `my_boards`, `my_work`, `board_items`, `search`, `get_item`,
   `get_history`, `related_work`, `create_item`, `edit_item`, `update_item`,
-  `transition_item`, `move_item`, `append_note`, `set_metadata`;
+  `transition_item`, `move_item`, `append_note`, `promote_note`, `set_state`,
+  `set_metadata`;
 - links and fields: `link_items`, `unlink_items`, `propose_edge`,
   `set_repository`, `set_work_class`, `set_team`, `clear_team`;
 - the end of an item: `cancel_item`, `delete_item`, `restore_item`,
@@ -494,6 +495,9 @@ A strategy or an initiative with an [owner](../glossary/#owner) carries
 
 A [cancelled](../glossary/#cancel) task carries `[cancelled]`.
 
+A task with a [state](#set_state) carries `[state: branch x; next: …]`: its
+branch and its next step, the ones with a value.
+
 A column with a WIP limit shows its live count against the limit after its
 name: `## Active (2) [WIP 2/3]`. A column with more live items than its limit
 shows `[WIP 4/3, over the limit]`. The count is of the whole column, not of the
@@ -614,6 +618,13 @@ cancelled it and the reason:
 - cancelled: 2026-10-09T10:00:00Z by Robin. Reason: The customer does not need it.
 ```
 
+A task with a [state](#set_state) has the line `state`. It gives the fields
+with a value, the next step, and who wrote it when:
+
+```text
+- state: branch acme-t-0012 at abc1234, pushed, PR https://github.com/acme/app/pull/12. Next: Wait for CI. (updated 5 min ago by Robin)
+```
+
 An initiative or a strategy has the line `teams` in the section of the
 relationships. Each team shows where it comes from. An item with no team has
 the line too:
@@ -649,6 +660,16 @@ An item that had other codes has the line `retired codes`:
 
 ```text
 - retired codes: COLLIERY-T-2430
+```
+
+An item with notes has the section `## Notes` after the relationships. Each
+line gives one note: its id, its date, its author and its first line. Cite a
+note by its id: "note n-3 on ACME-T-0012".
+
+```text
+## Notes
+- n-1 (2026-10-11, Robin): Found the cause.
+- n-2 (2026-10-12, Sam): The fix is in PR #12.
 ```
 
 Refuses: `NOT_FOUND` only when the short code names nothing at all.
@@ -969,21 +990,27 @@ version and no anchor text.
 | `short_code` | string | yes | — | The item's short code. |
 | `text` | string | yes | — | The markdown text of the note. Must not be empty. |
 
-The note gets a heading with the date (UTC) and the display name of the
-caller:
+The note gets an id and a heading with the date (UTC) and the display name
+of the caller:
 
 ```text
-## Note (2026-10-11, Robin)
+## Note n-3 (2026-10-11, Robin)
 
 The text of the note.
 ```
+
+The id is `n-` and the position of the note on the item: the first note is
+`n-1`. A note from before the ids has no id in its title. Kairos gives it the
+id of its position when it reads the item, so each id is stable. Cite a note
+by its id: "note n-3 on ACME-T-0012". `get_item` lists the notes with their
+ids, and the item page of the GUI anchors each one (`#n-3`).
 
 The server locks the item, adds the note to the current content, and writes
 one new version. Two notes at the same time both stay: the server adds the
 second one after the first one. The result is one line:
 
 ```text
-Appended a note to ACME-T-0012 (version 4).
+Appended note n-3 to ACME-T-0012 (version 4).
 ```
 
 The edit rule applies, as for `update_item`. REST: `POST
@@ -993,6 +1020,47 @@ The edit rule applies, as for `update_item`. REST: `POST
 Refuses: `VALIDATION` for an empty `text`. `NOT_FOUND` for an unknown short
 code or an archived item. `FORBIDDEN` when the
 [edit rule](../capabilities/#the-edit-rule) refuses the caller.
+
+### `promote_note`
+
+Turns a note into a draft ADR or document, in one call. The new item has
+the text of the note. A line names the note, its author and its date:
+
+```text
+From note n-3 on ACME-T-0012 (Robin, 2026-10-11).
+```
+
+The note gets a trailing line that names the new item:
+
+```text
+Promoted to ACME-A-0029.
+```
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `short_code` | string | yes | — | The short code of the item that has the note. |
+| `note_id` | string | yes | — | The id of the note, as `get_item` lists it: `n-3`. |
+| `kind` | string | yes | — | `adr` or `document`. |
+| `board` | string | yes | — | The board that gets the new item (slug or UUID): an ADR board for an ADR, the owner board for a document. |
+| `title` | string | no | the first line of the note | The title of the new item. |
+
+The new item `supports` the item when the item is a strategy, an initiative
+or a task. A note on a document or an ADR gets no edge, and the result says
+so. The result is one line:
+
+```text
+Promoted note n-3 on ACME-T-0012 to the draft adr ACME-A-0029. ACME-A-0029 supports ACME-T-0012. The note has the line "Promoted to ACME-A-0029."
+```
+
+You need the edit rule on the item: you created it, or you hold
+`manage_<type>` on its board. You also need the right to create on the
+board: `manage_adrs` for an ADR, `manage_documents` for a document. The rule
+is that of `POST /api/{family}/{short_code}/notes/{note_id}/promote`.
+
+Refuses: `NOT_FOUND` for an unknown short code, an archived item, or an
+unknown board. `NOT_FOUND` for an unknown note id; the refusal lists the
+ids. `VALIDATION` for a kind that is not `adr` or `document`. `FORBIDDEN`
+by the edit rule, or without the capability on the board.
 
 ### `set_metadata`
 
@@ -1052,6 +1120,40 @@ Refuses: `NOT_FOUND` for an unknown short code or an archived task.
 `VALIDATION` when the item is not a task, and for an unknown `work_class`.
 `FORBIDDEN` without `transition_items`. `AGENT_TRIAGE_OFF` for an agent's
 move of intake to planned while the board lets a person decide the triage.
+
+### `set_state`
+
+Writes the live state of a task: the branch, the last commit, pushed or
+not, the PR, the next step. The state is one current line, separate from
+the notes. `get_item`, `board_items` and the card of the task show it, with
+who wrote it when. Write it after each commit, each push, a PR, and before
+you stop.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `short_code` | string | yes | — | The short code of the task. |
+| `branch` | string | no | — | The branch of the work. |
+| `commit` | string | no | — | The last commit (a hash or a short hash). |
+| `pushed` | boolean | no | `false` | True when the last commit is pushed. |
+| `pr_url` | string | no | — | The URL of the PR. |
+| `next_step` | string | no | — | What comes next. |
+
+The write replaces the whole state: send each field each time. Kairos
+clears a field that you do not send. Send at least one field. The state is
+not content: the write makes no new version of the task. The state stays
+when the task reaches a done column.
+
+The edit rule applies, as for `append_note`: the creator of the task, or
+`manage_tasks` on its board. The rule is that of
+`PUT /api/tasks/{short_code}/state`. The result is one line:
+
+```text
+State of ACME-T-0012: branch acme-t-0012 at abc1234, pushed, PR https://github.com/acme/app/pull/12. Next: Wait for CI. (updated just now by Robin)
+```
+
+Refuses: `NOT_FOUND` for an unknown short code or an archived task.
+`VALIDATION` when the item is not a task, when no field has a value, and
+for an unknown argument. `FORBIDDEN` by the edit rule.
 
 ### The teams of an initiative or a strategy
 

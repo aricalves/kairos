@@ -348,10 +348,40 @@ kairos <noun> note <SHORT_CODE> --text <TEXT> [OPTIONS]
 | `<SHORT_CODE>` | string | required | The item's short code. |
 | `--text <TEXT>` | string | required | The markdown text of the note. Must not be empty. |
 
-Appends a note at the end of the item's content, under a heading with the
-date and your name: `## Note (2026-10-11, Robin)`. Send no version: the server
-locks the item and writes one new version. Two notes at the same time both
-stay. The edit rule applies, as for `edit`.
+Appends a note at the end of the item's content. The note gets a title with
+its id, the date and your name: `## Note n-3 (2026-10-11, Robin)`. Send no
+version: the server locks the item and writes one new version. Two notes at
+the same time both stay. The edit rule applies, as for `edit`.
+
+The output names the id: `Kairos appended note n-3 to ACME-T-0012 (version
+4).` Cite the note by its id: "note n-3 on ACME-T-0012". With `--json`, the
+response has `note_id`.
+
+### `<noun> promote-note`
+
+```
+kairos <noun> promote-note <SHORT_CODE> <NOTE_ID> --kind <KIND> --board <BOARD> [--title <TITLE>] [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<SHORT_CODE>` | string | required | The item's short code. |
+| `<NOTE_ID>` | string | required | The id of the note, as `get` lists it: `n-3`. |
+| `--kind <KIND>` | `adr` \| `document` | required | What the note becomes. |
+| `--board <BOARD>` | slug or UUID | required | The board that gets the new item: an ADR board for an ADR, the owner board for a document. |
+| `--title <TITLE>` | string | the first line of the note | The title of the new item. |
+
+Turns a note into a draft ADR or document. The new item has the text of the
+note. A line names the note, its author and its date. The new item
+supports the item when the item is a strategy, an initiative or a task. The
+note gets a trailing line that names the new item.
+
+You need the edit rule on the item, and `manage_adrs` or `manage_documents`
+on the board. The command prints one line:
+
+```text
+Kairos promoted note n-3 on ACME-T-0012 to the draft adr ACME-A-0029. ACME-A-0029 supports ACME-T-0012.
+```
 
 ### `<noun> transition`
 
@@ -369,7 +399,8 @@ A target outside the board's transition graph is rejected with 422
 name and id. Not available on `documents`.
 
 A task that a person moves to Active gets the [claim](../glossary/#claim) of the
-person. `tasks get` shows it in the field `claim`.
+person. `tasks get` shows it in the field `claim`. A task with a live state
+(`kairos state`) shows it in the field `state`.
 
 ### `tasks move`
 
@@ -454,6 +485,35 @@ task already has changes nothing. The command prints one of these lines:
 ```text
 Moved ACME-T-0001 to the planned lane (was support).
 ACME-T-0001 is already in the planned lane: nothing changed.
+```
+
+### `state`
+
+```
+kairos state <SHORT_CODE> [--branch <BRANCH>] [--commit <COMMIT>] [--pushed] [--pr <URL>] [--next <TEXT>] [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<SHORT_CODE>` | string | required | The task's short code. |
+| `--branch <BRANCH>` | string | none | The branch of the work. |
+| `--commit <COMMIT>` | string | none | The last commit (a hash or a short hash). |
+| `--pushed` | flag | off | The last commit is pushed. |
+| `--pr <URL>` | string | none | The URL of the PR. |
+| `--next <TEXT>` | string | none | What comes next. |
+
+Writes the live state of a task: one current line, separate from the notes.
+The write replaces the whole state: send each option each time. Kairos
+clears an option that you do not send. Send at least one option. The state
+is not content: the write makes no new version of the task.
+
+The edit rule applies, as for `note`: the creator of the task, or
+`manage_tasks` on its board. `tasks get` shows the state in the field
+`state`. The board card and the item page of the GUI show it too. The
+command prints one line:
+
+```text
+State of ACME-T-0001: branch acme-t-0001 at abc1234, pushed, PR https://github.com/acme/app/pull/12. Next: Wait for CI. (updated 2026-10-15 by Robin)
 ```
 
 ### `documents move`

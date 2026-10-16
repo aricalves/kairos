@@ -164,10 +164,11 @@ The server refuses a body with a field that is not in this table ([Errors](../..
 
 ## AppendNoteResponse
 
-Response of `POST /api/{entity_type}/{short_code}/notes` (KAIROS-T-0367): the version that the note made.
+Response of `POST /api/{entity_type}/{short_code}/notes` (KAIROS-T-0367): the version that the note made, and the id of the note (KAIROS-T-0504).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `note_id` | `string` | no | The id of the note: `n-3`. The heading of the note carries it, and the item page anchors it (`#n-3`). The default is for the client only: a response of an older server has no `note_id`. |
 | `short_code` | `string` | yes | The item's short code. |
 | `version` | `integer` | yes | The new version of the item. |
 
@@ -1811,6 +1812,30 @@ A `(done, total)` children rollup (KAIROS-T-0080). `done` counts the children si
 | `has_done` | `boolean` | yes | False when no board hosting the children has a done-flagged column — clients show composition only, never a done fraction. The server sends it in each response, so the schema shows it as required (COLLIERY-T-0254). The default is for the client only: a response of an older server has no `has_done`, and it reads as `false`. |
 | `total` | `integer` | yes |  |
 
+## PromoteNoteRequest
+
+Body of `POST /api/{entity_type}/{short_code}/notes/{note_id}/promote` (KAIROS-T-0505): turn a note into a draft ADR or document.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `board` | `string` | yes | The board that gets the new item (slug or UUID). An ADR board for an ADR; the owner board for a document. |
+| `kind` | `string` | yes | `adr` or `document`. |
+| `title` | `string`, nullable | no | The title of the new item. Default: the first line of the note. |
+
+The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
+
+## PromoteNoteResponse
+
+Response of `POST /api/{entity_type}/{short_code}/notes/{note_id}/promote` (KAIROS-T-0505).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `kind` | `string` | yes | `adr` or `document`. |
+| `note_id` | `string` | yes | The id of the note: `n-3`. |
+| `promoted_to` | `string` | yes | The short code of the new item. |
+| `short_code` | `string` | yes | The short code of the source item. |
+| `supports` | `boolean` | yes | True when the new item `supports` the source item. False for a note on a document or an ADR: no edge joins two attachments. |
+
 ## PurgeTaskResponse
 
 Response of `POST /api/tasks/{short_code}/purge` (KAIROS-T-0362): the task that is gone for good.
@@ -2360,6 +2385,20 @@ Body of `PUT /api/tasks/{short_code}/repository` — set the repository the task
 
 The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
 
+## SetTaskStateRequest
+
+Body of `PUT /api/tasks/{short_code}/state` (KAIROS-T-0506). Each field is optional. The write replaces the whole state: Kairos clears a field that you do not send. At least one field must have a value.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `branch` | `string`, nullable | no | The branch of the work. |
+| `commit` | `string`, nullable | no | The last commit. |
+| `next_step` | `string`, nullable | no | What comes next. |
+| `pr_url` | `string`, nullable | no | The URL of the PR. |
+| `pushed` | `boolean` | no | True when the last commit is pushed. Default false. |
+
+The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
+
 ## SetWorkClassRequest
 
 transitions â the board rules engine is never consulted.
@@ -2461,6 +2500,7 @@ A task/bug/tech-debt item (Flight Level 1), as returned by `/api/tasks`.
 | `repository` | [`RepositoryRef`](#repositoryref), nullable | no |  |
 | `repository_id` | `string`, nullable | no | The repository this task is issued against (UUID), if bound (KAIROS-T-0104, A-0019). |
 | `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-T-{NNNN}`). |
+| `state` | [`TaskState`](#taskstate), nullable | no |  |
 | `task_type` | `string` | yes | `task|bug|tech_debt|support`. |
 | `team_id` | `string`, nullable | no | Owning team (UUID), if assigned. |
 | `title` | `string` | yes |  |
@@ -2490,6 +2530,21 @@ The claim of a task (KAIROS-T-0359, KAIROS-A-0024): the person who has the task 
 | `claimed_at` | `string` | yes | RFC 3339. |
 | `display_name` | `string` | yes | The display name of the person. |
 | `user_id` | `string` | yes | The person (UUID). |
+
+## TaskState
+
+The live state of a task (KAIROS-T-0506): one current state, separate from the append-only notes. An agent writes it after each push and before each stop. A write replaces the whole state.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `branch` | `string`, nullable | no | The branch of the work. |
+| `commit` | `string`, nullable | no | The last commit (a hash or a short hash). |
+| `next_step` | `string`, nullable | no | What comes next. |
+| `pr_url` | `string`, nullable | no | The URL of the PR. |
+| `pushed` | `boolean` | no | True when the last commit is pushed. |
+| `updated_at` | `string` | yes | RFC 3339. |
+| `updated_by` | `string` | yes | The user id (UUID) of who wrote the state. |
+| `updated_by_name` | `string` | yes | The display name of who wrote the state. |
 
 ## Team
 

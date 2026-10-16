@@ -1145,6 +1145,8 @@ pub(crate) async fn board_items(
                 crate::claims::attach_claims(conn, &mut all).map_err(ApiError::internal)?;
                 // KAIROS-T-0362: the cancel mark of each task.
                 crate::cancel::attach_cancellations(conn, &mut all).map_err(ApiError::internal)?;
+                // KAIROS-T-0506: the live state of each task.
+                crate::task_state::attach_states(conn, &mut all).map_err(ApiError::internal)?;
                 let mut by_column: HashMap<String, Vec<kairos_client::types::Task>> =
                     HashMap::new();
                 for task in all {

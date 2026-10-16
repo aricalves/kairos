@@ -206,11 +206,44 @@ pub fn children_progress_counts(by_column: &[(bool, i64)]) -> (i64, i64) {
     (done, total)
 }
 
-/// The heading of a note that `append_note` adds (KAIROS-T-0367):
-/// `## Note (2026-10-11, Robin)`, with the UTC date and the display name
-/// of the author.
-pub fn note_heading(date: chrono::NaiveDate, author: &str) -> String {
-    format!("## Note ({}, {})", date.format("%Y-%m-%d"), author.trim())
+/// The heading of a note that `append_note` adds (KAIROS-T-0367,
+/// KAIROS-T-0504): `## Note n-3 (2026-10-11, Robin)`, with the id of the
+/// note, the UTC date and the display name of the author.
+pub fn note_heading(position: usize, date: chrono::NaiveDate, author: &str) -> String {
+    kairos_markdown::notes::note_heading(position, &date.format("%Y-%m-%d").to_string(), author)
+}
+
+/// The id of the note that `append_note` adds to `content`
+/// (KAIROS-T-0504): one after the count of its note headings.
+pub fn next_note_position(content: &str) -> usize {
+    kairos_markdown::notes::notes(content).len() + 1
+}
+
+/// The id of the note at `position`: `n-3` (KAIROS-T-0504).
+pub fn note_id(position: usize) -> String {
+    kairos_markdown::notes::note_id(position)
+}
+
+/// The notes of `content` (KAIROS-T-0504): id, date, author, first line.
+pub fn notes(content: &str) -> Vec<kairos_markdown::notes::Note> {
+    kairos_markdown::notes::notes(content)
+}
+
+/// The content with `line` at the end of the note `note_id`
+/// (KAIROS-T-0505: `Promoted to KAIROS-A-0029.`), after an empty line.
+/// `None` when the content has no note with that id.
+pub fn content_with_note_line(content: &str, note_id: &str, line: &str) -> Option<String> {
+    let note = notes(content).into_iter().find(|note| note.id == note_id)?;
+    let lines: Vec<&str> = content.lines().collect();
+    let mut out: Vec<&str> = lines[..=note.last_line].to_vec();
+    out.push("");
+    out.push(line);
+    out.extend_from_slice(&lines[note.last_line + 1..]);
+    let mut joined = out.join("\n");
+    if content.ends_with('\n') {
+        joined.push('\n');
+    }
+    Some(joined)
 }
 
 /// The content after a note is appended (KAIROS-T-0367): the old content
@@ -473,16 +506,49 @@ mod tests {
     #[test]
     fn a_note_goes_at_the_end_under_a_dated_heading() {
         let date = chrono::NaiveDate::from_ymd_opt(2026, 10, 11).unwrap();
-        let heading = note_heading(date, " Robin ");
-        assert_eq!(heading, "## Note (2026-10-11, Robin)");
+        let heading = note_heading(1, date, " Robin ");
+        assert_eq!(heading, "## Note n-1 (2026-10-11, Robin)");
         assert_eq!(
             content_with_note("# T\n\nBody\n\n\n", &heading, "\n\nDone.\n").as_deref(),
-            Some("# T\n\nBody\n\n## Note (2026-10-11, Robin)\n\nDone.")
+            Some("# T\n\nBody\n\n## Note n-1 (2026-10-11, Robin)\n\nDone.")
         );
         assert_eq!(
             content_with_note("", &heading, "Done.").as_deref(),
-            Some("## Note (2026-10-11, Robin)\n\nDone.")
+            Some("## Note n-1 (2026-10-11, Robin)\n\nDone.")
         );
         assert_eq!(content_with_note("Body", &heading, " \n\t\n"), None);
+    }
+
+    // KAIROS-T-0504: the id of a new note is one after the count of the
+    // note headings, with or without ids.
+    #[test]
+    fn the_next_note_follows_the_count_of_the_headings() {
+        assert_eq!(next_note_position("# T\n\nBody"), 1);
+        assert_eq!(
+            next_note_position(
+                "# T\n\n## Note (2026-10-01, Robin)\n\nx\n\n## Note n-2 (2026-10-02, Sam)\n\ny"
+            ),
+            3
+        );
+        assert_eq!(note_id(3), "n-3");
+    }
+
+    // KAIROS-T-0505: a line goes at the end of one note.
+    #[test]
+    fn a_line_goes_at_the_end_of_the_note() {
+        let content = "# T\n\n## Note n-1 (2026-10-01, Robin)\n\nOne.\n\n\n## Note n-2 (2026-10-02, Sam)\n\nTwo.\n";
+        assert_eq!(
+            content_with_note_line(content, "n-1", "Promoted to ACME-A-0001.").as_deref(),
+            Some(
+                "# T\n\n## Note n-1 (2026-10-01, Robin)\n\nOne.\n\nPromoted to ACME-A-0001.\n\n\n## Note n-2 (2026-10-02, Sam)\n\nTwo.\n"
+            )
+        );
+        assert_eq!(
+            content_with_note_line(content, "n-2", "Promoted to ACME-D-0001.").as_deref(),
+            Some(
+                "# T\n\n## Note n-1 (2026-10-01, Robin)\n\nOne.\n\n\n## Note n-2 (2026-10-02, Sam)\n\nTwo.\n\nPromoted to ACME-D-0001.\n"
+            )
+        );
+        assert_eq!(content_with_note_line(content, "n-3", "x"), None);
     }
 }

@@ -477,6 +477,27 @@ Request body (required): `application/json`, [`SetTaskRepositoryRequest`](../sch
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown short code |
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown repository |
 
+### `PUT /api/tasks/{short_code}/state`
+
+Write the live state of a task (KAIROS-T-0506): branch, last commit,
+pushed, PR, next step. One state for each task; the write replaces it.
+Kairos clears a field that you do not send. The state is not content:
+no new version of the task. The edit rule applies: the creator of the
+task, or `manage_tasks` on its board.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `short_code` | path | yes | `string` | Task short code |
+
+Request body (required): `application/json`, [`SetTaskStateRequest`](../schemas/#settaskstaterequest)
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`Task`](../schemas/#task) | The task, with its state |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Refused by the edit rule: the caller did not create the task and lacks manage_tasks |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown short code, or the task is archived |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | No field has a value, or the body has an unknown field |
+
 ### `POST /api/tasks/{short_code}/transition`
 
 Move a task to another column (requires `transition_items` on the

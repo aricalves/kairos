@@ -89,6 +89,8 @@ use crate::app::AppState;
         crate::api::tasks::set_work_class,
         // Task repository binding (KAIROS-T-0104).
         crate::api::tasks::set_repository,
+        // The live state of a task (KAIROS-T-0506).
+        crate::api::tasks::set_state,
         crate::api::documents::list_documents,
         crate::api::documents::get_document,
         crate::api::documents::create_document,
@@ -150,6 +152,7 @@ use crate::app::AppState;
         crate::api::meta::history::get_history,
         crate::api::meta::restore::restore_item,
         crate::api::meta::notes::append_note,
+        crate::api::meta::notes::promote_note,
         crate::api::meta::activity::get_activity,
         // Organizational families (KAIROS-T-0019).
         crate::api::org::boards::list_boards,

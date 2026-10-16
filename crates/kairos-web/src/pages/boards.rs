@@ -971,6 +971,8 @@ struct CardModel {
     repository: Option<String>,
     /// The person who has the task in Active (KAIROS-T-0359) — tasks only.
     claim: Option<data::TaskClaim>,
+    /// The live state of a task (KAIROS-T-0506) — tasks only.
+    state: Option<data::TaskState>,
     /// The owner of the card (KAIROS-T-0416): the person with the claim of
     /// a task, or the owner of a strategy or an initiative.
     owner: Option<CardOwner>,
@@ -1054,6 +1056,7 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                 work_class: Option<String>,
                 repository: Option<String>,
                 claim: Option<data::TaskClaim>,
+                state: Option<data::TaskState>,
                 owner: Option<CardOwner>| {
         let progress = progress_of(short_code);
         let blocks = blocks_of(short_code);
@@ -1063,11 +1066,12 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
             short_code: short_code.to_string(),
             title: title.to_string(),
             key: format!(
-                "{short_code}|{title}|{meta:?}|{work_class:?}|{repository:?}|{claim:?}|{owner:?}|{teams:?}|{progress:?}|{blocks:?}"
+                "{short_code}|{title}|{meta:?}|{work_class:?}|{repository:?}|{claim:?}|{state:?}|{owner:?}|{teams:?}|{progress:?}|{blocks:?}"
             ),
             work_class,
             repository,
             claim,
+            state,
             owner,
             teams,
             progress,
@@ -1103,6 +1107,7 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                     None,
                     None,
                     None,
+                    None,
                     item.owner.as_ref().map(CardOwner::of_owner),
                 )
             }));
@@ -1124,6 +1129,7 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                     &item.short_code,
                     &item.title,
                     meta,
+                    None,
                     None,
                     None,
                     None,
@@ -1149,6 +1155,7 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                     Some(item.work_class.clone()),
                     item.repository.as_ref().map(|r| r.slug.clone()),
                     item.claim.clone(),
+                    item.state.clone(),
                     item.claim.as_ref().map(CardOwner::of_claim),
                 )
             }));
@@ -1163,6 +1170,7 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                     &item.short_code,
                     &item.title,
                     meta,
+                    None,
                     None,
                     None,
                     None,
@@ -2853,13 +2861,13 @@ fn LaneColumns(
                                     children=move |card: CardModel| {
                                         let CardModel {
                                             kind, short_code, title, meta, work_class,
-                                            repository, claim, owner, teams, progress, blocks, key: _,
+                                            repository, claim, state, owner, teams, progress, blocks, key: _,
                                         } = card;
                                         let owner = owner.map(|owner| owner.user_id);
                                         view! {
                                             <ItemCard
                                                 kind short_code title meta work_class repository
-                                                claim owner teams progress blocks
+                                                claim state owner teams progress blocks
                                                 targets=targets_for_cards.get_value()
                                                 source_column=column_for_cards.get_value()
                                                 drag powers
@@ -2897,6 +2905,29 @@ fn claim_title(claim: &data::TaskClaim) -> String {
     format!("{} has the claim since {since}.", claim_label(claim))
 }
 
+/// The line of the state on a card (KAIROS-T-0506): the branch and the
+/// next step, when they have a value. `None` when neither has one.
+fn state_label(state: &data::TaskState) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(branch) = &state.branch {
+        parts.push(format!("branch {branch}"));
+    }
+    if let Some(next) = &state.next_step {
+        parts.push(format!("Next: {next}"));
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+/// The tooltip of the state line: who wrote it, and when.
+fn state_title(state: &data::TaskState) -> String {
+    let day = state.updated_at.get(..10).unwrap_or(&state.updated_at);
+    let pushed = if state.pushed { "pushed" } else { "not pushed" };
+    format!(
+        "State ({pushed}), updated {day} by {}.",
+        state.updated_by_name
+    )
+}
+
 /// One board card: short code (the detail link, KAIROS-T-0076) with its
 /// copy-link button, plain-text title, type, key metadata, and
 /// drag-and-drop between columns (KAIROS-T-0064 — draggable only when the
@@ -2917,6 +2948,9 @@ fn ItemCard(
     /// The person who has the task in Active (KAIROS-T-0359) — a chip
     /// with the name of the person.
     claim: Option<data::TaskClaim>,
+    /// The live state of a task (KAIROS-T-0506) — a line with the branch
+    /// and the next step.
+    state: Option<data::TaskState>,
     /// The user id of the owner of the card (KAIROS-T-0416), carried into
     /// the drag so an owner lane can refuse a drop.
     owner: Option<String>,
@@ -3023,6 +3057,14 @@ fn ItemCard(
                 </Group>
             </Group>
             <span class="kairos-card__title">{title}</span>
+            {state.as_ref().and_then(state_label).map(|label| {
+                let tip = state_title(state.as_ref().expect("a state"));
+                view! {
+                    <span class="kairos-card__state" data-testid="card-state" title=tip>
+                        <Text size="xs" dimmed=true>{label}</Text>
+                    </span>
+                }
+            })}
             {(!meta.is_empty()).then(|| view! {
                 <Group gap="xs" wrap=true>
                     {meta.into_iter().map(|(label, color)| view! {
@@ -4433,6 +4475,7 @@ mod tests {
             work_class: None,
             repository: repository.map(str::to_string),
             claim: None,
+            state: None,
             owner: None,
             teams: Vec::new(),
             progress: None,

@@ -606,6 +606,49 @@ pub struct SetWorkClassParams {
     pub work_class: String,
 }
 
+/// Parameters for `promote_note` (KAIROS-T-0505).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct PromoteNoteParams {
+    /// The short code of the item that has the note (e.g. "ACME-T-0012").
+    pub short_code: String,
+    /// The id of the note, as `get_item` lists it: "n-3".
+    pub note_id: String,
+    /// What the note becomes: adr | document.
+    pub kind: String,
+    /// The board that gets the new item (slug or UUID): an ADR board for
+    /// an adr, the owner board for a document.
+    pub board: String,
+    /// The title of the new item. Default: the first line of the note.
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+/// Parameters for `set_state` (KAIROS-T-0506).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct SetStateParams {
+    /// The short code of the task (e.g. "ACME-T-0012").
+    pub short_code: String,
+    /// The branch of the work.
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// The last commit (a hash or a short hash).
+    #[serde(default)]
+    pub commit: Option<String>,
+    /// True when the last commit is pushed. Default false.
+    #[serde(default)]
+    pub pushed: Option<bool>,
+    /// The URL of the PR.
+    #[serde(default)]
+    pub pr_url: Option<String>,
+    /// What comes next.
+    #[serde(default)]
+    pub next_step: Option<String>,
+}
+
 /// Parameters for `set_team` and `clear_team` (KAIROS-T-0321).
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -1849,6 +1892,8 @@ impl KairosMcp {
             // KAIROS-T-0362: the cancelled tasks, one query.
             let cancelled = kairos_db::task_cancellations::marks_of(conn, &item_ids)
                 .map_err(ApiError::internal)?;
+            // KAIROS-T-0506: the live states of the tasks, two queries.
+            let states = crate::task_state::state_dtos(conn, &item_ids)?;
             // KAIROS-T-0368: with `details`, the metadata of the cards, one
             // query.
             let details = params.details.unwrap_or(false);
@@ -1899,7 +1944,7 @@ impl KairosMcp {
                     // tell put-away work from live work will pick one up
                     // and start on it (KAIROS-A-0020 rule 2).
                     out.push_str(&format!(
-                        "- {} [{}] {}{}{}{}{}{}{}{}\n",
+                        "- {} [{}] {}{}{}{}{}{}{}{}{}\n",
                         item.short_code,
                         item.kind,
                         item.title,
@@ -1933,6 +1978,10 @@ impl KairosMcp {
                         blocks
                             .get(&item.id)
                             .map(|counts| blocks_marker(*counts))
+                            .unwrap_or_default(),
+                        states
+                            .get(&item.id)
+                            .map(crate::task_state::state_tag)
                             .unwrap_or_default(),
                         if item.archived { " [archived]" } else { "" },
                         if details {
@@ -2417,6 +2466,8 @@ impl KairosMcp {
             // KAIROS-T-0362: the cancel mark and its reason.
             if item.item_type == ItemType::Task {
                 out.push_str(&crate::cancel::cancel_text(conn, item.id)?);
+                // KAIROS-T-0506: the live state of the task.
+                out.push_str(&crate::task_state::state_line(conn, item.id)?);
             }
             // KAIROS-T-0411: the owner of a strategy or an initiative, in
             // each column and in the archive.
@@ -2492,6 +2543,20 @@ impl KairosMcp {
                 out.push_str(&relationships);
                 out.push_str(&impacts);
                 out.push_str(&external);
+            }
+
+            // KAIROS-T-0504: the notes of the item, each one with its id, so
+            // that an agent cites `note n-3 on ACME-T-0012`.
+            let notes = kairos_core::items::notes(&item.content);
+            if !notes.is_empty() {
+                out.push_str("\n## Notes\n");
+                for note in notes {
+                    out.push_str(&format!("- {} ({}, {})", note.id, note.date, note.author));
+                    if !note.first_line.is_empty() {
+                        out.push_str(&format!(": {}", clip_line(&note.first_line, 120)));
+                    }
+                    out.push('\n');
+                }
             }
 
             // Forge links (KAIROS-T-0123, UAT finding #3): an agent must see
@@ -2871,7 +2936,7 @@ impl KairosMcp {
 
     // KAIROS-T-0367: a note in one call, with no version and no anchor.
     #[tool(
-        description = "Append a note at the end of an item's content. The note gets a heading with the date and your name: `## Note (2026-10-11, Robin)`. Send no version and no anchor text: the server locks the item, adds the note to the current content, and writes one new version. Two notes at the same time both stay. Use it to record work, a finding or a decision on an item. You can append to an item that you created, or with `manage_<type>` on its board."
+        description = "Append a note at the end of an item's content. The note gets an id and a heading with the date and your name: `## Note n-3 (2026-10-11, Robin)`. The result names the id: cite it as `note n-3 on ACME-T-0012`. Send no version and no anchor text: the server locks the item, adds the note to the current content, and writes one new version. Two notes at the same time both stay. Use it to record work, a finding or a decision on an item. You can append to an item that you created, or with `manage_<type>` on its board."
     )]
     pub async fn append_note(
         &self,
@@ -2884,7 +2949,7 @@ impl KairosMcp {
         self.run_tool(&tenant, move |conn| {
             let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
             require_item_edit(conn, &slug, user, item.id, item.item_type)?;
-            let version = items::append_note(
+            let appended = items::append_note(
                 conn,
                 item.item_type,
                 item.id,
@@ -2894,8 +2959,8 @@ impl KairosMcp {
             )
             .map_err(crate::api::map_note_error)?;
             Ok(format!(
-                "Appended a note to {} (version {version}).",
-                item.short_code
+                "Appended note {} to {} (version {}).",
+                appended.note_id, item.short_code, appended.version
             ))
         })
         .await
@@ -3180,6 +3245,101 @@ impl KairosMcp {
                     updated.short_code, updated.work_class, before
                 )
             })
+        })
+        .await
+    }
+
+    // KAIROS-T-0505: a note becomes a draft ADR or document.
+    #[tool(
+        description = "Turn a note into a draft ADR or document in one call: `short_code` of the item, `note_id` as `get_item` lists it (n-3), `kind` adr | document, `board` (slug or UUID) that gets the new item, optional `title` (default: the first line of the note). The new item has the text of the note and a line `From note n-3 on CODE (author, date)`; it `supports` the item when the item is a strategy, an initiative or a task. The note gets the line `Promoted to <code>`. Needs the edit rule on the item and the right to create on the board (manage_adrs or manage_documents)."
+    )]
+    pub async fn promote_note(
+        &self,
+        Parameters(params): Parameters<PromoteNoteParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
+            let promoted = atomically(conn, |conn| {
+                crate::promote::promote_note(
+                    conn,
+                    &slug,
+                    user,
+                    crate::promote::PromoteInput {
+                        source: (item.id, item.item_type, &item.short_code),
+                        note_id: &params.note_id,
+                        kind: &params.kind,
+                        board: &params.board,
+                        title: params.title.as_deref(),
+                    },
+                    crate::api::documents::CreateWording {
+                        request: "call",
+                        details_key: "argument",
+                        board: "`board`",
+                        parent: "`board`",
+                    },
+                )
+            })?;
+            let mut out = format!(
+                "Promoted note {} on {} to the draft {} {}.",
+                promoted.note_id, promoted.source_code, promoted.kind, promoted.created_code
+            );
+            if promoted.supports {
+                out.push_str(&format!(
+                    " {} supports {}.",
+                    promoted.created_code, promoted.source_code
+                ));
+            } else {
+                out.push_str(&format!(
+                    " No edge: {} is a {}, and a supports edge joins a strategy, an initiative or a task.",
+                    promoted.source_code, item.item_type
+                ));
+            }
+            out.push_str(&format!(
+                " The note has the line \"Promoted to {}.\"",
+                promoted.created_code
+            ));
+            Ok(out)
+        })
+        .await
+    }
+
+    // KAIROS-T-0506: the live state of a task.
+    #[tool(
+        description = "Write the live state of a TASK: `branch`, `commit`, `pushed`, `pr_url`, `next_step` (each optional; send at least one). The write replaces the whole state: send every field each time. The state is not a note: it is one current line that `get_item`, `board_items` and the card show, with who wrote it when. Write it after each commit, each push, a PR, and before you stop. The edit rule applies: the creator of the task, or `manage_tasks` on its board."
+    )]
+    pub async fn set_state(
+        &self,
+        Parameters(params): Parameters<SetStateParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
+            if item.item_type != ItemType::Task {
+                return Err(ApiError::validation(format!(
+                    "The {} {} is not a task. set_state applies to tasks only.",
+                    item.item_type, item.short_code
+                )));
+            }
+            let body = kairos_client::types::SetTaskStateRequest {
+                branch: params.branch,
+                commit: params.commit,
+                pushed: params.pushed.unwrap_or(false),
+                pr_url: params.pr_url,
+                next_step: params.next_step,
+            };
+            let state = crate::task_state::write_state(conn, &slug, user, item.id, &body)?;
+            Ok(format!(
+                "State of {}: {}",
+                item.short_code,
+                crate::task_state::state_text(&state, chrono::Utc::now())
+            ))
         })
         .await
     }
@@ -5196,6 +5356,17 @@ fn render_page_tree(
 
 /// A slug from a title: lower case, each run of other characters one
 /// hyphen ("How-to Guides" gives "how-to-guides").
+/// `text` cut to `max` characters, with `…` when it was longer
+/// (KAIROS-T-0504: the first line of a note in `get_item`).
+fn clip_line(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut clipped: String = text.chars().take(max.saturating_sub(1)).collect();
+    clipped.push('…');
+    clipped
+}
+
 fn slug_from_title(title: &str) -> String {
     let mut slug = String::new();
     for c in title.chars() {
