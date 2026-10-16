@@ -171,12 +171,15 @@ rules are links too.
 
 `hooks/git_guard.py` is a `PreToolUse` hook on Bash (KAIROS-T-0497, COLLIERY-I-0631). It
 asks every time; it does not look for a "go" in the conversation. It splits the command line
-into its simple commands (`&&`, `;`, `|`, a subshell, `$(...)`) and asks for: `git push` (any
-form), `git merge`, `git rebase`, `git tag <name>` (a list is silent), `git reset --hard`,
-`git commit --amend`, `git branch -D` of a remote-tracking branch, any `git` command with
-`--force` or `--force-with-lease`, `gh pr merge` and `gh release create|edit|delete`. The
-answer is `permissionDecision: "ask"` with a one-line reason that names the command; anything
-else gives no output. `git status`, `git fetch`, a `grep` for "push" and an `echo` of the
+into its simple commands (`&&`, `;`, `|`, a subshell, `$(...)`), looks inside `sh -c`,
+`bash -c`, `zsh -c` and `eval` (KAIROS-T-0548), and asks for: `git push` (any form),
+`git pull` (any form: a merge or a rebase), `git merge`, `git rebase`, `git tag <name>` (a
+list is silent), `git reset --hard`, `git commit --amend`, `git clean -f`, `git checkout --
+<path>`, `git restore` (not `--staged`), `git branch -D` of a remote-tracking branch, any `git`
+command with `--force` or `--force-with-lease`, `gh pr merge`, `gh release
+create|edit|delete` and `gh api` with a path that ends in `/merge`. The answer is
+`permissionDecision: "ask"` with a one-line reason that names the command; anything else gives
+no output. `git status`, `git fetch`, `git clean -n`, a `grep` for "push" and an `echo` of the
 words are silent. The hook reads no file and holds no credentials.
 
 - Tests: `hooks/test_git_guard.py`, part of `angreal test unit`.
