@@ -150,5 +150,7 @@ tool again with that `offset`.
 - [MCP tools](../../reference/mcp-tools/) — all seventy, with arguments and
   refusals
 - [Give an agent machine access](../give-an-agent-machine-access/)
+- [Connect the Claude Desktop app](../connect-claude-desktop/) — the same
+  endpoint from the Desktop app, with a connector or a bridge
 - [Capabilities and access](../../explanation/capabilities-and-access/)
 - [Capabilities](../../reference/capabilities/)
