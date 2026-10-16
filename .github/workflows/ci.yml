@@ -330,6 +330,18 @@ jobs:
       - name: Gate 3 — angreal test unit
         run: angreal test unit
 
+      # KAIROS-T-0511, temporary: the askpass helper tests 50 times with 8
+      # threads, and the stress test once. Removed when the proof is in.
+      - name: KAIROS-T-0511 — askpass helper, 50 runs
+        run: |
+          set -euo pipefail
+          cargo test -p kairos-server --lib code_index::git -- --ignored --test-threads=8
+          for i in $(seq 1 50); do
+            echo "--- run ${i}"
+            cargo test -p kairos-server --lib code_index::git -- --test-threads=8 2>&1 | tail -n 3
+            test "${PIPESTATUS[0]}" -eq 0
+          done
+
       # KAIROS-T-0023 (A-0005 §6): the OpenAPI document is a CI artifact per
       # run. `write_spec_artifact` is a pure test (no services) that writes
       # the spec to target/openapi.json.

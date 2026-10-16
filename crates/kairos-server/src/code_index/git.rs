@@ -24,8 +24,10 @@
 //!   different one.
 //! - [`GitError`] texts have the token replaced with `[token]`.
 
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::time::Duration;
 
 use kairos_client::types_auth::Secret;
 
@@ -94,17 +96,53 @@ impl Askpass {
             path: script.clone(),
             source,
         };
-        std::fs::write(&script, ASKPASS_SCRIPT).map_err(io)?;
+        // KAIROS-T-0511: the script is written under a draft name, closed,
+        // made executable, and then renamed into place. Nothing holds the
+        // final path open for write.
+        let draft = dir.path().join("askpass.sh.draft");
+        std::fs::write(&draft, ASKPASS_SCRIPT).map_err(io)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
                 .map_err(io)?;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
-                .map_err(io)?;
+            std::fs::set_permissions(&draft, std::fs::Permissions::from_mode(0o700)).map_err(io)?;
         }
+        std::fs::rename(&draft, &script).map_err(io)?;
         Ok(Askpass { _dir: dir, script })
     }
+}
+
+/// How many times a spawn that fails with ETXTBSY is tried.
+const ETXTBSY_TRIES: u32 = 5;
+
+/// The wait after the first ETXTBSY; each later wait is one step longer.
+const ETXTBSY_WAIT: Duration = Duration::from_millis(20);
+
+/// Run `attempt`, and run it again after a short wait when it fails with
+/// ETXTBSY ("Text file busy", `ExecutableFileBusy`), up to [`ETXTBSY_TRIES`]
+/// times in all (KAIROS-T-0511).
+///
+/// On Linux, the exec of a file that a process holds open for write fails
+/// with ETXTBSY. A child forked by a different thread while the askpass
+/// helper is written inherits the open descriptor, and holds it until its
+/// own exec: a transient state, so a short wait and a new try clear it.
+fn retry_text_file_busy<T>(mut attempt: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    let mut tries = 1;
+    loop {
+        match attempt() {
+            Err(e) if e.kind() == io::ErrorKind::ExecutableFileBusy && tries < ETXTBSY_TRIES => {
+                std::thread::sleep(ETXTBSY_WAIT * tries);
+                tries += 1;
+            }
+            result => return result,
+        }
+    }
+}
+
+/// `command.output()`, tried again on ETXTBSY (KAIROS-T-0511).
+fn output(command: &mut Command) -> io::Result<Output> {
+    retry_text_file_busy(|| command.output())
 }
 
 /// The git command for `args` in `dir`, with no prompt and no credential
@@ -133,7 +171,7 @@ fn command(dir: &Path, args: &[&str], token: Option<(&GitToken, &Askpass)>) -> C
 }
 
 fn run(dir: &Path, args: &[&str]) -> Result<Output, GitError> {
-    command(dir, args, None).output().map_err(GitError::Start)
+    output(&mut command(dir, args, None)).map_err(GitError::Start)
 }
 
 /// Run `args`, and fail with the standard error when git fails. The token
@@ -141,9 +179,8 @@ fn run(dir: &Path, args: &[&str]) -> Result<Output, GitError> {
 fn checked_with(dir: &Path, args: &[&str], token: Option<&GitToken>) -> Result<Output, GitError> {
     let token = token.filter(|t| !t.is_empty());
     let askpass = token.map(|_| Askpass::new()).transpose()?;
-    let output = command(dir, args, token.zip(askpass.as_ref()))
-        .output()
-        .map_err(GitError::Start)?;
+    let output =
+        output(&mut command(dir, args, token.zip(askpass.as_ref()))).map_err(GitError::Start)?;
     if output.status.success() {
         return Ok(output);
     }
@@ -387,13 +424,20 @@ mod tests {
             .mode();
         assert_eq!(mode & 0o777, 0o700);
         let ask = |prompt: &str| {
-            let out = Command::new(&askpass.script)
-                .arg(prompt)
-                .env(TOKEN_ENV, "ghp_from_env")
-                .output()
-                .expect("runs");
+            let out = output(
+                Command::new(&askpass.script)
+                    .arg(prompt)
+                    .env(TOKEN_ENV, "ghp_from_env"),
+            )
+            .expect("runs");
             String::from_utf8(out.stdout).unwrap()
         };
+        // The draft is renamed into place: the folder holds the script only.
+        let names: Vec<_> = std::fs::read_dir(askpass.script.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names, ["askpass.sh"]);
         assert_eq!(
             ask("Username for 'https://github.com': "),
             "x-access-token\n"
@@ -407,6 +451,97 @@ mod tests {
         let dir = askpass.script.parent().unwrap().to_path_buf();
         drop(askpass);
         assert!(!dir.exists(), "the folder of the helper is removed");
+    }
+
+    fn text_file_busy() -> std::io::Error {
+        std::io::Error::new(std::io::ErrorKind::ExecutableFileBusy, "Text file busy")
+    }
+
+    /// KAIROS-T-0511: a spawn that fails with ETXTBSY is tried again, and
+    /// succeeds when the file is free. The error is injected: macOS does
+    /// not give ETXTBSY.
+    #[test]
+    fn a_text_file_busy_spawn_is_tried_again() {
+        let mut calls = 0;
+        let result = retry_text_file_busy(|| {
+            calls += 1;
+            if calls < 3 {
+                Err(text_file_busy())
+            } else {
+                Ok(calls)
+            }
+        });
+        assert_eq!(result.unwrap(), 3);
+        assert_eq!(calls, 3);
+    }
+
+    /// The retry gives up after `ETXTBSY_TRIES` tries, with the error.
+    #[test]
+    fn a_spawn_that_stays_busy_fails_after_the_last_try() {
+        let mut calls = 0;
+        let err = retry_text_file_busy(|| -> std::io::Result<()> {
+            calls += 1;
+            Err(text_file_busy())
+        })
+        .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::ExecutableFileBusy);
+        assert_eq!(calls, ETXTBSY_TRIES);
+    }
+
+    /// A different error is not tried again.
+    #[test]
+    fn a_spawn_that_fails_for_another_reason_is_not_tried_again() {
+        let mut calls = 0;
+        let err = retry_text_file_busy(|| -> std::io::Result<()> {
+            calls += 1;
+            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no file"))
+        })
+        .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(calls, 1);
+    }
+
+    /// KAIROS-T-0511, the race itself: helpers written and run on 8 threads
+    /// at once, beside a thread that forks all the time. On Linux, a child
+    /// forked while a helper is open for write holds its descriptor until
+    /// its exec, and the exec of that helper gives ETXTBSY without the
+    /// retry. Ignored: it takes seconds. Run it with `--ignored`.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "stress test, seconds long"]
+    fn the_askpass_helper_runs_beside_concurrent_spawns() {
+        const THREADS: usize = 8;
+        const ROUNDS: usize = 50;
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let spawner = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    Command::new("true").output().expect("true runs");
+                }
+            })
+        };
+        let workers: Vec<_> = (0..THREADS)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    for _ in 0..ROUNDS {
+                        let askpass = Askpass::new().expect("helper");
+                        let out = output(
+                            Command::new(&askpass.script)
+                                .arg("Password: ")
+                                .env(TOKEN_ENV, "ghp_stress"),
+                        )
+                        .expect("runs");
+                        assert_eq!(String::from_utf8(out.stdout).unwrap(), "ghp_stress\n");
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().expect("a worker panicked");
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        spawner.join().unwrap();
     }
 
     /// A git error that has the token in it (here: the token is a part of
