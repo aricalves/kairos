@@ -291,8 +291,9 @@ pub enum IndexError {
     #[error("The rules file {path} is not valid: {message}.")]
     Rules { path: PathBuf, message: String },
     #[error(
-        "The index has schema version {found}. This version of Kairos reads version {}.",
-        SCHEMA_VERSION
+        "The index has schema version {found}. This version of Kairos reads version {}. {}",
+        SCHEMA_VERSION,
+        schema_hint(*found)
     )]
     SchemaVersion { found: i64 },
     #[error("The index database has an error: {0}.")]
@@ -382,6 +383,17 @@ pub fn build_structure_with(
 ) -> Result<BuildReport, IndexError> {
     let known = known_vectors_at(db)?;
     build(root, db, Mode::Scip(options), &known, Parse::All)
+}
+
+/// What to do about an index of another schema version (KAIROS-T-0513): a
+/// newer index comes from a newer server or CLI, so the CLI is behind; an
+/// older index is one that this CLI can build again.
+fn schema_hint(found: i64) -> &'static str {
+    if found > SCHEMA_VERSION {
+        "The index is newer than this CLI: update the kairos CLI to the version of the server (`kairos self-update`), or run `kairos index --full`."
+    } else {
+        "Run `kairos index --full` to build the index again with this CLI."
+    }
 }
 
 /// The token vectors of the index at `db`, by tree hash, for a build that
@@ -1283,6 +1295,31 @@ mod tests {
             matches!(err, IndexError::SchemaVersion { found: 99 }),
             "{err}"
         );
+    }
+
+    #[test]
+    fn a_schema_refusal_names_both_versions_and_what_to_do() {
+        let newer = IndexError::SchemaVersion {
+            found: SCHEMA_VERSION + 1,
+        }
+        .to_string();
+        assert!(
+            newer.contains(&format!("schema version {}", SCHEMA_VERSION + 1)),
+            "{newer}"
+        );
+        assert!(
+            newer.contains(&format!("reads version {SCHEMA_VERSION}")),
+            "{newer}"
+        );
+        assert!(newer.contains("`kairos self-update`"), "{newer}");
+        assert!(newer.contains("`kairos index --full`"), "{newer}");
+
+        let older = IndexError::SchemaVersion {
+            found: SCHEMA_VERSION - 1,
+        }
+        .to_string();
+        assert!(older.contains("`kairos index --full`"), "{older}");
+        assert!(!older.contains("self-update"), "{older}");
     }
 
     #[test]
