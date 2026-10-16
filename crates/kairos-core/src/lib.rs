@@ -8,6 +8,7 @@ pub mod abac;
 pub mod board;
 pub mod chunk;
 pub mod embed_text;
+pub mod external_ref;
 pub mod forge;
 pub mod forge_filter;
 pub mod graph;

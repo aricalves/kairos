@@ -66,3 +66,14 @@ Only offer to create an ADR when all three are true:
 3. **The result of a real trade-off** — there were genuine alternatives and you picked one for specific reasons
 
 If any of the three is missing, skip the ADR. Create it per [ADR-FORMAT.md](./ADR-FORMAT.md).
+
+## Record this decision
+
+One short path when the user says "record this decision", or when `implement` finds one at the end of a task (COLLIERY-I-0628). A decision about the system under work goes to Kairos, not to local memory.
+
+1. Find the ADR board of the team: `adr_board` in the SessionStart context, else `my_boards`.
+2. Draft from the conversation: the title (the decision in one clause), the context (what was true, what forced the choice), the decision, the consequences (what changes for the code and the people). Show the draft to the user. Keep the words the conversation used.
+3. `create_item` with `item_type: adr`, `board: <adr board>`, `parent: <the task or the initiative that produced it>`, the draft as `content` ([ADR-FORMAT.md](./ADR-FORMAT.md)).
+4. `link_items` with `impacts` from the ADR to each repository that it is about.
+5. A decision that changes an existing ADR: `link_items` with `supersedes` from the new ADR to the old one. The old one stays as it is.
+6. Show the short code of the ADR, and write it on the task or the initiative.

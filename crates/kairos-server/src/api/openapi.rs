@@ -125,6 +125,10 @@ use crate::app::AppState;
         crate::api::meta::impacts::get_impacts,
         crate::api::meta::impacts::create_impact,
         crate::api::meta::impacts::delete_impact,
+        // The relationship `external`, to a URI (KAIROS-T-0508).
+        crate::api::meta::external::get_external_refs,
+        crate::api::meta::external::create_external_ref,
+        crate::api::meta::external::delete_external_ref,
         // The teams of an initiative or a strategy (KAIROS-T-0321).
         crate::api::meta::item_owners::get_owner,
         crate::api::meta::item_owners::claim_owner,

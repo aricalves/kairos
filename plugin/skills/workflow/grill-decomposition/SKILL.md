@@ -18,7 +18,7 @@ Tasks can come from `/kairos:decompose`, from triage, from a different session o
 ## 1. Load the set
 
 1. Call `get_item` with the initiative short code (`PREFIX-I-NNNN`). If it does not find the initiative, tell the user and stop. With no argument, ask the user for the initiative. Do not guess.
-2. Read the goals, the non-goals, the design and the `## Decisions` lines of the initiative. Also read its PRD and the ADRs that inform it.
+2. Read the goals, the non-goals, the design and the `## Decisions` lines of the initiative. Also read its PRD and the ADRs that inform it. Then ground the set in the record: [GROUND.md](../../meta/kairos/GROUND.md) (the ADRs and documents that impact the repository, `related_work` on the initiative). Write its "Read: ..." sentence before the first question. A task that contradicts an ADR is a finding of the review.
 3. Call `get_item` for each child task. Ignore a task in a done column. For each other task, record its column, its repository, its acceptance criteria and its `blocks` edges (both directions).
 4. If each child task is in a done column, or the initiative has no child task, tell the user and point to `/kairos:decompose`. Stop.
 

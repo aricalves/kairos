@@ -1590,6 +1590,48 @@ impl KairosClient {
             .await
     }
 
+    /// `GET /api/{family}/{short_code}/external` — the external references
+    /// of an item (KAIROS-T-0508).
+    pub async fn item_external_refs(
+        &self,
+        kind: EntityKind,
+        short_code: &str,
+    ) -> Result<crate::types_meta::ItemExternalRefsResponse, Error> {
+        self.get(&format!("/api/{kind}/{short_code}/external"))
+            .await
+    }
+
+    /// `POST /api/{family}/{short_code}/external` — link an item to a URI
+    /// with a label (KAIROS-T-0508). The edit rule of the item applies.
+    pub async fn add_external_ref(
+        &self,
+        kind: EntityKind,
+        short_code: &str,
+        uri: &str,
+        label: Option<&str>,
+    ) -> Result<crate::types_meta::ExternalRef, Error> {
+        self.post_created(
+            &format!("/api/{kind}/{short_code}/external"),
+            &crate::types_meta::CreateExternalRefRequest {
+                uri: uri.to_string(),
+                label: label.map(str::to_string),
+            },
+        )
+        .await
+    }
+
+    /// `DELETE /api/{family}/{short_code}/external/{id}` — remove an
+    /// external reference by its id (KAIROS-T-0508).
+    pub async fn remove_external_ref(
+        &self,
+        kind: EntityKind,
+        short_code: &str,
+        id: &str,
+    ) -> Result<crate::types_meta::DeletedExternalRefResponse, Error> {
+        self.delete(&format!("/api/{kind}/{short_code}/external/{id}"))
+            .await
+    }
+
     /// `GET /api/{family}/{short_code}/children-progress` — the direct
     /// `parent`-edge children grouped by board column, with the
     /// `(done, total)` summary (KAIROS-T-0080).

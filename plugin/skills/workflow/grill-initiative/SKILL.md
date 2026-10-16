@@ -18,7 +18,8 @@ The item is the record of the interview. A compaction loses the conversation, bu
 - **A short code** (`PREFIX-I-NNNN` or `PREFIX-S-NNNN`): call `get_item`. If it does not find the item, tell the user and stop. Then read:
   - each document that supports it (for example the PRD), with `get_item`;
   - the parent strategy of an initiative;
-  - the ADRs that inform it.
+  - the ADRs that inform it;
+  - the ADRs and the documents that impact the repository, and `related_work` on the item: [GROUND.md](../../meta/kairos/GROUND.md). Write its "Read: ..." sentence before the first question.
 - **A title**: confirm the title and the board with the user. The board is `initiative_board` in `.claude/kairos.local.md`, else find it with `my_boards`. Then call `create_item` (`item_type: initiative`). Send `parent` only when the user names a parent strategy. From then on, name the initiative only by the short code in the result.
 - **No argument**: ask the user which item to grill. Do not guess.
 

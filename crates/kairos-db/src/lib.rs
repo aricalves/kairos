@@ -20,6 +20,7 @@ pub mod code_rename;
 pub mod dispatch;
 pub mod embeddings;
 pub mod events;
+pub mod external_refs;
 pub mod flow;
 pub mod forge;
 pub mod forge_actor;

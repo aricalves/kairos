@@ -157,6 +157,135 @@ class BlocksEdgesWhenWorkSplits(unittest.TestCase):
 
 
 
+class GroundBeforePlanning(unittest.TestCase):
+    """KAIROS-T-0499 (COLLIERY-I-0627): implement, grilling and decompose
+    start by reading the ADRs and documents of the repository and the
+    initiative, and name what they read."""
+
+    GROUND = os.path.join(SKILLS, "meta", "kairos", "GROUND.md")
+    SKILLS_THAT_PLAN = (
+        "workflow/implement",
+        "meta/grilling",
+        "workflow/grill-initiative",
+        "workflow/grill-decomposition",
+        "workflow/decompose",
+    )
+
+    def test_the_reference_gives_the_calls_and_the_sentence(self):
+        text = read(self.GROUND)
+        for phrase in (
+            "`get_item`",
+            "repository: <slug>, entity_type: [adr, document]",
+            "`related_work`",
+            "parent chain",
+            "Read: KAIROS-A-0028, COLLIERY-D-0013. Nothing read contradicts this plan.",
+            "contradicts KAIROS-A-0028",
+            "Not checked:",
+        ):
+            self.assertIn(phrase, text)
+
+    def test_each_skill_that_plans_grounds_first(self):
+        for rel in self.SKILLS_THAT_PLAN:
+            with self.subTest(skill=rel):
+                text = read(os.path.join(SKILLS, rel, "SKILL.md"))
+                self.assertIn("GROUND.md", text)
+                self.assertIn("Read: ...", text)
+                link = re.search(r"\]\(([^)]*GROUND\.md)\)", text).group(1)
+                target = os.path.normpath(os.path.join(SKILLS, rel, link))
+                self.assertTrue(os.path.isfile(target), target)
+
+    def test_implement_grounds_before_the_work(self):
+        text = read(os.path.join(SKILLS, "workflow", "implement", "SKILL.md"))
+        self.assertLess(text.index("## Ground"), text.index("## Work"))
+
+    def test_handoff_lists_what_was_read(self):
+        text = read(os.path.join(SKILLS, "meta", "handoff", "SKILL.md"))
+        self.assertIn("Read: ...", text)
+        self.assertIn("GROUND.md", text)
+
+
+class NamesAreCheckedAgainstTheCode(unittest.TestCase):
+    """KAIROS-T-0500 (COLLIERY-I-0627): a symbol, file or dependency that a
+    task names is checked with the code index before the plan relies on it;
+    a stale name and an unchecked claim are marked."""
+
+    def test_implement_and_decompose_check_the_names(self):
+        for rel in ("workflow/implement", "workflow/decompose"):
+            with self.subTest(skill=rel):
+                text = read(os.path.join(SKILLS, rel, "SKILL.md"))
+                self.assertIn("Check the names", text)
+                for tool in ("`symbol`", "`code_search`", "`path`"):
+                    self.assertIn(tool, text)
+                self.assertIn("Stale:", text)
+                self.assertIn("is not in the code", text)
+                self.assertIn('"not checked"', text)
+                self.assertIn("blocker", text)
+
+    def test_implement_checks_before_the_work_and_lists_what_stays_unchecked(self):
+        text = read(os.path.join(SKILLS, "workflow", "implement", "SKILL.md"))
+        self.assertLess(text.index("## Ground"), text.index("## Check the names"))
+        self.assertLess(text.index("## Check the names"), text.index("## Work"))
+        gate = text.split("## The completion gate", 1)[1]
+        self.assertIn('what stays "not checked"', gate)
+
+
+class RemainingWorkLivesOnTheItems(unittest.TestCase):
+    """KAIROS-T-0501 (COLLIERY-I-0627): what is left is the open tasks of
+    the initiative and their `blocks` edges; the running skills read and
+    edit that list, never rewrite it from memory."""
+
+    RUNNING_SKILLS = (
+        "workflow/implement",
+        "meta/handoff",
+        "workflow/ralph",
+        "workflow/ralph-initiative",
+    )
+
+    def test_each_running_skill_names_the_rule(self):
+        for rel in self.RUNNING_SKILLS:
+            with self.subTest(skill=rel):
+                text = read(os.path.join(SKILLS, rel, "SKILL.md"))
+                self.assertIn("What remains lives on the items", text)
+                self.assertIn("`blocks`", text)
+                self.assertIn("`search` with `traverse", text)
+                self.assertIn('never "out of scope"', text)
+                self.assertIn("from memory", text)
+
+    def test_implement_gives_the_traverse_call(self):
+        text = read(os.path.join(SKILLS, "workflow", "implement", "SKILL.md"))
+        self.assertIn("relationships: [parent, blocks]", text)
+        self.assertIn("order of their edges", text)
+
+
+class RecordThisDecision(unittest.TestCase):
+    """KAIROS-T-0503 (COLLIERY-I-0628): domain-modeling drafts an ADR from
+    the conversation, and implement asks at the end of a task."""
+
+    def test_domain_modeling_has_the_path(self):
+        text = read(os.path.join(SKILLS, "engineering", "domain-modeling", "SKILL.md"))
+        section = text.split("## Record this decision", 1)[1]
+        for phrase in (
+            "`my_boards`",
+            "`create_item`",
+            "`item_type: adr`",
+            "`parent:",
+            "`impacts`",
+            "`supersedes`",
+            "context",
+            "consequences",
+            "ADR-FORMAT.md",
+        ):
+            self.assertIn(phrase, section)
+
+    def test_implement_asks_before_completed(self):
+        text = read(os.path.join(SKILLS, "workflow", "implement", "SKILL.md"))
+        gate = text.split("## The completion gate", 1)[1].split("## Blocked", 1)[0]
+        self.assertIn("did this work decide anything an ADR or the spec should hold?", gate)
+        self.assertIn("Record this decision", gate)
+        self.assertIn("`domain-modeling`", gate)
+        self.assertIn("No decision to record.", gate)
+
+
 class GrillInitiative(unittest.TestCase):
     """COLLIERY-T-1864."""
 

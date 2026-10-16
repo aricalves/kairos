@@ -15,9 +15,13 @@ Break a plan into independently-grabbable Kairos tasks using vertical slices (tr
 
 Work from whatever is already in the conversation. If the user passes a short code as an argument, `get_item` it — and if it's an initiative whose relationships list an attached PRD, `get_item` that too — and read the full content. If neither an argument nor a plan in the conversation exists, ask the user what to decompose.
 
-### 2. Explore the codebase (if not already done)
+### 2. Ground, then explore the codebase
+
+First read the record: [GROUND.md](../../meta/kairos/GROUND.md). The ADRs and the documents that impact the repository, the documents of the initiative, `related_work` on the initiative. Write its "Read: ..." sentence before you draft a task. A task that contradicts an ADR says so in its body, and you ask the user before you publish it.
 
 If you have not already explored the codebase, do so to understand the current state of the code. Task titles and descriptions should use the project's domain glossary vocabulary, and respect ADRs in the area you're touching.
+
+Check the names. List each symbol, file, crate and dependency that the plan names, and check each one with the code tools (`symbol`, `code_search`, `path`). A name that is not in the code goes into no task: write "Stale: `<name>` is not in the code" on the initiative, and ask the user what the plan meant. A blocker that the plan names: `get_item` it, and check that it is open and that its scope blocks this work. A claim that you make without evidence carries the marker "not checked".
 
 Look for opportunities to prefactor the code to make the implementation easier. "Make the change easy, then make the easy change."
 

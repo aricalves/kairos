@@ -357,6 +357,31 @@ A board's first column by position, among its live columns. A new item goes
 there by default. A task that moves to a different delivery board goes there. A
 [request](#request) goes there.
 
+## external reference
+
+A link from an item to a URI with a label: the relationship `external`. An RFC
+in a wiki, a design page or an issue that Kairos does not hold. The label is
+the text that a page shows for the link. A task that applies an RFC names the
+RFC, so `get_item` and `related_work` show it next to the Kairos items.
+
+An item of each type can have external references. The [edit rule](#edit-rule)
+of the item decides who can write one. The scheme of the URI is `http`,
+`https` or `mailto`. Kairos refuses each other scheme and names it. A page
+renders the URI as a link, so a scheme that a browser runs as code cannot
+pass. Kairos does not read the document.
+
+A reference is not an edge between two items. A URI has no short code. So the
+graph view, the traversal of a search and the cascade of an archive do not
+show it. These reads show it:
+
+- `get_item`: one line `external` per reference
+- `related_work`: the section `External references`
+- `GET /api/{type}/{short_code}/external`
+- the item page: the panel "External references"
+
+A reference stays when the item is archived. A link in the text of an item is
+not a reference. It is for a reader, and the tools do not return it.
+
 ## file_backlog
 
 The computed capability that permits a [request](#request). Every member of
@@ -537,8 +562,8 @@ See sense 1 of [archived](#archived).
 
 ## relationship
 
-A directed edge between two items. Five types of edge exist, and a sixth
-relationship goes to a repository:
+A directed edge between two items. Five types of edge exist. A sixth
+relationship goes to a repository, and a seventh to a URI:
 
 | Type | Meaning |
 |---|---|
@@ -548,6 +573,7 @@ relationship goes to a repository:
 | `supersedes` | One item replaces another. |
 | `blocks` | The source blocks the target. |
 | [`impacts`](#impacts) | A document or an ADR is about a repository. The target is a repository and not an item. Kairos does not keep this link as an edge between two items. |
+| [`external`](#external-reference) | An item names a document outside Kairos. The target is a URI with a label, and not an item. |
 
 Which types are legal between which item types is enforced, as is cycle
 prevention. The [link rule](#link-rule) decides who can write an edge, and it
