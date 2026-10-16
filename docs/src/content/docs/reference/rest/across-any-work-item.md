@@ -439,6 +439,32 @@ Request body (required): `application/json`, [`AppendNoteRequest`](../schemas/#a
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown family or short code, or the item is archived |
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The text is empty, or the body has an unknown field |
 
+### `POST /api/{entity_type}/{short_code}/notes/{note_id}/promote`
+
+Turn a note into a draft ADR or document (KAIROS-T-0505). The new item
+has the text of the note. A line names the note, its author and its
+date. It `supports` the source item when the source is a
+strategy, an initiative or a task. The note gets a trailing line that
+names the new item.
+
+The edit rule of the source item applies. The caller needs the right
+to create on the target board.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `entity_type` | path | yes | `string` | Plural family name (strategies|initiatives|tasks|documents|adrs) |
+| `short_code` | path | yes | `string` | Item short code |
+| `note_id` | path | yes | `string` | The id of the note, as `get_item` lists it (n-3) |
+
+Request body (required): `application/json`, [`PromoteNoteRequest`](../schemas/#promotenoterequest)
+
+| Response | Body | Meaning |
+|---|---|---|
+| `201` | [`PromoteNoteResponse`](../schemas/#promotenoteresponse) | The new item and its edge |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Refused by the edit rule of the source item, or the caller cannot create on the target board |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown family, short code, note id or board |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The kind is not adr or document, or the body has an unknown field |
+
 ## cascade
 
 ### `GET /api/{entity_type}/{short_code}/cascade-preview`

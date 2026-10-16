@@ -148,6 +148,7 @@ use crate::app::AppState;
         crate::api::meta::history::get_history,
         crate::api::meta::restore::restore_item,
         crate::api::meta::notes::append_note,
+        crate::api::meta::notes::promote_note,
         crate::api::meta::activity::get_activity,
         // Organizational families (KAIROS-T-0019).
         crate::api::org::boards::list_boards,

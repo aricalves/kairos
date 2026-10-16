@@ -1527,6 +1527,39 @@ pub struct AppendedNote {
     pub note_id: String,
 }
 
+/// The version and the content of a live item, with its row locked
+/// (`SELECT … FOR UPDATE`) until the end of the transaction of `conn`
+/// (KAIROS-T-0367, KAIROS-T-0505). The caller runs in a transaction.
+pub fn lock_item_content(
+    conn: &mut PgConnection,
+    item_type: ItemType,
+    item_id: Uuid,
+) -> Result<(i32, String), ItemError> {
+    macro_rules! lock_row {
+        ($table:ident) => {{
+            use crate::schema::$table::dsl;
+            dsl::$table
+                .filter(dsl::id.eq(item_id))
+                .filter(dsl::deleted_at.is_null())
+                .select((dsl::version, dsl::content))
+                .for_update()
+                .first::<(i32, String)>(conn)
+                .optional()
+        }};
+    }
+    let locked = match item_type {
+        ItemType::Strategy => lock_row!(strategies),
+        ItemType::Initiative => lock_row!(initiatives),
+        ItemType::Task => lock_row!(tasks),
+        ItemType::Document => lock_row!(documents),
+        ItemType::Adr => lock_row!(adrs),
+    }?;
+    locked.ok_or(ItemError::ItemNotFound {
+        entity_type: item_type.entity_type(),
+        id: item_id,
+    })
+}
+
 /// Append a note at the end of an item's content (KAIROS-T-0367): a heading
 /// with the id of the note, the UTC date of `today` and the display name of
 /// `actor` ([`kairos_core::items::note_heading`]), then the text. One new
@@ -1550,30 +1583,7 @@ pub fn append_note(
         return Err(NoteError::EmptyText);
     }
     conn.transaction::<_, NoteError, _>(|conn| {
-        macro_rules! lock_row {
-            ($table:ident) => {{
-                use crate::schema::$table::dsl;
-                dsl::$table
-                    .filter(dsl::id.eq(item_id))
-                    .filter(dsl::deleted_at.is_null())
-                    .select((dsl::version, dsl::content))
-                    .for_update()
-                    .first::<(i32, String)>(conn)
-                    .optional()
-            }};
-        }
-        let locked = match item_type {
-            ItemType::Strategy => lock_row!(strategies),
-            ItemType::Initiative => lock_row!(initiatives),
-            ItemType::Task => lock_row!(tasks),
-            ItemType::Document => lock_row!(documents),
-            ItemType::Adr => lock_row!(adrs),
-        }
-        .map_err(ItemError::from)?;
-        let (version, content) = locked.ok_or(ItemError::ItemNotFound {
-            entity_type: item_type.entity_type(),
-            id: item_id,
-        })?;
+        let (version, content) = lock_item_content(conn, item_type, item_id)?;
         let author: Option<String> = crate::schema::users::table
             .filter(crate::schema::users::id.eq(actor))
             .select(crate::schema::users::display_name)

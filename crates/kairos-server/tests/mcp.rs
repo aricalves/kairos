@@ -85,8 +85,8 @@ const TENANT: &str = "acme";
 
 /// How many tools `tools/list` returns, and the word the reference pages
 /// use for that number (COLLIERY-T-0220, COLLIERY-T-0266).
-const TOOL_COUNT: usize = 69;
-const TOOL_COUNT_WORD: &str = "sixty-nine";
+const TOOL_COUNT: usize = 70;
+const TOOL_COUNT_WORD: &str = "seventy";
 
 /// Every request carries a real `Host` header and the tenant resolves from
 /// its subdomain against the configured base domain — the S-0006 REQ-1.2
@@ -666,6 +666,8 @@ async fn mcp_endpoint_against_live_stack() {
         "grant_capability",
         // KAIROS-T-0367: a note in one call, with no version and no anchor.
         "append_note",
+        // KAIROS-T-0505: a note becomes a draft ADR or document.
+        "promote_note",
         // KAIROS-T-0506: the live state of a task.
         "set_state",
         // KAIROS-T-0368: the scales and the templates, for triage.
@@ -762,6 +764,7 @@ async fn mcp_endpoint_against_live_stack() {
             "unlink_items",
             "propose_edge",
             "append_note",
+            "promote_note",
             "set_state",
             "set_metadata",
             "set_repository",
@@ -1995,6 +1998,87 @@ async fn mcp_endpoint_against_live_stack() {
         .await;
     assert!(
         text.contains("FORBIDDEN") && text.contains("manage_tasks"),
+        "{text}"
+    );
+    // KAIROS-T-0505: a note becomes a draft ADR or document. alice holds
+    // manage_adrs on the ADR board and manage_tasks on the delivery board.
+    let text = session
+        .call_ok(
+            "promote_note",
+            json!({
+                "short_code": filed,
+                "note_id": "n-1",
+                "kind": "adr",
+                "board": "adrs",
+                "title": "Keep the filer's idea"
+            }),
+        )
+        .await;
+    let promoted_adr = extract_code(&text, "ACME-A-");
+    assert!(
+        text.starts_with(&format!(
+            "Promoted note n-1 on {filed} to the draft adr {promoted_adr}. {promoted_adr} supports {filed}. The note has the line \"Promoted to {promoted_adr}.\""
+        )),
+        "{text}"
+    );
+    let text = session
+        .call_ok("get_item", json!({"short_code": promoted_adr}))
+        .await;
+    assert!(
+        text.contains("Keep the filer's idea")
+            && text.contains(&format!(
+                "The filer adds a note.\n\nFrom note n-1 on {filed} (bob, "
+            ))
+            && text.contains(&format!("supports: {filed}")),
+        "{text}"
+    );
+    let text = session
+        .call_ok("get_item", json!({"short_code": filed}))
+        .await;
+    assert!(
+        text.contains(&format!(
+            "The filer adds a note.\n\nPromoted to {promoted_adr}."
+        )),
+        "{text}"
+    );
+    let text = session
+        .call_ok(
+            "promote_note",
+            json!({"short_code": filed, "note_id": "n-1", "kind": "document", "board": "platform-delivery"}),
+        )
+        .await;
+    let promoted_doc = extract_code(&text, "ACME-D-");
+    assert!(
+        text.contains(&format!(
+            "to the draft document {promoted_doc}. {promoted_doc} supports {filed}."
+        )),
+        "{text}"
+    );
+    let text = session
+        .call_err(
+            "promote_note",
+            json!({"short_code": filed, "note_id": "n-7", "kind": "adr", "board": "adrs"}),
+        )
+        .await;
+    assert!(text.contains("NOT_FOUND") && text.contains("n-1"), "{text}");
+    let text = session
+        .call_err(
+            "promote_note",
+            json!({"short_code": filed, "note_id": "n-1", "kind": "spec", "board": "adrs"}),
+        )
+        .await;
+    assert!(
+        text.contains("VALIDATION") && text.contains("document"),
+        "{text}"
+    );
+    let text = bob_session
+        .call_err(
+            "promote_note",
+            json!({"short_code": filed, "note_id": "n-1", "kind": "adr", "board": "adrs"}),
+        )
+        .await;
+    assert!(
+        text.contains("FORBIDDEN") && text.contains("manage_adrs"),
         "{text}"
     );
     let text = bob_session

@@ -844,6 +844,38 @@ pub struct AppendNoteRequest {
     pub text: String,
 }
 
+/// Body of `POST /api/{entity_type}/{short_code}/notes/{note_id}/promote`
+/// (KAIROS-T-0505): turn a note into a draft ADR or document.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PromoteNoteRequest {
+    /// `adr` or `document`.
+    pub kind: String,
+    /// The board that gets the new item (slug or UUID). An ADR board for
+    /// an ADR; the owner board for a document.
+    pub board: String,
+    /// The title of the new item. Default: the first line of the note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+/// Response of `POST /api/{entity_type}/{short_code}/notes/{note_id}/promote`
+/// (KAIROS-T-0505).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PromoteNoteResponse {
+    /// The short code of the source item.
+    pub short_code: String,
+    /// The id of the note: `n-3`.
+    pub note_id: String,
+    /// `adr` or `document`.
+    pub kind: String,
+    /// The short code of the new item.
+    pub promoted_to: String,
+    /// True when the new item `supports` the source item. False for a note
+    /// on a document or an ADR: no edge joins two attachments.
+    pub supports: bool,
+}
+
 /// Response of `POST /api/{entity_type}/{short_code}/notes`
 /// (KAIROS-T-0367): the version that the note made, and the id of the note
 /// (KAIROS-T-0504).

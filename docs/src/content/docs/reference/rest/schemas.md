@@ -1770,6 +1770,30 @@ A `(done, total)` children rollup (KAIROS-T-0080). `done` counts the children si
 | `has_done` | `boolean` | yes | False when no board hosting the children has a done-flagged column — clients show composition only, never a done fraction. The server sends it in each response, so the schema shows it as required (COLLIERY-T-0254). The default is for the client only: a response of an older server has no `has_done`, and it reads as `false`. |
 | `total` | `integer` | yes |  |
 
+## PromoteNoteRequest
+
+Body of `POST /api/{entity_type}/{short_code}/notes/{note_id}/promote` (KAIROS-T-0505): turn a note into a draft ADR or document.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `board` | `string` | yes | The board that gets the new item (slug or UUID). An ADR board for an ADR; the owner board for a document. |
+| `kind` | `string` | yes | `adr` or `document`. |
+| `title` | `string`, nullable | no | The title of the new item. Default: the first line of the note. |
+
+The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
+
+## PromoteNoteResponse
+
+Response of `POST /api/{entity_type}/{short_code}/notes/{note_id}/promote` (KAIROS-T-0505).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `kind` | `string` | yes | `adr` or `document`. |
+| `note_id` | `string` | yes | The id of the note: `n-3`. |
+| `promoted_to` | `string` | yes | The short code of the new item. |
+| `short_code` | `string` | yes | The short code of the source item. |
+| `supports` | `boolean` | yes | True when the new item `supports` the source item. False for a note on a document or an ADR: no edge joins two attachments. |
+
 ## PurgeTaskResponse
 
 Response of `POST /api/tasks/{short_code}/purge` (KAIROS-T-0362): the task that is gone for good.

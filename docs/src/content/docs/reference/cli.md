@@ -357,6 +357,32 @@ The output names the id: `Kairos appended note n-3 to ACME-T-0012 (version
 4).` Cite the note by its id: "note n-3 on ACME-T-0012". With `--json`, the
 response has `note_id`.
 
+### `<noun> promote-note`
+
+```
+kairos <noun> promote-note <SHORT_CODE> <NOTE_ID> --kind <KIND> --board <BOARD> [--title <TITLE>] [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<SHORT_CODE>` | string | required | The item's short code. |
+| `<NOTE_ID>` | string | required | The id of the note, as `get` lists it: `n-3`. |
+| `--kind <KIND>` | `adr` \| `document` | required | What the note becomes. |
+| `--board <BOARD>` | slug or UUID | required | The board that gets the new item: an ADR board for an ADR, the owner board for a document. |
+| `--title <TITLE>` | string | the first line of the note | The title of the new item. |
+
+Turns a note into a draft ADR or document. The new item has the text of the
+note. A line names the note, its author and its date. The new item
+supports the item when the item is a strategy, an initiative or a task. The
+note gets a trailing line that names the new item.
+
+You need the edit rule on the item, and `manage_adrs` or `manage_documents`
+on the board. The command prints one line:
+
+```text
+Kairos promoted note n-3 on ACME-T-0012 to the draft adr ACME-A-0029. ACME-A-0029 supports ACME-T-0012.
+```
+
 ### `<noun> transition`
 
 ```

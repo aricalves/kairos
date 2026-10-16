@@ -3,8 +3,8 @@ title: "MCP tools"
 ---
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-sixty-nine tools. A drift gate in the test suite
-asserts that `tools/list` returns these sixty-nine and no others. The same
+seventy tools. A drift gate in the test suite
+asserts that `tools/list` returns these seventy and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -22,7 +22,7 @@ organization.
 
 | URL | Profile | Tools |
 |---|---|---|
-| `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory, claims, notifications, the scales and templates, team pages to read: 38 tools. |
+| `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory, claims, notifications, the scales and templates, team pages to read: 40 tools. |
 | `/mcp?profile=admin` | admin | Teams, boards, columns and transitions, grants, metadata definitions and templates, dispatch rules and agent triage, the writes of team pages, org read tokens, delete and rebuild of repositories, board flow, purge: the other 30 tools. |
 | `/mcp?profile=all` | all | Each tool. |
 
@@ -33,7 +33,8 @@ The work tools:
 
 - items: `whoami`, `my_boards`, `my_work`, `board_items`, `search`, `get_item`,
   `get_history`, `related_work`, `create_item`, `edit_item`, `update_item`,
-  `transition_item`, `move_item`, `append_note`, `set_state`, `set_metadata`;
+  `transition_item`, `move_item`, `append_note`, `promote_note`, `set_state`,
+  `set_metadata`;
 - links and fields: `link_items`, `unlink_items`, `propose_edge`,
   `set_repository`, `set_work_class`, `set_team`, `clear_team`;
 - the end of an item: `cancel_item`, `delete_item`, `restore_item`,
@@ -1010,6 +1011,47 @@ The edit rule applies, as for `update_item`. REST: `POST
 Refuses: `VALIDATION` for an empty `text`. `NOT_FOUND` for an unknown short
 code or an archived item. `FORBIDDEN` when the
 [edit rule](../capabilities/#the-edit-rule) refuses the caller.
+
+### `promote_note`
+
+Turns a note into a draft ADR or document, in one call. The new item has
+the text of the note. A line names the note, its author and its date:
+
+```text
+From note n-3 on ACME-T-0012 (Robin, 2026-10-11).
+```
+
+The note gets a trailing line that names the new item:
+
+```text
+Promoted to ACME-A-0029.
+```
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `short_code` | string | yes | — | The short code of the item that has the note. |
+| `note_id` | string | yes | — | The id of the note, as `get_item` lists it: `n-3`. |
+| `kind` | string | yes | — | `adr` or `document`. |
+| `board` | string | yes | — | The board that gets the new item (slug or UUID): an ADR board for an ADR, the owner board for a document. |
+| `title` | string | no | the first line of the note | The title of the new item. |
+
+The new item `supports` the item when the item is a strategy, an initiative
+or a task. A note on a document or an ADR gets no edge, and the result says
+so. The result is one line:
+
+```text
+Promoted note n-3 on ACME-T-0012 to the draft adr ACME-A-0029. ACME-A-0029 supports ACME-T-0012. The note has the line "Promoted to ACME-A-0029."
+```
+
+You need the edit rule on the item: you created it, or you hold
+`manage_<type>` on its board. You also need the right to create on the
+board: `manage_adrs` for an ADR, `manage_documents` for a document. The rule
+is that of `POST /api/{family}/{short_code}/notes/{note_id}/promote`.
+
+Refuses: `NOT_FOUND` for an unknown short code, an archived item, or an
+unknown board. `NOT_FOUND` for an unknown note id; the refusal lists the
+ids. `VALIDATION` for a kind that is not `adr` or `document`. `FORBIDDEN`
+by the edit rule, or without the capability on the board.
 
 ### `set_metadata`
 

@@ -29,8 +29,9 @@ use crate::types::{
     Adr, AppendNoteRequest, AppendNoteResponse, CascadePreviewResponse, CreateAdrRequest,
     CreateDocumentRequest, CreateInitiativeRequest, CreateStrategyRequest, CreateTaskRequest,
     DeleteResponse, Document, ErrorEnvelope, ImpactListQuery, Initiative, ListEnvelope, ListQuery,
-    Pagination, RestoreResponse, SetDocumentBoardRequest, SetLifecycleRequest, SetTaskStateRequest,
-    SetWorkClassRequest, Strategy, Task, TransitionRequest, UpdateContentRequest,
+    Pagination, PromoteNoteRequest, PromoteNoteResponse, RestoreResponse, SetDocumentBoardRequest,
+    SetLifecycleRequest, SetTaskStateRequest, SetWorkClassRequest, Strategy, Task,
+    TransitionRequest, UpdateContentRequest,
 };
 use crate::types_auth::{DeploymentConfig, LoginRequest, LoginResponse};
 use crate::types_meta::{
@@ -568,6 +569,22 @@ impl KairosClient {
                 board: board.to_string(),
                 rename,
             },
+        )
+        .await
+    }
+
+    /// `POST /api/{family}/{short_code}/notes/{note_id}/promote` — turn a
+    /// note into a draft ADR or document (KAIROS-T-0505).
+    pub async fn promote_note(
+        &self,
+        kind: EntityKind,
+        short_code: &str,
+        note_id: &str,
+        request: &PromoteNoteRequest,
+    ) -> Result<PromoteNoteResponse, Error> {
+        self.post_created(
+            &format!("/api/{kind}/{short_code}/notes/{note_id}/promote"),
+            request,
         )
         .await
     }

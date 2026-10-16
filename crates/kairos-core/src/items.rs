@@ -229,6 +229,23 @@ pub fn notes(content: &str) -> Vec<kairos_markdown::notes::Note> {
     kairos_markdown::notes::notes(content)
 }
 
+/// The content with `line` at the end of the note `note_id`
+/// (KAIROS-T-0505: `Promoted to KAIROS-A-0029.`), after an empty line.
+/// `None` when the content has no note with that id.
+pub fn content_with_note_line(content: &str, note_id: &str, line: &str) -> Option<String> {
+    let note = notes(content).into_iter().find(|note| note.id == note_id)?;
+    let lines: Vec<&str> = content.lines().collect();
+    let mut out: Vec<&str> = lines[..=note.last_line].to_vec();
+    out.push("");
+    out.push(line);
+    out.extend_from_slice(&lines[note.last_line + 1..]);
+    let mut joined = out.join("\n");
+    if content.ends_with('\n') {
+        joined.push('\n');
+    }
+    Some(joined)
+}
+
 /// The content after a note is appended (KAIROS-T-0367): the old content
 /// with no trailing blank lines, an empty line, the heading, an empty line,
 /// and the text with no leading or trailing blank lines. An empty content
@@ -514,5 +531,24 @@ mod tests {
             3
         );
         assert_eq!(note_id(3), "n-3");
+    }
+
+    // KAIROS-T-0505: a line goes at the end of one note.
+    #[test]
+    fn a_line_goes_at_the_end_of_the_note() {
+        let content = "# T\n\n## Note n-1 (2026-10-01, Robin)\n\nOne.\n\n\n## Note n-2 (2026-10-02, Sam)\n\nTwo.\n";
+        assert_eq!(
+            content_with_note_line(content, "n-1", "Promoted to ACME-A-0001.").as_deref(),
+            Some(
+                "# T\n\n## Note n-1 (2026-10-01, Robin)\n\nOne.\n\nPromoted to ACME-A-0001.\n\n\n## Note n-2 (2026-10-02, Sam)\n\nTwo.\n"
+            )
+        );
+        assert_eq!(
+            content_with_note_line(content, "n-2", "Promoted to ACME-D-0001.").as_deref(),
+            Some(
+                "# T\n\n## Note n-1 (2026-10-01, Robin)\n\nOne.\n\n\n## Note n-2 (2026-10-02, Sam)\n\nTwo.\n\nPromoted to ACME-D-0001.\n"
+            )
+        );
+        assert_eq!(content_with_note_line(content, "n-3", "x"), None);
     }
 }

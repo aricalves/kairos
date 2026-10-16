@@ -35,6 +35,7 @@ pub mod middleware;
 pub mod owners;
 pub mod pages;
 pub mod periodic;
+pub mod promote;
 pub mod rate_limit;
 pub mod secrets;
 pub mod secrets_rotation;

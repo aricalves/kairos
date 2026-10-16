@@ -606,6 +606,25 @@ pub struct SetWorkClassParams {
     pub work_class: String,
 }
 
+/// Parameters for `promote_note` (KAIROS-T-0505).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct PromoteNoteParams {
+    /// The short code of the item that has the note (e.g. "ACME-T-0012").
+    pub short_code: String,
+    /// The id of the note, as `get_item` lists it: "n-3".
+    pub note_id: String,
+    /// What the note becomes: adr | document.
+    pub kind: String,
+    /// The board that gets the new item (slug or UUID): an ADR board for
+    /// an adr, the owner board for a document.
+    pub board: String,
+    /// The title of the new item. Default: the first line of the note.
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
 /// Parameters for `set_state` (KAIROS-T-0506).
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -3214,6 +3233,64 @@ impl KairosMcp {
                     updated.short_code, updated.work_class, before
                 )
             })
+        })
+        .await
+    }
+
+    // KAIROS-T-0505: a note becomes a draft ADR or document.
+    #[tool(
+        description = "Turn a note into a draft ADR or document in one call: `short_code` of the item, `note_id` as `get_item` lists it (n-3), `kind` adr | document, `board` (slug or UUID) that gets the new item, optional `title` (default: the first line of the note). The new item has the text of the note and a line `From note n-3 on CODE (author, date)`; it `supports` the item when the item is a strategy, an initiative or a task. The note gets the line `Promoted to <code>`. Needs the edit rule on the item and the right to create on the board (manage_adrs or manage_documents)."
+    )]
+    pub async fn promote_note(
+        &self,
+        Parameters(params): Parameters<PromoteNoteParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
+            let promoted = atomically(conn, |conn| {
+                crate::promote::promote_note(
+                    conn,
+                    &slug,
+                    user,
+                    crate::promote::PromoteInput {
+                        source: (item.id, item.item_type, &item.short_code),
+                        note_id: &params.note_id,
+                        kind: &params.kind,
+                        board: &params.board,
+                        title: params.title.as_deref(),
+                    },
+                    crate::api::documents::CreateWording {
+                        request: "call",
+                        details_key: "argument",
+                        board: "`board`",
+                        parent: "`board`",
+                    },
+                )
+            })?;
+            let mut out = format!(
+                "Promoted note {} on {} to the draft {} {}.",
+                promoted.note_id, promoted.source_code, promoted.kind, promoted.created_code
+            );
+            if promoted.supports {
+                out.push_str(&format!(
+                    " {} supports {}.",
+                    promoted.created_code, promoted.source_code
+                ));
+            } else {
+                out.push_str(&format!(
+                    " No edge: {} is a {}, and a supports edge joins a strategy, an initiative or a task.",
+                    promoted.source_code, item.item_type
+                ));
+            }
+            out.push_str(&format!(
+                " The note has the line \"Promoted to {}.\"",
+                promoted.created_code
+            ));
+            Ok(out)
         })
         .await
     }
