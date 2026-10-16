@@ -2,7 +2,7 @@
 title: "Install Kairos on Kubernetes with Helm"
 ---
 
-Get a Kairos 0.14.0 deployment serving on a cluster you already run.
+Get a Kairos 0.15.0 deployment serving on a cluster you already run.
 
 **Before you start**, have all four:
 
@@ -123,7 +123,7 @@ mounts the Swagger UI at `/api/docs`.
 
 ```sh
 helm install kairos oci://ghcr.io/colliery-io/charts/kairos \
-  --version 0.14.0 -f my-values.yaml
+  --version 0.15.0 -f my-values.yaml
 ```
 
 `--version` is not optional in practice: the chart publishes no floating tag.
@@ -212,6 +212,20 @@ These changes of 0.14 show after the upgrade. They apply to Compose too.
   does not stop the build.
 - After login, the browser opens the "For me" page at `/`. The boards are at
   `/boards`.
+
+### From 0.14 to 0.15
+
+These changes of 0.15 show after the upgrade. They apply to Compose too.
+
+- Two migrations run: `item_external_refs` (a link from an item to a URI)
+  and `task_state` (the live state of a task).
+- Each note gets an id in its heading, like `n-3`. An old note gets one by
+  its position when the server reads it. `append_note` returns the id.
+- The MCP server has three more operations: `promote_note`, `set_state`,
+  and `relationship: external` on `link_items`. The tool count is 70.
+- The plugin has three new hooks: a question before a push, merge, rebase,
+  tag or release; the Kairos rules once per session; and a reminder on a
+  write to local memory. Update the plugin with `/plugin` to get them.
 
 ## Trying it out without a database
 
