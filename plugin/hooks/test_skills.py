@@ -388,3 +388,21 @@ class BootstrapWritesNoRepositoryConnection(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SkillsWriteNoRepoFileForWiringOrNotes(unittest.TestCase):
+    """KAIROS-T-0527: bootstrap keeps the wiring out of git through the
+    local exclude of the clone, never the tracked .gitignore; prototype
+    keeps its answer in Kairos, never in a NOTES.md next to the code."""
+
+    def test_bootstrap_writes_the_local_exclude_not_gitignore(self):
+        text = read(os.path.join(PLUGIN, "skills", "meta", "bootstrap", "SKILL.md"))
+        self.assertIn("info/exclude", text)
+        self.assertIn("git rev-parse --git-common-dir", text)
+        self.assertNotIn("If `.gitignore` does not already cover it, append", text)
+        self.assertIn("not a git checkout", text)
+
+    def test_prototype_keeps_its_answer_in_kairos(self):
+        text = read(os.path.join(PLUGIN, "skills", "engineering", "prototype", "SKILL.md"))
+        self.assertNotIn("NOTES.md", text)
+        self.assertIn("append_note", text)

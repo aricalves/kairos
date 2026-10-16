@@ -192,11 +192,13 @@ Connected as the service account claude-code (org: Acme Inc, team: platform),
 set up by alice@acme.example.
 ```
 
-Then ensure it is gitignored — it is org-specific wiring, not for the repo's history (tokens live with the MCP client and the API key lives in the user's settings, never in this file). If `.gitignore` does not already cover it, append:
+Then keep it out of git — it is org-specific wiring, not for the repo's history (tokens live with the MCP client and the API key lives in the user's settings, never in this file). Do not touch the tracked `.gitignore`: that is an edit on the current branch of a shared clone, and a shared clone may be on `main` (KAIROS-T-0527). Write the local exclude of the clone instead, which git never commits. The path is `$(git rev-parse --git-common-dir)/info/exclude`, the same file for every worktree of the clone. If it does not already hold the line, append:
 
 ```
 .claude/kairos.local.md
 ```
+
+In a folder that is not a git checkout (a board folder that holds clones), stop before step 4: there is no remote to match and no exclude to write. Say: "This folder is not a repository. Run /kairos:bootstrap inside the clone of the repository you work on, or write the board wiring by hand (deployment, tenant, team board, no repository)."
 
 ## 5. Report
 
