@@ -2483,6 +2483,20 @@ impl KairosMcp {
                 out.push_str(&impacts);
             }
 
+            // KAIROS-T-0504: the notes of the item, each one with its id, so
+            // that an agent cites `note n-3 on ACME-T-0012`.
+            let notes = kairos_core::items::notes(&item.content);
+            if !notes.is_empty() {
+                out.push_str("\n## Notes\n");
+                for note in notes {
+                    out.push_str(&format!("- {} ({}, {})", note.id, note.date, note.author));
+                    if !note.first_line.is_empty() {
+                        out.push_str(&format!(": {}", clip_line(&note.first_line, 120)));
+                    }
+                    out.push('\n');
+                }
+            }
+
             // Forge links (KAIROS-T-0123, UAT finding #3): an agent must see
             // PR state here, not only as a PR leaving `get_repository`'s
             // in-flight list. Same query and order as the links API.
@@ -2859,7 +2873,7 @@ impl KairosMcp {
 
     // KAIROS-T-0367: a note in one call, with no version and no anchor.
     #[tool(
-        description = "Append a note at the end of an item's content. The note gets a heading with the date and your name: `## Note (2026-10-11, Robin)`. Send no version and no anchor text: the server locks the item, adds the note to the current content, and writes one new version. Two notes at the same time both stay. Use it to record work, a finding or a decision on an item. You can append to an item that you created, or with `manage_<type>` on its board."
+        description = "Append a note at the end of an item's content. The note gets an id and a heading with the date and your name: `## Note n-3 (2026-10-11, Robin)`. The result names the id: cite it as `note n-3 on ACME-T-0012`. Send no version and no anchor text: the server locks the item, adds the note to the current content, and writes one new version. Two notes at the same time both stay. Use it to record work, a finding or a decision on an item. You can append to an item that you created, or with `manage_<type>` on its board."
     )]
     pub async fn append_note(
         &self,
@@ -2872,7 +2886,7 @@ impl KairosMcp {
         self.run_tool(&tenant, move |conn| {
             let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
             require_item_edit(conn, &slug, user, item.id, item.item_type)?;
-            let version = items::append_note(
+            let appended = items::append_note(
                 conn,
                 item.item_type,
                 item.id,
@@ -2882,8 +2896,8 @@ impl KairosMcp {
             )
             .map_err(crate::api::map_note_error)?;
             Ok(format!(
-                "Appended a note to {} (version {version}).",
-                item.short_code
+                "Appended note {} to {} (version {}).",
+                appended.note_id, item.short_code, appended.version
             ))
         })
         .await
@@ -5145,6 +5159,17 @@ fn render_page_tree(
 
 /// A slug from a title: lower case, each run of other characters one
 /// hyphen ("How-to Guides" gives "how-to-guides").
+/// `text` cut to `max` characters, with `…` when it was longer
+/// (KAIROS-T-0504: the first line of a note in `get_item`).
+fn clip_line(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut clipped: String = text.chars().take(max.saturating_sub(1)).collect();
+    clipped.push('…');
+    clipped
+}
+
 fn slug_from_title(title: &str) -> String {
     let mut slug = String::new();
     for c in title.chars() {

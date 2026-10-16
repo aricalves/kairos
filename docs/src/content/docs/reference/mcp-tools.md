@@ -642,6 +642,16 @@ An item that had other codes has the line `retired codes`:
 - retired codes: COLLIERY-T-2430
 ```
 
+An item with notes has the section `## Notes` after the relationships. Each
+line gives one note: its id, its date, its author and its first line. Cite a
+note by its id: "note n-3 on ACME-T-0012".
+
+```text
+## Notes
+- n-1 (2026-10-11, Robin): Found the cause.
+- n-2 (2026-10-12, Sam): The fix is in PR #12.
+```
+
 Refuses: `NOT_FOUND` only when the short code names nothing at all.
 
 ### `get_history`
@@ -960,21 +970,27 @@ version and no anchor text.
 | `short_code` | string | yes | — | The item's short code. |
 | `text` | string | yes | — | The markdown text of the note. Must not be empty. |
 
-The note gets a heading with the date (UTC) and the display name of the
-caller:
+The note gets an id and a heading with the date (UTC) and the display name
+of the caller:
 
 ```text
-## Note (2026-10-11, Robin)
+## Note n-3 (2026-10-11, Robin)
 
 The text of the note.
 ```
+
+The id is `n-` and the position of the note on the item: the first note is
+`n-1`. A note from before the ids has no id in its title. Kairos gives it the
+id of its position when it reads the item, so each id is stable. Cite a note
+by its id: "note n-3 on ACME-T-0012". `get_item` lists the notes with their
+ids, and the item page of the GUI anchors each one (`#n-3`).
 
 The server locks the item, adds the note to the current content, and writes
 one new version. Two notes at the same time both stay: the server adds the
 second one after the first one. The result is one line:
 
 ```text
-Appended a note to ACME-T-0012 (version 4).
+Appended note n-3 to ACME-T-0012 (version 4).
 ```
 
 The edit rule applies, as for `update_item`. REST: `POST

@@ -132,6 +132,8 @@ async fn append_note_adds_a_dated_note_in_one_version_against_live_stack() {
     assert_eq!(status, StatusCode::OK, "{answer}");
     assert_eq!(answer["short_code"], code.as_str());
     assert_eq!(answer["version"], 2);
+    // KAIROS-T-0504: the first note is n-1, and the heading carries the id.
+    assert_eq!(answer["note_id"], "n-1", "{answer}");
     let today = chrono::Utc::now().date_naive().format("%Y-%m-%d");
     let (_, got) = send(
         Method::GET,
@@ -142,7 +144,7 @@ async fn append_note_adds_a_dated_note_in_one_version_against_live_stack() {
     .await;
     assert_eq!(
         got["content"],
-        format!("# Pay\n\nThe body.\n\n## Note ({today}, {svc_name})\n\nFound the cause."),
+        format!("# Pay\n\nThe body.\n\n## Note n-1 ({today}, {svc_name})\n\nFound the cause."),
         "{got}"
     );
     let history = |conn: &mut PgConnection| -> i64 {
@@ -212,6 +214,18 @@ async fn append_note_adds_a_dated_note_in_one_version_against_live_stack() {
         .collect();
     versions.sort_unstable();
     assert_eq!(versions, (3..3 + AT_ONCE as i64).collect::<Vec<_>>());
+    // KAIROS-T-0504: each note gets its own id, n-2 to n-9.
+    let mut ids: Vec<String> = answers
+        .iter()
+        .map(|(_, answer)| answer["note_id"].as_str().expect("note id").to_string())
+        .collect();
+    ids.sort_by_key(|id| id[2..].parse::<usize>().expect("digits"));
+    assert_eq!(
+        ids,
+        (2..2 + AT_ONCE)
+            .map(|n| format!("n-{n}"))
+            .collect::<Vec<_>>()
+    );
     let (_, got) = send(
         Method::GET,
         format!("/api/tasks/{code}"),
@@ -228,11 +242,35 @@ async fn append_note_adds_a_dated_note_in_one_version_against_live_stack() {
         );
     }
     assert_eq!(
-        content.matches("## Note (").count(),
+        content.matches("## Note n-").count(),
         AT_ONCE + 1,
         "{content}"
     );
     assert_eq!(history(&mut conn), 2 + AT_ONCE as i64);
+
+    // --- KAIROS-T-0504: old notes without an id count by position ----------
+    let (status, old) = send(
+        Method::POST,
+        "/api/tasks".into(),
+        token.clone(),
+        Some(json!({
+            "board_id": "payments-delivery",
+            "title": "Old notes",
+            "content": "# Old\n\n## Note (2026-10-01, Robin)\n\nOne.\n\n## Note (2026-10-02, Sam)\n\nTwo.\n",
+        })),
+    )
+    .await;
+    assert!(status.is_success(), "{status} {old}");
+    let old_code = old["short_code"].as_str().expect("short code");
+    let (status, answer) = send(
+        Method::POST,
+        format!("/api/tasks/{old_code}/notes"),
+        token.clone(),
+        Some(json!({"text": "Three."})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer["note_id"], "n-3", "{answer}");
 
     drop(pool);
     drop(conn);

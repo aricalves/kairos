@@ -430,6 +430,22 @@
   margin: 6px 0;
 }
 
+/* KAIROS-T-0504: the link to a note (`#n-3`), shown on hover of its heading. */
+.kairos-markdown h2:target {
+  background: var(--inset);
+}
+
+.kairos-markdown .kairos-note-link {
+  color: var(--muted);
+  text-decoration: none;
+  opacity: 0;
+}
+
+.kairos-markdown h2:hover .kairos-note-link,
+.kairos-markdown .kairos-note-link:focus {
+  opacity: 1;
+}
+
 .kairos-markdown a {
   color: var(--ice);
 }

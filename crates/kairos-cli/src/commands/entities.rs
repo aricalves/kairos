@@ -901,8 +901,8 @@ pub fn emit_noted(common: &Common, response: &AppendNoteResponse) -> Result<(), 
         return print_json(response);
     }
     println!(
-        "Kairos appended a note to {} (version {}).",
-        response.short_code, response.version
+        "Kairos appended note {} to {} (version {}).",
+        response.note_id, response.short_code, response.version
     );
     Ok(())
 }

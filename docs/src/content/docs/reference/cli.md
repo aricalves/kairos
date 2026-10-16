@@ -348,10 +348,14 @@ kairos <noun> note <SHORT_CODE> --text <TEXT> [OPTIONS]
 | `<SHORT_CODE>` | string | required | The item's short code. |
 | `--text <TEXT>` | string | required | The markdown text of the note. Must not be empty. |
 
-Appends a note at the end of the item's content, under a heading with the
-date and your name: `## Note (2026-10-11, Robin)`. Send no version: the server
-locks the item and writes one new version. Two notes at the same time both
-stay. The edit rule applies, as for `edit`.
+Appends a note at the end of the item's content. The note gets a title with
+its id, the date and your name: `## Note n-3 (2026-10-11, Robin)`. Send no
+version: the server locks the item and writes one new version. Two notes at
+the same time both stay. The edit rule applies, as for `edit`.
+
+The output names the id: `Kairos appended note n-3 to ACME-T-0012 (version
+4).` Cite the note by its id: "note n-3 on ACME-T-0012". With `--json`, the
+response has `note_id`.
 
 ### `<noun> transition`
 

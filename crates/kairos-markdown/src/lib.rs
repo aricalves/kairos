@@ -37,7 +37,11 @@
 
 use std::collections::HashMap;
 
-use pulldown_cmark::{CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd, html};
+use pulldown_cmark::{
+    CodeBlockKind, CowStr, Event, HeadingLevel, Options, Parser, Tag, TagEnd, html,
+};
+
+pub mod notes;
 
 /// A fence that renders specially.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -116,8 +120,33 @@ fn render(source: &str, links: Option<&HashMap<String, String>>) -> String {
     let mut dropped: Vec<bool> = Vec::new();
     // In a code block that renders as code: its text is not linked.
     let mut in_code = false;
+    // KAIROS-T-0504: the note headings seen, for the id of a note without one.
+    let mut note_count = 0usize;
     for event in Parser::new_ext(source, options()) {
         match (&mut open, event) {
+            // A note heading gets its id as the anchor, and a link to it.
+            (None, Event::Text(text))
+                if matches!(
+                    events.last(),
+                    Some(Event::Start(Tag::Heading {
+                        level: HeadingLevel::H2,
+                        ..
+                    }))
+                ) && notes::parse_note_title(&text).is_some() =>
+            {
+                note_count += 1;
+                let id = notes::parse_note_title(&text)
+                    .and_then(|title| title.id)
+                    .map_or_else(|| notes::note_id(note_count), str::to_string);
+                if let Some(Event::Start(Tag::Heading { id: anchor, .. })) = events.last_mut() {
+                    *anchor = Some(CowStr::from(id.clone()));
+                }
+                events.push(Event::Text(text));
+                // `id` is `n-<digits>` (checked by the parser): safe markup.
+                events.push(Event::Html(CowStr::from(format!(
+                    " <a class=\"kairos-note-link\" href=\"#{id}\" title=\"Link to this note\">#</a>"
+                ))));
+            }
             (None, Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info)))) => {
                 match fence_of(&info) {
                     Some(fence) => open = Some((fence, String::new())),
@@ -479,6 +508,25 @@ mod tests {
 
     /// KAIROS-T-0402: a resolved code is a link, an unresolved code is text,
     /// and a code in a code span, a code block or a link is left alone.
+    // KAIROS-T-0504: a note heading gets its id as the anchor and a link.
+    #[test]
+    fn note_headings_get_anchors() {
+        let rendered = to_html(
+            "## Note (2026-10-01, Robin)\n\nOne.\n\n## Objective\n\nx\n\n## Note n-2 (2026-10-02, Sam)\n\nTwo.\n",
+        );
+        assert!(
+            rendered.contains(
+                "<h2 id=\"n-1\">Note (2026-10-01, Robin) <a class=\"kairos-note-link\" href=\"#n-1\" title=\"Link to this note\">#</a></h2>"
+            ),
+            "{rendered}"
+        );
+        assert!(rendered.contains("<h2>Objective</h2>"), "{rendered}");
+        assert!(
+            rendered.contains("<h2 id=\"n-2\">Note n-2 (2026-10-02, Sam) <a class=\"kairos-note-link\" href=\"#n-2\""),
+            "{rendered}"
+        );
+    }
+
     #[test]
     fn short_codes_link_when_resolved() {
         let source = "See KAIROS-D-0012, KAIROS-T-0001 and `KAIROS-D-0012`.\n\n```\nKAIROS-D-0012\n```\n\n[KAIROS-D-0012](https://example.com)\n";

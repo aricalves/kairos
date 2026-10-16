@@ -23,8 +23,8 @@ pub fn router() -> Router<AppState> {
     Router::new().route("/api/{entity_type}/{short_code}/notes", post(append_note))
 }
 
-/// Append a note to an item: a heading with the date and the name of the
-/// caller, then the text. One new version.
+/// Append a note to an item. The note gets a heading with its id, the date
+/// and the name of the caller, then the text. One new version.
 #[utoipa::path(
     post,
     path = "/api/{entity_type}/{short_code}/notes",
@@ -35,7 +35,7 @@ pub fn router() -> Router<AppState> {
     ),
     request_body = dto::AppendNoteRequest,
     responses(
-        (status = 200, description = "Appended; the new version", body = dto::AppendNoteResponse),
+        (status = 200, description = "Appended; the id of the note and the new version", body = dto::AppendNoteResponse),
         (status = 403, description = "Refused by the edit rule: the caller did not create the item and lacks the capability", body = dto::ErrorEnvelope),
         (status = 404, description = "Unknown family or short code, or the item is archived", body = dto::ErrorEnvelope),
         (status = 422, description = "The text is empty, or the body has an unknown field", body = dto::ErrorEnvelope),
@@ -56,7 +56,7 @@ pub(crate) async fn append_note(
             let (item_id, item_type) =
                 resolve_family_item(conn, &family, &short_code, Liveness::LiveOnly)?;
             crate::api::require_item_edit(conn, &slug, user, item_id, item_type)?;
-            let version = kairos_db::items::append_note(
+            let appended = kairos_db::items::append_note(
                 conn,
                 item_type,
                 item_id,
@@ -67,7 +67,8 @@ pub(crate) async fn append_note(
             .map_err(map_note_error)?;
             Ok(dto::AppendNoteResponse {
                 short_code: short_code_of(conn, item_id)?,
-                version,
+                version: appended.version,
+                note_id: appended.note_id,
             })
         })
         .await?;

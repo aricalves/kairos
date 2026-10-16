@@ -164,10 +164,11 @@ The server refuses a body with a field that is not in this table ([Errors](../..
 
 ## AppendNoteResponse
 
-Response of `POST /api/{entity_type}/{short_code}/notes` (KAIROS-T-0367): the version that the note made.
+Response of `POST /api/{entity_type}/{short_code}/notes` (KAIROS-T-0367): the version that the note made, and the id of the note (KAIROS-T-0504).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `note_id` | `string` | no | The id of the note: `n-3`. The heading of the note carries it, and the item page anchors it (`#n-3`). The default is for the client only: a response of an older server has no `note_id`. |
 | `short_code` | `string` | yes | The item's short code. |
 | `version` | `integer` | yes | The new version of the item. |
 

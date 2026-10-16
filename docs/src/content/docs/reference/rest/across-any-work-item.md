@@ -422,8 +422,8 @@ snapshot with `?version=N`.
 
 ### `POST /api/{entity_type}/{short_code}/notes`
 
-Append a note to an item: a heading with the date and the name of the
-caller, then the text. One new version.
+Append a note to an item. The note gets a heading with its id, the date
+and the name of the caller, then the text. One new version.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
@@ -434,7 +434,7 @@ Request body (required): `application/json`, [`AppendNoteRequest`](../schemas/#a
 
 | Response | Body | Meaning |
 |---|---|---|
-| `200` | [`AppendNoteResponse`](../schemas/#appendnoteresponse) | Appended; the new version |
+| `200` | [`AppendNoteResponse`](../schemas/#appendnoteresponse) | Appended; the id of the note and the new version |
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Refused by the edit rule: the caller did not create the item and lacks the capability |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown family or short code, or the item is archived |
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The text is empty, or the body has an unknown field |

@@ -1899,16 +1899,26 @@ async fn mcp_endpoint_against_live_stack() {
         )
         .await;
     assert!(
-        text.contains(&format!("Appended a note to {filed} (version 4).")),
+        text.contains(&format!("Appended note n-1 to {filed} (version 4).")),
         "{text}"
     );
     let text = session
         .call_ok("get_item", json!({"short_code": filed}))
         .await;
     assert!(
-        text.contains("edited again by the filer\n\n## Note (")
+        text.contains("edited again by the filer\n\n## Note n-1 (")
             && text.contains(")\n\nThe filer adds a note."),
-        "the note is at the end, under a dated heading: {text}"
+        "the note is at the end, under a dated heading with its id: {text}"
+    );
+    // KAIROS-T-0504: get_item lists the notes with their ids, before the content.
+    let notes_at = text.find("\n## Notes\n- n-1 (").expect("a Notes section");
+    assert!(
+        notes_at < text.find("\n## Content\n").expect("content"),
+        "{text}"
+    );
+    assert!(
+        text.contains("): The filer adds a note.\n"),
+        "the first line of the note: {text}"
     );
     let text = bob_session
         .call_err("append_note", json!({"short_code": filed, "text": "  "}))
