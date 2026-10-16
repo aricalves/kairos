@@ -204,6 +204,31 @@ class GroundBeforePlanning(unittest.TestCase):
         self.assertIn("GROUND.md", text)
 
 
+class NamesAreCheckedAgainstTheCode(unittest.TestCase):
+    """KAIROS-T-0500 (COLLIERY-I-0627): a symbol, file or dependency that a
+    task names is checked with the code index before the plan relies on it;
+    a stale name and an unchecked claim are marked."""
+
+    def test_implement_and_decompose_check_the_names(self):
+        for rel in ("workflow/implement", "workflow/decompose"):
+            with self.subTest(skill=rel):
+                text = read(os.path.join(SKILLS, rel, "SKILL.md"))
+                self.assertIn("Check the names", text)
+                for tool in ("`symbol`", "`code_search`", "`path`"):
+                    self.assertIn(tool, text)
+                self.assertIn("Stale:", text)
+                self.assertIn("is not in the code", text)
+                self.assertIn('"not checked"', text)
+                self.assertIn("blocker", text)
+
+    def test_implement_checks_before_the_work_and_lists_what_stays_unchecked(self):
+        text = read(os.path.join(SKILLS, "workflow", "implement", "SKILL.md"))
+        self.assertLess(text.index("## Ground"), text.index("## Check the names"))
+        self.assertLess(text.index("## Check the names"), text.index("## Work"))
+        gate = text.split("## The completion gate", 1)[1]
+        self.assertIn('what stays "not checked"', gate)
+
+
 class GrillInitiative(unittest.TestCase):
     """COLLIERY-T-1864."""
 
