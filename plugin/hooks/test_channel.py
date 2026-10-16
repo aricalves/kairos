@@ -210,3 +210,53 @@ class EndToEnd(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DispatchHowTosNameRealFlags(unittest.TestCase):
+    """KAIROS-T-0545: each `kairos boards dispatch add-target` command in the
+    book uses flags that the CLI has, and names `--hook-url`. The flags come
+    from `crates/kairos-cli/src/commands/dispatch.rs`: every `long = "x"` and
+    every `#[arg(long)]` field, as clap derives them."""
+
+    REPO = os.path.normpath(os.path.join(HERE, "..", ".."))
+    HOW_TOS = (
+        "docs/src/content/docs/how-to/dispatch-tasks-to-an-agent.md",
+        "docs/src/content/docs/how-to/receive-dispatch-in-a-session.md",
+    )
+
+    def cli_flags(self):
+        import re
+
+        source = open(os.path.join(self.REPO, "crates", "kairos-cli", "src", "commands", "dispatch.rs")).read()
+        flags = {"--" + name for name in re.findall(r'long = "([a-z0-9-]+)"', source)}
+        for field in re.findall(r"#\[arg\(long\)\]\s*\n\s*([a-z_]+):", source):
+            flags.add("--" + field.replace("_", "-"))
+        return flags
+
+    def add_target_commands(self, text):
+        """Each add-target command of a how-to, its continuation lines joined."""
+        commands, current = [], None
+        for line in text.splitlines():
+            if "dispatch add-target" in line:
+                current = line.strip()
+            elif current is not None:
+                current += " " + line.strip()
+            if current is not None and not current.endswith("\\"):
+                commands.append(current.replace("\\", " "))
+                current = None
+        return commands
+
+    def test_each_add_target_command_uses_flags_the_cli_has(self):
+        import re
+
+        flags = self.cli_flags()
+        self.assertIn("--hook-url", flags)
+        seen = 0
+        for how_to in self.HOW_TOS:
+            text = open(os.path.join(self.REPO, how_to)).read()
+            for command in self.add_target_commands(text):
+                seen += 1
+                used = set(re.findall(r"(--[a-z][a-z0-9-]*)", command))
+                self.assertTrue(used <= flags, f"{how_to}: {used - flags} is not a flag of the CLI: {command}")
+                self.assertIn("--hook-url", used, f"{how_to}: {command}")
+        self.assertGreaterEqual(seen, 2, "both how-tos show an add-target command")
