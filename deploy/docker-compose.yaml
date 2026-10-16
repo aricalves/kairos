@@ -93,6 +93,15 @@ services:
       KAIROS_SINGLE_TENANT_NAME: ${KAIROS_SINGLE_TENANT_NAME:-}
       KAIROS_AUTO_JOIN_DOMAINS: ${KAIROS_AUTO_JOIN_DOMAINS:-}
       KAIROS_DEPLOYMENT_ADMINS: ${KAIROS_DEPLOYMENT_ADMINS:-}
+      # Forge webhooks: the public base URL of this deployment, and the key
+      # that each webhook secret is derived from. Both empty: the feature is
+      # off.
+      KAIROS_PUBLIC_URL: ${KAIROS_PUBLIC_URL:-}
+      KAIROS_WEBHOOK_SIGNING_KEY: ${KAIROS_WEBHOOK_SIGNING_KEY:-}
+      # API keys and agent keys: the default life of a new key, and how long
+      # the old secret of a rotated key works.
+      KAIROS_API_KEY_TTL_DAYS: ${KAIROS_API_KEY_TTL_DAYS:-}
+      KAIROS_API_KEY_ROTATION_GRACE_SECS: ${KAIROS_API_KEY_ROTATION_GRACE_SECS:-}
       KAIROS_BIND_ADDR: 0.0.0.0:8080
       # KAIROS-T-0394: `all` (the default) serves the API and runs the code
       # index builds. With the `worker` profile on, set `api` in .env: the
@@ -136,9 +145,49 @@ services:
       KAIROS_CODE_INDEX_DIR: ${KAIROS_CODE_INDEX_DIR:-}
       KAIROS_CODE_INDEX_POLL_SECS: ${KAIROS_CODE_INDEX_POLL_SECS:-}
       KAIROS_CODE_INDEX_THREADS: ${KAIROS_CODE_INDEX_THREADS:-}
+      KAIROS_CODE_INDEX_MIN_REBUILD_SECS: ${KAIROS_CODE_INDEX_MIN_REBUILD_SECS:-}
+      # 0.14: the dependency caches of the Go, TypeScript and Python runners.
+      KAIROS_CODE_INDEX_DEPS_CAP_MB: ${KAIROS_CODE_INDEX_DEPS_CAP_MB:-}
+      KAIROS_CODE_INDEX_MIN_FREE_MB: ${KAIROS_CODE_INDEX_MIN_FREE_MB:-}
+      KAIROS_CODE_INDEX_DEPS_ENV: ${KAIROS_CODE_INDEX_DEPS_ENV:-}
       # COLLIERY-T-3105: encrypts the read token of each repository. Keep it
       # with the database password; a lost key means every token is set again.
+      # The old keys go in _OLD during a rotation (`kairos-server rotate-secrets`).
       KAIROS_SECRETS_KEY: ${KAIROS_SECRETS_KEY:-}
+      KAIROS_SECRETS_KEY_OLD: ${KAIROS_SECRETS_KEY_OLD:-}
+      # Retention (KAIROS-A-0004). These defaults are the server's own, and
+      # scripts/check_compose_settings.py holds them to the book: the server
+      # reads an EMPTY retention value as an error, not as unset, so the
+      # empty default the other settings use would stop the start.
+      KAIROS_HISTORY_HOT_DAYS: ${KAIROS_HISTORY_HOT_DAYS:-90}
+      KAIROS_HISTORY_KEEP_LATEST: ${KAIROS_HISTORY_KEEP_LATEST:-5}
+      KAIROS_ACTIVITY_RETENTION_DAYS: ${KAIROS_ACTIVITY_RETENTION_DAYS:-365}
+      KAIROS_ARCHIVE_TARGET: ${KAIROS_ARCHIVE_TARGET:-}
+      KAIROS_NOTIFICATIONS_READ_DAYS: ${KAIROS_NOTIFICATIONS_READ_DAYS:-30}
+      KAIROS_CODE_INDEX_POOL_DAYS: ${KAIROS_CODE_INDEX_POOL_DAYS:-30}
+      KAIROS_RETENTION_MODE: ${KAIROS_RETENTION_MODE:-archive}
+      # The job queue (KAIROS-T-0373): the lease of a job, and how many jobs
+      # of each kind ONE server runs at the same time.
+      KAIROS_JOB_HEARTBEAT_SECS: ${KAIROS_JOB_HEARTBEAT_SECS:-}
+      KAIROS_JOB_LEASE_SECS: ${KAIROS_JOB_LEASE_SECS:-}
+      KAIROS_JOB_MAX_TRIES: ${KAIROS_JOB_MAX_TRIES:-}
+      KAIROS_JOB_LIMIT_EMBEDDED_BUILD: ${KAIROS_JOB_LIMIT_EMBEDDED_BUILD:-}
+      KAIROS_JOB_LIMIT_HOSTED_BUILD: ${KAIROS_JOB_LIMIT_HOSTED_BUILD:-}
+      KAIROS_JOB_LIMIT_EMBEDDING_BATCH: ${KAIROS_JOB_LIMIT_EMBEDDING_BATCH:-}
+      KAIROS_JOB_LIMIT_PERIODIC: ${KAIROS_JOB_LIMIT_PERIODIC:-}
+      KAIROS_JOB_LIMIT_WEBHOOK_DELIVERY: ${KAIROS_JOB_LIMIT_WEBHOOK_DELIVERY:-}
+      KAIROS_JOB_LIMIT_GITHUB_WRITEBACK: ${KAIROS_JOB_LIMIT_GITHUB_WRITEBACK:-}
+      KAIROS_JOB_LIMIT_ISSUE_IMPORT: ${KAIROS_JOB_LIMIT_ISSUE_IMPORT:-}
+      # Webhook deliveries (KAIROS-T-0384): the tries and the waits.
+      KAIROS_WEBHOOK_MAX_TRIES: ${KAIROS_WEBHOOK_MAX_TRIES:-}
+      KAIROS_WEBHOOK_RETRY_BASE_SECS: ${KAIROS_WEBHOOK_RETRY_BASE_SECS:-}
+      KAIROS_WEBHOOK_TIMEOUT_SECS: ${KAIROS_WEBHOOK_TIMEOUT_SECS:-}
+      KAIROS_WEBHOOK_DISABLE_AFTER: ${KAIROS_WEBHOOK_DISABLE_AFTER:-}
+      KAIROS_WEBHOOK_ALLOW_PRIVATE: ${KAIROS_WEBHOOK_ALLOW_PRIVATE:-}
+      # GitHub Enterprise Server: `https://<host>/api/v3`. Empty is github.com.
+      KAIROS_GITHUB_API_URL: ${KAIROS_GITHUB_API_URL:-}
+      # A mirror of the CLI tarballs for `kairos self-update`.
+      KAIROS_CLI_DOWNLOAD_URL: ${KAIROS_CLI_DOWNLOAD_URL:-}
       # KAIROS-T-0409: the store of the sites that repositories publish
       # (KAIROS-D-0012). `disk` keeps them in the volume below; set `s3` and
       # the KAIROS_PAGES_S3_* variables for a bucket instead.

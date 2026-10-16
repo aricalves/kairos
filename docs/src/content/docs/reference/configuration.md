@@ -1384,8 +1384,16 @@ stock `postgres:16` does not carry it. There is no bundled identity provider.
 | `KAIROS_AUTO_JOIN_DOMAINS` | commented out | The server. Defaults to empty. |
 | `KAIROS_DEPLOYMENT_ADMINS` | empty | The server. Defaults to empty. |
 | `KAIROS_LOG_LEVEL` | `info` | The server. Falls back to `info`. |
-| `KAIROS_API_BEARER` | `access_token` | Nothing. Present in `.env.example` but **not forwarded** to the container by `deploy/docker-compose.yaml`. |
-| `KAIROS_WEB_CLIENT_SECRET` | empty | Nothing. Present in `.env.example` but **not forwarded** to the container by `deploy/docker-compose.yaml`. |
+| `KAIROS_API_BEARER` | `access_token` | The server. Defaults to empty, so the server default `access_token` holds. |
+| `KAIROS_WEB_CLIENT_SECRET` | empty | The server. Defaults to empty. |
+
+The Compose file also passes each other setting under
+[Server environment variables](#server-environment-variables). The default is
+empty, so the server default holds. There are two exceptions. The retention
+settings get their documented defaults: the server reads an empty retention
+value as an error. The two settings under [Development](#development) are not
+in the Compose file. `scripts/check_compose_settings.py` (in `angreal test unit` and CI) fails
+when the Compose file, `.env.example` and this page do not agree.
 
 The profile `worker` adds the service `worker`. It is the same image with
 `KAIROS_ROLE=worker` and its own volume for the clones and the tools. The
