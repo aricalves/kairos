@@ -38,6 +38,9 @@ The Kairos port is never published. Caddy does not start. `tailscale serve` is a
 tailnet-only proxy; the stack never enables Funnel, which would make the
 deployment public.
 
+Kairos compresses its own answers (gzip and brotli) when the browser asks for
+it. The proxy does not have to.
+
 ## Turn on HTTPS certificates for the tailnet
 
 **Step 1.** Open the admin console. Go to **DNS**.
