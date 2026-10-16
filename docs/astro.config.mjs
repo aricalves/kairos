@@ -84,6 +84,7 @@ export default defineConfig({
 								page('how-to/give-an-agent-machine-access', 'Give an agent machine access'),
 								page('how-to/run-an-admin-agent', 'Run an admin agent'),
 								page('how-to/connect-over-mcp', 'Connect over MCP'),
+								page('how-to/connect-claude-desktop', 'Connect the Claude Desktop app'),
 								page('how-to/read-notifications-as-an-agent', 'Read notifications as an agent'),
 								page('how-to/dispatch-tasks-to-an-agent', 'Dispatch tasks to an agent runner'),
 								page('how-to/receive-dispatch-in-a-session', 'Receive dispatch in a Claude Code session'),
