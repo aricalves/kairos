@@ -22,6 +22,10 @@ tokio = { workspace = true }
 # version pinned in the workspace manifest.
 tokio-postgres = { workspace = true }
 tower = { workspace = true }
+# KAIROS-T-0603: gzip and brotli on every response that asks for it (the API
+# JSON, the GUI assets); `brotli` also pre-compresses the embedded assets once.
+tower-http = { workspace = true, features = ["compression-gzip", "compression-br"] }
+brotli = "8"
 tracing = { workspace = true }
 # KAIROS-T-0196: OTLP trace export, enabled at runtime by KAIROS_OTEL_ENDPOINT.
 opentelemetry = { workspace = true }

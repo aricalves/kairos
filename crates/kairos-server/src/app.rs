@@ -544,6 +544,12 @@ pub fn router(state: AppState) -> Router {
         // the path) and its own auth (none for a repository site).
         .merge(crate::pages::router(&state))
         .fallback(crate::web::spa_fallback)
+        // KAIROS-T-0603: gzip or brotli for each response that asks for it
+        // with Accept-Encoding: the API JSON and the GUI assets. The default
+        // predicate leaves out text/event-stream (the MCP stream), images,
+        // bodies under 32 bytes, and a response that already carries a
+        // Content-Encoding (the pre-compressed embedded assets of web.rs).
+        .layer(tower_http::compression::CompressionLayer::new())
         // KAIROS-T-0049 (A-0013): the HTTP-metrics layer wraps the WHOLE
         // router (added last → outermost), so every request — matched route
         // or SPA fallback — is timed and counted, and it sees the tenant the

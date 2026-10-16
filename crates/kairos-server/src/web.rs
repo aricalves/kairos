@@ -45,7 +45,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{Extension, Form, State};
-use axum::http::{Method, StatusCode, Uri, header};
+use axum::http::{HeaderMap, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
@@ -367,7 +367,12 @@ fn wants_index_fallback(rel: &str) -> bool {
 
 /// The router fallback (mounted in [`crate::app::router`]): reserved
 /// prefixes 404 with the S-0005 envelope; everything else serves the GUI.
-pub async fn spa_fallback(State(state): State<AppState>, method: Method, uri: Uri) -> Response {
+pub async fn spa_fallback(
+    State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Response {
     let path = uri.path();
     if is_reserved(path) {
         return ApiError::not_found(format!("The server has no route {path}.")).into_response();
@@ -384,17 +389,39 @@ pub async fn spa_fallback(State(state): State<AppState>, method: Method, uri: Ur
     if let Some(dist) = state.config.web_dist.clone() {
         return serve_from_dir(&dist, rel).await;
     }
-    serve_embedded_or_placeholder(rel)
+    serve_embedded_or_placeholder(rel, accepted_encoding(&headers))
+}
+
+/// The encoding of a pre-compressed asset that the request accepts: brotli
+/// before gzip, none when the request names neither (KAIROS-T-0603). Only
+/// the embedded assets use it; a file from `KAIROS_WEB_DIST` and every API
+/// answer go through the compression layer of the router instead.
+fn accepted_encoding(headers: &HeaderMap) -> Option<&'static str> {
+    let accept = headers
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let names: Vec<&str> = accept
+        .split(',')
+        .map(|part| part.split(';').next().unwrap_or("").trim())
+        .collect();
+    if names.contains(&"br") {
+        Some("br")
+    } else if names.contains(&"gzip") {
+        Some("gzip")
+    } else {
+        None
+    }
 }
 
 /// Dev serving: files out of `KAIROS_WEB_DIST`, with the SPA fallback.
 async fn serve_from_dir(dist: &std::path::Path, rel: &str) -> Response {
     let name = if rel.is_empty() { "index.html" } else { rel };
     match tokio::fs::read(dist.join(name)).await {
-        Ok(bytes) => asset_response(name, Bytes::from(bytes)),
+        Ok(bytes) => asset_response(name, Bytes::from(bytes), None),
         Err(_) if wants_index_fallback(name) => {
             match tokio::fs::read(dist.join("index.html")).await {
-                Ok(bytes) => asset_response("index.html", Bytes::from(bytes)),
+                Ok(bytes) => asset_response("index.html", Bytes::from(bytes), None),
                 Err(_) => ApiError::new(
                     StatusCode::SERVICE_UNAVAILABLE,
                     "WEB_DIST_MISSING",
@@ -411,29 +438,100 @@ async fn serve_from_dir(dist: &std::path::Path, rel: &str) -> Response {
     }
 }
 
-/// Release serving: assets embedded by the `embed-web` feature.
+/// The assets embedded by the `embed-web` feature: the trunk output,
+/// relative to this crate's manifest dir.
 #[cfg(feature = "embed-web")]
-fn serve_embedded_or_placeholder(rel: &str) -> Response {
-    #[derive(rust_embed::Embed)]
-    // Relative to this crate's manifest dir: the trunk output.
-    #[folder = "../kairos-web/dist"]
-    struct Assets;
+#[derive(rust_embed::Embed)]
+#[folder = "../kairos-web/dist"]
+struct Assets;
 
+/// Release serving: assets embedded by the `embed-web` feature. An asset
+/// over [`precompressed::MIN_BYTES`] is served from its pre-compressed copy
+/// when the request accepts brotli or gzip (KAIROS-T-0603): the wasm bundle
+/// is compressed once per process, not once per request.
+#[cfg(feature = "embed-web")]
+fn serve_embedded_or_placeholder(rel: &str, encoding: Option<&'static str>) -> Response {
     let name = if rel.is_empty() { "index.html" } else { rel };
     match Assets::get(name) {
-        Some(file) => asset_response(name, Bytes::from(file.data.into_owned())),
+        Some(file) => match encoding.and_then(|enc| precompressed::get(name, enc)) {
+            Some(bytes) => asset_response(name, bytes, encoding),
+            None => asset_response(name, Bytes::from(file.data.into_owned()), None),
+        },
         None if wants_index_fallback(name) => match Assets::get("index.html") {
-            Some(file) => asset_response("index.html", Bytes::from(file.data.into_owned())),
+            Some(file) => asset_response("index.html", Bytes::from(file.data.into_owned()), None),
             None => ApiError::not_found("The GUI in the server has no index.html.").into_response(),
         },
         None => ApiError::not_found(format!("The server has no asset /{rel}.")).into_response(),
     }
 }
 
+/// The pre-compressed copies of the large embedded assets (KAIROS-T-0603).
+/// Each asset at or over `MIN_BYTES` is compressed once per process, on the
+/// first request that asks for it, with gzip and with brotli; `index.html`
+/// is left to the compression layer, because its CSP is computed per body.
+#[cfg(feature = "embed-web")]
+mod precompressed {
+    use std::collections::HashMap;
+    use std::io::Write;
+    use std::sync::{Mutex, OnceLock};
+
+    use axum::body::Bytes;
+
+    use super::Assets;
+
+    /// Below this size the compression layer of the router does the work.
+    pub const MIN_BYTES: usize = 64 * 1024;
+
+    static CACHE: OnceLock<Mutex<HashMap<(String, &'static str), Bytes>>> = OnceLock::new();
+
+    /// The `encoding` copy of the embedded asset `name`, made on first use;
+    /// `None` for an asset that is small, missing, or `index.html`.
+    pub fn get(name: &str, encoding: &'static str) -> Option<Bytes> {
+        if name == "index.html" {
+            return None;
+        }
+        let file = Assets::get(name)?;
+        if file.data.len() < MIN_BYTES {
+            return None;
+        }
+        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let key = (name.to_string(), encoding);
+        if let Some(bytes) = cache.lock().ok()?.get(&key) {
+            return Some(bytes.clone());
+        }
+        let bytes = Bytes::from(compress(&file.data, encoding)?);
+        cache.lock().ok()?.insert(key, bytes.clone());
+        Some(bytes)
+    }
+
+    fn compress(data: &[u8], encoding: &str) -> Option<Vec<u8>> {
+        match encoding {
+            "gzip" => {
+                let mut out =
+                    flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(6));
+                out.write_all(data).ok()?;
+                out.finish().ok()
+            }
+            "br" => {
+                let mut out = Vec::new();
+                {
+                    // 5: about the ratio of gzip 9 at a fraction of the time;
+                    // the bundle is compressed once per process.
+                    let mut writer = brotli::CompressorWriter::new(&mut out, 4096, 5, 22);
+                    writer.write_all(data).ok()?;
+                    writer.flush().ok()?;
+                }
+                Some(out)
+            }
+            _ => None,
+        }
+    }
+}
+
 /// No dist dir, no embedded assets: an honest placeholder so plain
 /// `cargo run -p kairos-server -- serve` still answers `/` usefully.
 #[cfg(not(feature = "embed-web"))]
-fn serve_embedded_or_placeholder(_rel: &str) -> Response {
+fn serve_embedded_or_placeholder(_rel: &str, _encoding: Option<&'static str>) -> Response {
     const PLACEHOLDER: &str = "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
         <title>Kairos</title></head><body>\
         <h1>Kairos</h1>\
@@ -460,13 +558,16 @@ fn serve_embedded_or_placeholder(_rel: &str) -> Response {
 /// An asset body with content type + cache policy. Trunk content-hashes
 /// every asset filename, so non-index assets are immutable; `index.html`
 /// must always revalidate (it is the pointer to the current hashes).
-fn asset_response(name: &str, bytes: Bytes) -> Response {
+/// `encoding` names the Content-Encoding of a pre-compressed body
+/// (KAIROS-T-0603); every asset says `Vary: Accept-Encoding`, because a
+/// cache may hold it in more than one encoding.
+fn asset_response(name: &str, bytes: Bytes, encoding: Option<&'static str>) -> Response {
     let mime = mime_guess::from_path(name).first_or_octet_stream();
-    if name == "index.html" {
+    let mut response = if name == "index.html" {
         // KAIROS-T-0370: the CSP of the GUI, with the hash of each inline
         // script of this page.
         let csp = crate::security_headers::spa_csp(&bytes);
-        return (
+        (
             StatusCode::OK,
             [
                 (header::CONTENT_TYPE, mime.as_ref().to_string()),
@@ -475,20 +576,77 @@ fn asset_response(name: &str, bytes: Bytes) -> Response {
             ],
             bytes,
         )
-            .into_response();
+            .into_response()
+    } else {
+        (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, mime.as_ref().to_string()),
+                (
+                    header::CACHE_CONTROL,
+                    "public, max-age=31536000, immutable".to_string(),
+                ),
+            ],
+            bytes,
+        )
+            .into_response()
+    };
+    let headers = response.headers_mut();
+    headers.insert(
+        header::VARY,
+        header::HeaderValue::from_static("Accept-Encoding"),
+    );
+    if let Some(encoding) = encoding {
+        headers.insert(
+            header::CONTENT_ENCODING,
+            header::HeaderValue::from_static(encoding),
+        );
     }
-    (
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, mime.as_ref().to_string()),
-            (
-                header::CACHE_CONTROL,
-                "public, max-age=31536000, immutable".to_string(),
-            ),
-        ],
-        bytes,
-    )
-        .into_response()
+    response
+}
+
+/// With the `embed-web` feature: the pre-compressed copies of the embedded
+/// assets round-trip and are smaller than the raw bytes. Runs only when the
+/// feature is on, against whatever `crates/kairos-web/dist` holds.
+#[cfg(all(test, feature = "embed-web"))]
+mod embedded_tests {
+    use std::io::Read;
+
+    use super::{Assets, precompressed};
+
+    #[test]
+    fn large_embedded_assets_have_smaller_compressed_copies_that_round_trip() {
+        assert!(precompressed::get("index.html", "gzip").is_none());
+        let mut large = 0;
+        for name in Assets::iter() {
+            let file = Assets::get(&name).expect("embedded");
+            if file.data.len() < precompressed::MIN_BYTES || name == "index.html" {
+                assert!(
+                    precompressed::get(&name, "gzip").is_none(),
+                    "{name} is small"
+                );
+                continue;
+            }
+            large += 1;
+            let gz = precompressed::get(&name, "gzip").expect("gzip copy");
+            let br = precompressed::get(&name, "br").expect("brotli copy");
+            assert!(gz.len() < file.data.len(), "{name}: gzip is smaller");
+            assert!(br.len() < file.data.len(), "{name}: brotli is smaller");
+            let mut out = Vec::new();
+            flate2::read::GzDecoder::new(&gz[..])
+                .read_to_end(&mut out)
+                .expect("gunzip");
+            assert_eq!(out, file.data.as_ref(), "{name}: gzip round-trips");
+            let mut out = Vec::new();
+            brotli::Decompressor::new(&br[..], 4096)
+                .read_to_end(&mut out)
+                .expect("unbrotli");
+            assert_eq!(out, file.data.as_ref(), "{name}: brotli round-trips");
+            // The second call is the cached copy.
+            assert_eq!(precompressed::get(&name, "gzip").expect("cached"), gz);
+        }
+        assert!(large >= 1, "the dist has at least one asset over MIN_BYTES");
+    }
 }
 
 #[cfg(test)]
@@ -616,8 +774,40 @@ mod tests {
     }
 
     #[test]
+    fn accepted_encoding_prefers_brotli_then_gzip() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(accepted_encoding(&headers), None);
+        headers.insert(header::ACCEPT_ENCODING, "gzip, deflate".parse().unwrap());
+        assert_eq!(accepted_encoding(&headers), Some("gzip"));
+        headers.insert(
+            header::ACCEPT_ENCODING,
+            "gzip;q=1.0, br;q=0.9, *;q=0.1".parse().unwrap(),
+        );
+        assert_eq!(accepted_encoding(&headers), Some("br"));
+        headers.insert(header::ACCEPT_ENCODING, "identity".parse().unwrap());
+        assert_eq!(accepted_encoding(&headers), None);
+    }
+
+    #[test]
+    fn a_precompressed_asset_names_its_encoding_and_varies() {
+        let response = asset_response(
+            "kairos-web-abc_bg.wasm",
+            Bytes::from_static(b"\x1f\x8b"),
+            Some("gzip"),
+        );
+        assert_eq!(
+            response.headers()[header::CONTENT_ENCODING.as_str()],
+            "gzip"
+        );
+        assert_eq!(response.headers()[header::VARY.as_str()], "Accept-Encoding");
+        let response = asset_response("app.css", Bytes::from_static(b"body{}"), None);
+        assert!(response.headers().get(header::CONTENT_ENCODING).is_none());
+        assert_eq!(response.headers()[header::VARY.as_str()], "Accept-Encoding");
+    }
+
+    #[test]
     fn asset_responses_carry_mime_and_cache_policy() {
-        let response = asset_response("kairos-web-abc_bg.wasm", Bytes::from_static(b"\0asm"));
+        let response = asset_response("kairos-web-abc_bg.wasm", Bytes::from_static(b"\0asm"), None);
         assert_eq!(
             response.headers()[header::CONTENT_TYPE.as_str()],
             "application/wasm"
@@ -627,7 +817,7 @@ mod tests {
             "public, max-age=31536000, immutable"
         );
 
-        let response = asset_response("index.html", Bytes::from_static(b"<!doctype html>"));
+        let response = asset_response("index.html", Bytes::from_static(b"<!doctype html>"), None);
         assert_eq!(
             response.headers()[header::CONTENT_TYPE.as_str()],
             "text/html"
