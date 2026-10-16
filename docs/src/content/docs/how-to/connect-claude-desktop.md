@@ -78,8 +78,9 @@ administration tools, add `?profile=admin` to the URL. See
 [Profiles](../../reference/mcp-tools/#profiles).
 
 The Claude Code plugin also runs two local servers, the code index
-(`kairos-code`) and dispatch. They are binaries of the plugin, and the Desktop
-app does not get them.
+(`kairos-code`) and dispatch. They are scripts of the plugin, and the Desktop
+app does not get them. The code index runs the `kairos` CLI on PATH at the
+version of the plugin: after a plugin update, run `kairos self-update`.
 
 ## If it does not connect
 
