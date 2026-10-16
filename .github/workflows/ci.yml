@@ -123,6 +123,12 @@ jobs:
       - name: Gate 5 — Simplified Technical English, the texts of the code
         run: angreal docs ste --code
 
+      # KAIROS-T-0496: deploy/docker-compose.yaml passes each setting that
+      # the configuration reference documents, and deploy/.env.example names
+      # each one. Pure Python, no build.
+      - name: The Compose file passes each setting of the book
+        run: python scripts/check_compose_settings.py
+
       - name: Gate 6 — GUI conventions grep
         run: angreal web lint
 
@@ -212,6 +218,7 @@ jobs:
         run: |
           python -B -m unittest discover -s plugin/hooks -p 'test_*.py'
           python -B -m unittest discover -s scripts/metis_import -t scripts
+          python -B -m unittest scripts/test_check_compose_settings.py
 
   build-tests:
     name: build-tests
