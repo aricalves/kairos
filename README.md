@@ -43,6 +43,13 @@ Each tarball has a `.sha256` beside it on the release. The
 [CLI reference](https://colliery-io.github.io/kairos/reference/cli.html) covers
 every command and flag.
 
+The CLI, the server and the Claude Code plugin have one version. After an
+update of the server or of the plugin, run `kairos self-update`: it installs
+the version of the server in place of the binary. The code tools of the plugin
+run `kairos index mcp`, and an older CLI reads an older index schema. The
+plugin says so at the start of a session, and its code tools are off until
+the CLI is current.
+
 ## Run a deployment
 
 ```sh

@@ -1104,7 +1104,9 @@ symbol as `symbol` does.
 
 The uses are part of the index since schema version 7. Kairos refuses an
 index of an earlier version. Run `kairos index --full`, or take a new base
-index from Kairos.
+index from Kairos. A CLI refuses an index of a later version: the index comes
+from a newer server or CLI. Run `kairos self-update`, or run `kairos index
+--full` with this CLI.
 
 ### The code index: Terraform
 

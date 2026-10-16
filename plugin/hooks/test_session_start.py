@@ -8,6 +8,7 @@ import importlib.util
 import os
 import tempfile
 import unittest
+import unittest.mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SPEC = importlib.util.spec_from_file_location(
@@ -174,6 +175,36 @@ class CliNote(unittest.TestCase):
     def test_no_line_without_both_versions(self):
         self.assertIsNone(session_start.cli_note(None, "0.12.0"))
         self.assertIsNone(session_start.cli_note("0.12.0", None))
+
+    def test_an_older_cli_than_the_plugin_gets_a_line(self):
+        """KAIROS-T-0513: the plugin's code tools need the CLI at its version."""
+        note = session_start.cli_note("0.13.0", None, "0.15.0")
+        self.assertIn("kairos CLI is 0.13.0", note)
+        self.assertIn("plugin is 0.15.0", note)
+        self.assertIn("kairos self-update", note)
+        self.assertIsNone(session_start.cli_note("0.15.0", None, "0.15.0"))
+        self.assertIsNone(session_start.cli_note("0.16.0", None, "0.15.0"))
+        self.assertIsNone(session_start.cli_note("dev", None, "0.15.0"))
+
+    def test_server_and_plugin_both_newer_is_one_line(self):
+        note = session_start.cli_note("0.13.0", "0.15.0", "0.15.0")
+        self.assertEqual(note.count("\n"), 0)
+        self.assertIn("server is 0.15.0", note)
+        self.assertIn("plugin is 0.15.0", note)
+        self.assertEqual(note.count("kairos self-update"), 1)
+
+    def test_the_plugin_version_is_read_from_the_manifest(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, ".claude-plugin"))
+            with open(os.path.join(root, ".claude-plugin", "plugin.json"), "w") as f:
+                f.write('{"name": "kairos", "version": "0.15.0"}')
+            with unittest.mock.patch.dict(os.environ, {"CLAUDE_PLUGIN_ROOT": root}):
+                self.assertEqual(session_start.plugin_version(), "0.15.0")
+            with unittest.mock.patch.dict(os.environ, {"CLAUDE_PLUGIN_ROOT": root + "/x"}):
+                self.assertIsNone(session_start.plugin_version())
+        with unittest.mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CLAUDE_PLUGIN_ROOT", None)
+            self.assertRegex(session_start.plugin_version(), r"^\d+\.\d+\.\d+")
 
     def test_the_line_is_in_the_context(self):
         note = session_start.cli_note("0.8.0", "0.12.0")

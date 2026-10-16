@@ -1,15 +1,27 @@
 #!/usr/bin/env python3
 """The `kairos-code` MCP server of the plugin (COLLIERY-T-1855,
-COLLIERY-T-2529).
+COLLIERY-T-2529, KAIROS-T-0513).
 
-- With `kairos` on PATH: run `kairos index mcp` in place of this process
-  (exec), with the same stdin, stdout, folder and exit code.
-- With no `kairos` on PATH: serve MCP over stdio with no tools. The server
-  answers `initialize` (its instructions say why it has no tools),
-  `tools/list` (an empty list) and `ping`, and refuses each other request
-  with "method not found". It writes nothing to stderr. So Claude Code
-  connects to it and shows no connection error, and the session has no code
-  tools.
+- With `kairos` on PATH at the version of the plugin or newer: run
+  `kairos index mcp` in place of this process (exec), with the same stdin,
+  stdout, folder and exit code.
+- With `kairos` on PATH but older than the plugin: serve MCP over stdio
+  with no tools. The instructions name both versions and `kairos
+  self-update`. An old CLI reads an old index schema, and refuses the index
+  that the server and a current CLI write (KAIROS-T-0513); a refusal on
+  stderr shows as a connection error, so the wrapper says why instead.
+- With no `kairos` on PATH: the same server with no tools; its instructions
+  say that `kairos` is not on PATH.
+
+The server with no tools answers `initialize` (its instructions say why it
+has no tools), `tools/list` (an empty list) and `ping`, and refuses each
+other request with "method not found". It writes nothing to stderr. So
+Claude Code connects to it and shows no connection error, and the session
+has no code tools.
+
+The version of the plugin is in `.claude-plugin/plugin.json` at
+`CLAUDE_PLUGIN_ROOT`, else two folders above this script. A version that
+cannot be read (the CLI or the plugin) counts as current: the CLI runs.
 
 Python stdlib only.
 """
@@ -17,14 +29,81 @@ Python stdlib only.
 import json
 import os
 import shutil
+import subprocess
 import sys
 
 DEFAULT_PROTOCOL = "2025-06-18"
-INSTRUCTIONS = (
-    "The code tools of Kairos are off: `kairos` is not on PATH. Put the "
-    "`kairos` CLI on PATH and start the session again to get `module_map`, "
-    "`code_search`, `symbol`, `callers`, `callees`, `references` and `path`."
+TOOLS = (
+    "`module_map`, `code_search`, `symbol`, `callers`, `callees`, "
+    "`references` and `path`"
 )
+NO_CLI = (
+    "The code tools of Kairos are off: `kairos` is not on PATH. Put the "
+    f"`kairos` CLI on PATH and start the session again to get {TOOLS}."
+)
+
+
+def old_cli(cli, plugin):
+    """The instructions when the CLI is older than the plugin."""
+    return (
+        f"The code tools of Kairos are off: the kairos CLI is {cli} and the "
+        f"plugin is {plugin}. An old CLI reads an old index schema. Run "
+        "`kairos self-update` (it installs the version of the server), then "
+        f"start the session again to get {TOOLS}."
+    )
+
+
+def plugin_root():
+    root = os.environ.get("CLAUDE_PLUGIN_ROOT")
+    if root:
+        return root
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.dirname(os.path.dirname(here))
+
+
+def plugin_version(root=None):
+    """The version in `.claude-plugin/plugin.json`, or None."""
+    path = os.path.join(root or plugin_root(), ".claude-plugin", "plugin.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            version = json.load(f).get("version")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return version if isinstance(version, str) and version else None
+
+
+def cli_version(binary):
+    """The version that `kairos --version` prints, or None."""
+    try:
+        out = subprocess.run(
+            [binary, "--version"], capture_output=True, text=True, timeout=5
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    parts = out.split()
+    return parts[-1] if parts else None
+
+
+def version_tuple(version):
+    """The first three numbers of a version, for a comparison, or None
+    when the text has no number."""
+    parts = []
+    for part in version.lstrip("v").split("-")[0].split(".")[:3]:
+        if not part.isdigit():
+            return None
+        parts.append(int(part))
+    return tuple(parts) if parts else None
+
+
+def is_older(cli, plugin):
+    """True when the CLI version is known, the plugin version is known,
+    and the CLI is older (pure; testable)."""
+    if not cli or not plugin:
+        return False
+    a, b = version_tuple(cli), version_tuple(plugin)
+    if a is None or b is None:
+        return False
+    return a < b
 
 
 def answer(message_id, result=None, error=None):
@@ -37,7 +116,7 @@ def answer(message_id, result=None, error=None):
     sys.stdout.flush()
 
 
-def handle(message):
+def handle(message, instructions):
     if not isinstance(message, dict) or "method" not in message:
         if isinstance(message, dict) and "id" in message:
             answer(message["id"], error={"code": -32600, "message": "Invalid request"})
@@ -53,7 +132,7 @@ def handle(message):
                 "protocolVersion": params.get("protocolVersion") or DEFAULT_PROTOCOL,
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "kairos-code", "version": "0"},
-                "instructions": INSTRUCTIONS,
+                "instructions": instructions,
             },
         )
     elif method == "tools/list":
@@ -67,7 +146,7 @@ def handle(message):
         )
 
 
-def serve_no_tools():
+def serve_no_tools(instructions):
     for line in sys.stdin:
         if not line.strip():
             continue
@@ -76,15 +155,19 @@ def serve_no_tools():
         except ValueError:
             answer(None, error={"code": -32700, "message": "Parse error"})
             continue
-        handle(message)
+        handle(message, instructions)
 
 
 def main():
     kairos = shutil.which("kairos")
+    instructions = NO_CLI
     if kairos is not None:
-        os.execv(kairos, ["kairos", "index", "mcp", *sys.argv[1:]])
+        cli, plugin = cli_version(kairos), plugin_version()
+        if not is_older(cli, plugin):
+            os.execv(kairos, ["kairos", "index", "mcp", *sys.argv[1:]])
+        instructions = old_cli(cli, plugin)
     try:
-        serve_no_tools()
+        serve_no_tools(instructions)
     except (BrokenPipeError, KeyboardInterrupt):
         pass
 

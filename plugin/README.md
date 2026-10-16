@@ -121,7 +121,11 @@ The plugin gives each session the code index of the checkout (COLLIERY-T-1855, C
   path of the checkout, and the server takes the nearest index of the repository from Kairos
   (KAIROS-T-0348). If `kairos` is not on PATH, `bin/kairos-code` is an MCP server with no
   tools (COLLIERY-T-2529). Its instructions tell the agent that `kairos` is not on PATH, and
-  Claude Code shows no connection error.
+  Claude Code shows no connection error. If `kairos` is older than the plugin
+  (`.claude-plugin/plugin.json`), it is the same server with no tools: an old CLI reads an
+  old index schema and refuses the index of the server (KAIROS-T-0513). Its instructions
+  name both versions and `kairos self-update`. `hooks/session_start.py` says the same in one
+  line. A plugin update does not update the CLI: run `kairos self-update` after it.
 - **The update at the start.** `hooks/index_update.py start` is a `SessionStart` hook. If
   `kairos` is on PATH and the checkout has `.claude/kairos.local.md`, it starts
   `kairos index update --link-only` as a detached process and does not wait for it. The
