@@ -151,16 +151,39 @@ def version_tuple(version):
     return tuple(parts)
 
 
-def cli_note(cli, server):
-    """One line when the CLI is older than the server (KAIROS-T-0432), else
-    None (pure; testable)."""
-    if not cli or not server:
+def plugin_version():
+    """The version of the plugin: `.claude-plugin/plugin.json` at
+    `CLAUDE_PLUGIN_ROOT`, else two folders above this hook. None when it
+    cannot be read."""
+    root = os.environ.get("CLAUDE_PLUGIN_ROOT")
+    if not root:
+        here = os.path.dirname(os.path.abspath(__file__))
+        root = os.path.dirname(os.path.dirname(here))
+    try:
+        with open(os.path.join(root, ".claude-plugin", "plugin.json"), encoding="utf-8") as f:
+            version = json.load(f).get("version")
+    except (OSError, ValueError, AttributeError):
         return None
-    if version_tuple(cli) >= version_tuple(server):
+    return version if isinstance(version, str) and version else None
+
+
+def cli_note(cli, server, plugin=None):
+    """One line when the CLI is older than the server (KAIROS-T-0432) or
+    than the plugin (KAIROS-T-0513), else None (pure; testable). An old CLI
+    reads an old index schema, so the code tools of the plugin are off."""
+    if not cli or not any(c.isdigit() for c in cli):
+        return None
+    behind = []
+    if server and version_tuple(cli) < version_tuple(server):
+        behind.append(f"the server is {server}")
+    if plugin and version_tuple(cli) < version_tuple(plugin):
+        behind.append(f"the plugin is {plugin}")
+    if not behind:
         return None
     return (
-        f"- cli: the kairos CLI is {cli} and the server is {server}. "
-        "Tell the user; `kairos self-update` installs the version of the server."
+        f"- cli: the kairos CLI is {cli}; {' and '.join(behind)}. "
+        "Tell the user. Update the CLI: `kairos self-update` installs the "
+        "version of the server."
     )
 
 
@@ -190,9 +213,10 @@ def main():
     values = read_frontmatter(config_path)
     deployment = values.get("deployment_url", "")
     status = probe(deployment) if deployment else "no deployment_url configured"
-    note = None
+    server = None
     if deployment and "NOT reachable" not in status:
-        note = cli_note(cli_version(), server_version(deployment))
+        server = server_version(deployment)
+    note = cli_note(cli_version(), server, plugin_version())
 
     json.dump(
         {
