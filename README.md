@@ -103,19 +103,23 @@ than in the book:
 | [`plugin/README.md`](plugin/README.md) | the Claude Code plugin |
 | [`.metis/`](.metis/) | the work record up to 2026-09-26, frozen: vision, initiatives, ADRs, specifications |
 
-Work is managed in Kairos itself since 2026-09-26. The record was copied there
-with its numbers kept, so `KAIROS-T-0042` in a commit or a comment is
-`COLLIERY-T-0042` on the board; a specification `KAIROS-S-n` is the document
-`COLLIERY-D-n`, and the vision is the strategy `COLLIERY-S-0001`.
-The first version of
+Work is managed in Kairos itself since 2026-09-26, on the board `kairos`
+(codes `KAIROS-T-n`, ADRs `KAIROS-A-n`, documents `KAIROS-D-n`). The record
+moved to a new database with one board per project on 2026-10-04
+(COLLIERY-I-0025). A code in a commit, a comment or a page from before that
+date (`COLLIERY-x-n`, and the `KAIROS-x-n` numbers of the first copy) is
+historical: it does not match the items on the boards now, and there is no
+lookup from an old code to a new one.
 [`scripts/migrate-metis-to-kairos.py`](scripts/migrate-metis-to-kairos.py) did
-the copy and `.metis/kairos-migration.json` is its ledger. The script now has
-board prefixes: `--codes keep` keeps the Metis numbers on the boards of a team. `.metis/` stays in the
-repository because the code, the commits and the book cite it. Nothing new is
-written there except `code-index.md`, which a session hook keeps current.
+the copies (`--codes keep` keeps the Metis numbers on the boards of a team) and
+`.metis/kairos-migration.json` is the ledger of the first one. `.metis/` stays
+in the repository because the code, the commits and the book cite it; nothing
+is written there. The map of the code is the code index that the `kairos-code`
+MCP server of the plugin serves (`plugin/README.md`), not a file in `.metis/`.
 
-Architecture decisions up to that date are in [`.metis/adrs/`](.metis/adrs/); the
-testing and verification strategy is [`KAIROS-A-0012`](.metis/adrs/KAIROS-A-0012.md).
+Architecture decisions up to 2026-09-26 are in [`.metis/adrs/`](.metis/adrs/);
+the ones since are on the Kairos board `kairos-adrs`. The testing and
+verification strategy is [`KAIROS-A-0012`](.metis/adrs/KAIROS-A-0012.md).
 
 ## CI
 
