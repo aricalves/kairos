@@ -49,8 +49,8 @@ new key and revoke the old key.
 
 ## 3. Put the key and the URL in the settings of the agent
 
-For Claude Code, put the key and the URL of the deployment in the `env`
-section of your user settings, `~/.claude/settings.json`:
+For Claude Code, put the key and the deployment URL in the `env` section
+of your user settings, `~/.claude/settings.json`:
 
 ```json
 {
@@ -86,7 +86,7 @@ deployment. Then the entry holds the name of the variable, not the key:
 }
 ```
 
-On a deployment where you log in with OpenID Connect and no agent key, leave
+Some deployments use OpenID Connect and no agent key. There, leave
 `KAIROS_URL` unset and add a user-scope server with no header. See
 [Connect over MCP](../connect-over-mcp/).
 
