@@ -1182,10 +1182,11 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
             ColumnModel {
                 id: group.column.id.clone(),
                 name: group.column.name.clone(),
-                key: format!(
-                    "{}|{}|{:?}|{:?}",
-                    group.column.id, group.column.name, targets, wip
-                ),
+                // KAIROS-T-0616: the WIP chip is NOT in the key. Its count
+                // changes with every card that enters or leaves the column,
+                // and a changed key rebuilds the column and all its cards in
+                // every lane; the chip reads the live model instead.
+                key: format!("{}|{}|{:?}", group.column.id, group.column.name, targets),
                 wip,
                 targets,
                 cards,
@@ -1946,7 +1947,9 @@ fn BoardBody(
             let owner_view = move || view! {
                 <For
                     each=move || owner_lane_list.get()
-                    key=|lane: &OwnerLane| lane.clone()
+                    // KAIROS-T-0616: the owner, not the whole lane; a
+                    // relabel of a person does not rebuild their lane.
+                    key=|lane: &OwnerLane| (lane.user_id.clone(), lane.mine)
                     children=move |lane: OwnerLane| {
                         view! {
                             <OwnerLaneSection lane columns drag powers on_changed on_error/>
@@ -2528,13 +2531,15 @@ const NO_OWNER: &str = "No owner";
 /// card has no owner (KAIROS-T-0463).
 fn owner_lanes(columns: &[ColumnModel], me: Option<&str>) -> Vec<OwnerLane> {
     let mut owners: Vec<&CardOwner> = Vec::new();
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let mut unowned = false;
     for card in columns.iter().flat_map(|column| column.cards.iter()) {
         let Some(owner) = card.owner.as_ref() else {
             unowned = true;
             continue;
         };
-        if !owners.iter().any(|o| o.user_id == owner.user_id) {
+        // KAIROS-T-0616: a set, not a scan of the owners per card.
+        if seen.insert(owner.user_id.as_str()) {
             owners.push(owner);
         }
     }
@@ -2765,7 +2770,19 @@ fn LaneColumns(
                 each=move || columns.get()
                 key=|column| column.key.clone()
                 children=move |column: ColumnModel| {
-                    let ColumnModel { id, name, wip, targets, key: _, cards: _ } = column;
+                    let ColumnModel { id, name, wip: _, targets, key: _, cards: _ } = column;
+                    // KAIROS-T-0616: the live WIP chip of this column, read
+                    // from the model so the column node persists when only
+                    // the count changes.
+                    let wip_column_id = id.clone();
+                    let wip = Memo::new(move |_| {
+                        columns.with(|columns| {
+                            columns
+                                .iter()
+                                .find(|c| c.id == wip_column_id)
+                                .and_then(|c| c.wip.clone())
+                        })
+                    });
                     // This column's live card list — this lane's slice of
                     // it: the column node itself persists across
                     // refetches; only its cards diff.
@@ -2830,7 +2847,7 @@ fn LaneColumns(
                                     <Text dimmed=true size="xs">{move || cards.with(Vec::len).to_string()}</Text>
                                     // KAIROS-T-0371: the live count against
                                     // the WIP limit, marked when over it.
-                                    {wip.map(|(label, over)| {
+                                    {move || wip.get().map(|(label, over)| {
                                         let title = if over {
                                             "The column holds more items than its WIP limit."
                                         } else {
