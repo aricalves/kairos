@@ -101,6 +101,11 @@ test('team pages: landing layout → announcements → page edit + 409 merge →
   // A member makes a folder at the root of the tree, where they are: the
   // slug comes from the title. Then they reorder and move it by drag and
   // drop.
+  // KAIROS-T-0512: a title of this run only, so a retry of the test does
+  // not meet the folder of the first attempt (the duplicate step below
+  // would then refuse the FIRST create, and its form would stay open).
+  const incidentsTitle = `Incidents ${Date.now()}`;
+  const incidentsSlug = incidentsTitle.toLowerCase().replace(' ', '-');
   await test.step('member grows the tree in place: create, reorder, move', async () => {
     const docs = panel(page, 'Documentation');
     // The outermost list is the root of the tree; nested lists are inside it.
@@ -108,8 +113,8 @@ test('team pages: landing layout → announcements → page edit + 409 merge →
     const rootSummaries = rootList.locator(':scope > details > summary');
     // Folders are closed, so the only visible "+ Folder" is the root's.
     await docs.getByRole('button', { name: '+ Folder', exact: true }).last().click();
-    await docs.getByLabel('New folder').fill('Incidents');
-    await expect(docs.getByLabel('Slug')).toHaveValue('incidents');
+    await docs.getByLabel('New folder').fill(incidentsTitle);
+    await expect(docs.getByLabel('Slug')).toHaveValue(incidentsSlug);
     await docs.getByRole('button', { name: 'Create', exact: true }).click();
 
     // It lands as a sibling of Documentation, not nested inside it.
@@ -119,12 +124,15 @@ test('team pages: landing layout → announcements → page edit + 409 merge →
     await expect(incidents).toBeVisible();
     await expect(rootSummaries.last()).toContainText('Incidents');
 
-    // A duplicate root slug surfaces the server's typed 422 rather than a
-    // silent no-op.
+    // A duplicate root slug surfaces the server's typed 422 (SLUG_CONFLICT)
+    // in the form, with the server's reason, rather than a silent no-op.
     await docs.getByRole('button', { name: '+ Folder', exact: true }).last().click();
-    await docs.getByLabel('New folder').fill('Incidents');
+    await docs.getByLabel('New folder').fill(incidentsTitle);
     await docs.getByRole('button', { name: 'Create', exact: true }).click();
     await expect(docs.getByText('Create failed')).toBeVisible();
+    await expect(
+      docs.getByText(`A page in the same folder has the slug "${incidentsSlug}" already.`),
+    ).toBeVisible();
     await docs.getByRole('button', { name: 'Cancel', exact: true }).click();
 
     // The tree keeps the folders a person opened (step 2 opened
@@ -189,7 +197,7 @@ test('team pages: landing layout → announcements → page edit + 409 merge →
   // KAIROS-T-0439: a folder is archived with what is in it, and comes back
   // with it.
   await test.step('member archives a folder and restores it from the archive', async () => {
-    await page.goto('/teams/platform/pages/documentation/incidents');
+    await page.goto(`/teams/platform/pages/documentation/${incidentsSlug}`);
     await panel(page, 'Manage').getByRole('button', { name: 'Archive', exact: true }).click();
     const dialog = page.getByRole('dialog');
     await expect(dialog.getByText('Archive this folder?')).toBeVisible();
@@ -198,10 +206,10 @@ test('team pages: landing layout → announcements → page edit + 409 merge →
 
     await page.goto('/teams/platform/pages/');
     const archived = panel(page, 'Archived');
-    await expect(archived.getByText('Incidents', { exact: true })).toBeVisible();
+    await expect(archived.getByText(incidentsTitle, { exact: true })).toBeVisible();
     await archived.getByRole('button', { name: 'Restore', exact: true }).first().click();
     await expect(archived.getByText('Nothing is archived.')).toBeVisible();
-    await page.goto('/teams/platform/pages/documentation/incidents');
+    await page.goto(`/teams/platform/pages/documentation/${incidentsSlug}`);
     await expect(page.getByText('Page not found')).toHaveCount(0);
     await page.goto('/teams/platform');
   });

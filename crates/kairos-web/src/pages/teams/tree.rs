@@ -197,6 +197,11 @@ struct TreeCtx {
     pages: StoredValue<Vec<api::TeamPageNode>>,
     manage: bool,
     drag: RwSignal<Option<String>>,
+    /// The rules line shows while a drag is on. Separate from `drag`
+    /// (KAIROS-T-0512): Chromium cancels a native drag when the DOM changes
+    /// inside the `dragstart` handler, so this is set after the handler
+    /// returns, while `drag` is set at once (the first `dragover` reads it).
+    rules: RwSignal<bool>,
     error: RwSignal<Option<String>>,
     busy: RwSignal<bool>,
     on_changed: Callback<()>,
@@ -216,7 +221,7 @@ impl TreeCtx {
         let Some(dragged) = self.drag.get_untracked() else {
             return;
         };
-        self.drag.set(None);
+        drag_end(*self);
         let Some(steps) = self
             .pages
             .with_value(|pages| plan_drop(pages, &dragged, &target))
@@ -301,6 +306,7 @@ pub(crate) fn TeamTree(
         pages: StoredValue::new(nodes),
         manage,
         drag: RwSignal::new(None),
+        rules: RwSignal::new(false),
         error: RwSignal::new(None),
         busy: RwSignal::new(false),
         on_changed,
@@ -317,17 +323,20 @@ pub(crate) fn TeamTree(
                     </Alert>
                 })}
                 {(empty && !manage).then(|| view! { <Text dimmed=true size="sm">"No pages yet."</Text> })}
-                // KAIROS-T-0467: a refused drop shows only the not-allowed
-                // cursor; this line says the rules while a drag is on.
-                {move || ctx.drag.get().map(|_| view! {
-                    <Text dimmed=true size="sm">
-                        "Drop onto a folder to move the node in, onto a gap to reorder. A folder cannot go into itself, and the charter stays first."
-                    </Text>
-                })}
                 {render_level(ctx, None, String::new())}
                 {manage.then(|| {
                     let position = ctx.pages.with_value(|pages| next_position(pages, None));
                     view! { <InlineCreate team_id parent_id=None position on_changed/> }
+                })}
+                // KAIROS-T-0467: a refused drop shows only the not-allowed
+                // cursor; this line says the rules while a drag is on. Under
+                // the tree (KAIROS-T-0512): above it, the tree moved down a
+                // line as the drag began, and the pointer was no longer over
+                // the gap or folder it had been over.
+                {move || ctx.rules.get().then(|| view! {
+                    <Text dimmed=true size="sm">
+                        "Drop onto a folder to move the node in, onto a gap to reorder. A folder cannot go into itself, and the charter stays first."
+                    </Text>
                 })}
             </Stack>
         </div>
@@ -373,6 +382,24 @@ fn drag_start(ctx: TreeCtx, id: String, ev: &web_sys::DragEvent) {
         dt.set_effect_allowed("move");
     }
     ctx.drag.set(Some(id));
+    // KAIROS-T-0512: the rules line changes the DOM, which cancels the drag
+    // in Chromium when it happens inside this handler (dragend fires at
+    // once, nothing drags). Show it after the handler returns, and only if
+    // the drag is still on.
+    set_timeout(
+        move || {
+            if ctx.drag.get_untracked().is_some() {
+                ctx.rules.set(true);
+            }
+        },
+        std::time::Duration::from_millis(0),
+    );
+}
+
+/// The drag ended (a drop, or the browser cancelled it).
+fn drag_end(ctx: TreeCtx) {
+    ctx.drag.set(None);
+    ctx.rules.set(false);
 }
 
 /// One list: the children of `parent`, each with the gap before it, then
@@ -433,7 +460,7 @@ fn render_level(ctx: TreeCtx, parent: Option<String>, path_prefix: String) -> An
                             class:kairos-doctree__summary--over=move || over.get()
                             draggable=if ctx.manage { "true" } else { "false" }
                             on:dragstart=move |ev: web_sys::DragEvent| drag_start(ctx, id.clone(), &ev)
-                            on:dragend=move |_| ctx.drag.set(None)
+                            on:dragend=move |_| drag_end(ctx)
                             on:dragover=move |ev: web_sys::DragEvent| {
                                 if ctx.legal(&into_check) {
                                     ev.prevent_default();
@@ -484,7 +511,7 @@ fn render_level(ctx: TreeCtx, parent: Option<String>, path_prefix: String) -> An
                         class="kairos-doctree__page kairos-doctree__item"
                         draggable=if ctx.manage { "true" } else { "false" }
                         on:dragstart=move |ev: web_sys::DragEvent| drag_start(ctx, id.clone(), &ev)
-                        on:dragend=move |_| ctx.drag.set(None)
+                        on:dragend=move |_| drag_end(ctx)
                     >
                         <Group gap="xs">
                             <Text dimmed=true size="xs">{kind}</Text>
@@ -502,7 +529,7 @@ fn render_level(ctx: TreeCtx, parent: Option<String>, path_prefix: String) -> An
                         class="kairos-doctree__page"
                         draggable=if ctx.manage { "true" } else { "false" }
                         on:dragstart=move |ev: web_sys::DragEvent| drag_start(ctx, id.clone(), &ev)
-                        on:dragend=move |_| ctx.drag.set(None)
+                        on:dragend=move |_| drag_end(ctx)
                     >
                         <Anchor href=href>{title}</Anchor>
                     </div>
