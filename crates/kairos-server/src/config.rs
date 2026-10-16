@@ -146,6 +146,15 @@ pub enum ConfigError {
 pub struct AppConfig {
     /// `DATABASE_URL` — the shared Postgres (sole state, A-0013).
     pub database_url: String,
+    /// `KAIROS_POOL_SIZE` — the connections of each of the two pools of a
+    /// server, the async one of the middleware and the blocking one of the
+    /// handlers and the jobs (default 16; KAIROS-T-0608). A server holds up
+    /// to twice this many connections, plus one for LISTEN.
+    pub pool_size: u32,
+    /// `KAIROS_POOL_MIN_IDLE` — the connections the blocking pool opens at
+    /// start and keeps idle (default 2), so the first requests after a
+    /// start do not pay the connect. Capped at `KAIROS_POOL_SIZE`.
+    pub pool_min_idle: u32,
     /// `KAIROS_BIND_ADDR` — where axum listens (default `127.0.0.1:8080`).
     pub bind_addr: SocketAddr,
     /// `OIDC_ISSUER_URL` — the issuer; discovery + JWKS derive from it.
@@ -709,6 +718,8 @@ impl AppConfig {
 
         Ok(Self {
             database_url,
+            pool_size: parse_num(&get, "KAIROS_POOL_SIZE", 16)?,
+            pool_min_idle: parse_num(&get, "KAIROS_POOL_MIN_IDLE", 2)?,
             bind_addr,
             oidc_issuer_url: oidc_issuer_url.map(|url| url.trim_end_matches('/').to_string()),
             oidc_audience,

@@ -263,6 +263,8 @@ pub async fn user_token(http: &reqwest::Client, user: &str) -> String {
 pub fn base_config(scratch_url: &str) -> AppConfig {
     AppConfig {
         database_url: scratch_url.to_string(),
+        pool_size: 16,
+        pool_min_idle: 0,
         bind_addr: "127.0.0.1:0".parse().expect("addr"),
         oidc_issuer_url: Some(ISSUER.to_string()),
         oidc_audience: Some(AUDIENCE.to_string()),

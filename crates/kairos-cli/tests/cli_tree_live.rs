@@ -254,6 +254,8 @@ async fn cli_command_tree_golden_path_live() {
     );
     let config = AppConfig {
         database_url: scratch_url.clone(),
+        pool_size: 16,
+        pool_min_idle: 0,
         bind_addr: "127.0.0.1:0".parse().expect("addr"),
         oidc_issuer_url: Some(ISSUER.to_string()),
         oidc_audience: Some(AUDIENCE.to_string()),

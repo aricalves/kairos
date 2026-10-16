@@ -39,7 +39,9 @@
 use std::ops::{Deref, DerefMut};
 
 use diesel_async::pooled_connection::bb8::{Pool, PooledConnection};
-use diesel_async::pooled_connection::{AsyncDieselConnectionManager, ManagerConfig};
+use diesel_async::pooled_connection::{
+    AsyncDieselConnectionManager, ManagerConfig, RecyclingMethod,
+};
 use diesel_async::{AsyncPgConnection, SimpleAsyncConnection};
 
 use crate::tenant::{is_valid_tenant_slug, tenant_schema_name};
@@ -92,14 +94,26 @@ impl TenantPool {
     /// Build a pool of at most `max_size` connections against
     /// `database_url`. Connections negotiate TLS as `sslmode` asks (see
     /// [`crate::tls`]).
+    ///
+    /// KAIROS-T-0608: no ping on checkout (`test_on_check_out(false)` and
+    /// `RecyclingMethod::Fast`): every checkout runs `SET search_path`
+    /// first, so a dead connection fails there, and a live one is not
+    /// asked twice. A 5 s `connection_timeout`, so a full pool answers
+    /// with an error instead of 30 s of silence.
     pub async fn new(database_url: &str, max_size: u32) -> Result<Self, PoolError> {
         let mut config = ManagerConfig::default();
         config.custom_setup = Box::new(|url| Box::pin(crate::tls::establish(url)));
+        config.recycling_method = RecyclingMethod::Fast;
         let manager = AsyncDieselConnectionManager::<AsyncPgConnection>::new_with_config(
             database_url,
             config,
         );
-        let pool = Pool::builder().max_size(max_size).build(manager).await?;
+        let pool = Pool::builder()
+            .max_size(max_size)
+            .test_on_check_out(false)
+            .connection_timeout(std::time::Duration::from_secs(5))
+            .build(manager)
+            .await?;
         Ok(Self { pool })
     }
 
