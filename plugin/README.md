@@ -144,6 +144,20 @@ The plugin gives each session the code index of the checkout (COLLIERY-T-1855, C
   overrides the parent folder. Only one update runs at a time for each checkout.
 - Tests: `hooks/test_index_update.py` (also `bin/kairos-code`), part of `angreal test unit`.
 
+## The git guard asks before a push, a merge, a rebase, a tag and a rewrite
+
+`hooks/git_guard.py` is a `PreToolUse` hook on Bash (KAIROS-T-0497, COLLIERY-I-0631). It
+asks every time; it does not look for a "go" in the conversation. It splits the command line
+into its simple commands (`&&`, `;`, `|`, a subshell, `$(...)`) and asks for: `git push` (any
+form), `git merge`, `git rebase`, `git tag <name>` (a list is silent), `git reset --hard`,
+`git commit --amend`, `git branch -D` of a remote-tracking branch, any `git` command with
+`--force` or `--force-with-lease`, `gh pr merge` and `gh release create|edit|delete`. The
+answer is `permissionDecision: "ask"` with a one-line reason that names the command; anything
+else gives no output. `git status`, `git fetch`, a `grep` for "push" and an `echo` of the
+words are silent. The hook reads no file and holds no credentials.
+
+- Tests: `hooks/test_git_guard.py`, part of `angreal test unit`.
+
 ## Sessions are scoped to a team board and a repository
 
 `/kairos:bootstrap` records the checkout's repository (`repository:` in
