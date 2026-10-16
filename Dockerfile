@@ -89,17 +89,18 @@ COPY --from=planner /build/recipe.json recipe.json
 ARG KAIROS_SERVER_FEATURES=embed-web,llama
 RUN cargo chef cook --release --recipe-path recipe.json \
         -p kairos-server --features "${KAIROS_SERVER_FEATURES}"
-RUN cargo chef cook --release --recipe-path recipe.json \
+RUN cargo chef cook --profile wasm-release --recipe-path recipe.json \
         --target wasm32-unknown-unknown -p kairos-web
 COPY . .
 
-# 1) Build the GUI wasm bundle (release: opt-level z + wasm-opt) into
-#    crates/kairos-web/dist — exactly what `angreal web build --release`
-#    produces. 2) Compile the server WITH the embed-web feature so rust-embed
+# 1) Build the GUI wasm bundle (the wasm-release profile of the workspace
+#    Cargo.toml: opt-level z, LTO, one codegen unit, panic abort; then
+#    wasm-opt -Oz) into crates/kairos-web/dist — exactly what
+#    `angreal web build --release` produces (KAIROS-T-0604). 2) Compile the server WITH the embed-web feature so rust-embed
 #    bakes crates/kairos-web/dist into the binary (KAIROS-A-0013 single
 #    artifact). Order matters: the embed macro reads dist at compile time.
 WORKDIR /build/crates/kairos-web
-RUN trunk build --release
+RUN trunk build --release --cargo-profile wasm-release
 WORKDIR /build
 # The C++ link ordering `ort` needs lives in `.cargo/config.toml`, so it applies
 # here, in CI and to a developer on Linux alike rather than only to this build.

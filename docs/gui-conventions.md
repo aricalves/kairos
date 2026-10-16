@@ -22,7 +22,7 @@ document builds on.
 
   ```
   angreal web build            # dev bundle → crates/kairos-web/dist/
-  angreal web build --release  # optimized bundle (opt-level z + wasm-opt)
+  angreal web build --release  # the wasm-release profile (opt-level z, LTO) + wasm-opt
   ```
 
   The task provisions the `wasm32-unknown-unknown` target and trunk

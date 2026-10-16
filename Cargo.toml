@@ -162,3 +162,15 @@ pulldown-cmark = { version = "0.12.2", default-features = false, features = ["ht
 # when kairos-server's off-by-default `embed-web` feature is enabled.
 rust-embed = "8"
 mime_guess = "2"
+
+# KAIROS-T-0604: the profile of the GUI bundle. `trunk build --release` in
+# crates/kairos-web selects it through `data-cargo-profile` on the rust link
+# of index.html, so the server keeps the plain release profile. Size over
+# speed: the bundle is downloaded by every browser, and wasm-opt then runs
+# with `-Oz` on top (index.html).
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

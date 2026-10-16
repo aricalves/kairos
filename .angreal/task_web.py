@@ -23,6 +23,11 @@ web = angreal.command_group(name="web", about="GUI (kairos-web) build commands")
 
 WEB_CRATE = PROJECT_ROOT / "crates" / "kairos-web"
 WEB_DIST = WEB_CRATE / "dist"
+# KAIROS-T-0604: the cargo profile of the shipped bundle (workspace Cargo.toml).
+WASM_PROFILE = "wasm-release"
+# The largest .wasm the release build may write, in bytes. Raise it on purpose,
+# in the same change that grows the bundle, with the reason in the commit.
+WASM_BUDGET_FILE = WEB_CRATE / "wasm-size-budget"
 TOOLS_ROOT = PROJECT_ROOT / "target" / "tools"
 # Pinned like the diesel CLI in task_db.py: upgrades are deliberate.
 TRUNK_VERSION = "0.21.14"
@@ -102,7 +107,7 @@ def _acquire_trunk():
         ## Examples
         ```
         angreal web build            # dev profile (fast, unoptimized)
-        angreal web build --release  # wasm-opt'd release bundle
+        angreal web build --release  # the wasm-release profile + wasm-opt
         ```
         """,
         risk_level="safe",
@@ -113,8 +118,34 @@ def _acquire_trunk():
     long="release",
     takes_value=False,
     is_flag=True,
-    help="release profile (opt-level z + wasm-opt; what ships)",
+    help="the wasm-release profile (opt-level z, LTO, one codegen unit) + wasm-opt; what ships",
 )
+def _check_wasm_budget():
+    """Compare the release .wasm with crates/kairos-web/wasm-size-budget.
+
+    Returns 0 when the bundle is within the budget, 1 when it is over it
+    or when there is no bundle. The budget is a byte count on one line.
+    """
+    wasms = sorted(WEB_DIST.glob("*.wasm"))
+    if not wasms:
+        print(f"No .wasm in {WEB_DIST}", file=sys.stderr)
+        return 1
+    budget = int(WASM_BUDGET_FILE.read_text().strip())
+    code = 0
+    for wasm in wasms:
+        size = wasm.stat().st_size
+        verdict = "within" if size <= budget else "OVER"
+        print(f"{wasm.name}: {size:,} bytes, {verdict} the budget of {budget:,} bytes ({WASM_BUDGET_FILE.name})")
+        if size > budget:
+            print(
+                "The bundle is over its size budget. Make it smaller, or raise "
+                f"{WASM_BUDGET_FILE} in the same change and say why in the commit.",
+                file=sys.stderr,
+            )
+            code = 1
+    return code
+
+
 def build(release=False):
     """Ensure wasm tooling, then `trunk build` in crates/kairos-web."""
     exit_code = _ensure_wasm_target()
@@ -128,13 +159,18 @@ def build(release=False):
 
     cmd = [trunk, "build"]
     if release:
-        cmd.append("--release")
+        # KAIROS-T-0604: the profile of the bundle lives in the workspace
+        # Cargo.toml ([profile.wasm-release]); the dev build keeps the dev
+        # profile, so iteration stays fast.
+        cmd += ["--release", "--cargo-profile", WASM_PROFILE]
     print(f"Building kairos-web ({'release' if release else 'dev'} profile)...")
     result = subprocess.run(cmd, cwd=str(WEB_CRATE))
     if result.returncode != 0:
         print("trunk build failed", file=sys.stderr)
         return result.returncode
     print(f"GUI bundle written to {WEB_DIST}")
+    if release:
+        return _check_wasm_budget()
     return 0
 
 
