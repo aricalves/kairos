@@ -10,15 +10,23 @@ and the leading `VAR=value` words and wrappers (`env`, `nohup`, `sudo`,
 `time`, `command`) are dropped. Then:
 
     git push ...                         any push, also --delete
+    git pull ...                         a merge or a rebase (KAIROS-T-0548)
     git merge ...                        into any branch; the user decides
     git rebase ...
     git tag <name> | -a | -d | -f        a list (`git tag`, `-l`) is silent
     git reset --hard ...
     git commit --amend ...
+    git clean -f | --force               deletes files git does not track
+    git checkout -- <path>               discards changes
+    git restore <path>                   discards changes (`--staged` is silent)
     git branch -D|-d of a remote-tracking branch (`-r`, or `origin/x`)
     git <anything> --force | --force-with-lease | -f on push
     gh pr merge ...
     gh release create | edit | delete ...
+    gh api .../merge                     a merge through the API
+
+A command inside `sh -c`, `bash -c`, `zsh -c` or `eval` is scanned the same
+way (KAIROS-T-0548): the string is split into its simple commands too.
 
 A match gives `permissionDecision: "ask"` with a one-line reason that names
 the command. Anything else gives no output. Each error gives no output and
@@ -34,6 +42,7 @@ import sys
 SEPARATORS = re.compile(r"&&|\|\||[;|\n()`]|\$\(")
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 WRAPPERS = ("env", "nohup", "sudo", "time", "command", "exec")
+SHELLS = ("sh", "bash", "zsh")
 GIT_OPTIONS_WITH_VALUE = ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path")
 GH_RELEASE_WRITES = ("create", "edit", "delete", "upload", "delete-asset")
 FORCE_FLAGS = ("--force", "--force-with-lease", "--force-if-includes")
@@ -51,7 +60,9 @@ def words_of(simple):
     try:
         words = shlex.split(simple, comments=False)
     except ValueError:
-        words = simple.split()
+        # A quote that the split on separators cut open (`bash -c 'git fetch
+        # && git push'`): the words keep their quote marks, so drop them.
+        words = [word.strip("'\"") for word in simple.split()]
     while words and (ASSIGNMENT.match(words[0]) or words[0] in WRAPPERS):
         words = words[1:]
     return words
@@ -89,6 +100,8 @@ def guarded_git(words):
         return f"`git {subcommand} --force`: a history rewrite needs the user's go, each time."
     if subcommand == "push":
         return "`git push`: a push needs the user's go, each time."
+    if subcommand == "pull":
+        return "`git pull`: a pull merges or rebases; it needs the user's go, each time."
     if subcommand == "merge":
         return "`git merge`: a merge needs the user's go, each time."
     if subcommand == "rebase":
@@ -102,6 +115,12 @@ def guarded_git(words):
         return "`git reset --hard`: a history rewrite needs the user's go, each time."
     if subcommand == "commit" and "--amend" in args:
         return "`git commit --amend`: a history rewrite needs the user's go, each time."
+    if subcommand == "clean" and (has_short_flag(args, "f") or "--force" in args):
+        return "`git clean -f`: it deletes files that git does not track; it needs the user's go, each time."
+    if subcommand == "checkout" and "--" in args:
+        return "`git checkout -- <path>`: it discards changes; it needs the user's go, each time."
+    if subcommand == "restore" and not (has_short_flag(args, "S") or "--staged" in args):
+        return "`git restore`: it discards changes; it needs the user's go, each time."
     if subcommand == "branch":
         deleting = has_short_flag(args, "D") or has_short_flag(args, "d") or "--delete" in args
         remote = has_short_flag(args, "r") or "--remotes" in args
@@ -118,6 +137,22 @@ def guarded_gh(words):
         return "`gh pr merge`: a merge needs the user's go, each time."
     if len(args) >= 2 and args[0] == "release" and args[1] in GH_RELEASE_WRITES:
         return f"`gh release {args[1]}`: a release needs the user's go, each time."
+    if args[:1] == ["api"] and any(arg.rstrip("/").endswith("/merge") for arg in words[1:]):
+        return "`gh api .../merge`: a merge needs the user's go, each time."
+    return None
+
+
+def inner_command(words):
+    """The command line inside `sh -c <string>`, `bash -c`, `zsh -c` or
+    `eval ...`, or None when `words` is not one of those."""
+    if not words:
+        return None
+    if words[0] == "eval":
+        return " ".join(words[1:]) or None
+    if words[0] in SHELLS:
+        for index, word in enumerate(words[1:], start=1):
+            if word.startswith("-") and not word.startswith("--") and "c" in word[1:]:
+                return words[index + 1] if index + 1 < len(words) else None
     return None
 
 
@@ -135,6 +170,10 @@ def guarded(command):
             reason = guarded_git(words)
         elif words[0] == "gh":
             reason = guarded_gh(words)
+        else:
+            inner = inner_command(words)
+            if inner is not None and inner != command:
+                reason = guarded(inner)
         if reason:
             return reason
     return None

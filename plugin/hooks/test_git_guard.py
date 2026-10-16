@@ -64,6 +64,27 @@ ASKS = (
     "env FOO=1 git push",
     "FOO=1 git push",
     "nohup git push > log 2>&1",
+    # KAIROS-T-0548: a command inside a shell string or an eval.
+    'bash -c "git push origin main"',
+    "sh -c 'git merge feature'",
+    'zsh -lc "git rebase main"',
+    "bash -ec 'git fetch && git push'",
+    "eval git push",
+    'eval "git tag v1"',
+    "exec bash -c 'git push'",
+    # KAIROS-T-0548: a pull, a clean, a discard, a merge through the API.
+    "git pull",
+    "git pull --rebase origin main",
+    "git pull --ff-only origin main",
+    "git clean -fdx",
+    "git clean -f",
+    "git clean --force -d",
+    "git checkout -- .",
+    "git checkout -- src/main.rs",
+    "git restore .",
+    "git restore src/main.rs",
+    "gh api repos/o/r/pulls/42/merge -X PUT",
+    "gh api -X PUT /repos/o/r/pulls/42/merge/",
 )
 
 SILENT = (
@@ -93,6 +114,18 @@ SILENT = (
     "gh release view v1.2.0",
     "ls",
     "",
+    # KAIROS-T-0548: the silent neighbours of the new rules.
+    "git clean -n",
+    "git clean --dry-run -d",
+    "git restore --staged src/main.rs",
+    "git restore -S .",
+    "git checkout feature",
+    "git checkout -b topic origin/main",
+    "bash -c 'git status'",
+    "sh -c ls",
+    "eval echo hi",
+    "gh api repos/o/r/pulls/42",
+    "gh api repos/o/r/pulls/42/comments",
 )
 
 
