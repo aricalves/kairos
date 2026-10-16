@@ -29,6 +29,10 @@ The task must be workable: acceptance criteria present and independently verifia
 
 To give the task to a different person, `hand_off_item` (`to`: a user id, an email or a user name). To stop work on a task and leave it in Active for anyone, `release_item`. The claim ends by itself when the task leaves Active.
 
+## Ground
+
+Before the plan, read the record: [GROUND.md](../../meta/kairos/GROUND.md). The ADRs and the documents that impact this repository, the documents of the parent initiative, and `related_work` on the task. Write the sentence it gives ("Read: ... Nothing read contradicts this plan." or "Step N contradicts ...") on the task and in your reply, before the first change.
+
 ## Work
 
 The task item is your **working memory**. Every few significant steps, `append_note` findings, decisions, dead ends ruled out, and plan changes onto it (one call: no version, no anchor text; the note gets a heading with the date and your name) — the item must let any session, or another agent, resume cold after this conversation's context is gone. Reference commits, files, and other items by hash, path, or short code rather than restating them. End each note with a `Next step:` line: after a context compaction, the plugin gives you that line again for each Active task.

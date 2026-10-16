@@ -7,6 +7,8 @@ Interview me relentlessly about every aspect of this plan until we reach a share
 
 Ask the questions one at a time, waiting for feedback on each question before continuing. Asking multiple questions at once is bewildering.
 
+Before the first question, ground the plan in the record: [GROUND.md](../kairos/GROUND.md) gives the calls (the ADRs and documents of the repository, the documents of the initiative, `related_work`) and the sentence to write ("Read: ... Nothing read contradicts this plan."). Name what you read. A plan step that contradicts an ADR says so.
+
 If a *fact* can be found by exploring the codebase, look it up rather than asking me. The *decisions*, though, are mine — put each one to me and wait for my answer.
 
 Do not enact the plan until I confirm we have reached a shared understanding.

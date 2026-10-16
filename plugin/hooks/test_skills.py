@@ -157,6 +157,53 @@ class BlocksEdgesWhenWorkSplits(unittest.TestCase):
 
 
 
+class GroundBeforePlanning(unittest.TestCase):
+    """KAIROS-T-0499 (COLLIERY-I-0627): implement, grilling and decompose
+    start by reading the ADRs and documents of the repository and the
+    initiative, and name what they read."""
+
+    GROUND = os.path.join(SKILLS, "meta", "kairos", "GROUND.md")
+    SKILLS_THAT_PLAN = (
+        "workflow/implement",
+        "meta/grilling",
+        "workflow/grill-initiative",
+        "workflow/grill-decomposition",
+        "workflow/decompose",
+    )
+
+    def test_the_reference_gives_the_calls_and_the_sentence(self):
+        text = read(self.GROUND)
+        for phrase in (
+            "`get_item`",
+            "repository: <slug>, entity_type: [adr, document]",
+            "`related_work`",
+            "parent chain",
+            "Read: KAIROS-A-0028, COLLIERY-D-0013. Nothing read contradicts this plan.",
+            "contradicts KAIROS-A-0028",
+            "Not checked:",
+        ):
+            self.assertIn(phrase, text)
+
+    def test_each_skill_that_plans_grounds_first(self):
+        for rel in self.SKILLS_THAT_PLAN:
+            with self.subTest(skill=rel):
+                text = read(os.path.join(SKILLS, rel, "SKILL.md"))
+                self.assertIn("GROUND.md", text)
+                self.assertIn("Read: ...", text)
+                link = re.search(r"\]\(([^)]*GROUND\.md)\)", text).group(1)
+                target = os.path.normpath(os.path.join(SKILLS, rel, link))
+                self.assertTrue(os.path.isfile(target), target)
+
+    def test_implement_grounds_before_the_work(self):
+        text = read(os.path.join(SKILLS, "workflow", "implement", "SKILL.md"))
+        self.assertLess(text.index("## Ground"), text.index("## Work"))
+
+    def test_handoff_lists_what_was_read(self):
+        text = read(os.path.join(SKILLS, "meta", "handoff", "SKILL.md"))
+        self.assertIn("Read: ...", text)
+        self.assertIn("GROUND.md", text)
+
+
 class GrillInitiative(unittest.TestCase):
     """COLLIERY-T-1864."""
 
