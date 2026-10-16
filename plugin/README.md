@@ -177,6 +177,21 @@ words are silent. The hook reads no file and holds no credentials.
 
 - Tests: `hooks/test_git_guard.py`, part of `angreal test unit`.
 
+## A write to local memory gets a reminder
+
+`hooks/memory_reminder.py` is a `PreToolUse` hook on `Write`, `Edit` and `MultiEdit`
+(KAIROS-T-0502, COLLIERY-I-0628). When the file is in a memory folder
+(`.claude/projects/<name>/memory/`, or `CLAUDE_MEMORY_DIR`), it reminds: a fact about the
+system under work belongs in Kairos, in an ADR (`create_item` with `item_type: adr` on the
+`adr_board` of the wiring), the spec document or a note on the initiative; local memory holds
+the preferences and the tooling of the person. It reminds and never refuses: the output is
+`additionalContext` only, with no `permissionDecision`, so the normal permission flow of the
+tool decides. It does not read the text of the write.
+
+- Once per session per file: `~/.claude/kairos-memory/<session_id>.json` holds the paths
+  (`KAIROS_MEMORY_STATE_DIR` overrides the folder; records older than 30 days are removed).
+- Tests: `hooks/test_memory_reminder.py`, part of `angreal test unit`.
+
 ## Sessions are scoped to a team board and a repository
 
 `/kairos:bootstrap` records the checkout's repository (`repository:` in
