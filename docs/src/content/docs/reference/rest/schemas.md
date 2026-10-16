@@ -595,6 +595,17 @@ Body of `POST /api/documents`. A document has an owner board from its create (CO
 
 The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
 
+## CreateExternalRefRequest
+
+Body of `POST /api/{entity_type}/{short_code}/external`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `label` | `string`, nullable | no | The label, at most 200 characters. Empty is no label. |
+| `uri` | `string` | yes | The URI. The scheme is `http`, `https` or `mailto`; each other scheme is refused. |
+
+The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
+
 ## CreateForgeConnectionRequest
 
 Body of `POST /api/forge-connections`: connect webhooks for a registered repository (slug or UUID). Register the repository first via `POST /api/repositories`; its `forge` must be `github` or `gitlab`.
@@ -894,6 +905,15 @@ Response of `DELETE /api/{family}/{short_code}` â the soft delete and its K
 | `not_reached` | array of [`NotReached`](#notreached) | no | The live descendants that the archive did not reach, sorted by short code (COLLIERY-T-0234). They stay live and keep their `parent` edge. Absent when the archive reached each descendant. |
 | `short_code` | `string` | yes | The deleted item's short code. |
 
+## DeletedExternalRefResponse
+
+Response of `DELETE /api/{entity_type}/{short_code}/external/{id}`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `short_code` | `string` | yes | The short code of the item. |
+| `uri` | `string` | yes | The URI of the reference that was removed. |
+
 ## DeletedImpactResponse
 
 Response of `DELETE /api/{entity_type}/{short_code}/impacts/{repository}`.
@@ -998,6 +1018,19 @@ The S-0005 error envelope: `{"error": {"code", "message", "details"}}`.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `error` | [`ErrorBody`](#errorbody) | yes |  |
+
+## ExternalRef
+
+One external reference of an item: a URI with a label. The API and the tools show it as the relationship `external`. A URI is not an item, so the reference is not an edge between two items.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `created_at` | `string` | yes | When the reference was made, RFC 3339. |
+| `created_by` | `string` | yes | Who made the reference (user id, UUID). |
+| `id` | `string` | yes | The id of the reference (UUID). `DELETE .../external/{id}` names it. |
+| `label` | `string`, nullable | no | The label, when the reference has one. |
+| `relationship` | `string` | yes | Always `external`. |
+| `uri` | `string` | yes | The URI, with the scheme `http`, `https` or `mailto`. |
 
 ## FlowAgeingItem
 
@@ -1253,6 +1286,15 @@ The counts of an import of the open issues (KAIROS-T-0483). The job writes them 
 | `message` | `string` | yes | A sentence for a person. |
 | `not_taken` | `integer` | yes | Issues that no task could be made for; `message` says why. |
 | `skipped` | `integer` | yes | Issues that were taken before (by a webhook or an earlier import). |
+
+## ItemExternalRefsResponse
+
+Response of `GET /api/{entity_type}/{short_code}/external`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `external` | array of [`ExternalRef`](#externalref) | yes | The references of the item, oldest first. |
+| `short_code` | `string` | yes | The short code of the item. |
 
 ## ItemImpactsResponse
 

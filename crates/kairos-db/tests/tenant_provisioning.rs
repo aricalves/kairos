@@ -45,7 +45,7 @@ static SCRATCH_DB: scratch::ScratchName =
 /// The tenant tables (sorted): the 21 from the KAIROS-S-0004 DDL plus
 /// `scim_tokens` (KAIROS-T-0025 / A-0016) and `api_keys` (KAIROS-T-0057 /
 /// A-0017 service-account API keys).
-const EXPECTED_TABLES: [&str; 63] = [
+const EXPECTED_TABLES: [&str; 64] = [
     "activity_log",
     "adrs",
     "api_keys",
@@ -81,6 +81,7 @@ const EXPECTED_TABLES: [&str; 63] = [
     // KAIROS-T-0187: the two embedding tables (A-0021 rule 2).
     "item_chunks",
     "item_embeddings",
+    "item_external_refs",
     "item_history",
     // COLLIERY-T-0269: the `impacts` links of a document or of an ADR.
     "item_impacts",

@@ -582,6 +582,15 @@ not live.
 - impacts: repository fidius (github colliery-io/fidius); repository old-lib (github acme/old-lib) [archived]
 ```
 
+An item with [external references](../glossary/#external-reference) has one
+line `external` per reference, oldest first. The line has the label, then the
+URI in angle brackets. A reference with no label shows the URI only.
+
+```text
+- external: RFC: zen as the policy engine <https://example.com/wiki/rfc-42>
+- external: <https://example.com/design>
+```
+
 A task in Active has the line `claim`. A task in Active with no claim has the
 line too:
 
@@ -1355,8 +1364,9 @@ Creates a relationship edge between two items.
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `source` | string | yes | — | Source item's short code. The edge runs source to target. |
-| `target` | string | yes | — | Target item's short code. For `impacts`: the slug or the UUID of a repository. |
-| `relationship` | string | yes | — | `parent`, `supports`, `informs`, `supersedes`, `blocks`, `impacts`. |
+| `target` | string | yes | — | Target item's short code. For `impacts`: the slug or the UUID of a repository. For `external`: a URI. |
+| `relationship` | string | yes | — | `parent`, `supports`, `informs`, `supersedes`, `blocks`, `impacts`, `external`. |
+| `label` | string | no | — | For `external` only: the label of the reference, at most 200 characters. |
 
 The [link rule](../capabilities/#who-can-write-relationships) applies. The
 caller can edit the source or the target. One end is sufficient. The rule is
@@ -1388,6 +1398,27 @@ The tool refuses with these codes:
 | `RELATIONSHIP_RULE` | That relationship is not possible between those two item types. |
 | `CYCLE_DETECTED` | The edge makes a cycle. |
 | `ALREADY_LINKED` | The edge is there. |
+
+#### The relationship `external`
+
+`external` links an item of each type (`source`) to a URI (`target`) with a
+label. The URI names an RFC in a wiki, a design page or an issue that Kairos
+does not hold. See [external reference](../glossary/#external-reference). The caller must be
+able to edit the source. The scheme of the URI is `http`, `https` or `mailto`.
+The tool refuses each other scheme with `VALIDATION`, and the refusal names the
+scheme:
+
+```text
+Kairos does not permit the scheme "javascript". The schemes are: http, https, mailto.
+```
+
+A URI that the item has is `ALREADY_LINKED`. A `label` with a different
+relationship is `VALIDATION`, and the refusal names `label`. The result is one
+line:
+
+```text
+Linked ACME-T-0012 -[external]-> RFC: zen as the policy engine <https://example.com/wiki/rfc-42>.
+```
 
 #### The relationship `impacts`
 
@@ -1429,8 +1460,8 @@ Removes a relationship edge. The arguments and the link rule are those of
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `source` | string | yes | — | Source item's short code. |
-| `target` | string | yes | — | Target item's short code. For `impacts`: the slug or the UUID of a repository. |
-| `relationship` | string | yes | — | `parent`, `supports`, `informs`, `supersedes`, `blocks`, `impacts`. |
+| `target` | string | yes | — | Target item's short code. For `impacts`: the slug or the UUID of a repository. For `external`: the URI of the reference. |
+| `relationship` | string | yes | — | `parent`, `supports`, `informs`, `supersedes`, `blocks`, `impacts`, `external`. |
 
 To remove a `supports` edge of a document, the caller must be able to edit
 the document. The right to edit the source is not sufficient.
@@ -1446,9 +1477,16 @@ source. The repository can be archived. The result is one line:
 Unlinked ACME-D-0004 -[impacts]-> repository fidius.
 ```
 
+For `external`, the caller can edit the source, and `target` is the URI of the
+reference. The result is one line:
+
+```text
+Unlinked ACME-T-0012 -[external]-> RFC: zen as the policy engine <https://example.com/wiki/rfc-42>.
+```
+
 Refuses: as `link_items`, except that a `relationship` with no such edge
 between those items is `NOT_FOUND`. An `impacts` link that is not there is
-`NOT_FOUND` too. The tool gives `FORBIDDEN` for a
+`NOT_FOUND` too, and an external reference that is not there. The tool gives `FORBIDDEN` for a
 `supports` edge of a document that the caller cannot edit.
 
 ## Finding related work
@@ -1487,6 +1525,18 @@ check rather than facts to act on — the reasoning is
 
 Items already joined by an edge are not returned: there is nothing to propose and
 nothing you cannot already see.
+
+The response ends with the section `External references` when the item or a
+proposal has one. Each line has the short code, the label and the URI of one
+reference. The search does not read those documents. The section is there when
+the search found no related work too.
+
+```text
+## External references
+
+- ACME-T-0012: RFC: zen as the policy engine <https://example.com/wiki/rfc-42>
+- ACME-T-0009: Design page <https://example.com/design>
+```
 
 Returns a plain note, not an error, when the deployment has embeddings disabled.
 

@@ -775,10 +775,14 @@ pub struct LinkItemsParams {
     /// Source item's short code (edge direction: source -> target).
     pub source: String,
     /// Target item's short code. For `impacts`: the slug or the UUID of a
-    /// repository.
+    /// repository. For `external`: a URI (http, https or mailto).
     pub target: String,
-    /// parent | supports | informs | supersedes | blocks | impacts.
+    /// parent | supports | informs | supersedes | blocks | impacts | external.
     pub relationship: String,
+    /// For `external` only: the label of the reference, at most 200
+    /// characters ("RFC: zen as the policy engine, accepted 2026-10-05").
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -788,9 +792,9 @@ pub struct UnlinkItemsParams {
     /// Source item's short code.
     pub source: String,
     /// Target item's short code. For `impacts`: the slug or the UUID of a
-    /// repository.
+    /// repository. For `external`: the URI of the reference.
     pub target: String,
-    /// parent | supports | informs | supersedes | blocks | impacts.
+    /// parent | supports | informs | supersedes | blocks | impacts | external.
     pub relationship: String,
 }
 
@@ -2348,7 +2352,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "One item by short code: type, board and column, version, markdown content, metadata, relationships (parent chain, children, blockers and blocked, supporting documents; a done end is marked [done]), and as it applies: the claim of a task in Active, the owner and teams of a strategy or initiative, the owner board and impacted repositories of a document or ADR, the cancel mark of a task. A retired code finds the item and names the current code."
+        description = "One item by short code: type, board and column, version, markdown content, metadata, relationships (parent chain, children, blockers and blocked, supporting documents; a done end is marked [done]), and as it applies: the claim of a task in Active, the owner and teams of a strategy or initiative, the owner board and impacted repositories of a document or ADR, the cancel mark of a task, the external references (URIs with a label) of any item. A retired code finds the item and names the current code."
     )]
     pub async fn get_item(
         &self,
@@ -2476,11 +2480,18 @@ impl KairosMcp {
             let impacts = impacts_line(conn, &item)?;
             // KAIROS-T-0321: the teams of an initiative or a strategy.
             let teams = teams_line(conn, &item)?;
-            if !relationships.is_empty() || !impacts.is_empty() || !teams.is_empty() {
+            // KAIROS-T-0508: the external references of the item.
+            let external = external_lines(conn, item.id)?;
+            if !relationships.is_empty()
+                || !impacts.is_empty()
+                || !teams.is_empty()
+                || !external.is_empty()
+            {
                 out.push_str("\n## Relationships\n");
                 out.push_str(&teams);
                 out.push_str(&relationships);
                 out.push_str(&impacts);
+                out.push_str(&external);
             }
 
             // Forge links (KAIROS-T-0123, UAT finding #3): an agent must see
@@ -2640,7 +2651,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Find work related to an item — possible duplicates, prior art in finished or put-away work, and dependencies nobody drew. Returns a HANDFUL of PROPOSALS, each with what is claimed and why, never assertions: check before acting on one. Ranked across text and meaning together; a deployment with no vectors answers from text alone and says so. Ask this before starting a ticket, and before filing one."
+        description = "Find work related to an item — possible duplicates, prior art in finished or put-away work, and dependencies nobody drew. Returns a HANDFUL of PROPOSALS, each with what is claimed and why, never assertions: check before acting on one. Ranked across text and meaning together; a deployment with no vectors answers from text alone and says so. Ends with the external references (URIs) of the item and of the proposals. Ask this before starting a ticket, and before filing one."
     )]
     pub async fn related_work(
         &self,
@@ -2665,7 +2676,8 @@ impl KairosMcp {
             let found = service
                 .related_work(conn, &short_code, &config)
                 .map_err(|e| ApiError::not_found(e.to_string()))?;
-            Ok(render_related_work(&found))
+            let external = external_refs_of_related(conn, &found)?;
+            Ok(render_related_work(&found, &external))
         })
         .await
     }
@@ -3670,7 +3682,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Create an edge between two items by short code: parent, supports, informs, supersedes or blocks (type rules and cycles are checked). `blocks`: the target waits for the source; add it when a task must wait, none between parallel tasks. You need to be able to edit one of the two: you created it, or you hold `manage_<type>` on its board. `impacts` goes from a document or an ADR (`source`) to a repository (`target`: slug or UUID): it says what the item is about and gives no right. A task links to a repository with `set_repository`."
+        description = "Create an edge between two items by short code: parent, supports, informs, supersedes or blocks (type rules and cycles are checked). `blocks`: the target waits for the source; add it when a task must wait, none between parallel tasks. You need to be able to edit one of the two: you created it, or you hold `manage_<type>` on its board. `impacts` goes from a document or an ADR (`source`) to a repository (`target`: slug or UUID): it says what the item is about and gives no right. A task links to a repository with `set_repository`. `external` links any item (`source`) to a URI (`target`: http, https or mailto) with an optional `label`: an RFC, a design page or an issue that Kairos does not hold; `get_item` and `related_work` show it."
     )]
     pub async fn link_items(
         &self,
@@ -3681,6 +3693,29 @@ impl KairosMcp {
         let user = auth.user_id;
         let tenant_ctx = tenant.clone();
         self.run_tool(&tenant, move |conn| {
+            // KAIROS-T-0508: the target of `external` is a URI.
+            if params.relationship == kairos_db::external_refs::RELATIONSHIP {
+                let source = require_live_typed(conn, &params.source, "source")?;
+                let made = crate::api::meta::external::add(
+                    conn,
+                    &tenant_ctx.slug,
+                    user,
+                    source,
+                    &params.target,
+                    params.label.as_deref(),
+                )?;
+                return Ok(format!(
+                    "Linked {} -[external]-> {}.",
+                    params.source,
+                    external_ref_text(&made)
+                ));
+            }
+            if params.label.is_some() {
+                return Err(ApiError::validation(format!(
+                    "The parameter label applies to the relationship external only, not to {:?}.",
+                    params.relationship
+                )));
+            }
             // COLLIERY-T-0269: the target of `impacts` is a repository.
             if params.relationship == kairos_db::impacts::RELATIONSHIP {
                 let source = require_live_typed(conn, &params.source, "source")?;
@@ -3719,7 +3754,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Remove a relationship edge between two items (by short code and relationship type). The rule of link_items applies: you can edit one of the two items. To remove a `supports` edge of a document, you must be able to edit the document. The owner board of the document does not change, so a document can lose its last `supports` edge. For the relationship `impacts`, `target` is the slug or the UUID of the repository, and you must be able to edit the document or the ADR."
+        description = "Remove a relationship edge between two items (by short code and relationship type). The rule of link_items applies: you can edit one of the two items. To remove a `supports` edge of a document, you must be able to edit the document. The owner board of the document does not change, so a document can lose its last `supports` edge. For the relationship `impacts`, `target` is the slug or the UUID of the repository, and you must be able to edit the document or the ADR. For `external`, `target` is the URI of the reference."
     )]
     pub async fn unlink_items(
         &self,
@@ -3730,6 +3765,22 @@ impl KairosMcp {
         let user = auth.user_id;
         let tenant_ctx = tenant.clone();
         self.run_tool(&tenant, move |conn| {
+            // KAIROS-T-0508: the target of `external` is a URI.
+            if params.relationship == kairos_db::external_refs::RELATIONSHIP {
+                let source = require_live_typed(conn, &params.source, "source")?;
+                let removed = crate::api::meta::external::remove(
+                    conn,
+                    &tenant_ctx.slug,
+                    user,
+                    source,
+                    &params.target,
+                )?;
+                return Ok(format!(
+                    "Unlinked {} -[external]-> {}.",
+                    params.source,
+                    external_ref_text(&removed)
+                ));
+            }
             // COLLIERY-T-0269: the target of `impacts` is a repository.
             if params.relationship == kairos_db::impacts::RELATIONSHIP {
                 let source = require_live_typed(conn, &params.source, "source")?;
@@ -6181,6 +6232,7 @@ fn parse_relationship(value: &str) -> Result<RelationshipType, ApiError> {
             .map(|relationship| relationship.to_string())
             .collect();
         allowed.push(kairos_db::impacts::RELATIONSHIP.to_string());
+        allowed.push(kairos_db::external_refs::RELATIONSHIP.to_string());
         ApiError::validation(format!(
             "The value {value:?} is not a value of relationship. The values are: {}.",
             allowed.join(", ")
@@ -6247,6 +6299,49 @@ fn impacts_line(conn: &mut PgConnection, item: &ItemView) -> Result<String, ApiE
         })
         .collect();
     Ok(format!("- impacts: {}\n", entries.join("; ")))
+}
+
+/// One external reference as the tools print it (KAIROS-T-0508):
+/// `label <uri>`, or `<uri>` when the reference has no label.
+fn external_ref_text(reference: &kairos_db::external_refs::ExternalRef) -> String {
+    match reference.label.as_deref().filter(|label| !label.is_empty()) {
+        Some(label) => format!("{label} <{}>", reference.uri),
+        None => format!("<{}>", reference.uri),
+    }
+}
+
+/// The lines `- external: ...` of an item for `get_item` (KAIROS-T-0508):
+/// one per reference, oldest first, or an empty string.
+fn external_lines(conn: &mut PgConnection, item_id: Uuid) -> Result<String, ApiError> {
+    let refs = kairos_db::external_refs::refs_of(conn, item_id).map_err(ApiError::internal)?;
+    Ok(refs
+        .iter()
+        .map(|reference| format!("- external: {}\n", external_ref_text(reference)))
+        .collect())
+}
+
+/// The external references of the item of `related_work` and of each
+/// proposal (KAIROS-T-0508), as `(short_code, references)`, for the items
+/// that have one. The item asked about comes first.
+fn external_refs_of_related(
+    conn: &mut PgConnection,
+    found: &crate::embedding::RelatedWork,
+) -> Result<Vec<(String, Vec<kairos_db::external_refs::ExternalRef>)>, ApiError> {
+    let codes = std::iter::once(found.short_code.as_str())
+        .chain(found.proposals.iter().map(|p| p.short_code.as_str()));
+    let mut ids: Vec<(String, Uuid)> = Vec::new();
+    for code in codes {
+        if let Some((id, _)) = resolve_short_code(conn, code, Liveness::IncludeArchived)? {
+            ids.push((code.to_string(), id));
+        }
+    }
+    let only_ids: Vec<Uuid> = ids.iter().map(|(_, id)| *id).collect();
+    let mut by_item =
+        kairos_db::external_refs::refs_of_items(conn, &only_ids).map_err(ApiError::internal)?;
+    Ok(ids
+        .into_iter()
+        .filter_map(|(code, id)| by_item.remove(&id).map(|refs| (code, refs)))
+        .collect())
 }
 
 /// The move of a DOCUMENT to a different owner board (COLLIERY-T-0269):
@@ -7164,12 +7259,20 @@ fn enum_field<T: serde::de::DeserializeOwned>(
 /// told flatly that something blocks it will do wrong work confidently, and at
 /// the measured precision — roughly half at the top of the distribution — that
 /// is the likelier outcome of a confident verb.
-fn render_related_work(found: &crate::embedding::RelatedWork) -> String {
+///
+/// `external` is the external references of the item and of the proposals
+/// (KAIROS-T-0508): the documents outside Kairos that the search cannot
+/// read, so an agent does not take "no related work" as "nothing exists".
+fn render_related_work(
+    found: &crate::embedding::RelatedWork,
+    external: &[(String, Vec<kairos_db::external_refs::ExternalRef>)],
+) -> String {
     let mut out = format!("# Possibly related to {}\n\n", found.short_code);
     if found.proposals.is_empty() {
         out.push_str("The search found no related work. ");
         out.push_str(found.sources.note());
         out.push_str("\n\nThis is one search. It does not prove that no related work exists.\n");
+        out.push_str(&render_external_refs(external));
         return out;
     }
     out.push_str(found.sources.note());
@@ -7185,6 +7288,27 @@ fn render_related_work(found: &crate::embedding::RelatedWork) -> String {
             "- **{}** — {} ({})\n  {}\n",
             p.short_code, p.title, p.claim, p.why
         ));
+    }
+    out.push_str(&render_external_refs(external));
+    out
+}
+
+/// The section `## External references` of `related_work`
+/// (KAIROS-T-0508), or an empty string when no item has one.
+fn render_external_refs(
+    external: &[(String, Vec<kairos_db::external_refs::ExternalRef>)],
+) -> String {
+    if external.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "\n## External references\n\nDocuments outside Kairos that these items name. \
+         The search does not read them.\n\n",
+    );
+    for (code, refs) in external {
+        for reference in refs {
+            out.push_str(&format!("- {code}: {}\n", external_ref_text(reference)));
+        }
     }
     out
 }

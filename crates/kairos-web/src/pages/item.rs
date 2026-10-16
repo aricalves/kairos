@@ -28,6 +28,7 @@ mod create_doc;
 mod delete;
 mod editor;
 mod end;
+mod external;
 mod item_owner;
 pub(crate) use kairos_markdown as markdown;
 mod metadata;
@@ -55,6 +56,7 @@ use create_doc::CreateDocumentDialog;
 use delete::DeleteDialog;
 use editor::ContentEditor;
 use end::{CancelDialog, CancelledBanner, PurgeDialog};
+use external::ExternalRefsPanel;
 use item_owner::OwnerPanel;
 use metadata::MetadataPanel;
 use owner::{ImpactsPanel, OwnerBoardPanel};
@@ -283,6 +285,7 @@ fn ItemLoaded(
     let created_by = item.created_by.clone();
     let editorial_archived = item.lifecycle.as_deref() == Some("archived");
     let impacts_creator = item.created_by.clone();
+    let external_creator = item.created_by.clone();
     let teams_creator = item.created_by.clone();
     let ItemDetail {
         short_code,
@@ -441,6 +444,9 @@ fn ItemLoaded(
                     <LifecyclePanel code=short_code.clone() current archived on_moved/>
                 })}
                 <MetadataPanel family code=short_code.clone() read_only=archived/>
+                // KAIROS-T-0508: the URIs that the item names, with a label.
+                <ExternalRefsPanel family code=short_code.clone() board
+                    created_by=external_creator archived/>
                 <DevelopmentPanel family code=short_code.clone()/>
                 <EdgeProposalsPanel code=short_code.clone()/>
                 // KAIROS-T-0195: below the agent-made suggestions, because this

@@ -84,6 +84,60 @@ is a fact about the record, progress is a fact about live work.
 | `200` | [`ChildrenProgressResponse`](../schemas/#childrenprogressresponse) | The rollup |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown short code |
 
+### `GET /api/{entity_type}/{short_code}/external`
+
+The external references of an item (open tenant-wide). The item can be
+archived: its references stay.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `entity_type` | path | yes | `string` | Plural family name (strategies|initiatives|tasks|documents|adrs) |
+| `short_code` | path | yes | `string` | Item short code |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`ItemExternalRefsResponse`](../schemas/#itemexternalrefsresponse) | The external references of the item, oldest first |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown family or short code |
+
+### `POST /api/{entity_type}/{short_code}/external`
+
+Link an item to a URI with a label.
+
+The edit rule applies (COLLIERY-T-0228): the caller can edit the item.
+The scheme of the URI is `http`, `https` or `mailto`.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `entity_type` | path | yes | `string` | Plural family name (strategies|initiatives|tasks|documents|adrs) |
+| `short_code` | path | yes | `string` | Item short code |
+
+Request body (required): `application/json`, [`CreateExternalRefRequest`](../schemas/#createexternalrefrequest)
+
+| Response | Body | Meaning |
+|---|---|---|
+| `201` | [`ExternalRef`](../schemas/#externalref) | Reference created (relationship_add activity row written) |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Refused by the edit rule: the caller cannot edit the item |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown family or short code |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | VALIDATION: the scheme of the URI is not http, https or mailto (the refusal names it), or the label is too long. ALREADY_LINKED: the item has that URI |
+
+### `DELETE /api/{entity_type}/{short_code}/external/{id}`
+
+Remove an external reference by its id.
+
+The edit rule applies (COLLIERY-T-0228), as for the create.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `entity_type` | path | yes | `string` | Plural family name (strategies|initiatives|tasks|documents|adrs) |
+| `short_code` | path | yes | `string` | Item short code |
+| `id` | path | yes | `string` | The id of the reference (UUID), from the list |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`DeletedExternalRefResponse`](../schemas/#deletedexternalrefresponse) | Reference removed (relationship_remove activity row written) |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Refused by the edit rule: the caller cannot edit the item |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown family or short code, or the item has no reference with that id |
+
 ### `GET /api/{entity_type}/{short_code}/graph`
 
 The focal subgraph (KAIROS-T-0088): every node within `depth` hops

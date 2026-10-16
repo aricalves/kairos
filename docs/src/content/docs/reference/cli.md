@@ -535,6 +535,54 @@ kairos <noun> restore <SHORT_CODE> [OPTIONS]
 Puts an archived item back on its board. The item's own archived children stay
 archived: restore is per item, not a cascade.
 
+### `kairos link`
+
+```
+kairos link <SHORT_CODE> external <URI> [--label <TEXT>] [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<SHORT_CODE>` | string | required | The item, of each type. |
+| `external` | relationship | required | The one relationship of this command. |
+| `<URI>` | string | required | The URI. The scheme is `http`, `https` or `mailto`. |
+| `--label` | string | none | The label of the reference, at most 200 characters. |
+
+The command links an item to a document outside Kairos: an
+[external reference](../glossary/#external-reference). You must be able to
+edit the item. The command prints this line:
+
+```text
+Kairos made the link: ACME-T-0012 -[external]-> RFC: zen as the policy engine <https://example.com/wiki/rfc-42>.
+```
+
+The server refuses each other scheme with 422 `VALIDATION`, and the refusal
+names the scheme. The server refuses a URI that the item has with 422
+`ALREADY_LINKED`. To say that a document impacts a repository, use `kairos
+repos link`.
+
+### `kairos unlink`
+
+```
+kairos unlink <SHORT_CODE> external <URI> [OPTIONS]
+```
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `<SHORT_CODE>` | string | required | The item. |
+| `external` | relationship | required | The one relationship of this command. |
+| `<URI>` | string | required | The URI of the reference. |
+
+The command removes an external reference. The rule is that of `kairos link`.
+The command prints this line:
+
+```text
+Kairos removed the link: ACME-T-0012 -[external]-> RFC: zen as the policy engine <https://example.com/wiki/rfc-42>.
+```
+
+The command fails with exit code 1 when the item has no reference with that
+URI.
+
 ## Finding work
 
 ### `kairos me`

@@ -364,6 +364,18 @@ diesel::table! {
 }
 
 diesel::table! {
+    item_external_refs (id) {
+        id -> Uuid,
+        item_id -> Uuid,
+        item_type -> Text,
+        uri -> Text,
+        label -> Nullable<Text>,
+        created_by -> Uuid,
+        created_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
     item_impacts (id) {
         id -> Uuid,
         item_id -> Uuid,
@@ -806,6 +818,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     item_chunks,
     item_embeddings,
     item_history,
+    item_external_refs,
     item_impacts,
     item_links,
     item_metadata,

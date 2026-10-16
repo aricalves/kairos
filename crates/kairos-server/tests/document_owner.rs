@@ -1945,7 +1945,7 @@ async fn a_document_names_its_board_and_impacts_a_repository_against_live_stack(
         (
             true,
             "VALIDATION: The value \"is_about\" is not a value of relationship. The values \
-             are: parent, supports, informs, supersedes, blocks, impacts."
+             are: parent, supports, informs, supersedes, blocks, impacts, external."
                 .to_string(),
         ),
     );
