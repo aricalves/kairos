@@ -220,6 +220,24 @@ class NotificationsInTheSkills(unittest.TestCase):
                 self.assertIn("`mark_events_read`", text)
 
 
+class TheStateInTheSkills(unittest.TestCase):
+    """KAIROS-T-0507: implement writes the live state of the task with
+    `set_state` after each push and before each stop; handoff reads it and
+    writes it."""
+
+    def test_implement_sets_the_state_after_a_push_and_before_a_stop(self):
+        text = read(os.path.join(SKILLS, "workflow", "implement", "SKILL.md"))
+        self.assertIn("`set_state`", text)
+        for field in ("branch", "commit", "pushed", "pr_url", "next_step"):
+            self.assertIn(f"`{field}`", text)
+        self.assertIn("before", text.split("`set_state`", 1)[1][:600])
+
+    def test_handoff_reads_and_writes_the_state(self):
+        text = read(os.path.join(SKILLS, "meta", "handoff", "SKILL.md"))
+        self.assertIn("`set_state`", text)
+        self.assertIn("state", text.split("`get_item`", 1)[0])
+
+
 class BootstrapWritesNoRepositoryConnection(unittest.TestCase):
     """The MCP connection belongs to the user: the plugin server or a
     user-scope entry. A project `.mcp.json` only when the user asks."""

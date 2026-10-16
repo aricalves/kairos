@@ -190,6 +190,46 @@ class AnActiveTaskIsNamed(ActiveWorkCase):
         self.assertIn("wire the route", context)
         self.assertIn("`append_note`", context)
 
+    def test_a_set_state_is_named_and_takes_the_next_step(self):
+        """KAIROS-T-0507: the live state of the task."""
+        self.tool_use("get_item", {"short_code": "ACME-T-0042"}, get_item_text())
+        self.tool_use(
+            "set_state",
+            {
+                "short_code": "ACME-T-0042",
+                "branch": "acme-t-0042",
+                "commit": "abc1234",
+                "pushed": True,
+                "pr_url": "https://example.com/pr/12",
+                "next_step": "Wait for CI.",
+            },
+            "State of ACME-T-0042: branch acme-t-0042 at abc1234, pushed, "
+            "PR https://example.com/pr/12. Next: Wait for CI. (updated just now by Robin)",
+        )
+        _, context = self.compact()
+        self.assertIn(
+            "State: branch acme-t-0042 at abc1234, pushed, PR https://example.com/pr/12. "
+            "Next: Wait for CI.",
+            context,
+        )
+        self.assertIn("Next step: Wait for CI.", context)
+        self.assertIn("`set_state`", context)
+
+    def test_a_get_item_with_a_state_line_names_the_state(self):
+        """KAIROS-T-0507: `get_item` shows the state; a read without one
+        clears a stale record."""
+        with_state = get_item_text().replace(
+            "- version: 4\n",
+            "- state: branch acme-t-0042, not pushed. Next: Run the tests. "
+            "(updated 5 min ago by Robin)\n- version: 4\n",
+        )
+        self.tool_use("get_item", {"short_code": "ACME-T-0042"}, with_state)
+        _, context = self.compact()
+        self.assertIn("State: branch acme-t-0042, not pushed. Next: Run the tests.", context)
+        self.tool_use("get_item", {"short_code": "ACME-T-0042"}, get_item_text())
+        _, context = self.compact()
+        self.assertNotIn("State:", context)
+
     def test_a_completed_task_is_not_active_work(self):
         self.tool_use("get_item", {"short_code": "ACME-T-0042"}, get_item_text())
         self.tool_use(

@@ -33,6 +33,8 @@ To give the task to a different person, `hand_off_item` (`to`: a user id, an ema
 
 The task item is your **working memory**. Every few significant steps, `append_note` findings, decisions, dead ends ruled out, and plan changes onto it (one call: no version, no anchor text; the note gets a heading with the date and your name) — the item must let any session, or another agent, resume cold after this conversation's context is gone. Reference commits, files, and other items by hash, path, or short code rather than restating them. End each note with a `Next step:` line: after a context compaction, the plugin gives you that line again for each Active task.
 
+The task also has a **live state**, separate from the notes: one current line that `get_item`, `board_items` and the card show. Write it with `set_state` (`branch`, `commit`, `pushed`, `pr_url`, `next_step`) after each commit, after each push, after a PR opens, and before any stop or hand-off. The write replaces the whole state: send every field each time. A note records what happened; the state says where the work is now.
+
 To find code, use the code tools of the `kairos-code` MCP server before you read files: `module_map`, `code_search`, `callers` and `callees` (and `symbol`, `references` and `path`). Then read only the files that they name.
 
 When you split the task, or add a task for work that you find, link the tasks with `blocks` when one must wait for the other. Give no edge to tasks that can go in parallel. Say the order in each task.
@@ -47,7 +49,7 @@ The task transitions Active → Completed **only** when all of these hold, with 
 2. **Every acceptance criterion demonstrated, not asserted**: for each criterion, `append_note` the command you ran and the observed output onto the item as evidence.
 3. **New behavior carries new tests.**
 
-Then review the diff (the `code-review` skill), commit to the current branch, and `transition_item` to **Completed**. When the work needs a change from a DIFFERENT team (an API to add, a client to update), send a request to that team. The recipe is [CROSS-TEAM-FILING.md](CROSS-TEAM-FILING.md): `create_item` (`board: <the delivery board of that team>`, `parent: <this task's initiative>`), then `link_items blocks` from the request to this task.
+Then review the diff (the `code-review` skill), commit to the current branch, `set_state` with the final commit, pushed, the PR and the next step, and `transition_item` to **Completed**. When the work needs a change from a DIFFERENT team (an API to add, a client to update), send a request to that team. The recipe is [CROSS-TEAM-FILING.md](CROSS-TEAM-FILING.md): `create_item` (`board: <the delivery board of that team>`, `parent: <this task's initiative>`), then `link_items blocks` from the request to this task.
 
 ## Blocked
 

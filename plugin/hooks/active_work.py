@@ -22,6 +22,8 @@ the tool result that Claude Code gives the PostToolUse hook:
     edit_item         next step (from the `replace` text)
     update_item       title, next step (from the `content`)
     append_note       next step (from the `text`)
+    set_state         the live state of the task (from the fields,
+                      KAIROS-T-0507), and its next step
 
 The record is `$KAIROS_WORK_STATE_DIR/<session_id>.json`, default
 `~/.claude/kairos-work/`. `compact` reads it and the Ralph state of the
@@ -56,7 +58,7 @@ TASK_CODE = re.compile(r"^[A-Z][A-Z0-9]*-T-[0-9]+$")
 SESSION_ID = re.compile(r"^[A-Za-z0-9_.-]+$")
 KAIROS_TOOL = re.compile(
     r"^mcp__(?:plugin_kairos_)?kairos[A-Za-z0-9_-]*__"
-    r"(get_item|transition_item|edit_item|update_item|append_note)$"
+    r"(get_item|transition_item|edit_item|update_item|append_note|set_state)$"
 )
 DONE_COLUMNS = ("completed", "done")
 SHOWN_COLUMNS = ("active", "blocked")
@@ -71,6 +73,7 @@ HEADER = re.compile(r"^#\s+([A-Z][A-Z0-9]*-[A-Z]-[0-9]+)\s+—\s+(.+)$")
 REPOSITORY = re.compile(r"·\s*repository:\s*([^\s(·]+)")
 COLUMN = re.compile(r"^-\s*board:\s*.*?/\s*column:\s*(.+)$")
 PARENT_CHAIN = re.compile(r"^-\s*parent chain:\s*(.+)$")
+STATE = re.compile(r"^-\s*state:\s*(.+)$")
 TRANSITIONED = re.compile(r"^Transitioned\s+\S+:\s*.*?->\s*(.+?)\.?$")
 
 
@@ -210,6 +213,9 @@ def parse_get_item(text):
             column = COLUMN.match(line.strip())
             if column:
                 fields["column"] = column.group(1).strip()
+            state = STATE.match(line.strip())
+            if state:
+                fields["state"] = clip(state.group(1))
         elif section == "## Relationships":
             chain = PARENT_CHAIN.match(line.strip())
             if chain:
@@ -223,6 +229,33 @@ def parse_get_item(text):
         if note:
             fields["last_note"] = note
     return fields
+
+
+def state_text(fields):
+    """The live state of a task from the fields of a `set_state` call
+    (KAIROS-T-0507): `branch x at abc123, pushed, PR <url>. Next: …`."""
+    text = lambda key: (  # noqa: E731
+        fields[key].strip() if isinstance(fields.get(key), str) and fields[key].strip() else None
+    )
+    branch, commit, pr_url, next_step = (
+        text("branch"), text("commit"), text("pr_url"), text("next_step")
+    )
+    pushed = fields.get("pushed") is True
+    parts = []
+    if branch and commit:
+        parts.append(f"branch {branch} at {commit}")
+    elif branch:
+        parts.append(f"branch {branch}")
+    elif commit:
+        parts.append(f"commit {commit}")
+    if parts or pushed:
+        parts.append("pushed" if pushed else "not pushed")
+    if pr_url:
+        parts.append(f"PR {pr_url}")
+    out = ", ".join(parts)
+    if next_step:
+        out += (". " if out else "") + f"Next: {next_step}"
+    return clip(out) if out else None
 
 
 def changes_from(tool, tool_input, text):
@@ -241,6 +274,17 @@ def changes_from(tool, tool_input, text):
             changes["last_note"] = None
         elif "last_note" in changes:
             changes["next_step"] = None
+        if "state" not in changes:
+            changes["state"] = None
+    elif tool == "set_state":
+        state = state_text(tool_input)
+        if state:
+            changes["state"] = state
+        step = tool_input.get("next_step")
+        if isinstance(step, str) and step.strip():
+            changes["next_step"] = clip(step)
+            changes["last_note"] = None
+        changes["edited"] = True
     elif tool == "transition_item":
         moved = TRANSITIONED.match(text.strip())
         column = moved.group(1) if moved else tool_input.get("to_column")
@@ -339,6 +383,9 @@ def task_line(code, task):
         line += f" Last note: {task['last_note']}"
     else:
         line += " No next step recorded."
+    # KAIROS-T-0507: the live state of the task, when it has one.
+    if task.get("state"):
+        line += f" State: {task['state']}"
     return line
 
 
@@ -406,7 +453,9 @@ def build_context(values, record, session):
         lines.append(f"To find your Active tasks, {read_live}.")
     lines.append(
         "Write progress notes on the task with `append_note`, and end each note "
-        "with a `Next step:` line."
+        "with a `Next step:` line. Write the live state of the task with `set_state` "
+        "(branch, commit, pushed, pr_url, next_step) after each commit and each push, "
+        "and before you stop."
     )
     return "\n".join(lines)
 

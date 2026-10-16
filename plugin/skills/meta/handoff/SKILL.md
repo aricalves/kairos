@@ -5,7 +5,7 @@ argument-hint: "What will the next session be used for?"
 disable-model-invocation: true
 ---
 
-Kairos is the persistent memory: durable state — findings, decisions, progress, blockers — belongs on the work items, where any teammate or agent reads it. First bring the active items current (`edit_item`, `transition_item` if a column changed) so the boards tell the true story.
+Kairos is the persistent memory: durable state — findings, decisions, progress, blockers — belongs on the work items, where any teammate or agent reads it. First bring the active items current (`edit_item`, `transition_item` if a column changed) so the boards tell the true story. Each active task has a live state (the `state` line of `get_item`: branch, commit, pushed, PR, next step): read it, write the hand-off from it, and `set_state` with the true branch, commit, pushed, PR and next step before you stop (every field each time: the write replaces the state).
 
 Only then compact what remains — context this conversation alone holds: dead ends already ruled out, in-flight reasoning, environment quirks, the intended next move. Open the note with the short codes the next session should `get_item` first; the note is read alongside the board state, never instead of it. Save it as `kairos-handoff-<workspace-name>.md` in the OS temporary directory (not the workspace), replacing any previous note for this workspace, and finish by telling the user its absolute path. If nothing remains once the items are current, say so and skip the note.
 
