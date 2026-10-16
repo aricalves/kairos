@@ -29,6 +29,16 @@ The task must be workable: acceptance criteria present and independently verifia
 
 To give the task to a different person, `hand_off_item` (`to`: a user id, an email or a user name). To stop work on a task and leave it in Active for anyone, `release_item`. The claim ends by itself when the task leaves Active.
 
+## Ground
+
+Before the plan, read the record: [GROUND.md](../../meta/kairos/GROUND.md). The ADRs and the documents that impact this repository, the documents of the parent initiative, and `related_work` on the task. Write the sentence it gives ("Read: ... Nothing read contradicts this plan." or "Step N contradicts ...") on the task and in your reply, before the first change.
+
+## Check the names
+
+List each symbol, file, crate and dependency that the task text names. Check each one with the code tools (`symbol`, `code_search`, `path`) before the plan relies on it. A name that is not in the code gets one note on the task, "Stale: `resolve_many` (KAIROS-T-0579) is not in the code", and the plan does not use it. A blocker that the task names: `get_item` it. Is it open, and does its scope block this task? When it does not, say so on the task.
+
+An assertion that you make without evidence, in a note or in a reply, carries the marker "not checked". Repair it when you check it. The closing note of the task lists what stays "not checked".
+
 ## Work
 
 The task item is your **working memory**. Every few significant steps, `append_note` findings, decisions, dead ends ruled out, and plan changes onto it (one call: no version, no anchor text; the note gets a heading with the date and your name) — the item must let any session, or another agent, resume cold after this conversation's context is gone. Reference commits, files, and other items by hash, path, or short code rather than restating them. End each note with a `Next step:` line: after a context compaction, the plugin gives you that line again for each Active task.
@@ -36,6 +46,8 @@ The task item is your **working memory**. Every few significant steps, `append_n
 To find code, use the code tools of the `kairos-code` MCP server before you read files: `module_map`, `code_search`, `callers` and `callees` (and `symbol`, `references` and `path`). Then read only the files that they name.
 
 When you split the task, or add a task for work that you find, link the tasks with `blocks` when one must wait for the other. Give no edge to tasks that can go in parallel. Say the order in each task.
+
+**What remains lives on the items.** The remaining work is the open tasks of the initiative and their `blocks` edges, not a list you rewrite from memory each turn. When asked what is left: `get_item` the initiative, then `search` with `traverse: {from: <initiative>, relationships: [parent, blocks], direction: both, depth: 2}`, and present the open tasks in the order of their edges. A new step goes on the record before you answer: a task with its `blocks` edge, or a note on the task when it is small. A deliverable of the active task is never "out of scope" in a reply: it is done, split into a task with a reason and an edge, or left on the task as open.
 
 Use the `tdd` skill at pre-agreed seams where possible. Run the repo's fast checks — formatter, typecheck, single test files — as you go; the full suite once at the end.
 
@@ -46,6 +58,10 @@ The task transitions Active → Completed **only** when all of these hold, with 
 1. **Gates clean** where the repo has them: formatter check, linter with warnings denied, full test suite green (in a Rust/angreal repo: `cargo fmt --check`, `cargo clippy -- -D warnings`, `angreal test unit && angreal test integration`; otherwise the repo's equivalents).
 2. **Every acceptance criterion demonstrated, not asserted**: for each criterion, `append_note` the command you ran and the observed output onto the item as evidence.
 3. **New behavior carries new tests.**
+
+The closing note lists what stays "not checked" (a manual check, a live run, a claim without evidence).
+
+Before Completed, ask: did this work decide anything an ADR or the spec should hold? A behaviour change, a rule, a boundary. Yes: record it with the "Record this decision" path of the `domain-modeling` skill (an ADR with `parent` this task, `impacts` the repository), and write its short code in the closing note. No: say so in the closing note ("No decision to record."). A decision in a note or in local memory only is lost to the next session.
 
 Then review the diff (the `code-review` skill), commit to the current branch, and `transition_item` to **Completed**. When the work needs a change from a DIFFERENT team (an API to add, a client to update), send a request to that team. The recipe is [CROSS-TEAM-FILING.md](CROSS-TEAM-FILING.md): `create_item` (`board: <the delivery board of that team>`, `parent: <this task's initiative>`), then `link_items blocks` from the request to this task.
 

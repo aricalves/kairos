@@ -53,6 +53,8 @@ Do the tasks in that sequence. Each task goes through each step of `/kairos:impl
 
 Follow the commit rules of the repository and of the user. Every few tasks, write a short progress note on the initiative with `append_note`.
 
+What remains lives on the items: the open tasks of the initiative and their `blocks` edges. When the loop finds work that no task holds, record it as a task with its edge (or a note on the task when it is small) before it goes on. A deliverable of the active task is never "out of scope" in a reply: it is done, split into a task with a reason, or left on the task as open. Do not rewrite the list of what is left from memory: read it (`get_item`, `search` with `traverse`).
+
 The loop ends in one of three ways:
 
 - **Each task in the sequence is in Completed.** End your reply with `<promise>ALL TASKS COMPLETE</promise>`. Do not move the initiative: the user reviews it.

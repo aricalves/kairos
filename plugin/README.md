@@ -11,7 +11,7 @@ plugin/
 │   ├── review/       # architecture-review, diataxis-review
 │   └── meta/         # kairos (router), kairos-vocabulary, grill-me, grilling, handoff, writing-great-skills, bootstrap
 ├── references/       # rendered review specs (see below)
-└── hooks/            # SessionStart context injection, the Ralph loop (Stop hook), the active work after a compaction, the code index
+└── hooks/            # SessionStart context injection, the Ralph loop (Stop hook), the active work after a compaction, the code index, the Kairos rules once per session, the git guard, the memory reminder
 ```
 
 Shipped (KAIROS-T-0027..T-0034): all four buckets plus the SessionStart hook.
@@ -143,6 +143,54 @@ The plugin gives each session the code index of the checkout (COLLIERY-T-1855, C
   `changed-files`, `update.log` (and `update.log.1`) and `lock`. `KAIROS_INDEX_STATE_DIR`
   overrides the parent folder. Only one update runs at a time for each checkout.
 - Tests: `hooks/test_index_update.py` (also `bin/kairos-code`), part of `angreal test unit`.
+
+## The Kairos rules come once per session
+
+`hooks/kairos_rules.py` is a `PreToolUse` hook on the kairos MCP tools, on `Skill` and on
+Bash (KAIROS-T-0498, COLLIERY-I-0631). On the first Kairos tool call of a session (an
+`mcp__plugin_kairos_*` or `mcp__kairos*` tool, a `kairos*` skill, or a `kairos` command) it
+gives the Kairos rules as `additionalContext`, once: cite each item as a link
+`<deployment_url>/items/<CODE>` (the bare code when no URL is wired), name work by short code
+and Kairos words, ground a plan in the ADRs and documents of the repository and the initiative
+(COLLIERY-I-0627), put a decision about the system in Kairos and not in local memory
+(COLLIERY-I-0628), and mark what was not checked as "not checked". The short codes in the
+rules are links too.
+
+- The marker is `~/.claude/kairos-rules/<session_id>-<RULES_VERSION>` (`KAIROS_RULES_STATE_DIR`
+  overrides the folder). A marker means silence. Bump `RULES_VERSION` when the text changes:
+  each session then gets the new text once. Markers older than 30 days are removed.
+- It reads `deployment_url` from `.claude/kairos.local.md` with `session_start.read_frontmatter`.
+  No credentials, no network.
+- Tests: `hooks/test_kairos_rules.py`, part of `angreal test unit`.
+
+## The git guard asks before a push, a merge, a rebase, a tag and a rewrite
+
+`hooks/git_guard.py` is a `PreToolUse` hook on Bash (KAIROS-T-0497, COLLIERY-I-0631). It
+asks every time; it does not look for a "go" in the conversation. It splits the command line
+into its simple commands (`&&`, `;`, `|`, a subshell, `$(...)`) and asks for: `git push` (any
+form), `git merge`, `git rebase`, `git tag <name>` (a list is silent), `git reset --hard`,
+`git commit --amend`, `git branch -D` of a remote-tracking branch, any `git` command with
+`--force` or `--force-with-lease`, `gh pr merge` and `gh release create|edit|delete`. The
+answer is `permissionDecision: "ask"` with a one-line reason that names the command; anything
+else gives no output. `git status`, `git fetch`, a `grep` for "push" and an `echo` of the
+words are silent. The hook reads no file and holds no credentials.
+
+- Tests: `hooks/test_git_guard.py`, part of `angreal test unit`.
+
+## A write to local memory gets a reminder
+
+`hooks/memory_reminder.py` is a `PreToolUse` hook on `Write`, `Edit` and `MultiEdit`
+(KAIROS-T-0502, COLLIERY-I-0628). When the file is in a memory folder
+(`.claude/projects/<name>/memory/`, or `CLAUDE_MEMORY_DIR`), it reminds: a fact about the
+system under work belongs in Kairos, in an ADR (`create_item` with `item_type: adr` on the
+`adr_board` of the wiring), the spec document or a note on the initiative; local memory holds
+the preferences and the tooling of the person. It reminds and never refuses: the output is
+`additionalContext` only, with no `permissionDecision`, so the normal permission flow of the
+tool decides. It does not read the text of the write.
+
+- Once per session per file: `~/.claude/kairos-memory/<session_id>.json` holds the paths
+  (`KAIROS_MEMORY_STATE_DIR` overrides the folder; records older than 30 days are removed).
+- Tests: `hooks/test_memory_reminder.py`, part of `angreal test unit`.
 
 ## Sessions are scoped to a team board and a repository
 
