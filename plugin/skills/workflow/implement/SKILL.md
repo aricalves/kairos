@@ -47,6 +47,8 @@ To find code, use the code tools of the `kairos-code` MCP server before you read
 
 When you split the task, or add a task for work that you find, link the tasks with `blocks` when one must wait for the other. Give no edge to tasks that can go in parallel. Say the order in each task.
 
+**What remains lives on the items.** The remaining work is the open tasks of the initiative and their `blocks` edges, not a list you rewrite from memory each turn. When asked what is left: `get_item` the initiative, then `search` with `traverse: {from: <initiative>, relationships: [parent, blocks], direction: both, depth: 2}`, and present the open tasks in the order of their edges. A new step goes on the record before you answer: a task with its `blocks` edge, or a note on the task when it is small. A deliverable of the active task is never "out of scope" in a reply: it is done, split into a task with a reason and an edge, or left on the task as open.
+
 Use the `tdd` skill at pre-agreed seams where possible. Run the repo's fast checks — formatter, typecheck, single test files — as you go; the full suite once at the end.
 
 ## The completion gate

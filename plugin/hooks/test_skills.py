@@ -229,6 +229,34 @@ class NamesAreCheckedAgainstTheCode(unittest.TestCase):
         self.assertIn('what stays "not checked"', gate)
 
 
+class RemainingWorkLivesOnTheItems(unittest.TestCase):
+    """KAIROS-T-0501 (COLLIERY-I-0627): what is left is the open tasks of
+    the initiative and their `blocks` edges; the running skills read and
+    edit that list, never rewrite it from memory."""
+
+    RUNNING_SKILLS = (
+        "workflow/implement",
+        "meta/handoff",
+        "workflow/ralph",
+        "workflow/ralph-initiative",
+    )
+
+    def test_each_running_skill_names_the_rule(self):
+        for rel in self.RUNNING_SKILLS:
+            with self.subTest(skill=rel):
+                text = read(os.path.join(SKILLS, rel, "SKILL.md"))
+                self.assertIn("What remains lives on the items", text)
+                self.assertIn("`blocks`", text)
+                self.assertIn("`search` with `traverse", text)
+                self.assertIn('never "out of scope"', text)
+                self.assertIn("from memory", text)
+
+    def test_implement_gives_the_traverse_call(self):
+        text = read(os.path.join(SKILLS, "workflow", "implement", "SKILL.md"))
+        self.assertIn("relationships: [parent, blocks]", text)
+        self.assertIn("order of their edges", text)
+
+
 class GrillInitiative(unittest.TestCase):
     """COLLIERY-T-1864."""
 
