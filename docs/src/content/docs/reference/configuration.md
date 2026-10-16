@@ -1387,11 +1387,12 @@ stock `postgres:16` does not carry it. There is no bundled identity provider.
 | `KAIROS_API_BEARER` | `access_token` | The server. Defaults to empty, so the server default `access_token` holds. |
 | `KAIROS_WEB_CLIENT_SECRET` | empty | The server. Defaults to empty. |
 
-Each other setting under [Server environment variables](#server-environment-variables)
-is also in the Compose file, with an empty default, so the server default holds.
-There are two exceptions. The Compose file gives the retention settings their
-documented defaults, because the server reads an empty retention value as an
-error. It does not pass the two settings under [Development](#development). `scripts/check_compose_settings.py` (in `angreal test unit` and CI) fails
+The Compose file also passes each other setting under
+[Server environment variables](#server-environment-variables). The default is
+empty, so the server default holds. There are two exceptions. The retention
+settings get their documented defaults: the server reads an empty retention
+value as an error. The two settings under [Development](#development) are not
+in the Compose file. `scripts/check_compose_settings.py` (in `angreal test unit` and CI) fails
 when the Compose file, `.env.example` and this page do not agree.
 
 The profile `worker` adds the service `worker`. It is the same image with
