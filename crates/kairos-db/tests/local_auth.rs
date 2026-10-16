@@ -100,11 +100,25 @@ fn a_session_round_trips_and_expiry_and_revocation_are_honored() {
 
     // last_used_at is best-effort but must actually land when it succeeds — it is
     // what makes a stale session visible later.
-    local_auth::touch_session(&mut conn, live).expect("touch");
+    let window = Duration::minutes(1);
+    assert_eq!(
+        local_auth::touch_session(&mut conn, live, Utc::now() - window).expect("touch"),
+        1
+    );
     let touched = local_auth::find_session_by_hash(&mut conn, "hash-live")
         .expect("query")
         .expect("row");
     assert!(touched.last_used_at.is_some());
+    // KAIROS-T-0610: a stamp inside the window is not written again; one
+    // older than the window is.
+    assert_eq!(
+        local_auth::touch_session(&mut conn, live, Utc::now() - window).expect("touch again"),
+        0
+    );
+    assert_eq!(
+        local_auth::touch_session(&mut conn, live, Utc::now() + window).expect("touch, old"),
+        1
+    );
 
     // An expired row is still FOUND, and invalid. Found-but-invalid is the shape
     // the auth path needs, so every failure can collapse into one 401 instead of

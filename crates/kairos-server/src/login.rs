@@ -425,8 +425,14 @@ pub async fn authenticate_session(state: &AppState, token: &str) -> Result<AuthC
                 .ok_or_else(bad_session)?;
 
             // Best-effort, deliberately ignored: a failed timestamp update must not
-            // fail an otherwise valid request.
-            let _ = kairos_db::local_auth::touch_session(conn, session.id);
+            // fail an otherwise valid request. KAIROS-T-0610: written only when
+            // the last stamp is older than the window, so the reads of a page
+            // load do not each write the session row.
+            let _ = kairos_db::local_auth::touch_session(
+                conn,
+                session.id,
+                Utc::now() - crate::service_accounts::auth::LAST_USED_WINDOW,
+            );
 
             Ok(AuthContext {
                 user_id: user.id,
