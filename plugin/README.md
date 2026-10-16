@@ -144,6 +144,25 @@ The plugin gives each session the code index of the checkout (COLLIERY-T-1855, C
   overrides the parent folder. Only one update runs at a time for each checkout.
 - Tests: `hooks/test_index_update.py` (also `bin/kairos-code`), part of `angreal test unit`.
 
+## The Kairos rules come once per session
+
+`hooks/kairos_rules.py` is a `PreToolUse` hook on the kairos MCP tools, on `Skill` and on
+Bash (KAIROS-T-0498, COLLIERY-I-0631). On the first Kairos tool call of a session (an
+`mcp__plugin_kairos_*` or `mcp__kairos*` tool, a `kairos*` skill, or a `kairos` command) it
+gives the Kairos rules as `additionalContext`, once: cite each item as a link
+`<deployment_url>/items/<CODE>` (the bare code when no URL is wired), name work by short code
+and Kairos words, ground a plan in the ADRs and documents of the repository and the initiative
+(COLLIERY-I-0627), put a decision about the system in Kairos and not in local memory
+(COLLIERY-I-0628), and mark what was not checked as "not checked". The short codes in the
+rules are links too.
+
+- The marker is `~/.claude/kairos-rules/<session_id>-<RULES_VERSION>` (`KAIROS_RULES_STATE_DIR`
+  overrides the folder). A marker means silence. Bump `RULES_VERSION` when the text changes:
+  each session then gets the new text once. Markers older than 30 days are removed.
+- It reads `deployment_url` from `.claude/kairos.local.md` with `session_start.read_frontmatter`.
+  No credentials, no network.
+- Tests: `hooks/test_kairos_rules.py`, part of `angreal test unit`.
+
 ## The git guard asks before a push, a merge, a rebase, a tag and a rewrite
 
 `hooks/git_guard.py` is a `PreToolUse` hook on Bash (KAIROS-T-0497, COLLIERY-I-0631). It

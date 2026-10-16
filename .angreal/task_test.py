@@ -241,6 +241,7 @@ def unit():
         os.path.join(hooks, "test_skills.py"),  # the skill set in sync, COLLIERY-T-1866
         os.path.join(hooks, "test_index_update.py"),  # the code index, COLLIERY-T-1855
         os.path.join(hooks, "test_git_guard.py"),  # ask before push, merge, rebase, KAIROS-T-0497
+        os.path.join(hooks, "test_kairos_rules.py"),  # the rules once per session, KAIROS-T-0498
     ]
     code = subprocess.run(
         [sys.executable, "-B", "-m", "unittest", *hook_tests],
