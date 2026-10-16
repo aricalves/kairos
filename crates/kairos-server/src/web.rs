@@ -386,10 +386,14 @@ pub async fn spa_fallback(
         return ApiError::not_found("The server does not have that asset.").into_response();
     }
 
+    let if_none_match = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
     if let Some(dist) = state.config.web_dist.clone() {
-        return serve_from_dir(&dist, rel).await;
+        return serve_from_dir(&dist, rel, if_none_match.as_deref()).await;
     }
-    serve_embedded_or_placeholder(rel, accepted_encoding(&headers))
+    serve_embedded_or_placeholder(rel, accepted_encoding(&headers), if_none_match.as_deref())
 }
 
 /// The encoding of a pre-compressed asset that the request accepts: brotli
@@ -415,13 +419,19 @@ fn accepted_encoding(headers: &HeaderMap) -> Option<&'static str> {
 }
 
 /// Dev serving: files out of `KAIROS_WEB_DIST`, with the SPA fallback.
-async fn serve_from_dir(dist: &std::path::Path, rel: &str) -> Response {
+async fn serve_from_dir(
+    dist: &std::path::Path,
+    rel: &str,
+    if_none_match: Option<&str>,
+) -> Response {
     let name = if rel.is_empty() { "index.html" } else { rel };
     match tokio::fs::read(dist.join(name)).await {
-        Ok(bytes) => asset_response(name, Bytes::from(bytes), None),
+        Ok(bytes) => asset_response_for(name, Bytes::from(bytes), None, if_none_match),
         Err(_) if wants_index_fallback(name) => {
             match tokio::fs::read(dist.join("index.html")).await {
-                Ok(bytes) => asset_response("index.html", Bytes::from(bytes), None),
+                Ok(bytes) => {
+                    asset_response_for("index.html", Bytes::from(bytes), None, if_none_match)
+                }
                 Err(_) => ApiError::new(
                     StatusCode::SERVICE_UNAVAILABLE,
                     "WEB_DIST_MISSING",
@@ -450,18 +460,36 @@ struct Assets;
 /// when the request accepts brotli or gzip (KAIROS-T-0603): the wasm bundle
 /// is compressed once per process, not once per request.
 #[cfg(feature = "embed-web")]
-fn serve_embedded_or_placeholder(rel: &str, encoding: Option<&'static str>) -> Response {
+fn serve_embedded_or_placeholder(
+    rel: &str,
+    encoding: Option<&'static str>,
+    if_none_match: Option<&str>,
+) -> Response {
     let name = if rel.is_empty() { "index.html" } else { rel };
     match Assets::get(name) {
         Some(file) => match encoding.and_then(|enc| precompressed::get(name, enc)) {
-            Some(bytes) => asset_response(name, bytes, encoding),
-            None => asset_response(name, Bytes::from(file.data.into_owned()), None),
+            Some(bytes) => asset_response_for(name, bytes, encoding, None),
+            None => asset_response_for(name, embedded_bytes(file), None, if_none_match),
         },
         None if wants_index_fallback(name) => match Assets::get("index.html") {
-            Some(file) => asset_response("index.html", Bytes::from(file.data.into_owned()), None),
+            Some(file) => {
+                asset_response_for("index.html", embedded_bytes(file), None, if_none_match)
+            }
             None => ApiError::not_found("The GUI in the server has no index.html.").into_response(),
         },
         None => ApiError::not_found(format!("The server has no asset /{rel}.")).into_response(),
+    }
+}
+
+/// The bytes of an embedded asset with no copy (KAIROS-T-0606): in a release
+/// build rust-embed gives a `'static` slice, and `into_owned` copied the
+/// whole wasm bundle on every request. A debug build reads the file, so the
+/// bytes are owned already.
+#[cfg(feature = "embed-web")]
+fn embedded_bytes(file: rust_embed::EmbeddedFile) -> Bytes {
+    match file.data {
+        std::borrow::Cow::Borrowed(bytes) => Bytes::from_static(bytes),
+        std::borrow::Cow::Owned(bytes) => Bytes::from(bytes),
     }
 }
 
@@ -531,7 +559,11 @@ mod precompressed {
 /// No dist dir, no embedded assets: an honest placeholder so plain
 /// `cargo run -p kairos-server -- serve` still answers `/` usefully.
 #[cfg(not(feature = "embed-web"))]
-fn serve_embedded_or_placeholder(_rel: &str, _encoding: Option<&'static str>) -> Response {
+fn serve_embedded_or_placeholder(
+    _rel: &str,
+    _encoding: Option<&'static str>,
+    _if_none_match: Option<&str>,
+) -> Response {
     const PLACEHOLDER: &str = "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
         <title>Kairos</title></head><body>\
         <h1>Kairos</h1>\
@@ -561,20 +593,62 @@ fn serve_embedded_or_placeholder(_rel: &str, _encoding: Option<&'static str>) ->
 /// `encoding` names the Content-Encoding of a pre-compressed body
 /// (KAIROS-T-0603); every asset says `Vary: Accept-Encoding`, because a
 /// cache may hold it in more than one encoding.
-fn asset_response(name: &str, bytes: Bytes, encoding: Option<&'static str>) -> Response {
+/// The ETag and the CSP of an index.html body, computed once per distinct
+/// body (KAIROS-T-0606): the embedded index never changes, a dist index
+/// changes on a rebuild. The ETag is the first 32 hex digits of the SHA-256
+/// of the body, strong.
+fn index_meta(bytes: &Bytes) -> (String, String) {
+    use std::sync::{Mutex, OnceLock};
+    static LAST: OnceLock<Mutex<Option<(Bytes, String, String)>>> = OnceLock::new();
+    let last = LAST.get_or_init(|| Mutex::new(None));
+    if let Ok(guard) = last.lock()
+        && let Some((cached, etag, csp)) = guard.as_ref()
+        && cached == bytes
+    {
+        return (etag.clone(), csp.clone());
+    }
+    let etag = crate::security_headers::etag_of(bytes);
+    let csp = crate::security_headers::spa_csp(bytes);
+    if let Ok(mut guard) = last.lock() {
+        *guard = Some((bytes.clone(), etag.clone(), csp.clone()));
+    }
+    (etag, csp)
+}
+
+/// [`asset_response`] with the `If-None-Match` of the request: an index
+/// whose ETag the client already holds gets a 304 with no body
+/// (KAIROS-T-0606). The hashed assets are immutable and carry no ETag.
+fn asset_response_for(
+    name: &str,
+    bytes: Bytes,
+    encoding: Option<&'static str>,
+    if_none_match: Option<&str>,
+) -> Response {
     let mime = mime_guess::from_path(name).first_or_octet_stream();
     let mut response = if name == "index.html" {
         // KAIROS-T-0370: the CSP of the GUI, with the hash of each inline
         // script of this page.
-        let csp = crate::security_headers::spa_csp(&bytes);
+        let (etag, csp) = index_meta(&bytes);
+        let matches = if_none_match.is_some_and(|held| {
+            held.split(',')
+                .map(|tag| tag.trim().trim_start_matches("W/"))
+                .any(|tag| tag == etag || tag == "*")
+        });
+        let status = if matches {
+            StatusCode::NOT_MODIFIED
+        } else {
+            StatusCode::OK
+        };
+        let body = if matches { Bytes::new() } else { bytes };
         (
-            StatusCode::OK,
+            status,
             [
                 (header::CONTENT_TYPE, mime.as_ref().to_string()),
                 (header::CACHE_CONTROL, "no-cache".to_string()),
                 (header::CONTENT_SECURITY_POLICY, csp),
+                (header::ETAG, etag),
             ],
-            bytes,
+            body,
         )
             .into_response()
     } else {
@@ -774,6 +848,26 @@ mod tests {
     }
 
     #[test]
+    fn the_index_gets_an_etag_and_a_304_when_the_client_holds_it() {
+        let body = Bytes::from_static(b"<!doctype html><html><body>index</body></html>");
+        let response = asset_response_for("index.html", body.clone(), None, None);
+        assert_eq!(response.status(), StatusCode::OK);
+        let etag = response.headers()[header::ETAG.as_str()]
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(etag.starts_with('"') && etag.len() == 34, "{etag}");
+        let again = asset_response_for("index.html", body.clone(), None, Some(&etag));
+        assert_eq!(again.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(again.headers()[header::ETAG.as_str()], etag.as_str());
+        let weak = format!("W/{etag}, \"other\"");
+        let again = asset_response_for("index.html", body.clone(), None, Some(&weak));
+        assert_eq!(again.status(), StatusCode::NOT_MODIFIED);
+        let other = asset_response_for("index.html", body, None, Some("\"nope\""));
+        assert_eq!(other.status(), StatusCode::OK);
+    }
+
+    #[test]
     fn accepted_encoding_prefers_brotli_then_gzip() {
         let mut headers = HeaderMap::new();
         assert_eq!(accepted_encoding(&headers), None);
@@ -790,24 +884,30 @@ mod tests {
 
     #[test]
     fn a_precompressed_asset_names_its_encoding_and_varies() {
-        let response = asset_response(
+        let response = asset_response_for(
             "kairos-web-abc_bg.wasm",
             Bytes::from_static(b"\x1f\x8b"),
             Some("gzip"),
+            None,
         );
         assert_eq!(
             response.headers()[header::CONTENT_ENCODING.as_str()],
             "gzip"
         );
         assert_eq!(response.headers()[header::VARY.as_str()], "Accept-Encoding");
-        let response = asset_response("app.css", Bytes::from_static(b"body{}"), None);
+        let response = asset_response_for("app.css", Bytes::from_static(b"body{}"), None, None);
         assert!(response.headers().get(header::CONTENT_ENCODING).is_none());
         assert_eq!(response.headers()[header::VARY.as_str()], "Accept-Encoding");
     }
 
     #[test]
     fn asset_responses_carry_mime_and_cache_policy() {
-        let response = asset_response("kairos-web-abc_bg.wasm", Bytes::from_static(b"\0asm"), None);
+        let response = asset_response_for(
+            "kairos-web-abc_bg.wasm",
+            Bytes::from_static(b"\0asm"),
+            None,
+            None,
+        );
         assert_eq!(
             response.headers()[header::CONTENT_TYPE.as_str()],
             "application/wasm"
@@ -817,7 +917,12 @@ mod tests {
             "public, max-age=31536000, immutable"
         );
 
-        let response = asset_response("index.html", Bytes::from_static(b"<!doctype html>"), None);
+        let response = asset_response_for(
+            "index.html",
+            Bytes::from_static(b"<!doctype html>"),
+            None,
+            None,
+        );
         assert_eq!(
             response.headers()[header::CONTENT_TYPE.as_str()],
             "text/html"

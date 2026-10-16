@@ -102,6 +102,14 @@ pub fn spa_csp(index_html: &[u8]) -> String {
     )
 }
 
+/// A strong ETag of a body (KAIROS-T-0606): the first 32 hex digits of its
+/// SHA-256, in quotes.
+pub fn etag_of(body: &[u8]) -> String {
+    let digest = Sha256::digest(body);
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    format!("\"{}\"", &hex[..32])
+}
+
 /// The body of each `<script>` of `html` that has no `src`.
 fn inline_scripts(html: &str) -> Vec<&str> {
     let mut bodies = Vec::new();

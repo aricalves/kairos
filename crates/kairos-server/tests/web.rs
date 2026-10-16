@@ -225,6 +225,49 @@ async fn web_surfaces_against_live_stack() {
     assert!(content_type.starts_with("text/html"), "{content_type}");
     assert!(body.contains("kairos-test-gui"), "{body}");
 
+    // KAIROS-T-0606: the index carries an ETag, and a client that holds it
+    // gets a 304 with no body.
+    let response = dist_router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/boards/acme")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let etag = response
+        .headers()
+        .get("etag")
+        .expect("the index has an ETag")
+        .to_str()
+        .expect("ascii")
+        .to_string();
+    assert!(etag.starts_with('"') && etag.ends_with('"'), "{etag}");
+    let response = dist_router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/boards/acme")
+                .header("if-none-match", &etag)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(response.headers()["etag"], etag.as_str());
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    assert!(body.is_empty(), "a 304 has no body");
+
     // A missing asset-like path is a real 404, not HTML.
     let (status, _, _) = raw_request(&dist_router, Method::GET, "/missing.css", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
