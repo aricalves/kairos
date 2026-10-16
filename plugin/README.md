@@ -11,10 +11,13 @@ plugin/
 │   ├── review/       # architecture-review, diataxis-review
 │   └── meta/         # kairos (router), kairos-vocabulary, grill-me, grilling, handoff, writing-great-skills, bootstrap
 ├── references/       # rendered review specs (see below)
-└── hooks/            # SessionStart context injection, the Ralph loop (Stop hook), the active work after a compaction, the code index, the Kairos rules once per session, the git guard, the memory reminder
+├── hooks/            # SessionStart context injection, the Ralph loop (Stop hook), the active work after a compaction, the code index, the Kairos rules once per session, the git guard, the memory reminder
+└── bin/              # kairos-code (the code tools over stdio), kairos-channel (the dispatch channel)
 ```
 
-Shipped (KAIROS-T-0027..T-0034): all four buckets plus the SessionStart hook.
+The manifest registers three MCP servers: `kairos` (the deployment, over HTTP with the agent
+key), `kairos-code` (the code index, stdio) and `kairos-dispatch` (the dispatch channel,
+stdio). Each is described below.
 
 - `meta/` — `kairos` (the `/kairos` router), `grilling` and `kairos-vocabulary` (model-invoked;
   `kairos-vocabulary` names work only by short codes and Kairos words, with `ITEM-TYPES.md`
@@ -29,8 +32,9 @@ Shipped (KAIROS-T-0027..T-0034): all four buckets plus the SessionStart hook.
   deployment URL in `KAIROS_URL`, for the `kairos` server of the plugin (below); the key acts as that person
   (KAIROS-A-0024). Do not share a service-account key for Claude Code. That server lists
   the work profile of the MCP tools; the administration tools (teams, boards, grants,
-  dispatch rules, team page writes) need a second server at `$KAIROS_URL/mcp?profile=admin`
-  (`kairos-admin`; see the Profiles section of the MCP tools reference).
+  dispatch rules, team page writes) need a second server at `$KAIROS_URL/mcp?profile=admin`,
+  which the plugin does not ship: the user adds it (`onboard-team` gives the recipe; see the
+  Profiles section of the MCP tools reference).
 - `workflow/` — `grill-initiative` (an interview that writes each settled answer into the
   initiative or strategy at once, and never moves it), `to-initiative`, `decompose`,
   `grill-decomposition` (reviews the open tasks of an initiative as a set before a Ralph loop),
@@ -113,7 +117,8 @@ The plugin gives each session the code index of the checkout (COLLIERY-T-1855, C
 
 - **The code tools.** `.claude-plugin/plugin.json` registers the local MCP server `kairos-code`
   (stdio). It starts `bin/kairos-code`, which runs `kairos index mcp`. It gives `module_map`,
-  `code_search`, `symbol`, `callers`, `callees`, `references`, `path` and `fetch_index`. A
+  `code_search`, `symbol`, `callers`, `callees`, `references`, `path`, `duplicates` and
+  `fetch_index`. A
   symbol is chosen by its name, `file` and `line` (KAIROS-T-0417). `references` gives each use
   of a symbol, not only the calls: in Rust, also the uses as a type, a field or an import, from
   SCIP. For the other languages it gives the calls (KAIROS-T-0419). A session that starts
@@ -147,6 +152,28 @@ The plugin gives each session the code index of the checkout (COLLIERY-T-1855, C
   `changed-files`, `update.log` (and `update.log.1`) and `lock`. `KAIROS_INDEX_STATE_DIR`
   overrides the parent folder. Only one update runs at a time for each checkout.
 - Tests: `hooks/test_index_update.py` (also `bin/kairos-code`), part of `angreal test unit`.
+
+## The dispatch channel pushes a delivery into the session
+
+`bin/kairos-channel` is the MCP server `kairos-dispatch` of the manifest (KAIROS-T-0429): a
+Claude Code channel over stdio. It listens on a local port for the signed deliveries of the
+dispatch rules of a board (KAIROS-T-0385, KAIROS-T-0427), checks the HMAC signature, the time
+and the delivery id of each one, and pushes the event into the running session; the session
+then works the task with the Kairos MCP tools. The event carries facts only (the code, the
+board, the column, the type, the lane, the event, the rule, the blocker); the session reads
+the item itself.
+
+- The config of a board is `~/.claude/channels/kairos/<name>.json`, mode 600, where `<name>`
+  is `KAIROS_CHANNEL_BOARD`, else the name of the folder of the session. Write it with
+  `bin/kairos-channel setup <name> --port <port>`, the secret of the target on stdin; the
+  target comes from `kairos boards dispatch add-target <board> --hook-url http://127.0.0.1:<port>/`.
+  With no config, the server serves MCP with no listener and its instructions say why.
+- Channels are in research preview: the session starts with
+  `claude --dangerously-load-development-channels plugin:kairos@kairos`. The how-to
+  "Receive dispatch in a Claude Code session" in the book has the steps.
+- The secret is never printed or logged. Python stdlib only.
+- Tests: `hooks/test_channel.py`, part of `angreal test unit`. One of them checks that the
+  how-to names the flags that the CLI has (KAIROS-T-0545).
 
 ## The Kairos rules come once per session
 

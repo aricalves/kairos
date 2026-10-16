@@ -28,7 +28,7 @@ Nothing off the machine can reach it.
 
 ```sh
 kairos boards dispatch add-target platform-delivery \
-  --name "Claude session" --url http://host.docker.internal:8790/
+  --name "Claude session" --hook-url http://host.docker.internal:8790/
 # → secret: kairos_whsec_3b9e…
 ```
 
