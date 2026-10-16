@@ -11,6 +11,10 @@ A Kairos tool call is one of:
 
 The marker is `$KAIROS_RULES_STATE_DIR/<session_id>-<RULES_VERSION>`,
 default `~/.claude/kairos-rules/`. A marker that is there means silence.
+In a wired folder `session_start.py` gives the rules at the start of the
+session and writes the marker (KAIROS-T-0525), and `active_work.py compact`
+gives them again after a compaction; this hook then covers the sessions
+that start with no wiring.
 The marker carries the version of the rules, so a plugin update with a
 higher RULES_VERSION gives the new text once more. Markers older than 30
 days are removed.
@@ -152,6 +156,23 @@ def deployment_url():
     return session_start.read_frontmatter(path).get("deployment_url", "")
 
 
+def mark(session):
+    """Write the marker of `session`: the rules were given. Returns False
+    when the session id is not usable or the marker was there already
+    (KAIROS-T-0525: session_start marks too, so a wired session gets the
+    rules at its start and this hook then stays silent)."""
+    if not isinstance(session, str) or not SESSION_ID.match(session):
+        return False
+    marker = marker_path(session)
+    if os.path.exists(marker):
+        return False
+    os.makedirs(state_dir(), exist_ok=True)
+    prune()
+    with open(marker, "w", encoding="utf-8") as handle:
+        handle.write("")
+    return True
+
+
 def main():
     try:
         payload = json.loads(sys.stdin.read() or "null")
@@ -159,16 +180,8 @@ def main():
             return
         if not is_kairos_call(payload.get("tool_name"), payload.get("tool_input")):
             return
-        session = payload.get("session_id")
-        if not isinstance(session, str) or not SESSION_ID.match(session):
+        if not mark(payload.get("session_id")):
             return
-        marker = marker_path(session)
-        if os.path.exists(marker):
-            return
-        os.makedirs(state_dir(), exist_ok=True)
-        prune()
-        with open(marker, "w", encoding="utf-8") as handle:
-            handle.write("")
         json.dump(
             {
                 "hookSpecificOutput": {
