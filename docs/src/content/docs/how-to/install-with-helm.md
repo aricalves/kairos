@@ -2,7 +2,7 @@
 title: "Install Kairos on Kubernetes with Helm"
 ---
 
-Get a Kairos 0.15.0 deployment serving on a cluster you already run.
+Get a Kairos 0.15.1 deployment serving on a cluster you already run.
 
 **Before you start**, have all four:
 
@@ -123,7 +123,7 @@ mounts the Swagger UI at `/api/docs`.
 
 ```sh
 helm install kairos oci://ghcr.io/colliery-io/charts/kairos \
-  --version 0.15.0 -f my-values.yaml
+  --version 0.15.1 -f my-values.yaml
 ```
 
 `--version` is not optional in practice: the chart publishes no floating tag.
@@ -226,6 +226,17 @@ These changes of 0.15 show after the upgrade. They apply to Compose too.
 - The plugin has three new hooks: a question before a push, merge, rebase,
   tag or release; the Kairos rules once per session; and a reminder on a
   write to local memory. Update the plugin with `/plugin` to get them.
+
+### From 0.15.0 to 0.15.1
+
+A point release with fixes. No migration runs.
+
+- The Compose file passes every documented setting to the containers. A
+  local override for a setting of 0.14 can go.
+- Drag-and-drop in the tree of the team pages works again in Chromium. It
+  did not work from 0.13.0 to 0.15.0.
+- The plugin tells you when the `kairos` CLI is older than the plugin or
+  the server. Run `kairos self-update`.
 
 ## Trying it out without a database
 
