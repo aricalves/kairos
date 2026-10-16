@@ -47,6 +47,8 @@
 
 pub mod activity;
 pub mod definitions;
+// KAIROS-T-0508: the relationship `external`, to a URI.
+pub mod external;
 pub mod history;
 // COLLIERY-T-0269: the relationship `impacts`, to a repository.
 pub mod impacts;
@@ -80,6 +82,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .merge(relationships::router())
         .merge(impacts::router())
+        .merge(external::router())
         .merge(item_owners::router())
         .merge(item_teams::router())
         .merge(restore::router())

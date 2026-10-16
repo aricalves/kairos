@@ -81,6 +81,7 @@ const EXPECTED_TABLES: [&str; 63] = [
     // KAIROS-T-0187: the two embedding tables (A-0021 rule 2).
     "item_chunks",
     "item_embeddings",
+    "item_external_refs",
     "item_history",
     // COLLIERY-T-0269: the `impacts` links of a document or of an ADR.
     "item_impacts",

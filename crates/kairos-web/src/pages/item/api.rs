@@ -899,6 +899,80 @@ pub async fn remove_impact(
     Ok(())
 }
 
+/// mirror of: `kairos_client::types_meta::ExternalRef` (KAIROS-T-0508).
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct ExternalRef {
+    pub id: String,
+    pub uri: String,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+/// mirror of: `kairos_client::types_meta::ItemExternalRefsResponse`
+/// (partial).
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+struct ItemExternalRefs {
+    external: Vec<ExternalRef>,
+}
+
+/// `GET /api/{family}/{short_code}/external` — the external references of
+/// an item (KAIROS-T-0508), oldest first.
+pub async fn fetch_external_refs(
+    auth: Auth,
+    family: Family,
+    code: String,
+) -> Result<Vec<ExternalRef>, ApiError> {
+    let listed: ItemExternalRefs = get_json(
+        auth,
+        &format!("/api/{}/{code}/external", family.api_family()),
+    )
+    .await?;
+    Ok(listed.external)
+}
+
+/// Body of `POST /api/{family}/{short_code}/external` (mirror of:
+/// `kairos_client::types_meta::CreateExternalRefRequest`).
+#[derive(Debug, Serialize)]
+struct CreateExternalRefBody<'a> {
+    uri: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<&'a str>,
+}
+
+/// `POST /api/{family}/{short_code}/external` — link the item to a URI
+/// with a label (KAIROS-T-0508).
+pub async fn add_external_ref(
+    auth: Auth,
+    family: Family,
+    code: &str,
+    uri: &str,
+    label: Option<&str>,
+) -> Result<ExternalRef, ApiError> {
+    crate::api::post_json(
+        auth,
+        &format!("/api/{}/{code}/external", family.api_family()),
+        &CreateExternalRefBody { uri, label },
+    )
+    .await
+}
+
+/// `DELETE /api/{family}/{short_code}/external/{id}` — remove an external
+/// reference (KAIROS-T-0508).
+pub async fn remove_external_ref(
+    auth: Auth,
+    family: Family,
+    code: &str,
+    id: &str,
+) -> Result<(), ApiError> {
+    let path = format!(
+        "/api/{}/{code}/external/{}",
+        family.api_family(),
+        crate::api::encode_component(id)
+    );
+    let _: serde_json::Value = send_json(auth, Verb::Delete, &path, None::<&()>).await?;
+    Ok(())
+}
+
 /// mirror of: `kairos_client::types_org::ItemTeamsResponse`
 /// (KAIROS-T-0321).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]

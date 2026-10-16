@@ -206,6 +206,10 @@ enum Command {
     /// The templates of the organization (writes: organization admins)
     #[command(subcommand)]
     Templates(commands::meta::TemplatesCommand),
+    /// Link an item to a URI with a label (the relationship `external`)
+    Link(commands::links::LinkArgs),
+    /// Remove the external reference of an item with a URI
+    Unlink(commands::links::UnlinkArgs),
     /// The code index of a checkout, and its code tools for an agent (COLLIERY-T-1852)
     Index(IndexArgs),
     /// Install the version of the server (or --latest, or --version) in place of this binary
@@ -276,6 +280,8 @@ async fn dispatch(command: Command) -> Result<(), CliError> {
         Command::Keys(command) => command.run().await,
         Command::Admin(command) => command.run().await,
         Command::Index(command) => command.run().await,
+        Command::Link(args) => args.run().await,
+        Command::Unlink(args) => args.run().await,
         Command::Metadata(command) => command.run().await,
         Command::Templates(command) => command.run().await,
         Command::SelfUpdate(args) => args.run().await,

@@ -635,3 +635,57 @@ mod tests {
         assert!(definition.entity_types.is_empty());
     }
 }
+
+// ---------------------------------------------------------------------------
+// External references (KAIROS-T-0508, COLLIERY-I-0630)
+// ---------------------------------------------------------------------------
+
+/// One external reference of an item: a URI with a label. The API and the
+/// tools show it as the relationship `external`. A URI is not an item, so
+/// the reference is not an edge between two items.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ExternalRef {
+    /// The id of the reference (UUID). `DELETE .../external/{id}` names it.
+    pub id: String,
+    /// Always `external`.
+    pub relationship: String,
+    /// The URI, with the scheme `http`, `https` or `mailto`.
+    pub uri: String,
+    /// The label, when the reference has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Who made the reference (user id, UUID).
+    pub created_by: String,
+    /// When the reference was made, RFC 3339.
+    pub created_at: String,
+}
+
+/// Body of `POST /api/{entity_type}/{short_code}/external`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateExternalRefRequest {
+    /// The URI. The scheme is `http`, `https` or `mailto`; each other
+    /// scheme is refused.
+    pub uri: String,
+    /// The label, at most 200 characters. Empty is no label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// Response of `GET /api/{entity_type}/{short_code}/external`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ItemExternalRefsResponse {
+    /// The short code of the item.
+    pub short_code: String,
+    /// The references of the item, oldest first.
+    pub external: Vec<ExternalRef>,
+}
+
+/// Response of `DELETE /api/{entity_type}/{short_code}/external/{id}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DeletedExternalRefResponse {
+    /// The short code of the item.
+    pub short_code: String,
+    /// The URI of the reference that was removed.
+    pub uri: String,
+}

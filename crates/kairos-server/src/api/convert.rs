@@ -214,6 +214,20 @@ pub fn attach_repository(
 }
 
 /// One `impacts` link as the wire type (COLLIERY-T-0269).
+/// One external reference (KAIROS-T-0508).
+pub fn external_ref(
+    row: kairos_db::external_refs::ExternalRef,
+) -> kairos_client::types_meta::ExternalRef {
+    kairos_client::types_meta::ExternalRef {
+        id: row.id.to_string(),
+        relationship: kairos_db::external_refs::RELATIONSHIP.to_string(),
+        uri: row.uri,
+        label: row.label,
+        created_by: row.created_by.to_string(),
+        created_at: timestamp(row.created_at),
+    }
+}
+
 pub fn impact(
     row: kairos_db::impacts::ImpactedRepository,
 ) -> kairos_client::types_repositories::Impact {
