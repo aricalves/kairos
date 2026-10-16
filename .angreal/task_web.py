@@ -88,6 +88,32 @@ def _acquire_trunk():
 
 
 @web()
+def _check_wasm_budget():
+    """Compare the release .wasm with crates/kairos-web/wasm-size-budget.
+
+    Returns 0 when the bundle is within the budget, 1 when it is over it
+    or when there is no bundle. The budget is a byte count on one line.
+    """
+    wasms = sorted(WEB_DIST.glob("*.wasm"))
+    if not wasms:
+        print(f"No .wasm in {WEB_DIST}", file=sys.stderr)
+        return 1
+    budget = int(WASM_BUDGET_FILE.read_text().strip())
+    code = 0
+    for wasm in wasms:
+        size = wasm.stat().st_size
+        verdict = "within" if size <= budget else "OVER"
+        print(f"{wasm.name}: {size:,} bytes, {verdict} the budget of {budget:,} bytes ({WASM_BUDGET_FILE.name})")
+        if size > budget:
+            print(
+                "The bundle is over its size budget. Make it smaller, or raise "
+                f"{WASM_BUDGET_FILE} in the same change and say why in the commit.",
+                file=sys.stderr,
+            )
+            code = 1
+    return code
+
+
 @angreal.command(
     name="build",
     about="build the Leptos CSR bundle (trunk) into crates/kairos-web/dist",
@@ -120,32 +146,6 @@ def _acquire_trunk():
     is_flag=True,
     help="the wasm-release profile (opt-level z, LTO, one codegen unit) + wasm-opt; what ships",
 )
-def _check_wasm_budget():
-    """Compare the release .wasm with crates/kairos-web/wasm-size-budget.
-
-    Returns 0 when the bundle is within the budget, 1 when it is over it
-    or when there is no bundle. The budget is a byte count on one line.
-    """
-    wasms = sorted(WEB_DIST.glob("*.wasm"))
-    if not wasms:
-        print(f"No .wasm in {WEB_DIST}", file=sys.stderr)
-        return 1
-    budget = int(WASM_BUDGET_FILE.read_text().strip())
-    code = 0
-    for wasm in wasms:
-        size = wasm.stat().st_size
-        verdict = "within" if size <= budget else "OVER"
-        print(f"{wasm.name}: {size:,} bytes, {verdict} the budget of {budget:,} bytes ({WASM_BUDGET_FILE.name})")
-        if size > budget:
-            print(
-                "The bundle is over its size budget. Make it smaller, or raise "
-                f"{WASM_BUDGET_FILE} in the same change and say why in the commit.",
-                file=sys.stderr,
-            )
-            code = 1
-    return code
-
-
 def build(release=False):
     """Ensure wasm tooling, then `trunk build` in crates/kairos-web."""
     exit_code = _ensure_wasm_target()
