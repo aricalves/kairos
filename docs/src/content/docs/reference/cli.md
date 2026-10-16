@@ -1879,8 +1879,8 @@ update, and nothing changes.
 The CLI, the server and the Claude Code plugin have one version. The code
 tools of the plugin run `kairos index mcp`, and an older CLI reads an older
 index schema. An update of the plugin does not update the CLI. When the CLI
-is older than the plugin, the plugin says so at the start of the session and
-its code tools are off: run `kairos self-update`.
+is older than the plugin, the plugin says so at the start of the session. Its
+code tools are off until you run `kairos self-update`.
 
 #### The daily check
 
