@@ -110,15 +110,26 @@ A command can also use a key in place of the login.
 
 | Variable | Description |
 |---|---|
-| `KAIROS_KEY`, then `KAIROS_MCP_KEY` | An agent key (it acts as you) or a service-account key. When one is set, each command that reaches the API sends it as the bearer, and does not read the credential cache. The key wins over a login. |
-| `KAIROS_URL` | The deployment, when `--url` is not given. With a key and no URL, the CLI uses the only cached deployment. Otherwise it exits with code 2. |
+| `KAIROS_KEY`, then `KAIROS_MCP_KEY` | An agent key (it acts as you) or a service-account key. When one is set, each command that reaches the API sends it as the bearer. The key wins over a login. |
+| `KAIROS_URL` | The deployment, when `--url` is not given. `login` and `logout` also read it. With a key and no URL, the CLI uses the only cached deployment. Otherwise it exits with code 2. |
+| `KAIROS_QUIET` | `1` stops the warning of a key that hides a login. |
 | `KAIROS_TIMEOUT` | The time in seconds that a command waits for an answer. The default is 60. A connection gets 5 seconds. A value that is not a positive integer stops the command with exit code 1. |
 | `KAIROS_UPDATE_CHECK` | `0` turns off the daily version check (see [`kairos self-update`](#kairos-self-update)). |
 | `KAIROS_AUTO_UPDATE` | `1` makes the daily check install the newer version of the server instead of printing a line. |
 | `KAIROS_RELEASES_URL` | The base URL of the release tarballs for `self-update --version` and `--latest`, for a mirror. The default is the GitHub releases. |
 
 A key carries its tenant, so it needs no `--tenant`. A 401 for a key names the
-variable that holds it. Use a key when the issuer gives the CLI no device
+variable that holds it.
+
+A key can hide a login. When the cache has a login for the deployment of the
+key, each command writes one line on stderr:
+
+```
+warning: KAIROS_MCP_KEY is set, so the CLI sends that key and not the login for <URL>. Set KAIROS_QUIET=1 to hide this warning.
+```
+
+The command still sends the key. To use the login, unset the variable.
+`kairos whoami` shows which credential a command sends. Use a key when the issuer gives the CLI no device
 grant, for example Google. See
 [Give an agent your key](../../how-to/give-an-agent-your-key/#use-the-key-with-the-cli).
 
@@ -127,12 +138,12 @@ grant, for example Google. See
 Logs in to a deployment and caches the credential.
 
 ```
-kairos login --url <URL> [OPTIONS]
+kairos login [--url <URL>] [OPTIONS]
 ```
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--url <URL>` | string | required | Deployment base URL, e.g. `https://kairos.example.com`. |
+| `--url <URL>` | string | `KAIROS_URL` | Deployment base URL, e.g. `https://kairos.example.com`. With neither, the command exits with code 1. |
 | `--email <EMAIL>` | string | none | Email of a local account. Selects the password login. Conflicts with `--issuer`, `--client-id` and `--bearer`. |
 | `--issuer <ISSUER>` | string | discovered | OIDC issuer override. Skips RFC 9728 discovery against the deployment. |
 | `--tenant <TENANT>` | string | none | Tenant slug, cached and sent as `X-Tenant` on subsequent API calls. |
@@ -185,7 +196,7 @@ kairos logout [OPTIONS]
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--url <URL>` | string | the only cached deployment | Deployment whose credentials are forgotten. |
+| `--url <URL>` | string | `KAIROS_URL`, then the only cached deployment | Deployment whose credentials are forgotten. |
 
 `logout` takes neither `--tenant` nor `--json`.
 
@@ -206,11 +217,21 @@ kairos whoami [OPTIONS]
 
 Also accepts `--url` and `--tenant`.
 
-The default rendering prints three lines: `user:` with display name and email,
+The default rendering prints these lines: `user:` with display name and email,
 `org:` with the organization slug and the caller's role, and `teams:` with the
-team names, or `(none)`. A caller with a grant of `manage_structure` gets a
-fourth line, `manage_structure:`. It gives the scope of each grant:
-`organization` or `board <slug>`.
+team names, or `(none)`. A caller with a grant of `manage_structure` gets the
+line `manage_structure:`. It gives the scope of each grant: `organization` or
+`board <slug>`. The last line, `credential:`, tells the source of the
+credential:
+
+| Source | Line |
+|---|---|
+| A key in the environment | `credential: key from KAIROS_MCP_KEY` (or `KAIROS_KEY`) |
+| The credential cache | `credential: login cached for <URL>` |
+
+An agent key and a service-account key have the same format, so the line
+says `key`. `--json` prints the response of the server only, with no
+`credential:` line.
 
 The `/api/whoami` response carries more than the default rendering prints. The
 board capabilities the principal holds, the capabilities every member holds
@@ -2149,7 +2170,7 @@ kairos index update [--root <ROOT>] [--rust-edges] [--link-only] [--max-changed 
 | `--max-changed <MAX_CHANGED>` | integer | 200 | The most files that can change since the base index. Above it, the CLI builds nothing. |
 | `--repository <REPOSITORY>` | slug or UUID | `repository` in `.claude/kairos.local.md`, else the repository of the `origin` remote | The repository in Kairos. |
 | `--url <URL>` | string | `KAIROS_URL`, else `deployment_url` in `.claude/kairos.local.md`, else the only deployment of `kairos login` | The deployment. |
-| `--tenant <TENANT>` | string | the tenant of the login | The tenant, for a token from `kairos login`. |
+| `--tenant <TENANT>` | string | `tenant` in `.claude/kairos.local.md`, else the tenant of the login | The tenant, for a token from `kairos login`. A key carries its tenant. |
 
 Updates the index for the changes in the checkout, also the changes that are
 not committed. With no index, the command starts from the nearest base index
@@ -2360,6 +2381,8 @@ plaintext password never has to be written into a manifest.
 |---|---|---|
 | config directory | `0700` | Resolved from `KAIROS_CONFIG_DIR`, else `$XDG_CONFIG_HOME/kairos`, else `$HOME/.config/kairos`. |
 | `credentials.json` inside it | `0600` | The credential cache, keyed by normalized deployment URL. Holds issuer tokens and local sessions. |
+| `credentials.json.lock` inside it | `0600` | The lock of the cache. A token refresh, `login` and `logout` hold it while they change the cache. The lock is an advisory lock of the operating system. Another process waits for it, and then reads the new token. |
+| `credentials.json.<PID>.tmp` inside it | `0600` | The temporary file of a write to the cache. The rename to `credentials.json` removes it. |
 | `version-check.json` inside it | default | The last daily version check: the deployment, the time and the version of the server. |
 
 [Configuration](../configuration/#cli-configuration) is the canonical entry for
