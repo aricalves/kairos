@@ -292,9 +292,19 @@ pub(crate) fn after_column_change(
 }
 
 /// The short code and the column of a live task, with the check that the
-/// column holds claims.
+/// column holds claims. Locks the task row (KAIROS-T-0640).
 fn claimable_task(conn: &mut PgConnection, task_id: Uuid) -> Result<String, ClaimError> {
     use crate::schema::{board_columns, tasks};
+    // KAIROS-T-0640: lock the task row first, in the transaction of the
+    // claim, the hand-off or the release. A second change of the claim of
+    // the task waits, then reads the claim that the first one wrote. Only
+    // the task row: changes of other tasks in the column do not wait.
+    tasks::table
+        .filter(tasks::id.eq(task_id))
+        .select(tasks::id)
+        .for_update()
+        .first::<Uuid>(conn)
+        .optional()?;
     let row: Option<(String, String, bool)> = tasks::table
         .inner_join(board_columns::table)
         .filter(tasks::id.eq(task_id))
