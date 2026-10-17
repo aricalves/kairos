@@ -43,7 +43,7 @@ Each document has an owner board, and `create_item` for a document needs `board`
 
 Then say what the document is about: `link_items {source: <document>, target: <repository slug>, relationship: impacts}`. The link goes from a document or an ADR to a repository. It gives no right, and you need no right on the repository. A task does not impact a repository: `set_repository` links a task.
 
-In a checkout, read the documents that impact the repository before you plan work. `get_repository <slug>` lists them, and `get_item` gives each one. `search` with `filter.repository` finds them with the tasks of the repository.
+In a checkout, read the documents and the ADRs of the repository before you plan work. `get_repository <slug>` lists the items that impact the repository and the ADRs of the owner team. `team_pages <team>` gives the tree of the documents and the ADRs of the team. `get_item` gives each one. `search` with `filter.repository` finds the linked items with the tasks of the repository.
 
 ## Initiatives and strategies: their teams
 

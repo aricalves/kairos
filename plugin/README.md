@@ -183,7 +183,7 @@ Bash (KAIROS-T-0498, COLLIERY-I-0631). On the first Kairos tool call of a sessio
 gives the Kairos rules as `additionalContext`, once: cite each item as a link
 `<deployment_url>/items/<CODE>` (the bare code when no URL is wired), name work by short code
 and Kairos words, ground a plan in the ADRs and documents of the repository and the initiative
-(COLLIERY-I-0627), put a decision about the system in Kairos and not in local memory
+(COLLIERY-I-0627; the routes are `get_repository` and `team_pages`, KAIROS-T-0599), put a decision about the system in Kairos and not in local memory
 (COLLIERY-I-0628), and mark what was not checked as "not checked". The short codes in the
 rules are links too.
 

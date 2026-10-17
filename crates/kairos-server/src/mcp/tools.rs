@@ -1520,7 +1520,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "One repository: owner team and its delivery board, open task count, default branch and where it comes from, the team's `description` of how to work in it (read it before working in an unfamiliar repository), the documents and ADRs that impact it (read them with `get_item` before planning), its open branches and pull requests with their items and those not linked to an item, the forge filters, and the lines read token, write-back, code index build and code index breaker (a tripped breaker stops builds until `rebuild_code_index` (admin profile)). `repository` is a slug or UUID; `include_deleted: true` adds archived documents and ADRs."
+        description = "One repository: owner team and its delivery board, open task count, default branch and where it comes from, the team's `description` of how to work in it (read it before working in an unfamiliar repository), the documents and ADRs that impact it, the other ADRs of the owner team (newest first, 50 at most, none superseded; read each with `get_item` before planning), its open branches and pull requests with their items and those not linked to an item, the forge filters, and the lines read token, write-back, code index build and code index breaker (a tripped breaker stops builds until `rebuild_code_index` (admin profile)). `repository` is a slug or UUID; `include_deleted: true` adds archived documents and ADRs."
     )]
     pub async fn get_repository(
         &self,
@@ -1532,13 +1532,17 @@ impl KairosMcp {
             let repo = repositories::resolve(conn, &params.repository)
                 .map_err(crate::api::org::repositories::map_error)?;
             let repo_id = repo.id;
+            let team_id = repo.team_id;
             let rendered = crate::api::org::repositories::render(conn, vec![repo])?.remove(0);
             // COLLIERY-T-0269: the same read as `GET /api/repositories/{slug}`.
-            let impacted_by = crate::api::org::repositories::impacted_by(
-                conn,
-                repo_id,
-                params.include_deleted.unwrap_or(false),
-            )?;
+            let include_deleted = params.include_deleted.unwrap_or(false);
+            let impacted_by =
+                crate::api::org::repositories::impacted_by(conn, repo_id, include_deleted)?;
+            // KAIROS-T-0599: the ADRs of the owner team that no `impacts`
+            // link names. Most ADRs have no link, and the grounding rule
+            // reads this tool, so it must find them here.
+            let (team_adrs, team_adrs_total) =
+                crate::api::org::repositories::owner_team_adrs(conn, team_id, include_deleted)?;
             // Slugs everywhere (KAIROS-T-0123): the delivery board is what
             // the skills pass to `board_items`, so print it the way they
             // will use it. It is the board of the OWNER, and the line says
@@ -1612,25 +1616,24 @@ impl KairosMcp {
             if impacted_by.is_empty() {
                 out.push_str("(none)\n");
             }
-            for item in impacted_by {
-                let kind = match (item.entity_type.as_str(), item.document_type) {
-                    ("document", Some(document_type)) => format!("document ({document_type})"),
-                    (entity_type, _) => entity_type.to_string(),
-                };
-                let state = match (item.lifecycle, item.column) {
-                    (Some(lifecycle), _) => format!(" · lifecycle: {lifecycle}"),
-                    (None, Some(column)) => format!(" · column: {column}"),
-                    (None, None) => String::new(),
-                };
+            for item in &impacted_by {
+                out.push_str(&impacting_item_line(item));
+            }
+            out.push_str(&format!(
+                "\n## ADRs of the owner team\nThe ADRs on the boards of the team {} that no `impacts` link names, newest first. A superseded ADR is not listed.\n",
+                rendered.team.slug
+            ));
+            if team_adrs.is_empty() {
+                out.push_str("(none)\n");
+            }
+            for item in &team_adrs {
+                out.push_str(&impacting_item_line(item));
+            }
+            let not_listed = team_adrs_total - team_adrs.len() as i64;
+            if not_listed > 0 {
                 out.push_str(&format!(
-                    "- {} — {} · {kind}{state}{}\n",
-                    item.short_code,
-                    item.title,
-                    if item.archived_at.is_some() {
-                        " [archived]"
-                    } else {
-                        ""
-                    }
+                    "- {not_listed} more: `team_pages {}` lists each ADR of the team.\n",
+                    rendered.team.slug
                 ));
             }
             out.push_str("\n## In flight\n");
@@ -6508,6 +6511,31 @@ fn owner_board_line(conn: &mut PgConnection, item: &ItemView) -> Result<String, 
         Some(board_id) => format!("- owner board: {}\n", board_by_id(conn, board_id)?.slug),
         None => String::new(),
     })
+}
+
+/// One line of a document or an ADR in a section of `get_repository`
+/// (COLLIERY-T-0269, KAIROS-T-0599): the short code, the title, the kind,
+/// the lifecycle or the column, and `[archived]`.
+fn impacting_item_line(item: &kairos_client::types_repositories::ImpactingItem) -> String {
+    let kind = match (item.entity_type.as_str(), item.document_type.as_deref()) {
+        ("document", Some(document_type)) => format!("document ({document_type})"),
+        (entity_type, _) => entity_type.to_string(),
+    };
+    let state = match (item.lifecycle.as_deref(), item.column.as_deref()) {
+        (Some(lifecycle), _) => format!(" · lifecycle: {lifecycle}"),
+        (None, Some(column)) => format!(" · column: {column}"),
+        (None, None) => String::new(),
+    };
+    format!(
+        "- {} — {} · {kind}{state}{}\n",
+        item.short_code,
+        item.title,
+        if item.archived_at.is_some() {
+            " [archived]"
+        } else {
+            ""
+        }
+    )
 }
 
 /// The line `- impacts: ...` of a document or of an ADR for `get_item`

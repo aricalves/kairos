@@ -936,17 +936,46 @@ pub(crate) fn impacted_by(
         kairos_db::impacts::items_of_repository(conn, repository_id, include_archived)
             .map_err(ApiError::internal)?
             .into_iter()
-            .map(|item| dto::ImpactingItem {
-                short_code: item.short_code,
-                title: item.title,
-                entity_type: item.entity_type,
-                document_type: item.document_type,
-                lifecycle: item.lifecycle,
-                column: item.column_name,
-                archived_at: item.archived_at.map(|at| at.to_rfc3339()),
-            })
+            .map(impacting_item_dto)
             .collect(),
     )
+}
+
+/// The most ADRs of the owner team that a repository read lists
+/// (KAIROS-T-0599). The total says how many more there are.
+pub(crate) const OWNER_TEAM_ADRS_LIMIT: i64 = 50;
+
+/// The ADRs of the owner team of a repository that no `impacts` link
+/// names (KAIROS-T-0599), newest first, [`OWNER_TEAM_ADRS_LIMIT`] at
+/// most, and the count of all of them: the ONE read for
+/// `GET /api/repositories/{slug}` and for the MCP tool `get_repository`.
+/// An ADR with a link is in [`impacted_by`] of the repository it names,
+/// so no ADR shows twice. A superseded ADR is not in the list.
+pub(crate) fn owner_team_adrs(
+    conn: &mut PgConnection,
+    team_id: Uuid,
+    include_archived: bool,
+) -> Result<(Vec<dto::ImpactingItem>, i64), ApiError> {
+    let (items, total) = kairos_db::impacts::team_adrs_without_impacts(
+        conn,
+        team_id,
+        include_archived,
+        OWNER_TEAM_ADRS_LIMIT,
+    )
+    .map_err(ApiError::internal)?;
+    Ok((items.into_iter().map(impacting_item_dto).collect(), total))
+}
+
+fn impacting_item_dto(item: kairos_db::impacts::ImpactingItem) -> dto::ImpactingItem {
+    dto::ImpactingItem {
+        short_code: item.short_code,
+        title: item.title,
+        entity_type: item.entity_type,
+        document_type: item.document_type,
+        lifecycle: item.lifecycle,
+        column: item.column_name,
+        archived_at: item.archived_at.map(|at| at.to_rfc3339()),
+    }
 }
 
 /// One repository (open tenant-wide): the directory row plus its webhook
@@ -958,6 +987,10 @@ pub(crate) fn impacted_by(
 /// decisions about it. It has the live items only.
 /// `?include_deleted=true` adds the archived items, each marked with
 /// `archived_at`.
+///
+/// `owner_team_adrs` has the other ADRs of the owner team (KAIROS-T-0599).
+/// No `impacts` link names them. The newest come first, 50 at most.
+/// A superseded ADR is not there. `owner_team_adrs_total` counts them all.
 #[utoipa::path(
     get,
     path = "/api/repositories/{slug}",
@@ -982,6 +1015,8 @@ pub(crate) async fn get_repository(
         .run(&tenant.slug, move |conn| {
             let repo = repositories::resolve(conn, &slug).map_err(map_error)?;
             let repo_id = repo.id;
+            let (owner_team_adrs, owner_team_adrs_total) =
+                owner_team_adrs(conn, repo.team_id, query.include_deleted)?;
             let connection_id = kairos_db::forge::find_connection_for_repository(conn, repo_id)
                 .map_err(super::forge::map_error)?
                 .map(|c| c.id.to_string());
@@ -1016,6 +1051,8 @@ pub(crate) async fn get_repository(
                 in_flight,
                 refs,
                 impacted_by: impacted_by(conn, repo_id, query.include_deleted)?,
+                owner_team_adrs,
+                owner_team_adrs_total,
             })
         })
         .await?;

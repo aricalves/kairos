@@ -31,7 +31,7 @@ To give the task to a different person, `hand_off_item` (`to`: a user id, an ema
 
 ## Ground
 
-Before the plan, read the record: [GROUND.md](../../meta/kairos/GROUND.md). The ADRs and the documents that impact this repository, the documents of the parent initiative, and `related_work` on the task. Write the sentence it gives ("Read: ... Nothing read contradicts this plan." or "Step N contradicts ...") on the task and in your reply, before the first change.
+Before the plan, read the record: [GROUND.md](../../meta/kairos/GROUND.md). The ADRs and the documents of this repository (`get_repository <slug>`: the items that impact it, and the ADRs of the owner team; `team_pages <team>`: the tree of the team), the documents of the parent initiative, and `related_work` on the task. Write the sentence it gives ("Read: ... Nothing read contradicts this plan." or "Step N contradicts ...") on the task and in your reply, before the first change.
 
 ## Check the names
 

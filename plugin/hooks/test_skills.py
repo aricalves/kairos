@@ -176,6 +176,10 @@ class GroundBeforePlanning(unittest.TestCase):
         for phrase in (
             "`get_item`",
             "repository: <slug>, entity_type: [adr, document]",
+            # KAIROS-T-0599: the ADRs with no `impacts` link.
+            "`get_repository <slug>`",
+            "ADRs of the owner team",
+            "`team_pages <team>`",
             "`related_work`",
             "parent chain",
             "Read: KAIROS-A-0028, COLLIERY-D-0013. Nothing read contradicts this plan.",

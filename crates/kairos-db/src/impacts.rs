@@ -72,7 +72,7 @@ use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::result::{DatabaseErrorKind, Error as DieselError};
 use diesel::sql_query;
-use diesel::sql_types::{Array, Bool, Nullable, Text, Timestamptz, Uuid as SqlUuid};
+use diesel::sql_types::{Array, BigInt, Bool, Nullable, Text, Timestamptz, Uuid as SqlUuid};
 use uuid::Uuid;
 
 use kairos_core::short_code::ItemType;
@@ -464,6 +464,55 @@ pub fn items_of_repository(
     .bind::<SqlUuid, _>(repository_id)
     .bind::<Bool, _>(include_archived)
     .load(conn)?)
+}
+
+/// The ADRs of a team that no `impacts` link names (KAIROS-T-0599), as
+/// `get_repository` shows them for the owner team of a repository.
+///
+/// An ADR of the team is an ADR on a live board of the team. An ADR in the
+/// column `Superseded` is not in the list. An ADR with an `impacts` link
+/// to a repository is not in the list either: the link says what it is
+/// about, and the read of that repository lists it
+/// ([`items_of_repository`]). So no ADR shows twice.
+///
+/// Newest first, `limit` at most. The second value is the count of all
+/// the ADRs that match, so the caller can say that the list is cut.
+/// `include_archived` is as in [`items_of_repository`] (KAIROS-A-0020).
+pub fn team_adrs_without_impacts(
+    conn: &mut PgConnection,
+    team_id: Uuid,
+    include_archived: bool,
+    limit: i64,
+) -> Result<(Vec<ImpactingItem>, i64), ImpactError> {
+    #[derive(QueryableByName)]
+    struct Count {
+        #[diesel(sql_type = BigInt)]
+        n: i64,
+    }
+    const MATCHING: &str = "FROM adrs a \
+         JOIN boards b ON b.id = a.board_id AND b.deleted_at IS NULL AND b.team_id = $1 \
+         LEFT JOIN board_columns c ON c.id = a.column_id \
+         WHERE ($2 OR a.deleted_at IS NULL) \
+           AND COALESCE(c.name, '') <> 'Superseded' \
+           AND NOT EXISTS (SELECT 1 FROM item_impacts i \
+                            WHERE i.item_id = a.id AND i.target_kind = 'repository')";
+    let total: Count = sql_query(format!("SELECT count(*) AS n {MATCHING}"))
+        .bind::<SqlUuid, _>(team_id)
+        .bind::<Bool, _>(include_archived)
+        .get_result(conn)?;
+    let items = sql_query(format!(
+        "SELECT a.id AS item_id, 'adr' AS entity_type, a.short_code, a.title, \
+                NULL::text AS document_type, NULL::text AS lifecycle, \
+                c.name AS column_name, a.deleted_at AS archived_at \
+         {MATCHING} \
+         ORDER BY a.created_at DESC, a.short_code DESC \
+         LIMIT $3"
+    ))
+    .bind::<SqlUuid, _>(team_id)
+    .bind::<Bool, _>(include_archived)
+    .bind::<BigInt, _>(limit)
+    .load(conn)?;
+    Ok((items, total.n))
 }
 
 #[derive(QueryableByName)]

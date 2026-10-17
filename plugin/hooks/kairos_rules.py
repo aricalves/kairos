@@ -41,7 +41,7 @@ if HERE not in sys.path:
 import git_guard  # noqa: E402  (simple_commands, words_of)
 import session_start  # noqa: E402  (read_frontmatter)
 
-RULES_VERSION = 1
+RULES_VERSION = 2
 
 KAIROS_TOOL = re.compile(r"^mcp__(?:plugin_kairos_)?kairos[A-Za-z0-9_-]*__")
 SESSION_ID = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -52,7 +52,7 @@ ENV_OPTIONS_WITH_VALUE = ("-u", "--unset", "-C", "--chdir")
 RULES = """Kairos rules (once per session, from the kairos plugin):
 - {cite}
 - Name work by its short code and the words of Kairos: Backlog, Todo, Active, Completed; task, initiative, ADR, document. Not "ticket", "sprint", "epic", "done".
-- Ground before you plan: read the ADRs and the documents that impact the repository and the documents of the parent initiative, and name what you read (COLLIERY-I-0627).
+- Ground before you plan: read the ADRs and the documents of the repository and the documents of the parent initiative, and name what you read (COLLIERY-I-0627). Two routes give them: `get_repository <slug>` (the items that impact the repository, and the ADRs of the owner team) and `team_pages <team>` (the tree of the documents and the ADRs of the team).
 - A decision about the system under work goes to Kairos: an ADR, the spec, or a note on the initiative. Not to local memory (COLLIERY-I-0628).
 - Mark what you did not check as "not checked", in notes and in replies."""
 
