@@ -141,7 +141,8 @@ pub enum TeamMembersCommand {
     Remove {
         /// Team slug or UUID
         team: String,
-        /// The user: a user id, an email or a user name
+        /// The user: a user id, an email, a user name or the name of a
+        /// service account (see `kairos members list`)
         #[arg(long, value_name = "USER")]
         user: String,
         #[command(flatten)]

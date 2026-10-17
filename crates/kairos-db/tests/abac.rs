@@ -860,6 +860,7 @@ fn archived_items_resolve_the_same_capabilities_as_live_ones() {
             position: 0,
             is_done: false,
             claims: false,
+            keeps_claims: false,
         })
         .returning(schema::board_columns::id)
         .get_result(&mut conn)

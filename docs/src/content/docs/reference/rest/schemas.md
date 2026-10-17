@@ -244,6 +244,7 @@ A board column.
 | `created_at` | `string` | yes | RFC 3339. |
 | `id` | `string` | yes | Column id (UUID). |
 | `is_done` | `boolean` | yes | Occupants count as completed for children-progress rollups (KAIROS-T-0080). The server sends it in each response, so the schema shows it as required (COLLIERY-T-0254). The default is for the client only: a response of an older server has no `is_done`, and it reads as `false`. |
+| `keeps_claims` | `boolean` | yes | A task with a claim keeps it in this column, and a task with no claim gets none here (KAIROS-T-0529). The Blocked column of a delivery board has it. The default is for the client only: a response of an older server has no `keeps_claims`. |
 | `name` | `string` | yes |  |
 | `position` | `integer` | yes | Display ordering, 0-indexed. |
 | `removed_at` | `string`, nullable | yes | When this column was REMOVED from its board (RFC 3339), `null` while it is part of the board (KAIROS-T-0161, KAIROS-T-0164). `GET /api/boards/{id}` omits removed columns entirely unless it is asked for them (`?include_removed_columns=true`), so this is `null` on every default read. It is a timestamp only for a caller that wants the column an ARCHIVED card was put away in — the audit fact the soft delete exists to preserve. Named `removed_at`, not `archived_at`: the entity DTOs' `archived_at` is the KAIROS-A-0020 work-item state, and a column is not work. The server sends it in each response, `null` for a live column, so the schema shows it as required and nullable (COLLIERY-T-0256, the pattern of COLLIERY-T-0254). The default is for the client only: a response of an older server has no `removed_at`, and it reads as `None`. |
@@ -2934,6 +2935,7 @@ Body of `PATCH /api/boards/{id}/columns/{col_id}` — rename, move, and/or set t
 |---|---|---|---|
 | `claims` | `boolean`, nullable | no | A task that a person moves into this column gets a claim for the person (KAIROS-T-0359). When the flag goes off, the claims of the tasks in the column end. |
 | `is_done` | `boolean`, nullable | no | Mark occupants as completed for children-progress rollups (KAIROS-T-0080). An explicit admin choice — the dead-end heuristic only ever suggests. |
+| `keeps_claims` | `boolean`, nullable | no | A task with a claim keeps it in this column, and a task with no claim gets none here (KAIROS-T-0529). When the flag goes off, the claims of the tasks in the column end, unless the column has `claims` too. |
 | `name` | `string`, nullable | no |  |
 | `position` | `integer`, nullable | no | New 0-indexed position; the other columns shift around it. |
 | `wip_limit` | `integer`, nullable | no | The WIP limit of the column (KAIROS-T-0371): a number above 0, or `null` to remove the limit. Leave it out to keep the limit. |
