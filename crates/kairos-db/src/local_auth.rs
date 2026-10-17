@@ -109,10 +109,24 @@ pub fn revoke_all_sessions_for_user(conn: &mut PgConnection, user_id: Uuid) -> Q
 
 /// Record that a session was just used. Best-effort: the auth path ignores the
 /// result, so a write failure never fails a request.
-pub fn touch_session(conn: &mut PgConnection, id: Uuid) -> QueryResult<usize> {
-    diesel::update(local_sessions::table.filter(local_sessions::id.eq(id)))
-        .set(local_sessions::last_used_at.eq(diesel::dsl::now))
-        .execute(conn)
+pub fn touch_session(
+    conn: &mut PgConnection,
+    id: Uuid,
+    older_than: DateTime<Utc>,
+) -> QueryResult<usize> {
+    // KAIROS-T-0610: a request within the window writes nothing, so the
+    // reads of a page load do not each write the session row.
+    diesel::update(
+        local_sessions::table
+            .filter(local_sessions::id.eq(id))
+            .filter(
+                local_sessions::last_used_at
+                    .is_null()
+                    .or(local_sessions::last_used_at.lt(older_than)),
+            ),
+    )
+    .set(local_sessions::last_used_at.eq(diesel::dsl::now))
+    .execute(conn)
 }
 
 /// The user with this email, whether or not they have a password.

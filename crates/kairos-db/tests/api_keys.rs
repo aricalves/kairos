@@ -111,14 +111,25 @@ fn api_key_round_trip() {
     assert_eq!(listed.len(), 1);
 
     // Best-effort last-used touch.
+    let window = chrono::Duration::minutes(1);
     assert_eq!(
-        api_keys::touch_last_used(&mut conn, created.id).expect("touch"),
+        api_keys::touch_last_used(&mut conn, created.id, Utc::now() - window).expect("touch"),
         1
     );
     let touched = api_keys::find_key(&mut conn, created.id)
         .expect("find")
         .expect("present");
     assert!(touched.last_used_at.is_some());
+    // KAIROS-T-0610: a stamp inside the window is not written again; one
+    // older than the window is.
+    assert_eq!(
+        api_keys::touch_last_used(&mut conn, created.id, Utc::now() - window).expect("touch again"),
+        0
+    );
+    assert_eq!(
+        api_keys::touch_last_used(&mut conn, created.id, Utc::now() + window).expect("touch, old"),
+        1
+    );
 
     // Revoke → no longer valid.
     let revoked = api_keys::revoke_key(&mut conn, created.id).expect("revoke");

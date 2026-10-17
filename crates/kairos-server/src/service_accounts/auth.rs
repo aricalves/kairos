@@ -108,6 +108,11 @@ pub struct ApiKeyTenant(pub String);
 /// owning service-account user. Returns the [`AuthContext`] for that principal
 /// and the key's tenant slug. The key of a person (an agent key, KAIROS-T-0359)
 /// sets [`AuthContext::agent_key`]. Every failure is the uniform [`bad_key`] 401.
+/// How fresh a `last_used_at` stamp can be before a request writes it
+/// again (KAIROS-T-0610): one minute. The stamp says "this key was in use
+/// around then"; a request inside the window adds nothing to that.
+pub const LAST_USED_WINDOW: chrono::Duration = chrono::Duration::minutes(1);
+
 pub async fn authenticate_api_key(
     state: &AppState,
     token: &str,
@@ -160,10 +165,17 @@ pub async fn authenticate_api_key(
     }
 
     // Best-effort last-used stamp: never fail or block the request on it.
-    let _ = diesel::update(api_keys::table.filter(api_keys::id.eq(row.id)))
-        .set(api_keys::last_used_at.eq(diesel::dsl::now))
-        .execute(&mut *conn)
-        .await;
+    // KAIROS-T-0610: written only when the last stamp is older than the
+    // window, so a read does not write on every call.
+    let stale = row
+        .last_used_at
+        .is_none_or(|at| at < Utc::now() - LAST_USED_WINDOW);
+    if stale {
+        let _ = diesel::update(api_keys::table.filter(api_keys::id.eq(row.id)))
+            .set(api_keys::last_used_at.eq(diesel::dsl::now))
+            .execute(&mut *conn)
+            .await;
+    }
     drop(conn);
 
     // KAIROS-T-0359: the key of a person is an agent key; it acts as the

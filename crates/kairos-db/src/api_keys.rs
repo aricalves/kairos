@@ -120,12 +120,26 @@ pub fn revoke_key(conn: &mut PgConnection, id: Uuid) -> QueryResult<ApiKey> {
         .get_result(conn)
 }
 
-/// Record that a key was just used. Best-effort: the auth path ignores the
-/// result so a write failure never blocks a request (KAIROS-T-0058).
-pub fn touch_last_used(conn: &mut PgConnection, id: Uuid) -> QueryResult<usize> {
-    diesel::update(api_keys::table.filter(api_keys::id.eq(id)))
-        .set(api_keys::last_used_at.eq(diesel::dsl::now))
-        .execute(conn)
+/// Record that a key was just used, when its last stamp is older than
+/// `older_than` or missing. Best-effort: the auth path ignores the result
+/// so a write failure never blocks a request (KAIROS-T-0058). The stamp is
+/// a coarse "when was this key last seen", so a request within the window
+/// writes nothing: a read no longer writes on every call (KAIROS-T-0610).
+/// Returns the rows written: 1, or 0 when the stamp was fresh.
+pub fn touch_last_used(
+    conn: &mut PgConnection,
+    id: Uuid,
+    older_than: DateTime<Utc>,
+) -> QueryResult<usize> {
+    diesel::update(
+        api_keys::table.filter(api_keys::id.eq(id)).filter(
+            api_keys::last_used_at
+                .is_null()
+                .or(api_keys::last_used_at.lt(older_than)),
+        ),
+    )
+    .set(api_keys::last_used_at.eq(diesel::dsl::now))
+    .execute(conn)
 }
 
 /// Rotate a key (KAIROS-T-0370): insert `new`, and end the old key at
