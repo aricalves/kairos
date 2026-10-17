@@ -274,15 +274,18 @@ mod tests {
     }
 
     #[test]
-    fn the_tag_has_the_branch_and_the_next_step() {
+    fn the_tag_has_the_branch_the_next_step_and_the_age() {
+        let now = DateTime::parse_from_rfc3339("2026-10-17T10:00:00+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
         assert_eq!(
-            state_tag(&state(), Utc::now()),
-            " [state: branch kairos-t-0506; next: Wait for CI]"
+            state_tag(&state(), now),
+            " [state: branch kairos-t-0506; next: Wait for CI; 2 days ago]"
         );
         let mut none = state();
         none.branch = None;
         none.next_step = None;
-        assert_eq!(state_tag(&none, Utc::now()), "");
+        assert_eq!(state_tag(&none, now), "");
     }
 
     #[test]
