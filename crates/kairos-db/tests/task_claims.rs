@@ -7,6 +7,8 @@
 //! - a person who moves a task into Active gets the claim, with the agent
 //!   key of the session; a move out of Active ends it; a service account
 //!   that moves a task into Active makes no claim;
+//! - a move into a claims column of a task with a claim keeps it, whoever
+//!   moves it, and Blocked keeps a claim and gives none (KAIROS-T-0529);
 //! - a hand-off and a release; their refusals;
 //! - an archive of the task, and an admin who removes the flag from the
 //!   column, end the claim;
@@ -290,7 +292,8 @@ fn a_task_in_active_has_a_claim() {
     );
 
     // A move between two claims columns by a different person: the claim
-    // goes to that person.
+    // stays with its holder (KAIROS-T-0529, KAIROS-A-0034). A hand-off is
+    // the way to give it to a different person.
     let review = boards::add_column(&mut conn, web, "Review", 5, alice).expect("column");
     boards::set_column_claims(&mut conn, review.id, true, alice).expect("flag");
     let active = column(&mut conn, web, "Active");
@@ -298,12 +301,12 @@ fn a_task_in_active_has_a_claim() {
     boards::transition_task(&mut conn, task, review.id, bob).expect("to Review");
     let claim = task_claims::claim_of(&mut conn, task)
         .expect("claim")
-        .expect("bob has the claim");
-    assert_eq!(claim.user_id, bob);
-    assert_eq!(claim.agent_key_id, None);
+        .expect("alice keeps the claim");
+    assert_eq!(claim.user_id, alice);
     assert_eq!(
-        activity(&mut conn, task, ActivityAction::Claim).last(),
-        Some(&format!("claim:{bob} from:{alice}"))
+        activity(&mut conn, task, ActivityAction::Claim),
+        vec![format!("claim:{alice}")],
+        "no new claim row"
     );
 
     // The admin removes the flag: the claim ends.
@@ -311,7 +314,7 @@ fn a_task_in_active_has_a_claim() {
     assert_eq!(task_claims::claim_of(&mut conn, task).expect("claim"), None);
     assert_eq!(
         activity(&mut conn, task, ActivityAction::Release).last(),
-        Some(&format!("release:{bob} reason:column"))
+        Some(&format!("release:{alice} reason:column"))
     );
 
     // --- out of Active: the claim ends --------------------------------------
@@ -334,15 +337,24 @@ fn a_task_in_active_has_a_claim() {
     walk(&mut conn, web, task, &["Todo", "Active"], ci);
     assert_eq!(task_claims::claim_of(&mut conn, task).expect("claim"), None);
     assert!(activity(&mut conn, task, ActivityAction::Claim).is_empty());
-    // A claim that the task had ends at a move by a service account.
+    // Blocked keeps claims and gives none (KAIROS-T-0529): alice's move
+    // back into Active gives her the claim.
     walk(&mut conn, web, task, &["Blocked", "Active"], alice);
-    assert!(
+    assert_eq!(
         task_claims::claim_of(&mut conn, task)
             .expect("claim")
-            .is_some()
+            .map(|c| c.user_id),
+        Some(alice)
     );
+    // A move by a service account keeps the claim of the person: the claim
+    // is the work, not the move (KAIROS-A-0034).
     walk(&mut conn, web, task, &["Blocked", "Active"], ci);
-    assert_eq!(task_claims::claim_of(&mut conn, task).expect("claim"), None);
+    assert_eq!(
+        task_claims::claim_of(&mut conn, task)
+            .expect("claim")
+            .map(|c| c.user_id),
+        Some(alice)
+    );
 
     // --- hand-off and release -------------------------------------------------
     let task = new_task(&mut conn, web, "Handed", alice);
