@@ -72,8 +72,19 @@ claude --dangerously-load-development-channels plugin:kairos@kairos
 
 Claude Code shows a warning for the development channel. The line under the
 banner names `plugin:kairos@kairos`. Run `/mcp`: `kairos-dispatch` is
-connected, and its instructions say where it listens. With no config, its
-instructions say that the channel is off, and why.
+connected. Its instructions say where it listens, and that this session owns
+the port.
+
+With no config, the channel does not listen. A folder with Kairos wiring has
+`.claude/kairos.local.md`, or is a worktree of a clone with that file. There,
+the instructions say that dispatch is off, and give the three steps of this
+page. In a folder with no wiring, the channel gives no instructions.
+
+The channel is a server of the plugin, so it starts in each session of the
+folder. A session without `--dangerously-load-development-channels` also
+listens, but Claude Code drops the events of that session. The channel cannot
+see the difference: the `initialize` request of Claude Code is the same with
+and without the flag. Start each session of the folder with the flag.
 
 ## 5. Test it
 
@@ -114,6 +125,7 @@ the plugin lets that push through, and asks for each other push.
 
 | Delivery | Answer | Pushed |
 |---|---|---|
+| Any delivery before the session ends the MCP handshake | 503 | no: Kairos tries again |
 | A wrong `X-Kairos-Signature` | 401 | no |
 | An event older than 24 hours, or more than 5 minutes in the future | 401 | no |
 | `X-Kairos-Delivery` different from the `id` of the body | 401 | no |
@@ -121,8 +133,13 @@ the plugin lets that push through, and asks for each other push.
 | An event other than `ping`, `task.entered_column` and `task.unblocked` | 200 | no |
 
 Events that arrive while the session is busy wait, and arrive together on its
-next turn. One session listens on a port. A second session of the same board
-finds the port taken, and its channel is off.
+next turn. The channel keeps the delivery ids in `<board>.seen.json` beside
+the config, so a restart does not push a delivery again.
+
+One session listens on a port. It writes `<board>.owner.json` with its process
+id and its folder. A second session of the same board finds the port taken.
+Its channel is off, and its instructions name the folder and the process id
+of the session that listens.
 
 ## Related reading
 

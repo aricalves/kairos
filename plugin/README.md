@@ -177,7 +177,16 @@ the item itself.
   is `KAIROS_CHANNEL_BOARD`, else the name of the folder of the session. Write it with
   `bin/kairos-channel setup <name> --port <port>`, the secret of the target on stdin; the
   target comes from `kairos boards dispatch add-target <board> --hook-url http://127.0.0.1:<port>/`.
-  With no config, the server serves MCP with no listener and its instructions say why.
+  With no config, the server serves MCP with no listener (KAIROS-T-0544). In a folder with no
+  Kairos wiring it gives no instructions; in a wired folder its instructions give the three
+  steps to turn dispatch on, with the full path of `kairos-channel`.
+- The listener answers 503 until the client sends `notifications/initialized`; Kairos tries
+  again. The client's `initialize` does not show whether the session loaded the channel, so
+  a session started without the flag still takes the deliveries and drops them.
+- The delivery ids are kept in `<name>.seen.json` beside the config (mode 600): a restart does
+  not push a delivery twice. The session that listens writes `<name>.owner.json` (pid, folder,
+  start time); a second session that finds the port taken names it.
+- The instructions name the intake steps (KAIROS-T-0543) and the push policy (KAIROS-A-0046).
 - Channels are in research preview: the session starts with
   `claude --dangerously-load-development-channels plugin:kairos@kairos`. The how-to
   "Receive dispatch in a Claude Code session" in the book has the steps.

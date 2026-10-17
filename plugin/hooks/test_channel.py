@@ -174,71 +174,205 @@ class TheInstructionsCanBeFollowed(unittest.TestCase):
         self.assertEqual(order, sorted(order))
 
 
+def load_json(path):
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def wire(folder, board="web-delivery"):
+    """Write a Kairos wiring file into `folder`."""
+    os.makedirs(os.path.join(folder, ".claude"), exist_ok=True)
+    with open(os.path.join(folder, ".claude", "kairos.local.md"), "w") as f:
+        f.write(f"---\ndeployment_url: https://kairos.example\nteam_board: {board}\n---\n")
+
+
+def sentences(text):
+    return [part for part in re.split(r"(?<=[.?!:])\s+", text) if part.strip()]
+
+
 class EndToEnd(unittest.TestCase):
     def setUp(self):
         self.home = tempfile.TemporaryDirectory()
-        self.env = dict(os.environ, HOME=self.home.name, KAIROS_CHANNEL_BOARD="web")
+        self.project = tempfile.TemporaryDirectory()
+        self.env = dict(os.environ, HOME=self.home.name, KAIROS_CHANNEL_BOARD="web",
+                        CLAUDE_PROJECT_DIR=self.project.name)
 
     def tearDown(self):
         self.home.cleanup()
+        self.project.cleanup()
 
-    def start(self):
+    def start(self, initialized=True):
         proc = subprocess.Popen([sys.executable, SCRIPT], stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 env=self.env, text=True)
+        for pipe in (proc.stdin, proc.stdout, proc.stderr):
+            self.addCleanup(pipe.close)
+        self.addCleanup(proc.wait)  # cleanups run last first: kill, wait, close
         self.addCleanup(proc.kill)
-        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
-                                     "params": {"protocolVersion": "2025-06-18"}}) + "\n")
+        self.send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                         "params": {"protocolVersion": "2025-06-18"}})
+        reply = json.loads(proc.stdout.readline())
+        if initialized:
+            self.initialized(proc)
+        return proc, reply
+
+    def send(self, proc, message):
+        proc.stdin.write(json.dumps(message) + "\n")
         proc.stdin.flush()
-        return proc, json.loads(proc.stdout.readline())
 
-    def test_with_no_config_the_channel_is_off(self):
-        _, reply = self.start()
-        result = reply["result"]
-        self.assertEqual(result["capabilities"]["experimental"], {"claude/channel": {}})
-        self.assertIn("channel is off", result["instructions"])
-        self.assertIn("kairos-channel setup web", result["instructions"])
+    def initialized(self, proc):
+        self.send(proc, {"jsonrpc": "2.0", "method": "notifications/initialized"})
+        # A ping answer shows that the server read the notification.
+        self.send(proc, {"jsonrpc": "2.0", "id": 99, "method": "ping"})
+        self.assertEqual(json.loads(proc.stdout.readline())["id"], 99)
 
-    def test_setup_writes_a_private_config_and_a_signed_post_arrives(self):
-        port = free_port()
+    def setup_config(self, port):
         out = subprocess.run([sys.executable, SCRIPT, "setup", "web", "--port", str(port)],
                              input=SECRET, capture_output=True, text=True, env=self.env)
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertNotIn(SECRET, out.stdout + out.stderr)
-        path = os.path.join(self.home.name, ".claude", "channels", "kairos", "web.json")
+        return out
+
+    def post(self, port, body, headers):
+        request = urllib.request.Request(f"http://127.0.0.1:{port}/", data=body, method="POST",
+                                         headers=headers)
+        for _ in range(50):
+            try:
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    return response.status
+            except urllib.error.HTTPError as err:
+                return err.code
+            except urllib.error.URLError:
+                time.sleep(0.05)
+        self.fail("the listener did not start")
+
+    def config_file(self, name):
+        return os.path.join(self.home.name, ".claude", "channels", "kairos", name)
+
+    def test_with_no_config_and_no_wiring_the_channel_is_silent(self):
+        _, reply = self.start()
+        result = reply["result"]
+        self.assertEqual(result["capabilities"]["experimental"], {"claude/channel": {}})
+        self.assertNotIn("instructions", result)
+
+    def test_with_no_config_in_a_wired_folder_the_message_gives_the_steps(self):
+        wire(self.project.name)
+        _, reply = self.start()
+        text = reply["result"]["instructions"]
+        script = os.path.realpath(SCRIPT)
+        for part in (
+            "Kairos dispatch is off (optional)",
+            "1. Run `kairos boards dispatch add-target web-delivery --name \"Claude session\" "
+            "--hook-url http://127.0.0.1:<port>/` and copy the secret.",
+            "http://host.docker.internal:<port>/",
+            f"2. Run `{script} setup web --port <port>` with the secret on stdin.",
+            "Use the port of the target URL.",
+            "3. Start the session again with "
+            "`claude --dangerously-load-development-channels plugin:kairos@kairos`.",
+        ):
+            with self.subTest(part=part):
+                self.assertIn(part, text)
+        used = set(re.findall(r"(--[a-z][a-z0-9-]*)", text.split("add-target", 1)[1].split("`", 1)[0]))
+        self.assertTrue(used <= DispatchHowTosNameRealFlags().cli_flags(), used)
+        for sentence in sentences(text):
+            with self.subTest(sentence=sentence[:60]):
+                self.assertLessEqual(len(sentence.split()), 20)
+
+    def test_a_worktree_reads_the_wiring_of_its_clone(self):
+        clone = os.path.join(self.project.name, "repo")
+        os.makedirs(clone)
+        run = lambda *args: subprocess.run(["git", "-C", clone, "-c", "user.name=Robin",
+                                            "-c", "user.email=robin@example.com", *args],
+                                           check=True, capture_output=True)
+        run("init", "-q", "-b", "main")
+        run("commit", "-q", "--allow-empty", "-m", "first")
+        wire(clone)
+        worktree = os.path.join(self.project.name, "wt-web-t-0001")
+        run("worktree", "add", "-q", worktree, "-b", "web-t-0001")
+        self.env["CLAUDE_PROJECT_DIR"] = worktree
+        _, reply = self.start()
+        self.assertIn("Kairos dispatch is off (optional)", reply["result"]["instructions"])
+
+    def test_a_folder_name_that_is_not_plain_names_the_variable(self):
+        folder = os.path.join(self.project.name, "my project")
+        wire(folder)
+        self.env["CLAUDE_PROJECT_DIR"] = folder
+        del self.env["KAIROS_CHANNEL_BOARD"]
+        _, reply = self.start()
+        self.assertIn("KAIROS_CHANNEL_BOARD", reply["result"]["instructions"])
+
+    def test_setup_writes_a_private_config_and_a_signed_post_arrives(self):
+        port = free_port()
+        out = self.setup_config(port)
+        self.assertIn("--dangerously-load-development-channels", out.stdout)
+        path = self.config_file("web.json")
         self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
 
-        proc, reply = self.start()
-        self.assertIn(f"127.0.0.1:{port}", reply["result"]["instructions"])
-        url = f"http://127.0.0.1:{port}/"
+        proc, reply = self.start(initialized=False)
+        text = reply["result"]["instructions"]
+        self.assertIn(f"127.0.0.1:{port}", text)
+        self.assertIn(f"This session owns the port (pid {proc.pid}", text)
         now = datetime.now(timezone.utc)
-
-        def post(body, headers):
-            request = urllib.request.Request(url, data=body, method="POST", headers=headers)
-            for _ in range(50):
-                try:
-                    with urllib.request.urlopen(request, timeout=5) as response:
-                        return response.status
-                except urllib.error.HTTPError as err:
-                    return err.code
-                except urllib.error.URLError:
-                    time.sleep(0.05)
-            self.fail("the listener did not start")
-
         body, headers = delivery(created=now)
+        # Before the handshake is done the listener answers 503: Kairos tries again.
+        self.assertEqual(self.post(port, body, headers), 503)
+        self.initialized(proc)
         bad = dict(headers, **{"x-kairos-signature": "sha256=" + "0" * 64})
-        self.assertEqual(post(body, bad), 401)
-        self.assertEqual(post(body, headers), 200)
-        self.assertEqual(post(body, headers), 200, "a repeat is answered 200")
+        self.assertEqual(self.post(port, body, bad), 401)
+        self.assertEqual(self.post(port, body, headers), 200)
+        self.assertEqual(self.post(port, body, headers), 200, "a repeat is answered 200")
         note = json.loads(proc.stdout.readline())
         self.assertEqual(note["method"], "notifications/claude/channel")
         self.assertEqual(note["params"]["meta"]["code"], "WEB-T-0012")
         # The repeat pushed nothing: the next line is the answer to a ping.
-        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 2, "method": "ping"}) + "\n")
-        proc.stdin.flush()
+        self.send(proc, {"jsonrpc": "2.0", "id": 2, "method": "ping"})
         self.assertEqual(json.loads(proc.stdout.readline()), {"jsonrpc": "2.0", "id": 2, "result": {}})
         proc.kill()
         self.assertNotIn(SECRET, proc.stderr.read())
+        owner = load_json(self.config_file("web.owner.json"))
+        self.assertEqual(owner["pid"], proc.pid)
+        self.assertEqual(os.stat(self.config_file("web.owner.json")).st_mode & 0o777, 0o600)
+
+    def test_a_delivery_is_not_pushed_again_after_a_restart(self):
+        port = free_port()
+        self.setup_config(port)
+        body, headers = delivery(created=datetime.now(timezone.utc))
+        first, _ = self.start()
+        self.assertEqual(self.post(port, body, headers), 200)
+        self.assertEqual(json.loads(first.stdout.readline())["params"]["meta"]["code"], "WEB-T-0012")
+        first.kill()
+        first.wait()
+        seen = self.config_file("web.seen.json")
+        self.assertEqual(load_json(seen), ["d-1"])
+        self.assertEqual(os.stat(seen).st_mode & 0o777, 0o600)
+
+        second, _ = self.start()
+        self.assertEqual(self.post(port, body, headers), 200)
+        self.send(second, {"jsonrpc": "2.0", "id": 3, "method": "ping"})
+        self.assertEqual(json.loads(second.stdout.readline())["id"], 3, "the repeat pushed nothing")
+
+    def test_a_second_session_names_the_session_that_owns_the_port(self):
+        port = free_port()
+        self.setup_config(port)
+        first, _ = self.start()
+        self.assertEqual(self.post(port, b"", {}), 400)  # the first one listens
+        _, reply = self.start()
+        text = reply["result"]["instructions"]
+        self.assertIn("channel is off", text)
+        self.assertIn(f"pid {first.pid}", text)
+        self.assertIn(self.project.name.strip("/").split("/")[-1], text)
+
+    def test_a_port_that_a_different_program_holds_says_so(self):
+        port = free_port()
+        self.setup_config(port)
+        with socket.socket() as holder:
+            holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            holder.bind(("127.0.0.1", port))
+            holder.listen(1)
+            _, reply = self.start()
+        text = reply["result"]["instructions"]
+        self.assertIn("a different program", text)
+        self.assertIn(f"lsof -i :{port}", text)
 
     def test_a_config_that_others_can_read_is_refused(self):
         folder = os.path.join(self.home.name, ".claude", "channels", "kairos")
@@ -249,6 +383,25 @@ class EndToEnd(unittest.TestCase):
         os.chmod(path, 0o644)
         _, reply = self.start()
         self.assertIn("chmod 600", reply["result"]["instructions"])
+
+
+class SeenStore(unittest.TestCase):
+    def test_the_seen_ids_survive_a_new_checker(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = os.path.join(folder, "web.seen.json")
+            body, headers = delivery()
+            first = channel.Checker(SECRET, now=lambda: NOW, store=store)
+            self.assertEqual(first.check(body, headers)[2], "ok")
+            second = channel.Checker(SECRET, now=lambda: NOW, store=store)
+            self.assertEqual(second.check(body, headers)[2], "repeat")
+
+    def test_a_bad_store_file_is_an_empty_store(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = os.path.join(folder, "web.seen.json")
+            with open(store, "w") as f:
+                f.write("not json")
+            body, headers = delivery()
+            self.assertEqual(channel.Checker(SECRET, now=lambda: NOW, store=store).check(body, headers)[2], "ok")
 
 
 if __name__ == "__main__":
