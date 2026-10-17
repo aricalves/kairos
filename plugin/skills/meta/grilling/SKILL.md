@@ -1,6 +1,6 @@
 ---
 name: grilling
-description: Grill the user relentlessly about a plan or design. Use when the user wants to stress-test a plan before building, or uses any 'grill' trigger phrases.
+description: Grill the user relentlessly about a plan or design in the conversation. Use when the user wants to stress-test a plan before building, or says "grill me". This loop writes nothing to Kairos. To grill a Kairos initiative, a strategy or the tasks of an initiative, the user runs /kairos:grill-initiative or /kairos:grill-decomposition.
 ---
 
 Interview me relentlessly about every aspect of this plan until we reach a shared understanding. Walk down each branch of the design tree, resolving dependencies between decisions one-by-one. For each question, provide your recommended answer.
@@ -12,5 +12,7 @@ Before the first question, ground the plan in the record: [GROUND.md](../kairos/
 If a *fact* can be found by exploring the codebase, look it up rather than asking me. The *decisions*, though, are mine — put each one to me and wait for my answer.
 
 Do not enact the plan until I confirm we have reached a shared understanding.
+
+This loop writes nothing to Kairos. `/kairos:grill-initiative` and `/kairos:grill-decomposition` run it and write each answer into the item. If the user asks to grill a Kairos item and neither skill runs, offer the one that fits.
 
 Name work the way Kairos does: an existing item by its short code, a proposed item by its quoted title marked "not yet created", and no numbered decisions (`D1`, `D2`). The rules are in the `kairos-vocabulary` skill.
