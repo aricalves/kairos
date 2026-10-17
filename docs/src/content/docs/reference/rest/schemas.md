@@ -2149,7 +2149,8 @@ The `filter` capability. Fields are AND with each other; array values are OR wit
 | `board` | `string`, nullable | no | Restrict to items on this board, by slug or UUID (KAIROS-T-0368). Not with `board_id`. |
 | `board_id` | `string`, nullable | no | Restrict to items on this board (UUID; excludes documents, which do not live on boards). Not with `board`. |
 | `claimed_by` | `string`, nullable | no | Only the tasks that this person has the claim on (KAIROS-T-0488): a user id, an email, a user name, or `me` for the caller. A claim that an agent key of the person made counts. Other entity types are excluded. An unknown person is refused. |
-| `column_id` | `string`, nullable | no | Restrict to items in this board column (UUID; excludes documents). |
+| `column` | `string`, nullable | no | Restrict to items in this board column, by name (with `board`) or UUID (KAIROS-T-0552). Not with `column_id`. |
+| `column_id` | `string`, nullable | no | Restrict to items in this board column (UUID; excludes documents). Not with `column`. |
 | `created_after` | `string`, nullable | no | Only items created strictly after this instant (RFC 3339). |
 | `created_before` | `string`, nullable | no | Only items created strictly before this instant (RFC 3339). |
 | `created_by` | `string`, nullable | no | Only the items that this person created (KAIROS-T-0488): a user id, an email, a user name, or `me`. An unknown person is refused. |
