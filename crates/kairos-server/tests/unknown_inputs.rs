@@ -511,7 +511,8 @@ async fn a_known_input_passes_and_a_refusal_writes_nothing_against_live_stack() 
             "offset",
             "team",
             "no_team",
-            "with_metadata"
+            "with_metadata",
+            "fields"
         ]
     );
     stack

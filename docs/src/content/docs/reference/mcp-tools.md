@@ -67,7 +67,7 @@ These hold for every tool.
 | Listing weight | Listings are compact: short code, title and key fields. Full markdown content arrives only from `get_item` and from `get_history` with a `version`. |
 | Errors | A refusal comes back as an MCP tool error whose text is `CODE: message`, the code being the same stable one as the REST API's error envelope. Where that code has structured `details`, a second line follows: `details: ` and the JSON object. See [Errors](../errors/) for what each code's `details` carries. |
 | Audit | Writes are recorded in the activity log by the same code path as the REST API. |
-| Notifications | While the person of the key has unread [notifications](#your-notifications), each answer (not a refusal) ends with a block: the 5 newest, then `N more: call get_events` when there are more. The block stops when the person marks them read. `get_events` itself has no block, because it lists them. A service account gets no notifications. |
+| Notifications | While the caller has unread [notifications](#your-notifications), each answer (not a refusal) ends with a block: the 5 newest, then `N more: call get_events` when there are more. The block stops when the caller marks them read. An agent key keeps its own read state, apart from the person. `get_events` itself has no block, because it lists them. A service account gets no notifications. |
 | Claims | A task in Active has a [claim](../glossary/#claim): the person who works on it. A write to a task that a different person has the claim on succeeds and is recorded. The text of the tool then ends with a line: `Warning: Alice (agent) has the claim on ACME-T-0012 (since 2026-10-09T10:00:00Z). Your change is recorded.` A write by the person who has the claim, also with the agent key of the person, gets no warning. |
 
 ### Refusal codes
@@ -121,9 +121,9 @@ must have that argument. …`. An argument with the wrong JSON type is
 [An input that a route does not accept](../errors/#an-input-that-a-route-does-not-accept)
 for the rule of the REST API.
 
-`DEFINITION_IN_USE`, the refusal that protects a metadata definition carrying
-values, belongs to the REST surface — `DELETE /api/metadata-definitions/{id}`.
-No MCP tool deletes a definition, so no MCP tool returns it. See
+`DEFINITION_IN_USE` protects a metadata definition that carries values.
+[`delete_metadata_definition`](#delete_metadata_definition) returns it, as
+`DELETE /api/metadata-definitions/{id}` does. See
 [Tenant configuration](../rest/tenant-configuration/).
 
 ## Orientation
@@ -740,6 +740,13 @@ The list of an item that a move renamed has the section **Renames**. Each
 line has the old code, the new code, the time and who did the move:
 
 ```text
+## Renames
+- COLLIERY-T-0100 -> SKADI-T-0001 — 2026-10-03T18:20:00Z by Dylan
+```
+
+Refuses: `NOT_FOUND` for an unknown short code, or for a `version` with no
+snapshot.
+
 ### `list_metadata_definitions`
 
 The metadata definitions of the organization, by slug. For each one: the
@@ -774,13 +781,6 @@ REST: `GET /api/templates` and `GET /api/templates/{id}`.
 
 Refuses: `NOT_FOUND` for a `slug` that names no template.
 
-## Renames
-- COLLIERY-T-0100 -> SKADI-T-0001 — 2026-10-03T18:20:00Z by Dylan
-```
-
-Refuses: `NOT_FOUND` for an unknown short code, or for a `version` with no
-snapshot.
-
 ## Searching
 
 ### `search`
@@ -794,7 +794,7 @@ are compact and grouped by type.
 | `q` | string | no | — | Full-text query. Websearch syntax: quoted phrases, `OR`, `-negation`. Must not be blank. When `q` is a short code, the result also has the item with that code, first. When `q` is a retired code, the result has the item with its current code, and a notice gives the current code. |
 | `filter` | object | no | — | See below. Fields AND together. |
 | `traverse` | object | no | — | See below. |
-| `sort` | object | no | `created_at` descending | See below. |
+| `sort` | object | no | `relevance` descending with `q`, else `created_at` descending | See below. |
 | `limit` | integer | no | `25` | Page size, 1–100. |
 | `offset` | integer | no | `0` | Offset into the combined result set. Must not be negative. |
 
@@ -1318,8 +1318,8 @@ no owner. The board policy `owner_gate` sets this rule.
 Moves a task to another delivery board. It lands in that board's entry column
 and follows that board's team.
 
-The tool also moves a document to a different owner board, or removes the
-owner board of a document.
+The tool also moves a document to a different owner board. It cannot remove
+the owner board of a document.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
@@ -1769,10 +1769,10 @@ no item. The confirm takes the
 confirms must be able to edit the item at one end. A refused confirm leaves the
 proposal pending.
 
-Refuses: `VALIDATION` for a relationship outside `parent`/`blocks` or a short
-code naming no live item; `CONFLICT` when an identical proposal is already
-waiting, or when the item already holds ten undecided ones — decide some rather
-than adding more.
+Refuses: `VALIDATION` for a relationship outside `parent`/`blocks`;
+`NOT_FOUND` for a short code that names no live item; `CONFLICT` when an
+identical proposal is already waiting, or when the item already holds ten
+undecided ones — decide some rather than adding more.
 
 Only `parent` and `blocks` are proposable. `supports`, `informs` and `supersedes`
 are editorial, cheap to undo, and remain a person's to draw with
@@ -1828,9 +1828,8 @@ The output has no such lines when the archive reached each descendant.
 Refuses: `VALIDATION` when `confirm` is `false` — checked before the short code
 is looked up, so such a call never reports an unknown item; `NOT_FOUND` for an
 unknown short code or an already-archived item; `FORBIDDEN` when the
-[edit rule](../capabilities/#the-edit-rule) refuses the caller. An *absent* `confirm` is a schema violation
-rather than a refusal — it is a required field, so the call is rejected before
-the tool body runs and carries no Kairos error code.
+[edit rule](../capabilities/#the-edit-rule) refuses the caller. A call with no `confirm` gets `VALIDATION`.
+The text names the argument, and `details.argument` is `confirm`.
 
 ### `restore_item`
 
@@ -2339,28 +2338,61 @@ content of the item. Its lines have no id: `get_events` gives the ids.
 get_events gives each with its id; mark them read with mark_events_read when you have acted on them.
 ```
 
+### The read state
+
+Each reader keeps its own read state (KAIROS-T-0550). The person is one
+reader: the bell of the web app and the login of the person. Each agent key
+of the person is a different reader. When an agent marks a notification
+read, the bell of the person still shows it unread.
+
+- A new agent key starts with the state of the person at that time. A
+  notification that the person read before the key was made is read for the
+  key.
+- A rotated key keeps the reads of the key that it replaces.
+- `get_events`, `mark_events_read` and the block at the end of an answer
+  use the state of the caller. So do the two REST routes.
+
 ### `get_events`
 
 Gives your notifications: each unread one first (newest first, 100 at most),
 then the 20 newest read ones. Each line has the id, the time, the kind, the
-item and the text. No arguments.
+item and the text.
 
-REST: `GET /api/me/notifications`.
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `before` | string | no | — | The id of a notification. The page has the unread notifications older than it, and no read ones. |
+
+The answer ends with the `up_to` value for `mark_events_read`: the id of the
+newest unread notification. When the page has 100 unread notifications, the
+answer also gives the `before` value of the next page.
+
+Refuses: `NOT_FOUND` when `before` is not one of your notifications.
+
+REST: `GET /api/me/notifications`, with the query parameter `before`.
 
 ### `mark_events_read`
 
-Marks your notifications read. Send `ids` or `all`, not both.
+Marks your notifications read for the caller. Send `ids`, or `all: true`
+with `up_to`.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `ids` | array of strings | no | — | The ids of your notifications, as `get_events` gives them. |
-| `all` | boolean | no | — | `true`: each of your unread notifications. |
+| `all` | boolean | no | — | `true`: each of your unread notifications up to `up_to`. |
+| `up_to` | string | with `all` | — | The id of the newest notification that you read. Kairos marks it and each older unread notification. A newer notification stays unread. |
+
+Kairos refuses `all` without `up_to`. A notification can come after your list.
+Without a bound, Kairos would mark it read before you see it.
+
+`up_to` also marks the older unread notifications that are not on your
+page. Read each page before you send `all`.
 
 The result is one line: `Marked 2 notification(s) read. You have 5 unread.`
 
 Refuses: `VALIDATION` when the call has neither `ids` nor `all: true`, or has
-both. `NOT_FOUND` when an id is not one of your notifications; the message
-names the id, and nothing changes. An id that is read already does not change.
+both. `VALIDATION` when `all` has no `up_to`, or `up_to` comes with `ids`.
+`NOT_FOUND` when an id is not one of your notifications. The message names
+the id, and nothing changes. An id that is read already does not change.
 
 REST: `POST /api/me/notifications/read`.
 

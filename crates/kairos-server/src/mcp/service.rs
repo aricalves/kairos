@@ -115,7 +115,7 @@ impl ServerHandler for KairosMcp {
             .get::<Parts>()
             .and_then(|parts| parts.extensions.get::<AuthContext>())
             .and_then(|auth| auth.agent_key);
-        // KAIROS-T-0382: the unread notifications of the person ride along
+        // KAIROS-T-0382: the unread notifications of the caller ride along
         // on each answer, but not on `get_events`, which lists them.
         let ride_along = (request.name != "get_events")
             .then(|| Self::caller(&context).ok())
@@ -143,12 +143,14 @@ impl ServerHandler for KairosMcp {
                 if result.is_error != Some(true)
                     && let Some((auth, tenant)) = ride_along
                 {
-                    let user = auth.user_id;
+                    // KAIROS-T-0550: the unread ones of the caller: the agent
+                    // key keeps its own read state, apart from the person.
+                    let (user, key) = (auth.user_id, auth.agent_key);
                     let block = self
                         .state
                         .blocking
                         .run(&tenant.slug, move |conn| {
-                            super::tools::ride_along(conn, user)
+                            super::tools::ride_along(conn, user, key)
                         })
                         .await;
                     match block {

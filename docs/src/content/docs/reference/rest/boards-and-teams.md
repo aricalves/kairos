@@ -476,6 +476,11 @@ work. An edge with either end in a terminal column (`is_done`) adds to
 neither card. The edge stays on the relationship list of each item,
 with a mark on the done end.
 
+Each item is a card (KAIROS-T-0602). A card has no `content`,
+`created_by` or `updated_by`. `?fields=full` adds them: then the
+response has the shape that the route had before cards. The item route
+of a card gives its content.
+
 The path takes the slug or the id of the board (COLLIERY-T-0265). An
 unknown slug and an unknown id are a 404.
 
@@ -489,6 +494,7 @@ unknown slug and an unknown id are a 404.
 | `team` | query | no | `string` | Narrow the STRATEGIES and the INITIATIVES to those of this team (slug or UUID), from tasks or set by hand (KAIROS-T-0321). Tasks and ADRs are unaffected. Unknown team → 422. Not with `no_team`. |
 | `no_team` | query | no | `boolean` | Narrow the STRATEGIES and the INITIATIVES to those with no team (KAIROS-T-0321). Tasks and ADRs are unaffected. Not with `team`. |
 | `with_metadata` | query | no | `boolean` | Add `item_metadata` to the response: the metadata values of each item of the page (KAIROS-T-0368). Default false. |
+| `fields` | query | no | `string` (`card`, `full`) | `card` (the default): the cards have no `content`, `created_by` or `updated_by`. `full`: the cards have them, as before cards (KAIROS-T-0602). An other value is refused. |
 
 | Response | Body | Meaning |
 |---|---|---|

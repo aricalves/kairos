@@ -230,7 +230,9 @@ def unit():
     the stdlib unit tests of the
     Metis import script (scripts/metis_import, COLLIERY-I-0019), then the
     check that the Compose file passes each setting of the book
-    (scripts/check_compose_settings.py, KAIROS-T-0496)."""
+    (scripts/check_compose_settings.py, KAIROS-T-0496), then the check that
+    the MCP tools page names each tool of the code
+    (scripts/check_mcp_tools.py, KAIROS-T-0563)."""
     _no_incremental()
     code = run_cargo_command(["test", "--workspace", "--lib", "--bins"])
     if code:
@@ -267,10 +269,12 @@ def unit():
     # KAIROS-T-0496: the Compose file passes each setting of the book. The
     # test runs the check on the repository; the check alone prints the list.
     # A path for unittest is relative to the cwd: an absolute one does not load.
+    # KAIROS-T-0563: the MCP tools page names each tool of the code.
     return subprocess.run(
         [
             sys.executable, "-B", "-m", "unittest",
             os.path.join("scripts", "test_check_compose_settings.py"),
+            os.path.join("scripts", "test_check_mcp_tools.py"),
         ],
         cwd=PROJECT_ROOT,
         check=False,

@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::types::{Adr, Document, Initiative, Strategy, Task};
+use crate::types_cards::{AdrCard, DocumentCard, InitiativeCard, StrategyCard, TaskCard};
 
 // ---------------------------------------------------------------------------
 // Request (S-0005 Unified Search, field for field)
@@ -219,26 +219,29 @@ pub struct SearchResponse {
     pub offset: i64,
 }
 
-/// The `results` object: one fully-typed group per entity type, each group
+/// The `results` object: one group of cards per entity type, each group
 /// omitted entirely when empty. Group order follows the request's combined
 /// sort.
+///
+/// A hit is a card (KAIROS-T-0602): the title and a `snippet` of the
+/// content, not the content. The item route of the hit gives the content.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct SearchResultGroups {
     /// Matching strategies.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub strategies: Vec<Strategy>,
+    pub strategies: Vec<StrategyCard>,
     /// Matching initiatives.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub initiatives: Vec<Initiative>,
+    pub initiatives: Vec<InitiativeCard>,
     /// Matching tasks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tasks: Vec<Task>,
+    pub tasks: Vec<TaskCard>,
     /// Matching documents.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub documents: Vec<Document>,
+    pub documents: Vec<DocumentCard>,
     /// Matching ADRs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub adrs: Vec<Adr>,
+    pub adrs: Vec<AdrCard>,
 }
 
 #[cfg(test)]
