@@ -276,6 +276,8 @@ pub async fn set_local_password(
             Ok(())
         })
         .await?;
+    // KAIROS-T-0609: the sessions the change revoked are refused at once.
+    state.auth_cache.drop_sessions(target);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -370,6 +372,8 @@ pub async fn revoke_sessions(
             Ok(())
         })
         .await?;
+    // KAIROS-T-0609: the next request with a session of the person is refused.
+    state.auth_cache.drop_sessions(target);
     Ok(StatusCode::NO_CONTENT)
 }
 

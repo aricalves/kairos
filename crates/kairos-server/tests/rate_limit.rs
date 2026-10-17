@@ -239,10 +239,12 @@ async fn a_burst_of_failed_authentications_is_refused() {
 
     // 6. X-Forwarded-For is ignored unless KAIROS_TRUSTED_PROXY is on. If it
     //    were trusted here, a spoofed header would be a free identity per
-    //    request and step 2 would never have happened.
+    //    request and step 2 would never have happened. The bad key: step 5
+    //    put the good key in the auth cache, and a cached key skips the
+    //    throttle (KAIROS-T-0609).
     let (status, _, _) = whoami_from(
         &router,
-        &good_key,
+        &bad_key,
         attacker,
         &[("x-forwarded-for", bystander)],
     )

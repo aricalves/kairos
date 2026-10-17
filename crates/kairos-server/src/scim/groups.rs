@@ -579,6 +579,7 @@ pub(crate) async fn create_group(
     Extension(ctx): Extension<ScimContext>,
     body: Bytes,
 ) -> Result<Response, ScimError> {
+    let org_id = ctx.org_id;
     let body = parse_json_body(&body)?;
     let display_name = body
         .get("displayName")
@@ -683,6 +684,8 @@ pub(crate) async fn create_group(
         })
     })
     .await?;
+    // KAIROS-T-0609: a role the group write changed is read again.
+    state.auth_cache.drop_org_roles(org_id);
     Ok(scim_response(StatusCode::CREATED, resource))
 }
 
@@ -693,6 +696,7 @@ pub(crate) async fn patch_group(
     Path(id): Path<String>,
     body: Bytes,
 ) -> Result<Response, ScimError> {
+    let org_id = ctx.org_id;
     let group_id = parse_resource_id(&id)?;
     let changes = parse_group_patch(&parse_json_body(&body)?)?;
     let resource = run_scim(&state, &ctx.slug.clone(), move |conn| {
@@ -703,6 +707,8 @@ pub(crate) async fn patch_group(
         })
     })
     .await?;
+    // KAIROS-T-0609: a role the group write changed is read again.
+    state.auth_cache.drop_org_roles(org_id);
     Ok(scim_response(StatusCode::OK, resource))
 }
 
@@ -714,6 +720,7 @@ pub(crate) async fn replace_group(
     Path(id): Path<String>,
     body: Bytes,
 ) -> Result<Response, ScimError> {
+    let org_id = ctx.org_id;
     let group_id = parse_resource_id(&id)?;
     let body = parse_json_body(&body)?;
     let mut changes = Vec::new();
@@ -732,6 +739,8 @@ pub(crate) async fn replace_group(
         })
     })
     .await?;
+    // KAIROS-T-0609: a role the group write changed is read again.
+    state.auth_cache.drop_org_roles(org_id);
     Ok(scim_response(StatusCode::OK, resource))
 }
 
@@ -778,6 +787,7 @@ pub(crate) async fn delete_group(
     Extension(ctx): Extension<ScimContext>,
     Path(id): Path<String>,
 ) -> Result<Response, ScimError> {
+    let org_id = ctx.org_id;
     let group_id = parse_resource_id(&id)?;
     run_scim(&state, &ctx.slug.clone(), move |conn| {
         use kairos_db::schema::{boards as boards_schema, teams};
@@ -856,5 +866,7 @@ pub(crate) async fn delete_group(
         })
     })
     .await?;
+    // KAIROS-T-0609: a role the group write changed is read again.
+    state.auth_cache.drop_org_roles(org_id);
     Ok(no_content())
 }

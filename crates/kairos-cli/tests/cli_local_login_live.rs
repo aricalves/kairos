@@ -232,6 +232,7 @@ impl Deployment {
             auth_max_failures: shape.max_failures,
             auth_failure_window_secs: 300,
             auth_lockout_secs: 60,
+            auth_cache_secs: 60,
             trusted_proxy: false,
             local_auth: shape.local_auth,
             session_ttl_secs: 14 * 24 * 60 * 60,

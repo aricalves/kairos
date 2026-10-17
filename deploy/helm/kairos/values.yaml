@@ -329,6 +329,10 @@ config:
     # set; the default is 60, short on purpose so a mistyped password is not a
     # support request and a lockout is not a denial-of-service.
     lockoutSecs: ""
+    # -- KAIROS_AUTH_CACHE_SECS — how long the auth cache keeps an entry, in
+    # seconds. Emitted when set, including 0, which turns the cache off; the
+    # server default is 60.
+    cacheSecs: ""
     # -- KAIROS_TRUSTED_PROXY — trust X-Forwarded-For for the client address.
     # Empty FOLLOWS ingress.enabled, which is the right answer either way:
     # behind an Ingress the socket peer is the controller, so the header is the

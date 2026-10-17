@@ -55,6 +55,9 @@ pub struct AppState {
     /// process-global would let one in-process test router's lockouts refuse
     /// another's requests.
     pub throttle: Option<Arc<crate::rate_limit::AuthThrottle>>,
+    /// The cache of the auth and tenant lookups (KAIROS-T-0609). Per
+    /// `AppState`, as the throttle is.
+    pub auth_cache: Arc<crate::auth_cache::AuthCache>,
     /// The clones of the indexed repositories (COLLIERY-T-1853), when
     /// `KAIROS_CODE_INDEX_DIR` is set. `None`: no nearest-commit answer and no
     /// builder; the upload and the download of an index still work.
@@ -121,6 +124,9 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
     let instance = uuid::Uuid::new_v4();
     let code_index = code_index_service(&config, instance);
     let throttle = crate::rate_limit::from_config(&config, &blocking).map(Arc::new);
+    let auth_cache = Arc::new(crate::auth_cache::AuthCache::new(
+        std::time::Duration::from_secs(config.auth_cache_secs),
+    ));
     // KAIROS-T-0394: the worker registers only the kinds of its role.
     let jobs = Arc::new(
         crate::jobs::Worker::new(job_pool.clone(), instance, config.jobs.clone())
@@ -164,6 +170,7 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
         embedding: build_embedding_service(),
         metrics: Arc::new(crate::metrics::Metrics::new()),
         throttle,
+        auth_cache,
         code_index,
         tenant_readiness: Arc::new(crate::tenant_readiness::TenantReadiness::default()),
         jobs,
@@ -331,6 +338,9 @@ pub fn state_with(config: AppConfig, pool: TenantPool, auth: Arc<Authenticator>)
     // test that wants a throttle sets the variables and a test that does not set
     // `KAIROS_AUTH_MAX_FAILURES` to 0.
     let throttle = crate::rate_limit::from_config(&config, &blocking).map(Arc::new);
+    let auth_cache = Arc::new(crate::auth_cache::AuthCache::new(
+        std::time::Duration::from_secs(config.auth_cache_secs),
+    ));
     // The worker of a test state runs no job until a test starts it.
     let jobs = Arc::new(
         crate::jobs::Worker::new(job_pool.clone(), uuid::Uuid::new_v4(), config.jobs.clone())
@@ -370,6 +380,7 @@ pub fn state_with(config: AppConfig, pool: TenantPool, auth: Arc<Authenticator>)
         embedding: None,
         metrics: Arc::new(crate::metrics::Metrics::new()),
         throttle,
+        auth_cache,
         code_index: None,
         tenant_readiness: Arc::new(crate::tenant_readiness::TenantReadiness::default()),
         jobs,
