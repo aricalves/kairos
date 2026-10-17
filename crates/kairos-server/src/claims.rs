@@ -54,7 +54,6 @@
 //! and the MCP tool call writes the line, only for a response that is a
 //! success.
 
-use kairos_core::short_code::ItemType;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -422,27 +421,17 @@ pub fn require_claim_change(
     crate::api::require_capability(conn, slug, Some(board_id), user, "transition_items")
 }
 
-/// The right to take the claim of a free task (KAIROS-T-0528):
-/// `transition_items` on the board of the task, or the edit rule of the
-/// task (its creator, or `manage_tasks`).
+/// The right to take the claim of a free task (KAIROS-T-0528,
+/// KAIROS-T-0642): `transition_items` on the board of the task. The edit
+/// rule gives no claim: a claimant who cannot move the task to done is a
+/// dead end (KAIROS-A-0030 as amended, KAIROS-A-0037).
 pub fn require_claim_take(
     conn: &mut PgConnection,
     slug: &str,
-    task_id: Uuid,
     board_id: Uuid,
     user: Uuid,
 ) -> Result<(), ApiError> {
-    if crate::api::require_capability(conn, slug, Some(board_id), user, "transition_items").is_ok()
-    {
-        return Ok(());
-    }
-    crate::api::require_item_edit(conn, slug, user, task_id, ItemType::Task).map_err(|_| {
-        ApiError::forbidden(
-            "To claim a task, you need transition_items on its board, or the right to edit the \
-             task: its creator has it, and so does manage_tasks.",
-        )
-        .with_details(serde_json::json!({ "board_id": board_id, "capability": "transition_items" }))
-    })
+    crate::api::require_capability(conn, slug, Some(board_id), user, "transition_items")
 }
 
 /// The person that `reference` names, for a hand-off: a user id, an email
