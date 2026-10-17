@@ -2242,14 +2242,16 @@ You get no notification for a change that you made. You can turn a kind off
 with `PUT /api/me/notification-settings` or on the Notifications page of the
 GUI.
 
-The block at the end of an answer:
+The block at the end of an answer. It is a content block of its own, after
+the answer (KAIROS-T-0549). The content that `get_item` gives stays the
+content of the item. Its lines have no id: `get_events` gives the ids.
 
 ```text
 ## Your notifications (7 unread)
-- 6f1a1f9e-... · 2026-10-12 09:15Z · hand_off · ACME-T-0012: Robin gave you the claim on ACME-T-0012: Fix the login
+- 2026-10-12 09:15Z · hand_off · ACME-T-0012: Robin gave you the claim on ACME-T-0012: Fix the login
 - ...
 2 more: call get_events
-Mark them read with mark_events_read when you have acted on them.
+get_events gives each with its id; mark them read with mark_events_read when you have acted on them.
 ```
 
 ### `get_events`
