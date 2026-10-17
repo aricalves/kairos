@@ -87,8 +87,9 @@ def is_checkout(project):
 NOT_A_CHECKOUT_TEXT = (
     "Code index: this folder is not a git checkout, so the local MCP server "
     "`kairos-code` has no index open. Call its tool `fetch_index` with `root`, "
-    "the path of the checkout you work on (the clone of the repository of your "
-    "task). It takes the nearest index from Kairos. Then use `module_map`, "
+    "the path of the checkout you work on (the worktree of the clone of the "
+    "repository of your task; the wiring context lists the clones of this "
+    "folder). It takes the nearest index from Kairos. Then use `module_map`, "
     "`code_search`, `symbol`, `callers`, `callees`, `references` and `path` "
     "before you read files."
 )

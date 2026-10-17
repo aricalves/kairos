@@ -439,3 +439,140 @@ class WorktreeWiring(unittest.TestCase):
             self.assertEqual(load("kairos_rules").deployment_url(), "http://127.0.0.1:9")
             self.assertEqual(load("memory_reminder").adr_board(), "platform-adrs")
             self.assertTrue(load("index_update").is_wired(self.worktree))
+
+
+class BoardFolder(unittest.TestCase):
+    """KAIROS-T-0521: in a board folder (clones, no `.git` of its own) the
+    session hook lists each clone and worktree, its origin remote, its
+    branch and how far it is behind the origin default branch, from the
+    local refs."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = os.path.realpath(self.tmp.name)
+        self.board = os.path.join(root, "board")
+        os.makedirs(self.board)
+        origin = os.path.join(root, "origin.git")
+        os.makedirs(origin)
+        git("init", "-q", "--bare", "-b", "main", cwd=origin)
+        seed = make_clone(root, "seed", origin=origin)
+        git("push", "-q", "origin", "main", cwd=seed)
+        git("clone", "-q", origin, "payments", cwd=self.board)
+        self.clone = os.path.join(self.board, "payments")
+        for n in (2, 3):
+            git("commit", "-q", "--allow-empty", "-m", f"c{n}", cwd=seed)
+        git("push", "-q", "origin", "main", cwd=seed)
+        git("fetch", "-q", "origin", cwd=self.clone)  # the clone is 2 behind
+        git("worktree", "add", "-q", "-b", "acme-t-0001", "../wt-acme-t-0001", "origin/main", cwd=self.clone)
+        # A user and a token in the URL: the hook never prints them.
+        git("remote", "set-url", "origin", "https://robin:s3cret@GitHub.com/Acme/Payments.git", cwd=self.clone)
+        os.makedirs(os.path.join(self.board, "notes"))  # not a checkout
+        with open(os.path.join(self.board, "README.md"), "w") as handle:
+            handle.write("x")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def by_name(self):
+        return {e["name"]: e for e in session_start.board_checkouts(self.board)}
+
+    def test_each_clone_and_worktree_is_listed_and_nothing_else(self):
+        self.assertEqual(sorted(self.by_name()), ["payments", "wt-acme-t-0001"])
+
+    def test_the_clone_has_its_branch_its_remote_and_its_count_behind(self):
+        clone = self.by_name()["payments"]
+        self.assertFalse(clone["worktree"])
+        self.assertEqual(clone["branch"], "main")
+        self.assertEqual(clone["remote"], "github.com/acme/payments")
+        self.assertEqual(clone["default"], "main")
+        self.assertEqual(clone["behind"], 2)
+
+    def test_a_worktree_names_its_clone_and_its_branch(self):
+        worktree = self.by_name()["wt-acme-t-0001"]
+        self.assertTrue(worktree["worktree"])
+        self.assertEqual(worktree["clone"], "payments")
+        self.assertEqual(worktree["branch"], "acme-t-0001")
+        self.assertEqual(worktree["behind"], 0)
+
+    def test_without_origin_head_the_default_is_main(self):
+        git("symbolic-ref", "--delete", "refs/remotes/origin/HEAD", cwd=self.clone)
+        self.assertEqual(self.by_name()["payments"]["default"], "main")
+        self.assertEqual(self.by_name()["payments"]["behind"], 2)
+
+    def test_the_text_says_as_of_the_last_fetch_and_hides_the_credentials(self):
+        text = session_start.checkouts_text(session_start.board_checkouts(self.board))
+        self.assertIn("as of the last fetch", text)
+        self.assertIn(
+            "- payments/: remote github.com/acme/payments, branch main, 2 behind origin/main",
+            text,
+        )
+        self.assertIn(
+            "- wt-acme-t-0001/: worktree of payments/, remote github.com/acme/payments, "
+            "branch acme-t-0001, 0 behind origin/main",
+            text,
+        )
+        self.assertIn("`list_repositories`", text)
+        self.assertNotIn("s3cret", text)
+        self.assertNotIn("robin", text)
+
+    def test_a_checkout_is_not_a_board_folder(self):
+        self.assertEqual(session_start.board_checkouts(self.clone), [])
+        self.assertIsNone(session_start.checkouts_text([]))
+
+    def test_the_scan_stops_at_its_time_limit(self):
+        ticks = iter([0.0, 0.0, 5.0, 5.0])
+        checkouts = session_start.board_checkouts(self.board, seconds=1.0, clock=lambda: next(ticks))
+        self.assertEqual([e.get("name") for e in checkouts], ["payments", None])
+        self.assertIn("the list stops here", session_start.checkouts_text(checkouts))
+
+    def test_remotes_are_normalized_like_the_cli(self):
+        for url in (
+            "git@github.com:Acme/Payments.git",
+            "https://github.com/acme/payments",
+            "https://user:token@github.com/acme/payments.git/",
+            "ssh://git@github.com/acme/payments.git",
+        ):
+            self.assertEqual(session_start.normalized_remote(url), "github.com/acme/payments")
+
+    def test_the_board_folder_gets_no_bootstrap_advice(self):
+        checkouts = session_start.board_checkouts(self.board)
+        text = session_start.build_context(
+            {"deployment_url": "http://127.0.0.1:9", "team_board": "platform"},
+            "deployment reachable",
+            None,
+            checkouts,
+        )
+        self.assertIn("Clones here", text)
+        self.assertIn("board folder. Pick the task, then open the clone of its repository", text)
+        self.assertNotIn("/kairos:bootstrap to detect", text)
+        # Outside a board folder the advice stays.
+        text = session_start.build_context(
+            {"deployment_url": "http://127.0.0.1:9", "team_board": "platform"},
+            "deployment reachable",
+        )
+        self.assertIn("/kairos:bootstrap to detect", text)
+        self.assertNotIn("Clones here", text)
+
+    def test_the_hook_in_a_board_folder_lists_the_clones(self):
+        import json
+        import subprocess
+        import sys
+
+        os.makedirs(os.path.join(self.board, ".claude"))
+        with open(os.path.join(self.board, ".claude", "kairos.local.md"), "w") as handle:
+            handle.write("---\ndeployment_url: http://127.0.0.1:9\nteam_board: platform\n---\n")
+        env = dict(
+            os.environ,
+            CLAUDE_PROJECT_DIR=self.board,
+            KAIROS_RULES_STATE_DIR=os.path.join(self.tmp.name, "rules"),
+            PATH="/usr/bin:/bin",
+        )
+        result = subprocess.run(
+            [sys.executable, os.path.join(HERE, "session_start.py")],
+            input=json.dumps({"session_id": "session-0521", "source": "startup"}),
+            capture_output=True, text=True, env=env, cwd=self.board, check=False, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("- payments/: remote github.com/acme/payments, branch main, 2 behind origin/main", context)
+        self.assertIn("- wt-acme-t-0001/: worktree of payments/", context)

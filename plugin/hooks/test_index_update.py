@@ -215,6 +215,7 @@ class SessionStart(Harness):
         self.assertIn("not a git checkout", text)
         self.assertIn("`fetch_index`", text)
         self.assertIn("`root`", text)
+        self.assertIn("lists the clones of this folder", text)  # KAIROS-T-0521
         self.assertNotIn("kairos index --full", text)
         time.sleep(0.3)
         self.assertEqual(self.calls_text(), "", "no update ran")
