@@ -18,7 +18,7 @@
 //! - create-from-template ([`create_doc`]) and the archive (a soft
 //!   delete) with cascade warning ([`delete`], A-0001);
 //! - for a task: Cancel with a reason, and Delete for good ([`end`],
-//!   KAIROS-T-0362);
+//!   KAIROS-T-0362); Reopen for a done task ([`end`], KAIROS-T-0648);
 //! - for a task: the claim, with Hand off and Release ([`claim`],
 //!   KAIROS-T-0369);
 //! - who may edit ([`access`], KAIROS-T-0581): the editor and the metadata
@@ -65,7 +65,7 @@ use claim::ClaimPanel;
 use create_doc::CreateDocumentDialog;
 use delete::DeleteDialog;
 use editor::ContentEditor;
-use end::{CancelDialog, CancelledBanner, PurgeDialog};
+use end::{CancelDialog, CancelledBanner, PurgeDialog, ReopenDialog};
 use external::ExternalRefsPanel;
 use item_owner::OwnerPanel;
 use metadata::MetadataPanel;
@@ -246,6 +246,7 @@ fn ItemLoaded(item: ItemDetail, family: Family) -> impl IntoView {
     let delete_open = RwSignal::new(false);
     let cancel_open = RwSignal::new(false);
     let purge_open = RwSignal::new(false);
+    let reopen_open = RwSignal::new(false);
 
     // The facts that do not change while the page shows this code.
     let code = StoredValue::new(item.short_code.clone());
@@ -454,6 +455,14 @@ fn ItemLoaded(item: ItemDetail, family: Family) -> impl IntoView {
                         "Cancel task"
                     </Button>
                 })}
+                // KAIROS-T-0648: a done task (completed or cancelled) can
+                // be reopened.
+                {move || (task_powers.get().reopen && !archived.get()).then(|| view! {
+                    <Button variant="default" size="xs"
+                        on_click=Callback::new(move |_| reopen_open.set(true))>
+                        "Reopen"
+                    </Button>
+                })}
                 {move || can_archive.get().then(|| view! {
                     <Button variant="default" size="xs" disabled=archived
                         on_click=Callback::new(move |_| delete_open.set(true))>
@@ -546,6 +555,8 @@ fn ItemLoaded(item: ItemDetail, family: Family) -> impl IntoView {
                     <CancelDialog code=code.get_value() title=title.clone() open=cancel_open
                         on_cancelled=on_moved/>
                     <PurgeDialog code=code.get_value() title=title.clone() open=purge_open/>
+                    <ReopenDialog code=code.get_value() title=title.clone() open=reopen_open
+                        on_reopened=on_moved/>
                 })}
             }
         }}
@@ -653,6 +664,21 @@ struct TaskEndPowers {
     cancel: bool,
     /// Delete for good: `manage_tasks` on the board.
     purge: bool,
+    /// Reopen (KAIROS-T-0648): `transition_items` on the board, and the
+    /// task is in a done column. A cancelled task is in a done column too.
+    reopen: bool,
+}
+
+impl TaskEndPowers {
+    /// The powers from the capabilities and the column of the task. Pure,
+    /// host-tested.
+    fn from_rule(transition: bool, manage_tasks: bool, done: bool) -> Self {
+        Self {
+            cancel: transition && !done,
+            purge: manage_tasks,
+            reopen: transition && done,
+        }
+    }
 }
 
 /// The [`TaskEndPowers`] of the page: `false` for each until whoami and
@@ -684,15 +710,13 @@ fn task_end_powers(
                 .any(|c| Some(&c.id) == column.as_ref() && c.is_done)
         });
         let powers = boards::board_powers(&me, &board.slug, board.team_id.as_deref(), None);
-        TaskEndPowers {
-            cancel: powers.transition && !done,
-            purge: boards::holds_capability(
-                &me,
-                Some(&board.slug),
-                board.team_id.as_deref(),
-                "manage_tasks",
-            ),
-        }
+        let manage_tasks = boards::holds_capability(
+            &me,
+            Some(&board.slug),
+            board.team_id.as_deref(),
+            "manage_tasks",
+        );
+        TaskEndPowers::from_rule(powers.transition, manage_tasks, done)
     })
 }
 
@@ -2266,6 +2290,27 @@ mod tests {
         // A claim or a hand-off does not change the version.
         assert!(takes_copy(4, 4));
         assert!(!takes_copy(5, 4));
+    }
+
+    /// KAIROS-T-0648: Reopen shows for a done task to a person with
+    /// `transition_items`; Cancel shows for a task that is not done. A
+    /// cancelled task is in a done column, so it gets Reopen.
+    #[test]
+    fn reopen_shows_for_a_done_task_with_the_move_capability() {
+        let done = TaskEndPowers::from_rule(true, false, true);
+        assert!(done.reopen);
+        assert!(!done.cancel);
+        let open = TaskEndPowers::from_rule(true, false, false);
+        assert!(!open.reopen);
+        assert!(open.cancel);
+        let no_move = TaskEndPowers::from_rule(false, true, true);
+        assert!(!no_move.reopen);
+        assert!(!no_move.cancel);
+        assert!(no_move.purge);
+        assert_eq!(
+            TaskEndPowers::default(),
+            TaskEndPowers::from_rule(false, false, false)
+        );
     }
 
     /// The banner says WHEN, in something a person reads (KAIROS-T-0164):
