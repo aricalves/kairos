@@ -282,7 +282,11 @@ async fn the_board_and_search_send_cards_without_content_against_live_stack() {
     let (status, refusal) = stack
         .send(Method::GET, &format!("{items_uri}&fields=all"), None)
         .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refusal}");
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refusal}");
+    assert_eq!(
+        refusal["error"]["details"]["parameter"], "fields",
+        "{refusal}"
+    );
 
     // --- search: a snippet, not the content ---------------------------------
     let found = stack
