@@ -278,8 +278,13 @@ when one of these conditions is true:
 2. The principal holds the `manage_<type>` capability on the authorization
    board of the item.
 3. The principal is an organization admin.
+4. The item is a task, and the principal has its [claim](../glossary/#claim)
+   (KAIROS-T-0532). A claim through an agent key counts. This condition does
+   not apply to an archive or a restore.
 
 The rule applies to each item type: strategy, initiative, task, document, ADR.
+The person who works a task writes its notes, its state and its metadata.
+That holds when a different team owns the board.
 
 Creation is the primary mechanism of ownership. The server reads who created
 the item, and does not read where the item is. If a team moves the item to a

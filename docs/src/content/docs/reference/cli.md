@@ -524,8 +524,8 @@ The write replaces the whole state: send each option each time. Kairos
 clears an option that you do not send. Send at least one option. The state
 is not content: the write makes no new version of the task.
 
-The edit rule applies, as for `note`: the creator of the task, or
-`manage_tasks` on its board. `tasks get` shows the state in the field
+The edit rule applies, as for `note`. It passes the creator of the task, the
+holder of its claim (KAIROS-T-0532), and `manage_tasks` on its board. `tasks get` shows the state in the field
 `state`. The board card and the item page of the GUI show it too. The
 command prints one line:
 
