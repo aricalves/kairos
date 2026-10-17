@@ -75,6 +75,7 @@ diesel::table! {
         deleted_at -> Nullable<Timestamptz>,
         claims -> Bool,
         wip_limit -> Nullable<Int4>,
+        keeps_claims -> Bool,
     }
 }
 

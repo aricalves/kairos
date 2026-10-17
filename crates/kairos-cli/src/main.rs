@@ -35,6 +35,8 @@
 //! envelope on stderr.
 
 mod auth;
+#[cfg(test)]
+mod cli_doc_tests;
 mod commands;
 mod context;
 mod credentials;

@@ -788,6 +788,13 @@ fn seeded_claims_column(level: BoardLevel, name: &str) -> bool {
     level == BoardLevel::Delivery && name == "Active"
 }
 
+/// Which seeded columns keep claims (KAIROS-T-0529): the Blocked column of
+/// a delivery board. A task with a claim keeps it there, and a task with
+/// no claim gets none. Applies to the system defaults only.
+fn seeded_keeps_claims_column(level: BoardLevel, name: &str) -> bool {
+    level == BoardLevel::Delivery && name == "Blocked"
+}
+
 /// Create a board in the current tenant schema, seeding its columns and
 /// transitions from the tenant's `public.system_board_defaults` row for
 /// `level` — the ONE implementation of default-board seeding: tenant
@@ -979,6 +986,7 @@ pub fn create_board(
                     position: position as i32,
                     is_done: seeded_done_column(level, column),
                     claims: seeded_claims_column(level, column),
+                    keeps_claims: seeded_keeps_claims_column(level, column),
                 })
                 .returning(BoardColumn::as_returning())
                 .get_result(conn)?;
@@ -1522,8 +1530,9 @@ pub fn add_column(
                 // Admin-added columns start un-done; the flag is a
                 // deliberate admin choice (KAIROS-T-0080).
                 is_done: false,
-                // The same for the claims flag (KAIROS-T-0359).
+                // The same for the claims flags (KAIROS-T-0359, KAIROS-T-0529).
                 claims: false,
+                keeps_claims: false,
             })
             .returning(BoardColumn::as_returning())
             .get_result(conn)?;
@@ -1571,6 +1580,48 @@ pub fn set_column_done(
             Some(board_id),
             "board",
             format!("column_done:{name}={is_done}"),
+        )?;
+        Ok(updated)
+    })
+}
+
+/// Set a column's keeps_claims flag (KAIROS-T-0529) — an explicit admin
+/// choice, logged as board configuration. A task with a claim keeps it in
+/// a column with the flag, and a task with no claim gets none there. When
+/// the flag goes off on a column without `claims`, the claims of the tasks
+/// in the column end.
+pub fn set_column_keeps_claims(
+    conn: &mut PgConnection,
+    column_id: Uuid,
+    keeps_claims: bool,
+    actor_id: Uuid,
+) -> Result<BoardColumn, BoardError> {
+    conn.transaction::<_, BoardError, _>(|conn| {
+        use crate::schema::board_columns;
+
+        let board_id = column_board_id(conn, column_id)?;
+        let (columns, _) = load_board_rules(conn, board_id)?;
+        let name = column_name(&columns, column_id)?;
+
+        let updated: BoardColumn =
+            diesel::update(board_columns::table.filter(board_columns::id.eq(column_id)))
+                .set((
+                    board_columns::keeps_claims.eq(keeps_claims),
+                    board_columns::updated_at.eq(diesel::dsl::now),
+                ))
+                .returning(BoardColumn::as_returning())
+                .get_result(conn)?;
+        if !keeps_claims && !updated.claims {
+            crate::task_claims::drop_claims_in_column(conn, column_id, actor_id)?;
+        }
+
+        log_activity(
+            conn,
+            actor_id,
+            ActivityAction::BoardConfig,
+            Some(board_id),
+            "board",
+            format!("column_keeps_claims:{name}={keeps_claims}"),
         )?;
         Ok(updated)
     })

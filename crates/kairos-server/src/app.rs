@@ -568,6 +568,13 @@ pub fn router(state: AppState) -> Router {
         // the path) and its own auth (none for a repository site).
         .merge(crate::pages::router(&state))
         .fallback(crate::web::spa_fallback)
+        // KAIROS-T-0613: the request timeout of `/api` and `/mcp`, with the
+        // exceptions of crate::request_timeout. Inside the metrics and the
+        // security headers, so a 503 of the timeout is counted and has them.
+        .layer(axum_middleware::from_fn_with_state(
+            std::time::Duration::from_secs(state.config.request_timeout_secs),
+            crate::request_timeout::enforce,
+        ))
         // KAIROS-T-0603: gzip or brotli for each response that asks for it
         // with Accept-Encoding: the API JSON and the GUI assets. The default
         // predicate leaves out text/event-stream (the MCP stream), images,
@@ -894,6 +901,9 @@ pub async fn serve(
         bootstrap_first_admin(&state).await?;
     }
     start_background(&state, retention).await;
+    if role.serves_api() {
+        warm_start(&state).await;
+    }
 
     let app = if role.serves_api() {
         router(state)
@@ -921,6 +931,31 @@ pub async fn serve(
     // image smoke check) can tell it from a kill.
     tracing::info!("shutdown complete");
     Ok(())
+}
+
+/// The warm start (KAIROS-T-0613), before `bind`: the first requests do not
+/// build the route table of the inputs, open the first connection of the
+/// blocking pool, or start its first thread. The discovery document of the
+/// issuer is the one of [`build_state`] (`web::router` uses it). A failure
+/// here does not stop the start: the first request then pays, as before.
+async fn warm_start(state: &AppState) {
+    let started = std::time::Instant::now();
+    let routes = crate::input::warm();
+    let checkout = state
+        .blocking
+        .run_public(|conn| {
+            use diesel::connection::SimpleConnection as _;
+            conn.batch_execute("SELECT 1").map_err(ApiError::internal)
+        })
+        .await;
+    if let Err(e) = checkout {
+        tracing::warn!(error = %e.message, "warm start: the blocking pool did not open a connection");
+    }
+    tracing::info!(
+        routes,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "warm start done"
+    );
 }
 
 /// The background work of `serve` for the role of the server

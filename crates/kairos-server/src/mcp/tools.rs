@@ -1190,6 +1190,9 @@ pub struct UpdateColumnParams {
     pub is_done: Option<bool>,
     /// True: a task in the column has a claim.
     pub claims: Option<bool>,
+    /// True: a task with a claim keeps it in the column, and gets none
+    /// there (Blocked, KAIROS-T-0529).
+    pub keeps_claims: Option<bool>,
     /// The WIP limit, 1 or more.
     pub wip_limit: Option<i32>,
     /// True: remove the WIP limit. Not with `wip_limit`.
@@ -4803,7 +4806,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Change a column of a board, as PATCH /api/boards/{id}/columns/{col_id} does: `name`, `position` (from 0), `is_done` (a done column), `claims` (a task in it has a claim), `wip_limit` (1 or more), or `no_wip_limit: true` to remove the limit. Send one or more. `board` is a slug or UUID; `column` is a name or UUID. Requires `configure_boards` on the board."
+        description = "Change a column of a board, as PATCH /api/boards/{id}/columns/{col_id} does: `name`, `position` (from 0), `is_done` (a done column), `claims` (a task in it has a claim), `keeps_claims` (a task keeps its claim in it, as in Blocked), `wip_limit` (1 or more), or `no_wip_limit: true` to remove the limit. Send one or more. `board` is a slug or UUID; `column` is a name or UUID. Requires `configure_boards` on the board."
     )]
     pub async fn update_column(
         &self,
@@ -4838,6 +4841,7 @@ impl KairosMcp {
                     position: params.position,
                     is_done: params.is_done,
                     claims: params.claims,
+                    keeps_claims: params.keeps_claims,
                     wip_limit,
                 },
             )?;

@@ -6,7 +6,8 @@
 //! 1. **`GET /api/config`** (public, no auth): the SPA's discovery
 //!    endpoint — issuer, the GUI's OAuth client id
 //!    (`KAIROS_WEB_CLIENT_ID`), and the issuer's `authorization_endpoint`
-//!    (resolved from OIDC discovery server-side, cached). Public by
+//!    (resolved from OIDC discovery server-side, cached; KAIROS-T-0613: the
+//!    discovery document of the startup, so no second fetch). Public by
 //!    design: it is exactly the information a login page needs before
 //!    any token exists. Decision (T-0039): a config endpoint over
 //!    build-time env, so one wasm bundle works against any deployment.
@@ -111,8 +112,23 @@ struct WebAuth {
     /// it on the token exchange — required by Google's "Web application"
     /// clients. Server-side only; never reaches the browser.
     client_secret: Option<String>,
+    /// KAIROS-T-0613: a 5 s timeout ([`crate::middleware::auth::IDP_TIMEOUT`])
+    /// on the discovery and on the token relay.
     http: reqwest::Client,
     endpoints: OnceCell<IdpEndpoints>,
+}
+
+/// The endpoints of the discovery document that the authenticator fetched at
+/// startup (KAIROS-T-0613), when its issuer is the issuer of `/api/config`.
+/// `None` when there is no such document or it does not parse: then the first
+/// request fetches the document as before, and a fault gets its own message.
+fn boot_endpoints(state: &AppState) -> Option<IdpEndpoints> {
+    let issuer = state.config.oidc_issuer_url.as_deref()?;
+    if issuer.trim_end_matches('/') != state.auth.issuer() {
+        return None;
+    }
+    let document = state.auth.discovery_document()?;
+    serde_json::from_value(document.clone()).ok()
 }
 
 impl WebAuth {
@@ -165,8 +181,8 @@ pub fn router(state: &AppState) -> Router<AppState> {
         client_id: state.config.web_client_id.clone(),
         api_bearer: state.config.api_bearer,
         client_secret: state.config.web_client_secret.clone(),
-        http: reqwest::Client::new(),
-        endpoints: OnceCell::new(),
+        http: crate::middleware::auth::idp_client(),
+        endpoints: OnceCell::new_with(boot_endpoints(state)),
     });
     Router::new()
         // COLLIERY-T-0256: `/api/config` has the rule of the inputs. The

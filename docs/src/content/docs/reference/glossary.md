@@ -248,8 +248,11 @@ cancelled task, as it archives a finished task. To cancel a task, a principal ne
 
 The person who works on a task in Active (KAIROS-T-0359). A column can have
 the flag `claims`. The Active column of a delivery board has it. The person who
-moves a task into such a column gets the claim. A person can also take a free task
-in the column with a claim (`claim_item`, `kairos tasks claim`).
+moves a task with no claim into such a column gets the claim. A person can also
+take a free task in the column with a claim (`claim_item`, `kairos tasks claim`).
+
+A column can also have the flag `keeps_claims`: the Blocked column has it
+(KAIROS-T-0529). A task keeps its claim there, and a task with no claim gets none.
 
 An agent can move the task with the agent key of a person. Then the claim names
 the person, and the GUI shows "Alice (agent)". A service account gets no claim.
@@ -258,10 +261,10 @@ A hand-off gives the claim to a person who holds `transition_items` on the
 board of the task (KAIROS-T-0530). A person who cannot move the task cannot
 finish it.
 
-The claim ends when the task leaves Active. It also ends at a hand-off, at a
-release, and at an archive. It ends when its person leaves the organization
-(KAIROS-T-0531). Then the task stays in its column, free, and the team of the
-board gets a notification.
+The claim ends when the task leaves the columns that hold or keep claims. It
+also ends at a hand-off, at a release, and at an archive. It ends when its
+person leaves the organization (KAIROS-T-0531). Then the task stays in its
+column, free, and the team of the board gets a notification.
 
 A claim does not end by age. A claim with no write for some days is **stale**:
 Kairos tells the holder and the owner of the initiative. A different person can

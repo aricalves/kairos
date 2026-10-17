@@ -101,6 +101,10 @@ pub struct BoardColumn {
     /// The most live items that the column should hold (KAIROS-T-0371);
     /// `None`: no limit. A move over the limit is allowed, with a warning.
     pub wip_limit: Option<i32>,
+    /// A task that has a claim keeps it in this column, and a task with
+    /// no claim gets none here (KAIROS-T-0529). The seed sets it on the
+    /// Blocked column of a delivery board: a block does not end the work.
+    pub keeps_claims: bool,
 }
 
 /// Insert for [`BoardColumn`].
@@ -112,6 +116,7 @@ pub struct NewBoardColumn {
     pub position: i32,
     pub is_done: bool,
     pub claims: bool,
+    pub keeps_claims: bool,
 }
 
 /// Partial update for [`BoardColumn`].
@@ -122,6 +127,7 @@ pub struct BoardColumnChangeset {
     pub position: Option<i32>,
     pub is_done: Option<bool>,
     pub claims: Option<bool>,
+    pub keeps_claims: Option<bool>,
     pub deleted_at: Option<Option<DateTime<Utc>>>,
     pub updated_at: Option<DateTime<Utc>>,
 }
