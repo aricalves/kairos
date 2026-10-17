@@ -272,6 +272,26 @@ organization nouns (`boards`, `teams`, `members`, `streams`, `admin tenants`)
 have no archived mode. `kairos search` carries the same flag. See
 [Archiving](../../explanation/archiving/).
 
+#### The pages of a list
+
+A `list` verb prints one page. After the table, it prints the count and the
+page:
+
+```
+total: 340 (limit 200, offset 0)
+Next: --offset 200
+```
+
+The `Next:` line is there only when more rows follow the page. To read the
+next page, run the command again with that option. The last page has no
+`Next:` line. With `--json`, the command prints the envelope of the server
+as it is: `items`, `total`, `limit` and `offset`.
+
+These verbs page so: `<noun> list`, `boards list`,
+`members list`, `teams list`, `streams list`, `repos list`, `metadata list`,
+`templates list`, `admin agent-keys list`, `admin tenants list` and
+`kairos search`.
+
 ### `<noun> get`
 
 ```
@@ -782,7 +802,18 @@ Raw body:
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--query-json <JSON>` | JSON, `@FILE`, or `-` | none | The full search request body as raw JSON. `@FILE` reads a file; `-` reads standard input. Cannot be combined with any other search flag. |
+| `--query-json <JSON>` | JSON, `@FILE`, or `-` | none | The full search request body as raw JSON. `@FILE` reads a file; `-` reads standard input. |
+
+The command sends the `--query-json` body to the server as it is. The server
+checks each field and refuses an unknown field by its name. So an older CLI
+can send a field that only a newer server knows.
+
+`--query-json` does not accept a search flag beside it. The command then
+exits 1, and the message names each flag. Put the values in the JSON, or use
+the flags alone. Paging is in the JSON too: `"limit"` and `"offset"`.
+
+The output pages as [the pages of a list](#the-pages-of-a-list) tell. The
+`Next:` line counts the hits of all the groups.
 
 ### `kairos boards list`
 
@@ -891,7 +922,7 @@ The board marks the column.
 kairos boards columns list   <BOARD> [OPTIONS]
 kairos boards columns add    <BOARD> <NAME> [--position <N>] [OPTIONS]
 kairos boards columns update <BOARD> <COLUMN> [--name <NAME>] [--position <N>] [--done <BOOL>] [--claims <BOOL>] [OPTIONS]   (one option at least)
-kairos boards columns remove <BOARD> <COLUMN> [OPTIONS]
+kairos boards columns remove <BOARD> <COLUMN> --confirm [OPTIONS]
 ```
 
 | Argument / Option | Type | Default | Description |
@@ -903,6 +934,7 @@ kairos boards columns remove <BOARD> <COLUMN> [OPTIONS]
 | `--name <NAME>` | string | no change | The new name. |
 | `--done <BOOL>` | `true` or `false` | no change | A done column. |
 | `--claims <BOOL>` | `true` or `false` | no change | A task in the column has a claim. |
+| `--confirm` | flag | off | Required on `remove` for the removal to happen. Without it, the command exits 1. |
 
 `list` shows the columns in their order. `add`, `update` and `remove` need
 `configure_boards` on the board. A new column has no transition. `remove`
@@ -914,7 +946,7 @@ WIP limit.
 ```
 kairos boards transitions list   <BOARD> [OPTIONS]
 kairos boards transitions add    <BOARD> <FROM> <TO> [OPTIONS]
-kairos boards transitions remove <BOARD> <FROM> <TO> [OPTIONS]
+kairos boards transitions remove <BOARD> <FROM> <TO> --confirm [OPTIONS]
 ```
 
 | Argument / Option | Type | Default | Description |
@@ -922,6 +954,7 @@ kairos boards transitions remove <BOARD> <FROM> <TO> [OPTIONS]
 | `<BOARD>` | slug or UUID | required | The board. |
 | `<FROM>` | name or UUID | required on `add` and `remove` | The column where the move starts. |
 | `<TO>` | name or UUID | required on `add` and `remove` | The column where the move ends. |
+| `--confirm` | flag | off | Required on `remove` for the removal to happen. Without it, the command exits 1. |
 
 `list` shows the moves that the board allows. `add` allows a move, and
 `remove` stops it. The two need `configure_boards` on the board.
@@ -931,11 +964,11 @@ kairos boards transitions remove <BOARD> <FROM> <TO> [OPTIONS]
 ```
 kairos boards dispatch list <BOARD> [OPTIONS]
 kairos boards dispatch add-target <BOARD> --name <NAME> --hook-url <URL> [OPTIONS]
-kairos boards dispatch remove-target <BOARD> <TARGET> [OPTIONS]
+kairos boards dispatch remove-target <BOARD> <TARGET> --confirm [OPTIONS]
 kairos boards dispatch enable-target <BOARD> <TARGET> [OPTIONS]
 kairos boards dispatch test-target <BOARD> <TARGET> [OPTIONS]
 kairos boards dispatch add-rule <BOARD> [--trigger entered_column|unblocked] [--column <COLUMN>] --target <TARGET> [--task-type <TYPE>] [--metadata <SLUG=VALUE>] [--repository <REPO>] [OPTIONS]
-kairos boards dispatch remove-rule <BOARD> <RULE> [OPTIONS]
+kairos boards dispatch remove-rule <BOARD> <RULE> --confirm [OPTIONS]
 kairos boards dispatch agent-triage <BOARD> [--on | --off] [OPTIONS]
 kairos boards dispatch log <BOARD> [--target <TARGET>] [--rule <RULE>] [--limit <N>] [OPTIONS]
 ```
@@ -949,16 +982,17 @@ Kairos sends one signed delivery to the target. See
 |---|---|---|
 | `list` | a place on the board | Shows the rules and the targets of the board. |
 | `add-target` | `configure_boards` | Makes a target. The command shows its secret one time. |
-| `remove-target` | `configure_boards` | Removes a target, with its rules and its log. |
+| `remove-target` | `configure_boards` | Removes a target, with its rules and its log. It needs `--confirm`. |
 | `enable-target` | `configure_boards` | Turns on a target that Kairos turned off. |
 | `test-target` | `configure_boards` | Sends the event `ping` to a target. |
 | `add-rule` | `configure_boards` | Makes a rule. |
-| `remove-rule` | `configure_boards` | Removes a rule. Its deliveries stay in the log. |
+| `remove-rule` | `configure_boards` | Removes a rule. Its deliveries stay in the log. It needs `--confirm`. |
 | `agent-triage` | a place on the board; `configure_boards` with `--on` or `--off` | Shows or sets who decides the triage of intake. `--on`: an agent decides. `--off`: an agent proposes with a note, and a person decides. |
 | `log` | a place on the board | Shows the newest deliveries, with the status, the tries and the response code. |
 
 A place on the board is a grant on the board, a place in its team, or the
-admin role.
+admin role. Without `--confirm`, `remove-target` and `remove-rule` remove
+nothing and exit 1.
 
 | Option of `add-rule` | Type | Default | Description |
 |---|---|---|---|
@@ -1309,8 +1343,8 @@ kairos repos list [OPTIONS]
 | `--offset <OFFSET>` | integer | 0 | Rows to skip. |
 
 After the table, the command prints the count of the repositories and the
-page: `total: 12 (limit 50, offset 0)`. With `--json`, the command prints
-the page: `items`, `total`, `limit` and `offset`.
+page: `total: 12 (limit 50, offset 0)`. See
+[the pages of a list](#the-pages-of-a-list).
 
 ### `kairos repos get`
 
@@ -1614,8 +1648,13 @@ Use a GitHub fine-grained personal access token with only the permission
 ### `kairos repos credential remove`
 
 ```
-kairos repos credential remove <REPOSITORY> [OPTIONS]
+kairos repos credential remove <REPOSITORY> --confirm [OPTIONS]
 ```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<REPOSITORY>` | slug or UUID | required | The repository. |
+| `--confirm` | flag | off | Required for the removal to happen. Without it, the command exits 1. |
 
 Removes the read token. The next fetch has no credential. The server gives 404
 `NOT_FOUND` when the repository has no token.
@@ -1635,7 +1674,7 @@ token.
 
 ```
 kairos repos write-token set <REPOSITORY> [OPTIONS]
-kairos repos write-token remove <REPOSITORY> [OPTIONS]
+kairos repos write-token remove <REPOSITORY> --confirm [OPTIONS]
 kairos repos write-token status <REPOSITORY> [OPTIONS]
 ```
 
@@ -1648,6 +1687,9 @@ member of the owner team.
 does. Then Kairos writes each open pull request that links to an item. Use a
 GitHub fine-grained token with "Pull requests: write" and "Commit statuses:
 write" on the one repository. Only a GitHub repository takes a write token.
+
+`remove` needs `--confirm`. Without it, the command removes nothing and
+exits 1.
 
 `remove` removes the token, and Kairos writes nothing more. `status` prints
 `off (no write token)`, or `on` with the last write. `kairos repos get` shows
@@ -1694,20 +1736,25 @@ on the organization. See [Run an admin agent](../../how-to/run-an-admin-agent/).
 kairos metadata list [OPTIONS]
 kairos metadata create --name <NAME> --slug <SLUG> --type <TYPE> [--option <VALUE>]... [--entity-type <TYPE>]... [OPTIONS]
 kairos metadata update <DEFINITION> [--name <NAME>] [--slug <SLUG>] [--option <VALUE>]... [--entity-type <TYPE>]... [OPTIONS]
-kairos metadata delete <DEFINITION> [OPTIONS]
+kairos metadata delete <DEFINITION> --confirm [OPTIONS]
 ```
 
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
 | `<DEFINITION>` | slug or UUID | required on `update` and `delete` | The metadata definition. |
+| `--limit <LIMIT>` | integer | server default 50, maximum 200 | On `list`: the page size. |
+| `--offset <OFFSET>` | integer | 0 | On `list`: the rows to skip. |
 | `--name <NAME>` | string | required on `create` | The name. |
 | `--slug <SLUG>` | string | required on `create` | The slug. |
-| `--type <TYPE>` | string | required on `create` | `text`, `number`, `date`, `enum` or `boolean`. It does not change later. |
+| `--type <TYPE>` | string | required on `create` | `string`, `enum` or `date`. It does not change later. |
 | `--option <VALUE>` | string | none | A value of an enum. Repeat it for each value, in the order of the scale. On `update`, the values replace the list. |
 | `--entity-type <TYPE>` | string | each type | An entity type of the definition: `strategy`, `initiative`, `task`, `document` or `adr`. Repeat it. On `update`, the values replace the list. |
+| `--confirm` | flag | off | Required on `delete` for the deletion to happen. Without it, the command exits 1. |
 
-`list` shows the metadata definitions. Only an organization admin can create,
-update or delete a definition. `delete` refuses a definition that an item or a
+`list` shows one page of the metadata definitions. See
+[the pages of a list](#the-pages-of-a-list). `update` and `delete` find the
+slug on each page. Only an organization admin can create, update or delete a
+definition. `delete` refuses a definition that an item or a
 template uses, and the message names them.
 
 ### `kairos templates`
@@ -1716,19 +1763,24 @@ template uses, and the message names them.
 kairos templates list [OPTIONS]
 kairos templates create --name <NAME> --slug <SLUG> [--content <TEXT>] [--field <FIELD>]... [OPTIONS]
 kairos templates update <TEMPLATE> [--name <NAME>] [--slug <SLUG>] [--content <TEXT>] [--field <FIELD>]... [OPTIONS]
-kairos templates delete <TEMPLATE> [OPTIONS]
+kairos templates delete <TEMPLATE> --confirm [OPTIONS]
 ```
 
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
 | `<TEMPLATE>` | slug or UUID | required on `update` and `delete` | The template. |
+| `--limit <LIMIT>` | integer | server default 50, maximum 200 | On `list`: the page size. |
+| `--offset <OFFSET>` | integer | 0 | On `list`: the rows to skip. |
 | `--name <NAME>` | string | required on `create` | The name. |
 | `--slug <SLUG>` | string | required on `create` | The slug. |
 | `--content <TEXT>` | string | empty | The markdown of a new item of the template. |
 | `--field <FIELD>` | string | none | A metadata field: `SLUG`, `SLUG=DEFAULT`, `SLUG!` or `SLUG=DEFAULT!`. The `!` makes the field required. Repeat it. On `update`, the values replace the list. |
+| `--confirm` | flag | off | Required on `delete` for the deletion to happen. Without it, the command exits 1. |
 
-`list` shows the templates. Only an organization admin can create, update or
-delete a template. Items from a deleted template keep their content and their
+`list` shows one page of the templates. See
+[the pages of a list](#the-pages-of-a-list). `update` and `delete` find the
+slug on each page. Only an organization admin can create, update or delete a
+template. Items from a deleted template keep their content and their
 metadata.
 
 ## Machine access

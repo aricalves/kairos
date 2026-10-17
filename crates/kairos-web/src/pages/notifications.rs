@@ -55,6 +55,8 @@ struct NotificationSettings {
     p0_bug: bool,
     delivery_failing: bool,
     agent_key_revoked: bool,
+    claim_dropped: bool,
+    claim_stale: bool,
 }
 
 /// mirror of: `kairos_client::types_notifications::MarkNotificationsReadResponse`
@@ -96,6 +98,8 @@ fn kind_label(kind: &str) -> &'static str {
         "p0_bug" => "P0 bug",
         "delivery_failing" => "Delivery failing",
         "agent_key_revoked" => "Agent key revoked",
+        "claim_dropped" => "Claim dropped",
+        "claim_stale" => "Claim stale",
         _ => "Notification",
     }
 }
@@ -323,6 +327,8 @@ pub fn NotificationsPage() -> impl IntoView {
     let p0_bug = RwSignal::new(true);
     let delivery_failing = RwSignal::new(true);
     let agent_key_revoked = RwSignal::new(true);
+    let claim_dropped = RwSignal::new(true);
+    let claim_stale = RwSignal::new(true);
     let settings_reload = RwSignal::new(0u32);
     let settings = LocalResource::new(move || {
         auth.track_session();
@@ -340,6 +346,8 @@ pub fn NotificationsPage() -> impl IntoView {
             p0_bug.set(s.p0_bug);
             delivery_failing.set(s.delivery_failing);
             agent_key_revoked.set(s.agent_key_revoked);
+            claim_dropped.set(s.claim_dropped);
+            claim_stale.set(s.claim_stale);
         }
     });
     let on_save = move |_| {
@@ -353,6 +361,8 @@ pub fn NotificationsPage() -> impl IntoView {
             "p0_bug": p0_bug.get_untracked(),
             "delivery_failing": delivery_failing.get_untracked(),
             "agent_key_revoked": agent_key_revoked.get_untracked(),
+            "claim_dropped": claim_dropped.get_untracked(),
+            "claim_stale": claim_stale.get_untracked(),
         });
         run_mutation(
             busy,
@@ -433,6 +443,10 @@ pub fn NotificationsPage() -> impl IntoView {
                                     label="Kairos turns off a webhook target that you own after failed deliveries"/>
                                 <Switch checked=agent_key_revoked
                                     label="An organization admin revokes an agent key of yours"/>
+                                <Switch checked=claim_dropped
+                                    label="A person leaves, and their claim on a task of your team ends"/>
+                                <Switch checked=claim_stale
+                                    label="A claim of yours, or on a task of your initiative, has no write for days"/>
                                 <Group justify="end">
                                     <Button on_click=Callback::new(on_save)>"Save"</Button>
                                 </Group>
@@ -467,6 +481,8 @@ mod tests {
             "p0_bug",
             "delivery_failing",
             "agent_key_revoked",
+            "claim_dropped",
+            "claim_stale",
         ] {
             assert_ne!(kind_label(kind), "Notification", "{kind}");
         }

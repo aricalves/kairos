@@ -2818,7 +2818,8 @@ async fn mcp_endpoint_against_live_stack() {
         )
     );
     // A short code that names nothing, and one that names archived work:
-    // NOT_FOUND, as from every write tool.
+    // NOT_FOUND, as from every write tool. The second names restore_item
+    // (KAIROS-T-0560).
     let text = session
         .call_err(
             "set_repository",
@@ -2835,7 +2836,13 @@ async fn mcp_endpoint_against_live_stack() {
             json!({"short_code": task_code, "repository": "ledger"}),
         )
         .await;
-    assert!(text.starts_with("NOT_FOUND: No live item"), "{text}");
+    assert_eq!(
+        text,
+        format!(
+            "NOT_FOUND: The item {task_code} is archived. A write needs a live item. Restore \
+             the item first with restore_item."
+        )
+    );
 
     // bob has no `manage_tasks` on the board. He did not file this task, so
     // the refusal names the capability and no more.

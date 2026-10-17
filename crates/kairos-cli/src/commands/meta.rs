@@ -3,24 +3,23 @@
 //! organization admins. A definition or a template is a slug or an id.
 
 use kairos_client::KairosClient;
-use kairos_client::types::Pagination;
+use kairos_client::types::{ListEnvelope, Pagination};
 use kairos_client::types_meta::{
     CreateMetadataDefinitionRequest, CreateTemplateRequest, MetadataDefinition, Template,
     TemplateMetadataEntry, UpdateMetadataDefinitionRequest, UpdateTemplateRequest,
 };
 
+use crate::commands::entities::require_confirm;
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
-use crate::table::Table;
+use crate::table::{Table, print_page_footer};
 
 /// The metadata definitions of the organization.
 #[derive(clap::Subcommand, Debug)]
 pub enum MetadataCommand {
-    /// List the metadata definitions: slug, type, the values of an enum
-    List {
-        #[command(flatten)]
-        common: Common,
-    },
+    /// List the metadata definitions: slug, type, the values of an enum.
+    /// One page; the last line gives the next --offset
+    List(crate::commands::entities::ListArgs),
     /// Make a metadata definition (organization admins)
     Create {
         /// The name
@@ -29,7 +28,7 @@ pub enum MetadataCommand {
         /// The slug
         #[arg(long)]
         slug: String,
-        /// text, number, date, enum or boolean. It does not change later
+        /// string, enum or date. It does not change later
         #[arg(long = "type", value_name = "TYPE")]
         field_type: String,
         /// A value of an enum; repeat it for each value, in the order of the
@@ -64,12 +63,15 @@ pub enum MetadataCommand {
         #[command(flatten)]
         common: Common,
     },
-    /// Delete a metadata definition (organization admins). Refused while an
-    /// item has a value or a template has the field
+    /// Delete a metadata definition (organization admins; needs --confirm).
+    /// Refused while an item has a value or a template has the field
     Delete {
         /// The definition: slug or id (UUID)
         #[arg(value_name = "DEFINITION")]
         definition: String,
+        /// Required: without it, the command deletes nothing
+        #[arg(long)]
+        confirm: bool,
         #[command(flatten)]
         common: Common,
     },
@@ -78,11 +80,8 @@ pub enum MetadataCommand {
 /// The templates of the organization.
 #[derive(clap::Subcommand, Debug)]
 pub enum TemplatesCommand {
-    /// List the templates
-    List {
-        #[command(flatten)]
-        common: Common,
-    },
+    /// List the templates. One page; the last line gives the next --offset
+    List(crate::commands::entities::ListArgs),
     /// Make a template (organization admins)
     Create {
         /// The name
@@ -122,47 +121,81 @@ pub enum TemplatesCommand {
         #[command(flatten)]
         common: Common,
     },
-    /// Delete a template (organization admins). Items made from it keep
-    /// their content and their metadata
+    /// Delete a template (organization admins; needs --confirm). Items made
+    /// from it keep their content and their metadata
     Delete {
         /// The template: slug or id (UUID)
         #[arg(value_name = "TEMPLATE")]
         template: String,
+        /// Required: without it, the command deletes nothing
+        #[arg(long)]
+        confirm: bool,
         #[command(flatten)]
         common: Common,
     },
 }
 
-const ALL: Pagination = Pagination {
-    limit: Some(200),
-    offset: None,
-};
+/// The page size of a lookup: the server maximum.
+const LOOKUP_PAGE: i64 = 200;
+
+/// Read the pages of a list until `found` matches a row, or the rows end
+/// (KAIROS-T-0593: a lookup read the first page only).
+async fn find_in_pages<T, F, Fut>(
+    mut page: F,
+    found: impl Fn(&T) -> bool,
+) -> Result<Option<T>, CliError>
+where
+    F: FnMut(Pagination) -> Fut,
+    Fut: std::future::Future<Output = Result<ListEnvelope<T>, kairos_client::Error>>,
+    T: utoipa::ToSchema,
+{
+    let mut offset = 0;
+    loop {
+        let envelope = page(Pagination {
+            limit: Some(LOOKUP_PAGE),
+            offset: Some(offset),
+        })
+        .await?;
+        let shown = i64::try_from(envelope.items.len()).unwrap_or(i64::MAX);
+        if let Some(row) = envelope.items.into_iter().find(|row| found(row)) {
+            return Ok(Some(row));
+        }
+        offset = offset.saturating_add(shown);
+        if shown == 0 || offset >= envelope.total {
+            return Ok(None);
+        }
+    }
+}
 
 async fn definition(
     client: &KairosClient,
     reference: &str,
 ) -> Result<MetadataDefinition, CliError> {
-    let all = client.list_metadata_definitions(ALL).await?.items;
-    all.into_iter()
-        .find(|d| d.id == reference || d.slug == reference)
-        .ok_or_else(|| {
-            CliError::Failure(format!(
-                "No metadata definition has the slug or the id {reference:?}. `kairos metadata \
-                 list` gives them."
-            ))
-        })
+    find_in_pages(
+        |page| client.list_metadata_definitions(page),
+        |d: &MetadataDefinition| d.id == reference || d.slug == reference,
+    )
+    .await?
+    .ok_or_else(|| {
+        CliError::Failure(format!(
+            "No metadata definition has the slug or the id {reference:?}. `kairos metadata \
+             list` gives them."
+        ))
+    })
 }
 
 async fn template(client: &KairosClient, reference: &str) -> Result<Template, CliError> {
-    let all = client.list_templates(ALL).await?.items;
-    all.into_iter()
-        .find(|t| t.id == reference || t.slug == reference)
-        .ok_or_else(|| {
-            CliError::Failure(format!(
-                "No template has the slug or the id {reference:?}. `kairos templates list` gives \
-                 them."
-            ))
-        })
+    find_in_pages(
+        |page| client.list_templates(page),
+        |t: &Template| t.id == reference || t.slug == reference,
+    )
+    .await?
+    .ok_or_else(|| {
+        CliError::Failure(format!(
+            "No template has the slug or the id {reference:?}. `kairos templates list` gives \
+             them."
+        ))
+    })
 }
 
 /// A `--field` value: `slug`, `slug=default`, with `!` at the end for a
@@ -203,10 +236,10 @@ fn definition_line(d: &MetadataDefinition) -> String {
 impl MetadataCommand {
     pub async fn run(self) -> Result<(), CliError> {
         match self {
-            Self::List { common } => {
-                let client = client(&common)?;
-                let all = client.list_metadata_definitions(ALL).await?;
-                if common.json {
+            Self::List(args) => {
+                let client = client(&args.common)?;
+                let all = client.list_metadata_definitions(args.page()).await?;
+                if args.common.json {
                     return print_json(&all);
                 }
                 let mut table = Table::new(&["SLUG", "NAME", "TYPE", "VALUES", "ENTITY TYPES"]);
@@ -224,6 +257,7 @@ impl MetadataCommand {
                     ]);
                 }
                 print!("{}", table.render());
+                print_page_footer(all.total, all.limit, all.offset, all.items.len());
                 Ok(())
             }
             Self::Create {
@@ -286,8 +320,10 @@ impl MetadataCommand {
             }
             Self::Delete {
                 definition: reference,
+                confirm,
                 common,
             } => {
+                require_confirm(confirm, &format!("the metadata definition {reference}"))?;
                 let client = client(&common)?;
                 let current = definition(&client, &reference).await?;
                 let deleted = client.delete_metadata_definition(&current.id).await?;
@@ -304,10 +340,10 @@ impl MetadataCommand {
 impl TemplatesCommand {
     pub async fn run(self) -> Result<(), CliError> {
         match self {
-            Self::List { common } => {
-                let client = client(&common)?;
-                let all = client.list_templates(ALL).await?;
-                if common.json {
+            Self::List(args) => {
+                let client = client(&args.common)?;
+                let all = client.list_templates(args.page()).await?;
+                if args.common.json {
                     return print_json(&all);
                 }
                 let mut table = Table::new(&["SLUG", "NAME", "ID"]);
@@ -315,6 +351,7 @@ impl TemplatesCommand {
                     table.row(vec![t.slug.clone(), t.name.clone(), t.id.clone()]);
                 }
                 print!("{}", table.render());
+                print_page_footer(all.total, all.limit, all.offset, all.items.len());
                 Ok(())
             }
             Self::Create {
@@ -379,8 +416,10 @@ impl TemplatesCommand {
             }
             Self::Delete {
                 template: reference,
+                confirm,
                 common,
             } => {
+                require_confirm(confirm, &format!("the template {reference}"))?;
                 let client = client(&common)?;
                 let current = template(&client, &reference).await?;
                 let deleted = client.delete_template(&current.id).await?;
@@ -417,5 +456,64 @@ mod tests {
             }
         );
         assert!(field("=high").is_err());
+    }
+
+    fn fixture(n: usize) -> Template {
+        Template {
+            id: format!("id-{n}"),
+            name: format!("Template {n}"),
+            slug: format!("slug-{n}"),
+            content: String::new(),
+            is_system_default: false,
+            created_at: "2026-10-17T00:00:00Z".into(),
+            updated_at: "2026-10-17T00:00:00Z".into(),
+        }
+    }
+
+    /// A server page of `limit` rows from 450 fixtures, with the offsets
+    /// that the lookup asked for.
+    async fn fixture_page(
+        asked: &std::sync::Mutex<Vec<i64>>,
+        page: Pagination,
+    ) -> Result<ListEnvelope<Template>, kairos_client::Error> {
+        let offset = page.offset.unwrap_or(0);
+        let limit = page.limit.unwrap_or(50);
+        asked.lock().unwrap().push(offset);
+        let items = (0..450usize)
+            .skip(usize::try_from(offset).unwrap())
+            .take(usize::try_from(limit).unwrap())
+            .map(fixture)
+            .collect();
+        Ok(ListEnvelope {
+            items,
+            total: 450,
+            limit,
+            offset,
+        })
+    }
+
+    /// KAIROS-T-0593: the lookup by slug reads the next page when the
+    /// first page does not have the slug, and stops at the last page.
+    #[tokio::test]
+    async fn a_lookup_reads_each_page_until_it_finds_the_slug() {
+        let asked = std::sync::Mutex::new(Vec::new());
+        let found = find_in_pages(
+            |page| fixture_page(&asked, page),
+            |t: &Template| t.slug == "slug-401",
+        )
+        .await
+        .unwrap();
+        assert_eq!(found.map(|t| t.id), Some("id-401".to_string()));
+        assert_eq!(*asked.lock().unwrap(), vec![0, 200, 400]);
+
+        asked.lock().unwrap().clear();
+        let missing = find_in_pages(
+            |page| fixture_page(&asked, page),
+            |t: &Template| t.slug == "slug-9999",
+        )
+        .await
+        .unwrap();
+        assert!(missing.is_none());
+        assert_eq!(*asked.lock().unwrap(), vec![0, 200, 400]);
     }
 }

@@ -218,6 +218,10 @@ the current code, and `details` has these fields:
 | `retired_code` | The retired code of the request. |
 | `current_code` | The current code of the item. Send the write again with this code. |
 
+A reference in a write follows a retired code. For example, the
+`source_short_code` and the `target_short_code` of `POST /api/relationships`
+follow it. The response has the current codes.
+
 ### A `limit` or an `offset` that is out of the range
 
 The server does not refuse a `limit` or an `offset` that is out of the range.
