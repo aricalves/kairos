@@ -6,6 +6,15 @@
 //! arrives with an unknown `kid` (key rotation) behind a stampede guard so
 //! concurrent unknown-kid requests trigger a single fetch.
 //!
+//! KAIROS-T-0613: the JWKS is fetched at most once per
+//! [`JWKS_REFETCH_INTERVAL`] (the fetch at startup counts). While the last
+//! fetch is younger than that, a `kid` that is not in the key set is unknown:
+//! the answer is a 401 with no fetch and no wait on the guard. A flood of
+//! random kids so makes one fetch per minute, and a key that the issuer
+//! rotates in is found at most a minute after the last fetch. Each request to
+//! the issuer has a timeout of [`IDP_TIMEOUT`]. The discovery document of the
+//! startup is kept ([`Authenticator::discovery_document`]) for `/api/config`.
+//!
 //! The [`require_auth`] middleware validates RS256 signature, `iss`, `exp`,
 //! and `aud` (against `OIDC_AUDIENCE`), JIT-upserts `public.users` from the
 //! claims (`sub` → `external_id`, `email`, `name` → `display_name`; org
@@ -29,6 +38,7 @@
 //! mode, and an effectively-empty value is a startup error.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use axum::extract::{Request, State};
 use axum::http::header::AUTHORIZATION;
@@ -46,6 +56,28 @@ use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::error::ApiError;
+
+/// The timeout of each request to the issuer: the discovery document and the
+/// JWKS (KAIROS-T-0613). The connect is in it.
+pub const IDP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The shortest time between two fetches of the JWKS (KAIROS-T-0613). A
+/// `kid` that is not in the key set is unknown until the last fetch is this
+/// old.
+pub const JWKS_REFETCH_INTERVAL: Duration = Duration::from_secs(60);
+
+/// An HTTP client for the issuer, with [`IDP_TIMEOUT`].
+///
+/// A failed build means that the TLS backend did not start. `Client::new()`
+/// panics in that case too, so the panic here is not new.
+pub fn idp_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(IDP_TIMEOUT)
+        .connect_timeout(IDP_TIMEOUT)
+        .user_agent(concat!("Kairos/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .expect("the HTTP client of the issuer starts")
+}
 
 /// The authenticated caller, inserted as a request extension for every
 /// request that passes [`require_auth`] (KAIROS-A-0010).
@@ -180,6 +212,24 @@ struct DiscoveryDoc {
     jwks_uri: String,
 }
 
+/// What the key cache knows of one `kid` (KAIROS-T-0613).
+enum Cached {
+    /// The key is in the set.
+    Key(DecodingKey),
+    /// The key is not in the set, and the last fetch is younger than the
+    /// refetch interval: the kid is unknown, with no fetch.
+    Unknown,
+    /// The key is not in the set, and a fetch is allowed.
+    Miss,
+}
+
+/// The keys of the JWKS by `kid`, and when the last fetch was.
+struct KeySet {
+    keys: HashMap<String, DecodingKey>,
+    /// `None` until the first fetch, and for a static-key instance.
+    fetched_at: Option<Instant>,
+}
+
 #[derive(Debug, serde::Deserialize)]
 struct JwksDoc {
     keys: Vec<Jwk>,
@@ -203,11 +253,18 @@ pub struct Authenticator {
     /// `None` for test instances built with [`Self::with_static_keys`]
     /// (no refresh possible).
     jwks_uri: Option<String>,
+    /// The discovery document of the startup, as the issuer sent it. `None`
+    /// for an instance with no discovery.
+    discovery: Option<serde_json::Value>,
     http: reqwest::Client,
-    keys: RwLock<HashMap<String, DecodingKey>>,
+    keys: RwLock<KeySet>,
     /// Stampede guard: concurrent unknown-kid requests serialize here and
     /// re-check the cache before fetching.
     refresh: Mutex<()>,
+    /// [`JWKS_REFETCH_INTERVAL`]; shorter in the tests.
+    refetch_interval: Duration,
+    /// The JWKS fetches of this instance, for the tests (KAIROS-T-0613).
+    fetches: std::sync::atomic::AtomicU64,
     /// False for [`Self::disabled`] — a deployment with no issuer
     /// (KAIROS-T-0208). Kept as a flag rather than inferred from an empty
     /// `issuer`, because "the issuer happens to be an empty string" and "there is
@@ -242,7 +299,7 @@ impl Authenticator {
     /// unreachable or publishes no usable RSA keys.
     pub async fn discover(issuer: &str, audience: &str) -> Result<Self, DiscoveryError> {
         let issuer = issuer.trim_end_matches('/').to_string();
-        let http = reqwest::Client::new();
+        let http = idp_client();
         let discovery_url = format!("{issuer}/.well-known/openid-configuration");
         let err = |message: String| DiscoveryError::Discovery {
             issuer: issuer.clone(),
@@ -259,7 +316,7 @@ impl Authenticator {
             )));
         }
 
-        let doc: DiscoveryDoc = http
+        let raw: serde_json::Value = http
             .get(&discovery_url)
             .send()
             .await
@@ -268,14 +325,22 @@ impl Authenticator {
             .json()
             .await
             .map_err(|e| err(format!("parsing discovery document: {e}")))?;
+        let doc: DiscoveryDoc = serde_json::from_value(raw.clone())
+            .map_err(|e| err(format!("parsing discovery document: {e}")))?;
 
         let auth = Self {
             issuer,
             audiences,
             jwks_uri: Some(doc.jwks_uri.clone()),
+            discovery: Some(raw),
             http,
-            keys: RwLock::new(HashMap::new()),
+            keys: RwLock::new(KeySet {
+                keys: HashMap::new(),
+                fetched_at: None,
+            }),
             refresh: Mutex::new(()),
+            refetch_interval: JWKS_REFETCH_INTERVAL,
+            fetches: std::sync::atomic::AtomicU64::new(0),
             enabled: true,
         };
         auth.refresh_keys()
@@ -303,9 +368,15 @@ impl Authenticator {
             issuer: String::new(),
             audiences: Vec::new(),
             jwks_uri: None,
-            http: reqwest::Client::new(),
-            keys: RwLock::new(HashMap::new()),
+            discovery: None,
+            http: idp_client(),
+            keys: RwLock::new(KeySet {
+                keys: HashMap::new(),
+                fetched_at: None,
+            }),
             refresh: Mutex::new(()),
+            refetch_interval: JWKS_REFETCH_INTERVAL,
+            fetches: std::sync::atomic::AtomicU64::new(0),
             enabled: false,
         }
     }
@@ -324,18 +395,59 @@ impl Authenticator {
             issuer: issuer.trim_end_matches('/').to_string(),
             audiences: parse_audiences(audience),
             jwks_uri: None,
-            http: reqwest::Client::new(),
-            keys: RwLock::new(keys.into_iter().collect()),
+            discovery: None,
+            http: idp_client(),
+            keys: RwLock::new(KeySet {
+                keys: keys.into_iter().collect(),
+                fetched_at: None,
+            }),
             refresh: Mutex::new(()),
+            refetch_interval: JWKS_REFETCH_INTERVAL,
+            fetches: std::sync::atomic::AtomicU64::new(0),
             enabled: true,
         }
     }
 
+    /// The issuer, with no `/` at the end. Empty with no issuer.
+    pub fn issuer(&self) -> &str {
+        &self.issuer
+    }
+
+    /// The discovery document that [`Self::discover`] fetched at startup
+    /// (KAIROS-T-0613). `/api/config` and the token relay use it, so they do
+    /// not fetch it again. `None` with no discovery.
+    pub fn discovery_document(&self) -> Option<&serde_json::Value> {
+        self.discovery.as_ref()
+    }
+
+    /// The JWKS fetches of this instance, the fetch at startup included.
+    pub fn jwks_fetches(&self) -> u64 {
+        std::sync::atomic::AtomicU64::load(&self.fetches, std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Fetch the JWKS and replace the cache with its RSA keys.
+    ///
+    /// KAIROS-T-0613: the time of the fetch is kept when the fetch fails
+    /// too, so an issuer that is down is asked once per interval, not once
+    /// per request.
     async fn refresh_keys(&self) -> Result<(), VerifyError> {
         let Some(jwks_uri) = &self.jwks_uri else {
             return Ok(()); // static-key instance: nothing to refresh
         };
+        self.fetches
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let fetched = self.fetch_keys(jwks_uri).await;
+        let mut set = self.keys.write().await;
+        set.fetched_at = Some(Instant::now());
+        set.keys = fetched?;
+        Ok(())
+    }
+
+    /// The RSA keys of the JWKS at `jwks_uri`.
+    async fn fetch_keys(
+        &self,
+        jwks_uri: &str,
+    ) -> Result<HashMap<String, DecodingKey>, VerifyError> {
         let doc: JwksDoc = self
             .http
             .get(jwks_uri)
@@ -369,15 +481,36 @@ impl Authenticator {
                 "JWKS at {jwks_uri} contains no usable RSA keys"
             )));
         }
-        *self.keys.write().await = fresh;
-        Ok(())
+        Ok(fresh)
+    }
+
+    /// What the cache knows of `kid`.
+    async fn cached_key(&self, kid: &str) -> Cached {
+        let set = self.keys.read().await;
+        if let Some(key) = set.keys.get(kid) {
+            return Cached::Key(key.clone());
+        }
+        match set.fetched_at {
+            Some(at) if at.elapsed() < self.refetch_interval => Cached::Unknown,
+            _ => Cached::Miss,
+        }
+    }
+
+    /// A shorter refetch interval, for the tests.
+    #[cfg(test)]
+    fn with_refetch_interval(mut self, interval: Duration) -> Self {
+        self.refetch_interval = interval;
+        self
     }
 
     /// The decoding key for `kid`, refreshing the JWKS once (behind the
-    /// stampede guard) if it is not cached.
+    /// stampede guard) if it is not cached and the last fetch is older than
+    /// the refetch interval (KAIROS-T-0613).
     async fn key_for(&self, kid: &str) -> Result<Option<DecodingKey>, VerifyError> {
-        if let Some(key) = self.keys.read().await.get(kid) {
-            return Ok(Some(key.clone()));
+        match self.cached_key(kid).await {
+            Cached::Key(key) => return Ok(Some(key)),
+            Cached::Unknown => return Ok(None),
+            Cached::Miss => {}
         }
         if self.jwks_uri.is_none() {
             return Ok(None);
@@ -385,11 +518,13 @@ impl Authenticator {
         let _guard = self.refresh.lock().await;
         // Re-check under the guard: a concurrent request may have already
         // refreshed while we waited.
-        if let Some(key) = self.keys.read().await.get(kid) {
-            return Ok(Some(key.clone()));
+        match self.cached_key(kid).await {
+            Cached::Key(key) => return Ok(Some(key)),
+            Cached::Unknown => return Ok(None),
+            Cached::Miss => {}
         }
         self.refresh_keys().await?;
-        Ok(self.keys.read().await.get(kid).cloned())
+        Ok(self.keys.read().await.keys.get(kid).cloned())
     }
 
     /// Validate `token` (RS256 signature, `iss`, `aud`, `exp`) and return
@@ -1068,5 +1203,163 @@ BWKiTzkt91ge2HS8jjYZyPRxuojSqlQMbhlcJWYXEWjfEcHgo1Z8Iw/4TxU7oDzj
         .expect("an odd email_verified must not reject the token");
         assert_eq!(claims.email_verified, None);
         assert_eq!(claims.sub, "s");
+    }
+
+    // ---------------------------------------------------------------------
+    // KAIROS-T-0613: one JWKS fetch per interval, and the unknown kid.
+    // A stub issuer on a local port counts the fetches of its JWKS.
+
+    /// The modulus of [`TEST_RSA_PUBLIC_PEM`], base64url, for a JWKS.
+    const TEST_RSA_N: &str = "2gKQdTOnMPT8zyKzbjydl3l9htFHvo09akZTYRCNGV_x0HrOH27OiVbcvL_1ZOKIv63bfgnGYxKmp74MNvNqg6K-HrTl5nccTgsCaN_TL6ISf3xasICBz451XwjM8qezSek1zwGzW0OzC7l7xcQzupHuF9VhqzpY9LgqV8-2KQy_8rwH5-r3n4le0gzuDZgbvBH_GFjWF55LJrmMJvt61iSdLn7mEq4YwF1UkRajp_sR1iaaDnTJuR3R2S46iD3DFMbrZPgyu-sC4qcWurEQBWKiTzkt91ge2HS8jjYZyPRxuojSqlQMbhlcJWYXEWjfEcHgo1Z8Iw_4TxU7oDzj6Q";
+
+    /// A stub issuer: its URL, the kids of its JWKS (a test can change
+    /// them), and the count of the JWKS requests it served.
+    struct StubIssuer {
+        url: String,
+        kids: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        jwks_hits: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    }
+
+    impl StubIssuer {
+        fn hits(&self) -> u64 {
+            std::sync::atomic::AtomicU64::load(&self.jwks_hits, std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    async fn stub_issuer(kids: &[&str]) -> StubIssuer {
+        use axum::routing::get;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let url = format!("http://{}", listener.local_addr().expect("addr"));
+        let kids = std::sync::Arc::new(std::sync::Mutex::new(
+            kids.iter().map(|k| k.to_string()).collect::<Vec<_>>(),
+        ));
+        let jwks_hits = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let discovery = serde_json::json!({
+            "issuer": url,
+            "jwks_uri": format!("{url}/jwks"),
+            "authorization_endpoint": format!("{url}/auth"),
+            "token_endpoint": format!("{url}/token"),
+        });
+        let (served_kids, hits) = (kids.clone(), jwks_hits.clone());
+        let app = axum::Router::new()
+            .route(
+                "/.well-known/openid-configuration",
+                get(move || async move { axum::Json(discovery) }),
+            )
+            .route(
+                "/jwks",
+                get(move || async move {
+                    hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let keys: Vec<_> = served_kids
+                        .lock()
+                        .expect("kids")
+                        .iter()
+                        .map(|kid| {
+                            serde_json::json!({
+                                "kty": "RSA", "kid": kid, "n": TEST_RSA_N, "e": "AQAB"
+                            })
+                        })
+                        .collect();
+                    axum::Json(serde_json::json!({ "keys": keys }))
+                }),
+            );
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        StubIssuer {
+            url,
+            kids,
+            jwks_hits,
+        }
+    }
+
+    /// A flood of unknown kids, as many requests at once.
+    async fn flood(auth: &Authenticator, issuer: &str, count: usize) {
+        let tokens: Vec<String> = (0..count)
+            .map(|i| mint(issuer, AUDIENCE, future_exp(), Some(&format!("random-{i}"))))
+            .collect();
+        let results = futures_util::future::join_all(tokens.iter().map(|t| auth.verify(t))).await;
+        for result in results {
+            assert!(
+                matches!(result, Err(VerifyError::UnknownKey { .. })),
+                "an unknown kid is refused: {result:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_flood_of_unknown_kids_makes_one_jwks_fetch() {
+        let stub = stub_issuer(&[KID]).await;
+        let auth = Authenticator::discover(&stub.url, AUDIENCE)
+            .await
+            .expect("discovery against the stub")
+            .with_refetch_interval(Duration::from_millis(300));
+        assert_eq!(stub.hits(), 1, "the startup fetches the JWKS once");
+
+        // In the interval after the startup fetch: no fetch at all.
+        flood(&auth, &stub.url, 50).await;
+        assert_eq!(stub.hits(), 1, "no fetch in the interval");
+
+        // After the interval: the flood makes one fetch, not fifty.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        flood(&auth, &stub.url, 50).await;
+        assert_eq!(stub.hits(), 2, "one fetch for the whole flood");
+        assert_eq!(auth.jwks_fetches(), 2);
+
+        // A known kid needs no fetch.
+        auth.verify(&mint(&stub.url, AUDIENCE, future_exp(), Some(KID)))
+            .await
+            .expect("the known key validates");
+        assert_eq!(stub.hits(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_kid_stays_unknown_until_the_interval_ends() {
+        let stub = stub_issuer(&[KID]).await;
+        let auth = Authenticator::discover(&stub.url, AUDIENCE)
+            .await
+            .expect("discovery against the stub")
+            .with_refetch_interval(Duration::from_millis(300));
+        let rotated = mint(&stub.url, AUDIENCE, future_exp(), Some("rotated-in"));
+
+        // The issuer rotates a key in after the startup fetch. In the
+        // interval the kid is unknown, and the server does not ask.
+        stub.kids
+            .lock()
+            .expect("kids")
+            .push("rotated-in".to_string());
+        for _ in 0..5 {
+            let err = auth
+                .verify(&rotated)
+                .await
+                .expect_err("unknown in the interval");
+            assert!(matches!(err, VerifyError::UnknownKey { ref kid } if kid == "rotated-in"));
+        }
+        assert_eq!(
+            stub.hits(),
+            1,
+            "an unknown kid makes no fetch in the interval"
+        );
+
+        // After the interval, one fetch finds the new key.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        auth.verify(&rotated)
+            .await
+            .expect("the rotated key is found after the interval");
+        assert_eq!(stub.hits(), 2);
+        auth.verify(&rotated).await.expect("cached now");
+        assert_eq!(stub.hits(), 2);
+    }
+
+    #[tokio::test]
+    async fn the_discovery_document_of_the_startup_is_kept() {
+        let stub = stub_issuer(&[KID]).await;
+        let auth = Authenticator::discover(&stub.url, AUDIENCE)
+            .await
+            .expect("discovery against the stub");
+        let doc = auth.discovery_document().expect("a document");
+        assert_eq!(doc["token_endpoint"], format!("{}/token", stub.url));
+        assert_eq!(auth.issuer(), stub.url);
+        assert!(authenticator().discovery_document().is_none());
     }
 }

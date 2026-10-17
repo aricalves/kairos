@@ -38,6 +38,7 @@ pub mod pages;
 pub mod periodic;
 pub mod promote;
 pub mod rate_limit;
+pub mod request_timeout;
 pub mod secrets;
 pub mod secrets_rotation;
 pub mod security_headers;
