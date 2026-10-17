@@ -600,9 +600,18 @@ impl KairosClient {
             .await
     }
 
+    /// `POST /api/tasks/{short_code}/claim` — take the claim of a task in
+    /// Active that has no claim (KAIROS-T-0528). The caller holds
+    /// `transition_items` on the board of the task, or may edit the task.
+    /// A task that a different person holds is refused with `CLAIMED`.
+    pub async fn claim_task(&self, short_code: &str) -> Result<Task, Error> {
+        self.post_empty(&format!("/api/tasks/{short_code}/claim"))
+            .await
+    }
+
     /// `POST /api/tasks/{short_code}/hand-off` — give the claim of a task
     /// in Active to a person (KAIROS-T-0359). `to` is a user id, an email
-    /// or a user name of a person of the organization. The caller has the
+    /// or a user name of a person of the organization, or `me`. The caller has the
     /// claim, or holds `transition_items` on the board of the task.
     pub async fn hand_off_task(&self, short_code: &str, to: &str) -> Result<Task, Error> {
         self.post_ok(

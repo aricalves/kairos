@@ -9,7 +9,8 @@
 //!    line of the MCP text. A change by alice (with or without her agent
 //!    key) gives no warning.
 //! 3. A hand-off to bob makes the claim bob's.
-//! 4. A release leaves no claim, and the next person who moves the task
+//! 4. A release leaves no claim; a claim takes a free task (KAIROS-T-0528),
+//!    and the next person who moves the task
 //!    to Active (out and back in) gets the claim.
 //! 5. The claim ends when the task goes out of Active.
 //!
@@ -517,6 +518,60 @@ async fn a_task_in_active_has_a_claim() {
         .call("release_item", json!({"short_code": task.short_code}))
         .await;
     assert!(error && text.starts_with("NO_CLAIM:"), "{text}");
+    // --- 4b. a free task is claimed (KAIROS-T-0528) --------------------------
+    // carol: no transition_items, not the creator.
+    let err = carol
+        .claim_task(&task.short_code)
+        .await
+        .expect_err("carol has no right");
+    assert!(matches!(err, Error::Forbidden { .. }), "{err}");
+    let claimed = bob
+        .claim_task(&task.short_code)
+        .await
+        .expect("bob claims the free task");
+    let claim = claimed.claim.expect("bob has the claim");
+    assert_eq!(claim.user_id, bob_id.to_string());
+    assert!(!claim.agent);
+    let err = bob
+        .claim_task(&task.short_code)
+        .await
+        .expect_err("bob has it already");
+    assert!(
+        matches!(&err, Error::Conflict { code, .. } if code == "CONFLICT"),
+        "{err}"
+    );
+    let err = alice
+        .claim_task(&task.short_code)
+        .await
+        .expect_err("bob holds it");
+    assert!(
+        matches!(&err, Error::Conflict { code, .. } if code == "CLAIMED"),
+        "{err}"
+    );
+    assert!(err.to_string().contains(&bob_name), "{err}");
+    // `me`: alice takes it with a hand-off to herself.
+    let mine = alice
+        .hand_off_task(&task.short_code, "me")
+        .await
+        .expect("hand-off to me");
+    assert_eq!(mine.claim.expect("alice").user_id, alice_id.to_string());
+    alice.release_task(&task.short_code).await.expect("release");
+    // Over MCP: the claim, then the refusal names the holder.
+    let text = bob_mcp
+        .call_ok("claim_item", json!({"short_code": task.short_code}))
+        .await;
+    assert!(
+        text.contains(&format!("Claimed {}", task.short_code))
+            && text.contains(&format!("- claim: {bob_name}")),
+        "{text}"
+    );
+    let (text, error) = alice_mcp
+        .call("claim_item", json!({"short_code": task.short_code}))
+        .await;
+    assert!(
+        error && text.starts_with("CLAIMED:") && text.contains(&bob_name),
+        "{text}"
+    );
     // From Todo: a different task.
     let second = alice
         .create_task(&new_task("From Todo"))

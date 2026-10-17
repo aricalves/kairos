@@ -27,7 +27,7 @@ The task must be workable: acceptance criteria present and independently verifia
 
 **Read your notifications.** While you have unread notifications, each answer of a Kairos tool ends with a block `## Your notifications (N unread)`: the 5 newest, then `N more: call get_events`. A notification tells you of a claim handed off to you, a blocker of your claimed task that is done or archived, a task that you created that someone cancelled, a mention of your user name, or a P0 bug on the board of your team. `get_events` lists them with their ids. Act on each one that changes your work (a cleared blocker can make a task workable; a P0 bug can come before your pick), tell the lead about the others, then `mark_events_read` (`ids`, or `all: true`). Do not mark a notification read before you have read it.
 
-To give the task to a different person, `hand_off_item` (`to`: a user id, an email or a user name). To stop work on a task and leave it in Active for anyone, `release_item`. The claim ends by itself when the task leaves Active.
+To give the task to a different person, `hand_off_item` (`to`: a user id, an email, a user name, or `me`). To stop work on a task and leave it in Active for anyone, `release_item`. To take a free task in Active, `claim_item` (KAIROS-T-0528): a task that a different person holds is refused with the name of the holder. The claim ends by itself when the task leaves Active.
 
 ## Ground
 
