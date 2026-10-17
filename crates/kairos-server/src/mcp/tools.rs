@@ -630,6 +630,16 @@ pub struct PromoteNoteParams {
     pub title: Option<String>,
 }
 
+/// `None` when the field is absent, `Some(None)` for `null`, `Some(Some(v))`
+/// for a value (KAIROS-T-0533): the three states of a patch field.
+fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
 /// Parameters for `set_state` (KAIROS-T-0506).
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -637,21 +647,25 @@ pub struct PromoteNoteParams {
 pub struct SetStateParams {
     /// The short code of the task (e.g. "ACME-T-0012").
     pub short_code: String,
-    /// The branch of the work.
-    #[serde(default)]
-    pub branch: Option<String>,
-    /// The last commit (a hash or a short hash).
-    #[serde(default)]
-    pub commit: Option<String>,
-    /// True when the last commit is pushed. Default false.
+    /// The branch of the work. Not sent: kept. `null`: cleared.
+    #[serde(default, deserialize_with = "present")]
+    pub branch: Option<Option<String>>,
+    /// The last commit (a hash or a short hash). Not sent: kept. `null`: cleared.
+    #[serde(default, deserialize_with = "present")]
+    pub commit: Option<Option<String>>,
+    /// True when the last commit is pushed. Not sent: kept.
     #[serde(default)]
     pub pushed: Option<bool>,
-    /// The URL of the PR.
+    /// The URL of the PR. Not sent: kept. `null`: cleared.
+    #[serde(default, deserialize_with = "present")]
+    pub pr_url: Option<Option<String>>,
+    /// The `updated_at` of the state you read (RFC 3339). A state that
+    /// changed since refuses the write with CONFLICT and the current state.
     #[serde(default)]
-    pub pr_url: Option<String>,
-    /// What comes next.
-    #[serde(default)]
-    pub next_step: Option<String>,
+    pub expected_updated_at: Option<String>,
+    /// What comes next. Not sent: kept. `null`: cleared.
+    #[serde(default, deserialize_with = "present")]
+    pub next_step: Option<Option<String>>,
 }
 
 /// Parameters for `set_team` and `clear_team` (KAIROS-T-0321).
@@ -2022,7 +2036,7 @@ impl KairosMcp {
                             .unwrap_or_default(),
                         states
                             .get(&item.id)
-                            .map(crate::task_state::state_tag)
+                            .map(|s| crate::task_state::state_tag(s, chrono::Utc::now()))
                             .unwrap_or_default(),
                         if item.archived { " [archived]" } else { "" },
                         if details {
@@ -3371,7 +3385,7 @@ impl KairosMcp {
 
     // KAIROS-T-0506: the live state of a task.
     #[tool(
-        description = "Write the live state of a TASK: `branch`, `commit`, `pushed`, `pr_url`, `next_step` (each optional; send at least one). The write replaces the whole state: send every field each time. The state is not a note: it is one current line that `get_item`, `board_items` and the card show, with who wrote it when. Write it after each commit, each push, a PR, and before you stop. The edit rule applies: the creator of the task, or `manage_tasks` on its board."
+        description = "Write the live state of a TASK: `branch`, `commit`, `pushed`, `pr_url`, `next_step` (send at least one). The write is a patch: a field that you send is set, `null` clears it, a field that you do not send is kept. `expected_updated_at` (the `updated_at` you read) refuses a write over a state that changed since, with CONFLICT and the current state. A hand-off or a release clears `next_step`. The state is not a note: it is one current line that `get_item`, `board_items` and the card show, with who wrote it when. Write it after each commit, each push, a PR, and before you stop. The edit rule applies: the creator of the task, or `manage_tasks` on its board."
     )]
     pub async fn set_state(
         &self,
@@ -3392,9 +3406,10 @@ impl KairosMcp {
             let body = kairos_client::types::SetTaskStateRequest {
                 branch: params.branch,
                 commit: params.commit,
-                pushed: params.pushed.unwrap_or(false),
+                pushed: params.pushed,
                 pr_url: params.pr_url,
                 next_step: params.next_step,
+                expected_updated_at: params.expected_updated_at,
             };
             let state = crate::task_state::write_state(conn, &slug, user, item.id, &body)?;
             Ok(format!(

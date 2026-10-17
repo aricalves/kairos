@@ -90,7 +90,8 @@ class SkillSetInSync(unittest.TestCase):
         for rel, fields in self.skills.items():
             if not is_user_invoked(fields):
                 with self.subTest(skill=rel):
-                    self.assertIn(f"`{fields['name']}`", line)
+                    names = (f"`{fields['name']}`", f"`kairos:{fields['name']}`")
+                    self.assertTrue(any(name in line for name in names))
 
     def test_readme_names_each_skill(self):
         for rel, fields in self.skills.items():
@@ -386,8 +387,87 @@ class BootstrapWritesNoRepositoryConnection(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(PLUGIN, ".mcp.json")))
 
 
-if __name__ == "__main__":
-    unittest.main()
+class SkillsAgree(unittest.TestCase):
+    """KAIROS-T-0546: the skills give one answer for the grill trigger, the
+    name of the review skill, the place of dead ends, the ADR link, the
+    Kairos tools of a sub-agent, the initiative board, the skipped tasks of
+    a loop, and the owner of a repository."""
+
+    def text(self, rel):
+        return read(os.path.join(SKILLS, rel))
+
+    def test_the_review_skill_is_named_with_its_namespace(self):
+        # Claude Code has a built-in `/code-review` that posts nothing to
+        # Kairos. A bare `code-review` can load that one.
+        paths = [os.path.join(HERE, "ralph.py")]
+        for folder, _, files in os.walk(SKILLS):
+            paths += [os.path.join(folder, name) for name in files if name.endswith(".md")]
+        own = os.path.join(SKILLS, "engineering", "code-review", "SKILL.md")
+        bare = []
+        for path in paths:
+            for line in read(path).splitlines():
+                if path == own and line == "name: code-review":
+                    continue
+                if re.search(r"(?<![\w:/-])code-review", line):
+                    bare.append(f"{os.path.relpath(path, ROOT)}: {line[:80]}")
+        self.assertEqual(bare, [])
+
+    def test_the_grill_trigger_names_no_user_invoked_skill_as_its_own(self):
+        description = frontmatter(os.path.join(SKILLS, "meta", "grilling", "SKILL.md"))["description"]
+        self.assertNotIn("any 'grill'", description)
+        for rel in skill_dirs():
+            fields = frontmatter(os.path.join(ROOT, rel, "SKILL.md"))
+            name = fields["name"]
+            if "grill" in name and is_user_invoked(fields):
+                with self.subTest(skill=rel):
+                    # The user runs it as `/kairos:<name>`; the bare name is a trigger.
+                    rest = description.replace(f"/kairos:{name}", "")
+                    self.assertNotRegex(rest, rf"\b{re.escape(name)}\b")
+        body = self.text("meta/grilling/SKILL.md")
+        self.assertIn("writes nothing to Kairos", body)
+        self.assertIn("`/kairos:grill-initiative`", body)
+
+    def test_dead_ends_go_on_the_task(self):
+        handoff = self.text("meta/handoff/SKILL.md")
+        self.assertIn("`append_note`", handoff)
+        self.assertNotIn("temporary directory", handoff)
+        self.assertNotIn("kairos-handoff-", handoff)
+        self.assertIn("dead ends ruled out", self.text("workflow/implement/SKILL.md"))
+
+    def test_an_adr_links_to_its_item_with_parent(self):
+        adr_format = self.text("engineering/domain-modeling/ADR-FORMAT.md")
+        self.assertIn("Send `parent`", adr_format)
+        self.assertIn("`supports` edge", adr_format)
+        for rel in (
+            "engineering/domain-modeling/ADR-FORMAT.md",
+            "engineering/domain-modeling/SKILL.md",
+            "workflow/grill-initiative/SKILL.md",
+            "workflow/grill-decomposition/SKILL.md",
+            "workflow/implement/SKILL.md",
+        ):
+            with self.subTest(skill=rel):
+                text = self.text(rel)
+                self.assertNotIn("`informs`", text)
+                self.assertNotIn("ADRs that inform", text)
+
+    def test_a_sub_agent_has_the_kairos_tools(self):
+        review = self.text("engineering/code-review/SKILL.md")
+        self.assertNotIn("no Kairos access", review)
+        self.assertIn("inherit the MCP tools of the session", review)
+        self.assertIn("with Kairos tool access", self.text("engineering/research/SKILL.md"))
+
+    def test_to_initiative_uses_the_initiative_board(self):
+        self.assertIn("`initiative_board`", self.text("workflow/to-initiative/SKILL.md"))
+        self.assertIn("`initiative_board`", self.text("workflow/grill-initiative/SKILL.md"))
+
+    def test_ralph_initiative_appends_the_skipped_tasks(self):
+        text = self.text("workflow/ralph-initiative/SKILL.md")
+        self.assertIn("skipped tasks and their reasons on the initiative with `append_note`", text)
+
+    def test_onboard_team_changes_the_owner_with_update_repository(self):
+        text = self.text("workflow/onboard-team/SKILL.md")
+        self.assertNotIn("does not change the owner", text)
+        self.assertIn("`update_repository` with `team`", text)
 
 
 class SkillsWriteNoRepoFileForWiringOrNotes(unittest.TestCase):
@@ -431,3 +511,7 @@ class AgentKeyHowToMatchesTheManifest(unittest.TestCase):
         self.assertIn(".claude/kairos.local.md", text)
         self.assertIn("writes only", text)
         self.assertNotIn("writes this entry", text)
+
+
+if __name__ == "__main__":
+    unittest.main()

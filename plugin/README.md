@@ -99,7 +99,7 @@ Ralph loop of the session: the iteration and the tasks left.
   `additionalContext` is a system reminder on the next request.
 - The hook does not read Kairos and holds no credentials. `hooks/active_work.py record` is a
   `PostToolUse` hook on the kairos `get_item`, `transition_item`, `edit_item`,
-  `update_item` and `append_note` tools. It keeps a local record for each session in
+  `update_item`, `append_note` and `set_state` tools. It keeps a local record for each session in
   `~/.claude/kairos-work/<session_id>.json` (`KAIROS_WORK_STATE_DIR` overrides the folder).
   The record has the title, repository, column and parent from the `get_item` result. It has
   the column from `transition_item`, and the next step from the text that the agent writes. The next step is
@@ -236,7 +236,7 @@ The team decides the board of a task; the repository is an optional link that sa
 code is (COLLIERY-A-0023). Every repository has exactly one owning team, and a task on any
 team's board may link to it. `implement` works the team board filtered by this repository and
 finds the work of other teams here with `search`, `decompose` names a board for every task it
-creates, `triage` grooms the tasks that link to this repository by default, and `code-review`
+creates, `triage` grooms the tasks that link to this repository by default, and `kairos:code-review`
 flags a change whose task links to a different repository. Work for a different team is a
 **request** to the delivery board of that team: entry column, support lane (recipe in
 `skills/workflow/implement/CROSS-TEAM-FILING.md`, which the `/kairos` router points at).

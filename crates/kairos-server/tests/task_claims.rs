@@ -708,7 +708,7 @@ async fn a_task_in_active_has_a_claim() {
         .set_task_state(
             &fifth.short_code,
             &SetTaskStateRequest {
-                next_step: Some("Run the tests.".into()),
+                next_step: Some(Some("Run the tests.".into())),
                 ..Default::default()
             },
         )

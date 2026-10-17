@@ -234,6 +234,9 @@ fn end_claim(
             task_id,
             format!("release:{} reason:{reason}", claim.user_id),
         )?;
+        // KAIROS-T-0533: the next step was the plan of the person who held
+        // the claim; the next holder starts from the facts.
+        crate::task_state::clear_next_step(conn, task_id)?;
     }
     Ok(ended)
 }
@@ -276,9 +279,19 @@ pub(crate) fn after_column_change(
 }
 
 /// The short code and the column of a live task, with the check that the
-/// column holds claims.
+/// column holds claims. Locks the task row (KAIROS-T-0640).
 fn claimable_task(conn: &mut PgConnection, task_id: Uuid) -> Result<String, ClaimError> {
     use crate::schema::{board_columns, tasks};
+    // KAIROS-T-0640: lock the task row first, in the transaction of the
+    // claim, the hand-off or the release. A second change of the claim of
+    // the task waits, then reads the claim that the first one wrote. Only
+    // the task row: changes of other tasks in the column do not wait.
+    tasks::table
+        .filter(tasks::id.eq(task_id))
+        .select(tasks::id)
+        .for_update()
+        .first::<Uuid>(conn)
+        .optional()?;
     let row: Option<(String, String, bool)> = tasks::table
         .inner_join(board_columns::table)
         .filter(tasks::id.eq(task_id))
@@ -362,6 +375,8 @@ pub fn hand_off(
             return Err(ClaimError::AlreadyHolder { short_code, name });
         }
         let claim = put_claim(conn, task_id, to_user, None)?;
+        // KAIROS-T-0533: the next step was the previous holder's plan.
+        crate::task_state::clear_next_step(conn, task_id)?;
         let from = existing.map_or_else(|| "none".to_string(), |c| c.user_id.to_string());
         log(
             conn,

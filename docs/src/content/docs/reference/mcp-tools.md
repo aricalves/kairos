@@ -1118,6 +1118,8 @@ The tool applies to tasks only. It writes no new version of the task. A call
 that sets the repository that the task already has is a success.
 
 Refuses: `NOT_FOUND` for an unknown short code or an archived task.
+`VALIDATION` for a patch that changes nothing. `CONFLICT` for a stale
+`expected_updated_at`.
 `VALIDATION` when the item is not a task, and for an unknown `repository`.
 `FORBIDDEN` when the edit rule refuses the caller.
 
@@ -1152,16 +1154,23 @@ you stop.
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `short_code` | string | yes | — | The short code of the task. |
-| `branch` | string | no | — | The branch of the work. |
-| `commit` | string | no | — | The last commit (a hash or a short hash). |
-| `pushed` | boolean | no | `false` | True when the last commit is pushed. |
-| `pr_url` | string | no | — | The URL of the PR. |
-| `next_step` | string | no | — | What comes next. |
+| `branch` | string or `null` | no | kept | The branch of the work. `null` clears it. |
+| `commit` | string or `null` | no | kept | The last commit (a hash or a short hash). `null` clears it. |
+| `pushed` | boolean | no | kept | True when the last commit is pushed. |
+| `pr_url` | string or `null` | no | kept | The URL of the PR. `null` clears it. |
+| `next_step` | string or `null` | no | kept | What comes next. `null` clears it. |
+| `expected_updated_at` | string | no | — | The `updated_at` of the state you read (RFC 3339). A state that changed since refuses the write with `CONFLICT`; the details carry the current state. |
 
-The write replaces the whole state: send each field each time. Kairos
-clears a field that you do not send. Send at least one field. The state is
-not content: the write makes no new version of the task. The state stays
-when the task reaches a done column.
+The write is a patch (KAIROS-T-0533). A field that you send gets the value.
+`null` clears the field. A field that you do not send keeps its value. Send
+at least one field.
+
+The state is not content: the write makes no new version of the task. The
+write emits `item_updated`, so the cards and the item page refresh. The state
+stays when the task reaches a done column. A hand-off or a release clears
+`next_step`: it was the plan of the previous claimant. The branch, the commit
+and the PR stay. `board_items` shows the age of the state in its tag:
+`[state: branch x; next: y; 2 days ago]`.
 
 The edit rule applies, as for `append_note`. It passes the creator of the
 task, the holder of its claim (KAIROS-T-0532), and `manage_tasks` on its

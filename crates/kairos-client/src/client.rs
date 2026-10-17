@@ -670,7 +670,8 @@ impl KairosClient {
     }
 
     /// `PUT /api/tasks/{short_code}/state` — write the live state of a task
-    /// (KAIROS-T-0506). The write replaces the whole state.
+    /// (KAIROS-T-0506). The write is a patch (KAIROS-T-0533): a field that
+    /// is not sent keeps its value, `null` clears it.
     pub async fn set_task_state(
         &self,
         short_code: &str,
