@@ -603,7 +603,7 @@ impl KairosClient {
 
     /// `POST /api/tasks/{short_code}/claim` — take the claim of a task in
     /// Active that has no claim (KAIROS-T-0528). The caller holds
-    /// `transition_items` on the board of the task, or may edit the task.
+    /// `transition_items` on the board of the task.
     /// A task that a different person holds is refused with `CLAIMED`.
     pub async fn claim_task(&self, short_code: &str) -> Result<Task, Error> {
         self.post_empty(&format!("/api/tasks/{short_code}/claim"))

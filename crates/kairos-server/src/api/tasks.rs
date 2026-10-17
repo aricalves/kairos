@@ -887,8 +887,8 @@ pub(crate) async fn hand_off_task(
 /// The caller must be a person. The claim names the caller, with the agent
 /// key of the request when an agent made it (KAIROS-A-0024).
 ///
-/// Requires `transition_items` on the board of the task, or the edit rule
-/// of the task (its creator, or `manage_tasks`). No body.
+/// Requires `transition_items` on the board of the task (KAIROS-T-0642):
+/// the edit rule gives no claim. No body.
 #[utoipa::path(
     post,
     path = "/api/tasks/{short_code}/claim",
@@ -896,7 +896,7 @@ pub(crate) async fn hand_off_task(
     params(("short_code" = String, Path, description = "Task short code")),
     responses(
         (status = 200, description = "The caller has the claim", body = dto::Task),
-        (status = 403, description = "The caller has neither transition_items nor the right to edit the task", body = dto::ErrorEnvelope),
+        (status = 403, description = "The caller does not hold transition_items on the board of the task", body = dto::ErrorEnvelope),
         (status = 404, description = "Unknown short code", body = dto::ErrorEnvelope),
         (status = 409, description = "CLAIMED (a different person has the claim; the details name the holder), or CONFLICT (the caller has it already)", body = dto::ErrorEnvelope),
         (status = 422, description = "NOT_CLAIMABLE (the task is not in Active), or VALIDATION (the caller is a service account)", body = dto::ErrorEnvelope),
@@ -914,7 +914,7 @@ pub(crate) async fn claim_task(
         .blocking
         .run(&tenant.slug, move |conn| {
             let task = load(conn, &short_code, Liveness::LiveOnly)?;
-            crate::claims::require_claim_take(conn, &slug, task.id, task.board_id, user)?;
+            crate::claims::require_claim_take(conn, &slug, task.board_id, user)?;
             kairos_db::task_claims::claim(conn, task.id, user)
                 .map_err(crate::claims::map_claim_error)?;
             let task = load(conn, &short_code, Liveness::LiveOnly)?.into_dto();

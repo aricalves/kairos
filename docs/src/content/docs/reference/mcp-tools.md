@@ -1376,9 +1376,8 @@ strategy or an initiative that has no owner.
 |---|---|---|---|---|
 | `short_code` | string | yes | — | The short code of a task in Active with no claim, or of a strategy or an initiative with no owner. |
 
-A task: you need `transition_items` on the board of the task, or the right
-to edit the task. The creator of the task has that right, and so does
-`manage_tasks`. The claim names you. With your agent key, it names you and
+A task: you need `transition_items` on the board of the task (KAIROS-T-0642).
+The creator of the task gets no claim from the edit rule. The claim names you. With your agent key, it names you and
 marks the agent. The answer has the line `claim`.
 
 A task that a different person holds gets `CLAIMED` and the name of the
@@ -1395,8 +1394,7 @@ Refuses:
 - `NOT_FOUND` for an unknown short code or an archived item.
 - `VALIDATION` for an item that is not a task, a strategy or an initiative.
 - `VALIDATION` for a task, when the caller is a service account.
-- `FORBIDDEN` for a task, without `transition_items` and without the right to
-  edit the task.
+- `FORBIDDEN` for a task, without `transition_items` on its board.
 - `FORBIDDEN` for a strategy or an initiative, for a service account, and for
   a person who is not a member of the board and not an organization admin.
 - `NOT_CLAIMABLE` for a task that is not in Active.

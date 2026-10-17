@@ -528,6 +528,34 @@ async fn a_task_in_active_has_a_claim() {
         .await
         .expect_err("carol has no right");
     assert!(matches!(err, Error::Forbidden { .. }), "{err}");
+    // KAIROS-T-0642: the creator gets no claim from the edit rule. carol
+    // files a request (file_backlog), alice moves it to Active and frees it;
+    // carol, its creator with no transition_items, is refused.
+    let request = carol
+        .create_task(&CreateTaskRequest {
+            work_class: Some("support".into()),
+            ..new_task("A request from carol")
+        })
+        .await
+        .expect("carol files a request");
+    for column in ["Todo", "Active"] {
+        alice
+            .transition_task(&request.short_code, &to(column))
+            .await
+            .expect(column);
+    }
+    alice
+        .release_task(&request.short_code)
+        .await
+        .expect("free the request");
+    let err = carol
+        .claim_task(&request.short_code)
+        .await
+        .expect_err("the creator has no transition_items");
+    assert!(
+        matches!(&err, Error::Forbidden { .. }) && err.to_string().contains("transition_items"),
+        "{err}"
+    );
     let claimed = bob
         .claim_task(&task.short_code)
         .await

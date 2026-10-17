@@ -354,8 +354,8 @@ Take the claim of a task in Active that has no claim (KAIROS-T-0528).
 The caller must be a person. The claim names the caller, with the agent
 key of the request when an agent made it (KAIROS-A-0024).
 
-Requires `transition_items` on the board of the task, or the edit rule
-of the task (its creator, or `manage_tasks`). No body.
+Requires `transition_items` on the board of the task (KAIROS-T-0642):
+the edit rule gives no claim. No body.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
@@ -364,7 +364,7 @@ of the task (its creator, or `manage_tasks`). No body.
 | Response | Body | Meaning |
 |---|---|---|
 | `200` | [`Task`](../schemas/#task) | The caller has the claim |
-| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The caller has neither transition_items nor the right to edit the task |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The caller does not hold transition_items on the board of the task |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown short code |
 | `409` | [`ErrorEnvelope`](../schemas/#errorenvelope) | CLAIMED (a different person has the claim; the details name the holder), or CONFLICT (the caller has it already) |
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | NOT_CLAIMABLE (the task is not in Active), or VALIDATION (the caller is a service account) |

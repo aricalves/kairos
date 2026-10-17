@@ -3798,7 +3798,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Take a free TASK in Active (no claim): the claim names you, so the board shows who works it. Or become the owner of a STRATEGY or INITIATIVE that has none: the one person who answers for it. A task: you need `transition_items` on its board or the right to edit the task; a task that a different person holds is refused with CLAIMED and the holder's name (ask for `hand_off_item`). A strategy or initiative: you must be a person and a member of its board (a grant), or an org admin; an item with an owner is refused with the owner's name. The owner gives no extra right. Moving a task to Active gives you the claim too."
+        description = "Take a free TASK in Active (no claim): the claim names you, so the board shows who works it. Or become the owner of a STRATEGY or INITIATIVE that has none: the one person who answers for it. A task: you need `transition_items` on its board; a task that a different person holds is refused with CLAIMED and the holder's name (ask for `hand_off_item`). A strategy or initiative: you must be a person and a member of its board (a grant), or an org admin; an item with an owner is refused with the owner's name. The owner gives no extra right. Moving a task to Active gives you the claim too."
     )]
     pub async fn claim_item(
         &self,
@@ -3827,7 +3827,7 @@ impl KairosMcp {
             // KAIROS-T-0528: a task in Active with no claim.
             let item = task_for_claim(item)?;
             let board_id = item.board_id.unwrap_or_default();
-            crate::claims::require_claim_take(conn, &slug, item.id, board_id, user)?;
+            crate::claims::require_claim_take(conn, &slug, board_id, user)?;
             kairos_db::task_claims::claim(conn, item.id, user)
                 .map_err(crate::claims::map_claim_error)?;
             Ok(format!(

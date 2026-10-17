@@ -462,8 +462,8 @@ kairos tasks claim <SHORT_CODE> [OPTIONS]
 | `<SHORT_CODE>` | string | required | The task's short code. The task must be in Active, with no claim. |
 
 Gives you the [claim](../glossary/#claim) of a free task in Active
-(KAIROS-T-0528). You need `transition_items` on the board of the task, or the
-right to edit the task. Kairos refuses a task that a different person holds
+(KAIROS-T-0528). You need `transition_items` on the board of the task
+(KAIROS-T-0642). Kairos refuses a task that a different person holds
 with `CLAIMED` and the name of the holder. A move of a task to Active gives
 you the claim too.
 
