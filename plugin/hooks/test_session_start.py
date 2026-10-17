@@ -89,6 +89,7 @@ class LiveStateHint(unittest.TestCase):
         self.assertIn(
             "the documents and the ADRs that impact this repository", hint
         )
+        self.assertIn("the other ADRs of the owner team", hint)  # KAIROS-T-0599
         self.assertIn("Read them with `get_item` before you plan work.", hint)
         self.assertIn("Then call `board_items`", hint)
 

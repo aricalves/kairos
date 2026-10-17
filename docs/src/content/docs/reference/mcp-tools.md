@@ -269,6 +269,7 @@ One repository in full. The output has these parts:
   [Connect a git forge](../../how-to/connect-a-git-forge/).
 - the team's description of how to work in the repository
 - the documents and the ADRs that impact the repository
+- `## ADRs of the owner team`: the other ADRs of the owner team
 - the in-flight branches and pull requests, each with its work item
 - `## Not linked to an item`: the in-flight branches and pull requests that
   the forge filter admits, with no item that links to them
@@ -280,7 +281,7 @@ tasks that link to the repository.
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `repository` | string | yes | — | Slug or UUID. |
-| `include_deleted` | boolean | no | `false` | Add the archived documents and ADRs that impact the repository, each with the mark `[archived]`. |
+| `include_deleted` | boolean | no | `false` | Add the archived documents and ADRs of the two sections, each with the mark `[archived]`. |
 
 The section `## Documents and ADRs that impact this repository` has one line
 for each item. The documents come first, in the order of the short code. A
@@ -293,6 +294,26 @@ shows its column, if it is on a board. An empty section shows `(none)`.
 - ACME-D-0009 — An old plan · document · lifecycle: draft [archived]
 - ACME-A-0002 — Plugins are dynamic libraries · adr · column: Decided
 ```
+
+The section `## ADRs of the owner team` lists the ADRs on the boards of the
+owner team that have no `impacts` link. Most older ADRs have no link. An ADR
+with a link is in the first section of the repository that it names. Thus
+each ADR shows one time only. The section does not show a superseded ADR.
+
+Each line shows the column of the ADR. The newest ADR comes first. The
+section shows 50 ADRs at most. When there are more, the last line gives the
+count and names `team_pages`. An empty section shows `(none)`.
+
+```text
+## ADRs of the owner team
+The ADRs on the boards of the team platform that no `impacts` link names, newest first. A superseded ADR is not listed.
+- ACME-A-0007 — Retries use a fixed backoff · adr · column: Decided
+- ACME-A-0005 — One database per tenant · adr · column: Draft
+- 3 more: `team_pages platform` lists each ADR of the team.
+```
+
+`GET /api/repositories/{slug}` gives the same rows in `owner_team_adrs`.
+`owner_team_adrs_total` gives the count of all of them.
 
 Read these items with `get_item` before you plan work in the repository. See
 [impacts](../glossary/#impacts).

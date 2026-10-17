@@ -125,8 +125,8 @@ pub struct ImpactingItem {
 #[into_params(parameter_in = Query)]
 #[serde(deny_unknown_fields)]
 pub struct RepositoryDetailQuery {
-    /// Include the archived documents and ADRs in `impacted_by`, each
-    /// marked with `archived_at`. Default false.
+    /// Include the archived documents and ADRs in `impacted_by` and
+    /// `owner_team_adrs`, each marked with `archived_at`. Default false.
     #[serde(default)]
     pub include_deleted: bool,
 }
@@ -263,6 +263,17 @@ pub struct RepositoryDetail {
     /// before you work in the repository.
     #[serde(default)]
     pub impacted_by: Vec<ImpactingItem>,
+    /// The ADRs of the owner team that no `impacts` link names
+    /// (KAIROS-T-0599): newest first, 50 at most. An ADR with a link is in
+    /// `impacted_by` of the repository that it names, so no ADR shows
+    /// twice. A superseded ADR is not in the list. `include_deleted=true`
+    /// adds the archived ones.
+    #[serde(default)]
+    pub owner_team_adrs: Vec<ImpactingItem>,
+    /// The count of all the ADRs of `owner_team_adrs`, also those that the
+    /// limit of 50 cuts (KAIROS-T-0599).
+    #[serde(default)]
+    pub owner_team_adrs_total: i64,
 }
 
 /// Body of `POST /api/repositories`.
