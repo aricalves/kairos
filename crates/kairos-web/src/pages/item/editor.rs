@@ -8,13 +8,13 @@ use std::rc::Rc;
 
 use leptos::prelude::*;
 
-use super::api::{self, Family};
+use super::api::{self, Family, ItemDetail};
 use crate::auth::use_auth;
-use crate::pages::editor::{MarkdownEditor, Saver, draft_key};
+use crate::pages::editor::{MarkdownEditor, Saver, ServerCopy, draft_key};
 
-/// The editable content panel. Recreated (with fresh server state) when
-/// the page refetches after a successful save — the parent owns that
-/// refetch via `on_saved`.
+/// The editable content panel. It stays mounted while the page shows the
+/// item (KAIROS-T-0618): a save gives the item that the PATCH returns to
+/// the page, and a new copy from the page comes in as `server`.
 #[component]
 pub fn ContentEditor(
     family: Family,
@@ -30,21 +30,36 @@ pub fn ContentEditor(
     /// Why the content is read-only; empty while the page does not know.
     #[prop(into)]
     read_only_reason: Signal<String>,
-    /// Fired after a successful save; the parent refetches (server state
-    /// is the source of truth) and posts the page-level notice.
-    on_saved: Callback<i32>,
+    /// The content of the item as the page knows it (KAIROS-T-0618).
+    #[prop(into)]
+    server: Signal<ServerCopy>,
+    /// Fired after a successful save with the item that the PATCH
+    /// returned: the page shows it and posts the notice. No read follows.
+    on_saved: Callback<ItemDetail>,
 ) -> impl IntoView {
     let auth = use_auth();
     // KAIROS-T-0581: the draft is kept outside this subtree, so a reload
-    // of the page (a panel action, a save elsewhere) does not lose it.
+    // of the tab does not lose it.
     let key = draft_key(&code);
+    // The item of the last save, for `on_saved` (the editor only takes
+    // the version).
+    let saved: StoredValue<Option<ItemDetail>, LocalStorage> = StoredValue::new_local(None);
     let saver: Saver = Rc::new(move |title, content, version| {
         let code = code.clone();
         Box::pin(async move {
             api::update_content(auth, family, &code, &title, &content, version)
                 .await
-                .map(|updated| updated.version)
+                .map(|updated| {
+                    let version = updated.version;
+                    saved.set_value(Some(updated));
+                    version
+                })
         })
+    });
+    let on_version = Callback::new(move |_version: i32| {
+        if let Some(item) = saved.try_update_value(Option::take).flatten() {
+            on_saved.run(item);
+        }
     });
     view! {
         <MarkdownEditor
@@ -54,7 +69,8 @@ pub fn ContentEditor(
             read_only
             read_only_reason
             draft_key=key
-            on_saved
+            server
+            on_saved=on_version
             saver
             // KAIROS-T-0323: a ticket is read more than it is changed.
             start_in_preview=true

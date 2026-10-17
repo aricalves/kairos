@@ -305,6 +305,8 @@ test('repositories: team panel → board lens → cross-team filing → any repo
     const boardPanel = panel(page, 'Board');
     await expect(boardPanel).toContainText('Platform Delivery');
     const control = page.locator('[data-testid="repository-control"]');
+    // KAIROS-T-0618: the repositories load when the control opens.
+    await control.getByRole('button', { name: 'Change repository' }).click();
     await expect(control.locator('select')).toBeVisible();
     // The picker shows the link: it is not put back on "(none)".
     await expect(control.locator('select')).toHaveValue('portal-web');
@@ -321,6 +323,7 @@ test('repositories: team panel → board lens → cross-team filing → any repo
     await expect(page.locator('.cl-pill', { hasText: 'repo: payments-api' })).toBeVisible();
     const control = page.locator('[data-testid="repository-control"]');
     await expect(control).toBeVisible();
+    await control.getByRole('button', { name: 'Change repository' }).click();
     await expect(control.locator('select')).toBeVisible();
     await expectTenantRepositories(control.locator('select'));
     await control.locator('select').selectOption('platform-infra');
@@ -361,6 +364,8 @@ test('repositories: team panel → board lens → cross-team filing → any repo
     await page.goto(`/items/${filedCode}`);
     const mover = page.locator('[data-testid="move-board"]');
     await expect(mover).toBeVisible();
+    // KAIROS-T-0618: the boards load when the control opens.
+    await mover.getByRole('button', { name: 'Move to another board' }).click();
     const picker = mover.locator('select');
     // Default is "stay put"; the board the task is already on is never an
     // option, the other delivery board alice manages is.
@@ -385,6 +390,7 @@ test('repositories: team panel → board lens → cross-team filing → any repo
     await page.goto(`/items/${moving.short_code}`);
     const boardPanel = panel(page, 'Board');
     await expect(boardPanel).toContainText('Platform Delivery');
+    await boardPanel.getByRole('button', { name: 'Move to another board' }).click();
     await boardPanel.locator('[data-testid="move-board"] select').selectOption('web-delivery');
     await boardPanel.getByRole('button', { name: 'Move board' }).click();
     await expect(

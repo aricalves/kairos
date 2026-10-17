@@ -206,6 +206,26 @@ Two things are counted separately: the **identity** being attempted, and the
 attacker try one password each against a thousand accounts; counting only sources
 is meaningless behind a proxy, where every request shares one address.
 
+#### API keys
+
+The server counts a failed API key two times (KAIROS-T-0539):
+
+| Count | Limit in the window | The 429 |
+|---|---|---|
+| The key | `KAIROS_AUTH_MAX_FAILURES` (5) | `KEY_LOCKED_OUT` |
+| The address of the key | 20 times `KAIROS_AUTH_MAX_FAILURES` (100) | `ADDRESS_LOCKED_OUT` |
+
+- A stale key in a loop locks only itself. The other keys from the same
+  address continue to work.
+- The server does not count an attempt that a lockout refuses. Thus one
+  stale key adds at most 5 failures to its address in each lockout.
+- A flood of different keys from one address locks the address. Then the
+  server refuses each key from that address, also a good key.
+- A good key does not remove the count of its address.
+- These counts are apart from the counts of the password login.
+
+See [Errors](../errors/#failed-authentication) for the codes.
+
 The lockout is deliberately short. A long one is a denial-of-service an attacker
 can aim at an account they know the name of, and it turns one person's typo into a
 support request. Five more failures locks the subject out again, so a script gains
@@ -245,7 +265,7 @@ a logout. A revoke of sessions also removes them. The next request on that
 server sees the change. Other servers of the same deployment keep the entry
 until it expires. To make that delay shorter, set a lower value or `0`.
 
-A cached API key skips the failed-authentication throttle. So a source in a
+A cached API key skips the failed-authentication throttle. So an address in a
 lockout can still use a key that the server accepted recently. The throttle
 stops guesses, and a cached key is not a guess.
 
@@ -294,11 +314,12 @@ restart keeps it.
   checks the credential.
 - A failure adds one write. A success adds one write only when the subject
   has a count.
-- A row keeps a hash of the email or the address, not the value.
+- A row keeps a hash of the email, the key or the address, not the value.
 - The retention pass removes the rows whose window and lockout ended.
 - If the server cannot read the table, the attempt continues.
 
-A lockout increments `kairos_auth_lockouts_total{subject="identity"|"source"}` on
+A lockout increments
+`kairos_auth_lockouts_total{subject="identity"|"source"|"key"|"key_address"}` on
 `/metrics` and logs at WARN. The subject *kind* is recorded; the email address or
 IP is not, because a log line outlives the incident it was gathered for.
 

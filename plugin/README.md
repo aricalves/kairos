@@ -177,7 +177,16 @@ the item itself.
   is `KAIROS_CHANNEL_BOARD`, else the name of the folder of the session. Write it with
   `bin/kairos-channel setup <name> --port <port>`, the secret of the target on stdin; the
   target comes from `kairos boards dispatch add-target <board> --hook-url http://127.0.0.1:<port>/`.
-  With no config, the server serves MCP with no listener and its instructions say why.
+  With no config, the server serves MCP with no listener (KAIROS-T-0544). In a folder with no
+  Kairos wiring it gives no instructions; in a wired folder its instructions give the three
+  steps to turn dispatch on, with the full path of `kairos-channel`.
+- The listener answers 503 until the client sends `notifications/initialized`; Kairos tries
+  again. The client's `initialize` does not show whether the session loaded the channel, so
+  a session started without the flag still takes the deliveries and drops them.
+- The delivery ids are kept in `<name>.seen.json` beside the config (mode 600): a restart does
+  not push a delivery twice. The session that listens writes `<name>.owner.json` (pid, folder,
+  start time); a second session that finds the port taken names it.
+- The instructions name the intake steps (KAIROS-T-0543) and the push policy (KAIROS-A-0046).
 - Channels are in research preview: the session starts with
   `claude --dangerously-load-development-channels plugin:kairos@kairos`. The how-to
   "Receive dispatch in a Claude Code session" in the book has the steps.
@@ -209,7 +218,8 @@ rules are links too.
 `hooks/git_guard.py` is a `PreToolUse` hook on Bash (KAIROS-T-0497, COLLIERY-I-0631). It
 asks every time; it does not look for a "go" in the conversation. It splits the command line
 into its simple commands (`&&`, `;`, `|`, a subshell, `$(...)`), looks inside `sh -c`,
-`bash -c`, `zsh -c` and `eval` (KAIROS-T-0548), and asks for: `git push` (any form),
+`bash -c`, `zsh -c` and `eval` (KAIROS-T-0548), and asks for: `git push` (but the push of
+a feature branch, below),
 `git pull` (any form: a merge or a rebase), `git merge`, `git rebase`, `git tag <name>` (a
 list is silent), `git reset --hard`, `git commit --amend`, `git clean -f`, `git checkout --
 <path>`, `git restore` (not `--staged`), `git branch -D` of a remote-tracking branch, any `git`
@@ -218,6 +228,15 @@ create|edit|delete` and `gh api` with a path that ends in `/merge`. The answer i
 `permissionDecision: "ask"` with a one-line reason that names the command; anything else gives
 no output. `git status`, `git fetch`, `git clean -n`, a `grep` for "push" and an `echo` of the
 words are silent. The hook reads no file and holds no credentials.
+
+The push policy (KAIROS-T-0542): an agent pushes the branch of its task and opens a draft PR;
+a merge, a release and a tag need the user's go. So `git [-C <path>] push [-u|--set-upstream]
+origin <branch>` is silent when `<branch>` is one local branch, not a tag, and not the default
+branch (`origin/HEAD`; `main` and `master` always count). A force flag, a `+` or `:` refspec,
+`HEAD`, `--delete`, `--tags`, `--all`, any other option, a `git -c`, a `VAR=value` before
+`git`, a `remote.origin.push` refspec, or a `cd` in the line asks. For that check the hook
+runs read-only git commands (`symbolic-ref`, `show-ref`, `config --get-all`) in the folder of
+the command; when they fail, it asks.
 
 - Tests: `hooks/test_git_guard.py`, part of `angreal test unit`.
 

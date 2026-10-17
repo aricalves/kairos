@@ -359,13 +359,15 @@ PROCEDURE = """Each task goes through the steps of /kairos:implement (the `imple
 8. For each acceptance criterion, write the command and its output on the task as evidence.
 9. Review the diff (the `kairos:code-review` skill). Commit in the worktree, on the branch of the task.
 10. Follow the commit rules of the repository and of the user. An example: a rule that forbids a session line in a commit.
-11. Close the work, as /kairos:implement says. When the branch is pushed and the PR is open, remove the worktree. Else keep the worktree and write its path in the closing note.
-12. `transition_item` the task to Completed. Then go to the next task.
+11. Push and open the PR, as /kairos:implement says (KAIROS-A-0046). Run `git -C <worktree> push -u origin <code>`. Then open a draft PR with `gh pr create --draft`. Write the PR on the task with `set_state`, with each field. Do not merge, release or tag.
+12. Close the work, as /kairos:implement says. When the branch is pushed and the PR is open, remove the worktree. Else keep the worktree and write its path in the closing note.
+13. `transition_item` the task to Completed. Then go to the next task.
 
 Stop the loop, and do not guess, when one of these conditions occurs:
 - a task is in the Blocked column;
 - a task has no acceptance criteria that you can check;
-- the work needs a design decision, a push, a deploy, or a change in a different repository.
+- the work needs a design decision, a deploy, or a change in a different repository;
+- the work needs a merge, a release, a tag, or a push that the git guard asks for.
 
 To stop the loop:
 - Write the reason on the task and on its parent initiative with `append_note`.

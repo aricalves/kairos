@@ -159,7 +159,8 @@ pub fn AdminNavLink() -> impl IntoView {
 /// The section tabs of the admin area: Aurora route `Tabs`
 /// (COLLIERY-T-1836; links with `role="tab"`, the route selects the tab).
 /// Non-admins with a board-config grant see only Overview + Boards; the
-/// org-admin-only tabs (teams, streams, members, templates, metadata)
+/// org-admin-only tabs (teams, streams, repositories, code index, members,
+/// templates, metadata)
 /// render for admins only (KAIROS-T-0052). A holder of
 /// `administer_members` on a board also sees Members (KAIROS-T-0413): the
 /// way to the grants page of a person.
@@ -173,6 +174,7 @@ fn SectionTabs(is_admin: bool, assigns_members: bool) -> impl IntoView {
             ("/admin/teams", "Teams"),
             ("/admin/streams", "Streams"),
             ("/admin/repositories", "Repositories"),
+            ("/admin/code-index", "Code index"),
             ("/admin/members", "Members"),
             ("/admin/templates", "Templates"),
             ("/admin/metadata", "Metadata"),

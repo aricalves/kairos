@@ -822,14 +822,14 @@ pub async fn require_auth(
                 });
             return Ok(next.run(req).await);
         }
-        // KAIROS-T-0202. Counted by SOURCE only, never by the key's tenant slug.
-        // The slug is not a secret and every legitimate client of an org shares
-        // it, so an identity bucket here would let one CI job with a stale key
-        // lock a whole organization out of its own API. The identity grain belongs
-        // to the password endpoint, where the account being guessed belongs to one
-        // person.
+        // KAIROS-T-0539. Counted by the KEY, and by the source at a second,
+        // higher limit. Never by the key's tenant slug: the slug is not a secret
+        // and every client of an org shares it. A stale key in a loop locks
+        // itself out, not the other keys behind the same address; a flood of
+        // different keys still locks the address. The check stays before the
+        // key lookup, so a locked-out caller costs one read.
         let source = crate::rate_limit::client_addr(&req, state.config.trusted_proxy);
-        let mut attempt = crate::rate_limit::Attempt::begin(&state, source, None);
+        let mut attempt = crate::rate_limit::Attempt::api_key(&state, source, &token);
         if let Some(refused) = attempt.refuse_if_locked_out().await {
             return Ok(refused);
         }

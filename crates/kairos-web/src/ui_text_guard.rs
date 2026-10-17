@@ -172,3 +172,48 @@ fn the_lexer_skips_comments_and_char_literals() {
     let literals = string_literals(source);
     assert_eq!(literals, vec![(3, "real (A-0003)".to_string())]);
 }
+
+/// Does `text` say that a page is a stub: the word `stub` or `stubs`, in
+/// any case?
+fn names_a_stub(text: &str) -> bool {
+    text.split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|word| word.eq_ignore_ascii_case("stub") || word.eq_ignore_ascii_case("stubs"))
+}
+
+/// KAIROS-T-0585: each page of the GUI is built. No source file and no
+/// convention says that a page is a stub. The test reads the code and its
+/// comments, but not the test module of a file.
+#[test]
+fn no_text_says_that_a_page_is_a_stub() {
+    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    rust_files(&crate_dir.join("src"), &mut files);
+    files.push(crate_dir.join("../../docs/gui-conventions.md"));
+    files.sort();
+    let mut found = Vec::new();
+    for file in files {
+        if file.ends_with("ui_text_guard.rs") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&file).expect("read a source file");
+        let source = source.split("#[cfg(test)]").next().unwrap_or_default();
+        for (index, line) in source.lines().enumerate() {
+            if names_a_stub(line) {
+                found.push(format!("{}:{}: {}", file.display(), index + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "A text says that a page is a stub. Each page is built: remove the text:\n  {}",
+        found.join("\n  ")
+    );
+}
+
+#[test]
+fn a_stub_is_told_from_other_words() {
+    assert!(names_a_stub("// ---- feature stubs (replace these) ----"));
+    assert!(names_a_stub("Stub convention: a header and a panel"));
+    assert!(!names_a_stub("stubborn data"));
+    assert!(!names_a_stub("a feature page"));
+}

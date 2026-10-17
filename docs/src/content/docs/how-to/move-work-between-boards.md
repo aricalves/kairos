@@ -20,7 +20,7 @@ Only tasks move, and only between **delivery** boards.
 | CLI | `kairos tasks move <CODE> --to-board <slug\|uuid>` |
 | API | `POST /api/tasks/{short_code}/move` with `{"board": "<slug\|uuid>"}` |
 | MCP | `move_item {short_code, to_board}` |
-| GUI | the **Board** select on the item page's Board panel |
+| GUI | **Move to another board** on the item page's Board panel, then the **Board** select |
 
 ```sh
 kairos tasks move MOBILE-T-0001 --to-board platform-delivery
@@ -78,7 +78,7 @@ rename.
 A document can get a code of its new owner board too: `move_item` with
 `to_board` and `rename: true`, or `kairos documents move <CODE> --to-board
 <BOARD> --rename`. In the GUI, use the **Owner board** panel of the document.
-Select the new owner board. Set the switch **Give it a code of the new
+Select **Change owner board**, then select the new owner board. Set the switch **Give it a code of the new
 board**. Then select **Set owner board**. A rename of a document needs a new
 board.
 
