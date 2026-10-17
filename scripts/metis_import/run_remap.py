@@ -250,7 +250,10 @@ def create_body(doc, docs, ctx, args, state, staged):
             raise Stop("%s: no column for the phase %r on the board %s"
                        % (doc["short_code"], doc["phase"], board["slug"]))
         body["board_id"] = board["id"]
-        body["column_id"] = board["by_name"][column]
+        # KAIROS-T-0643 (Dylan, 2026-10-17): an initiative starts in the
+        # entry column of its board. walk_to_phase moves it to its column.
+        if kind != "initiative":
+            body["column_id"] = board["by_name"][column]
     if kind == "initiative":
         size = doc.get("estimated_complexity", "").lower()
         if size in ("xs", "s", "m", "l", "xl"):
@@ -303,6 +306,84 @@ def create(api, doc, body, admin, args, before_post=None):
                "Run the command again to continue." % (doc["short_code"], last))
 
 
+def phase_column(ctx, doc):
+    """The id of the column of the Metis phase of doc on its board."""
+    kind = remap.kind_of(doc)
+    return ctx.board_of(kind)["by_name"][remap.COLUMN[kind][doc["phase"]]]
+
+
+def walk_to_phase(api, ctx, doc, row, admin):
+    """KAIROS-T-0643: move an initiative from the column it is in to the
+    column of its Metis phase, one transition of the board at a time."""
+    board = ctx.board_of("initiative")
+    target = phase_column(ctx, doc)
+    if not row.get("column_id"):
+        # An adopted row from the search has no placement: read the item.
+        row = api.json("GET", "/api/initiatives/%s" % row["short_code"], admin=admin)
+    start = row.get("column_id")
+    if start == target:
+        return
+    edges = {}
+    for t in board.get("transitions", []):
+        edges.setdefault(t["from_column_id"], []).append(t["to_column_id"])
+    # The shortest path by the transitions of the board.
+    before = {start: None}
+    queue = [start]
+    while queue and target not in before:
+        here = queue.pop(0)
+        for nxt in edges.get(here, []):
+            if nxt not in before:
+                before[nxt] = here
+                queue.append(nxt)
+    if target not in before:
+        raise Stop("%s: the board %s has no path of transitions to its phase column"
+                   % (doc["short_code"], board["slug"]))
+    path = []
+    step = target
+    while step != start:
+        path.append(step)
+        step = before[step]
+    for column in reversed(path):
+        route = "/api/initiatives/%s/transition" % row["short_code"]
+        status, raw, _ = api.call("POST", route, {"to_column_id": column}, admin=admin)
+        if status != 200:
+            raise Stop("move of %s (%s) -> HTTP %s: %s"
+                       % (doc["short_code"], row["short_code"], status, raw[:500]))
+    row["column_id"] = target
+
+
+class OwnerGateOff:
+    """KAIROS-T-0643 (Dylan, 2026-10-17): the walk of an initiative to
+    Active needs an owner while the policy owner_gate of its board is on,
+    and an imported initiative has none. The run turns the policy off on the
+    initiative board and on again after, also when the run stops."""
+
+    def __init__(self, api, ctx, admin):
+        self.api, self.admin = api, admin
+        self.board = ctx.board_of("initiative")
+        self.was_on = self.board.get("owner_gate") is True
+
+    def _set(self, on):
+        path = "/api/boards/%s" % self.board["id"]
+        status, raw, _ = self.api.call("PATCH", path, {"owner_gate": on}, admin=self.admin)
+        if status != 200:
+            raise Stop("owner_gate %s on the board %s -> HTTP %s: %s. The import needs "
+                       "configure_boards on the initiative board."
+                       % ("on" if on else "off", self.board["slug"], status, raw[:300]))
+
+    def __enter__(self):
+        if self.was_on:
+            self._set(False)
+            print("owner_gate: turned off on %s for the run." % self.board["slug"])
+        return self
+
+    def __exit__(self, *exc):
+        if self.was_on:
+            self._set(True)
+            print("owner_gate: turned on again on %s." % self.board["slug"])
+        return False
+
+
 def set_next_number(api, ctx, doc, docs, code, admin):
     """Keep mode: set the sequence of the board of doc, so that its next
     code is `code`. A refusal stops the run and says why."""
@@ -338,6 +419,8 @@ def pass_create(api, ctx, docs, order, args, state, state_path, staged, use_admi
             def before_post(doc=doc, code=wanted[old]):
                 set_next_number(api, ctx, doc, docs, code, seq_admin)
         row, adopted = create(api, doc, body, admin, args, before_post)
+        if kind == "initiative":
+            walk_to_phase(api, ctx, doc, row, admin)
         new = row.get("short_code")
         if old in wanted and new != wanted[old]:
             raise Stop("%s came back as %r, expected %s. Another create on the board took the "
@@ -848,8 +931,10 @@ def main(args):
     started = time.time()
     before = api.requests
     start_count = dict(api.count)
-    if not pass_create(api, ctx, docs, order, args, state, state_path, staged, use_admin,
-                       wanted, seq_admin):
+    with OwnerGateOff(api, ctx, bool(admin_token)):
+        created = pass_create(api, ctx, docs, order, args, state, state_path, staged,
+                              use_admin, wanted, seq_admin)
+    if not created:
         print("%d requests in %.1f s." % (api.requests - before, time.time() - started))
         return 0
     print("Pass 1: %d items have a code." % len(state["codes"]))
