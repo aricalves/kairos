@@ -2,19 +2,21 @@
 //! per docs/src/content/docs/reference/events.md / KAIROS-A-0005 §5).
 //!
 //! The server pushes thin change notifications; the view reacts by
-//! re-fetching through REST (never by patching local state — conventions
-//! §4). Browser `WebSocket` clients cannot set request headers, so the
+//! reading through REST. The board view reads the one card that an event
+//! names, and puts it in its model (KAIROS-T-0615); the other views read
+//! again what they show. Browser `WebSocket` clients cannot set request
+//! headers, so the
 //! token travels via the ONE documented fallback, the `?access_token=`
 //! query parameter (`kairos-server::ws::promote_query_token`).
 //!
 //! Semantics implemented here (best-effort, A-0005 §5):
 //! - on open: send `{"subscribe": {"board_id": …}}` to filter the stream;
-//! - on every event: run `refetch` (an event carries no payload — the
-//!   REST re-fetch refreshes the affected cards). Every kind is treated
-//!   alike, `item_moved` (KAIROS-I-0012) included: the server emits that
-//!   one per side of a board move — the source board's copy carries no
-//!   column, the target's carries the entry column — so both boards'
-//!   subscribers refetch off their own half, exactly like
+//! - on every event: run `refetch` with the event (an event carries no
+//!   payload — the REST read refreshes the affected card). Every kind is
+//!   treated alike, `item_moved` (KAIROS-I-0012) included: the server
+//!   emits that one per side of a board move — the source board's copy
+//!   carries no column, the target's carries the entry column — so both
+//!   boards' subscribers read the card off their own half, exactly like
 //!   `item_transitioned`;
 //! - on close: reconnect with exponential backoff (1s → 15s cap), and on
 //!   every RE-open run `refetch` once — the silent reconcile for whatever
@@ -45,9 +47,9 @@ const BACKOFF_MAX_MS: u64 = 15_000;
 /// A stored wasm event-handler closure (present while a socket is live).
 type Handler<T> = RefCell<Option<Closure<T>>>;
 
-/// The consumer's refetch hook: called with the event's `short_code` when
-/// one arrived, `None` for a reconnect reconcile.
-type Refetch = Box<dyn Fn(Option<&str>)>;
+/// The consumer's refetch hook: called with the event when one arrived,
+/// `None` for a reconnect reconcile.
+type Refetch = Box<dyn Fn(Option<&ThinEvent>)>;
 
 /// The per-connection state shared by the event handlers and the
 /// reconnect timer chain.
@@ -61,8 +63,8 @@ struct Live {
     /// `false`: only the events of the items.
     person: bool,
     /// Runs on every event and every reconnect. The argument is the
-    /// event's `short_code` when one arrived (reconnect reconciles pass
-    /// `None`) — consumers that only care THAT something changed ignore it.
+    /// event when one arrived (reconnect reconciles pass `None`) —
+    /// consumers that only care THAT something changed ignore it.
     refetch: Refetch,
     /// Set by the drop guard: no further reconnects, handlers inert.
     closed: Cell<bool>,
@@ -104,13 +106,15 @@ impl Drop for LiveBoardGuard {
 }
 
 /// Subscribe the board view to `/ws/events`, filtered to `board_id`.
-/// `refetch` runs on every board event and on every reconnect.
+/// `on_event` runs on every board event with the event, and on every
+/// reconnect with `None` (KAIROS-T-0615: the view reads the card of the
+/// event, or the board).
 pub fn subscribe_board_events(
     auth: Auth,
     board_id: String,
-    refetch: impl Fn() + 'static,
+    on_event: impl Fn(Option<&ThinEvent>) + 'static,
 ) -> LiveBoardGuard {
-    subscribe(auth, Some(board_id), move |_| refetch())
+    subscribe(auth, Some(board_id), on_event)
 }
 
 /// Subscribe to the WHOLE tenant stream (no board filter): the graph
@@ -120,7 +124,15 @@ pub fn subscribe_all_events(
     auth: Auth,
     on_event: impl Fn(Option<&str>) + 'static,
 ) -> LiveBoardGuard {
-    subscribe(auth, None, on_event)
+    subscribe(auth, None, move |event| on_event(event_code(event)))
+}
+
+/// The short code of an event, or `None` for a reconnect and for an event
+/// that names no item. Pure, host-tested.
+pub(crate) fn event_code(event: Option<&ThinEvent>) -> Option<&str> {
+    event
+        .map(|event| event.short_code.as_str())
+        .filter(|code| !code.is_empty())
 }
 
 /// Subscribe to the events of the signed-in person (KAIROS-T-0383):
@@ -134,7 +146,7 @@ pub fn subscribe_person_events(auth: Auth, on_event: impl Fn() + 'static) -> Liv
 fn subscribe(
     auth: Auth,
     board_id: Option<String>,
-    refetch: impl Fn(Option<&str>) + 'static,
+    refetch: impl Fn(Option<&ThinEvent>) + 'static,
 ) -> LiveBoardGuard {
     start(auth, board_id, false, refetch)
 }
@@ -153,7 +165,7 @@ fn start(
     auth: Auth,
     board_id: Option<String>,
     person: bool,
-    refetch: impl Fn(Option<&str>) + 'static,
+    refetch: impl Fn(Option<&ThinEvent>) + 'static,
 ) -> LiveBoardGuard {
     let state = Rc::new(Live {
         auth,
@@ -242,16 +254,8 @@ fn connect(state: Rc<Live>) {
             if is_person_event(&text) != state.person {
                 return;
             }
-            if serde_json::from_str::<ThinEvent>(&text).is_ok() {
-                let short_code = serde_json::from_str::<serde_json::Value>(&text)
-                    .ok()
-                    .and_then(|value| {
-                        value
-                            .get("short_code")
-                            .and_then(|code| code.as_str())
-                            .map(str::to_string)
-                    });
-                (state.refetch)(short_code.as_deref());
+            if let Ok(event) = serde_json::from_str::<ThinEvent>(&text) {
+                (state.refetch)(Some(&event));
             }
         }) as Box<dyn FnMut(MessageEvent)>)
     };
@@ -301,6 +305,19 @@ mod tests {
             r#"{"event":"item_updated","entity_type":"task","short_code":"A-T-1"}"#
         ));
         assert!(!super::is_person_event("not json"));
+    }
+
+    /// KAIROS-T-0615: the views of the whole stream get the short code of
+    /// an event, and `None` for a reconnect or an event with no item.
+    #[test]
+    fn the_code_of_an_event() {
+        let event =
+            |text: &str| -> super::ThinEvent { serde_json::from_str(text).expect("event decodes") };
+        let note = event(r#"{"event":"item_updated","short_code":"A-T-1","board_id":"b"}"#);
+        assert_eq!(super::event_code(Some(&note)), Some("A-T-1"));
+        let read = event(r#"{"event":"notifications_read","short_code":""}"#);
+        assert_eq!(super::event_code(Some(&read)), None);
+        assert_eq!(super::event_code(None), None);
     }
 
     /// Backoff doubles from 1s and caps at 15s (host-testable math for
