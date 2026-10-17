@@ -27,9 +27,8 @@ use uuid::Uuid;
 use diesel::prelude::*;
 
 use super::resolve_family_item;
-use crate::api::convert::IntoDto;
-use crate::api::convert_meta::timestamp;
-use crate::api::{Liveness, parse_enum, parse_uuid, require_edge_write, resolve_short_code};
+use crate::api::convert_meta::{relationship_dto, timestamp};
+use crate::api::{Liveness, parse_enum, parse_uuid, require_edge_write, resolve_live_ref};
 use crate::app::AppState;
 use crate::body::ApiJson;
 use crate::error::ApiError;
@@ -432,42 +431,27 @@ pub(crate) async fn create_relationship(
     let relationship = parse_enum(&body.relationship, "relationship", RelationshipType::ALL)?;
     let user = auth.user_id;
     let tenant_ctx = tenant.clone();
-    let created =
-        state
-            .blocking
-            .run(&tenant.slug, move |conn| {
-                let (source_id, source_type) =
-                    resolve_short_code(conn, &body.source_short_code, Liveness::LiveOnly)?
-                        .ok_or_else(|| {
-                            ApiError::validation(format!(
-                                "The source_short_code {:?} is not the short code of a \
-                                 live item.",
-                                body.source_short_code
-                            ))
-                        })?;
-                let (target_id, target_type) =
-                    resolve_short_code(conn, &body.target_short_code, Liveness::LiveOnly)?
-                        .ok_or_else(|| {
-                            ApiError::validation(format!(
-                                "The target_short_code {:?} is not the short code of a \
-                                 live item.",
-                                body.target_short_code
-                            ))
-                        })?;
-                // COLLIERY-T-0228: the link rule, for each relationship type.
-                require_edge_write(
-                    conn,
-                    &tenant_ctx.slug,
-                    user,
-                    relationship.as_str(),
-                    (source_id, source_type),
-                    (target_id, target_type),
-                )?;
-                let created = graph::link_items(conn, source_id, target_id, relationship, user)
-                    .map_err(map_link_error)?;
-                Ok(created.into_dto())
-            })
-            .await?;
+    let created = state
+        .blocking
+        .run(&tenant.slug, move |conn| {
+            // KAIROS-T-0560: a retired code follows to its item, and the
+            // answer has the current codes.
+            let source = resolve_live_ref(conn, &body.source_short_code, "source_short_code")?;
+            let target = resolve_live_ref(conn, &body.target_short_code, "target_short_code")?;
+            // COLLIERY-T-0228: the link rule, for each relationship type.
+            require_edge_write(
+                conn,
+                &tenant_ctx.slug,
+                user,
+                relationship.as_str(),
+                source.typed(),
+                target.typed(),
+            )?;
+            let created = graph::link_items(conn, source.id, target.id, relationship, user)
+                .map_err(map_link_error)?;
+            Ok(relationship_dto(created, source.code, target.code))
+        })
+        .await?;
     Ok((StatusCode::CREATED, Json(created)))
 }
 
