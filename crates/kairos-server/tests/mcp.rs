@@ -2087,10 +2087,50 @@ async fn mcp_endpoint_against_live_stack() {
         )),
         "{text}"
     );
+    // KAIROS-T-0551: a note is promoted once. The refusal names the ADR.
+    let text = session
+        .call_err(
+            "promote_note",
+            json!({"short_code": filed, "note_id": "n-1", "kind": "document", "board": "platform-delivery"}),
+        )
+        .await;
+    assert!(
+        text.contains("CONFLICT")
+            && text.contains(&format!("became {promoted_adr} already."))
+            && text.contains(&format!("\"promoted_to\":\"{promoted_adr}\"")),
+        "{text}"
+    );
+    // KAIROS-T-0551: a `## ` heading in the text goes one level lower, and
+    // the answer says so.
+    let text = bob_session
+        .call_ok(
+            "append_note",
+            json!({"short_code": filed, "text": "A second idea.\n\n## Findings\n\nThe cause."}),
+        )
+        .await;
+    assert!(
+        text.contains("Appended note n-2 to ")
+            && text.contains("Kairos moved 1 heading of the text one level lower"),
+        "{text}"
+    );
+    let text = session
+        .call_ok("get_item", json!({"short_code": filed}))
+        .await;
+    assert!(
+        text.contains("A second idea.\n\n### Findings\n\nThe cause."),
+        "{text}"
+    );
+    let text = bob_session
+        .call_ok(
+            "append_note",
+            json!({"short_code": filed, "text": "A third idea."}),
+        )
+        .await;
+    assert!(text.contains("Appended note n-3 to "), "{text}");
     let text = session
         .call_ok(
             "promote_note",
-            json!({"short_code": filed, "note_id": "n-1", "kind": "document", "board": "platform-delivery"}),
+            json!({"short_code": filed, "note_id": "n-2", "kind": "document", "board": "platform-delivery"}),
         )
         .await;
     let promoted_doc = extract_code(&text, "ACME-D-");
@@ -2120,7 +2160,7 @@ async fn mcp_endpoint_against_live_stack() {
     let text = bob_session
         .call_err(
             "promote_note",
-            json!({"short_code": filed, "note_id": "n-1", "kind": "adr", "board": "adrs"}),
+            json!({"short_code": filed, "note_id": "n-3", "kind": "adr", "board": "adrs"}),
         )
         .await;
     assert!(

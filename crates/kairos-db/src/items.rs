@@ -1546,6 +1546,9 @@ pub struct AppendedNote {
     pub version: i32,
     /// The id of the note: `n-3`.
     pub note_id: String,
+    /// The count of the headings of the text that went one level lower
+    /// (KAIROS-T-0551): a `## ` heading would end the note.
+    pub demoted_headings: usize,
 }
 
 /// The version and the content of a live item, with its row locked
@@ -1590,8 +1593,11 @@ pub fn lock_item_content(
 /// (`SELECT … FOR UPDATE`) before it reads the content, so two notes at the
 /// same time are written one after the other, and the second one reads the
 /// content that the first one wrote. No note is lost, and each note gets
-/// its own id (KAIROS-T-0504: one after the count of the note headings).
-/// Returns the new version and the id of the note.
+/// its own id (KAIROS-T-0504, KAIROS-T-0551: one after the highest id).
+///
+/// A `## ` heading ends a note, so each heading of level 2 to 5 in `text`
+/// goes one level lower (KAIROS-T-0551). Returns the new version, the id of
+/// the note, and the count of the headings that changed.
 pub fn append_note(
     conn: &mut PgConnection,
     item_type: ItemType,
@@ -1616,7 +1622,8 @@ pub fn append_note(
             .unwrap_or_else(|| actor.to_string());
         let position = kairos_core::items::next_note_position(&content);
         let heading = kairos_core::items::note_heading(position, today, &author);
-        let new_content = kairos_core::items::content_with_note(&content, &heading, text)
+        let (text, demoted_headings) = kairos_core::items::demote_note_headings(text);
+        let new_content = kairos_core::items::content_with_note(&content, &heading, &text)
             .ok_or(NoteError::EmptyText)?;
         let version = update_item_content(
             conn,
@@ -1632,6 +1639,7 @@ pub fn append_note(
         Ok(AppendedNote {
             version,
             note_id: kairos_core::items::note_id(position),
+            demoted_headings,
         })
     })
 }

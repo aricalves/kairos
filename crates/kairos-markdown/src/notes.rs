@@ -4,7 +4,11 @@
 //! A heading is `## Note n-3 (2026-10-15, Robin)`. A note from before the
 //! ids has the heading `## Note (2026-10-15, Robin)`; it gets its id from
 //! its position when read (n-1, n-2, …), so the numbering is stable. A new
-//! note gets the id after the count of the note headings of the content.
+//! note gets the id after the highest id of the content (KAIROS-T-0551), so
+//! a hand edit that removes a note does not give its id again.
+//!
+//! A `## ` heading ends a note. So `append_note` demotes each heading of
+//! the text by one level ([`demote_headings`]) before it writes the note.
 //!
 //! The parser is here, not in kairos-core, so that the web app (wasm32)
 //! and the server share one reading of a heading.
@@ -17,6 +21,92 @@ pub fn note_id(position: usize) -> String {
 /// The heading of a note: `## Note n-3 (2026-10-15, Robin)`.
 pub fn note_heading(position: usize, date: &str, author: &str) -> String {
     format!("## Note {} ({date}, {})", note_id(position), author.trim())
+}
+
+/// The number of a note id: 3 for `n-3`. `None` for a text that is not an
+/// id.
+pub fn note_number(id: &str) -> Option<usize> {
+    if !is_note_id(id) {
+        return None;
+    }
+    id[2..].parse().ok()
+}
+
+/// The position of the next note of `content` (KAIROS-T-0551): one after
+/// the highest id of its notes. A hand edit can remove n-2 from n-1, n-2,
+/// n-3; the next note is then n-4, not a second n-3.
+pub fn next_position(content: &str) -> usize {
+    notes(content)
+        .iter()
+        .filter_map(|note| note_number(&note.id))
+        .max()
+        .unwrap_or(0)
+        + 1
+}
+
+/// The text with each heading of level 2 to 5 one level lower, and the
+/// count of the headings that changed (KAIROS-T-0551). A `## ` heading
+/// ends a note, so a note must not have one. A deeper heading also goes one
+/// level lower, so the headings of the text keep their order. A level-6
+/// heading stays: Markdown has no level 7, and it does not end a note. A
+/// heading in a fenced code block stays. The other lines stay as they are.
+pub fn demote_headings(text: &str) -> (String, usize) {
+    let mut out = String::with_capacity(text.len() + 8);
+    let mut demoted = 0;
+    let mut in_fence = false;
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            out.push_str(line);
+            continue;
+        }
+        let start = line.len() - line.trim_start().len();
+        let rest = &line[start..];
+        let level = rest.bytes().take_while(|&b| b == b'#').count();
+        let after = &rest[level..];
+        let is_heading = after.is_empty() || after.starts_with([' ', '\t', '\r', '\n']);
+        if !in_fence && (2..=5).contains(&level) && is_heading {
+            out.push_str(&line[..start]);
+            out.push('#');
+            out.push_str(rest);
+            demoted += 1;
+        } else {
+            out.push_str(line);
+        }
+    }
+    (out, demoted)
+}
+
+/// The code in the line `Promoted to ACME-A-0029.` of a note text
+/// (KAIROS-T-0505, KAIROS-T-0551): the item that the note became. `None`
+/// when the text has no such line. A line in a fenced code block does not
+/// count.
+pub fn promoted_to(text: &str) -> Option<&str> {
+    let mut in_fence = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        let Some(code) = trimmed
+            .strip_prefix("Promoted to ")
+            .and_then(|rest| rest.strip_suffix('.'))
+        else {
+            continue;
+        };
+        if !code.is_empty()
+            && code.contains('-')
+            && code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return Some(code);
+        }
+    }
+    None
 }
 
 /// The parts of the title of a note heading (the text after `## `).
@@ -203,5 +293,65 @@ mod tests {
         assert_eq!(found[0].text, "See:\n\n```\n## Not a heading\n```\n\nDone.");
         assert_eq!(found[0].first_line, "See:");
         assert_eq!(found[0].last_line, 8);
+    }
+
+    // KAIROS-T-0551: the next id is one after the highest id.
+    #[test]
+    fn the_next_position_is_one_after_the_highest_id() {
+        assert_eq!(next_position("# T\n\nBody\n"), 1);
+        let gap =
+            "## Note n-1 (2026-10-01, Robin)\n\nOne.\n\n## Note n-3 (2026-10-03, Sam)\n\nThree.\n";
+        assert_eq!(notes(gap).len(), 2);
+        assert_eq!(next_position(gap), 4);
+        let unordered = "## Note n-7 (2026-10-01, Robin)\n\n## Note n-2 (2026-10-02, Sam)\n";
+        assert_eq!(next_position(unordered), 8);
+        // A note from before the ids counts by its position.
+        let old = "## Note (2026-10-01, Robin)\n\n## Note (2026-10-02, Sam)\n";
+        assert_eq!(next_position(old), 3);
+        assert_eq!(note_number("n-12"), Some(12));
+        assert_eq!(note_number("x-1"), None);
+    }
+
+    // KAIROS-T-0551: a heading of the text goes one level lower.
+    #[test]
+    fn the_headings_of_a_text_go_one_level_lower() {
+        let text = "Intro.\n\n## Findings\n\n  ### Detail\n#### Four\n##### Five\n###### Six\n# Top\n##\n##no space\n\n```\n## In a fence\n```\nEnd.";
+        let (demoted, count) = demote_headings(text);
+        assert_eq!(
+            demoted,
+            "Intro.\n\n### Findings\n\n  #### Detail\n##### Four\n###### Five\n###### Six\n# Top\n###\n##no space\n\n```\n## In a fence\n```\nEnd."
+        );
+        assert_eq!(count, 5);
+        assert_eq!(
+            demote_headings("No heading.\r\n"),
+            ("No heading.\r\n".to_string(), 0)
+        );
+        // After the demotion, the note keeps all its text.
+        let content = format!("## Note n-1 (2026-10-01, Robin)\n\n{demoted}\n");
+        let found = notes(&content);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].text.ends_with("End."), "{:?}", found[0].text);
+    }
+
+    // KAIROS-T-0551: the line that a promote adds names the new item.
+    #[test]
+    fn the_promoted_line_names_the_new_item() {
+        assert_eq!(
+            promoted_to("One.\n\nPromoted to ACME-A-0029."),
+            Some("ACME-A-0029")
+        );
+        assert_eq!(
+            promoted_to("  Promoted to ACME-D-0001.  \nMore."),
+            Some("ACME-D-0001")
+        );
+        for text in [
+            "One.",
+            "Promoted to ACME-A-0029",
+            "Promoted to the team.",
+            "We promoted to ACME-A-0029.",
+            "```\nPromoted to ACME-A-0029.\n```",
+        ] {
+            assert_eq!(promoted_to(text), None, "{text}");
+        }
     }
 }

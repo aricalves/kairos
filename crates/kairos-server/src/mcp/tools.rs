@@ -2890,7 +2890,7 @@ impl KairosMcp {
 
     // KAIROS-T-0367: a note in one call, with no version and no anchor.
     #[tool(
-        description = "Append a note at the end of an item's content. The note gets an id and a heading with the date and your name: `## Note n-3 (2026-10-11, Robin)`. The result names the id: cite it as `note n-3 on ACME-T-0012`. Send no version and no anchor text: the server locks the item, adds the note to the current content, and writes one new version. Two notes at the same time both stay. Use it to record work, a finding or a decision on an item. You can append to an item that you created, or with `manage_<type>` on its board."
+        description = "Append a note at the end of an item's content. The note gets an id and a heading with the date and your name: `## Note n-3 (2026-10-11, Robin)`. The result names the id: cite it as `note n-3 on ACME-T-0012`. Send no version and no anchor text: the server locks the item, adds the note to the current content, and writes one new version. Two notes at the same time both stay. Use it to record work, a finding or a decision on an item. A `## ` heading ends a note, so each heading of the text goes one level lower (`## ` to `### `), and the result says so. You can append to an item that you created, or with `manage_<type>` on its board."
     )]
     pub async fn append_note(
         &self,
@@ -2912,10 +2912,18 @@ impl KairosMcp {
                 chrono::Utc::now().date_naive(),
             )
             .map_err(crate::api::map_note_error)?;
-            Ok(format!(
+            let mut out = format!(
                 "Appended note {} to {} (version {}).",
                 appended.note_id, item.short_code, appended.version
-            ))
+            );
+            // KAIROS-T-0551: say which headings went one level lower.
+            if let Some(sentence) =
+                kairos_core::items::demoted_headings_sentence(appended.demoted_headings)
+            {
+                out.push(' ');
+                out.push_str(&sentence);
+            }
+            Ok(out)
         })
         .await
     }
@@ -3199,7 +3207,7 @@ impl KairosMcp {
 
     // KAIROS-T-0505: a note becomes a draft ADR or document.
     #[tool(
-        description = "Turn a note into a draft ADR or document in one call: `short_code` of the item, `note_id` as `get_item` lists it (n-3), `kind` adr | document, `board` (slug or UUID) that gets the new item, optional `title` (default: the first line of the note). The new item has the text of the note and a line `From note n-3 on CODE (author, date)`; it `supports` the item when the item is a strategy, an initiative or a task. The note gets the line `Promoted to <code>`. Needs the edit rule on the item and the right to create on the board (manage_adrs or manage_documents)."
+        description = "Turn a note into a draft ADR or document in one call: `short_code` of the item, `note_id` as `get_item` lists it (n-3), `kind` adr | document, `board` (slug or UUID) that gets the new item, optional `title` (default: the first line of the note). The new item has the text of the note and a line `From note n-3 on CODE (author, date)`; it `supports` the item when the item is a strategy, an initiative or a task. The note gets the line `Promoted to <code>`. Kairos promotes a note one time only: it refuses a note with that line with CONFLICT and the code. Needs the edit rule on the item and the right to create on the board (manage_adrs or manage_documents)."
     )]
     pub async fn promote_note(
         &self,

@@ -946,6 +946,19 @@ pub fn emit_noted(common: &Common, response: &AppendNoteResponse) -> Result<(), 
         "Kairos appended note {} to {} (version {}).",
         response.note_id, response.short_code, response.version
     );
+    // KAIROS-T-0551: the server moved the headings of the text one level
+    // lower, because a `## ` heading ends a note.
+    match response.demoted_headings {
+        0 => {}
+        1 => println!(
+            "Kairos moved 1 heading of the text one level lower (`## ` to `### `): a `## ` \
+             heading ends a note."
+        ),
+        n => println!(
+            "Kairos moved {n} headings of the text one level lower (`## ` to `### `): a `## ` \
+             heading ends a note."
+        ),
+    }
     Ok(())
 }
 

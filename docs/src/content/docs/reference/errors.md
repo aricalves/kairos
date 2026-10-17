@@ -207,6 +207,7 @@ nothing on the others. The other 409s and what they carry instead:
 | Registering a repository whose slug is taken | — |
 | The create or the update of a board with the slug of a live board. The create of a team whose delivery board gets such a slug | `slug`, and `board` (`id`, `name`): the board that has the slug |
 | Registering a repository already registered for that forge | — |
+| A second promote of a note (`POST …/notes/{note_id}/promote`) | `note_id`, and `promoted_to`: the code of the item that the note became |
 | `DEFINITION_IN_USE` (its own code; see below) | its own fields |
 
 **The distinction to internalise**, because it decides how a client branches:

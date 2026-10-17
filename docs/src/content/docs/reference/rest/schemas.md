@@ -191,6 +191,7 @@ Response of `POST /api/{entity_type}/{short_code}/notes` (KAIROS-T-0367): the ve
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `demoted_headings` | `integer` | no | The count of the headings of the text that went one level lower (KAIROS-T-0551). A `## ` heading ends a note, so `## Findings` becomes `### Findings`. Zero when the text has no such heading. |
 | `note_id` | `string` | no | The id of the note: `n-3`. The heading of the note carries it, and the item page anchors it (`#n-3`). The default is for the client only: a response of an older server has no `note_id`. |
 | `short_code` | `string` | yes | The item's short code. |
 | `version` | `integer` | yes | The new version of the item. |

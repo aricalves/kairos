@@ -44,6 +44,9 @@ const PROMOTE_WORDING: crate::api::documents::CreateWording =
 /// strategy, an initiative or a task. The note gets a trailing line that
 /// names the new item.
 ///
+/// Kairos promotes a note one time only. A note with that line gets a
+/// refusal that names the item.
+///
 /// The edit rule of the source item applies. The caller needs the right
 /// to create on the target board.
 #[utoipa::path(
@@ -60,6 +63,7 @@ const PROMOTE_WORDING: crate::api::documents::CreateWording =
         (status = 201, description = "The new item and its edge", body = dto::PromoteNoteResponse),
         (status = 403, description = "Refused by the edit rule of the source item, or the caller cannot create on the target board", body = dto::ErrorEnvelope),
         (status = 404, description = "Unknown family, short code, note id or board", body = dto::ErrorEnvelope),
+        (status = 409, description = "The note has a `Promoted to` line; `details.promoted_to` names the item", body = dto::ErrorEnvelope),
         (status = 422, description = "The kind is not adr or document, or the body has an unknown field", body = dto::ErrorEnvelope),
     ),
 )]
@@ -106,7 +110,9 @@ pub(crate) async fn promote_note(
 }
 
 /// Append a note to an item. The note gets a heading with its id, the date
-/// and the name of the caller, then the text. One new version.
+/// and the name of the caller, then the text. One new version. A `## `
+/// line ends a note. Thus Kairos moves each title of the text one level
+/// lower, and `demoted_headings` gives the count.
 #[utoipa::path(
     post,
     path = "/api/{entity_type}/{short_code}/notes",
@@ -151,6 +157,7 @@ pub(crate) async fn append_note(
                 short_code: short_code_of(conn, item_id)?,
                 version: appended.version,
                 note_id: appended.note_id,
+                demoted_headings: u32::try_from(appended.demoted_headings).unwrap_or(u32::MAX),
             })
         })
         .await?;

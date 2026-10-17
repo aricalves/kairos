@@ -231,9 +231,39 @@ pub fn note_heading(position: usize, date: chrono::NaiveDate, author: &str) -> S
 }
 
 /// The id of the note that `append_note` adds to `content`
-/// (KAIROS-T-0504): one after the count of its note headings.
+/// (KAIROS-T-0504, KAIROS-T-0551): one after the highest id of its notes.
 pub fn next_note_position(content: &str) -> usize {
-    kairos_markdown::notes::notes(content).len() + 1
+    kairos_markdown::notes::next_position(content)
+}
+
+/// The text of a new note with each heading of level 2 to 5 one level
+/// lower, and the count of the headings that changed (KAIROS-T-0551): a
+/// `## ` heading ends a note, so the text of a note must not have one.
+pub fn demote_note_headings(text: &str) -> (String, usize) {
+    kairos_markdown::notes::demote_headings(text)
+}
+
+/// The sentence that tells the caller of `append_note` which headings went
+/// one level lower (KAIROS-T-0551). `None` when no heading changed.
+pub fn demoted_headings_sentence(count: usize) -> Option<String> {
+    match count {
+        0 => None,
+        1 => Some(
+            "Kairos moved 1 heading of the text one level lower (`## ` to `### `): \
+             a `## ` heading ends a note."
+                .to_string(),
+        ),
+        n => Some(format!(
+            "Kairos moved {n} headings of the text one level lower (`## ` to `### `): \
+             a `## ` heading ends a note."
+        )),
+    }
+}
+
+/// The code of the item that a note became (KAIROS-T-0551): the line
+/// `Promoted to ACME-A-0029.` of its text. `None` when it has no such line.
+pub fn note_promoted_to(note: &kairos_markdown::notes::Note) -> Option<&str> {
+    kairos_markdown::notes::promoted_to(&note.text)
 }
 
 /// The id of the note at `position`: `n-3` (KAIROS-T-0504).
@@ -559,10 +589,10 @@ mod tests {
         assert_eq!(content_with_note("Body", &heading, " \n\t\n"), None);
     }
 
-    // KAIROS-T-0504: the id of a new note is one after the count of the
-    // note headings, with or without ids.
+    // KAIROS-T-0504, KAIROS-T-0551: the id of a new note is one after the
+    // highest id, with or without ids in the headings.
     #[test]
-    fn the_next_note_follows_the_count_of_the_headings() {
+    fn the_next_note_follows_the_highest_id() {
         assert_eq!(next_note_position("# T\n\nBody"), 1);
         assert_eq!(
             next_note_position(
@@ -570,7 +600,42 @@ mod tests {
             ),
             3
         );
+        // A hand edit removed n-2: the next note is n-4, not a second n-3.
+        assert_eq!(
+            next_note_position(
+                "# T\n\n## Note n-1 (2026-10-01, Robin)\n\nx\n\n## Note n-3 (2026-10-03, Sam)\n\ny"
+            ),
+            4
+        );
         assert_eq!(note_id(3), "n-3");
+    }
+
+    // KAIROS-T-0551: a heading in the text of a note goes one level lower,
+    // and a promoted note names the item that it became.
+    #[test]
+    fn a_note_keeps_its_headings_and_its_promotion() {
+        let (text, count) = demote_note_headings("Intro.\n\n## Findings\n\nOne.");
+        assert_eq!(
+            (text.as_str(), count),
+            ("Intro.\n\n### Findings\n\nOne.", 1)
+        );
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 10, 11).unwrap();
+        let content =
+            content_with_note("# T", &note_heading(1, date, "Robin"), &text).expect("a note");
+        let found = notes(&content);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].text, "Intro.\n\n### Findings\n\nOne.");
+        assert_eq!(note_promoted_to(&found[0]), None);
+        let promoted =
+            content_with_note_line(&content, "n-1", "Promoted to ACME-A-0001.").expect("the note");
+        assert_eq!(note_promoted_to(&notes(&promoted)[0]), Some("ACME-A-0001"));
+        assert_eq!(demoted_headings_sentence(0), None);
+        assert!(
+            demoted_headings_sentence(1).is_some_and(|s| s.starts_with("Kairos moved 1 heading "))
+        );
+        assert!(
+            demoted_headings_sentence(2).is_some_and(|s| s.starts_with("Kairos moved 2 headings "))
+        );
     }
 
     // KAIROS-T-0505: a line goes at the end of one note.

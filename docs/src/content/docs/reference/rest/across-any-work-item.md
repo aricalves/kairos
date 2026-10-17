@@ -477,7 +477,9 @@ snapshot with `?version=N`.
 ### `POST /api/{entity_type}/{short_code}/notes`
 
 Append a note to an item. The note gets a heading with its id, the date
-and the name of the caller, then the text. One new version.
+and the name of the caller, then the text. One new version. A `## `
+line ends a note. Thus Kairos moves each title of the text one level
+lower, and `demoted_headings` gives the count.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
@@ -501,6 +503,9 @@ date. It `supports` the source item when the source is a
 strategy, an initiative or a task. The note gets a trailing line that
 names the new item.
 
+Kairos promotes a note one time only. A note with that line gets a
+refusal that names the item.
+
 The edit rule of the source item applies. The caller needs the right
 to create on the target board.
 
@@ -517,6 +522,7 @@ Request body (required): `application/json`, [`PromoteNoteRequest`](../schemas/#
 | `201` | [`PromoteNoteResponse`](../schemas/#promotenoteresponse) | The new item and its edge |
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Refused by the edit rule of the source item, or the caller cannot create on the target board |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown family, short code, note id or board |
+| `409` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The note has a `Promoted to` line; `details.promoted_to` names the item |
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The kind is not adr or document, or the body has an unknown field |
 
 ## cascade

@@ -79,7 +79,7 @@ Codes an agent can receive, and what each means.
 | `NOT_FOUND` | A short code, board or repository named as the subject of the call does not exist; an `unlink_items` edge does not exist; or a `search` `traverse.from` does not resolve. On a write tool it also means the item exists but is archived. Writes resolve live items only. The message says that the item is archived, and it names `restore_item`. A reference to an archived item, for example the `target` of `link_items`, is `VALIDATION` with the same text. |
 | `VALIDATION` | An argument is malformed, an enum value is outside its vocabulary, an argument does not apply to the item type, or something named as a *filter or reference* — a team, a repository filter, a parent, a metadata definition, a column — does not exist. A reference that does not resolve is `VALIDATION`; the call's own subject not existing is `NOT_FOUND`. **One exception:** `search`'s `traverse.from` is a reference and still answers `NOT_FOUND`, because a traversal's root is the subject of that traversal. |
 | `FORBIDDEN` | The rule for the write refuses the principal. For an edit, the [edit rule](../capabilities/#the-edit-rule): the principal did not create the item and lacks `manage_<type>` on its board. For an edge, the [link rule](../capabilities/#who-can-write-relationships): the principal can edit neither end. For a move or a create: the principal lacks the board capability. The message names the capability. For `add_repository` and `update_repository`: the principal is not a member of the owner team and is not an organization admin. The message names the team. For `create_team`, `create_board` and `add_team_member`: the principal is not an organization admin and has no `manage_structure` on the organization. The message names the capability and the scope. One case has a longer message: a move (`transition_item`, `move_item`) of a request that the caller created, while the request is in the entry column. That message says that the item is a request, that the team of the board moves it, that the caller can edit, link and archive it, and which capability the move needs. A `create_item` that sends `work_class: planned` to a board that the caller does not manage is also `FORBIDDEN`. |
-| `CONFLICT` | An optimistic-concurrency version mismatch. The refusal carries the current version and content. From `add_repository`: the directory has the slug already, or it has the repository already. |
+| `CONFLICT` | An optimistic-concurrency version mismatch. The refusal carries the current version and content. From `add_repository`: the directory has the slug already, or it has the repository already. From `promote_note`: the note has a `Promoted to` line, and `details.promoted_to` names the item. |
 | `INVALID_TRANSITION` | The target column is not reachable from the item's current column in the board's transition graph. The refusal enumerates the allowed target columns. |
 | `ITEM_NOT_ON_BOARD` | The item has no board placement, so it cannot be transitioned or moved. |
 | `SAME_BOARD` | A `move_item` whose target is the board the task is already on. A document is different: see [`move_item`](#move_item). |
@@ -1055,11 +1055,20 @@ of the caller:
 The text of the note.
 ```
 
-The id is `n-` and the position of the note on the item: the first note is
-`n-1`. A note from before the ids has no id in its title. Kairos gives it the
-id of its position when it reads the item, so each id is stable. Cite a note
-by its id: "note n-3 on ACME-T-0012". `get_item` lists the notes with their
-ids, and the item page of the GUI anchors each one (`#n-3`).
+The id is `n-` and a number: the first note is `n-1`. A new note gets the
+number after the highest id on the item. When a hand edit removes `n-2` from
+`n-1`, `n-2`, `n-3`, the next note is `n-4`.
+
+A note from before the ids has no id in its title. Kairos gives it the id of its position when it reads the
+item, so each id is stable. Cite a note by its id: "note n-3 on
+ACME-T-0012". `get_item` lists the notes with their ids, and the item page of
+the GUI anchors each one (`#n-3`).
+
+A `## ` heading ends a note. Thus Kairos moves each heading of the text one
+level lower. `## Findings` becomes `### Findings`, and `### Detail` becomes
+`#### Detail`. A level-6 heading stays. A line in a code block stays
+too. Kairos does not refuse the text, because the text stays complete and
+the headings keep their order.
 
 The server locks the item, adds the note to the current content, and writes
 one new version. Two notes at the same time both stay: the server adds the
@@ -1068,6 +1077,14 @@ second one after the first one. The result is one line:
 ```text
 Appended note n-3 to ACME-T-0012 (version 4).
 ```
+
+When a heading moved, the line tells you:
+
+```text
+Appended note n-3 to ACME-T-0012 (version 4). Kairos moved 2 headings of the text one level lower (`## ` to `### `): a `## ` heading ends a note.
+```
+
+The REST answer gives the count in `demoted_headings`.
 
 The edit rule applies, as for `update_item`. REST: `POST
 /api/{entity_type}/{short_code}/notes`. CLI: `kairos <noun> note <SHORT_CODE>
@@ -1108,6 +1125,14 @@ so. The result is one line:
 Promoted note n-3 on ACME-T-0012 to the draft adr ACME-A-0029. ACME-A-0029 supports ACME-T-0012. The note has the line "Promoted to ACME-A-0029."
 ```
 
+Kairos promotes a note one time only. A note that has a `Promoted to` line
+gets a `CONFLICT` refusal. The refusal names the item that the note became:
+
+```text
+CONFLICT: The note n-3 on ACME-T-0012 became ACME-A-0029 already. Kairos promotes a note one time only. Read ACME-A-0029, or promote a different note.
+details: {"note_id":"n-3","promoted_to":"ACME-A-0029"}
+```
+
 You need the edit rule on the item: you created it, or you hold
 `manage_<type>` on its board. You also need the right to create on the
 board: `manage_adrs` for an ADR, `manage_documents` for a document. The rule
@@ -1115,8 +1140,9 @@ is that of `POST /api/{family}/{short_code}/notes/{note_id}/promote`.
 
 Refuses: `NOT_FOUND` for an unknown short code, an archived item, or an
 unknown board. `NOT_FOUND` for an unknown note id; the refusal lists the
-ids. `VALIDATION` for a kind that is not `adr` or `document`. `FORBIDDEN`
-by the edit rule, or without the capability on the board.
+ids. `CONFLICT` for a note that has a `Promoted to` line. `VALIDATION` for a kind
+that is not `adr` or `document`. `FORBIDDEN` by the edit rule, or without the
+capability on the board.
 
 ### `set_metadata`
 

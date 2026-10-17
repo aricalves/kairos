@@ -929,6 +929,11 @@ pub struct AppendNoteResponse {
     /// only: a response of an older server has no `note_id`.
     #[serde(default)]
     pub note_id: String,
+    /// The count of the headings of the text that went one level lower
+    /// (KAIROS-T-0551). A `## ` heading ends a note, so `## Findings`
+    /// becomes `### Findings`. Zero when the text has no such heading.
+    #[serde(default)]
+    pub demoted_headings: u32,
 }
 
 /// Response of `POST /api/{entity_type}/{short_code}/restore`

@@ -8,7 +8,9 @@
 //! the source is a strategy, an initiative or a task (the type rule of a
 //! `supports` edge, [`kairos_core::graph::check_link`]); a note on a
 //! document or an ADR gets no edge. The note gets a trailing line
-//! `Promoted to KAIROS-A-0029.`
+//! `Promoted to KAIROS-A-0029.` Kairos promotes a note one time only
+//! (KAIROS-T-0551): it refuses a note that has that line with `CONFLICT`,
+//! and the refusal names the item that the note became.
 //!
 //! Who may: the edit rule of the source item (the trailing line is an
 //! edit), and the right to create on the target board (`manage_adrs`, or
@@ -107,6 +109,15 @@ pub(crate) fn promote_note(
             )
         }));
     };
+    // KAIROS-T-0551: a second promote would make a second item.
+    if let Some(promoted) = kairos_core::items::note_promoted_to(note) {
+        return Err(ApiError::conflict(format!(
+            "The note {} on {source_code} became {promoted} already. Kairos promotes a note \
+             one time only. Read {promoted}, or promote a different note.",
+            note.id
+        ))
+        .with_details(serde_json::json!({ "note_id": note.id, "promoted_to": promoted })));
+    }
     let title = match input.title.map(str::trim).filter(|title| !title.is_empty()) {
         Some(title) => title.to_string(),
         None if !note.first_line.is_empty() => clip(&note.first_line, 120),

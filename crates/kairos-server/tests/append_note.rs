@@ -2,6 +2,8 @@
 //! goes at the end of the content under a heading with the date and the
 //! name of the caller, in one call with no version, as one history
 //! version; notes sent at the same time all stay; the edit rule applies.
+//! KAIROS-T-0551: the next id is one after the highest id, and a heading of
+//! the text goes one level lower.
 //! The MCP tool `append_note` is in `tests/mcp.rs`.
 //!
 //! Runs against the LIVE compose stack (`angreal services up`). Owns the
@@ -247,6 +249,64 @@ async fn append_note_adds_a_dated_note_in_one_version_against_live_stack() {
         "{content}"
     );
     assert_eq!(history(&mut conn), 2 + AT_ONCE as i64);
+
+    // --- KAIROS-T-0551: a heading of the text goes one level lower ---------
+    let (status, answer) = send(
+        Method::POST,
+        notes.clone(),
+        token.clone(),
+        Some(json!({"text": "Intro.\n\n## Findings\n\nThe cause.\n\n### Detail\n\nMore."})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let heading_note = format!("n-{}", AT_ONCE + 2);
+    assert_eq!(answer["note_id"], heading_note.as_str(), "{answer}");
+    assert_eq!(answer["demoted_headings"], 2, "{answer}");
+    let (_, got) = send(
+        Method::GET,
+        format!("/api/tasks/{code}"),
+        token.clone(),
+        None,
+    )
+    .await;
+    let content = got["content"].as_str().expect("content");
+    assert!(
+        content.ends_with(")\n\nIntro.\n\n### Findings\n\nThe cause.\n\n#### Detail\n\nMore."),
+        "{content}"
+    );
+    let (status, answer) = send(
+        Method::POST,
+        notes.clone(),
+        token.clone(),
+        Some(json!({"text": "No heading."})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer["demoted_headings"], 0, "{answer}");
+
+    // --- KAIROS-T-0551: the next id is one after the highest id -------------
+    let (status, gap) = send(
+        Method::POST,
+        "/api/tasks".into(),
+        token.clone(),
+        Some(json!({
+            "board_id": "payments-delivery",
+            "title": "A gap",
+            "content": "# Gap\n\n## Note n-1 (2026-10-01, Robin)\n\nOne.\n\n## Note n-3 (2026-10-03, Sam)\n\nThree.\n",
+        })),
+    )
+    .await;
+    assert!(status.is_success(), "{status} {gap}");
+    let gap_code = gap["short_code"].as_str().expect("short code");
+    let (status, answer) = send(
+        Method::POST,
+        format!("/api/tasks/{gap_code}/notes"),
+        token.clone(),
+        Some(json!({"text": "Four."})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer["note_id"], "n-4", "not a second n-3: {answer}");
 
     // --- KAIROS-T-0504: old notes without an id count by position ----------
     let (status, old) = send(
