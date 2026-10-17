@@ -275,6 +275,9 @@ Decisions (T-0039), with the full flow documented in `auth.rs`:
   restores the session from the cookie (`GET /api/whoami` with no
   bearer), also where the issuer gives no refresh token (Google).
   Logout ends the session on the server and clears the cookie.
+- **One whoami** (KAIROS-T-0622): the body of that probe is the first
+  value of the shell's whoami resource. Every page under the shell reads
+  it with `app::use_whoami()` and does not fetch whoami on its own.
 - **Silent refresh**: timer at `expires_in − 60s` via the relay's
   refresh grant; failure clears the session (stored refresh token
   included).
