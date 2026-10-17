@@ -116,14 +116,31 @@ pub fn App() -> impl IntoView {
 ///
 /// Whoami is fetched ONCE here and shared (`LocalResource` is `Copy`) by
 /// the header badge and the "My teams" nav section (KAIROS-T-0068) — one
-/// identity round-trip per session, not one per consumer.
+/// identity round-trip per session, not one per consumer. Each page reads
+/// it with [`use_whoami`] (KAIROS-T-0622).
+///
+/// KAIROS-T-0622: a reload that found a cookie session already has the
+/// whoami body of the probe; that is the first value here. With no session
+/// there is no request: the shell shows the guard, not the identity.
 #[component]
 fn Shell() -> impl IntoView {
     let auth = use_auth();
     let whoami = LocalResource::new(move || {
         // Track the session so a fresh login refetches.
         auth.track_session();
-        api::whoami(auth)
+        let seed = auth.take_whoami_seed();
+        let live = auth.has_session_untracked();
+        async move {
+            match seed {
+                Some(me) => Ok(me),
+                None if !live => Err(ApiError::Http {
+                    status: 401,
+                    message: "There is no session.".to_string(),
+                    code: None,
+                }),
+                None => api::whoami(auth).await,
+            }
+        }
     });
     // Pages under the shell consume the same identity (KAIROS-T-0072: the
     // board view derives its capability mirror from it).
@@ -282,6 +299,12 @@ fn RedirectToIssuer() -> impl IntoView {
             }}
         </CenterScreen>
     }
+}
+
+/// The shell's whoami (KAIROS-T-0622): one identity for every page under
+/// the shell. A page never fetches whoami on its own.
+pub(crate) fn use_whoami() -> LocalResource<Result<api::Whoami, ApiError>> {
+    expect_context::<LocalResource<Result<api::Whoami, ApiError>>>()
 }
 
 /// The path of the docs sites of the organization of the person

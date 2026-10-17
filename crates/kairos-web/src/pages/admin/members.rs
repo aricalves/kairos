@@ -39,10 +39,7 @@ pub fn AdminMembersPage() -> impl IntoView {
         reload.get();
         api::list_org_members(auth)
     });
-    let whoami = LocalResource::new(move || {
-        auth.track_session();
-        crate::api::whoami(auth)
-    });
+    let whoami = crate::app::use_whoami();
     // The org-admin controls show only when whoami says so.
     let viewer_is_admin = move || matches!(whoami.get(), Some(Ok(me)) if gating::is_org_admin(&me));
 

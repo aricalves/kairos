@@ -151,10 +151,7 @@ pub fn AdminBoardsPage() -> impl IntoView {
     // A-0006); the board LIST and per-board config links stay open to
     // capability holders admitted by the shell gate (KAIROS-T-0052). The
     // server enforces this regardless — the gate below is UX only.
-    let whoami = LocalResource::new(move || {
-        auth.track_session();
-        crate::api::whoami(auth)
-    });
+    let whoami = crate::app::use_whoami();
     let is_admin = move || matches!(whoami.get(), Some(Ok(me)) if gating::is_org_admin(&me));
 
     // Create form state.
