@@ -62,8 +62,8 @@ use crate::pages;
 /// System. The toasts are the short notices of a mutation (the board, the
 /// item page).
 /// KAIROS-T-0397: the theme toggle of the top bar offers Hyper (Light /
-/// Dark / Hyper / System). `index.html` links the hyper stylesheet that
-/// it needs (`style/hyper.css`, written by `kairos-web-css`).
+/// Dark / Hyper / System). KAIROS-T-0605: a script of `index.html` loads
+/// the hyper stylesheet (written by `kairos-web-css`) only for Hyper.
 pub const OFFER_HYPER: bool = true;
 
 #[component]
@@ -432,27 +432,36 @@ mod tests {
         );
     }
 
-    /// KAIROS-T-0397: `index.html` links the hyper stylesheet after the
-    /// Aurora stylesheet (Aurora asks for this order) and before the
-    /// Kairos rules; the theme script comes before each of them.
+    /// KAIROS-T-0605: `index.html` links one stylesheet (Aurora, then the
+    /// Kairos rules) and no hyper stylesheet. The script that loads the
+    /// hyper file comes after the stylesheet (Aurora asks for this order);
+    /// the theme script comes before each of them.
     #[test]
-    fn index_html_links_the_hyper_stylesheet_after_aurora() {
+    fn index_html_loads_the_hyper_stylesheet_after_the_stylesheet() {
         let html = include_str!("../index.html");
-        let link = |href: &str| {
-            html.find(&format!(r#"<link data-trunk rel="css" href="{href}" />"#))
-                .unwrap_or_else(|| panic!("index.html links {href}"))
-        };
         let script = html
             .find(&format!(
                 "<script>{}</script>",
                 aurora_dark::THEME_INIT_SCRIPT
             ))
             .expect("index.html has THEME_INIT_SCRIPT as it is");
-        let (aurora, hyper, app) = (
-            link("style/aurora.css"),
-            link("style/hyper.css"),
-            link("app.css"),
+        let css = html
+            .find(r#"<link data-trunk rel="css" href="style/kairos.css" />"#)
+            .expect("index.html links style/kairos.css");
+        assert_eq!(html.matches(r#"rel="css""#).count(), 1, "one stylesheet");
+        let hyper = html
+            .find(r#"<link data-trunk rel="copy-file" href="style/hyper-"#)
+            .expect("index.html copies the hyper file with no link");
+        let loader = html
+            .find(
+                r#"document.write('<link id="' + ID + '" rel="stylesheet" href="' + H + '" />');"#,
+            )
+            .expect("index.html writes the hyper link for a stored hyper");
+        assert!(script < css && css < hyper && hyper < loader);
+        assert!(
+            html.contains(
+                r#"<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />"#
+            )
         );
-        assert!(script < aurora && aurora < hyper && hyper < app);
     }
 }
