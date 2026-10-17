@@ -18,6 +18,7 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use reqwest::Method;
 use serde::Serialize;
@@ -138,6 +139,52 @@ impl fmt::Display for EntityKind {
     }
 }
 
+/// The time the client waits for a connection (KAIROS-T-0607).
+pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The time the client waits for a whole request, from the start to the
+/// end of the body (KAIROS-T-0607). [`KairosClient::with_timeout`] and
+/// [`timeout_from_env`] change it.
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The environment variable that holds the request timeout in seconds.
+pub const TIMEOUT_VAR: &str = "KAIROS_TIMEOUT";
+
+/// The request timeout that `KAIROS_TIMEOUT` sets: `None` when the
+/// variable is not set or is empty. A value that is not a positive integer
+/// of seconds is refused with [`Error::Setting`], which names the
+/// variable.
+pub fn timeout_from_env() -> Result<Option<Duration>, Error> {
+    parse_timeout(std::env::var(TIMEOUT_VAR).ok().as_deref())
+}
+
+/// [`timeout_from_env`] over a value that is already read.
+pub fn parse_timeout(value: Option<&str>) -> Result<Option<Duration>, Error> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    match value.parse::<u64>() {
+        Ok(seconds) if seconds > 0 => Ok(Some(Duration::from_secs(seconds))),
+        _ => Err(Error::Setting {
+            variable: TIMEOUT_VAR,
+            message: format!(
+                "The value {value:?} of {TIMEOUT_VAR} is not a positive integer. Give a number of \
+                 seconds, for example {TIMEOUT_VAR}=120."
+            ),
+        }),
+    }
+}
+
+/// The HTTP client with the two timeouts. Compression is on: reqwest sends
+/// `Accept-Encoding: gzip, br` and decodes the answer (KAIROS-T-0607).
+fn build_http(connect_timeout: Duration, timeout: Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(connect_timeout)
+        .timeout(timeout)
+        .build()
+        .expect("the HTTP client builds: the TLS backend is in the binary")
+}
+
 /// The typed Kairos API client. Cheap to clone.
 #[derive(Clone)]
 pub struct KairosClient {
@@ -147,6 +194,8 @@ pub struct KairosClient {
     pub(crate) token: Arc<dyn TokenProvider>,
     /// `X-Tenant` header value (dev/test tenant resolution fallback).
     pub(crate) tenant: Option<String>,
+    connect_timeout: Duration,
+    timeout: Duration,
 }
 
 impl fmt::Debug for KairosClient {
@@ -154,23 +203,54 @@ impl fmt::Debug for KairosClient {
         f.debug_struct("KairosClient")
             .field("base_url", &self.base_url)
             .field("tenant", &self.tenant)
+            .field("connect_timeout", &self.connect_timeout)
+            .field("timeout", &self.timeout)
             .finish_non_exhaustive()
     }
 }
 
 impl KairosClient {
-    /// A client against `base_url` drawing tokens from `token`.
+    /// A client against `base_url` drawing tokens from `token`, with the
+    /// default timeouts ([`DEFAULT_CONNECT_TIMEOUT`], [`DEFAULT_TIMEOUT`]).
     pub fn new(base_url: impl Into<String>, token: Arc<dyn TokenProvider>) -> Self {
         let mut base_url = base_url.into();
         while base_url.ends_with('/') {
             base_url.pop();
         }
         Self {
-            http: reqwest::Client::new(),
+            http: build_http(DEFAULT_CONNECT_TIMEOUT, DEFAULT_TIMEOUT),
             base_url,
             token,
             tenant: None,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            timeout: DEFAULT_TIMEOUT,
         }
+    }
+
+    /// Wait `timeout` for a whole request (KAIROS-T-0607).
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self.http = build_http(self.connect_timeout, self.timeout);
+        self
+    }
+
+    /// Wait `connect_timeout` for a connection (KAIROS-T-0607).
+    #[must_use]
+    pub fn with_connect_timeout(mut self, connect_timeout: Duration) -> Self {
+        self.connect_timeout = connect_timeout;
+        self.http = build_http(self.connect_timeout, self.timeout);
+        self
+    }
+
+    /// The request timeout.
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
+    /// The connection timeout.
+    pub fn connect_timeout(&self) -> Duration {
+        self.connect_timeout
     }
 
     /// A client with a fixed bearer token (integration tests).
@@ -2646,6 +2726,116 @@ impl KairosClient {
                 Err(Error::from_envelope(status, envelope))
             }
             _ => Err(Error::UnexpectedResponse { status, body }),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::Router;
+    use axum::extract::State;
+    use axum::http::HeaderMap;
+    use axum::routing::get;
+
+    /// A server on an ephemeral port whose `/api/config` answers after
+    /// `delay` with the `Accept-Encoding` of the request as the issuer.
+    async fn serve(delay: Duration) -> String {
+        async fn config(State(delay): State<Duration>, headers: HeaderMap) -> axum::Json<Value> {
+            tokio::time::sleep(delay).await;
+            let accept = headers
+                .get("accept-encoding")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            axum::Json(serde_json::json!({"issuer": accept, "local_auth": false}))
+        }
+        let app = Router::new()
+            .route("/api/config", get(config))
+            .with_state(delay);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let address = listener.local_addr().expect("address");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve");
+        });
+        format!("http://{address}")
+    }
+
+    /// KAIROS-T-0607: `KAIROS_TIMEOUT` is a positive integer of seconds, or
+    /// nothing. Anything else is refused with the name of the variable.
+    #[test]
+    fn the_timeout_setting_is_a_positive_integer_of_seconds() {
+        assert_eq!(parse_timeout(None).expect("unset"), None);
+        assert_eq!(parse_timeout(Some("")).expect("empty"), None);
+        assert_eq!(parse_timeout(Some("  ")).expect("blank"), None);
+        assert_eq!(
+            parse_timeout(Some("120")).expect("seconds"),
+            Some(Duration::from_secs(120))
+        );
+        assert_eq!(
+            parse_timeout(Some(" 7 ")).expect("trimmed"),
+            Some(Duration::from_secs(7))
+        );
+        for bad in ["0", "-1", "abc", "1.5", "60s"] {
+            let err = parse_timeout(Some(bad)).expect_err(bad);
+            match &err {
+                Error::Setting { variable, message } => {
+                    assert_eq!(*variable, "KAIROS_TIMEOUT");
+                    assert!(message.contains("KAIROS_TIMEOUT"), "{message}");
+                    assert!(message.contains(bad), "{message}");
+                }
+                other => panic!("{bad}: expected Setting, got {other}"),
+            }
+            assert!(err.to_string().contains("KAIROS_TIMEOUT"), "{err}");
+        }
+    }
+
+    /// KAIROS-T-0607: a new client has the default timeouts; the builders
+    /// change one and keep the other.
+    #[test]
+    fn a_client_has_the_default_timeouts() {
+        let client = KairosClient::anonymous("http://kairos.test/");
+        assert_eq!(client.timeout(), Duration::from_secs(60));
+        assert_eq!(client.connect_timeout(), Duration::from_secs(5));
+        assert_eq!(client.base_url(), "http://kairos.test");
+
+        let client = client.with_timeout(Duration::from_secs(120));
+        assert_eq!(client.timeout(), Duration::from_secs(120));
+        assert_eq!(client.connect_timeout(), Duration::from_secs(5));
+
+        let client = client.with_connect_timeout(Duration::from_secs(1));
+        assert_eq!(client.timeout(), Duration::from_secs(120));
+        assert_eq!(client.connect_timeout(), Duration::from_secs(1));
+    }
+
+    /// KAIROS-T-0607: every request asks for a compressed answer.
+    #[tokio::test]
+    async fn the_client_accepts_gzip_and_brotli() {
+        let base_url = serve(Duration::ZERO).await;
+        let config = KairosClient::anonymous(base_url)
+            .deployment_config()
+            .await
+            .expect("config");
+        let accept = config.issuer.expect("the Accept-Encoding of the request");
+        assert!(accept.contains("gzip"), "{accept}");
+        assert!(accept.contains("br"), "{accept}");
+    }
+
+    /// KAIROS-T-0607: a server that does not answer in time is a transport
+    /// error, not a hang.
+    #[tokio::test]
+    async fn a_slow_server_is_a_timeout() {
+        let base_url = serve(Duration::from_secs(5)).await;
+        let err = KairosClient::anonymous(base_url)
+            .with_timeout(Duration::from_millis(200))
+            .deployment_config()
+            .await
+            .expect_err("the request times out");
+        match err {
+            Error::Transport(source) => assert!(source.is_timeout(), "{source}"),
+            other => panic!("expected Transport, got {other}"),
         }
     }
 }

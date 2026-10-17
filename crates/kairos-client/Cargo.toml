@@ -17,3 +17,8 @@ reqwest = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = "0.29.0"
 futures-util = "0.3.31"
+
+[dev-dependencies]
+# The tests of the timeouts and of `Accept-Encoding` (KAIROS-T-0607) run a
+# small axum server on an ephemeral port.
+axum = { workspace = true }
