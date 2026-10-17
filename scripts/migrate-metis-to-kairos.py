@@ -24,6 +24,13 @@ default, so a run always names its mode.
 In the two modes, the references in the text change to the new codes after
 each item exists, and a provenance footer keeps the Metis code.
 
+An initiative starts in the entry column of its board (KAIROS-T-0643). The
+run creates it there and moves it to the column of its Metis phase by the
+transitions of the board. An imported initiative has no owner, so the run
+turns the board policy `owner_gate` off on the initiative board, and on again
+after, also when the run stops. The output says both. This needs
+`configure_boards` on the initiative board.
+
 The 2026-09-26 keep mode (one sequence for the tenant, an empty tenant, the
 text not changed) is gone: board prefixes (COLLIERY-I-0407) replaced it.
 
