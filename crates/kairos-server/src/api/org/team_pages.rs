@@ -22,6 +22,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use super::super::{parse_enum, parse_opt_uuid, parse_uuid};
+use super::teams::team_by_ref;
 use crate::app::AppState;
 use crate::body::ApiJson;
 use crate::error::ApiError;
@@ -219,7 +220,7 @@ fn announcement_dto(row: TeamAnnouncement) -> dto::TeamAnnouncement {
     get,
     path = "/api/teams/{id}/pages",
     tag = "team-pages",
-    params(("id" = String, Path, description = "Team id (UUID)")),
+    params(("id" = String, Path, description = "The slug or the id (UUID) of the team")),
     responses(
         (status = 200, description = "The page tree, flat", body = Vec<dto::TeamPage>),
         (status = 404, description = "Unknown team", body = kairos_client::types::ErrorEnvelope),
@@ -230,10 +231,12 @@ pub(crate) async fn list_pages(
     Extension(tenant): Extension<TenantContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<dto::TeamPage>>, ApiError> {
-    let team_id = parse_uuid(&id, "id")?;
     let pages = state
         .blocking
-        .run(&tenant.slug, move |conn| list_as(conn, team_id))
+        .run(&tenant.slug, move |conn| {
+            let team_id = team_by_ref(conn, &id)?;
+            list_as(conn, team_id)
+        })
         .await?;
     Ok(Json(pages))
 }
@@ -255,7 +258,7 @@ pub(crate) fn list_as(
     path = "/api/teams/{id}/pages/{page_id}",
     tag = "team-pages",
     params(
-        ("id" = String, Path, description = "Team id (UUID)"),
+        ("id" = String, Path, description = "The slug or the id (UUID) of the team"),
         ("page_id" = String, Path, description = "Page id (UUID)"),
     ),
     responses(
@@ -268,11 +271,11 @@ pub(crate) async fn get_page(
     Extension(tenant): Extension<TenantContext>,
     Path((id, page_id)): Path<(String, String)>,
 ) -> Result<Json<dto::TeamPage>, ApiError> {
-    let team_id = parse_uuid(&id, "id")?;
     let page_id = parse_uuid(&page_id, "page_id")?;
     let page = state
         .blocking
         .run(&tenant.slug, move |conn| {
+            let team_id = team_by_ref(conn, &id)?;
             require_team(conn, team_id)?;
             let page = team_pages::load_page(conn, team_id, page_id).map_err(map_page_error)?;
             Ok(page_dto(page))
@@ -286,7 +289,7 @@ pub(crate) async fn get_page(
     post,
     path = "/api/teams/{id}/pages",
     tag = "team-pages",
-    params(("id" = String, Path, description = "Team id (UUID)")),
+    params(("id" = String, Path, description = "The slug or the id (UUID) of the team")),
     request_body = dto::CreateTeamPageRequest,
     responses(
         (status = 201, description = "Created", body = dto::TeamPage),
@@ -302,12 +305,12 @@ pub(crate) async fn create_page(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<dto::CreateTeamPageRequest>,
 ) -> Result<(StatusCode, Json<dto::TeamPage>), ApiError> {
-    let team_id = parse_uuid(&id, "id")?;
     let slug = tenant.slug.clone();
     let user = auth.user_id;
     let created = state
         .blocking
         .run(&slug, move |conn| {
+            let team_id = team_by_ref(conn, &id)?;
             create_as(conn, &tenant, user, team_id, &body)
         })
         .await?;
@@ -359,7 +362,7 @@ pub(crate) fn create_as(
     path = "/api/teams/{id}/pages/{page_id}",
     tag = "team-pages",
     params(
-        ("id" = String, Path, description = "Team id (UUID)"),
+        ("id" = String, Path, description = "The slug or the id (UUID) of the team"),
         ("page_id" = String, Path, description = "Page id (UUID)"),
     ),
     request_body = dto::UpdateTeamPageRequest,
@@ -378,13 +381,13 @@ pub(crate) async fn update_page(
     Path((id, page_id)): Path<(String, String)>,
     ApiJson(body): ApiJson<dto::UpdateTeamPageRequest>,
 ) -> Result<Json<dto::TeamPage>, ApiError> {
-    let team_id = parse_uuid(&id, "id")?;
     let page_id = parse_uuid(&page_id, "page_id")?;
     let slug = tenant.slug.clone();
     let user = auth.user_id;
     let updated = state
         .blocking
         .run(&slug, move |conn| {
+            let team_id = team_by_ref(conn, &id)?;
             update_as(conn, &tenant, user, team_id, page_id, &body)
         })
         .await?;
@@ -477,7 +480,7 @@ pub(crate) fn update_as(
     path = "/api/teams/{id}/pages/{page_id}",
     tag = "team-pages",
     params(
-        ("id" = String, Path, description = "Team id (UUID)"),
+        ("id" = String, Path, description = "The slug or the id (UUID) of the team"),
         ("page_id" = String, Path, description = "Page id (UUID)"),
     ),
     responses(
@@ -493,13 +496,13 @@ pub(crate) async fn delete_page(
     Extension(tenant): Extension<TenantContext>,
     Path((id, page_id)): Path<(String, String)>,
 ) -> Result<Json<kairos_client::types_org::OrgDeleteResponse>, ApiError> {
-    let team_id = parse_uuid(&id, "id")?;
     let page_uuid = parse_uuid(&page_id, "page_id")?;
     let slug = tenant.slug.clone();
     let user = auth.user_id;
     state
         .blocking
         .run(&slug, move |conn| {
+            let team_id = team_by_ref(conn, &id)?;
             delete_as(conn, &tenant, user, team_id, page_uuid).map(|_| ())
         })
         .await?;
@@ -540,7 +543,7 @@ pub(crate) fn delete_as(
     get,
     path = "/api/teams/{id}/archived-pages",
     tag = "team-pages",
-    params(("id" = String, Path, description = "Team id (UUID)")),
+    params(("id" = String, Path, description = "The slug or the id (UUID) of the team")),
     responses(
         (status = 200, description = "The archived nodes", body = Vec<dto::ArchivedTeamPage>),
         (status = 404, description = "Unknown team", body = kairos_client::types::ErrorEnvelope),
@@ -551,10 +554,12 @@ pub(crate) async fn list_archived(
     Extension(tenant): Extension<TenantContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<dto::ArchivedTeamPage>>, ApiError> {
-    let team_id = parse_uuid(&id, "id")?;
     let rows = state
         .blocking
-        .run(&tenant.slug, move |conn| list_archived_as(conn, team_id))
+        .run(&tenant.slug, move |conn| {
+            let team_id = team_by_ref(conn, &id)?;
+            list_archived_as(conn, team_id)
+        })
         .await?;
     Ok(Json(rows))
 }
@@ -585,7 +590,7 @@ pub(crate) fn list_archived_as(
     path = "/api/teams/{id}/pages/{page_id}/restore",
     tag = "team-pages",
     params(
-        ("id" = String, Path, description = "Team id (UUID)"),
+        ("id" = String, Path, description = "The slug or the id (UUID) of the team"),
         ("page_id" = String, Path, description = "Page id (UUID)"),
     ),
     responses(
@@ -601,13 +606,13 @@ pub(crate) async fn restore_page(
     Extension(tenant): Extension<TenantContext>,
     Path((id, page_id)): Path<(String, String)>,
 ) -> Result<Json<dto::TeamPage>, ApiError> {
-    let team_id = parse_uuid(&id, "id")?;
     let page_id = parse_uuid(&page_id, "page_id")?;
     let slug = tenant.slug.clone();
     let user = auth.user_id;
     let restored = state
         .blocking
         .run(&slug, move |conn| {
+            let team_id = team_by_ref(conn, &id)?;
             restore_as(conn, &tenant, user, team_id, page_id)
         })
         .await?;
@@ -645,7 +650,7 @@ pub(crate) fn restore_as(
     path = "/api/teams/{id}/pages/{page_id}/history",
     tag = "team-pages",
     params(
-        ("id" = String, Path, description = "Team id (UUID)"),
+        ("id" = String, Path, description = "The slug or the id (UUID) of the team"),
         ("page_id" = String, Path, description = "Page id (UUID)"),
     ),
     responses(
@@ -658,11 +663,13 @@ pub(crate) async fn page_history(
     Extension(tenant): Extension<TenantContext>,
     Path((id, page_id)): Path<(String, String)>,
 ) -> Result<Json<Vec<dto::TeamPageVersion>>, ApiError> {
-    let team_id = parse_uuid(&id, "id")?;
     let page_id = parse_uuid(&page_id, "page_id")?;
     let rows = state
         .blocking
-        .run(&tenant.slug, move |conn| history_as(conn, team_id, page_id))
+        .run(&tenant.slug, move |conn| {
+            let team_id = team_by_ref(conn, &id)?;
+            history_as(conn, team_id, page_id)
+        })
         .await?;
     Ok(Json(rows))
 }
@@ -709,7 +716,7 @@ pub(crate) fn history_as(
     get,
     path = "/api/teams/{id}/tree-items",
     tag = "team-pages",
-    params(("id" = String, Path, description = "Team id (UUID)")),
+    params(("id" = String, Path, description = "The slug or the id (UUID) of the team")),
     responses(
         (status = 200, description = "The items of the team", body = Vec<dto::TeamTreeItem>),
         (status = 404, description = "Unknown team", body = kairos_client::types::ErrorEnvelope),
@@ -720,10 +727,12 @@ pub(crate) async fn list_tree_items(
     Extension(tenant): Extension<TenantContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<dto::TeamTreeItem>>, ApiError> {
-    let team_id = parse_uuid(&id, "id")?;
     let rows = state
         .blocking
-        .run(&tenant.slug, move |conn| tree_items_as(conn, team_id))
+        .run(&tenant.slug, move |conn| {
+            let team_id = team_by_ref(conn, &id)?;
+            tree_items_as(conn, team_id)
+        })
         .await?;
     Ok(Json(rows))
 }
@@ -758,7 +767,7 @@ pub(crate) fn tree_items_as(
     path = "/api/teams/{id}/tree-items/{item}",
     tag = "team-pages",
     params(
-        ("id" = String, Path, description = "Team id (UUID)"),
+        ("id" = String, Path, description = "The slug or the id (UUID) of the team"),
         ("item" = String, Path, description = "The short code or the id of a document or an ADR of the team"),
     ),
     request_body = dto::PlaceTeamItemRequest,
@@ -776,12 +785,12 @@ pub(crate) async fn place_tree_item(
     Path((id, item)): Path<(String, String)>,
     ApiJson(body): ApiJson<dto::PlaceTeamItemRequest>,
 ) -> Result<Json<dto::TeamTreeItem>, ApiError> {
-    let team_id = parse_uuid(&id, "id")?;
     let slug = tenant.slug.clone();
     let user = auth.user_id;
     let placed = state
         .blocking
         .run(&slug, move |conn| {
+            let team_id = team_by_ref(conn, &id)?;
             place_item_as(conn, &tenant, user, team_id, &item, &body)
         })
         .await?;
@@ -835,7 +844,7 @@ pub(crate) fn place_item_as(
     get,
     path = "/api/teams/{id}/announcements",
     tag = "team-pages",
-    params(("id" = String, Path, description = "Team id (UUID)")),
+    params(("id" = String, Path, description = "The slug or the id (UUID) of the team")),
     responses(
         (status = 200, description = "Announcements", body = Vec<dto::TeamAnnouncement>),
         (status = 404, description = "Unknown team", body = kairos_client::types::ErrorEnvelope),
@@ -846,10 +855,10 @@ pub(crate) async fn list_announcements(
     Extension(tenant): Extension<TenantContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<dto::TeamAnnouncement>>, ApiError> {
-    let team_id = parse_uuid(&id, "id")?;
     let rows = state
         .blocking
         .run(&tenant.slug, move |conn| {
+            let team_id = team_by_ref(conn, &id)?;
             require_team(conn, team_id)?;
             let rows = team_pages::list_announcements(conn, team_id).map_err(ApiError::internal)?;
             Ok(rows.into_iter().map(announcement_dto).collect::<Vec<_>>())
@@ -864,7 +873,7 @@ pub(crate) async fn list_announcements(
     post,
     path = "/api/teams/{id}/announcements",
     tag = "team-pages",
-    params(("id" = String, Path, description = "Team id (UUID)")),
+    params(("id" = String, Path, description = "The slug or the id (UUID) of the team")),
     request_body = dto::CreateTeamAnnouncementRequest,
     responses(
         (status = 201, description = "Posted", body = dto::TeamAnnouncement),
@@ -880,7 +889,6 @@ pub(crate) async fn create_announcement(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<dto::CreateTeamAnnouncementRequest>,
 ) -> Result<(StatusCode, Json<dto::TeamAnnouncement>), ApiError> {
-    let team_id = parse_uuid(&id, "id")?;
     if body.body.len() > team_pages::MAX_CONTENT_BYTES {
         return Err(ApiError::validation(format!(
             "The body has {} bytes. The limit is {} bytes.",
@@ -893,6 +901,7 @@ pub(crate) async fn create_announcement(
     let created = state
         .blocking
         .run(&slug, move |conn| {
+            let team_id = team_by_ref(conn, &id)?;
             require_team(conn, team_id)?;
             require_team_member_or_admin(conn, &tenant, team_id, user)?;
             let created: TeamAnnouncement =
@@ -926,7 +935,7 @@ pub(crate) async fn create_announcement(
     path = "/api/teams/{id}/announcements/{announcement_id}",
     tag = "team-pages",
     params(
-        ("id" = String, Path, description = "Team id (UUID)"),
+        ("id" = String, Path, description = "The slug or the id (UUID) of the team"),
         ("announcement_id" = String, Path, description = "Announcement id (UUID)"),
     ),
     responses(
@@ -941,7 +950,6 @@ pub(crate) async fn delete_announcement(
     Extension(tenant): Extension<TenantContext>,
     Path((id, announcement_id)): Path<(String, String)>,
 ) -> Result<Json<kairos_client::types_org::OrgDeleteResponse>, ApiError> {
-    let team_id = parse_uuid(&id, "id")?;
     let announcement_uuid = parse_uuid(&announcement_id, "announcement_id")?;
     let user = auth.user_id;
     let is_admin = tenant.role == kairos_db::models::enums::OrgRole::Admin;
@@ -949,6 +957,7 @@ pub(crate) async fn delete_announcement(
     state
         .blocking
         .run(&slug, move |conn| {
+            let team_id = team_by_ref(conn, &id)?;
             use kairos_db::schema::team_announcements::dsl;
             require_team(conn, team_id)?;
             let author: Option<Uuid> = dsl::team_announcements

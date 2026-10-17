@@ -131,6 +131,16 @@ pub enum Error {
     /// A WebSocket-level failure on the `/ws/events` helper.
     #[error("The WebSocket gave an error: {0}")]
     WebSocket(String),
+
+    /// A setting of the client that cannot be read, for example a
+    /// `KAIROS_TIMEOUT` that is not a positive integer (KAIROS-T-0607).
+    /// The message names the variable.
+    #[error("{message}")]
+    Setting {
+        /// The environment variable.
+        variable: &'static str,
+        message: String,
+    },
 }
 
 impl Error {

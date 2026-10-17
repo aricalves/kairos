@@ -25,7 +25,7 @@ use kairos_db::{boards, models::User};
 use uuid::Uuid;
 
 use super::super::convert_org::team_to_dto;
-use super::super::{clamp_pagination, parse_enum, parse_uuid, require_structure};
+use super::super::{clamp_pagination, parse_enum, require_structure};
 use super::{
     check_team_slug, count_live_board_items, is_unique_violation, map_config_error,
     require_user_exists, run_in_transaction,
@@ -73,6 +73,31 @@ fn load_team(conn: &mut PgConnection, team_id: Uuid) -> Result<Team, ApiError> {
         .optional()
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found(format!("No live team has the id {team_id}.")))
+}
+
+/// The id of the live team that `reference` names, or 404
+/// (KAIROS-T-0607). The reference is the slug or the id of the team, as
+/// for a board ([`super::load_board_by_ref`]): a reference with the form
+/// of a UUID is an id, each other reference is a slug. Each
+/// `/api/teams/{id}` route takes it, so that a client that has the slug of
+/// a team makes one call.
+pub(crate) fn team_by_ref(conn: &mut PgConnection, reference: &str) -> Result<Uuid, ApiError> {
+    use kairos_db::schema::teams::dsl;
+    if let Ok(team_id) = Uuid::parse_str(reference) {
+        return load_team(conn, team_id).map(|team| team.id);
+    }
+    dsl::teams
+        .filter(dsl::slug.eq(reference))
+        .filter(dsl::deleted_at.is_null())
+        .select(dsl::id)
+        .first(conn)
+        .optional()
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| {
+            ApiError::not_found(format!(
+                "No live team has the slug or the id {reference:?}."
+            ))
+        })
 }
 
 /// The team's ONE live delivery board, if any (exactly-one semantics,
@@ -162,7 +187,7 @@ pub(crate) async fn list_teams(
     get,
     path = "/api/teams/{id}",
     tag = "teams",
-    params(("id" = String, Path, description = "Team id (UUID)")),
+    params(("id" = String, Path, description = "The slug or the id (UUID) of the team")),
     responses(
         (status = 200, description = "The team", body = dto::Team),
         (status = 404, description = "Unknown team", body = kairos_client::types::ErrorEnvelope),
@@ -173,10 +198,10 @@ pub(crate) async fn get_team(
     Extension(tenant): Extension<TenantContext>,
     Path(id): Path<String>,
 ) -> Result<Json<dto::Team>, ApiError> {
-    let team_id = parse_uuid(&id, "id")?;
     let team = state
         .blocking
         .run(&tenant.slug, move |conn| {
+            let team_id = team_by_ref(conn, &id)?;
             let team = load_team(conn, team_id)?;
             let board = delivery_board_of(conn, team_id)?;
             Ok(team_to_dto(team, board))
@@ -243,7 +268,7 @@ pub(crate) struct TeamLinksQuery {
     path = "/api/teams/{id}/links",
     tag = "teams",
     params(
-        ("id" = String, Path, description = "Team id (UUID)"),
+        ("id" = String, Path, description = "The slug or the id (UUID) of the team"),
         TeamLinksQuery,
     ),
     responses(
@@ -257,7 +282,6 @@ pub(crate) async fn list_team_links(
     Path(id): Path<String>,
     ApiQuery(query): ApiQuery<TeamLinksQuery>,
 ) -> Result<Json<Vec<kairos_client::types_forge::TeamLink>>, ApiError> {
-    let team_id = parse_uuid(&id, "id")?;
     let states: Vec<String> = query
         .state
         .as_deref()
@@ -270,6 +294,7 @@ pub(crate) async fn list_team_links(
     let rows = state
         .blocking
         .run(&tenant.slug, move |conn| {
+            let team_id = team_by_ref(conn, &id)?;
             load_team(conn, team_id)?;
             let board = delivery_board_of(conn, team_id)?;
             let refs: Vec<&str> = states.iter().map(String::as_str).collect();
@@ -304,7 +329,7 @@ pub(crate) async fn list_team_links(
     path = "/api/teams/{id}/unlinked-refs",
     tag = "teams",
     params(
-        ("id" = String, Path, description = "Team id (UUID)"),
+        ("id" = String, Path, description = "The slug or the id (UUID) of the team"),
         TeamLinksQuery,
     ),
     responses(
@@ -318,7 +343,6 @@ pub(crate) async fn list_team_unlinked_refs(
     Path(id): Path<String>,
     ApiQuery(query): ApiQuery<TeamLinksQuery>,
 ) -> Result<Json<Vec<kairos_client::types_forge::ForgeRef>>, ApiError> {
-    let team_id = parse_uuid(&id, "id")?;
     let states: Vec<String> = query
         .state
         .as_deref()
@@ -331,6 +355,7 @@ pub(crate) async fn list_team_unlinked_refs(
     let rows = state
         .blocking
         .run(&tenant.slug, move |conn| {
+            let team_id = team_by_ref(conn, &id)?;
             load_team(conn, team_id)?;
             let refs: Vec<&str> = states.iter().map(String::as_str).collect();
             let rows = kairos_db::forge::team_unlinked_refs(conn, team_id, &refs, limit)
@@ -352,7 +377,7 @@ pub(crate) async fn list_team_unlinked_refs(
     get,
     path = "/api/teams/{id}/work-documents",
     tag = "teams",
-    params(("id" = String, Path, description = "Team id (UUID)")),
+    params(("id" = String, Path, description = "The slug or the id (UUID) of the team")),
     responses(
         (status = 200, description = "The documents of the team, by short code", body = Vec<kairos_client::types_team_pages::TeamWorkDocument>),
         (status = 404, description = "Unknown team", body = kairos_client::types::ErrorEnvelope),
@@ -363,10 +388,10 @@ pub(crate) async fn list_work_documents(
     Extension(tenant): Extension<TenantContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<kairos_client::types_team_pages::TeamWorkDocument>>, ApiError> {
-    let team_id = parse_uuid(&id, "id")?;
     let rows = state
         .blocking
         .run(&tenant.slug, move |conn| {
+            let team_id = team_by_ref(conn, &id)?;
             load_team(conn, team_id)?;
             let board = delivery_board_of(conn, team_id)?;
             let rows = kairos_db::graph::team_work_documents(conn, team_id, board)
@@ -530,7 +555,7 @@ pub(crate) fn create(
     patch,
     path = "/api/teams/{id}",
     tag = "teams",
-    params(("id" = String, Path, description = "Team id (UUID)")),
+    params(("id" = String, Path, description = "The slug or the id (UUID) of the team")),
     request_body = dto::UpdateTeamRequest,
     responses(
         (status = 200, description = "Updated", body = dto::Team),
@@ -547,12 +572,12 @@ pub(crate) async fn update_team(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<dto::UpdateTeamRequest>,
 ) -> Result<Json<dto::Team>, ApiError> {
-    let team_id = parse_uuid(&id, "id")?;
     let user = auth.user_id;
     let slug = tenant.slug.clone();
     let team = state
         .blocking
         .run(&tenant.slug, move |conn| {
+            let team_id = team_by_ref(conn, &id)?;
             update_as(conn, &slug, user, team_id, &body)
         })
         .await?;
@@ -650,7 +675,7 @@ pub(crate) fn update_as(
     delete,
     path = "/api/teams/{id}",
     tag = "teams",
-    params(("id" = String, Path, description = "Team id (UUID)")),
+    params(("id" = String, Path, description = "The slug or the id (UUID) of the team")),
     responses(
         (status = 200, description = "Team and delivery board soft-deleted", body = dto::OrgDeleteResponse),
         (status = 403, description = "Not an org admin, and no manage_structure on the organization", body = kairos_client::types::ErrorEnvelope),
@@ -664,12 +689,12 @@ pub(crate) async fn delete_team(
     Extension(tenant): Extension<TenantContext>,
     Path(id): Path<String>,
 ) -> Result<Json<dto::OrgDeleteResponse>, ApiError> {
-    let team_id = parse_uuid(&id, "id")?;
     let user = auth.user_id;
     let slug = tenant.slug.clone();
     let outcome = state
         .blocking
         .run(&tenant.slug, move |conn| {
+            let team_id = team_by_ref(conn, &id)?;
             use kairos_db::schema::boards::dsl as boards_dsl;
             use kairos_db::schema::teams::dsl;
             require_structure(conn, &slug, user)?;
@@ -787,7 +812,7 @@ pub(crate) async fn delete_team(
     // operationIds must be unique across the aggregated spec (T-0023).
     operation_id = "list_team_members",
     tag = "teams",
-    params(("id" = String, Path, description = "Team id (UUID)")),
+    params(("id" = String, Path, description = "The slug or the id (UUID) of the team")),
     responses(
         (status = 200, description = "Members", body = [dto::TeamMember]),
         (status = 404, description = "Unknown team", body = kairos_client::types::ErrorEnvelope),
@@ -798,10 +823,10 @@ pub(crate) async fn list_members(
     Extension(tenant): Extension<TenantContext>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<dto::TeamMember>>, ApiError> {
-    let team_id = parse_uuid(&id, "id")?;
     let members = state
         .blocking
         .run(&tenant.slug, move |conn| {
+            let team_id = team_by_ref(conn, &id)?;
             use kairos_db::schema::{team_members, users};
             load_team(conn, team_id)?;
             // The tenant/public schema split keeps `team_members` and
@@ -844,7 +869,7 @@ pub(crate) async fn list_members(
     // Unique operationId next to `org::members::add_member` (T-0023).
     operation_id = "add_team_member",
     tag = "teams",
-    params(("id" = String, Path, description = "Team id (UUID)")),
+    params(("id" = String, Path, description = "The slug or the id (UUID) of the team")),
     request_body = dto::AddTeamMemberRequest,
     responses(
         (status = 201, description = "Added", body = dto::TeamMember),
@@ -861,12 +886,12 @@ pub(crate) async fn add_member(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<dto::AddTeamMemberRequest>,
 ) -> Result<(StatusCode, Json<dto::TeamMember>), ApiError> {
-    let team_id = parse_uuid(&id, "id")?;
     let user = auth.user_id;
     let slug = tenant.slug.clone();
     let member = state
         .blocking
         .run(&tenant.slug, move |conn| {
+            let team_id = team_by_ref(conn, &id)?;
             // KAIROS-T-0443: a UUID, an email or a user name.
             let target = resolve_member(conn, &slug, &body.user_id, "user_id")?.id;
             add_member_as(conn, &slug, user, team_id, target)
@@ -934,7 +959,7 @@ pub(crate) fn add_member_as(
     operation_id = "remove_team_member",
     tag = "teams",
     params(
-        ("id" = String, Path, description = "Team id (UUID)"),
+        ("id" = String, Path, description = "The slug or the id (UUID) of the team"),
         ("user_id" = String, Path, description = "User id (UUID)"),
     ),
     responses(
@@ -949,12 +974,12 @@ pub(crate) async fn remove_member(
     Extension(tenant): Extension<TenantContext>,
     Path((id, target)): Path<(String, String)>,
 ) -> Result<Json<dto::OrgDeleteResponse>, ApiError> {
-    let team_id = parse_uuid(&id, "id")?;
     let user = auth.user_id;
     let slug = tenant.slug.clone();
     let outcome = state
         .blocking
         .run(&tenant.slug, move |conn| {
+            let team_id = team_by_ref(conn, &id)?;
             // KAIROS-T-0443: a UUID, an email or a user name. A UUID is
             // taken as it is: a person who left the organization can still
             // be taken off the team.

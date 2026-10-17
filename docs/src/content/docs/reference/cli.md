@@ -74,6 +74,7 @@ A command can also use a key in place of the login.
 |---|---|
 | `KAIROS_KEY`, then `KAIROS_MCP_KEY` | An agent key (it acts as you) or a service-account key. When one is set, each command that reaches the API sends it as the bearer, and does not read the credential cache. The key wins over a login. |
 | `KAIROS_URL` | The deployment, when `--url` is not given. With a key and no URL, the CLI uses the only cached deployment. Otherwise it exits with code 2. |
+| `KAIROS_TIMEOUT` | The time in seconds that a command waits for an answer. The default is 60. A connection gets 5 seconds. A value that is not a positive integer stops the command with exit code 1. |
 | `KAIROS_UPDATE_CHECK` | `0` turns off the daily version check (see [`kairos self-update`](#kairos-self-update)). |
 | `KAIROS_AUTO_UPDATE` | `1` makes the daily check install the newer version of the server instead of printing a line. |
 | `KAIROS_RELEASES_URL` | The base URL of the release tarballs for `self-update --version` and `--latest`, for a mirror. The default is the GitHub releases. |
@@ -480,11 +481,11 @@ kairos tasks lane <SHORT_CODE> <LANE> [OPTIONS]
 Changes the lane of a task. Moving a support request to the planned backlog
 is a lane change. The task stays in its column. You need `transition_items`
 on the board of the task; creating the task gives no right here. A lane the
-task already has changes nothing. The command prints one of these lines:
+task already has changes nothing. The command prints the lane of the task
+after the call:
 
 ```text
-Moved ACME-T-0001 to the planned lane (was support).
-ACME-T-0001 is already in the planned lane: nothing changed.
+ACME-T-0001 is in the planned lane.
 ```
 
 ### `state`
@@ -536,11 +537,10 @@ to move it.
 Each document has an owner board, so the command cannot remove it. The
 command refuses `--no-board` as an unknown argument.
 
-The command prints one of these lines:
+The command prints the owner board of the document after the call:
 
 ```text
-Kairos moved the document ACME-D-0004 to the owner board <board-id>.
-Kairos did not change the document ACME-D-0004. Its owner board is <board-id> already.
+The owner board of the document ACME-D-0004 is <board-id>.
 ```
 
 ### `<noun> archive`
