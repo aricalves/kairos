@@ -136,6 +136,12 @@ pub struct Relationship {
     pub source_id: String,
     /// Target entity id (UUID).
     pub target_id: String,
+    /// The current short code of the source. A retired code in the request
+    /// follows to its item (KAIROS-T-0560), so this code can differ from
+    /// the request.
+    pub source_short_code: String,
+    /// The current short code of the target (see `source_short_code`).
+    pub target_short_code: String,
     /// `parent|supports|informs|supersedes|blocks`.
     pub relationship: String,
     /// RFC 3339.

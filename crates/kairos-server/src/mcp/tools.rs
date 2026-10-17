@@ -3950,14 +3950,15 @@ impl KairosMcp {
                     conn,
                     &tenant_ctx.slug,
                     user,
-                    source,
+                    source.typed(),
                     &params.target,
                     params.label.as_deref(),
                 )?;
                 return Ok(format!(
-                    "Linked {} -[external]-> {}.",
-                    params.source,
-                    external_ref_text(&made)
+                    "Linked {} -[external]-> {}.{}",
+                    source.code,
+                    external_ref_text(&made),
+                    renamed_lines(&[&source])
                 ));
             }
             if params.label.is_some() {
@@ -3973,31 +3974,35 @@ impl KairosMcp {
                     conn,
                     &tenant_ctx.slug,
                     user,
-                    source,
+                    source.typed(),
                     &params.target,
                     crate::api::meta::impacts::Surface::Mcp,
                 )?;
                 return Ok(format!(
-                    "Linked {} -[impacts]-> repository {}.",
-                    params.source, linked.slug
+                    "Linked {} -[impacts]-> repository {}.{}",
+                    source.code,
+                    linked.slug,
+                    renamed_lines(&[&source])
                 ));
             }
             let relationship = parse_relationship(&params.relationship)?;
-            let (source_id, source_type) = require_live_typed(conn, &params.source, "source")?;
-            let (target_id, target_type) = require_live_typed(conn, &params.target, "target")?;
+            let source = require_live_typed(conn, &params.source, "source")?;
+            let target = require_live_typed(conn, &params.target, "target")?;
             require_edge_write(
                 conn,
                 &tenant_ctx.slug,
                 user,
                 relationship.as_str(),
-                (source_id, source_type),
-                (target_id, target_type),
+                source.typed(),
+                target.typed(),
             )?;
-            graph::link_items(conn, source_id, target_id, relationship, user)
+            graph::link_items(conn, source.id, target.id, relationship, user)
                 .map_err(map_link_error)?;
             Ok(format!(
-                "Linked {} -[{relationship}]-> {}.",
-                params.source, params.target
+                "Linked {} -[{relationship}]-> {}.{}",
+                source.code,
+                target.code,
+                renamed_lines(&[&source, &target])
             ))
         })
         .await
@@ -4022,13 +4027,14 @@ impl KairosMcp {
                     conn,
                     &tenant_ctx.slug,
                     user,
-                    source,
+                    source.typed(),
                     &params.target,
                 )?;
                 return Ok(format!(
-                    "Unlinked {} -[external]-> {}.",
-                    params.source,
-                    external_ref_text(&removed)
+                    "Unlinked {} -[external]-> {}.{}",
+                    source.code,
+                    external_ref_text(&removed),
+                    renamed_lines(&[&source])
                 ));
             }
             // COLLIERY-T-0269: the target of `impacts` is a repository.
@@ -4038,18 +4044,20 @@ impl KairosMcp {
                     conn,
                     &tenant_ctx.slug,
                     user,
-                    source,
+                    source.typed(),
                     &params.target,
                     crate::api::meta::impacts::Surface::Mcp,
                 )?;
                 return Ok(format!(
-                    "Unlinked {} -[impacts]-> repository {}.",
-                    params.source, removed.slug
+                    "Unlinked {} -[impacts]-> repository {}.{}",
+                    source.code,
+                    removed.slug,
+                    renamed_lines(&[&source])
                 ));
             }
             let relationship = parse_relationship(&params.relationship)?;
-            let (source_id, source_type) = require_live_typed(conn, &params.source, "source")?;
-            let (target_id, target_type) = require_live_typed(conn, &params.target, "target")?;
+            let source = require_live_typed(conn, &params.source, "source")?;
+            let target = require_live_typed(conn, &params.target, "target")?;
             // COLLIERY-T-0235: the rule of the remove and the delete, in
             // one transaction, by the ONE function that REST
             // `DELETE /api/relationships/{id}` calls.
@@ -4058,12 +4066,14 @@ impl KairosMcp {
                 &tenant_ctx.slug,
                 user,
                 relationship,
-                (source_id, source_type),
-                (target_id, target_type),
+                source.typed(),
+                target.typed(),
             )?;
             Ok(format!(
-                "Unlinked {} -[{relationship}]-> {}.",
-                params.source, params.target
+                "Unlinked {} -[{relationship}]-> {}.{}",
+                source.code,
+                target.code,
+                renamed_lines(&[&source, &target])
             ))
         })
         .await
@@ -5534,6 +5544,14 @@ fn load_item(
         Some(found) => found,
         None => match crate::api::follow_retired(conn, short_code, liveness)? {
             Some(current) => resolve_short_code(conn, &current, liveness)?.ok_or_else(missing)?,
+            // KAIROS-T-0560: a write to an archived item says so.
+            None if liveness == Liveness::LiveOnly
+                && resolve_short_code(conn, short_code, Liveness::IncludeArchived)?.is_some() =>
+            {
+                return Err(crate::api::archived_write_refused(
+                    &short_code.to_ascii_uppercase(),
+                ));
+            }
             None => return Err(missing()),
         },
     };
@@ -6723,17 +6741,24 @@ fn rename_lines(rename: &kairos_db::code_rename::CodeRename) -> String {
 }
 
 /// A live item by short code WITH its type (the edge-permission check needs
-/// it); 422 `VALIDATION` naming the field otherwise, mirroring REST.
+/// it); 422 `VALIDATION` naming the field otherwise, mirroring REST. A
+/// retired code follows to its item (KAIROS-T-0560): see
+/// [`crate::api::resolve_live_ref`].
 fn require_live_typed(
     conn: &mut PgConnection,
     short_code: &str,
     field: &str,
-) -> Result<(Uuid, ItemType), ApiError> {
-    resolve_short_code(conn, short_code, Liveness::LiveOnly)?.ok_or_else(|| {
-        ApiError::validation(format!(
-            "The {field} {short_code:?} is not the short code of a live item."
-        ))
-    })
+) -> Result<crate::api::LiveRef, ApiError> {
+    crate::api::resolve_live_ref(conn, short_code, field)
+}
+
+/// One line for each reference that came in with a retired code, e.g.
+/// `\nACME-T-0100 is now ACME-T-0200.` (KAIROS-T-0560). Empty otherwise.
+fn renamed_lines(refs: &[&crate::api::LiveRef]) -> String {
+    refs.iter()
+        .filter_map(|r| r.renamed())
+        .map(|line| format!("\n{line}"))
+        .collect()
 }
 
 /// An item's metadata values as compact `- slug: value` lines (ordered by
@@ -7204,6 +7229,9 @@ fn create_item_impl(
             out.push_str(&format!(", supports {parent_code}"));
         }
         out.push('.');
+        if let Some(renamed) = &created.parent_renamed {
+            out.push_str(&format!("\n{renamed}"));
+        }
         return Ok(out);
     }
 
@@ -7315,12 +7343,8 @@ fn create_item_impl(
         .parent
         .as_deref()
         .map(|parent_code| {
-            let (parent_id, parent_type) =
-                resolve_short_code(conn, parent_code, Liveness::LiveOnly)?.ok_or_else(|| {
-                    ApiError::validation(format!(
-                        "The parent {parent_code:?} is not the short code of a live item."
-                    ))
-                })?;
+            let parent = require_live_typed(conn, parent_code, "parent")?;
+            let parent_type = parent.item_type;
             let relationship = if item_type == ItemType::Adr {
                 RelationshipType::Supports
             } else {
@@ -7332,7 +7356,7 @@ fn create_item_impl(
                 item_type,
             )
             .map_err(|e| ApiError::validation(e.to_string()))?;
-            Ok::<_, ApiError>((parent_code, parent_id, parent_type, relationship))
+            Ok::<_, ApiError>((parent, relationship))
         })
         .transpose()?;
 
@@ -7444,7 +7468,7 @@ fn create_item_impl(
     if let Some(lane) = lane {
         out.push_str(&format!(" Lane: {lane}."));
     }
-    if let Some((parent_code, parent_id, parent_type, relationship)) = parent {
+    if let Some((parent, relationship)) = parent {
         // The link rule (COLLIERY-T-0228), by the ONE function that
         // `link_items` calls. The item and the edge are in one transaction
         // (COLLIERY-T-0227), so a refusal here leaves no item.
@@ -7453,13 +7477,15 @@ fn create_item_impl(
             slug,
             user,
             relationship.as_str(),
-            (parent_id, parent_type),
+            parent.typed(),
             (created_id, item_type),
         )?;
-        graph::link_items(conn, parent_id, created_id, relationship, user)
+        graph::link_items(conn, parent.id, created_id, relationship, user)
             .map_err(map_graph_error)?;
         out.push_str(&format!(
-            "\nparent: {parent_code} ({relationship} edge created)."
+            "\nparent: {} ({relationship} edge created).{}",
+            parent.code,
+            renamed_lines(&[&parent])
         ));
     }
     Ok(out)
