@@ -123,6 +123,7 @@ async fn the_board_decides_the_team_against_live_stack() {
         team_id: None,
         repository: None,
         from_team: None,
+        parent: None,
     };
 
     // --- create: a board and no team -> the board's team ---------------------

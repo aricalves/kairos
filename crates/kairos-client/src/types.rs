@@ -478,6 +478,11 @@ pub struct CreateInitiativeRequest {
     /// (`tech_debt|bug|ad_hoc`); `is_bucket` is derived.
     #[serde(default)]
     pub bucket_type: Option<String>,
+    /// The short code of the parent strategy (KAIROS-T-0572). The server
+    /// writes the `parent` edge in the transaction of the create: a
+    /// refused parent leaves no initiative. A retired code finds its item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
 }
 
 /// Body of `POST /api/tasks`.
@@ -528,6 +533,12 @@ pub struct CreateTaskRequest {
     /// body.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_team: Option<String>,
+    /// The short code of the parent initiative (KAIROS-T-0572). The server
+    /// writes the `parent` edge in the transaction of the create: a
+    /// refused parent leaves no task. A retired code finds its item. In a
+    /// claims column, `parent_gate` applies (KAIROS-A-0040).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
 }
 
 /// Body of `POST /api/tasks/{short_code}/work-class` (KAIROS-T-0077): move

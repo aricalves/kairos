@@ -510,6 +510,7 @@ async fn task_by(client: &KairosClient, board: &str, title: &str, repo: Option<&
             team_id: None,
             repository: repo.map(str::to_string),
             from_team: None,
+            parent: None,
         })
         .await
         .unwrap_or_else(|e| panic!("creating task {title:?}: {e}"))
@@ -1664,6 +1665,7 @@ async fn a_document_names_its_board_and_impacts_a_repository_against_live_stack(
             content: String::new(),
             complexity: None,
             bucket_type: None,
+            parent: None,
         })
         .await
         .expect("initiative");

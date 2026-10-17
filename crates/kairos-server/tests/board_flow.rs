@@ -230,6 +230,7 @@ async fn the_flow_of_a_board_from_transitions_at_known_times() {
                 team_id: None,
                 repository: None,
                 from_team: None,
+                parent: None,
             })
             .await
             .expect("task");

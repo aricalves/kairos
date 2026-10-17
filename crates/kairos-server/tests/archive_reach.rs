@@ -440,6 +440,7 @@ fn task_on(board: &str, title: &str) -> CreateTaskRequest {
         team_id: None,
         repository: None,
         from_team: None,
+        parent: None,
     }
 }
 
@@ -452,6 +453,7 @@ async fn initiative_by(client: &KairosClient, board: &str, title: &str) -> Initi
             content: "original content".into(),
             complexity: None,
             bucket_type: None,
+            parent: None,
         })
         .await
         .unwrap_or_else(|e| panic!("creating initiative {title:?}: {e}"))
@@ -668,6 +670,7 @@ async fn archive_reach_and_proposal_confirm_against_live_stack() {
             content: String::new(),
             complexity: None,
             bucket_type: None,
+            parent: None,
         })
         .await
     {

@@ -248,6 +248,7 @@ differ.
 | `release` | no | no | yes | no | no |
 | `cancel` | no | no | yes | no | no |
 | `lane` | no | no | yes | no | no |
+| `set-parent` | no | yes | yes | no | no |
 | `archive` (alias `delete`) | yes | yes | yes | yes | yes |
 | `purge` | no | no | yes | no | no |
 | `restore` | yes | yes | yes | yes | yes |
@@ -361,11 +362,13 @@ Options specific to one noun:
 | `strategies` | `--hypothesis <HYPOTHESIS>` | string | none | The strategy's hypothesis. |
 | `initiatives` | `--complexity <COMPLEXITY>` | `xs` \| `s` \| `m` \| `l` \| `xl` | none | T-shirt sizing. |
 | `initiatives` | `--bucket-type <KIND>` | `tech_debt` \| `bug` \| `ad_hoc` | none | Marks the initiative as a bucket of this kind. |
+| `initiatives` | `--parent <STRATEGY>` | short code | none | The parent strategy. Kairos writes the initiative and the `parent` edge in one transaction: a refused parent leaves no initiative (KAIROS-T-0572). |
 | `tasks` | `--type <TASK_TYPE>` | `task` \| `bug` \| `tech_debt` \| `support` | `task` | Task type. |
 | `tasks` | `--work-class <WORK_CLASS>` | `planned` \| `support` | `support` for support-type tasks, `planned` otherwise; always `support` on a board that the caller does not manage | Planned/Support lane. On a board that the caller does not manage, `planned` is refused with 403. |
 | `tasks` | `--from-team <TEAM>` | slug or UUID | none | The team that sends the task. When it is not the team of the board, the task is a request: entry column, support lane, also for a manager of the board. With it, `planned` and a column other than the entry column are refused with 422. Kairos does not keep it on the task: name the sending team in the body. |
 | `tasks` | `--team <TEAM_ID>` | UUID | none | Team. Without `--board`, the task goes to the delivery board of this team. With `--board`, it must be the team of that board. |
 | `tasks` | `--repo <REPOSITORY>` | slug or UUID | none | Repository the task links to. It can be any repository, of any team. It does not choose the board. |
+| `tasks` | `--parent <INITIATIVE>` | short code | none | The parent initiative. Kairos writes the task and the `parent` edge in one transaction: a refused parent leaves no task (KAIROS-T-0572). In a claims column, `parent_gate` applies. |
 | `documents` | `--template <TEMPLATE_ID>` | UUID | none | Template to stamp content and metadata defaults from. |
 | `adrs` | `--decision-maker <DECISION_MAKER>` | string | none | Decision maker. |
 | `adrs` | `--decision-date <DATE>` | `YYYY-MM-DD` | none | Decision date. |
@@ -570,6 +573,29 @@ after the call:
 
 ```text
 ACME-T-0001 is in the planned lane.
+```
+
+### `initiatives set-parent`, `tasks set-parent`
+
+```
+kairos initiatives set-parent <SHORT_CODE> (<PARENT> | --remove) [OPTIONS]
+kairos tasks set-parent <SHORT_CODE> (<PARENT> | --remove) [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<SHORT_CODE>` | string | required | The short code of the initiative or the task. |
+| `<PARENT>` | string | required unless `--remove` | The new parent: a strategy for an initiative, an initiative for a task. |
+| `--remove` | flag | off | Remove the parent. |
+
+An item has one parent (KAIROS-T-0572). The new parent replaces the old one
+in one transaction. The link rule applies to each edge that changes: you can
+edit the item, or the parent at that end. A parent that the item has already
+changes nothing. A change of parent is not a move, so `parent_gate` does not
+apply. The command prints the parent after the call:
+
+```text
+The parent of ACME-T-0001 is ACME-I-0002 (was ACME-I-0001).
 ```
 
 ### `state`

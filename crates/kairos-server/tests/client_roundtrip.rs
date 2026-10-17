@@ -213,6 +213,7 @@ async fn typed_error_mapping_roundtrip() {
             work_class: Some("planned".into()),
             team_id: None,
             from_team: None,
+            parent: None,
         })
         .await,
     );
@@ -250,6 +251,7 @@ async fn typed_error_mapping_roundtrip() {
             work_class: None,
             team_id: None,
             from_team: None,
+            parent: None,
         })
         .await
         .expect("creating the fixture task");
@@ -331,6 +333,7 @@ async fn typed_error_mapping_roundtrip() {
             work_class: None,
             team_id: None,
             from_team: None,
+            parent: None,
         })
         .await,
     );
