@@ -51,6 +51,22 @@
 //! filtered to a board does not get it. The text of a notification is not
 //! in the event: the client reads it through the REST API.
 //!
+//! # The precise kinds (KAIROS-T-0574)
+//!
+//! `task_state_changed`, `task_cancelled` and `claim_changed` come IN
+//! ADDITION to the coarse kind of the same write: `item_updated` for a
+//! write of the state, a claim, a hand-off and a release, and
+//! `item_transitioned` for a cancel and a move. A subscriber that knows
+//! only the coarse kinds keeps working. A subscriber that wants to know
+//! what changed reads the precise kind. Both come in the same transaction.
+//!
+//! `claim_changed` and `board_configured` carry the field `change`
+//! ([`emit_event_with_change`]): what changed. For `claim_changed` it is
+//! a [`ClaimChange`]; for `board_configured` it is the setting
+//! (`column_add`, `transition_remove`, `board_settings`, ...).
+//! `board_configured` has `entity_type` `board`, the slug of the board as
+//! `short_code`, and the board as `board_id` ([`emit_board_configured`]).
+//!
 //! # Post-commit semantics (A-0005 §5)
 //!
 //! [`emit_event`] runs INSIDE the service transaction, and that is the
@@ -118,6 +134,46 @@ pub enum EventKind {
     /// slug of the repository, and there is no board. A reader of the
     /// repository reads its runs again.
     CodeIndexBuildChanged,
+    /// The live state of a task changed (KAIROS-T-0574): a write of the
+    /// state, or the clear of the next step when the claim changes. Comes
+    /// after the `item_updated` of the same write.
+    TaskStateChanged,
+    /// A task was cancelled (KAIROS-T-0574). `column_id` is the done column.
+    /// Comes after the `item_transitioned` of the cancel.
+    TaskCancelled,
+    /// The claim of a task changed (KAIROS-T-0574). `change` is a
+    /// [`ClaimChange`].
+    ClaimChanged,
+    /// The configuration of a board changed (KAIROS-T-0574): its columns,
+    /// its transitions, a flag or a setting. `entity_type` is `board`,
+    /// `short_code` is the slug of the board, `change` names the setting.
+    BoardConfigured,
+}
+
+/// What happened to a claim: the `change` of a `claim_changed` event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimChange {
+    /// A person took the claim: a claim, or a move into Active.
+    Taken,
+    /// A hand-off gave the claim to a person.
+    HandedOff,
+    /// The holder or a manager released the claim. The task stays.
+    Released,
+    /// The claim ended for a different reason: a move out of Active, a
+    /// cancel, an archive, a column flag, a person who left.
+    Ended,
+}
+
+impl ClaimChange {
+    /// The wire value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ClaimChange::Taken => "taken",
+            ClaimChange::HandedOff => "handed_off",
+            ClaimChange::Released => "released",
+            ClaimChange::Ended => "ended",
+        }
+    }
 }
 
 impl EventKind {
@@ -151,6 +207,10 @@ impl EventKind {
             EventKind::MetadataChanged => "metadata_changed",
             EventKind::ItemLinksChanged => "item_links_changed",
             EventKind::CodeIndexBuildChanged => "code_index_build_changed",
+            EventKind::TaskStateChanged => "task_state_changed",
+            EventKind::TaskCancelled => "task_cancelled",
+            EventKind::ClaimChanged => "claim_changed",
+            EventKind::BoardConfigured => "board_configured",
         }
     }
 }
@@ -240,6 +300,16 @@ pub fn blocks_boards(
 /// PostgreSQL delivers the notification on commit and drops it on
 /// rollback, which is what makes emission post-commit (A-0005 §5).
 pub fn emit_event(conn: &mut PgConnection, event: &ThinEvent) -> Result<(), DieselError> {
+    emit_event_with_change(conn, event, None)
+}
+
+/// [`emit_event`] with the field `change` (module docs, "The precise
+/// kinds"). `None` omits the field.
+pub fn emit_event_with_change(
+    conn: &mut PgConnection,
+    event: &ThinEvent,
+    change: Option<&str>,
+) -> Result<(), DieselError> {
     let schema: SchemaName = sql_query(
         "SELECT COALESCE(current_schema()::text, 'public') AS name, \
          NULLIF(current_setting('kairos.agent_key', true), '')::uuid AS agent_key",
@@ -258,6 +328,9 @@ pub fn emit_event(conn: &mut PgConnection, event: &ThinEvent) -> Result<(), Dies
     payload.insert("board_id".into(), json!(event.board_id));
     if let Some(column_id) = event.column_id {
         payload.insert("column_id".into(), json!(column_id));
+    }
+    if let Some(change) = change {
+        payload.insert("change".into(), json!(change));
     }
     payload.insert("actor".into(), json!(event.actor));
     // KAIROS-T-0359: the agent key, when an agent made the change. Omitted
@@ -363,8 +436,20 @@ pub fn emit_item_event_by_id(
     item_id: Uuid,
     actor: Uuid,
 ) -> Result<(), DieselError> {
+    emit_item_change_by_id(conn, event, entity_type, item_id, actor, None)
+}
+
+/// [`emit_item_event_by_id`] with the field `change` (KAIROS-T-0574).
+pub fn emit_item_change_by_id(
+    conn: &mut PgConnection,
+    event: EventKind,
+    entity_type: &str,
+    item_id: Uuid,
+    actor: Uuid,
+    change: Option<&str>,
+) -> Result<(), DieselError> {
     if let Some((short_code, board_id, column_id)) = item_placement(conn, entity_type, item_id)? {
-        emit_event(
+        emit_event_with_change(
             conn,
             &ThinEvent {
                 event,
@@ -374,7 +459,142 @@ pub fn emit_item_event_by_id(
                 column_id,
                 actor,
             },
+            change,
         )?;
     }
     Ok(())
+}
+
+/// Emit `claim_changed` for the task `task_id` (KAIROS-T-0574).
+pub fn emit_claim_changed(
+    conn: &mut PgConnection,
+    task_id: Uuid,
+    change: ClaimChange,
+    actor: Uuid,
+) -> Result<(), DieselError> {
+    emit_item_change_by_id(
+        conn,
+        EventKind::ClaimChanged,
+        "task",
+        task_id,
+        actor,
+        Some(change.as_str()),
+    )
+}
+
+#[derive(QueryableByName)]
+struct DirectoryRow {
+    #[diesel(sql_type = SqlUuid)]
+    id: Uuid,
+    #[diesel(sql_type = Text)]
+    entity_type: String,
+}
+
+/// [`emit_item_event_by_id`] for a call site that holds a short code
+/// (the descendants of an archive cascade, KAIROS-T-0574). An unknown
+/// code emits nothing.
+pub fn emit_item_event_by_code(
+    conn: &mut PgConnection,
+    event: EventKind,
+    short_code: &str,
+    actor: Uuid,
+) -> Result<(), DieselError> {
+    let row: Option<DirectoryRow> =
+        sql_query("SELECT id, entity_type FROM entity_directory WHERE short_code = $1")
+            .bind::<Text, _>(short_code)
+            .get_result(conn)
+            .optional()?;
+    match row {
+        Some(row) => emit_item_event_by_id(conn, event, &row.entity_type, row.id, actor),
+        None => Ok(()),
+    }
+}
+
+#[derive(QueryableByName)]
+struct BoardSlugRow {
+    #[diesel(sql_type = Text)]
+    slug: String,
+}
+
+/// Emit `board_configured` for the board `board_id` (KAIROS-T-0574):
+/// `entity_type` `board`, the slug of the board as `short_code`, and
+/// `change` the setting that changed. Call it in the transaction of the
+/// write. An unknown board emits nothing.
+pub fn emit_board_configured(
+    conn: &mut PgConnection,
+    board_id: Uuid,
+    actor: Uuid,
+    change: &str,
+) -> Result<(), DieselError> {
+    let row: Option<BoardSlugRow> = sql_query("SELECT slug FROM boards WHERE id = $1")
+        .bind::<SqlUuid, _>(board_id)
+        .get_result(conn)
+        .optional()?;
+    let Some(row) = row else {
+        return Ok(());
+    };
+    emit_event_with_change(
+        conn,
+        &ThinEvent {
+            event: EventKind::BoardConfigured,
+            entity_type: "board".to_string(),
+            short_code: row.slug,
+            board_id: Some(board_id),
+            column_id: None,
+            actor,
+        },
+        Some(change),
+    )
+}
+
+/// The setting of a board configuration record: the text before the
+/// first `:` of the `board_config` details (`column_add:Review@3` gives
+/// `column_add`).
+pub fn board_config_change(details: &str) -> &str {
+    details.split(':').next().unwrap_or(details)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_new_kinds_have_their_wire_names() {
+        assert_eq!(EventKind::TaskStateChanged.as_str(), "task_state_changed");
+        assert_eq!(EventKind::TaskCancelled.as_str(), "task_cancelled");
+        assert_eq!(EventKind::ClaimChanged.as_str(), "claim_changed");
+        assert_eq!(EventKind::BoardConfigured.as_str(), "board_configured");
+        let changes: Vec<&str> = [
+            ClaimChange::Taken,
+            ClaimChange::HandedOff,
+            ClaimChange::Released,
+            ClaimChange::Ended,
+        ]
+        .into_iter()
+        .map(ClaimChange::as_str)
+        .collect();
+        assert_eq!(changes, ["taken", "handed_off", "released", "ended"]);
+    }
+
+    #[test]
+    fn the_new_kinds_change_no_blocks_count() {
+        for kind in [
+            EventKind::TaskStateChanged,
+            EventKind::TaskCancelled,
+            EventKind::ClaimChanged,
+            EventKind::BoardConfigured,
+        ] {
+            assert!(!kind.changes_blocks_counts(), "{}", kind.as_str());
+        }
+    }
+
+    #[test]
+    fn the_change_of_a_board_record_is_its_setting() {
+        assert_eq!(board_config_change("column_add:Review@3"), "column_add");
+        assert_eq!(
+            board_config_change("transition_remove:Todo->Active"),
+            "transition_remove"
+        );
+        assert_eq!(board_config_change("board_settings"), "board_settings");
+    }
 }

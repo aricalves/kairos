@@ -18,7 +18,8 @@ use utoipa::ToSchema;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ThinEvent {
     /// `item_created|item_updated|item_transitioned|item_moved|item_deleted|`
-    /// `item_restored|relationship_changed|metadata_changed|item_links_changed|code_index_build_changed`,
+    /// `item_restored|relationship_changed|metadata_changed|item_links_changed|code_index_build_changed|`
+    /// `task_state_changed|task_cancelled|claim_changed|board_configured` (KAIROS-T-0574),
     /// and for the person of the connection only (KAIROS-T-0381)
     /// `notification_created|notifications_read`.
     ///
@@ -28,10 +29,11 @@ pub struct ThinEvent {
     /// deliberately distinct from `item_created`: treating it as a create
     /// renders a new card carrying an old version number.
     pub event: String,
-    /// `strategy|initiative|task|document|adr|repository`, or
+    /// `strategy|initiative|task|document|adr|repository|board`, or
     /// `notification` for the events of a person.
     pub entity_type: String,
-    /// The affected item's short code — re-fetch it via the REST API.
+    /// The affected item's short code — re-fetch it via the REST API. For
+    /// `repository` and `board`, the slug.
     pub short_code: String,
     /// The item's board (UUID); `null` for off-board items (documents,
     /// unplaced ADRs).
@@ -39,6 +41,11 @@ pub struct ThinEvent {
     /// The item's (new) column (UUID); omitted when not applicable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub column_id: Option<String>,
+    /// What changed, for `claim_changed` (`taken|handed_off|released|ended`)
+    /// and `board_configured` (the setting, e.g. `column_add`); omitted
+    /// otherwise (KAIROS-T-0574).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change: Option<String>,
     /// The acting user's id (UUID). For a change made with the agent key
     /// of a person, the person.
     pub actor: String,

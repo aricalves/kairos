@@ -231,6 +231,8 @@ pub fn cancel_task(
             task_id,
             actor_id,
         )?;
+        // KAIROS-T-0574: the precise kind, after the coarse one.
+        events::emit_item_event_by_id(conn, EventKind::TaskCancelled, "task", task_id, actor_id)?;
         Ok(Cancelled {
             short_code,
             from_column,

@@ -292,8 +292,9 @@ pub struct Template {
 /// mirror of: `kairos_client::types_events::ThinEvent` (partial — events
 /// carry no payloads; the view reads through REST per A-0005 §5).
 ///
-/// The KIND is not inspected. An event of an item of this board reads the
-/// card of the item again (KAIROS-T-0615, [`refresh_of`]). That is what
+/// The KIND is not inspected, except `board_configured`. An event of an
+/// item of this board reads the card of the item again (KAIROS-T-0615,
+/// [`refresh_of`]). That is what
 /// makes `item_moved` (KAIROS-I-0012) work without a special case: the
 /// server emits it once per side of the move, with `board_id` = the board
 /// the card left (no column) and once with `board_id` = the board it
@@ -578,6 +579,9 @@ impl BoardItemsResponse {
     }
 }
 
+/// The kind of a change of the configuration of a board (KAIROS-T-0574).
+pub const BOARD_CONFIGURED: &str = "board_configured";
+
 /// What one event of the board asks the view to read (KAIROS-T-0615).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refresh {
@@ -590,11 +594,17 @@ pub enum Refresh {
 /// The read of an event. `None` is a reconnect: the view reads the board,
 /// for the events that it did not get. An event of an item of a different
 /// board changes the "blocks" counts of cards that the event does not
-/// name, so the view reads the board. Pure, host-tested.
+/// name, so the view reads the board. `board_configured` (KAIROS-T-0574)
+/// names the board, not a card: the columns changed, so the view reads
+/// the board. Each other kind of a card of the board (`claim_changed`,
+/// `task_state_changed`, `task_cancelled` included) reads the card. Pure,
+/// host-tested.
 pub fn refresh_of(event: Option<&ThinEvent>, board_id: &str) -> Refresh {
     match event {
         Some(event)
-            if !event.short_code.is_empty() && event.board_id.as_deref() == Some(board_id) =>
+            if !event.short_code.is_empty()
+                && event.event != BOARD_CONFIGURED
+                && event.board_id.as_deref() == Some(board_id) =>
         {
             Refresh::Card(event.short_code.clone())
         }
@@ -1550,6 +1560,24 @@ mod tests {
         assert_eq!(refresh_of(Some(&event("", Some("b"))), "b"), Refresh::Board);
         assert_eq!(refresh_of(Some(&event("D-D-1", None)), "b"), Refresh::Board);
         assert_eq!(refresh_of(None, "b"), Refresh::Board);
+        // KAIROS-T-0574: the precise kinds of a card read the card, and a
+        // change of the board configuration reads the board.
+        for kind in ["claim_changed", "task_state_changed", "task_cancelled"] {
+            let precise = ThinEvent {
+                event: kind.to_string(),
+                ..event("D-T-1", Some("b"))
+            };
+            assert_eq!(
+                refresh_of(Some(&precise), "b"),
+                Refresh::Card("D-T-1".to_string()),
+                "{kind}"
+            );
+        }
+        let configured = ThinEvent {
+            event: BOARD_CONFIGURED.to_string(),
+            ..event("demo", Some("b"))
+        };
+        assert_eq!(refresh_of(Some(&configured), "b"), Refresh::Board);
         assert_eq!(
             board_card_path("demo", "D-T-1"),
             "/api/boards/demo/items?code=D-T-1"
