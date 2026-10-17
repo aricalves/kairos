@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -33,6 +34,7 @@ class RalphCase(unittest.TestCase):
         self.state_dir = os.path.join(self.tmp.name, "state")
         self.env = dict(os.environ, KAIROS_RALPH_STATE_DIR=self.state_dir)
         self.env.pop("CLAUDE_SESSION_ID", None)
+        self.env.pop("CLAUDE_PROJECT_DIR", None)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -103,7 +105,7 @@ class StartWithTaskCodes(RalphCase):
         self.assertEqual(state["mode"], "tasks")
         self.assertEqual(state["tasks"], ["COLLIERY-T-0001", "COLLIERY-T-0002"])
         self.assertEqual(state["iteration"], 1)
-        self.assertEqual(state["max_iterations"], 0)
+        self.assertEqual(state["max_iterations"], 25)
         self.assertEqual(state["completion_promise"], "ALL TASKS COMPLETE")
         self.assertEqual(state["session_id"], SESSION)
         self.assertIn("COLLIERY-T-0001", result.stdout)
@@ -118,6 +120,19 @@ class StartWithTaskCodes(RalphCase):
         result = self.start("COLLIERY-T-0001", extra=("--max-iterations", "2"))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.state()["max_iterations"], 2)
+
+    def test_the_default_limit_is_25(self):
+        # KAIROS-T-0547: a loop with no --max-iterations has a limit.
+        result = self.start("COLLIERY-T-0001")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.state()["max_iterations"], 25)
+        self.assertIn("limit: 25", result.stdout)
+
+    def test_zero_iterations_means_no_limit(self):
+        result = self.start("COLLIERY-T-0001", extra=("--max-iterations", "0"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.state()["max_iterations"], 0)
+        self.assertIn("limit: no limit", result.stdout)
 
     def test_the_session_comes_from_the_environment(self):
         self.env["CLAUDE_SESSION_ID"] = "from-env"
@@ -191,6 +206,7 @@ class StopHook(RalphCase):
             "/kairos:implement",
             "<promise>ALL TASKS COMPLETE</promise>",
             "<promise>LOOP STOPPED</promise>",
+            "<promise>NEED INPUT</promise>",
             "commit rules",
         ):
             self.assertIn(text, reason)
@@ -221,6 +237,38 @@ class StopHook(RalphCase):
             "<promise>LOOP STOPPED</promise>"
         )
         self.assertNotIn('"block"', result.stdout)
+        self.assertFalse(os.path.exists(self.state_path()))
+
+    def test_the_need_input_promise_ends_the_loop(self):
+        # KAIROS-T-0547: a question for the user ends the loop. The agent
+        # wrote it on the task with append_note before the promise.
+        self.start("COLLIERY-T-0001", "COLLIERY-T-0002")
+        result = self.stop(
+            "COLLIERY-T-0001: which seam do I test? The question is on the task.\n"
+            "<promise>NEED INPUT</promise>"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('"block"', result.stdout)
+        message = json.loads(result.stdout)["systemMessage"]
+        self.assertIn("question", message)
+        self.assertIn("task", message)
+        self.assertFalse(os.path.exists(self.state_path()))
+
+    def test_the_procedure_says_where_the_question_goes(self):
+        self.start("COLLIERY-T-0001")
+        reason = json.loads(self.stop().stdout)["reason"]
+        self.assertIn("question", reason)
+        self.assertIn("append_note", reason)
+
+    def test_the_default_limit_ends_the_loop(self):
+        self.start("COLLIERY-T-0001")
+        state = self.state()
+        state["iteration"] = 25
+        with open(self.state_path(), "w", encoding="utf-8") as f:
+            json.dump(state, f)
+        result = self.stop()
+        self.assertNotIn('"block"', result.stdout)
+        self.assertIn("25", json.loads(result.stdout)["systemMessage"])
         self.assertFalse(os.path.exists(self.state_path()))
 
     def test_a_quoted_promise_in_the_middle_does_not_end_the_loop(self):
@@ -278,6 +326,114 @@ class Cancel(RalphCase):
         result = self.run_script("cancel", "--session", SESSION, "--all")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("--all", result.stderr)
+
+
+class CancelByFolder(RalphCase):
+    """KAIROS-T-0547: `/clear` gives the session a new ID. Cancel then
+    finds the loop of this folder by its `project_dir`."""
+
+    def start_in(self, session, folder):
+        env = dict(self.env, CLAUDE_PROJECT_DIR=folder)
+        return subprocess.run(
+            [sys.executable, SCRIPT, "start", "--session", session, "COLLIERY-T-0001"],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=self.tmp.name,
+            check=False,
+        )
+
+    def cancel(self, *extra):
+        env = dict(self.env, CLAUDE_PROJECT_DIR=self.tmp.name)
+        return subprocess.run(
+            [sys.executable, SCRIPT, "cancel", "--session", "new-session", *extra],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=self.tmp.name,
+            check=False,
+        )
+
+    def test_the_one_loop_of_the_folder_is_cancelled_and_named(self):
+        self.start_in("old-session", self.tmp.name)
+        result = self.cancel()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("old-session", result.stdout)
+        self.assertIn("COLLIERY-T-0001", result.stdout)
+        self.assertFalse(os.path.exists(self.state_path("old-session")))
+
+    def test_a_loop_of_a_different_folder_is_not_touched(self):
+        other = os.path.join(self.tmp.name, "other")
+        os.makedirs(other)
+        self.start_in("old-session", other)
+        result = self.cancel()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("No Ralph loop", result.stdout)
+        self.assertTrue(os.path.exists(self.state_path("old-session")))
+
+    def test_two_loops_of_the_folder_are_listed_and_kept(self):
+        self.start_in("old-one", self.tmp.name)
+        self.start_in("old-two", self.tmp.name)
+        result = self.cancel()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("old-one", result.stderr)
+        self.assertIn("old-two", result.stderr)
+        self.assertIn("--loop", result.stderr)
+        self.assertTrue(os.path.exists(self.state_path("old-one")))
+        self.assertTrue(os.path.exists(self.state_path("old-two")))
+
+    def test_loop_names_the_loop_to_cancel(self):
+        self.start_in("old-one", self.tmp.name)
+        self.start_in("old-two", self.tmp.name)
+        result = self.cancel("--loop", "old-two")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("old-two", result.stdout)
+        self.assertFalse(os.path.exists(self.state_path("old-two")))
+        self.assertTrue(os.path.exists(self.state_path("old-one")))
+
+    def test_loop_with_no_such_loop_says_so(self):
+        result = self.cancel("--loop", "nothing-here")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("No Ralph loop", result.stdout)
+
+
+class Prune(RalphCase):
+    """KAIROS-T-0547: state files older than 30 days are removed, as in
+    the other state folders of the plugin."""
+
+    def old_file(self, name, days):
+        os.makedirs(self.state_dir, exist_ok=True)
+        path = os.path.join(self.state_dir, name)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("{}")
+        moment = time.time() - days * 24 * 3600
+        os.utime(path, (moment, moment))
+        return path
+
+    def test_a_start_removes_old_state(self):
+        old = self.old_file("orphan.json", 31)
+        old_tmp = self.old_file("orphan.json.tmp.123", 31)
+        recent = self.old_file("recent.json", 2)
+        result = self.start("COLLIERY-T-0001")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(os.path.exists(old))
+        self.assertFalse(os.path.exists(old_tmp))
+        self.assertTrue(os.path.exists(recent))
+        self.assertTrue(os.path.exists(self.state_path()))
+
+    def test_a_cancel_removes_old_state(self):
+        old = self.old_file("orphan.json", 31)
+        self.run_script("cancel", "--session", SESSION)
+        self.assertFalse(os.path.exists(old))
+
+    def test_a_running_loop_is_not_pruned(self):
+        # Each stop writes the state again, so its age is the last stop.
+        self.start("COLLIERY-T-0001")
+        self.stop()
+        orphan = self.old_file("orphan.json", 31)
+        self.run_script("start", "--session", "another", "COLLIERY-T-0002")
+        self.assertFalse(os.path.exists(orphan))
+        self.assertTrue(os.path.exists(self.state_path()))
 
 
 def task(code, column="Todo", blockers=()):

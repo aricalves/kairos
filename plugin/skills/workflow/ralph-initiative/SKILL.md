@@ -55,7 +55,7 @@ Follow the commit rules of the repository and of the user. Every few tasks, writ
 
 What remains lives on the items: the open tasks of the initiative and their `blocks` edges. When the loop finds work that no task holds, record it as a task with its edge (or a note on the task when it is small) before it goes on. A deliverable of the active task is never "out of scope" in a reply: it is done, split into a task with a reason, or left on the task as open. Do not rewrite the list of what is left from memory: read it (`get_item`, `search` with `traverse`).
 
-The loop ends in one of three ways:
+The loop ends in one of four ways:
 
 - **Each task in the sequence is in Completed.** End your reply with `<promise>ALL TASKS COMPLETE</promise>`. Do not move the initiative: the user reviews it.
 - **A task stops the loop.** Do not guess. Stop when one of these conditions occurs:
@@ -64,6 +64,7 @@ The loop ends in one of three ways:
   - the work needs a design decision, a push, a deploy, or a change in a different repository.
 
   Write the reason on the task and on the initiative. Give the reason in your reply. End the reply with `<promise>LOOP STOPPED</promise>`.
-- **The loop gets to the iteration limit** (`--max-iterations N`, no limit by default). The hook then lets the session stop.
+- **The loop needs an answer from the user.** Do not guess. Write the question on the task with `append_note`. Give the question in your reply. End the reply with `<promise>NEED INPUT</promise>`. The user answers, then starts the loop again.
+- **The loop gets to the iteration limit** (25 by default). Each stop of the session is one iteration. `--max-iterations N` changes the limit, and `--max-iterations 0` removes it. The hook then lets the session stop.
 
 Write a promise only when it is true. To stop the loop at a different time, the user runs `/kairos:cancel-ralph`.
