@@ -33,7 +33,7 @@ An entry has one of these actions:
 | `board_move` | A task moved to a different board. |
 | `claim` | A person moved a task to Active and got its [claim](#claim). |
 | `hand_off` | A person gave the claim of a task to a different person. |
-| `release` | The claim of a task ended. The details give the reason: a release, a move out of Active, an archive, a cancel, or a service account. |
+| `release` | The claim of a task ended. The details give the reason: a release, a move out of Active, an archive, a cancel, a service account, or a person who left (`left`). |
 | `cancel` | A person [cancelled](#cancel) a task. The details give the columns and the reason. |
 | `purge` | A person deleted a task for good (a [purge](#purge)). The details give the code and the title. |
 | `board_config` | A person changed the name, the slug, a column or a transition of a board. |
@@ -241,8 +241,14 @@ board of the task (KAIROS-T-0530). A person who cannot move the task cannot
 finish it.
 
 The claim ends when the task leaves Active. It also ends at a hand-off, at a
-release, and at an archive. A different person can change the task. Kairos
-records the change and gives a warning. See
+release, and at an archive. It ends when its person leaves the organization
+(KAIROS-T-0531). Then the task stays in its column, free, and the team of the
+board gets a notification.
+
+A claim does not end by age. A claim with no write for some days is **stale**:
+Kairos tells the holder and the owner of the initiative. A different person can
+change the task. Kairos records the change
+and gives a warning. See
 [Teams and boards](../../explanation/teams-and-boards/#who-works-on-a-task-the-claim).
 
 ## column

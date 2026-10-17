@@ -37,6 +37,14 @@
 //! - `agent_key_revoked`: an organization admin revokes the agent key of a
 //!   person ([`on_agent_key_revoked`]). The person is told the name and the
 //!   prefix of the key.
+//! - `claim_dropped`: a person leaves the organization, so each claim of
+//!   the person ends ([`crate::task_claims::drop_claims_of_user`],
+//!   KAIROS-T-0531). Each member of the team of the board of the task is
+//!   told: the task is free.
+//! - `claim_stale`: a claim had no write and no state change for some days
+//!   ([`crate::task_claims::notify_stale_claims`], KAIROS-T-0531). The
+//!   holder and the owner of the initiative of the task are told, once for
+//!   each quiet period. Kairos is the actor.
 //!
 //! # Who gets a notification
 //!
@@ -109,11 +117,6 @@ struct Recipient {
     #[diesel(sql_type = SqlUuid)]
     user_id: Uuid,
 }
-
-/// The columns of [`Notification`], with the item from `entity_directory`.
-const SELECT_NOTIFICATION: &str = "SELECT n.id, n.kind, n.item_id, d.short_code, d.entity_type, \
-     d.title, n.text, n.actor_id, n.created_at, n.read_at \
-     FROM notifications n LEFT JOIN entity_directory d ON d.id = n.item_id";
 
 /// Make one notification of `kind` for each person in `recipients` who may
 /// get it (module docs: a person of the organization, not the actor, the
@@ -289,6 +292,90 @@ pub fn on_cancel(
         &text,
         actor,
     )?;
+    Ok(())
+}
+
+/// `claim_dropped` (KAIROS-T-0531): the person `left` left the
+/// organization, and their claim on the task ended. The members of the
+/// team of the board of the task are told.
+pub fn on_claim_dropped(
+    conn: &mut PgConnection,
+    task_id: Uuid,
+    left: Uuid,
+    actor: Uuid,
+) -> Result<(), DieselError> {
+    use crate::schema::{board_columns, boards, tasks, team_members};
+    let Some((code, title, _)) = task_head(conn, task_id)? else {
+        return Ok(());
+    };
+    let place: Option<(String, Option<Uuid>)> = tasks::table
+        .inner_join(board_columns::table)
+        .inner_join(boards::table)
+        .filter(tasks::id.eq(task_id))
+        .select((board_columns::name, boards::team_id))
+        .first(conn)
+        .optional()?;
+    let Some((column, Some(team_id))) = place else {
+        return Ok(());
+    };
+    let members: Vec<Uuid> = team_members::table
+        .filter(team_members::team_id.eq(team_id))
+        .filter(team_members::user_id.ne(left))
+        .select(team_members::user_id)
+        .load(conn)?;
+    let text = format!(
+        "{} left the organization, so the claim on {code} ended. The task is free in {column}: \
+         {title}",
+        name_of(conn, left)?
+    );
+    notify(
+        conn,
+        &members,
+        NotificationKind::ClaimDropped,
+        Some((task_id, &code)),
+        &text,
+        actor,
+    )?;
+    Ok(())
+}
+
+/// `claim_stale` (KAIROS-T-0531): the claim had no write since
+/// `claim.last_write`. The holder is told, and the owner of the initiative
+/// of the task when it is a different person. Kairos is the actor.
+pub fn on_claim_stale(
+    conn: &mut PgConnection,
+    claim: &crate::task_claims::StaleClaim,
+    now: DateTime<Utc>,
+) -> Result<(), DieselError> {
+    let days = (now - claim.last_write).num_days().max(1);
+    let (code, title) = (&claim.short_code, &claim.title);
+    let text = format!(
+        "Your claim on {code} has no write and no state change for {days} days: {title}. \
+         Write a note or the state, or release the task."
+    );
+    notify(
+        conn,
+        &[claim.user_id],
+        NotificationKind::ClaimStale,
+        Some((claim.task_id, code)),
+        &text,
+        Uuid::nil(),
+    )?;
+    if let Some(owner) = claim.owner_id.filter(|owner| *owner != claim.user_id) {
+        let text = format!(
+            "The claim of {} on {code} has no write and no state change for {days} days. \
+             The task is part of an initiative that you own: {title}",
+            name_of(conn, claim.user_id)?
+        );
+        notify(
+            conn,
+            &[owner],
+            NotificationKind::ClaimStale,
+            Some((claim.task_id, code)),
+            &text,
+            Uuid::nil(),
+        )?;
+    }
     Ok(())
 }
 
@@ -698,17 +785,139 @@ pub fn on_p0_bug(conn: &mut PgConnection, item_id: Uuid, actor: Uuid) -> Result<
     Ok(())
 }
 
-/// The newest `limit` unread notifications of `user`, and the count of all
-/// the unread ones. One query, on the partial index of the unread rows.
-pub fn unread(conn: &mut PgConnection, user: Uuid, limit: i64) -> Result<Unread, DieselError> {
-    let rows: Vec<UnreadRow> = sql_query(
-        "SELECT n.id, n.kind, n.item_id, d.short_code, d.entity_type, d.title, n.text, \
-                n.actor_id, n.created_at, n.read_at, count(*) OVER () AS total \
-           FROM notifications n LEFT JOIN entity_directory d ON d.id = n.item_id \
-          WHERE n.user_id = $1 AND n.read_at IS NULL \
-          ORDER BY n.created_at DESC, n.id DESC LIMIT $2",
-    )
-    .bind::<SqlUuid, _>(user)
+/// Who reads the notifications of a person (KAIROS-T-0550): the person, or
+/// one agent key of the person. Each keeps its own read state. The person
+/// reads `notifications.read_at`; a key reads its rows in
+/// `notification_reads`. A notification is read for a key when the key, or
+/// a key that it replaced by a rotation, read it. It is read for the key
+/// also when the person read it before the first key of that chain was
+/// made, so a new key does not start with the old history unread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reader {
+    /// The person.
+    pub user: Uuid,
+    key: Option<KeyChain>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KeyChain {
+    /// The key of the request: a mark writes its rows.
+    id: Uuid,
+    /// The key, and each key that it replaced.
+    ids: Vec<Uuid>,
+    /// When the first key of the chain was made.
+    since: DateTime<Utc>,
+}
+
+#[derive(QueryableByName)]
+struct ChainRow {
+    #[diesel(sql_type = SqlUuid)]
+    id: Uuid,
+    #[diesel(sql_type = Timestamptz)]
+    created_at: DateTime<Utc>,
+}
+
+#[derive(QueryableByName)]
+struct IdRow {
+    #[diesel(sql_type = SqlUuid)]
+    id: Uuid,
+}
+
+#[derive(QueryableByName)]
+struct CountRow {
+    #[diesel(sql_type = BigInt)]
+    total: i64,
+}
+
+impl Reader {
+    /// The person reads.
+    pub fn person(user: Uuid) -> Reader {
+        Reader { user, key: None }
+    }
+
+    /// The reader of a request: the person, or the agent key of the person
+    /// (`agent_key`). One query for a key: the chain of its rotations.
+    pub fn of(
+        conn: &mut PgConnection,
+        user: Uuid,
+        agent_key: Option<Uuid>,
+    ) -> Result<Reader, DieselError> {
+        let Some(key) = agent_key else {
+            return Ok(Reader::person(user));
+        };
+        let rows: Vec<ChainRow> = sql_query(
+            "WITH RECURSIVE chain(id, created_at) AS ( \
+                 SELECT id, created_at FROM api_keys WHERE id = $1 AND user_id = $2 \
+                 UNION \
+                 SELECT k.id, k.created_at FROM api_keys k JOIN chain c ON k.replaced_by = c.id) \
+             SELECT id, created_at FROM chain",
+        )
+        .bind::<SqlUuid, _>(key)
+        .bind::<SqlUuid, _>(user)
+        .load(conn)?;
+        let since = rows
+            .iter()
+            .map(|r| r.created_at)
+            .min()
+            .unwrap_or_else(Utc::now);
+        let mut ids: Vec<Uuid> = rows.into_iter().map(|r| r.id).collect();
+        if !ids.contains(&key) {
+            ids.push(key);
+        }
+        Ok(Reader {
+            user,
+            key: Some(KeyChain {
+                id: key,
+                ids,
+                since,
+            }),
+        })
+    }
+
+    /// True when an agent key reads.
+    pub fn is_key(&self) -> bool {
+        self.key.is_some()
+    }
+
+    fn key_ids(&self) -> Vec<Uuid> {
+        self.key.as_ref().map(|k| k.ids.clone()).unwrap_or_default()
+    }
+
+    fn since(&self) -> Option<DateTime<Utc>> {
+        self.key.as_ref().map(|k| k.since)
+    }
+}
+
+/// The notifications of the reader as the view `v`, with the time that
+/// the reader read each one (`read_at`, NULL while unread). `$1` is the
+/// person, `$2` the ids of the key chain (empty for the person), `$3` the
+/// time of the first key of the chain (NULL for the person).
+const READER_VIEW: &str = "WITH v AS ( \
+     SELECT n.id, n.kind, n.item_id, n.text, n.actor_id, n.created_at, \
+            CASE WHEN $3::timestamptz IS NULL THEN n.read_at ELSE COALESCE( \
+                (SELECT min(r.read_at) FROM notification_reads r \
+                  WHERE r.notification_id = n.id AND r.api_key_id = ANY($2)), \
+                CASE WHEN n.read_at < $3 THEN n.read_at END) END AS read_at \
+       FROM notifications n WHERE n.user_id = $1)";
+
+/// The columns of [`Notification`] from the view `v` of [`READER_VIEW`].
+const SELECT_VIEW: &str = "SELECT v.id, v.kind, v.item_id, d.short_code, d.entity_type, \
+     d.title, v.text, v.actor_id, v.created_at, v.read_at \
+     FROM v LEFT JOIN entity_directory d ON d.id = v.item_id";
+
+/// The newest `limit` unread notifications of the reader, and the count of
+/// all the unread ones. One query.
+pub fn unread(conn: &mut PgConnection, reader: &Reader, limit: i64) -> Result<Unread, DieselError> {
+    let rows: Vec<UnreadRow> = sql_query(format!(
+        "{READER_VIEW} SELECT v.id, v.kind, v.item_id, d.short_code, d.entity_type, d.title, \
+                v.text, v.actor_id, v.created_at, v.read_at, count(*) OVER () AS total \
+           FROM v LEFT JOIN entity_directory d ON d.id = v.item_id \
+          WHERE v.read_at IS NULL \
+          ORDER BY v.created_at DESC, v.id DESC LIMIT $4"
+    ))
+    .bind::<SqlUuid, _>(reader.user)
+    .bind::<Array<SqlUuid>, _>(reader.key_ids())
+    .bind::<Nullable<Timestamptz>, _>(reader.since())
     .bind::<BigInt, _>(limit)
     .load(conn)?;
     let total = rows.first().map_or(0, |r| r.total);
@@ -718,63 +927,106 @@ pub fn unread(conn: &mut PgConnection, user: Uuid, limit: i64) -> Result<Unread,
     })
 }
 
-/// The notifications of `user` for a list: each unread one (newest first,
-/// at most `unread_limit`), then the newest `read_limit` read ones.
+/// The notifications of the reader for a list: the unread ones (newest
+/// first, at most `unread_limit`), then the newest `read_limit` read ones.
+/// With `before` (the id of a notification of the person), the next page:
+/// the unread ones older than it, and no read ones.
 pub fn list(
     conn: &mut PgConnection,
-    user: Uuid,
+    reader: &Reader,
+    before: Option<Uuid>,
     unread_limit: i64,
     read_limit: i64,
 ) -> Result<Vec<Notification>, DieselError> {
     let mut out: Vec<Notification> = sql_query(format!(
-        "{SELECT_NOTIFICATION} WHERE n.user_id = $1 AND n.read_at IS NULL \
-          ORDER BY n.created_at DESC, n.id DESC LIMIT $2"
+        "{READER_VIEW} {SELECT_VIEW} WHERE v.read_at IS NULL \
+           AND ($4::uuid IS NULL OR (v.created_at, v.id) < \
+                (SELECT b.created_at, b.id FROM notifications b WHERE b.id = $4 AND b.user_id = $1)) \
+          ORDER BY v.created_at DESC, v.id DESC LIMIT $5"
     ))
-    .bind::<SqlUuid, _>(user)
+    .bind::<SqlUuid, _>(reader.user)
+    .bind::<Array<SqlUuid>, _>(reader.key_ids())
+    .bind::<Nullable<Timestamptz>, _>(reader.since())
+    .bind::<Nullable<SqlUuid>, _>(before)
     .bind::<BigInt, _>(unread_limit)
     .load(conn)?;
-    let read: Vec<Notification> = sql_query(format!(
-        "{SELECT_NOTIFICATION} WHERE n.user_id = $1 AND n.read_at IS NOT NULL \
-          ORDER BY n.read_at DESC, n.id DESC LIMIT $2"
-    ))
-    .bind::<SqlUuid, _>(user)
-    .bind::<BigInt, _>(read_limit)
-    .load(conn)?;
-    out.extend(read);
+    if before.is_none() {
+        let read: Vec<Notification> = sql_query(format!(
+            "{READER_VIEW} {SELECT_VIEW} WHERE v.read_at IS NOT NULL \
+              ORDER BY v.read_at DESC, v.id DESC LIMIT $4"
+        ))
+        .bind::<SqlUuid, _>(reader.user)
+        .bind::<Array<SqlUuid>, _>(reader.key_ids())
+        .bind::<Nullable<Timestamptz>, _>(reader.since())
+        .bind::<BigInt, _>(read_limit)
+        .load(conn)?;
+        out.extend(read);
+    }
     Ok(out)
 }
 
-/// Mark notifications of `user` read: the ones in `ids`, or each unread
-/// one when `ids` is `None`. An id of a different person, or of a read
-/// notification, changes nothing. Returns the ids that changed, and sends
-/// the event `notifications_read` to the person when one changed.
+/// What [`mark_read`] marks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mark<'a> {
+    /// These ids.
+    Ids(&'a [Uuid]),
+    /// This notification of the person, and each older one: the order of
+    /// [`list`] (time, then id). A newer one stays unread.
+    UpTo(Uuid),
+}
+
+/// Mark notifications read for the reader. An id of a different person,
+/// or of a notification that the reader read already, changes nothing.
+/// Returns the ids that changed. A read of the person sends the event
+/// `notifications_read` to the person when one changed. A read of a key
+/// sends none: the bell of the person does not change.
 pub fn mark_read(
     conn: &mut PgConnection,
-    user: Uuid,
-    ids: Option<&[Uuid]>,
+    reader: &Reader,
+    mark: Mark<'_>,
 ) -> Result<Vec<Uuid>, DieselError> {
-    use crate::schema::notifications::dsl;
-    let changed: Vec<Uuid> = match ids {
-        Some(ids) => diesel::update(
-            dsl::notifications
-                .filter(dsl::user_id.eq(user))
-                .filter(dsl::read_at.is_null())
-                .filter(dsl::id.eq_any(ids)),
-        )
-        .set(dsl::read_at.eq(diesel::dsl::now))
-        .returning(dsl::id)
-        .get_results(conn)?,
-        None => diesel::update(
-            dsl::notifications
-                .filter(dsl::user_id.eq(user))
-                .filter(dsl::read_at.is_null()),
-        )
-        .set(dsl::read_at.eq(diesel::dsl::now))
-        .returning(dsl::id)
-        .get_results(conn)?,
+    let (ids, up_to): (Vec<Uuid>, Option<Uuid>) = match mark {
+        Mark::Ids(ids) => (ids.to_vec(), None),
+        Mark::UpTo(id) => (Vec::new(), Some(id)),
     };
-    if !changed.is_empty() {
-        events::emit_notification_event(conn, events::NOTIFICATIONS_READ, user, "", user)?;
+    let rows: Vec<IdRow> = match &reader.key {
+        None => sql_query(
+            "UPDATE notifications n SET read_at = now() \
+              WHERE n.user_id = $1 AND n.read_at IS NULL \
+                AND (n.id = ANY($2) OR (n.created_at, n.id) <= \
+                     (SELECT b.created_at, b.id FROM notifications b \
+                       WHERE b.id = $3 AND b.user_id = $1)) \
+             RETURNING n.id",
+        )
+        .bind::<SqlUuid, _>(reader.user)
+        .bind::<Array<SqlUuid>, _>(ids)
+        .bind::<Nullable<SqlUuid>, _>(up_to)
+        .load(conn)?,
+        Some(key) => sql_query(format!(
+            "{READER_VIEW} INSERT INTO notification_reads (notification_id, api_key_id) \
+             SELECT v.id, $6 FROM v WHERE v.read_at IS NULL \
+                AND (v.id = ANY($4) OR (v.created_at, v.id) <= \
+                     (SELECT b.created_at, b.id FROM notifications b \
+                       WHERE b.id = $5 AND b.user_id = $1)) \
+             ON CONFLICT DO NOTHING RETURNING notification_id AS id"
+        ))
+        .bind::<SqlUuid, _>(reader.user)
+        .bind::<Array<SqlUuid>, _>(reader.key_ids())
+        .bind::<Nullable<Timestamptz>, _>(reader.since())
+        .bind::<Array<SqlUuid>, _>(ids)
+        .bind::<Nullable<SqlUuid>, _>(up_to)
+        .bind::<SqlUuid, _>(key.id)
+        .load(conn)?,
+    };
+    let changed: Vec<Uuid> = rows.into_iter().map(|r| r.id).collect();
+    if !changed.is_empty() && !reader.is_key() {
+        events::emit_notification_event(
+            conn,
+            events::NOTIFICATIONS_READ,
+            reader.user,
+            "",
+            reader.user,
+        )?;
     }
     Ok(changed)
 }
@@ -795,14 +1047,16 @@ pub fn not_of(conn: &mut PgConnection, user: Uuid, ids: &[Uuid]) -> Result<Vec<U
         .collect())
 }
 
-/// The count of the unread notifications of `user`.
-pub fn unread_count(conn: &mut PgConnection, user: Uuid) -> Result<i64, DieselError> {
-    use crate::schema::notifications::dsl;
-    dsl::notifications
-        .filter(dsl::user_id.eq(user))
-        .filter(dsl::read_at.is_null())
-        .count()
-        .get_result(conn)
+/// The count of the unread notifications of the reader.
+pub fn unread_count(conn: &mut PgConnection, reader: &Reader) -> Result<i64, DieselError> {
+    let row: CountRow = sql_query(format!(
+        "{READER_VIEW} SELECT count(*) AS total FROM v WHERE v.read_at IS NULL"
+    ))
+    .bind::<SqlUuid, _>(reader.user)
+    .bind::<Array<SqlUuid>, _>(reader.key_ids())
+    .bind::<Nullable<Timestamptz>, _>(reader.since())
+    .get_result(conn)?;
+    Ok(row.total)
 }
 
 /// The settings of `user`: each kind, and whether it is on.

@@ -100,7 +100,7 @@ a different person never gets them.
 | `event` | Emitted when |
 |---|---|
 | `notification_created` | Kairos made a notification for you. `short_code` is the code of the item of the notification |
-| `notifications_read` | You marked one or more of your notifications as read. `short_code` is empty |
+| `notifications_read` | You marked one or more of your notifications as read with your login. A read with an agent key sends no event, because your bell does not change. `short_code` is empty |
 
 For the two events, `entity_type` is `notification` and `board_id` is `null`.
 Thus a connection with a board filter does not get them. The text of the
@@ -119,7 +119,17 @@ The `kind` of a notification says what happened. The blocker kinds:
 that you own. For `blocked_again`, the person who created the item gets it
 when nobody has the claim or owns it. For `blocker_cancelled`, the person who
 created the item gets it too. A cancel does not resolve a blocker, so it sends no
-`blocker_cleared`. The
+`blocker_cleared`.
+
+The claim kinds (KAIROS-T-0531):
+
+| `kind` | Kairos makes it when |
+|---|---|
+| `claim_dropped` | A person leaves the organization, and their claim on a task of the board of your team ends. The task is free in its column |
+| `claim_stale` | A claim has no write and no state change for `KAIROS_STALE_CLAIM_DAYS` days (default 14). The holder gets it, and the owner of the initiative of the task |
+
+Kairos does not end a stale claim. It sends `claim_stale` once for each quiet
+period. A write to the task or to its state starts a new period. The
 [MCP tools reference](../mcp-tools/#your-notifications) lists each kind.
 
 ## Client → server: board filter

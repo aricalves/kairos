@@ -31,11 +31,18 @@ pub enum NotificationKind {
     DeliveryFailing,
     /// An organization admin revoked an agent key of yours (KAIROS-T-0388).
     AgentKeyRevoked,
+    /// A person left the organization, so their claim on a task of the
+    /// board of your team ended (KAIROS-T-0531).
+    ClaimDropped,
+    /// A claim on a task had no write and no state change for some days:
+    /// your claim, or a claim on a task of an initiative that you own
+    /// (KAIROS-T-0531).
+    ClaimStale,
 }
 
 impl NotificationKind {
     /// Each kind, in the order of the settings.
-    pub const ALL: [NotificationKind; 9] = [
+    pub const ALL: [NotificationKind; 11] = [
         NotificationKind::HandOff,
         NotificationKind::BlockerCleared,
         NotificationKind::BlockedAgain,
@@ -45,6 +52,8 @@ impl NotificationKind {
         NotificationKind::P0Bug,
         NotificationKind::DeliveryFailing,
         NotificationKind::AgentKeyRevoked,
+        NotificationKind::ClaimDropped,
+        NotificationKind::ClaimStale,
     ];
 
     /// The wire name (`kind` column and API field).
@@ -59,6 +68,8 @@ impl NotificationKind {
             NotificationKind::P0Bug => "p0_bug",
             NotificationKind::DeliveryFailing => "delivery_failing",
             NotificationKind::AgentKeyRevoked => "agent_key_revoked",
+            NotificationKind::ClaimDropped => "claim_dropped",
+            NotificationKind::ClaimStale => "claim_stale",
         }
     }
 

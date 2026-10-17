@@ -67,7 +67,7 @@ These hold for every tool.
 | Listing weight | Listings are compact: short code, title and key fields. Full markdown content arrives only from `get_item` and from `get_history` with a `version`. |
 | Errors | A refusal comes back as an MCP tool error whose text is `CODE: message`, the code being the same stable one as the REST API's error envelope. Where that code has structured `details`, a second line follows: `details: ` and the JSON object. See [Errors](../errors/) for what each code's `details` carries. |
 | Audit | Writes are recorded in the activity log by the same code path as the REST API. |
-| Notifications | While the person of the key has unread [notifications](#your-notifications), each answer (not a refusal) ends with a block: the 5 newest, then `N more: call get_events` when there are more. The block stops when the person marks them read. `get_events` itself has no block, because it lists them. A service account gets no notifications. |
+| Notifications | While the caller has unread [notifications](#your-notifications), each answer (not a refusal) ends with a block: the 5 newest, then `N more: call get_events` when there are more. The block stops when the caller marks them read. An agent key keeps its own read state, apart from the person. `get_events` itself has no block, because it lists them. A service account gets no notifications. |
 | Claims | A task in Active has a [claim](../glossary/#claim): the person who works on it. A write to a task that a different person has the claim on succeeds and is recorded. The text of the tool then ends with a line: `Warning: Alice (agent) has the claim on ACME-T-0012 (since 2026-10-09T10:00:00Z). Your change is recorded.` A write by the person who has the claim, also with the agent key of the person, gets no warning. |
 
 ### Refusal codes
@@ -2295,6 +2295,8 @@ A notification tells a person about an event of their work (KAIROS-T-0381):
 | `p0_bug` | A bug with the priority `critical` (or `p0`) lands on the board of your team: its priority changes to P0, or it moves to the board. |
 | `delivery_failing` | Kairos turns off a webhook target that you made, or a target of a board that you manage, after failed deliveries. See [Webhook deliveries](../webhooks/). |
 | `agent_key_revoked` | An organization admin revokes an agent key of yours. The text names the key and its prefix. |
+| `claim_dropped` | A person leaves the organization, and their claim on a task of the board of your team ends. The task stays in its column, free. |
+| `claim_stale` | A claim has no write and no state change for `KAIROS_STALE_CLAIM_DAYS` days (default 14). You get it for your claim, or for a claim on a task of an initiative that you own. The claim stays. Kairos sends it once for each quiet period. |
 
 You get no notification for a change that you made. You can turn a kind off
 with `PUT /api/me/notification-settings` or on the Notifications page of the
@@ -2312,28 +2314,61 @@ content of the item. Its lines have no id: `get_events` gives the ids.
 get_events gives each with its id; mark them read with mark_events_read when you have acted on them.
 ```
 
+### The read state
+
+Each reader keeps its own read state (KAIROS-T-0550). The person is one
+reader: the bell of the web app and the login of the person. Each agent key
+of the person is a different reader. When an agent marks a notification
+read, the bell of the person still shows it unread.
+
+- A new agent key starts with the state of the person at that time. A
+  notification that the person read before the key was made is read for the
+  key.
+- A rotated key keeps the reads of the key that it replaces.
+- `get_events`, `mark_events_read` and the block at the end of an answer
+  use the state of the caller. So do the two REST routes.
+
 ### `get_events`
 
 Gives your notifications: each unread one first (newest first, 100 at most),
 then the 20 newest read ones. Each line has the id, the time, the kind, the
-item and the text. No arguments.
+item and the text.
 
-REST: `GET /api/me/notifications`.
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `before` | string | no | — | The id of a notification. The page has the unread notifications older than it, and no read ones. |
+
+The answer ends with the `up_to` value for `mark_events_read`: the id of the
+newest unread notification. When the page has 100 unread notifications, the
+answer also gives the `before` value of the next page.
+
+Refuses: `NOT_FOUND` when `before` is not one of your notifications.
+
+REST: `GET /api/me/notifications`, with the query parameter `before`.
 
 ### `mark_events_read`
 
-Marks your notifications read. Send `ids` or `all`, not both.
+Marks your notifications read for the caller. Send `ids`, or `all: true`
+with `up_to`.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `ids` | array of strings | no | — | The ids of your notifications, as `get_events` gives them. |
-| `all` | boolean | no | — | `true`: each of your unread notifications. |
+| `all` | boolean | no | — | `true`: each of your unread notifications up to `up_to`. |
+| `up_to` | string | with `all` | — | The id of the newest notification that you read. Kairos marks it and each older unread notification. A newer notification stays unread. |
+
+Kairos refuses `all` without `up_to`. A notification can come after your list.
+Without a bound, Kairos would mark it read before you see it.
+
+`up_to` also marks the older unread notifications that are not on your
+page. Read each page before you send `all`.
 
 The result is one line: `Marked 2 notification(s) read. You have 5 unread.`
 
 Refuses: `VALIDATION` when the call has neither `ids` nor `all: true`, or has
-both. `NOT_FOUND` when an id is not one of your notifications; the message
-names the id, and nothing changes. An id that is read already does not change.
+both. `VALIDATION` when `all` has no `up_to`, or `up_to` comes with `ids`.
+`NOT_FOUND` when an id is not one of your notifications. The message names
+the id, and nothing changes. An id that is read already does not change.
 
 REST: `POST /api/me/notifications/read`.
 

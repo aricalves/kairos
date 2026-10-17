@@ -9,8 +9,10 @@
 //!   that turn a kind off.
 //!
 //! Each row links to its item and has "Mark read". "Mark all read" marks
-//! each unread one. A notification marked read here is read for the agent
-//! of the person too: it is one record on the server.
+//! the newest unread one of the list and each older one (`up_to`), so a
+//! notification that came after the list stays unread (KAIROS-T-0550).
+//! A notification marked read here is read for the person only: each agent
+//! key of the person keeps its own read state.
 
 use aurora_dark::components::{
     Anchor, Button, Divider, Empty, ErrorState, Group, Loading, PageHeader, Panel, Pill, Stack,
@@ -55,6 +57,8 @@ struct NotificationSettings {
     p0_bug: bool,
     delivery_failing: bool,
     agent_key_revoked: bool,
+    claim_dropped: bool,
+    claim_stale: bool,
 }
 
 /// mirror of: `kairos_client::types_notifications::MarkNotificationsReadResponse`
@@ -72,16 +76,34 @@ async fn list(auth: Auth) -> Result<NotificationList, ApiError> {
     crate::api::get_json(auth, LIST).await
 }
 
-/// The body that marks one notification, or all. Pure, host-tested.
-fn mark_body(id: Option<&str>) -> serde_json::Value {
-    match id {
-        Some(id) => json!({ "ids": [id] }),
-        None => json!({ "all": true }),
+/// What a mark sends: one id, or all up to the newest unread id of the
+/// list (KAIROS-T-0550).
+#[derive(Clone, Debug, PartialEq)]
+enum MarkWhat {
+    One(String),
+    AllUpTo(String),
+}
+
+/// The body of a mark. Pure, host-tested.
+fn mark_body(what: &MarkWhat) -> serde_json::Value {
+    match what {
+        MarkWhat::One(id) => json!({ "ids": [id] }),
+        MarkWhat::AllUpTo(id) => json!({ "all": true, "up_to": id }),
     }
 }
 
-async fn mark(auth: Auth, id: Option<&str>) -> Result<Marked, ApiError> {
-    crate::api::post_json(auth, READ, &mark_body(id)).await
+/// The newest unread notification of a list: the `up_to` of "Mark all
+/// read". The list has the unread ones first, newest first. Pure,
+/// host-tested.
+fn newest_unread(list: &NotificationList) -> Option<String> {
+    list.items
+        .iter()
+        .find(|n| n.read_at.is_none())
+        .map(|n| n.id.clone())
+}
+
+async fn mark(auth: Auth, what: MarkWhat) -> Result<Marked, ApiError> {
+    crate::api::post_json(auth, READ, &mark_body(&what)).await
 }
 
 /// The words of a kind. Pure, host-tested.
@@ -96,6 +118,8 @@ fn kind_label(kind: &str) -> &'static str {
         "p0_bug" => "P0 bug",
         "delivery_failing" => "Delivery failing",
         "agent_key_revoked" => "Agent key revoked",
+        "claim_dropped" => "Claim dropped",
+        "claim_stale" => "Claim stale",
         _ => "Notification",
     }
 }
@@ -158,7 +182,7 @@ fn NotificationRows(
                 busy.set(true);
                 let id = id.get_value();
                 leptos::task::spawn_local(async move {
-                    let result = mark(auth, Some(&id)).await.map(|_| ());
+                    let result = mark(auth, MarkWhat::One(id)).await.map(|_| ());
                     busy.set(false);
                     on_marked.run(result);
                 });
@@ -229,9 +253,15 @@ pub fn NotificationBell() -> impl IntoView {
         if busy.get_untracked() {
             return;
         }
+        let Some(Ok(list)) = notifications.get_untracked() else {
+            return;
+        };
+        let Some(up_to) = newest_unread(&list) else {
+            return;
+        };
         busy.set(true);
         leptos::task::spawn_local(async move {
-            let result = mark(auth, None).await.map(|_| ());
+            let result = mark(auth, MarkWhat::AllUpTo(up_to)).await.map(|_| ());
             busy.set(false);
             on_marked.run(result);
         });
@@ -323,6 +353,8 @@ pub fn NotificationsPage() -> impl IntoView {
     let p0_bug = RwSignal::new(true);
     let delivery_failing = RwSignal::new(true);
     let agent_key_revoked = RwSignal::new(true);
+    let claim_dropped = RwSignal::new(true);
+    let claim_stale = RwSignal::new(true);
     let settings_reload = RwSignal::new(0u32);
     let settings = LocalResource::new(move || {
         auth.track_session();
@@ -340,6 +372,8 @@ pub fn NotificationsPage() -> impl IntoView {
             p0_bug.set(s.p0_bug);
             delivery_failing.set(s.delivery_failing);
             agent_key_revoked.set(s.agent_key_revoked);
+            claim_dropped.set(s.claim_dropped);
+            claim_stale.set(s.claim_stale);
         }
     });
     let on_save = move |_| {
@@ -353,6 +387,8 @@ pub fn NotificationsPage() -> impl IntoView {
             "p0_bug": p0_bug.get_untracked(),
             "delivery_failing": delivery_failing.get_untracked(),
             "agent_key_revoked": agent_key_revoked.get_untracked(),
+            "claim_dropped": claim_dropped.get_untracked(),
+            "claim_stale": claim_stale.get_untracked(),
         });
         run_mutation(
             busy,
@@ -373,12 +409,18 @@ pub fn NotificationsPage() -> impl IntoView {
         reload.update(|n| *n += 1);
     });
     let on_mark_all = move |_| {
+        let Some(Ok(list)) = notifications.get_untracked() else {
+            return;
+        };
+        let Some(up_to) = newest_unread(&list) else {
+            return;
+        };
         run_mutation(
             busy,
             outcome,
             reload,
-            "Kairos marked each notification read.".to_string(),
-            async move { mark(auth, None).await.map(|_| ()) },
+            "Kairos marked each notification of the list read.".to_string(),
+            async move { mark(auth, MarkWhat::AllUpTo(up_to)).await.map(|_| ()) },
         );
     };
 
@@ -392,7 +434,7 @@ pub fn NotificationsPage() -> impl IntoView {
         <Stack gap="md">
             <MutationNotice outcome/>
             <Panel title="Your notifications"
-                caption="A notification that you mark read here is read for your agent too.">
+                caption="A notification that you mark read here is read for you. Each agent key keeps its own read state.">
                 <Stack gap="sm">
                     <Group justify="end">
                         <Button variant="default" size="xs" on_click=Callback::new(on_mark_all)>
@@ -433,6 +475,10 @@ pub fn NotificationsPage() -> impl IntoView {
                                     label="Kairos turns off a webhook target that you own after failed deliveries"/>
                                 <Switch checked=agent_key_revoked
                                     label="An organization admin revokes an agent key of yours"/>
+                                <Switch checked=claim_dropped
+                                    label="A person leaves, and their claim on a task of your team ends"/>
+                                <Switch checked=claim_stale
+                                    label="A claim of yours, or on a task of your initiative, has no write for days"/>
                                 <Group justify="end">
                                     <Button on_click=Callback::new(on_save)>"Save"</Button>
                                 </Group>
@@ -447,12 +493,43 @@ pub fn NotificationsPage() -> impl IntoView {
 
 #[cfg(test)]
 mod tests {
-    use super::{count_text, kind_label, mark_body, when};
+    use super::{
+        MarkWhat, Notification, NotificationList, count_text, kind_label, mark_body, newest_unread,
+        when,
+    };
 
     #[test]
-    fn the_body_marks_one_or_all() {
-        assert_eq!(mark_body(Some("x")), serde_json::json!({"ids": ["x"]}));
-        assert_eq!(mark_body(None), serde_json::json!({"all": true}));
+    fn the_body_marks_one_or_all_up_to_the_newest() {
+        assert_eq!(
+            mark_body(&MarkWhat::One("x".into())),
+            serde_json::json!({"ids": ["x"]})
+        );
+        assert_eq!(
+            mark_body(&MarkWhat::AllUpTo("y".into())),
+            serde_json::json!({"all": true, "up_to": "y"})
+        );
+    }
+
+    #[test]
+    fn mark_all_takes_the_newest_unread_id() {
+        let row = |id: &str, read: bool| Notification {
+            id: id.into(),
+            kind: "mention".into(),
+            short_code: None,
+            text: "t".into(),
+            created_at: "2026-10-17T09:00:00Z".into(),
+            read_at: read.then(|| "2026-10-17T10:00:00Z".into()),
+        };
+        let list = NotificationList {
+            unread: 2,
+            items: vec![row("a", false), row("b", false), row("c", true)],
+        };
+        assert_eq!(newest_unread(&list).as_deref(), Some("a"));
+        let read = NotificationList {
+            unread: 0,
+            items: vec![row("c", true)],
+        };
+        assert_eq!(newest_unread(&read), None);
     }
 
     #[test]
@@ -467,6 +544,8 @@ mod tests {
             "p0_bug",
             "delivery_failing",
             "agent_key_revoked",
+            "claim_dropped",
+            "claim_stale",
         ] {
             assert_ne!(kind_label(kind), "Notification", "{kind}");
         }

@@ -1436,6 +1436,16 @@ impl KairosClient {
         self.get("/api/me/notifications").await
     }
 
+    /// `GET /api/me/notifications?before=` (KAIROS-T-0550): the next page
+    /// of the unread notifications of the caller, older than `before`.
+    pub async fn notifications_before(
+        &self,
+        before: &str,
+    ) -> Result<crate::types_notifications::NotificationList, Error> {
+        self.get(&format!("/api/me/notifications?before={before}"))
+            .await
+    }
+
     /// `GET /api/me/work` (KAIROS-T-0489): the work of the caller, in two
     /// lanes (initiatives and tasks).
     pub async fn my_work(&self) -> Result<crate::types_work::MyWork, Error> {
@@ -2665,6 +2675,13 @@ impl KairosClient {
     /// `POST /api/search` — full-text + filter + traverse composition.
     pub async fn search(&self, request: &SearchRequest) -> Result<SearchResponse, Error> {
         self.post_ok("/api/search", request).await
+    }
+
+    /// `POST /api/search` with a body as it is (KAIROS-T-0593): the server
+    /// judges each field, so a field that this client does not know still
+    /// goes to a server that knows it.
+    pub async fn search_raw(&self, body: &serde_json::Value) -> Result<SearchResponse, Error> {
+        self.post_ok("/api/search", body).await
     }
 
     // -- identity ------------------------------------------------------------------------------
