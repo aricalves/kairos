@@ -197,6 +197,7 @@ impl Deployment {
             database_url: scratch_url.clone(),
             pool_size: 16,
             pool_min_idle: 0,
+            job_pool_size: 6,
             bind_addr: "127.0.0.1:0".parse().expect("addr"),
             oidc_issuer_url: shape.issuer.then(|| ISSUER.to_string()),
             oidc_audience: shape.issuer.then(|| AUDIENCE.to_string()),

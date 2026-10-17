@@ -37,6 +37,7 @@
 //! is defense-in-depth for anything that bypasses it.
 
 use std::ops::{Deref, DerefMut};
+use std::time::Duration;
 
 use diesel_async::pooled_connection::bb8::{Pool, PooledConnection};
 use diesel_async::pooled_connection::{
@@ -52,6 +53,40 @@ pub type PgPool = Pool<AsyncPgConnection>;
 /// An owned checkout from the pool (`'static`: not borrowing the pool, so
 /// it can be moved into the reset task on drop).
 type OwnedConnection = PooledConnection<'static, AsyncPgConnection>;
+
+/// The longest a statement of a pooled connection runs (KAIROS-T-0614).
+/// A statement over it is cancelled, and the request fails with the error.
+pub const STATEMENT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The longest a statement of a pooled connection, or of the migration
+/// connection, waits for a lock (KAIROS-T-0614). The wait for the
+/// migration lock of [`crate::with_migration_lock`] is not under it.
+pub const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The longest a pooled connection stays idle inside an open transaction
+/// (KAIROS-T-0614). Postgres then closes the session, and the next
+/// checkout of the connection fails and opens a new one.
+pub const IDLE_IN_TRANSACTION_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The statement that sets the three timeouts of a pooled connection. Each
+/// pool runs it once on each NEW connection, not on each checkout: a
+/// session setting holds for the life of the connection, so a checkout
+/// pays nothing for it.
+pub fn session_timeouts_sql() -> String {
+    format!(
+        "SET statement_timeout = '{}s'; SET lock_timeout = '{}s'; \
+         SET idle_in_transaction_session_timeout = '{}s'",
+        STATEMENT_TIMEOUT.as_secs(),
+        LOCK_TIMEOUT.as_secs(),
+        IDLE_IN_TRANSACTION_TIMEOUT.as_secs()
+    )
+}
+
+/// The statement that sets [`LOCK_TIMEOUT`] alone: the migration connection
+/// runs long statements, so it gets no `statement_timeout`.
+pub fn lock_timeout_sql() -> String {
+    format!("SET lock_timeout = '{}s'", LOCK_TIMEOUT.as_secs())
+}
 
 /// Errors from building the pool or checking connections out.
 #[derive(Debug, thiserror::Error)]
@@ -100,9 +135,22 @@ impl TenantPool {
     /// first, so a dead connection fails there, and a live one is not
     /// asked twice. A 5 s `connection_timeout`, so a full pool answers
     /// with an error instead of 30 s of silence.
+    ///
+    /// KAIROS-T-0614: each new connection gets the timeouts of
+    /// [`session_timeouts_sql`] in its setup, one round trip per
+    /// connection and none per checkout.
     pub async fn new(database_url: &str, max_size: u32) -> Result<Self, PoolError> {
         let mut config = ManagerConfig::default();
-        config.custom_setup = Box::new(|url| Box::pin(crate::tls::establish(url)));
+        config.custom_setup = Box::new(|url| {
+            let url = url.to_owned();
+            Box::pin(async move {
+                let mut conn = crate::tls::establish(&url).await?;
+                conn.batch_execute(&session_timeouts_sql())
+                    .await
+                    .map_err(diesel::ConnectionError::CouldntSetupConfiguration)?;
+                Ok(conn)
+            })
+        });
         config.recycling_method = RecyclingMethod::Fast;
         let manager = AsyncDieselConnectionManager::<AsyncPgConnection>::new_with_config(
             database_url,

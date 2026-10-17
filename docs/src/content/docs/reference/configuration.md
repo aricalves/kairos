@@ -68,10 +68,13 @@ a deployment, use [`kairos login --email`](../cli/#kairos-login).
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
-| `KAIROS_POOL_SIZE` | integer | `16` | The connections of each of the two pools of a server: the async pool of the middleware and the blocking pool of the handlers and the jobs. A server holds up to twice this many connections, plus one for `LISTEN`. Size it against `max_connections` of PostgreSQL and the number of replicas. |
+| `KAIROS_POOL_SIZE` | integer | `16` | The connections of each of the two pools of a server: the async pool of the middleware and the blocking pool of the handlers. A server holds up to twice this many connections, plus the job pool and one for `LISTEN`. Size it against `max_connections` of PostgreSQL and the number of replicas. |
 | `KAIROS_POOL_MIN_IDLE` | integer | `2` | The connections the blocking pool opens at start and keeps idle, so the first requests after a start do not pay the connect. Capped at `KAIROS_POOL_SIZE`. |
+| `KAIROS_JOB_POOL_SIZE` | integer | `6` | The connections of the pool of the job worker and the jobs, at least 1. A burst of jobs fills this pool and leaves the handlers their pool. Raise it when you raise the job limits. |
 
-Neither pool pings a connection on checkout: every checkout sets `search_path` first, and a dead connection fails there. A checkout waits 5 seconds for a free connection, then fails the request.
+No pool pings a connection on checkout: every checkout sets `search_path` first, and a dead connection fails there. A checkout waits 5 seconds for a free connection, then fails the request.
+
+Each pool sets three timeouts on each new connection: `statement_timeout` 30 seconds, `lock_timeout` 5 seconds and `idle_in_transaction_session_timeout` 60 seconds. A statement that passes its timeout fails with the error of PostgreSQL, and the request reports it. The migration connection gets the `lock_timeout` alone, because a migration can run long. A replica that waits for the migration lock waits with no timeout.
 
 ### Local password accounts
 

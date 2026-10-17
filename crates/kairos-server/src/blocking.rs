@@ -43,11 +43,24 @@
 
 use diesel::connection::SimpleConnection;
 use diesel::pg::PgConnection;
-use diesel::r2d2::{ConnectionManager, Pool};
+use diesel::r2d2::{ConnectionManager, CustomizeConnection, Pool};
 use kairos_db::tenant::{is_valid_tenant_slug, tenant_schema_name};
 use tracing::Instrument as _;
 
 use crate::error::ApiError;
+
+/// Sets the timeouts of KAIROS-T-0614 (`kairos_db::pool::session_timeouts_sql`)
+/// on each connection the pool opens. `on_acquire` runs once when r2d2
+/// opens the connection, not on a checkout, so a checkout pays nothing.
+#[derive(Debug)]
+struct SessionTimeouts;
+
+impl CustomizeConnection<PgConnection, diesel::r2d2::Error> for SessionTimeouts {
+    fn on_acquire(&self, conn: &mut PgConnection) -> Result<(), diesel::r2d2::Error> {
+        conn.batch_execute(&kairos_db::pool::session_timeouts_sql())
+            .map_err(diesel::r2d2::Error::QueryError)
+    }
+}
 
 tokio::task_local! {
     /// The agent key of the request in scope (KAIROS-T-0359). Set by
@@ -102,6 +115,13 @@ impl BlockingTenantPool {
     /// round trip later than a ping and only when it is dead; a 5 s
     /// `connection_timeout`, so a full pool answers with an error instead
     /// of 30 s of silence.
+    ///
+    /// KAIROS-T-0614: each new connection gets `statement_timeout`,
+    /// `lock_timeout` and `idle_in_transaction_session_timeout`
+    /// ([`SessionTimeouts`]). A server builds two of these pools: one for
+    /// the handlers (`KAIROS_POOL_SIZE`) and one for the job worker and the
+    /// jobs (`KAIROS_JOB_POOL_SIZE`), so a burst of jobs leaves the
+    /// handlers their connections.
     pub fn with_min_idle(database_url: &str, max_size: u32, min_idle: u32) -> Self {
         let manager = ConnectionManager::<PgConnection>::new(database_url);
         let pool = Pool::builder()
@@ -109,6 +129,7 @@ impl BlockingTenantPool {
             .min_idle(Some(min_idle.min(max_size)))
             .test_on_check_out(false)
             .connection_timeout(std::time::Duration::from_secs(5))
+            .connection_customizer(Box::new(SessionTimeouts))
             .build_unchecked(manager);
         Self { pool }
     }
@@ -227,6 +248,13 @@ impl BlockingTenantPool {
             .map_err(ApiError::internal)?
         }
         .instrument(span)
+    }
+
+    /// The most connections this pool opens (`KAIROS_POOL_SIZE` for the
+    /// pool of the handlers, `KAIROS_JOB_POOL_SIZE` for the pool of the
+    /// jobs; KAIROS-T-0614).
+    pub fn max_size(&self) -> u32 {
+        self.pool.max_size()
     }
 
     /// Point-in-time `(total_connections, idle_connections)` for the r2d2
