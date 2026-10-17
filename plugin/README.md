@@ -158,8 +158,15 @@ The plugin gives each session the code index of the checkout (COLLIERY-T-1855, C
   job takes the list first, writes it to the log, runs the update, and clears the list only when
   the update succeeds. The update finds each changed file by its content hash, also with no
   list, so the list does not make the update faster today.
+- **The result of the last update.** After each update, the background job writes
+  `last-update.json` in the state folder: the exit code, the time, the command and the refusal.
+  The refusal is the last `error: ` line of the output of `kairos` (KAIROS-T-0519). The next
+  `index_update.py start` reads this file before it starts a new update. `active_work.py
+  compact` reads it after a compaction. When the update failed, each hook gives the agent one
+  line: the exit code, the refusal, the command to run again and the log. A success, no file, a
+  file that does not parse, or a result older than 7 days gives no line.
 - **The state** is outside the checkout: `~/.claude/kairos-index/<name>-<hash>/` holds
-  `changed-files`, `update.log` (and `update.log.1`) and `lock`. `KAIROS_INDEX_STATE_DIR`
+  `changed-files`, `update.log` (and `update.log.1`), `last-update.json` and `lock`. `KAIROS_INDEX_STATE_DIR`
   overrides the parent folder. Only one update runs at a time for each checkout.
 - Tests: `hooks/test_index_update.py` (also `bin/kairos-code`), part of `angreal test unit`.
 
