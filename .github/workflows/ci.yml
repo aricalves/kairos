@@ -17,6 +17,11 @@
 # a new push does not cancel the run of the commit before it. On a pull
 # request a new push cancels the old run.
 #
+# Merges to main go through the GitHub merge queue (KAIROS-T-0650). The
+# queue runs this workflow on its merge commit (`merge_group`), and `ci` is
+# the check that the ruleset of main requires. A queue run checks the parts
+# that the group changes against main, as a pull request does.
+#
 # Run one shard locally: `cargo nextest run --profile ci --partition hash:2/4`
 # with the compose stack up (`angreal services up`).
 
@@ -26,6 +31,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
+    types: [checks_requested]
 
 # A pull request: one group, and a new push cancels the old run. main: a
 # group for each commit, because GitHub keeps one waiting run per group and
@@ -65,10 +72,12 @@ jobs:
         id: filter
         env:
           EVENT: ${{ github.event_name }}
-          BASE: ${{ github.event.pull_request.base.sha }}
+          # A pull request diffs against its base; a merge queue run diffs
+          # against the main commit under the group.
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: |
           set -euo pipefail
-          if [ "${EVENT}" != "pull_request" ]; then
+          if [ "${EVENT}" = "push" ]; then
             # main: every gate, each commit.
             for part in rust web helm python; do echo "${part}=true" >> "$GITHUB_OUTPUT"; done
             # The release workflow builds the images of a tag.
@@ -485,14 +494,15 @@ jobs:
 
       # KAIROS-T-0039 (A-0015): the GUI must keep compiling to wasm.
       # `angreal web build` provisions the wasm32 target and trunk itself.
-      # The release profile (wasm-opt) runs on main; a pull request gets the
-      # debug profile, which compiles the same code faster.
+      # The release profile (wasm-opt) runs on main; a pull request and a
+      # merge queue run get the debug profile, which compiles the same code
+      # faster.
       - name: Gate 7 — GUI wasm build
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            angreal web build
-          else
+          if [ "${{ github.event_name }}" = "push" ]; then
             angreal web build --release
+          else
+            angreal web build
           fi
 
   # A pull request that changes the Dockerfile builds the hosted image for
