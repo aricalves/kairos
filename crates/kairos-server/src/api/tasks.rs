@@ -49,6 +49,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/api/tasks/{short_code}/release", post(release_task))
         .route("/api/tasks/{short_code}/cancel", post(cancel_task))
+        .route("/api/tasks/{short_code}/reopen", post(reopen_task))
         .route("/api/tasks/{short_code}/purge", post(purge_task))
         .route("/api/tasks/{short_code}/work-class", post(set_work_class))
         .route(
@@ -750,6 +751,10 @@ pub(crate) async fn set_state(
 /// reference to the old code in the text of the items changes to the new
 /// code, one time. A code in a URL or a path does not change. The response
 /// has the new code. Without `rename`, the task keeps its code.
+///
+/// A task in a done column (completed or cancelled) does not move: 422
+/// `TASK_DONE` (KAIROS-T-0564). Reopen it first
+/// (`POST /api/tasks/{short_code}/reopen`), then move it.
 #[utoipa::path(
     post,
     path = "/api/tasks/{short_code}/move",
@@ -760,7 +765,7 @@ pub(crate) async fn set_state(
         (status = 200, description = "Moved (new board, entry column)", body = dto::Task),
         (status = 403, description = "Missing manage_tasks on either board", body = dto::ErrorEnvelope),
         (status = 404, description = "Unknown short code or board", body = dto::ErrorEnvelope),
-        (status = 422, description = "SAME_BOARD | NOT_DELIVERY_BOARD | NO_ENTRY_COLUMN | RENAME_NOT_NEEDED (the code has the prefix of the target board)", body = dto::ErrorEnvelope),
+        (status = 422, description = "SAME_BOARD | NOT_DELIVERY_BOARD | NO_ENTRY_COLUMN | RENAME_NOT_NEEDED (the code has the prefix of the target board) | TASK_DONE (the task is in a done column: reopen it first) | PARENT_NOT_ACTIVE", body = dto::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn move_task(
@@ -1077,6 +1082,49 @@ pub(crate) async fn cancel_task(
             )?;
             crate::cancel::cancel(conn, &slug, task.id, task.board_id, &body.reason, user)?;
             crate::agent_triage::record(conn, &auth, task.id, triaged)?;
+            let task = load(conn, &task.short_code, Liveness::LiveOnly)?.into_dto();
+            embed(conn, task)
+        })
+        .await?;
+    Ok(Json(task))
+}
+
+/// Reopen a done task (KAIROS-T-0564): a completed task or a cancelled
+/// task. The task moves to the first column of its board that is not done,
+/// by position. On a seeded delivery board, that column is Backlog.
+///
+/// The transition rules of the board do not apply. The board policy
+/// `parent_gate` applies to that column, as for a transition. The reopen
+/// removes the cancel mark, and the history keeps the reason. The event is
+/// `item_transitioned`. No body.
+///
+/// Requires `transition_items` on the board of the task, the capability
+/// of a move. The creator of the task gets no right here.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{short_code}/reopen",
+    tag = "tasks",
+    params(("short_code" = String, Path, description = "Task short code")),
+    responses(
+        (status = 200, description = "Reopened: the task is in the first column that is not done", body = dto::Task),
+        (status = 403, description = "Missing capability", body = dto::ErrorEnvelope),
+        (status = 404, description = "Unknown short code", body = dto::ErrorEnvelope),
+        (status = 422, description = "TASK_NOT_DONE (the task is not in a done column), NO_OPEN_COLUMN (each column of the board is done), or PARENT_NOT_ACTIVE (the column holds claims and the initiative is not active)", body = dto::ErrorEnvelope),
+    ),
+)]
+pub(crate) async fn reopen_task(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Extension(tenant): Extension<TenantContext>,
+    Path(short_code): Path<String>,
+) -> Result<Json<dto::Task>, ApiError> {
+    let user = auth.user_id;
+    let slug = tenant.slug.clone();
+    let task = state
+        .blocking
+        .run(&tenant.slug, move |conn| {
+            let task = load(conn, &short_code, Liveness::LiveOnly)?;
+            crate::reopen::reopen(conn, &slug, task.id, task.board_id, user)?;
             let task = load(conn, &task.short_code, Liveness::LiveOnly)?.into_dto();
             embed(conn, task)
         })

@@ -85,6 +85,29 @@ deployment has no vectors yet, or has just changed models. The answer is real bu
 thinner — it will have missed work phrased differently — and it tells you so
 rather than letting you assume otherwise.
 
+## How the text half is stored
+
+The text half of retrieval is PostgreSQL full-text search. The `q` of
+`search` uses it too. Each item has one row in the table `item_search`. The
+row holds a weighted vector of the words of the item. The title has weight A
+and the content has weight B, so a title match ranks above a body match.
+
+Triggers on the five item tables write the row. They write it in the same
+transaction as the change, so the vector is never out of date. A create
+writes the row, and a purge deletes it. A change to the title or the content
+writes a new vector. A transition, an archive or a restore does not write it.
+
+A GIN index on the stored vector finds the matches. The rank (`ts_rank_cd`)
+reads the stored vector too. So a search does not read the content of an
+item again. Before this table, the index held no vector. Each search read
+the content of each match two times, once to match and once to rank. On a
+test tenant with 900 matching tasks, a search of 100 tasks took 1.45 s. Now
+it takes 87 ms.
+
+An edit of the content also costs less. The item tables have no index on the
+content now. So PostgreSQL can often write an edit as a HOT update, which
+adds no index entry.
+
 ## Confirming makes it better
 
 When a suggestion is right, confirming it draws the edge for real. That is not

@@ -3,8 +3,8 @@ title: "MCP tools"
 ---
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-seventy-one tools. A drift gate in the test suite
-asserts that `tools/list` returns these seventy-one and no others. The same
+seventy-two tools. A drift gate in the test suite
+asserts that `tools/list` returns these seventy-two and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -22,7 +22,7 @@ organization.
 
 | URL | Profile | Tools |
 |---|---|---|
-| `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory, claims, notifications, the scales and templates, team pages to read: 40 tools. |
+| `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory, claims, notifications, the scales and templates, team pages to read: 41 tools. |
 | `/mcp?profile=admin` | admin | Teams, boards, columns and transitions, grants, metadata definitions and templates, dispatch rules and agent triage, the writes of team pages, org read tokens, delete and rebuild of repositories, board flow, purge: the other 31 tools. |
 | `/mcp?profile=all` | all | Each tool. |
 
@@ -37,8 +37,8 @@ The work tools:
   `set_metadata`;
 - links and fields: `link_items`, `unlink_items`, `propose_edge`,
   `set_repository`, `set_work_class`, `set_team`, `clear_team`;
-- the end of an item: `cancel_item`, `delete_item`, `restore_item`,
-  `archive_completed`;
+- the end of an item: `cancel_item`, `reopen_item`, `delete_item`,
+  `restore_item`, `archive_completed`;
 - repositories: `list_repositories`, `get_repository`, `add_repository`,
   `update_repository`;
 - claims and notifications: `claim_item`, `hand_off_item`, `release_item`,
@@ -95,7 +95,9 @@ Codes an agent can receive, and what each means.
 | `CLAIMED` | A `claim_item` of a task that a different person holds. The text names the holder. |
 | `NO_OWNER` | A `release_item` of a strategy or an initiative that has no owner. |
 | `NOT_BOARD_MEMBER` | A `hand_off_item` of a strategy or an initiative to a person who is not a member of the board of the item. |
-| `TASK_DONE` | A `cancel_item` of a task that is in a done column. |
+| `TASK_DONE` | A `cancel_item` or a `move_item` of a task that is in a done column. Reopen the task first: `reopen_item`. |
+| `TASK_NOT_DONE` | A `reopen_item` of a task that is not in a done column. |
+| `NO_OPEN_COLUMN` | A `reopen_item` of a task whose board has only done columns. |
 | `NO_DONE_COLUMN` | A `cancel_item` of a task whose board has no done column. |
 | `AGENT_TRIAGE_OFF` | An agent's triage of intake on a board that lets a person decide. Intake is a support-lane task in the entry column. Its triage is `set_work_class`, `transition_item`, `move_item` or `cancel_item`. Write the proposal with `append_note`. |
 
@@ -1335,6 +1337,10 @@ The task keeps its repository. The move does not look at the repository.
 The entry column of the target board can hold claims. Then the policy
 `parent_gate` of the target board applies, as for `transition_item`.
 
+A task in a done column does not move: the refusal is `TASK_DONE`. A move
+would put a completed or cancelled task live on the other board. Reopen the
+task first with [`reopen_item`](#reopen_item). Then move it.
+
 Column-to-column moves on an item's own board are `transition_item`, not this
 tool.
 
@@ -1540,8 +1546,9 @@ the done flag, by position. A cancel ends the [claim](../glossary/#claim) of
 the task. The activity log gets a row `cancel` with the reason.
 
 `get_item`, `board_items` (the mark `[cancelled]`) and the board of the GUI
-show the mark. A move of the task out of the done column removes the mark. The
-activity log keeps the reason.
+show the mark. [`reopen_item`](#reopen_item) brings the task back and removes
+the mark. A transition out of the done column also removes it. The activity
+log keeps the reason.
 
 Needs `transition_items` on the board of the task: the capability of a move.
 The creator of the task gets no right here.
@@ -1555,6 +1562,47 @@ Refuses:
 - `NO_DONE_COLUMN` for a board with no done column.
 - `AGENT_TRIAGE_OFF` for an agent's cancel of intake (a support-lane task in
   the entry column) while the board lets a person decide the triage.
+
+### `reopen_item`
+
+Reopens a done task: a completed task, or a
+[cancelled](../glossary/#cancel) one. The task moves to the first column of its
+board that is not done.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `short_code` | string | yes | — | The task's short code. The task must be in a done column. |
+
+The column is the first live column without the done flag, by position. On a
+default delivery board, that column is Backlog. The transition rules of the
+board do not apply: a default board has no transition out of Completed. The
+policy `parent_gate` applies when the column holds claims, as for
+`transition_item`.
+
+The rest is the same as a transition. The activity log gets a row
+`transition`. The event is `item_transitioned`. The reopen removes the cancel
+mark, and the activity log keeps the reason. A completed blocker blocks again,
+and its dependants get `blocked_again`. A cancelled blocker never stopped
+blocking, so it sends no `blocked_again`.
+
+The result names the move:
+
+```text
+Reopened ACME-T-0012: Completed -> Backlog. The cancel mark is removed; the history keeps the reason.
+```
+
+Needs `transition_items` on the board of the task: the capability of a move.
+The creator of the task gets no right here.
+
+Refuses:
+
+- `NOT_FOUND` for an unknown short code or an archived task.
+- `VALIDATION` for an item that is not a task.
+- `FORBIDDEN` without `transition_items`.
+- `TASK_NOT_DONE` for a task that is not in a done column.
+- `NO_OPEN_COLUMN` for a board with only done columns.
+- `PARENT_NOT_ACTIVE` when the column holds claims, the policy `parent_gate`
+  is on, and the initiative of the task is not active.
 
 ## Relationships
 
@@ -1786,6 +1834,8 @@ Three tools end an item in different ways:
   deleted: `restore_item` brings it back.
 - `cancel_item` (above) moves a task to done with a reason.
 - `purge_task` deletes a task for good. Nothing can bring it back.
+
+`reopen_item` (above) brings a done task back to work.
 
 `archive_completed` archives each task in the done columns of a board.
 

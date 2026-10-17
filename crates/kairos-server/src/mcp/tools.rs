@@ -3,7 +3,7 @@
 //! (KAIROS-I-0012), `restore_item` (KAIROS-A-0020), `related_work`
 //! (KAIROS-T-0191), `propose_edge` (KAIROS-T-0192), `set_repository`
 //! (COLLIERY-T-0220), and `add_repository` and `update_repository`
-//! (COLLIERY-T-0266); later tasks added more (71 in all, in the profiles
+//! (COLLIERY-T-0266); later tasks added more (72 in all, in the profiles
 //! of `profiles.rs`, KAIROS-T-0454) — each a
 //! thin wrapper over the same `kairos-core`/`kairos-db` services the REST
 //! handlers call — through [`crate::blocking::BlockingTenantPool`], never
@@ -931,6 +931,14 @@ pub struct CancelItemParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
+pub struct ReopenItemParams {
+    /// The task's short code. The task must be in a done column.
+    pub short_code: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
 pub struct PurgeTaskParams {
     /// The task's current short code (a retired code is not followed).
     pub short_code: String,
@@ -1301,7 +1309,7 @@ pub struct SaveTemplateParams {
 }
 
 // ---------------------------------------------------------------------------
-// The tools (71; the list of each profile is asserted in tests/mcp.rs)
+// The tools (72; the list of each profile is asserted in tests/mcp.rs)
 // ---------------------------------------------------------------------------
 
 #[tool_router(vis = "pub(super)")]
@@ -4147,7 +4155,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Cancel a TASK the team will not do, with a `reason`: it moves to the done column with the mark \"cancelled\", from any column (the transition rules do not apply), and its claim ends. Moving it out of done removes the mark. Needs `transition_items` on its board. An empty reason, or a task already done (TASK_DONE), is refused. An agent's cancel of intake is refused with AGENT_TRIAGE_OFF while the board lets a person decide."
+        description = "Cancel a TASK the team will not do, with a `reason`: it moves to the done column with the mark \"cancelled\", from any column (the transition rules do not apply), and its claim ends. `reopen_item` brings it back and removes the mark. Needs `transition_items` on its board. An empty reason, or a task already done (TASK_DONE), is refused. An agent's cancel of intake is refused with AGENT_TRIAGE_OFF while the board lets a person decide."
     )]
     pub async fn cancel_item(
         &self,
@@ -4177,13 +4185,39 @@ impl KairosMcp {
                 crate::cancel::cancel(conn, &slug, item.id, board_id, &params.reason, user)?;
             crate::agent_triage::record(conn, &auth, item.id, triaged)?;
             Ok(format!(
-                "Cancelled {}: {} -> {}.\nReason: {}\nTo undo the cancel, move the task out of \
-                 the done column.",
+                "Cancelled {}: {} -> {}.\nReason: {}\nTo undo the cancel: reopen_item.",
                 cancelled.short_code,
                 cancelled.from_column,
                 cancelled.to_column,
                 cancelled.mark.reason
             ))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Reopen a done TASK (completed or cancelled): it moves to the first column of its board that is not done (Backlog on a default board). The transition rules do not apply; the board policy parent_gate does, for a column that holds claims. The reopen removes the cancel mark (the history keeps the reason) and sends item_transitioned. Needs `transition_items` on its board. A task that is not done (TASK_NOT_DONE) is refused. A done task does not `move_item` to another board: reopen it first."
+    )]
+    pub async fn reopen_item(
+        &self,
+        Parameters(params): Parameters<ReopenItemParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
+            let Some(board_id) = item.board_id.filter(|_| item.item_type == ItemType::Task) else {
+                return Err(ApiError::validation(format!(
+                    "{} is a {}. You can reopen only a task. Move another item out of its \
+                     done column with transition_item, where the board allows it.",
+                    item.short_code, item.item_type
+                ))
+                .with_details(serde_json::json!({ "argument": "short_code" })));
+            };
+            let reopened = crate::reopen::reopen(conn, &slug, item.id, board_id, user)?;
+            Ok(crate::reopen::reopen_text(&reopened))
         })
         .await
     }

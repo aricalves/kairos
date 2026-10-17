@@ -215,6 +215,26 @@ pub enum BoardError {
         to_column: String,
         board_id: Uuid,
     },
+    /// `move_task` (KAIROS-T-0564): the task is in a done column. A done
+    /// task does not go live on another board by a move.
+    #[error(
+        "{task} is in the done column {column}. A done task does not move to another board. \
+         Reopen it first: reopen_item. Then move it."
+    )]
+    TaskDone { task: String, column: String },
+    /// [`reopen_task`] (KAIROS-T-0564): the task is not in a done column.
+    #[error(
+        "{task} is in the column {column}, and that column is not done. You can reopen only a \
+         task in a done column."
+    )]
+    TaskNotDone { task: String, column: String },
+    /// [`reopen_task`]: each live column of the board is done, so the task
+    /// has no column to go to.
+    #[error(
+        "The board of {task} has no column that is not done, so Kairos cannot reopen the task. \
+         An admin of the board must add a column first."
+    )]
+    NoOpenColumn { task: String, board_id: Uuid },
     /// Any other database error.
     #[error("The database gave an error: {0}.")]
     Database(#[from] DieselError),
@@ -1109,6 +1129,71 @@ fn moved_meanwhile(
     }
 }
 
+/// The tail of a column move of an item on its board, in the transaction
+/// of the move, after the write of the column: the shared path of a
+/// transition (`transition_item_fn!`) and of a reopen ([`reopen_task`]).
+/// `from` and `to` are the column ids and names; `claim_reason` names the
+/// move on a `release` row.
+fn after_column_move(
+    conn: &mut PgConnection,
+    entity_type: &'static str,
+    item_id: Uuid,
+    (from_column_id, from_name): (Uuid, &str),
+    (to_column_id, to_name): (Uuid, &str),
+    actor_id: Uuid,
+    claim_reason: &str,
+) -> Result<(), BoardError> {
+    log_activity(
+        conn,
+        actor_id,
+        ActivityAction::Transition,
+        Some(item_id),
+        entity_type,
+        format!("column:{from_name}->{to_name}"),
+    )?;
+    // KAIROS-T-0381: an item that goes into a done column no longer
+    // blocks. KAIROS-T-0568: an item that leaves a done column blocks
+    // again. The cancel mark is still there here, so a cancelled blocker
+    // sends no `blocked_again` (KAIROS-T-0567).
+    let was_done = crate::notifications::column_is_done(conn, from_column_id)?;
+    let is_done = crate::notifications::column_is_done(conn, to_column_id)?;
+    if !was_done && is_done {
+        crate::notifications::on_blockers_cleared(
+            conn,
+            &[item_id],
+            crate::notifications::Cleared::Done,
+            actor_id,
+        )?;
+    } else if was_done && !is_done {
+        crate::notifications::on_blocker_reopened(conn, item_id, actor_id)?;
+    }
+    // KAIROS-T-0359: a task in a claims column has a claim.
+    if entity_type == "task" {
+        crate::task_claims::after_column_change(
+            conn,
+            item_id,
+            to_column_id,
+            actor_id,
+            claim_reason,
+        )?;
+        // KAIROS-T-0362: a move out of done ends the cancel mark.
+        crate::task_cancellations::after_column_change(conn, item_id, to_column_id)?;
+        // KAIROS-T-0385: the dispatch rules of the column.
+        crate::dispatch::on_task_entered_column(conn, item_id, to_column_id, actor_id)?;
+    }
+    // KAIROS-T-0386: the GitHub write-back of its pull requests.
+    crate::writeback::on_item_changed(conn, item_id)?;
+    // KAIROS-T-0022: thin event (new column), delivered on commit.
+    crate::events::emit_item_event_by_id(
+        conn,
+        crate::events::EventKind::ItemTransitioned,
+        entity_type,
+        item_id,
+        actor_id,
+    )?;
+    Ok(())
+}
+
 /// Generate `transition_<entity>` for an item table with NOT NULL
 /// `board_id`/`column_id` (strategies, initiatives, tasks): load the item's
 /// board/column, validate via [`kairos_core::board::can_transition`], update
@@ -1171,63 +1256,14 @@ macro_rules! transition_item_fn {
                     return Err(moved_meanwhile(conn, board_id, now, to_column_id));
                 }
 
-                log_activity(
+                after_column_move(
                     conn,
-                    actor_id,
-                    ActivityAction::Transition,
-                    Some(item_id),
-                    $entity_type,
-                    format!("column:{from_name}->{to_name}"),
-                )?;
-                // KAIROS-T-0381: an item that goes into a done column no
-                // longer blocks. KAIROS-T-0568: an item that leaves a done
-                // column blocks again.
-                let was_done = crate::notifications::column_is_done(conn, from_column_id)?;
-                let is_done = crate::notifications::column_is_done(conn, to_column_id)?;
-                if !was_done && is_done {
-                    crate::notifications::on_blockers_cleared(
-                        conn,
-                        &[item_id],
-                        crate::notifications::Cleared::Done,
-                        actor_id,
-                    )?;
-                } else if was_done && !is_done {
-                    crate::notifications::on_blocker_reopened(conn, item_id, actor_id)?;
-                }
-                // KAIROS-T-0359: a task in a claims column has a claim.
-                if $entity_type == "task" {
-                    crate::task_claims::after_column_change(
-                        conn,
-                        item_id,
-                        to_column_id,
-                        actor_id,
-                        "transition",
-                    )?;
-                    // KAIROS-T-0362: a move out of done ends the cancel
-                    // mark.
-                    crate::task_cancellations::after_column_change(
-                        conn,
-                        item_id,
-                        to_column_id,
-                    )?;
-                    // KAIROS-T-0385: the dispatch rules of the column.
-                    crate::dispatch::on_task_entered_column(
-                        conn,
-                        item_id,
-                        to_column_id,
-                        actor_id,
-                    )?;
-                }
-                // KAIROS-T-0386: the GitHub write-back of its pull requests.
-                crate::writeback::on_item_changed(conn, item_id)?;
-                // KAIROS-T-0022: thin event (new column), delivered on
-                // commit.
-                crate::events::emit_item_event_by_id(
-                    conn,
-                    crate::events::EventKind::ItemTransitioned,
                     $entity_type,
                     item_id,
+                    (from_column_id, &from_name),
+                    (to_column_id, &to_name),
                     actor_id,
+                    "transition",
                 )?;
                 Ok(())
             })
@@ -1253,6 +1289,108 @@ transition_item_fn!(
     tasks,
     "task"
 );
+
+// ---------------------------------------------------------------------------
+// Reopening a done task (KAIROS-T-0564)
+// ---------------------------------------------------------------------------
+
+/// What [`reopen_task`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reopened {
+    pub short_code: String,
+    pub from_column: String,
+    pub to_column: String,
+    pub to_column_id: Uuid,
+    /// The task had the cancel mark, and the reopen removed it.
+    pub was_cancelled: bool,
+}
+
+/// Reopen a live task in a done column (completed or cancelled): it moves
+/// to the first live column of its board that is not done, by position
+/// (Backlog on a seeded delivery board). One transaction.
+///
+/// - The transition graph of the board does not apply. A done column has
+///   no edge out on a seeded board; the reopen is the way out.
+/// - The board policy `parent_gate` applies to the column, as for a
+///   transition (KAIROS-T-0641).
+/// - The rest is the path of a transition ([`after_column_move`]): a
+///   `transition` activity row, `blocked_again` for the dependants (none
+///   for a cancelled task, KAIROS-A-0038), the claim rule, the end of the
+///   cancel mark, the dispatch rules, and `item_transitioned`.
+///
+/// Who may reopen is the rule of the caller (`transition_items`).
+pub fn reopen_task(
+    conn: &mut PgConnection,
+    task_id: Uuid,
+    actor_id: Uuid,
+) -> Result<Reopened, BoardError> {
+    conn.transaction::<_, BoardError, _>(|conn| {
+        use crate::schema::{board_columns, tasks};
+
+        // KAIROS-T-0534: the lock holds a second move of the task until
+        // this one commits.
+        let row: Option<(String, Uuid, Uuid)> = tasks::table
+            .filter(tasks::id.eq(task_id))
+            .filter(tasks::deleted_at.is_null())
+            .select((tasks::short_code, tasks::board_id, tasks::column_id))
+            .for_update()
+            .first(conn)
+            .optional()?;
+        let (short_code, board_id, from_column_id) = row.ok_or(BoardError::ItemNotFound {
+            entity_type: "task",
+            id: task_id,
+        })?;
+        let (from_column, from_done): (String, bool) = board_columns::table
+            .filter(board_columns::id.eq(from_column_id))
+            .select((board_columns::name, board_columns::is_done))
+            .first(conn)?;
+        if !from_done {
+            return Err(BoardError::TaskNotDone {
+                task: short_code,
+                column: from_column,
+            });
+        }
+        let target: Option<(Uuid, String)> = board_columns::table
+            .filter(board_columns::board_id.eq(board_id))
+            .filter(board_columns::is_done.eq(false))
+            .filter(board_columns::deleted_at.is_null())
+            .order((board_columns::position.asc(), board_columns::id.asc()))
+            .select((board_columns::id, board_columns::name))
+            .first(conn)
+            .optional()?;
+        let (to_column_id, to_column) = target.ok_or_else(|| BoardError::NoOpenColumn {
+            task: short_code.clone(),
+            board_id,
+        })?;
+        // KAIROS-T-0641: the first open column can hold claims.
+        crate::board_policy::check_active_parent(conn, task_id, to_column_id)?;
+        let was_cancelled = crate::task_cancellations::mark_of(conn, task_id)?.is_some();
+
+        diesel::update(tasks::table.filter(tasks::id.eq(task_id)))
+            .set((
+                tasks::column_id.eq(to_column_id),
+                tasks::updated_by.eq(actor_id),
+                tasks::updated_at.eq(diesel::dsl::now),
+            ))
+            .execute(conn)?;
+        after_column_move(
+            conn,
+            "task",
+            task_id,
+            (from_column_id, &from_column),
+            (to_column_id, &to_column),
+            actor_id,
+            "reopen",
+        )?;
+        Ok(Reopened {
+            short_code,
+            from_column,
+            to_column,
+            to_column_id,
+            was_cancelled,
+        })
+    })
+}
 
 // ---------------------------------------------------------------------------
 // Moving a task to another delivery board (KAIROS-I-0012)
@@ -1321,6 +1459,25 @@ pub fn move_task_with(
         if from_board_id == to_board_id {
             return Err(BoardError::SameBoard(to_board_id));
         }
+        // KAIROS-T-0564: a done task (completed or cancelled) does not land
+        // live on the target board. It is reopened first, on its own board.
+        let (from_column, from_done): (String, bool) = crate::schema::board_columns::table
+            .filter(crate::schema::board_columns::id.eq(from_column_id))
+            .select((
+                crate::schema::board_columns::name,
+                crate::schema::board_columns::is_done,
+            ))
+            .first(conn)?;
+        if from_done {
+            let task: String = dsl::tasks
+                .filter(dsl::id.eq(task_id))
+                .select(dsl::short_code)
+                .first(conn)?;
+            return Err(BoardError::TaskDone {
+                task,
+                column: from_column,
+            });
+        }
         let target: Option<Board> = boards_dsl::boards
             .filter(boards_dsl::id.eq(to_board_id))
             .filter(boards_dsl::deleted_at.is_null())
@@ -1364,8 +1521,9 @@ pub fn move_task_with(
             actor_id,
             "board_move",
         )?;
-        // KAIROS-T-0362: the entry column is not done (or it is, and the
-        // mark stays).
+        // KAIROS-T-0362: the task was not done (KAIROS-T-0564). The entry
+        // column can be done on a board that an admin set so; the rule is
+        // the same.
         crate::task_cancellations::after_column_change(conn, task_id, to_column_id)?;
         let renamed = if rename {
             let target_slug = target.slug.clone();

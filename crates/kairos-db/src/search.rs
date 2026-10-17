@@ -26,15 +26,18 @@
 //!    followed (their live descendants stay reachable); visibility is
 //!    enforced at type resolution and hydration.
 //! 2. **Full-text `q`** (if present): a condition of the ranking query
-//!    (step 5), `tsv @@ websearch_to_tsquery('english', $q)` on the tsv
-//!    expression of the `idx_*_tsv` GIN indexes — chosen over
+//!    (step 5), `s.tsv @@ websearch_to_tsquery('english', $q)` on the
+//!    stored vector of `item_search` (KAIROS-T-0624), which each arm joins
+//!    by id and type — `websearch_to_tsquery` chosen over
 //!    `plainto_tsquery` because it accepts arbitrary end-user input without
-//!    ever erroring and supports quoted phrases, `OR`, and `-negation`. The
-//!    expression is the one of the `searchable_items` view (S-0004),
-//!    character for character, so the index serves it. Since KAIROS-T-0157
-//!    the query spells `deleted_at IS NULL` only when
-//!    `filter.include_deleted` is absent (KAIROS-A-0020 rule 2); the
-//!    indexes are not partial, so both modes are index-served.
+//!    ever erroring and supports quoted phrases, `OR`, and `-negation`.
+//!    Triggers on the five item tables write the vector when the title or
+//!    the content changes; its GIN index `idx_item_search_tsv` serves the
+//!    match, and `ts_rank_cd` reads the stored vector, so no row is
+//!    tokenized at search time. Since KAIROS-T-0157 the query spells
+//!    `deleted_at IS NULL` only when `filter.include_deleted` is absent
+//!    (KAIROS-A-0020 rule 2); `item_search` has a row for archived items
+//!    too, so both modes are index-served.
 //!
 //!    A `q` that is a short code (any case) also matches the item with that
 //!    code, and the item of that code when it is retired (COLLIERY-T-3100):
@@ -638,13 +641,6 @@ fn model_work_class(work_class: SearchWorkClass) -> WorkClass {
     }
 }
 
-/// The weighted tsvector of an item: the expression of the `idx_*_tsv`
-/// GIN indexes and of `searchable_items` (migration 2026-09-23-000004),
-/// character for character, so that the planner serves `@@` from the
-/// index.
-const TSV: &str = "(setweight(to_tsvector('english', coalesce(title, '')), 'A') \
-                   || setweight(to_tsvector('english', coalesce(content, '')), 'B'))";
-
 /// The text part of a search: `q` and the ids of the item whose code is
 /// `q` ([`code_match_ids`]).
 struct TextMatch {
@@ -803,9 +799,11 @@ impl Ranking<'_> {
                     wheres.push(format!("id = ANY({ids})"));
                 }
                 if let Some((q, codes)) = &text {
-                    let matches = format!("{TSV} @@ websearch_to_tsquery('english', {q})");
+                    // Both terms read `s`, so a BitmapOr of the GIN index
+                    // and the primary key of `item_search` can serve them.
+                    let matches = format!("s.tsv @@ websearch_to_tsquery('english', {q})");
                     wheres.push(match codes {
-                        Some(codes) => format!("({matches} OR id = ANY({codes}))"),
+                        Some(codes) => format!("({matches} OR s.item_id = ANY({codes}))"),
                         None => matches,
                     });
                 }
@@ -885,10 +883,10 @@ impl Ranking<'_> {
                     SortField::Relevance => match &text {
                         Some((q, codes)) => {
                             let rank =
-                                format!("ts_rank_cd({TSV}, websearch_to_tsquery('english', {q}))");
+                                format!("ts_rank_cd(s.tsv, websearch_to_tsquery('english', {q}))");
                             match codes {
                                 Some(codes) => format!(
-                                    "CASE WHEN id = ANY({codes}) \
+                                    "CASE WHEN s.item_id = ANY({codes}) \
                                      THEN CAST({CODE_MATCH_SCORE} AS real) ELSE {rank} END"
                                 ),
                                 None => rank,
@@ -902,10 +900,21 @@ impl Ranking<'_> {
                 } else {
                     format!(" WHERE {}", wheres.join(" AND "))
                 };
+                let entity_type = arm.item_type.entity_type();
+                // KAIROS-T-0624: the stored vector. Each item has a row
+                // (the triggers write it with the item), so the join
+                // drops no item.
+                let join = if text.is_some() {
+                    format!(
+                        " JOIN item_search s ON s.item_id = x.id \
+                         AND s.entity_type = '{entity_type}'"
+                    )
+                } else {
+                    String::new()
+                };
                 format!(
-                    "SELECT id, '{}'::text AS entity_type, short_code, {key} AS sort_key \
-                     FROM {} x{wheres}",
-                    arm.item_type.entity_type(),
+                    "SELECT x.id, '{entity_type}'::text AS entity_type, x.short_code, \
+                     {key} AS sort_key FROM {} x{join}{wheres}",
                     arm.table,
                 )
             })

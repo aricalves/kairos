@@ -18,8 +18,10 @@
 //!
 //! # When the mark ends
 //!
-//! A move of the task to a column that is not done (a transition, or a
-//! move to a different board) removes the mark ([`after_column_change`]).
+//! A move of the task to a column that is not done removes the mark
+//! ([`after_column_change`]): a reopen ([`crate::boards::reopen_task`],
+//! KAIROS-T-0564), or a transition on a board with an edge out of done. A
+//! done task does not move to a different board.
 //! The `cancel` row of `activity_log` stays, so the history keeps the
 //! reason. An archive does not remove the mark: a restored task is
 //! cancelled still.
