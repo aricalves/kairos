@@ -242,11 +242,13 @@ server refuses a value that is not an integer, with `VALIDATION`.
 | `ITEM_NOT_ON_BOARD` | 422 | The item has no board placement, so it cannot transition or be moved: an off-board ADR, and over MCP a document, which never has one | — |
 | `NOT_CLAIMABLE` | 422 | A hand-off or a release of the claim of a task that is not in a column that holds claims (Active) (KAIROS-T-0359) | — |
 | `NO_CLAIM` | 422 | A release of the claim of a task that has no claim | — |
-| `TASK_DONE` | 422 | A cancel of a task that is in a done column (KAIROS-T-0362) | — |
+| `TASK_DONE` | 422 | A cancel of a task that is in a done column (KAIROS-T-0362), or a move to another board of a task that is in a done column (KAIROS-T-0564). Reopen the task first | `short_code` and `fix` for a move |
 | `NO_DONE_COLUMN` | 422 | A cancel of a task whose board has no done column | — |
+| `TASK_NOT_DONE` | 422 | A reopen of a task that is not in a done column (KAIROS-T-0564) | — |
+| `NO_OPEN_COLUMN` | 422 | A reopen of a task whose board has only done columns | `board_id` |
 | `AGENT_TRIAGE_OFF` | 403 | An agent (agent key or service account) triaged intake — a support-lane task in the entry column: a lane change to planned, a move out of the entry column, a move to another board, or a cancel — on a board that lets a person decide (KAIROS-T-0428) | `board_id` and `setting` (`agents_decide`) |
 | `OWNER_REQUIRED` | 422 | On a board with the policy `owner_gate` on (KAIROS-T-0643): a move of an initiative into Active while it has no owner, or a release of the owner of an initiative in Active or Monitoring. Claim the initiative first, or hand it to a member of the board | `initiative`, `to_column`, `board_id`, `policy` (`owner_gate`) and `fix` for a move; `column`, `policy` and `fix` for a release |
-| `PARENT_NOT_ACTIVE` | 422 | A move of a task into a claims column (Active) while its parent initiative is not active, on a board with the policy `parent_gate` on (KAIROS-T-0641). A transition, a move to the board and a create get it. Move the initiative to Active first | `initiative`, `initiative_column`, `to_column`, `board_id`, `policy` (`parent_gate`) and `fix` |
+| `PARENT_NOT_ACTIVE` | 422 | A move of a task into a claims column (Active) while its parent initiative is not active, on a board with the policy `parent_gate` on (KAIROS-T-0641). A transition, a move to the board, a reopen and a create get it. Move the initiative to Active first | `initiative`, `initiative_column`, `to_column`, `board_id`, `policy` (`parent_gate`) and `fix` |
 | `COLUMN_NOT_EMPTY` | 422 | The column still holds live items | `item_count` — live items only; archived ones do not count — and `column` (`id`, `name`) |
 | `BOARD_NOT_EMPTY` | 422 | The board still holds live items | `item_count` and `items` — the blocking short codes, **capped at 20** even when `item_count` is higher. Deleting a team adds `board_id` and `board` (`id`, `name`, `slug`): the board that is not empty. A team of old data can have 2 or more delivery boards, and the delete of the team examines each |
 | `DUPLICATE_COLUMN_NAME` | 422 | A live column of that board already has the name | — |
