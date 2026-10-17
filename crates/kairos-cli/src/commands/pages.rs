@@ -51,7 +51,7 @@ pub enum PagesCommand {
         /// Repository slug (or UUID)
         #[arg(long, value_name = "REPOSITORY")]
         repo: String,
-        /// Do the unpublish (without it, the command only says what it does)
+        /// Required: without it, the command unpublishes nothing and exits 1
         #[arg(long)]
         confirm: bool,
         #[command(flatten)]
