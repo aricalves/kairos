@@ -221,6 +221,16 @@ async fn get_item_runs_few_statements_against_live_stack() {
         Some(json!({"uri": "https://example.com/wiki/rfc-42", "label": "RFC 42"})),
     )
     .await;
+    // The parent initiative stays in Discovery: turn the parent gate off
+    // for this board (KAIROS-T-0641), so the task can go to Active.
+    let board = send(Method::GET, "/api/boards/payments-delivery".into(), None).await;
+    let board_id = board["id"].as_str().expect("board id").to_string();
+    send(
+        Method::PATCH,
+        format!("/api/boards/{board_id}"),
+        Some(json!({"parent_gate": false})),
+    )
+    .await;
     for column in ["Todo", "Active"] {
         let to = column_id(&mut conn, "payments-delivery", column);
         send(

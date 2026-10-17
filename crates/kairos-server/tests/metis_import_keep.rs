@@ -493,6 +493,16 @@ async fn the_import_keeps_the_metis_numbers_with_the_board_prefix_against_live_s
     )
     .await;
     assert_eq!(code, 0, "apply:\n{out}\n{err}");
+    // KAIROS-T-0643 (Dylan, 2026-10-17): the initiative starts in Discovery
+    // and walks to its phase column. The walk to Active needs no owner: the
+    // run turns owner_gate off on the initiative board, and on after.
+    assert!(
+        out.contains("owner_gate: turned off on initiatives for the run.")
+            && out.contains("owner_gate: turned on again on initiatives."),
+        "{out}"
+    );
+    let initiatives = stack.get("/api/boards/initiatives").await;
+    assert_eq!(initiatives["owner_gate"], json!(true), "{initiatives}");
 
     // The codes use the board prefix and the Metis numbers.
     let ledger: Value =
@@ -592,6 +602,11 @@ async fn a_retired_code_stops_the_import_and_the_message_names_it_against_live_s
     )
     .await;
     assert_eq!(code, 2, "the import stops:\n{out}\n{err}");
+    // The policy is on again after a run that stops (KAIROS-T-0643).
+    assert!(
+        out.contains("owner_gate: turned on again on initiatives."),
+        "{out}"
+    );
     assert!(
         err.contains(
             "STOP: SKADI-T-0002 cannot keep its Metis number: the server refused the code \
