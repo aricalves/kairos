@@ -17,6 +17,7 @@
 //! authority: a refusal shows in the panel.
 
 use aurora_dark::components::{Alert, Button, Group, Panel, Select, Stack, Text};
+use aurora_dark::frame::ConfirmDialog;
 use aurora_dark::tokens::{ApiError, token};
 use leptos::prelude::*;
 use serde::Deserialize;
@@ -93,6 +94,15 @@ fn hand_off_options(members: &[Member], owner: Option<&str>) -> Vec<(String, Str
             )
         })
         .collect()
+}
+
+/// The question of the hand-off dialog for the chosen member `to`.
+/// Pure, host-tested.
+fn hand_off_question(members: &[Member], to: &str) -> String {
+    match members.iter().find(|m| m.user_id == to) {
+        Some(m) => format!("Kairos makes {} ({}) the owner.", m.display_name, m.email),
+        None => "Choose a member first.".to_string(),
+    }
 }
 
 /// The owner panel of a strategy or an initiative.
@@ -172,9 +182,13 @@ fn OwnerControls(
     on_moved: Callback<String>,
 ) -> impl IntoView {
     let auth = use_auth();
+    let title = format!("Hand off {code}?");
     let code = StoredValue::new(code);
     let owner = StoredValue::new(owner);
+    // KAIROS-T-0535: the picker starts with no member, and a dialog asks
+    // before the hand-off.
     let to = RwSignal::new(String::new());
+    let asking = RwSignal::new(false);
     let busy = RwSignal::new(false);
     let error = RwSignal::new(None::<ApiError>);
     let members = LocalResource::new(move || {
@@ -213,6 +227,7 @@ fn OwnerControls(
         });
     });
     let hand_off: Callback<()> = Callback::new(move |()| {
+        asking.set(false);
         let person = to.get_untracked();
         if person.is_empty() {
             return;
@@ -244,6 +259,10 @@ fn OwnerControls(
             }
         });
     });
+    let question = move || match members.get() {
+        Some(Ok(list)) => hand_off_question(&list, &to.get()),
+        _ => String::new(),
+    };
     view! {
         <Stack gap="xs">
             {powers.claim.then(|| view! {
@@ -258,17 +277,13 @@ fn OwnerControls(
                 }.into_any(),
                 Some(Ok(list)) => {
                     let options = owner.with_value(|o| hand_off_options(&list, o.as_deref()));
-                    if to.get_untracked().is_empty()
-                        && let Some((first, _)) = options.first()
-                    {
-                        to.set(first.clone());
-                    }
-                    let empty = options.is_empty();
                     view! {
                         <Group align="end" gap="sm" wrap=true>
-                            <Select label="Hand off to" option_pairs=options value=to/>
-                            <Button size="xs" disabled=move || busy.get() || empty
-                                on_click=hand_off>
+                            <Select label="Hand off to" placeholder="Choose a member"
+                                option_pairs=options value=to/>
+                            <Button size="xs"
+                                disabled=move || busy.get() || to.with(String::is_empty)
+                                on_click=Callback::new(move |_| asking.set(true))>
                                 "Hand off"
                             </Button>
                         </Group>
@@ -294,6 +309,16 @@ fn OwnerControls(
                     <Text size="sm">{api::error_text(&e)}</Text>
                 </Alert>
             })}
+            <ConfirmDialog
+                open=asking
+                title=title
+                confirm_label="Hand off"
+                danger=false
+                busy=busy
+                on_confirm=hand_off
+            >
+                <Text size="sm">{question}</Text>
+            </ConfirmDialog>
         </Stack>
     }
 }
@@ -356,5 +381,11 @@ mod tests {
             vec![("u2".to_string(), "Sam (sam@example.test)".to_string())]
         );
         assert_eq!(hand_off_options(&members, None).len(), 2);
+        // The dialog names the chosen member; no choice asks for one.
+        assert_eq!(
+            hand_off_question(&members, "u2"),
+            "Kairos makes Sam (sam@example.test) the owner."
+        );
+        assert_eq!(hand_off_question(&members, ""), "Choose a member first.");
     }
 }

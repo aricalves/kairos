@@ -25,9 +25,21 @@
 //!
 //! Also: an archive of the task ends its claim ([`drop_claims`]), and so
 //! does an admin who removes the flag from a column
-//! ([`drop_claims_in_column`]). A hand-off ([`hand_off`]) gives the claim
-//! to a named person, and a release ([`release`]) leaves the task in the
-//! column with no claim, free for anyone.
+//! ([`drop_claims_in_column`]). A person who leaves the organization loses
+//! each claim ([`drop_claims_of_user`], KAIROS-T-0531): the task stays in
+//! its column, free. A hand-off ([`hand_off`]) gives the claim to a named
+//! person, and a release ([`release`]) leaves the task in the column with
+//! no claim, free for anyone.
+//!
+//! # A stale claim
+//!
+//! A claim never ends by age. [`notify_stale_claims`] finds each claim
+//! with no write for some days: no change of the task (`tasks.updated_at`)
+//! and no change of its state (`task_state.updated_at`) since the claim
+//! started. It tells the holder and the owner of the initiative of the
+//! task (`claim_stale`), and records the report in
+//! `task_claims.stale_notified_at`. A claim gets one report for each quiet
+//! period: a write after the report starts a new period.
 //!
 //! Each change writes one `activity_log` row: `claim`, `hand_off` or
 //! `release`, with the task as the entity.
@@ -36,8 +48,8 @@
 //!   different person ended.
 //! - `hand_off`: `hand_off:<user id or none>-><user id>`.
 //! - `release`: `release:<user id> reason:<reason>`, where the reason is
-//!   `release`, `transition`, `board_move`, `service_account`, `archive`
-//!   or `column`.
+//!   `release`, `transition`, `board_move`, `service_account`, `archive`,
+//!   `column` or `left`.
 //!
 //! Who may hand off or release is the rule of the server; this module
 //! checks only the state of the task.
@@ -207,6 +219,7 @@ fn put_claim(
             dsl::user_id.eq(user_id),
             dsl::agent_key_id.eq(agent_key_id),
             dsl::claimed_at.eq(diesel::dsl::now),
+            dsl::stale_notified_at.eq(None::<DateTime<Utc>>),
         ))
         .returning(TaskClaim::as_returning())
         .get_result(conn)
@@ -439,4 +452,146 @@ pub(crate) fn drop_claims_in_column(
         .select(tasks::id)
         .load(conn)?;
     drop_claims(conn, &task_ids, actor_id, "column")
+}
+
+/// End each claim of the person `user_id`, who left the organization
+/// (KAIROS-T-0531). Each task stays in its column with no claim, free for
+/// anyone. The `release` row has the reason `left`. The members of the
+/// team of the board of each task are told (`claim_dropped`). Call it in
+/// the transaction that removes the membership. Returns the tasks.
+pub fn drop_claims_of_user(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+    actor_id: Uuid,
+) -> Result<Vec<Uuid>, DieselError> {
+    use crate::schema::task_claims::dsl;
+    let mut task_ids: Vec<Uuid> = dsl::task_claims
+        .filter(dsl::user_id.eq(user_id))
+        .select(dsl::task_id)
+        .load(conn)?;
+    task_ids.sort();
+    let mut ended = Vec::with_capacity(task_ids.len());
+    for task_id in task_ids {
+        // KAIROS-T-0640: lock the task row, as a claim, a hand-off and a
+        // release do. Then end the claim only when the person still has it.
+        use crate::schema::tasks;
+        tasks::table
+            .filter(tasks::id.eq(task_id))
+            .select(tasks::id)
+            .for_update()
+            .first::<Uuid>(conn)
+            .optional()?;
+        if claim_of(conn, task_id)?.is_none_or(|claim| claim.user_id != user_id) {
+            continue;
+        }
+        ended.push(task_id);
+    }
+    for task_id in &ended {
+        end_claim(conn, *task_id, actor_id, "left")?;
+        crate::notifications::on_claim_dropped(conn, *task_id, user_id, actor_id)?;
+        // KAIROS-T-0386: the comment shows the claim.
+        crate::writeback::on_item_changed(conn, *task_id)?;
+        events::emit_item_event_by_id(conn, EventKind::ItemUpdated, "task", *task_id, actor_id)?;
+    }
+    Ok(ended)
+}
+
+/// One claim that [`notify_stale_claims`] reports.
+#[derive(Debug, Clone, PartialEq, Eq, QueryableByName)]
+pub struct StaleClaim {
+    #[diesel(sql_type = diesel::sql_types::Uuid)]
+    pub task_id: Uuid,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub short_code: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub title: String,
+    /// The person who has the claim.
+    #[diesel(sql_type = diesel::sql_types::Uuid)]
+    pub user_id: Uuid,
+    /// The owner of the initiative of the task, when it has one.
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Uuid>)]
+    pub owner_id: Option<Uuid>,
+    /// The last write: the latest of the start of the claim, the change of
+    /// the task and the change of its state.
+    #[diesel(sql_type = diesel::sql_types::Timestamptz)]
+    pub last_write: DateTime<Utc>,
+}
+
+/// The last write of a claim `c` on the task `t`, with its state `s`
+/// (module docs).
+const LAST_WRITE_SQL: &str = "GREATEST(c.claimed_at, t.updated_at, \
+     COALESCE(s.updated_at, c.claimed_at))";
+
+/// Report each stale claim of the tenant of the current `search_path`
+/// (module docs): a claim with no write for `days` days before `now`, and
+/// no report since its last write. The holder and the owner of the
+/// initiative of the task are told (`claim_stale`), as Kairos (no actor).
+/// The claim stays. `days` 0 reports nothing. Returns the claims reported.
+pub fn notify_stale_claims(
+    conn: &mut PgConnection,
+    days: u32,
+    now: DateTime<Utc>,
+) -> Result<Vec<StaleClaim>, DieselError> {
+    use diesel::sql_types::Timestamptz;
+    if days == 0 {
+        return Ok(Vec::new());
+    }
+    let cutoff = now - chrono::Duration::days(i64::from(days));
+    conn.transaction(|conn| {
+        let stale: Vec<StaleClaim> = diesel::sql_query(format!(
+            "SELECT c.task_id, t.short_code, t.title, c.user_id, \
+                    (SELECT o.user_id FROM item_relationships r \
+                       JOIN initiatives i ON i.id = r.source_id AND i.deleted_at IS NULL \
+                       JOIN item_owners o ON o.item_id = i.id \
+                      WHERE r.target_id = t.id AND r.relationship = 'parent' \
+                      ORDER BY i.short_code LIMIT 1) AS owner_id, \
+                    {last} AS last_write \
+               FROM task_claims c \
+               JOIN tasks t ON t.id = c.task_id AND t.deleted_at IS NULL \
+               LEFT JOIN task_state s ON s.task_id = c.task_id \
+              WHERE {last} < $1 \
+                AND (c.stale_notified_at IS NULL OR c.stale_notified_at < {last}) \
+              ORDER BY t.short_code \
+              FOR UPDATE OF c SKIP LOCKED",
+            last = LAST_WRITE_SQL,
+        ))
+        .bind::<Timestamptz, _>(cutoff)
+        .load(conn)?;
+        for claim in &stale {
+            crate::notifications::on_claim_stale(conn, claim, now)?;
+            use crate::schema::task_claims::dsl;
+            diesel::update(dsl::task_claims.filter(dsl::task_id.eq(claim.task_id)))
+                .set(dsl::stale_notified_at.eq(Some(now)))
+                .execute(conn)?;
+        }
+        Ok(stale)
+    })
+}
+
+/// [`notify_stale_claims`] in each tenant (KAIROS-T-0531): the work of
+/// the periodic pass `stale-claims`. `progress` is called before each
+/// tenant. Returns the count of the claims reported.
+pub fn stale_claims_pass(
+    conn: &mut PgConnection,
+    days: u32,
+    now: DateTime<Utc>,
+    progress: &mut dyn FnMut(),
+) -> Result<u64, crate::tenant::TenantError> {
+    if days == 0 {
+        return Ok(0);
+    }
+    let mut reported = 0u64;
+    for tenant_info in crate::tenant::list_tenants(conn)? {
+        progress();
+        if !tenant_info.schema_exists {
+            continue;
+        }
+        let schema = crate::tenant::tenant_schema_name(&tenant_info.slug);
+        diesel::sql_query(format!("SET search_path TO \"{schema}\"")).execute(conn)?;
+        let result = notify_stale_claims(conn, days, now);
+        let reset = diesel::sql_query("SET search_path TO DEFAULT").execute(conn);
+        reported += result?.len() as u64;
+        reset?;
+    }
+    Ok(reported)
 }

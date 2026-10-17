@@ -9,7 +9,7 @@ use crate::commands::entities::{ListArgs, require_confirm};
 use crate::commands::repos::family_of;
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
-use crate::table::Table;
+use crate::table::{Table, print_page_footer};
 
 /// Operations on teams.
 #[derive(clap::Subcommand, Debug)]
@@ -193,9 +193,11 @@ impl TeamsCommand {
                 } else {
                     print!("{}", team_table(&envelope.items).render());
                 }
-                println!(
-                    "total: {} (limit {}, offset {})",
-                    envelope.total, envelope.limit, envelope.offset
+                print_page_footer(
+                    envelope.total,
+                    envelope.limit,
+                    envelope.offset,
+                    envelope.items.len(),
                 );
                 Ok(())
             }
