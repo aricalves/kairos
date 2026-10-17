@@ -1150,6 +1150,8 @@ async fn mcp_endpoint_against_live_stack() {
         .await;
     assert!(text.contains("INVALID_TRANSITION"), "{text}");
     assert!(text.contains("allowed_targets"), "{text}");
+    // KAIROS-T-0554: the message itself names the targets.
+    assert!(text.contains("an item can move to"), "{text}");
     assert!(
         text.contains(&valid_target),
         "allowed targets name {valid_target}: {text}"
@@ -1672,8 +1674,8 @@ async fn mcp_endpoint_against_live_stack() {
         .call_ok("get_item", json!({"short_code": filed}))
         .await;
     assert!(
-        text.contains("column: Backlog"),
-        "the request is in the entry column: {text}"
+        text.contains("column: Backlog · next: "),
+        "the request is in the entry column, and the line says where it can go: {text}"
     );
     assert!(
         text.contains("(task) · lane: support"),

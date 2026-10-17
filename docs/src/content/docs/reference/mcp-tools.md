@@ -144,7 +144,17 @@ Refuses: nothing beyond transport-level authentication.
 ### `my_boards`
 
 Boards in the organization, grouped by level, with column names and per-column
-item counts for the caller's delivery boards. Each ADR board names its team
+item counts for the caller's delivery boards. Each of those boards also has a
+`moves:` line (KAIROS-T-0554). The line shows each live column in its order.
+The flags of a column are in brackets: `entry`, `done`, `claims`, `WIP <limit>`.
+An arrow gives the columns a card can move to from it. Read the allowed moves
+here, not from a refused `transition_item`.
+
+```text
+  moves: Backlog [entry] → Todo | Todo → Active, Blocked | Active [claims, WIP 3] → Completed, Blocked | Blocked → Todo, Active | Completed [done]
+```
+
+Each ADR board names its team
 (`ADR board of the team <slug>`), or the organization. A team ADR board holds
 the delivery ADRs of the team, with the prefix of the team. Each board of a team
 of the caller has a `team capabilities:` line. This line shows the
@@ -573,6 +583,14 @@ supporting documents.
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `short_code` | string | yes | — | The item's short code. |
+
+The line `board` of a live item ends with `next:` (KAIROS-T-0554). It names
+the columns a card can move to from its column, in board order. With no
+transition from the column, it says `next: none`:
+
+```text
+- board: platform-delivery / column: Todo · next: Active, Blocked
+```
 
 A document has no column. It shows its owner board in the line `owner board`,
 for example `- owner board: platform-delivery`. Each document has an owner

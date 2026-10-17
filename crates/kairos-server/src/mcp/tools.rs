@@ -1714,6 +1714,8 @@ impl KairosMcp {
                 .map(|board| board.id)
                 .collect();
             let mut columns_of: HashMap<Uuid, Vec<String>> = HashMap::new();
+            let mut counts_of: HashMap<Uuid, Vec<kairos_db::board_items::ColumnCardCount>> =
+                HashMap::new();
             for column in kairos_db::board_items::live_column_counts(conn, &mine)
                 .map_err(ApiError::internal)?
             {
@@ -1721,6 +1723,23 @@ impl KairosMcp {
                     .entry(column.board_id)
                     .or_default()
                     .push(format!("{} ({})", column.name, column.count));
+                counts_of.entry(column.board_id).or_default().push(column);
+            }
+            // KAIROS-T-0554: the rules of each board of mine, so an agent
+            // does not learn them by failing: each live column with its
+            // flags (entry, done, claims, WIP) and the columns a card can
+            // move to from it. One query for the transitions of every board
+            // of mine; the columns come with the counts above.
+            let transitions = kairos_db::board_items::transitions_of_boards(conn, &mine)
+                .map_err(ApiError::internal)?;
+            let mut moves_of: HashMap<Uuid, String> = HashMap::new();
+            for (board_id, columns) in &counts_of {
+                let edges: Vec<(Uuid, Uuid)> = transitions
+                    .iter()
+                    .filter(|(board, _, _)| board == board_id)
+                    .map(|(_, from, to)| (*from, *to))
+                    .collect();
+                moves_of.insert(*board_id, moves_line(columns, &edges));
             }
 
             // COLLIERY-T-3102: an ADR board can have a team. The list names
@@ -1763,6 +1782,9 @@ impl KairosMcp {
                     out.push_str(" [mine]\n");
                     let rendered = columns_of.remove(&board.id).unwrap_or_default();
                     out.push_str(&format!("  columns: {}\n", rendered.join(" | ")));
+                    if let Some(moves) = moves_of.remove(&board.id) {
+                        out.push_str(&format!("  moves: {moves}\n"));
+                    }
                 } else {
                     out.push('\n');
                 }
@@ -2475,7 +2497,18 @@ impl KairosMcp {
                 // column it was put away in is exactly what this line is
                 // for (KAIROS-T-0161).
                 let column = column_label(conn, column_id)?;
-                out.push_str(&format!("- board: {} / column: {column}\n", board.slug));
+                out.push_str(&format!("- board: {} / column: {column}", board.slug));
+                // KAIROS-T-0554: where it can move to from here, for a live
+                // item on a live board.
+                if item.archived_at.is_none() {
+                    let next = next_columns(conn, column_id)?;
+                    if next.is_empty() {
+                        out.push_str(" · next: none (no transition starts here)");
+                    } else {
+                        out.push_str(&format!(" · next: {}", next.join(", ")));
+                    }
+                }
+                out.push('\n');
             }
             // KAIROS-T-0359: who has the task in Active.
             if item.item_type == ItemType::Task && item.archived_at.is_none() {
@@ -7946,5 +7979,117 @@ mod create_item_parity_tests {
             description.contains("bucket_type"),
             "the create_item description must mention bucket_type"
         );
+    }
+}
+
+/// The columns a card can move to from `column_id`, by board position
+/// (KAIROS-T-0554): the live targets of the transitions that start there.
+fn next_columns(conn: &mut PgConnection, column_id: Uuid) -> Result<Vec<String>, ApiError> {
+    use kairos_db::schema::{board_columns, board_transitions};
+    board_transitions::table
+        .inner_join(board_columns::table.on(board_columns::id.eq(board_transitions::to_column_id)))
+        .filter(board_transitions::from_column_id.eq(column_id))
+        .filter(board_columns::deleted_at.is_null())
+        .order(board_columns::position.asc())
+        .select(board_columns::name)
+        .load::<String>(conn)
+        .map_err(ApiError::internal)
+}
+
+/// The rules of a board on one line (KAIROS-T-0554): each live column in
+/// its order with its flags, then the columns a card can move to from it.
+/// `Backlog [entry] → Todo | Active [claims, WIP 3] → Completed, Blocked |
+/// Completed [done]`. The entry column is the first by position, the rule
+/// of `kairos_db::boards::entry_column`. Pure.
+fn moves_line(
+    columns: &[kairos_db::board_items::ColumnCardCount],
+    transitions: &[(Uuid, Uuid)],
+) -> String {
+    let mut ordered: Vec<&kairos_db::board_items::ColumnCardCount> = columns.iter().collect();
+    ordered.sort_by_key(|c| c.position);
+    let entry = ordered.first().map(|c| c.column_id);
+    let mut parts = Vec::with_capacity(ordered.len());
+    for column in &ordered {
+        let mut flags = Vec::new();
+        if entry == Some(column.column_id) {
+            flags.push("entry".to_string());
+        }
+        if column.is_done {
+            flags.push("done".to_string());
+        }
+        if column.claims {
+            flags.push("claims".to_string());
+        }
+        if let Some(limit) = column.wip_limit {
+            flags.push(format!("WIP {limit}"));
+        }
+        let mut part = column.name.clone();
+        if !flags.is_empty() {
+            part.push_str(&format!(" [{}]", flags.join(", ")));
+        }
+        let targets: Vec<&str> = ordered
+            .iter()
+            .filter(|c| {
+                transitions
+                    .iter()
+                    .any(|(from, to)| *from == column.column_id && *to == c.column_id)
+            })
+            .map(|c| c.name.as_str())
+            .collect();
+        if !targets.is_empty() {
+            part.push_str(&format!(" → {}", targets.join(", ")));
+        }
+        parts.push(part);
+    }
+    parts.join(" | ")
+}
+
+#[cfg(test)]
+mod moves_line_tests {
+    use super::moves_line;
+    use kairos_db::board_items::ColumnCardCount;
+    use uuid::Uuid;
+
+    fn column(
+        board: Uuid,
+        name: &str,
+        position: i32,
+        is_done: bool,
+        claims: bool,
+        wip_limit: Option<i32>,
+    ) -> ColumnCardCount {
+        ColumnCardCount {
+            board_id: board,
+            column_id: Uuid::new_v4(),
+            name: name.to_string(),
+            count: 0,
+            position,
+            is_done,
+            claims,
+            wip_limit,
+        }
+    }
+
+    #[test]
+    fn the_line_names_the_flags_and_the_targets_in_board_order() {
+        let board = Uuid::new_v4();
+        let columns = vec![
+            column(board, "Active", 2, false, true, Some(3)),
+            column(board, "Backlog", 0, false, false, None),
+            column(board, "Todo", 1, false, false, None),
+            column(board, "Completed", 3, true, false, None),
+        ];
+        let id = |name: &str| columns.iter().find(|c| c.name == name).unwrap().column_id;
+        let transitions = vec![
+            (id("Backlog"), id("Todo")),
+            (id("Todo"), id("Active")),
+            (id("Active"), id("Completed")),
+            (id("Active"), id("Todo")),
+        ];
+        assert_eq!(
+            moves_line(&columns, &transitions),
+            "Backlog [entry] → Todo | Todo → Active | Active [claims, WIP 3] → Todo, Completed | Completed [done]"
+        );
+        assert_eq!(moves_line(&[], &[]), "");
     }
 }

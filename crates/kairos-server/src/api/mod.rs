@@ -909,17 +909,16 @@ pub fn map_board_error(e: BoardError) -> ApiError {
                 "The {entity_type} {id} is not on a board, so it cannot move between columns."
             ),
         ),
-        BoardError::Transition(TransitionError::NotAllowed {
-            from,
-            to,
-            allowed_targets,
-        }) => ApiError::unprocessable(
-            "INVALID_TRANSITION",
-            format!(
-                "This board does not permit the transition from {:?} to {:?}.",
-                from.name, to.name
-            ),
-        )
+        // KAIROS-T-0554: the message keeps the sentence of the core that
+        // names the targets ("From Todo, an item can move to: Active,
+        // Blocked."), so an agent reads where it can go without the details.
+        BoardError::Transition(
+            ref error @ TransitionError::NotAllowed {
+                ref from,
+                ref to,
+                ref allowed_targets,
+            },
+        ) => ApiError::unprocessable("INVALID_TRANSITION", error.to_string())
         .with_details(json!({
             "from": {"id": from.id, "name": from.name},
             "to": {"id": to.id, "name": to.name},
