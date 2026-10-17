@@ -438,6 +438,18 @@ async fn my_boards_counts_in_the_database_against_live_stack() {
         2,
         "only my boards have a line of columns: {text}"
     );
+    // KAIROS-T-0554: the rules of each board of mine, on one line each.
+    assert_eq!(
+        text.matches("  moves: ").count(),
+        2,
+        "only my boards have a line of moves: {text}"
+    );
+    assert!(
+        text.contains("[entry]"),
+        "the entry column is marked: {text}"
+    );
+    assert!(text.contains(" → "), "the targets follow an arrow: {text}");
+    assert!(text.contains("[done]"), "the done column is marked: {text}");
     assert_eq!(
         with_two_boards, with_one_board,
         "the number of queries does not grow with the number of boards"
