@@ -47,6 +47,7 @@
 
 use std::collections::HashMap;
 
+use chrono::{DateTime, Utc};
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::result::Error as DieselError;
@@ -73,9 +74,20 @@ pub enum ClaimError {
     /// `release`: the task has no claim.
     #[error("The task {short_code} has no claim. Kairos changed nothing.")]
     NoClaim { short_code: String },
-    /// `hand_off`: the person has the claim already.
+    /// `hand_off` or `claim`: the person has the claim already.
     #[error("{name} has the claim on {short_code} already. Kairos changed nothing.")]
     AlreadyHolder { short_code: String, name: String },
+    /// `claim`: a different person has the claim (KAIROS-T-0528).
+    #[error(
+        "{holder} has the claim on {short_code} since {since}. Ask for a hand-off (hand_off_item), \
+         or wait for a release."
+    )]
+    Claimed {
+        short_code: String,
+        holder: String,
+        holder_id: Uuid,
+        since: DateTime<Utc>,
+    },
     /// `hand_off`: the target is not a person (a service account, or no
     /// user).
     #[error(
@@ -231,6 +243,9 @@ fn end_claim(
             task_id,
             format!("release:{} reason:{reason}", claim.user_id),
         )?;
+        // KAIROS-T-0533: the next step was the plan of the person who held
+        // the claim; the next holder starts from the facts.
+        crate::task_state::clear_next_step(conn, task_id)?;
     }
     Ok(ended)
 }
@@ -303,6 +318,46 @@ fn claimable_task(conn: &mut PgConnection, task_id: Uuid) -> Result<String, Clai
     Ok(short_code)
 }
 
+/// Take the claim of a task in a claims column that has no claim
+/// (KAIROS-T-0528). `user` must be a person. The claim carries the agent
+/// key of the request, as a claim by a move does. A task with a claim is
+/// refused with the holder.
+pub fn claim(conn: &mut PgConnection, task_id: Uuid, user: Uuid) -> Result<TaskClaim, ClaimError> {
+    conn.transaction::<_, ClaimError, _>(|conn| {
+        let short_code = claimable_task(conn, task_id)?;
+        if !is_person(conn, user)? {
+            return Err(ClaimError::NotAPerson(user.to_string()));
+        }
+        if let Some(existing) = claim_of(conn, task_id)? {
+            let name = display_names(conn, &[existing.user_id])?
+                .remove(&existing.user_id)
+                .unwrap_or_else(|| existing.user_id.to_string());
+            if existing.user_id == user {
+                return Err(ClaimError::AlreadyHolder { short_code, name });
+            }
+            return Err(ClaimError::Claimed {
+                short_code,
+                holder: name,
+                holder_id: existing.user_id,
+                since: existing.claimed_at,
+            });
+        }
+        let agent_key = crate::agent_mark::current(conn)?;
+        let claim = put_claim(conn, task_id, user, agent_key)?;
+        log(
+            conn,
+            user,
+            ActivityAction::Claim,
+            task_id,
+            format!("claim:{user}"),
+        )?;
+        // KAIROS-T-0386: the comment shows the claim.
+        crate::writeback::on_item_changed(conn, task_id)?;
+        events::emit_item_event_by_id(conn, EventKind::ItemUpdated, "task", task_id, user)?;
+        Ok(claim)
+    })
+}
+
 /// Give the claim of a task in a claims column to the person `to_user`
 /// (a hand-off). The task can have a claim or not. The claim has no agent
 /// key: the agent of the new person did not make it. `actor_id` is the
@@ -328,6 +383,8 @@ pub fn hand_off(
             return Err(ClaimError::AlreadyHolder { short_code, name });
         }
         let claim = put_claim(conn, task_id, to_user, None)?;
+        // KAIROS-T-0533: the next step was the previous holder's plan.
+        crate::task_state::clear_next_step(conn, task_id)?;
         let from = existing.map_or_else(|| "none".to_string(), |c| c.user_id.to_string());
         log(
             conn,
@@ -346,8 +403,8 @@ pub fn hand_off(
 }
 
 /// End the claim of a task in a claims column (a release). The task stays
-/// in the column with no claim, free for anyone. Returns the claim that
-/// ended.
+/// in the column with no claim, free for anyone: [`claim`] takes it.
+/// Returns the claim that ended.
 pub fn release(
     conn: &mut PgConnection,
     task_id: Uuid,

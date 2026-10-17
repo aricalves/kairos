@@ -198,6 +198,18 @@ pub struct ColumnCardCount {
     /// The number of live cards in the column, of the four types.
     #[diesel(sql_type = BigInt)]
     pub count: i64,
+    /// The order of the column on its board (KAIROS-T-0554).
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    pub position: i32,
+    /// The column counts as done (KAIROS-T-0554).
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    pub is_done: bool,
+    /// A move into the column gives a claim (KAIROS-T-0554).
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    pub claims: bool,
+    /// The WIP limit of the column, when it has one (KAIROS-T-0554).
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Integer>)]
+    pub wip_limit: Option<i32>,
 }
 
 /// The live columns of the boards `$1`, each with the count of its live
@@ -205,7 +217,8 @@ pub struct ColumnCardCount {
 /// comes to the server.
 const COLUMN_COUNTS_SQL: &str = "\
     SELECT c.board_id, c.id AS column_id, c.name, \
-           COALESCE(n.count, 0)::bigint AS count \
+           COALESCE(n.count, 0)::bigint AS count, \
+           c.position, c.is_done, c.claims, c.wip_limit \
     FROM board_columns c \
     LEFT JOIN ( \
         SELECT card.column_id, COUNT(*) AS count \
@@ -318,4 +331,26 @@ pub fn metadata_of_items(
         out.entry(id).or_default().push((slug, value));
     }
     Ok(out)
+}
+
+/// The transitions of the boards `board_ids`, as `(board, from, to)`
+/// column ids, in one query (KAIROS-T-0554). Removed columns are not
+/// filtered here: the caller matches them against its live columns.
+pub fn transitions_of_boards(
+    conn: &mut PgConnection,
+    board_ids: &[Uuid],
+) -> Result<Vec<(Uuid, Uuid, Uuid)>, DieselError> {
+    use crate::schema::board_transitions;
+    use diesel::prelude::*;
+    if board_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    board_transitions::table
+        .filter(board_transitions::board_id.eq_any(board_ids))
+        .select((
+            board_transitions::board_id,
+            board_transitions::from_column_id,
+            board_transitions::to_column_id,
+        ))
+        .load(conn)
 }

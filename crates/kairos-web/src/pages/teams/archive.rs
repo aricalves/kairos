@@ -41,7 +41,7 @@ pub(crate) fn ArchivePanel(
     let auth = use_auth();
     let team_id = StoredValue::new(team_id);
     let rows = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         async move { api::archived_pages(auth, &team_id.get_value()).await }
     });
     let busy = RwSignal::new(false);

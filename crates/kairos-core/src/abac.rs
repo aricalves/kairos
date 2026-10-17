@@ -334,7 +334,7 @@ pub fn structure_covers(required: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 /// What the server knows about one principal and one item when it decides
-/// an edit (COLLIERY-T-0228). The server loads the three facts; the
+/// an edit (COLLIERY-T-0228). The server loads the four facts; the
 /// decision is [`may_edit_item`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EditFacts {
@@ -345,6 +345,10 @@ pub struct EditFacts {
     pub holds_manage: bool,
     /// The principal is an admin of the organization.
     pub is_org_admin: bool,
+    /// The item is a task, and the principal has its claim (KAIROS-T-0532):
+    /// the person who works it, also through an agent key. `false` for an
+    /// archive or a restore ([`EditUse::Archive`]).
+    pub holds_claim: bool,
 }
 
 /// What an edit is for, when the server loads [`EditFacts`]
@@ -370,10 +374,14 @@ pub enum EditUse {
 /// 1. the principal created the item,
 /// 2. the principal holds `manage_<type>` on the authorization board of the
 ///    item,
-/// 3. the principal is an admin of the organization.
+/// 3. the principal is an admin of the organization,
+/// 4. the item is a task and the principal has its claim (KAIROS-T-0532),
+///    for an edit that is not an archive or a restore.
 ///
 /// Creation is the primary mechanism of ownership. A capability on a board
-/// is how a team shares that ownership. The rule applies to each item type:
+/// is how a team shares that ownership. The claim is the work: the person
+/// who works a task writes its notes, its state and its metadata, also
+/// when a different team owns the board. The rule applies to each item type:
 /// strategy, initiative, task, document, ADR. It reads who created the
 /// item and not where the item is, so the right stays with the creator when
 /// the item moves to a different board.
@@ -390,7 +398,7 @@ pub enum EditUse {
 /// the plan of that team. Creation grants nothing on a board, a team, a
 /// member, a capability, a repository or the configuration of the tenant.
 pub fn may_edit_item(facts: EditFacts) -> bool {
-    facts.created_item || facts.holds_manage || facts.is_org_admin
+    facts.created_item || facts.holds_manage || facts.is_org_admin || facts.holds_claim
 }
 
 /// The `manage_<type>` capability of an item type: the capability of the
@@ -900,23 +908,27 @@ mod tests {
         }
     }
 
-    /// COLLIERY-T-0228: each of the three facts is sufficient, and with
-    /// none of them there is no edit. All eight combinations.
+    /// COLLIERY-T-0228, KAIROS-T-0532: each of the four facts is
+    /// sufficient, and with none of them there is no edit. All sixteen
+    /// combinations.
     #[test]
-    fn the_edit_rule_needs_one_fact_of_three() {
+    fn the_edit_rule_needs_one_fact_of_four() {
         for created_item in [false, true] {
             for holds_manage in [false, true] {
                 for is_org_admin in [false, true] {
-                    let facts = EditFacts {
-                        created_item,
-                        holds_manage,
-                        is_org_admin,
-                    };
-                    assert_eq!(
-                        may_edit_item(facts),
-                        created_item || holds_manage || is_org_admin,
-                        "{facts:?}"
-                    );
+                    for holds_claim in [false, true] {
+                        let facts = EditFacts {
+                            created_item,
+                            holds_manage,
+                            is_org_admin,
+                            holds_claim,
+                        };
+                        assert_eq!(
+                            may_edit_item(facts),
+                            created_item || holds_manage || is_org_admin || holds_claim,
+                            "{facts:?}"
+                        );
+                    }
                 }
             }
         }
@@ -924,12 +936,21 @@ mod tests {
             created_item: false,
             holds_manage: false,
             is_org_admin: false,
+            holds_claim: false,
         }));
         // Creation alone: no capability, no role.
         assert!(may_edit_item(EditFacts {
             created_item: true,
             holds_manage: false,
             is_org_admin: false,
+            holds_claim: false,
+        }));
+        // The claim alone (KAIROS-T-0532).
+        assert!(may_edit_item(EditFacts {
+            created_item: false,
+            holds_manage: false,
+            is_org_admin: false,
+            holds_claim: true,
         }));
     }
 

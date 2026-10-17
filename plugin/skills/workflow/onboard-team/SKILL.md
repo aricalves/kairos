@@ -83,7 +83,7 @@ The delivery board gets the default columns and transitions. Change them only wh
 Each repository has exactly one owner team. For each repository of the team:
 
 - Not in the directory: `add_repository` with the team as owner.
-- In the directory with a different owner: ask the person. A move to this team is `kairos repos update --team` (MCP `update_repository` does not change the owner).
+- In the directory with a different owner: ask the person. A move to this team is `update_repository` with `team`, or `kairos repos update --team`. You need the right on the old team and on the new team.
 - The description says how to work in the repository (build, test, review). Fill it in with `update_repository` when it is empty.
 
 ## 5. The team page

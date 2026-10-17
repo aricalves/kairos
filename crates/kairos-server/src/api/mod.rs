@@ -361,7 +361,9 @@ pub(crate) fn manage_capability_of(item_type: ItemType) -> &'static str {
 ///    the item ([`abac::resolve_authorization_board`]: the board of the
 ///    item, or for a document the board that it names, or the board of
 ///    its `supports` parent when it names none, COLLIERY-T-0269),
-/// 3. the principal is an admin of the organization.
+/// 3. the principal is an admin of the organization,
+/// 4. the item is a task and the principal has its claim (KAIROS-T-0532),
+///    for an edit that is not an archive or a restore.
 ///
 /// An `impacts` link gives no right (COLLIERY-T-0269). A member of the
 /// team that owns a repository cannot edit a document because the
@@ -909,17 +911,16 @@ pub fn map_board_error(e: BoardError) -> ApiError {
                 "The {entity_type} {id} is not on a board, so it cannot move between columns."
             ),
         ),
-        BoardError::Transition(TransitionError::NotAllowed {
-            from,
-            to,
-            allowed_targets,
-        }) => ApiError::unprocessable(
-            "INVALID_TRANSITION",
-            format!(
-                "This board does not permit the transition from {:?} to {:?}.",
-                from.name, to.name
-            ),
-        )
+        // KAIROS-T-0554: the message keeps the sentence of the core that
+        // names the targets ("From Todo, an item can move to: Active,
+        // Blocked."), so an agent reads where it can go without the details.
+        BoardError::Transition(
+            ref error @ TransitionError::NotAllowed {
+                ref from,
+                ref to,
+                ref allowed_targets,
+            },
+        ) => ApiError::unprocessable("INVALID_TRANSITION", error.to_string())
         .with_details(json!({
             "from": {"id": from.id, "name": from.name},
             "to": {"id": to.id, "name": to.name},

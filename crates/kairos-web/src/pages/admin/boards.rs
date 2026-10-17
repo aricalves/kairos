@@ -138,12 +138,12 @@ pub fn AdminBoardsPage() -> impl IntoView {
     let busy = RwSignal::new(false);
 
     let boards = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         reload.get();
         api::list_boards(auth)
     });
     let teams = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         reload.get();
         api::list_teams(auth)
     });
@@ -152,7 +152,7 @@ pub fn AdminBoardsPage() -> impl IntoView {
     // capability holders admitted by the shell gate (KAIROS-T-0052). The
     // server enforces this regardless — the gate below is UX only.
     let whoami = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         crate::api::whoami(auth)
     });
     let is_admin = move || matches!(whoami.get(), Some(Ok(me)) if gating::is_org_admin(&me));
@@ -356,7 +356,7 @@ pub fn AdminBoardPage() -> impl IntoView {
     let to_name = RwSignal::new(String::new());
 
     let detail = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         reload.get();
         let id = board_id.get();
         async move { api::board_detail(auth, &id).await }
@@ -804,13 +804,13 @@ fn MembersPanel(
     let board = StoredValue::new(board_id);
 
     let members = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         reload.get();
         let id = board.get_value();
         async move { api::board_members(auth, &id).await }
     });
     let org_members = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         reload.get();
         api::list_org_members(auth)
     });

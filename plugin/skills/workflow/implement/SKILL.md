@@ -27,7 +27,7 @@ The task must be workable: acceptance criteria present and independently verifia
 
 **Read your notifications.** While you have unread notifications, each answer of a Kairos tool ends with a block `## Your notifications (N unread)`: the 5 newest, then `N more: call get_events`. A notification tells you of a claim handed off to you, a blocker of your claimed task that is done or archived, a task that you created that someone cancelled, a mention of your user name, or a P0 bug on the board of your team. `get_events` lists them with their ids. Act on each one that changes your work (a cleared blocker can make a task workable; a P0 bug can come before your pick), tell the lead about the others, then `mark_events_read` (`ids`, or `all: true`). Do not mark a notification read before you have read it.
 
-To give the task to a different person, `hand_off_item` (`to`: a user id, an email or a user name). To stop work on a task and leave it in Active for anyone, `release_item`. The claim ends by itself when the task leaves Active.
+To give the task to a different person, `hand_off_item` (`to`: a user id, an email, a user name, or `me`). To stop work on a task and leave it in Active for anyone, `release_item`. To take a free task in Active, `claim_item` (KAIROS-T-0528): a task that a different person holds is refused with the name of the holder. The claim ends by itself when the task leaves Active.
 
 ## Ground
 
@@ -43,7 +43,7 @@ An assertion that you make without evidence, in a note or in a reply, carries th
 
 The task item is your **working memory**. Every few significant steps, `append_note` findings, decisions, dead ends ruled out, and plan changes onto it (one call: no version, no anchor text; the note gets a heading with the date and your name) — the item must let any session, or another agent, resume cold after this conversation's context is gone. Reference commits, files, and other items by hash, path, or short code rather than restating them. End each note with a `Next step:` line: after a context compaction, the plugin gives you that line again for each Active task.
 
-The task also has a **live state**, separate from the notes: one current line that `get_item`, `board_items` and the card show. Write it with `set_state` (`branch`, `commit`, `pushed`, `pr_url`, `next_step`) after each commit, after each push, after a PR opens, and before any stop or hand-off. The write replaces the whole state: send every field each time. A note records what happened; the state says where the work is now.
+The task also has a **live state**, separate from the notes: one current line that `get_item`, `board_items` and the card show. Write it with `set_state` (`branch`, `commit`, `pushed`, `pr_url`, `next_step`) after each commit, after each push, after a PR opens, and before any stop or hand-off. The write is a patch (KAIROS-A-0029): a field that you do not send keeps its value, and `null` clears it. A note records what happened; the state says where the work is now.
 
 To find code, use the code tools of the `kairos-code` MCP server before you read files: `module_map`, `code_search`, `callers` and `callees` (and `symbol`, `references` and `path`). Then read only the files that they name.
 
@@ -65,7 +65,7 @@ The closing note lists what stays "not checked" (a manual check, a live run, a c
 
 Before Completed, ask: did this work decide anything an ADR or the spec should hold? A behaviour change, a rule, a boundary. Yes: record it with the "Record this decision" path of the `domain-modeling` skill (an ADR with `parent` this task, `impacts` the repository), and write its short code in the closing note. No: say so in the closing note ("No decision to record."). A decision in a note or in local memory only is lost to the next session.
 
-Then review the diff (the `code-review` skill), commit to the current branch, `set_state` with the final commit, pushed, the PR and the next step, and `transition_item` to **Completed**. When the work needs a change from a DIFFERENT team (an API to add, a client to update), send a request to that team. The recipe is [CROSS-TEAM-FILING.md](CROSS-TEAM-FILING.md): `create_item` (`board: <the delivery board of that team>`, `parent: <this task's initiative>`), then `link_items blocks` from the request to this task.
+Then review the diff (the `kairos:code-review` skill; the built-in `/code-review` posts nothing to the task), commit to the current branch, `set_state` with the final commit, pushed, the PR and the next step, and `transition_item` to **Completed**. When the work needs a change from a DIFFERENT team (an API to add, a client to update), send a request to that team. The recipe is [CROSS-TEAM-FILING.md](CROSS-TEAM-FILING.md): `create_item` (`board: <the delivery board of that team>`, `parent: <this task's initiative>`), then `link_items blocks` from the request to this task.
 
 ## Blocked
 

@@ -83,7 +83,7 @@ pub fn AdminPage() -> impl IntoView {
     let auth = use_auth();
     let whoami = LocalResource::new(move || {
         // Track the session so a fresh login refetches.
-        let _ = auth.token();
+        auth.track_session();
         crate::api::whoami(auth)
     });
     view! {
@@ -142,7 +142,7 @@ fn NotAdminGate(role: String) -> impl IntoView {
 pub fn AdminNavLink() -> impl IntoView {
     let auth = use_auth();
     let whoami = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         crate::api::whoami(auth)
     });
     view! {
@@ -213,7 +213,7 @@ fn SectionTabs(is_admin: bool, assigns_members: bool) -> impl IntoView {
 pub fn AdminHomePage() -> impl IntoView {
     let auth = use_auth();
     let whoami = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         crate::api::whoami(auth)
     });
     let card = |href: &'static str, title: &'static str, blurb: &'static str| {

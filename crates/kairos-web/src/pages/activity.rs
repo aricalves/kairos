@@ -508,18 +508,18 @@ pub fn ActivityPage() -> impl IntoView {
     let applied = RwSignal::new(FeedFilters::default());
 
     let members = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         fetch_members(auth)
     });
     let teams = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         teams_api::list_teams(auth)
     });
     // COLLIERY-T-0265: the team is a filter of the route, as each other
     // filter. The page reads the entries after the filters, and it removes
     // none.
     let feed = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let filters = applied.get();
         fetch_feed(auth, filters)
     });
@@ -782,24 +782,24 @@ pub fn ItemHistoryPage() -> impl IntoView {
     let refresh = RwSignal::new(0u32);
 
     let head = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let _ = refresh.get();
         fetch_item_head(auth, code.get())
     });
     let versions = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let _ = refresh.get();
         fetch_versions(auth, code.get())
     });
     let members = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         fetch_members(auth)
     });
 
     // Snapshot viewer ("View" on a row).
     let viewing = RwSignal::new(None::<i32>);
     let snapshot = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let code = code.get();
         let wanted = viewing.get();
         async move {
@@ -814,7 +814,7 @@ pub fn ItemHistoryPage() -> impl IntoView {
     let diff_from = RwSignal::new(None::<i32>);
     let diff_to = RwSignal::new(None::<i32>);
     let diff = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let code = code.get();
         let pair = (diff_from.get(), diff_to.get());
         async move {

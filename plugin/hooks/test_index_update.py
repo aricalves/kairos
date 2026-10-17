@@ -43,7 +43,7 @@ FAKE_KAIROS = """#!/bin/sh
 if [ -n "$FAKE_KAIROS_OLD" ]; then
   case " $* " in *" --link-only "*)
     echo "error: unexpected argument '--link-only' found" >&2
-    exit 2;;
+    exit 64;;
   esac
 fi
 if [ -n "$FAKE_KAIROS_EDIT" ]; then
@@ -305,8 +305,9 @@ class ChangedFiles(Harness):
         calls = [c for c in self.calls_text().splitlines() if c.startswith("args:")]
         self.assertEqual(calls, ["args: index update --link-only"] * 3)
 
-    def test_an_old_kairos_with_no_link_only_runs_the_plain_update(self):
-        # A kairos from before COLLIERY-T-2529 refuses --link-only with exit 2.
+    def test_a_kairos_with_no_link_only_runs_the_plain_update(self):
+        # A kairos that does not know --link-only refuses it with the usage
+        # code 64 (KAIROS-T-0588). The hook reads the code, not the log.
         self.edit("Edit", os.path.join(self.project, "src", "lib.rs"))
         self.run_hook("worker", env=self.env(FAKE_KAIROS_OLD="1"), args=(self.project,))
         calls = [c for c in self.calls_text().splitlines() if c.startswith("args:")]
@@ -315,13 +316,27 @@ class ChangedFiles(Harness):
         with open(os.path.join(self.state_dir(), "update.log")) as handle:
             log = handle.read()
         self.assertIn("This kairos has no --link-only option", log)
+        self.assertIn("kairos self-update", log)
         self.assertIn("=== exit code 0", log)
 
-    def test_another_exit_2_is_not_retried(self):
+    def test_an_auth_error_is_not_retried(self):
+        # Exit 2 is an auth error (KAIROS-A-0015), also with clap's text in
+        # the log: the hook no longer reads the log for it.
         self.edit("Edit", os.path.join(self.project, "src", "lib.rs"))
         self.run_hook("worker", env=self.env(FAKE_KAIROS_EXIT="2"), args=(self.project,))
         calls = [c for c in self.calls_text().splitlines() if c.startswith("args:")]
         self.assertEqual(calls, ["args: index update --link-only"])
+        self.assertEqual(self.changed(), ["src/lib.rs"])
+
+    def test_a_usage_error_without_link_only_is_not_retried(self):
+        self.edit("Edit", os.path.join(self.project, "src", "lib.rs"))
+        self.run_hook(
+            "worker",
+            env=self.env(FAKE_KAIROS_EXIT="64", KAIROS_INDEX_SUMMARIZE="1"),
+            args=(self.project,),
+        )
+        calls = [c for c in self.calls_text().splitlines() if c.startswith("args:")]
+        self.assertEqual(calls, ["args: index update"])
         self.assertEqual(self.changed(), ["src/lib.rs"])
 
     def test_a_failed_update_keeps_the_list(self):

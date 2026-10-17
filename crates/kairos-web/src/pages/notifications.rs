@@ -199,7 +199,7 @@ pub fn NotificationBell() -> impl IntoView {
     let busy = RwSignal::new(false);
     let error: RwSignal<Option<ApiError>> = RwSignal::new(None);
     let notifications = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         reload.get();
         list(auth)
     });
@@ -298,7 +298,7 @@ pub fn NotificationsPage() -> impl IntoView {
     let busy = RwSignal::new(false);
     let outcome: RwSignal<MutationOutcome> = RwSignal::new(None);
     let notifications = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         reload.get();
         list(auth)
     });
@@ -319,7 +319,7 @@ pub fn NotificationsPage() -> impl IntoView {
     let agent_key_revoked = RwSignal::new(true);
     let settings_reload = RwSignal::new(0u32);
     let settings = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         settings_reload.get();
         async move { crate::api::get_json::<NotificationSettings>(auth, SETTINGS).await }
     });

@@ -42,6 +42,7 @@ pub fn client(common: &Common) -> Result<KairosClient, CliError> {
             var,
             key,
         } => {
+            auth::note_deployment(&deployment);
             let mut client = auth::key_client(&deployment, var, key);
             if let Some(tenant) = common.tenant.clone() {
                 client = client.with_tenant(tenant);
@@ -51,6 +52,7 @@ pub fn client(common: &Common) -> Result<KairosClient, CliError> {
         Source::Cache { deployment, store } => (deployment, store),
     };
     let entry = credentials::entry_for(&store, &deployment)?;
+    auth::note_deployment(&deployment);
 
     let provider = Arc::new(CachedTokenProvider::new(path, deployment.clone()));
     let mut client = KairosClient::new(&deployment, provider);

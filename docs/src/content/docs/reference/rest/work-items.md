@@ -348,6 +348,27 @@ Request body (required): `application/json`, [`CancelTaskRequest`](../schemas/#c
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown short code |
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | VALIDATION (`reason` is empty; details.field names it), TASK_DONE (the task is in a done column), or NO_DONE_COLUMN (the board has no done column) |
 
+### `POST /api/tasks/{short_code}/claim`
+
+Take the claim of a task in Active that has no claim (KAIROS-T-0528).
+The caller must be a person. The claim names the caller, with the agent
+key of the request when an agent made it (KAIROS-A-0024).
+
+Requires `transition_items` on the board of the task, or the edit rule
+of the task (its creator, or `manage_tasks`). No body.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `short_code` | path | yes | `string` | Task short code |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`Task`](../schemas/#task) | The caller has the claim |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The caller has neither transition_items nor the right to edit the task |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown short code |
+| `409` | [`ErrorEnvelope`](../schemas/#errorenvelope) | CLAIMED (a different person has the claim; the details name the holder), or CONFLICT (the caller has it already) |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | NOT_CLAIMABLE (the task is not in Active), or VALIDATION (the caller is a service account) |
+
 ### `POST /api/tasks/{short_code}/hand-off`
 
 Give the claim of a task in Active to a person (KAIROS-T-0359,
@@ -438,8 +459,8 @@ current code. The route does not follow a retired code.
 ### `POST /api/tasks/{short_code}/release`
 
 End the claim of a task in Active (KAIROS-T-0359, KAIROS-A-0024). The
-task stays in Active with no claim. It is free for anyone. The next
-person who moves it to Active gets the claim.
+task stays in Active with no claim. It is free for anyone: a claim
+(`POST .../claim`) or a move to Active takes it.
 
 The person who has the claim may release it. Any other caller needs
 `transition_items` on the board of the task. No body.

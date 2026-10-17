@@ -9,11 +9,14 @@
 //!    line of the MCP text. A change by alice (with or without her agent
 //!    key) gives no warning.
 //! 3. A hand-off to bob makes the claim bob's.
-//! 4. A release leaves no claim, and the next person who moves the task
+//! 4. A release leaves no claim; a claim takes a free task (KAIROS-T-0528),
+//!    and the next person who moves the task
 //!    to Active (out and back in) gets the claim.
 //! 5. The claim ends when the task goes out of Active, to a column that
-//!    holds no claim. Blocked holds claims: the claim survives
+//!    holds no claim. Blocked keeps claims: the claim survives
 //!    Active -> Blocked -> Active (KAIROS-T-0529).
+//! 7. The holder of the claim may edit the task: notes, state, metadata;
+//!    not an archive (KAIROS-T-0532).
 //!
 //! And: a move to Active by a service account makes no claim; an archive
 //! of a claimed task ends the claim; a person with no claim and no
@@ -25,7 +28,7 @@
 
 mod common;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use diesel::pg::PgConnection;
@@ -36,9 +39,10 @@ use uuid::Uuid;
 use common::{
     AUDIENCE, ISSUER, base_config, recreate_scratch_db, spawn_server, user_token, with_database,
 };
+use kairos_client::EntityKind;
 use kairos_client::Error;
-use kairos_client::types::{CreateTaskRequest, Task};
-use kairos_client::types_meta::ActivityQuery;
+use kairos_client::types::{CreateTaskRequest, SetTaskStateRequest, Task};
+use kairos_client::types_meta::{ActivityQuery, UpdateMetadataRequest};
 use kairos_client::types_org::{AddTeamMemberRequest, BoardItemsQuery, CreateTeamRequest};
 use kairos_client::types_service_accounts::{CreateApiKeyRequest, CreateServiceAccountRequest};
 use kairos_db::models::{NewOrganizationMember, OrgRole};
@@ -549,6 +553,60 @@ async fn a_task_in_active_has_a_claim() {
         .call("release_item", json!({"short_code": task.short_code}))
         .await;
     assert!(error && text.starts_with("NO_CLAIM:"), "{text}");
+    // --- 4b. a free task is claimed (KAIROS-T-0528) --------------------------
+    // carol: no transition_items, not the creator.
+    let err = carol
+        .claim_task(&task.short_code)
+        .await
+        .expect_err("carol has no right");
+    assert!(matches!(err, Error::Forbidden { .. }), "{err}");
+    let claimed = bob
+        .claim_task(&task.short_code)
+        .await
+        .expect("bob claims the free task");
+    let claim = claimed.claim.expect("bob has the claim");
+    assert_eq!(claim.user_id, bob_id.to_string());
+    assert!(!claim.agent);
+    let err = bob
+        .claim_task(&task.short_code)
+        .await
+        .expect_err("bob has it already");
+    assert!(
+        matches!(&err, Error::Conflict { code, .. } if code == "CONFLICT"),
+        "{err}"
+    );
+    let err = alice
+        .claim_task(&task.short_code)
+        .await
+        .expect_err("bob holds it");
+    assert!(
+        matches!(&err, Error::Conflict { code, .. } if code == "CLAIMED"),
+        "{err}"
+    );
+    assert!(err.to_string().contains(&bob_name), "{err}");
+    // `me`: alice takes it with a hand-off to herself.
+    let mine = alice
+        .hand_off_task(&task.short_code, "me")
+        .await
+        .expect("hand-off to me");
+    assert_eq!(mine.claim.expect("alice").user_id, alice_id.to_string());
+    alice.release_task(&task.short_code).await.expect("release");
+    // Over MCP: the claim, then the refusal names the holder.
+    let text = bob_mcp
+        .call_ok("claim_item", json!({"short_code": task.short_code}))
+        .await;
+    assert!(
+        text.contains(&format!("Claimed {}", task.short_code))
+            && text.contains(&format!("- claim: {bob_name}")),
+        "{text}"
+    );
+    let (text, error) = alice_mcp
+        .call("claim_item", json!({"short_code": task.short_code}))
+        .await;
+    assert!(
+        error && text.starts_with("CLAIMED:") && text.contains(&bob_name),
+        "{text}"
+    );
     // From Todo: a different task.
     let second = alice
         .create_task(&new_task("From Todo"))
@@ -653,4 +711,68 @@ async fn a_task_in_active_has_a_claim() {
             .expect("count")
     };
     assert_eq!(claims, 0, "the archive ended the claim");
+
+    // --- 7. the holder of the claim may edit the task (KAIROS-T-0532) ------
+    // carol is an org member with no team and no grant. A hand-off gives
+    // her the claim; the claim gives her the edit rule: notes, state,
+    // metadata. Not an archive.
+    let fifth = alice.create_task(&new_task("Helped")).await.expect("task");
+    for column in ["Todo", "Active"] {
+        alice
+            .transition_task(&fifth.short_code, &to(column))
+            .await
+            .expect(column);
+    }
+    let err = carol
+        .append_note(EntityKind::Task, &fifth.short_code, "Not mine yet.")
+        .await
+        .expect_err("carol has no right before the claim");
+    assert!(matches!(err, Error::Forbidden { .. }), "{err}");
+    alice
+        .hand_off_task(&fifth.short_code, "carol@kairos.test")
+        .await
+        .expect("hand-off to carol");
+    carol
+        .append_note(EntityKind::Task, &fifth.short_code, "Mine now.")
+        .await
+        .expect("the holder appends a note");
+    let with_state = carol
+        .set_task_state(
+            &fifth.short_code,
+            &SetTaskStateRequest {
+                next_step: Some(Some("Run the tests.".into())),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("the holder sets the state");
+    assert_eq!(
+        with_state.state.and_then(|s| s.next_step).as_deref(),
+        Some("Run the tests.")
+    );
+    carol
+        .update_metadata(
+            EntityKind::Task,
+            &fifth.short_code,
+            &UpdateMetadataRequest {
+                values: BTreeMap::from([("priority".to_string(), Some("high".to_string()))]),
+            },
+        )
+        .await
+        .expect("the holder sets metadata");
+    let err = carol
+        .delete_task(&fifth.short_code)
+        .await
+        .expect_err("the claim gives no archive");
+    assert!(matches!(err, Error::Forbidden { .. }), "{err}");
+    // After her release the right is gone.
+    carol
+        .release_task(&fifth.short_code)
+        .await
+        .expect("release");
+    let err = carol
+        .append_note(EntityKind::Task, &fifth.short_code, "Not mine any more.")
+        .await
+        .expect_err("no claim, no right");
+    assert!(matches!(err, Error::Forbidden { .. }), "{err}");
 }

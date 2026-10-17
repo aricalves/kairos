@@ -213,7 +213,7 @@ pub struct CodeSequence {
 /// A field that is present, with its value or its null. With
 /// `#[serde(default)]`, a field that is absent is `None` and a null is
 /// `Some(None)`.
-fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+pub(crate) fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,

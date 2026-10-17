@@ -178,7 +178,7 @@ fn OwnerControls(
     let busy = RwSignal::new(false);
     let error = RwSignal::new(None::<ApiError>);
     let members = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let board_slug = board_slug.clone();
         async move {
             match (powers.hand_off, board_slug.as_deref()) {

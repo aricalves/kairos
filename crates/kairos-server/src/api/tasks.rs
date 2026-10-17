@@ -41,6 +41,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/api/tasks/{short_code}/transition", post(transition_task))
         .route("/api/tasks/{short_code}/move", post(move_task))
+        .route("/api/tasks/{short_code}/claim", post(claim_task))
         .route("/api/tasks/{short_code}/hand-off", post(hand_off_task))
         .route("/api/tasks/{short_code}/release", post(release_task))
         .route("/api/tasks/{short_code}/cancel", post(cancel_task))
@@ -872,7 +873,7 @@ pub(crate) async fn hand_off_task(
         .run(&tenant.slug, move |conn| {
             let task = load(conn, &short_code, Liveness::LiveOnly)?;
             crate::claims::require_claim_change(conn, &slug, task.id, task.board_id, user)?;
-            let to = crate::claims::resolve_person(conn, &slug, &body.to)?;
+            let to = crate::claims::resolve_person(conn, &slug, &body.to, user)?;
             kairos_db::task_claims::hand_off(conn, task.id, to, user)
                 .map_err(crate::claims::map_claim_error)?;
             let task = load(conn, &short_code, Liveness::LiveOnly)?.into_dto();
@@ -882,9 +883,50 @@ pub(crate) async fn hand_off_task(
     Ok(Json(task))
 }
 
+/// Take the claim of a task in Active that has no claim (KAIROS-T-0528).
+/// The caller must be a person. The claim names the caller, with the agent
+/// key of the request when an agent made it (KAIROS-A-0024).
+///
+/// Requires `transition_items` on the board of the task, or the edit rule
+/// of the task (its creator, or `manage_tasks`). No body.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{short_code}/claim",
+    tag = "tasks",
+    params(("short_code" = String, Path, description = "Task short code")),
+    responses(
+        (status = 200, description = "The caller has the claim", body = dto::Task),
+        (status = 403, description = "The caller has neither transition_items nor the right to edit the task", body = dto::ErrorEnvelope),
+        (status = 404, description = "Unknown short code", body = dto::ErrorEnvelope),
+        (status = 409, description = "CLAIMED (a different person has the claim; the details name the holder), or CONFLICT (the caller has it already)", body = dto::ErrorEnvelope),
+        (status = 422, description = "NOT_CLAIMABLE (the task is not in Active), or VALIDATION (the caller is a service account)", body = dto::ErrorEnvelope),
+    ),
+)]
+pub(crate) async fn claim_task(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Extension(tenant): Extension<TenantContext>,
+    Path(short_code): Path<String>,
+) -> Result<Json<dto::Task>, ApiError> {
+    let user = auth.user_id;
+    let slug = tenant.slug.clone();
+    let task = state
+        .blocking
+        .run(&tenant.slug, move |conn| {
+            let task = load(conn, &short_code, Liveness::LiveOnly)?;
+            crate::claims::require_claim_take(conn, &slug, task.id, task.board_id, user)?;
+            kairos_db::task_claims::claim(conn, task.id, user)
+                .map_err(crate::claims::map_claim_error)?;
+            let task = load(conn, &short_code, Liveness::LiveOnly)?.into_dto();
+            embed(conn, task)
+        })
+        .await?;
+    Ok(Json(task))
+}
+
 /// End the claim of a task in Active (KAIROS-T-0359, KAIROS-A-0024). The
-/// task stays in Active with no claim. It is free for anyone. The next
-/// person who moves it to Active gets the claim.
+/// task stays in Active with no claim. It is free for anyone: a claim
+/// (`POST .../claim`) or a move to Active takes it.
 ///
 /// The person who has the claim may release it. Any other caller needs
 /// `transition_items` on the board of the task. No body.
