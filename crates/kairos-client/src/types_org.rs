@@ -74,6 +74,13 @@ pub struct BoardColumn {
     #[serde(default)]
     #[schema(required = true)]
     pub claims: bool,
+    /// A task with a claim keeps it in this column, and a task with no
+    /// claim gets none here (KAIROS-T-0529). The Blocked column of a
+    /// delivery board has it. The default is for the client only: a
+    /// response of an older server has no `keeps_claims`.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub keeps_claims: bool,
     /// When this column was REMOVED from its board (RFC 3339), `null`
     /// while it is part of the board (KAIROS-T-0161, KAIROS-T-0164).
     ///
@@ -550,6 +557,12 @@ pub struct UpdateColumnRequest {
     /// tasks in the column end.
     #[serde(default)]
     pub claims: Option<bool>,
+    /// A task with a claim keeps it in this column, and a task with no
+    /// claim gets none here (KAIROS-T-0529). When the flag goes off, the
+    /// claims of the tasks in the column end, unless the column has
+    /// `claims` too.
+    #[serde(default)]
+    pub keeps_claims: Option<bool>,
     /// The WIP limit of the column (KAIROS-T-0371): a number above 0, or
     /// `null` to remove the limit. Leave it out to keep the limit.
     #[serde(
@@ -1274,6 +1287,7 @@ mod tests {
             updated_at: "2026-01-01T00:00:00Z".to_string(),
             is_done: false,
             claims: false,
+            keeps_claims: false,
             removed_at: None,
             wip_limit: None,
         };
