@@ -78,7 +78,7 @@ ignore it.
 | `event` | Emitted when |
 |---|---|
 | `item_created` | An item was created |
-| `item_updated` | An item's content changed (an edit, or a rollback) |
+| `item_updated` | An item's content changed (an edit, or a rollback) Also a write of the live state of a task (`set_state`, KAIROS-T-0533). |
 | `item_transitioned` | An item moved to another column of its own board |
 | `item_moved` | A task moved to another delivery board. Emitted **twice**: once for the board it left (`board_id` = the source, no `column_id`) and once for the board it joined, so both boards' subscribers re-fetch |
 | `item_deleted` | An item was soft-deleted (put away) |

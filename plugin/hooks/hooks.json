@@ -73,7 +73,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "^mcp__(plugin_kairos_)?kairos[A-Za-z0-9_-]*__(get_item|transition_item|edit_item|update_item|append_note)$",
+        "matcher": "^mcp__(plugin_kairos_)?kairos[A-Za-z0-9_-]*__(get_item|transition_item|edit_item|update_item|append_note|set_state)$",
         "hooks": [
           {
             "type": "command",

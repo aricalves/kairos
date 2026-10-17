@@ -2391,11 +2391,12 @@ Body of `PUT /api/tasks/{short_code}/state` (KAIROS-T-0506). Each field is optio
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `branch` | `string`, nullable | no | The branch of the work. |
-| `commit` | `string`, nullable | no | The last commit. |
-| `next_step` | `string`, nullable | no | What comes next. |
-| `pr_url` | `string`, nullable | no | The URL of the PR. |
-| `pushed` | `boolean` | no | True when the last commit is pushed. Default false. |
+| `branch` | `string`, nullable | no | The branch of the work. Absent: kept. `null`: cleared (KAIROS-T-0533). |
+| `commit` | `string`, nullable | no | The last commit. Absent: kept. `null`: cleared. |
+| `expected_updated_at` | `string`, nullable | no | The `updated_at` of the state you read (RFC 3339). A write against a state that changed since is refused with `CONFLICT` and the current state (KAIROS-T-0533). |
+| `next_step` | `string`, nullable | no | What comes next. Absent: kept. `null`: cleared. |
+| `pr_url` | `string`, nullable | no | The URL of the PR. Absent: kept. `null`: cleared. |
+| `pushed` | `boolean`, nullable | no | True when the last commit is pushed. Absent: kept. |
 
 The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
 

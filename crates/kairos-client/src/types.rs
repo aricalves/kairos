@@ -209,21 +209,46 @@ pub struct TaskState {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SetTaskStateRequest {
-    /// The branch of the work.
+    /// The branch of the work. Absent: kept. `null`: cleared (KAIROS-T-0533).
+    #[serde(
+        default,
+        deserialize_with = "crate::types_org::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schema(value_type = Option<String>, nullable)]
+    pub branch: Option<Option<String>>,
+    /// The last commit. Absent: kept. `null`: cleared.
+    #[serde(
+        default,
+        deserialize_with = "crate::types_org::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schema(value_type = Option<String>, nullable)]
+    pub commit: Option<Option<String>>,
+    /// True when the last commit is pushed. Absent: kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub branch: Option<String>,
-    /// The last commit.
+    pub pushed: Option<bool>,
+    /// The URL of the PR. Absent: kept. `null`: cleared.
+    #[serde(
+        default,
+        deserialize_with = "crate::types_org::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schema(value_type = Option<String>, nullable)]
+    pub pr_url: Option<Option<String>>,
+    /// What comes next. Absent: kept. `null`: cleared.
+    #[serde(
+        default,
+        deserialize_with = "crate::types_org::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schema(value_type = Option<String>, nullable)]
+    pub next_step: Option<Option<String>>,
+    /// The `updated_at` of the state you read (RFC 3339). A write against a
+    /// state that changed since is refused with `CONFLICT` and the current
+    /// state (KAIROS-T-0533).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub commit: Option<String>,
-    /// True when the last commit is pushed. Default false.
-    #[serde(default)]
-    pub pushed: bool,
-    /// The URL of the PR.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pr_url: Option<String>,
-    /// What comes next.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next_step: Option<String>,
+    pub expected_updated_at: Option<String>,
 }
 
 /// The cancel mark of a task (KAIROS-T-0362). A cancel moves the task to

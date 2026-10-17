@@ -5,14 +5,17 @@
 //! wrote it when. An agent writes it after each push and before each stop;
 //! everyone reads it on the card, on the item page and in `get_item`.
 //!
-//! One row for each task at most ([`set`] replaces the row). No history:
+//! One row for each task at most; a write is a patch ([`patch`]): a field
+//! that is not sent is kept, `null` clears it (KAIROS-T-0533). No history:
 //! the notes hold the record. The row stays when the task reaches a done
-//! column, and it goes with the task when the retention sweep deletes the
-//! task. The state is not content: a write makes no new version of the
-//! task, and it emits no event.
+//! column; a hand-off or a release clears the next step
+//! ([`clear_next_step`]). The state is not content: a write makes no new
+//! version of the task; the server emits `item_updated` so the cards
+//! refresh.
 
 use std::collections::HashMap;
 
+use chrono::{DateTime, Utc};
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::result::Error as DieselError;
@@ -20,67 +23,147 @@ use uuid::Uuid;
 
 use crate::models::claims::{NewTaskState, TaskState};
 
-/// The fields of one write of the state. Each field is optional: the write
-/// replaces the row, so a field that is not sent is cleared.
+/// One field of a patch (KAIROS-T-0533): kept as it is, cleared, or set.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct StateWrite {
-    pub branch: Option<String>,
-    pub commit: Option<String>,
-    pub pushed: bool,
-    pub pr_url: Option<String>,
-    pub next_step: Option<String>,
+pub enum Field<T> {
+    #[default]
+    Keep,
+    Clear,
+    Set(T),
 }
 
-impl StateWrite {
-    /// Trim each text; an empty text is no value.
-    pub fn cleaned(self) -> Self {
-        let clean =
-            |text: Option<String>| text.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
-        StateWrite {
-            branch: clean(self.branch),
-            commit: clean(self.commit),
-            pushed: self.pushed,
-            pr_url: clean(self.pr_url),
-            next_step: clean(self.next_step),
+impl Field<String> {
+    /// A text field from the wire: absent keeps, `null` clears, a text sets
+    /// it trimmed; an empty text clears.
+    pub fn of(wire: Option<Option<String>>) -> Self {
+        match wire {
+            None => Field::Keep,
+            Some(None) => Field::Clear,
+            Some(Some(text)) => {
+                let text = text.trim();
+                if text.is_empty() {
+                    Field::Clear
+                } else {
+                    Field::Set(text.to_string())
+                }
+            }
         }
     }
 
-    /// True when no field has a value and `pushed` is false.
-    pub fn is_empty(&self) -> bool {
-        self.branch.is_none()
-            && self.commit.is_none()
-            && !self.pushed
-            && self.pr_url.is_none()
-            && self.next_step.is_none()
+    fn apply(&self, current: Option<String>) -> Option<String> {
+        match self {
+            Field::Keep => current,
+            Field::Clear => None,
+            Field::Set(text) => Some(text.clone()),
+        }
     }
 }
 
-/// Write the state of a task: the row is replaced, and `updated_at` is
-/// now. Returns the row.
-pub fn set(
+/// One write of the state (KAIROS-T-0533): a patch. A field that is not
+/// sent is kept, so an agent that writes `next_step` alone does not erase
+/// the branch and the PR. `expected_updated_at` is the stamp of the state
+/// the writer read; a state that changed since refuses the write.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StatePatch {
+    pub branch: Field<String>,
+    pub commit: Field<String>,
+    pub pushed: Option<bool>,
+    pub pr_url: Field<String>,
+    pub next_step: Field<String>,
+    pub expected_updated_at: Option<DateTime<Utc>>,
+}
+
+impl StatePatch {
+    /// True when the patch changes nothing.
+    pub fn is_empty(&self) -> bool {
+        self.branch == Field::Keep
+            && self.commit == Field::Keep
+            && self.pushed.is_none()
+            && self.pr_url == Field::Keep
+            && self.next_step == Field::Keep
+    }
+}
+
+/// Why a patch did not land.
+#[derive(Debug)]
+pub enum PatchError {
+    /// The state changed since the writer read it: here is the current one.
+    Conflict(Box<TaskState>),
+    Database(DieselError),
+}
+
+impl From<DieselError> for PatchError {
+    fn from(error: DieselError) -> Self {
+        PatchError::Database(error)
+    }
+}
+
+/// Apply `patch` to the state of a task: the row is read for update,
+/// merged, and written with `updated_at` now. Returns the row.
+pub fn patch(
     conn: &mut PgConnection,
     task_id: Uuid,
-    write: StateWrite,
+    patch: StatePatch,
     actor: Uuid,
-) -> Result<TaskState, DieselError> {
+) -> Result<TaskState, PatchError> {
     use crate::schema::task_state::dsl;
-    let write = write.cleaned();
-    let row = NewTaskState {
-        task_id,
-        branch: write.branch,
-        commit: write.commit,
-        pushed: write.pushed,
-        pr_url: write.pr_url,
-        next_step: write.next_step,
-        updated_by: actor,
-    };
-    diesel::insert_into(dsl::task_state)
-        .values(&row)
-        .on_conflict(dsl::task_id)
-        .do_update()
-        .set((&row, dsl::updated_at.eq(diesel::dsl::now)))
-        .returning(TaskState::as_select())
-        .get_result(conn)
+    conn.transaction::<_, PatchError, _>(|conn| {
+        let current: Option<TaskState> = dsl::task_state
+            .filter(dsl::task_id.eq(task_id))
+            .select(TaskState::as_select())
+            .for_update()
+            .first(conn)
+            .optional()?;
+        if let Some(expected) = patch.expected_updated_at
+            && let Some(current) = &current
+            && current.updated_at != expected
+        {
+            return Err(PatchError::Conflict(Box::new(current.clone())));
+        }
+        let (branch, commit, pushed, pr_url, next_step) = match &current {
+            Some(c) => (
+                c.branch.clone(),
+                c.commit.clone(),
+                c.pushed,
+                c.pr_url.clone(),
+                c.next_step.clone(),
+            ),
+            None => (None, None, false, None, None),
+        };
+        let row = NewTaskState {
+            task_id,
+            branch: patch.branch.apply(branch),
+            commit: patch.commit.apply(commit),
+            pushed: patch.pushed.unwrap_or(pushed),
+            pr_url: patch.pr_url.apply(pr_url),
+            next_step: patch.next_step.apply(next_step),
+            updated_by: actor,
+        };
+        Ok(diesel::insert_into(dsl::task_state)
+            .values(&row)
+            .on_conflict(dsl::task_id)
+            .do_update()
+            .set((&row, dsl::updated_at.eq(diesel::dsl::now)))
+            .returning(TaskState::as_select())
+            .get_result(conn)?)
+    })
+}
+
+/// Clear the next step of a task (KAIROS-T-0533): a hand-off or a release
+/// ends the plan of the previous claimant; the branch, the commit and the
+/// PR stay, they are facts of the work. Nothing when the task has no state.
+pub fn clear_next_step(conn: &mut PgConnection, task_id: Uuid) -> Result<usize, DieselError> {
+    use crate::schema::task_state::dsl;
+    diesel::update(
+        dsl::task_state
+            .filter(dsl::task_id.eq(task_id))
+            .filter(dsl::next_step.is_not_null()),
+    )
+    .set((
+        dsl::next_step.eq(None::<String>),
+        dsl::updated_at.eq(diesel::dsl::now),
+    ))
+    .execute(conn)
 }
 
 /// The state of a task, or `None`.
@@ -117,20 +200,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_write_trims_and_drops_empty_texts() {
-        let write = StateWrite {
-            branch: Some(" main ".into()),
-            commit: Some("  ".into()),
-            pushed: true,
-            pr_url: None,
-            next_step: Some("Run the tests.".into()),
-        }
-        .cleaned();
-        assert_eq!(write.branch.as_deref(), Some("main"));
-        assert_eq!(write.commit, None);
-        assert!(write.pushed);
-        assert_eq!(write.next_step.as_deref(), Some("Run the tests."));
-        assert!(!write.is_empty());
-        assert!(StateWrite::default().is_empty());
+    fn a_field_from_the_wire_keeps_clears_or_sets_trimmed() {
+        assert_eq!(Field::of(None), Field::Keep);
+        assert_eq!(Field::of(Some(None)), Field::Clear);
+        assert_eq!(Field::of(Some(Some("  ".into()))), Field::Clear);
+        assert_eq!(
+            Field::of(Some(Some(" main ".into()))),
+            Field::Set("main".into())
+        );
+        assert_eq!(Field::Keep.apply(Some("a".into())), Some("a".into()));
+        assert_eq!(Field::Clear.apply(Some("a".into())), None);
+        assert_eq!(
+            Field::Set("b".to_string()).apply(Some("a".into())),
+            Some("b".into())
+        );
+    }
+
+    #[test]
+    fn a_patch_with_no_field_is_empty() {
+        assert!(StatePatch::default().is_empty());
+        let only_stamp = StatePatch {
+            expected_updated_at: Some(Utc::now()),
+            ..Default::default()
+        };
+        assert!(only_stamp.is_empty());
+        let pushed = StatePatch {
+            pushed: Some(false),
+            ..Default::default()
+        };
+        assert!(!pushed.is_empty());
+        let next = StatePatch {
+            next_step: Field::Clear,
+            ..Default::default()
+        };
+        assert!(!next.is_empty());
     }
 }
