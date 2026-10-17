@@ -32,7 +32,7 @@ use kairos_client::types_repositories::{
 use crate::commands::entities::require_confirm;
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
-use crate::table::Table;
+use crate::table::{Table, print_page_footer};
 
 /// Operations on repositories.
 #[derive(clap::Subcommand, Debug)]
@@ -578,9 +578,11 @@ impl ReposCommand {
                 } else {
                     print!("{}", repo_table(&envelope.items).render());
                 }
-                println!(
-                    "total: {} (limit {}, offset {})",
-                    envelope.total, envelope.limit, envelope.offset
+                print_page_footer(
+                    envelope.total,
+                    envelope.limit,
+                    envelope.offset,
+                    envelope.items.len(),
                 );
                 Ok(())
             }

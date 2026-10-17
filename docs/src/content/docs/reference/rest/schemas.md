@@ -1725,7 +1725,7 @@ One notification of the caller (KAIROS-T-0382).
 | `created_at` | `string` | yes | When Kairos made the notification (RFC 3339). |
 | `entity_type` | `string`, nullable | no | `strategy|initiative|task|document|adr`; `null` when the item is gone. |
 | `id` | `string` | yes | The id (UUID). `POST /api/me/notifications/read` takes it. |
-| `kind` | `string` | yes | `hand_off|blocker_cleared|blocked_again|cancelled|blocker_cancelled|mention|p0_bug|delivery_failing|agent_key_revoked`. |
+| `kind` | `string` | yes | `hand_off|blocker_cleared|blocked_again|cancelled|blocker_cancelled|mention|p0_bug|delivery_failing|agent_key_revoked|claim_dropped|claim_stale`. |
 | `read_at` | `string`, nullable | no | When the person read it (RFC 3339); `null` while unread. |
 | `short_code` | `string`, nullable | no | The code of the item now; `null` when the item is gone. |
 | `text` | `string` | yes | What happened, in one sentence or two. |
@@ -1751,6 +1751,8 @@ One notification of the caller (KAIROS-T-0382).
 | `blocker_cancelled` | `boolean` | yes | A person cancelled a task that blocks an item that you have the claim on, own or made. The cancelled task still blocks (KAIROS-T-0567). |
 | `blocker_cleared` | `boolean` | yes | A blocker of an item that you have the claim on (or own) is done, archived or purged, or its `blocks` link is removed. |
 | `cancelled` | `boolean` | yes | A person cancelled a task that you created. |
+| `claim_dropped` | `boolean` | yes | A person left the organization, so their claim on a task of the board of your team ended. The task is free (KAIROS-T-0531). |
+| `claim_stale` | `boolean` | yes | A claim had no write and no state change for some days: your claim, or a claim on a task of an initiative that you own (KAIROS-T-0531). |
 | `delivery_failing` | `boolean` | yes | A webhook target that you own was turned off after failed deliveries (KAIROS-T-0384). |
 | `hand_off` | `boolean` | yes | A person handed off the claim of a task to you. |
 | `mention` | `boolean` | yes | A person wrote `@your_user_name` in a note or in the content of an item. |
@@ -2868,6 +2870,8 @@ The server refuses a body with a field that is not in this table ([Errors](../..
 | `blocker_cancelled` | `boolean`, nullable | no |  |
 | `blocker_cleared` | `boolean`, nullable | no |  |
 | `cancelled` | `boolean`, nullable | no |  |
+| `claim_dropped` | `boolean`, nullable | no |  |
+| `claim_stale` | `boolean`, nullable | no |  |
 | `delivery_failing` | `boolean`, nullable | no |  |
 | `hand_off` | `boolean`, nullable | no |  |
 | `mention` | `boolean`, nullable | no |  |

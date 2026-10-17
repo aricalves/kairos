@@ -638,6 +638,7 @@ diesel::table! {
         user_id -> Uuid,
         agent_key_id -> Nullable<Uuid>,
         claimed_at -> Timestamptz,
+        stale_notified_at -> Nullable<Timestamptz>,
     }
 }
 

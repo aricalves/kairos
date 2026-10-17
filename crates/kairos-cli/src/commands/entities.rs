@@ -20,7 +20,7 @@ use kairos_client::types_repositories::Impact;
 
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
-use crate::table::Table;
+use crate::table::{Table, print_page_footer};
 
 // ---------------------------------------------------------------------------
 // Shared verb arguments
@@ -755,9 +755,11 @@ pub fn emit_list<T: EntityView>(
         }
         print!("{}", table.render());
     }
-    println!(
-        "total: {} (limit {}, offset {})",
-        envelope.total, envelope.limit, envelope.offset
+    print_page_footer(
+        envelope.total,
+        envelope.limit,
+        envelope.offset,
+        envelope.items.len(),
     );
     Ok(())
 }

@@ -35,6 +35,12 @@ pub struct NotificationSettings {
     /// An organization admin revoked an agent key of yours
     /// (KAIROS-T-0388).
     pub agent_key_revoked: bool,
+    /// A person left the organization, so their claim on a task of the
+    /// board of your team ended. The task is free (KAIROS-T-0531).
+    pub claim_dropped: bool,
+    /// A claim had no write and no state change for some days: your claim,
+    /// or a claim on a task of an initiative that you own (KAIROS-T-0531).
+    pub claim_stale: bool,
 }
 
 /// `PUT /api/me/notification-settings` body: the kinds to turn on (`true`)
@@ -60,6 +66,10 @@ pub struct UpdateNotificationSettingsRequest {
     pub delivery_failing: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_key_revoked: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_dropped: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_stale: Option<bool>,
 }
 
 /// One notification of the caller (KAIROS-T-0382).
@@ -67,7 +77,7 @@ pub struct UpdateNotificationSettingsRequest {
 pub struct Notification {
     /// The id (UUID). `POST /api/me/notifications/read` takes it.
     pub id: String,
-    /// `hand_off|blocker_cleared|blocked_again|cancelled|blocker_cancelled|mention|p0_bug|delivery_failing|agent_key_revoked`.
+    /// `hand_off|blocker_cleared|blocked_again|cancelled|blocker_cancelled|mention|p0_bug|delivery_failing|agent_key_revoked|claim_dropped|claim_stale`.
     pub kind: String,
     /// The code of the item now; `null` when the item is gone.
     pub short_code: Option<String>,

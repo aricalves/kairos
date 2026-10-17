@@ -1,6 +1,7 @@
 //! The periodic passes as jobs (KAIROS-T-0376, COLLIERY-I-0613).
 //!
-//! A periodic pass (retention, the new-commits sweep of the code index) is
+//! A periodic pass (retention, the new-commits sweep of the code index, the
+//! report of the stale claims) is
 //! a job of the kind `periodic` ([`crate::jobs::kinds::PERIODIC`]) with no
 //! tenant. Its dedupe key names the pass ([`key`]), so each pass has one
 //! open run at most. When a run ends, done or failed, the worker adds the
@@ -37,6 +38,9 @@ pub const RETENTION: &str = "retention";
 
 /// The new-commits sweep of the code index (KAIROS-T-0374).
 pub const CODE_INDEX_SWEEP: &str = "code-index-sweep";
+
+/// The report of the stale claims (KAIROS-T-0531).
+pub const STALE_CLAIMS: &str = "stale-claims";
 
 /// The dedupe key of the runs of the pass `pass`.
 pub fn key(pass: &str) -> String {
@@ -264,5 +268,46 @@ fn retention_run(
         unused_summaries_deleted = pass.unused_summaries_deleted,
         "retention: pass done"
     );
+    Ok(())
+}
+
+/// How often the pass of the stale claims runs (KAIROS-T-0531). A claim
+/// is stale after days, so one hour is soon enough.
+pub const STALE_CLAIMS_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+/// The pass of the stale claims (KAIROS-T-0531): on a connection of its
+/// own, [`kairos_db::task_claims::stale_claims_pass`] tells the holder and
+/// the owner of the initiative of each claim with no write for `days`
+/// days (`KAIROS_STALE_CLAIM_DAYS`). The claim stays. A failed pass is
+/// tried again.
+pub fn stale_claims_pass(database_url: String, days: u32) -> PassFn {
+    Arc::new(move |handle: JobHandle| {
+        let url = database_url.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || stale_claims_run(&url, days, &handle))
+                .await
+                .map_err(|e| JobError::retry(format!("The stale-claims pass stopped: {e}")))?
+        })
+    })
+}
+
+/// One run of the pass of the stale claims: connect, run the pass, log the
+/// result.
+fn stale_claims_run(database_url: &str, days: u32, handle: &JobHandle) -> Result<(), JobError> {
+    let mut conn = kairos_db::establish_migration_connection(database_url).map_err(|e| {
+        tracing::error!(error = %e, "stale claims: the pass cannot connect to the database");
+        JobError::retry(format!(
+            "The stale-claims pass cannot connect to the database: {e}"
+        ))
+    })?;
+    let reported =
+        kairos_db::task_claims::stale_claims_pass(&mut conn, days, chrono::Utc::now(), &mut || {
+            handle.progress();
+        })
+        .map_err(|e| {
+            tracing::error!(error = %e, "stale claims: the pass failed");
+            JobError::retry(format!("The stale-claims pass failed: {e}"))
+        })?;
+    tracing::info!(days, reported, "stale claims: pass done");
     Ok(())
 }
