@@ -1143,8 +1143,9 @@ clears a field that you do not send. Send at least one field. The state is
 not content: the write makes no new version of the task. The state stays
 when the task reaches a done column.
 
-The edit rule applies, as for `append_note`: the creator of the task, or
-`manage_tasks` on its board. The rule is that of
+The edit rule applies, as for `append_note`. It passes the creator of the
+task, the holder of its claim (KAIROS-T-0532), and `manage_tasks` on its
+board. The rule is that of
 `PUT /api/tasks/{short_code}/state`. The result is one line:
 
 ```text

@@ -361,7 +361,9 @@ pub(crate) fn manage_capability_of(item_type: ItemType) -> &'static str {
 ///    the item ([`abac::resolve_authorization_board`]: the board of the
 ///    item, or for a document the board that it names, or the board of
 ///    its `supports` parent when it names none, COLLIERY-T-0269),
-/// 3. the principal is an admin of the organization.
+/// 3. the principal is an admin of the organization,
+/// 4. the item is a task and the principal has its claim (KAIROS-T-0532),
+///    for an edit that is not an archive or a restore.
 ///
 /// An `impacts` link gives no right (COLLIERY-T-0269). A member of the
 /// team that owns a repository cannot edit a document because the
