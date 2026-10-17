@@ -2224,9 +2224,8 @@ with `PUT /api/me/notification-settings` or on the Notifications page of the
 GUI.
 
 The block at the end of an answer. It is a content block of its own, after
-the block of the answer, so the content that `get_item` gives stays the
-content of the item (KAIROS-T-0549). Its lines have no id: `get_events`
-gives the ids.
+the answer (KAIROS-T-0549). The content that `get_item` gives stays the
+content of the item. Its lines have no id: `get_events` gives the ids.
 
 ```text
 ## Your notifications (7 unread)
