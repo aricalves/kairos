@@ -93,17 +93,26 @@ Request body (required): `application/json`, [`UpdateNotificationSettingsRequest
 ### `GET /api/me/notifications`
 
 The caller's notifications: each unread one (newest first, 100 at most),
-then the 20 newest read ones. A service account has none.
+then the 20 newest read ones. `before` gives the next page of unread
+ones. The read state is the caller's: the person, or the agent key of
+the request (KAIROS-T-0550). A service account has none.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `before` | query | no | `string` | The id of a notification. The page has the unread notifications older than it, and no read ones |
 
 | Response | Body | Meaning |
 |---|---|---|
 | `200` | [`NotificationList`](../schemas/#notificationlist) | The unread notifications, then the newest read ones |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | `before` is not a notification of the caller |
 
 ### `POST /api/me/notifications/read`
 
-Mark notifications of the caller read: `ids`, or `all: true`. An id that
-is not a notification of the caller is a 404 that names it, and nothing
-changes. An id that is read already does not change.
+Mark notifications of the caller read: `ids`, or `all: true` with
+`up_to`. The read is the caller's: the person, or the agent key of the
+request (KAIROS-T-0550). An id that is not a notification of the caller
+is a 404 that names it, and nothing changes. An id that is read already
+does not change.
 
 Request body (required): `application/json`, [`MarkNotificationsReadRequest`](../schemas/#marknotificationsreadrequest)
 
@@ -111,7 +120,7 @@ Request body (required): `application/json`, [`MarkNotificationsReadRequest`](..
 |---|---|---|
 | `200` | [`MarkNotificationsReadResponse`](../schemas/#marknotificationsreadresponse) | The ids that changed, and the unread count after |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | An id is not a notification of the caller |
-| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Neither ids nor all, or both |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Neither ids nor all, or both, or all without up_to |
 
 ### `GET /api/me/work`
 
