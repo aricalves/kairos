@@ -955,10 +955,49 @@ pub fn BoardsPage() -> impl IntoView {
 // Board view
 // ---------------------------------------------------------------------------
 
-/// One card's owned view model with a content-fingerprint `key`
-/// (KAIROS-T-0074): the card `<For>` diffs on it, so a card whose content
-/// is unchanged keeps its DOM node — element identity, focus, transient
-/// state — across refetches; a changed card is rebuilt.
+/// The key of a card in the card `<For>` (KAIROS-T-0074, KAIROS-T-0615).
+/// A card with the same key keeps its DOM node (element identity, focus,
+/// transient state) across reads; a changed card is rebuilt.
+///
+/// The `version` of the item changes with each write of its fields, and
+/// `column_id` with each move. `extras` is a hash of the fields that
+/// change with no new version: the claim, the state, the cancel mark, the
+/// repository, the owner, the teams, the progress and the blocks counts.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct CardKey {
+    short_code: String,
+    version: i32,
+    column_id: String,
+    extras: u64,
+}
+
+/// The fields of a card that change with no new version of the item.
+#[derive(Hash)]
+struct CardExtras<'a> {
+    work_class: Option<&'a str>,
+    repository: Option<&'a str>,
+    claim: Option<&'a data::TaskClaim>,
+    state: Option<&'a data::TaskState>,
+    cancelled: bool,
+    owner: Option<&'a CardOwner>,
+    teams: &'a [String],
+    progress: Option<data::ProgressCounts>,
+    blocks: Option<data::BlocksCounts>,
+}
+
+impl CardExtras<'_> {
+    /// The hash of the extras: one pass over a few fields, and no text is
+    /// made.
+    fn hash_value(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+/// One card's owned view model with its [`CardKey`] (KAIROS-T-0074): the
+/// card `<For>` diffs on the key.
 #[derive(Clone, PartialEq)]
 struct CardModel {
     kind: EntityKind,
@@ -985,11 +1024,11 @@ struct CardModel {
     /// Blocked-by/blocks counts — `Some` only with live blocks edges
     /// (KAIROS-T-0091).
     blocks: Option<data::BlocksCounts>,
-    key: String,
+    key: CardKey,
 }
 
 /// The owner of a card (KAIROS-T-0416).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct CardOwner {
     user_id: String,
     display_name: String,
@@ -1049,36 +1088,51 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
             .map(|teams| teams.iter().map(|team| team.slug.clone()).collect())
             .unwrap_or_default()
     };
-    let card = |kind: EntityKind,
-                short_code: &str,
-                title: &str,
-                meta: Vec<(String, &'static str)>,
-                work_class: Option<String>,
-                repository: Option<String>,
-                claim: Option<data::TaskClaim>,
-                state: Option<data::TaskState>,
-                owner: Option<CardOwner>| {
-        let progress = progress_of(short_code);
-        let blocks = blocks_of(short_code);
-        let teams = teams_of(short_code);
-        CardModel {
-            kind,
-            short_code: short_code.to_string(),
-            title: title.to_string(),
-            key: format!(
-                "{short_code}|{title}|{meta:?}|{work_class:?}|{repository:?}|{claim:?}|{state:?}|{owner:?}|{teams:?}|{progress:?}|{blocks:?}"
-            ),
-            work_class,
-            repository,
-            claim,
-            state,
-            owner,
-            teams,
-            progress,
-            blocks,
-            meta,
-        }
-    };
+    let card =
+        |kind: EntityKind,
+         (short_code, version, column_id): (&str, i32, &str),
+         title: &str,
+         meta: Vec<(String, &'static str)>,
+         work_class: Option<String>,
+         repository: Option<String>,
+         (claim, state, cancelled): (Option<data::TaskClaim>, Option<data::TaskState>, bool),
+         owner: Option<CardOwner>| {
+            let progress = progress_of(short_code);
+            let blocks = blocks_of(short_code);
+            let teams = teams_of(short_code);
+            let extras = CardExtras {
+                work_class: work_class.as_deref(),
+                repository: repository.as_deref(),
+                claim: claim.as_ref(),
+                state: state.as_ref(),
+                cancelled,
+                owner: owner.as_ref(),
+                teams: &teams,
+                progress,
+                blocks,
+            }
+            .hash_value();
+            CardModel {
+                kind,
+                short_code: short_code.to_string(),
+                title: title.to_string(),
+                key: CardKey {
+                    short_code: short_code.to_string(),
+                    version,
+                    column_id: column_id.to_string(),
+                    extras,
+                },
+                work_class,
+                repository,
+                claim,
+                state,
+                owner,
+                teams,
+                progress,
+                blocks,
+                meta,
+            }
+        };
     view.items
         .columns
         .iter()
@@ -1092,6 +1146,7 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                 .filter(|t| t.from_column_id == group.column.id)
                 .map(|t| (t.to_column_id.clone(), column_name_of(&t.to_column_id)))
                 .collect();
+            let column_id = group.column.id.as_str();
             let mut cards: Vec<CardModel> = Vec::new();
             cards.extend(group.strategies.iter().map(|item| {
                 // KAIROS-T-0411: the owner, as a pill.
@@ -1101,13 +1156,12 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                     .collect();
                 card(
                     EntityKind::Strategy,
-                    &item.short_code,
+                    (&item.short_code, item.version, column_id),
                     &item.title,
                     meta,
                     None,
                     None,
-                    None,
-                    None,
+                    (None, None, false),
                     item.owner.as_ref().map(CardOwner::of_owner),
                 )
             }));
@@ -1126,13 +1180,12 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                 }
                 card(
                     EntityKind::Initiative,
-                    &item.short_code,
+                    (&item.short_code, item.version, column_id),
                     &item.title,
                     meta,
                     None,
                     None,
-                    None,
-                    None,
+                    (None, None, false),
                     item.owner.as_ref().map(CardOwner::of_owner),
                 )
             }));
@@ -1149,13 +1202,16 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                 }
                 card(
                     EntityKind::Task,
-                    &item.short_code,
+                    (&item.short_code, item.version, column_id),
                     &item.title,
                     meta,
                     Some(item.work_class.clone()),
                     item.repository.as_ref().map(|r| r.slug.clone()),
-                    item.claim.clone(),
-                    item.state.clone(),
+                    (
+                        item.claim.clone(),
+                        item.state.clone(),
+                        item.cancellation.is_some(),
+                    ),
                     item.claim.as_ref().map(CardOwner::of_claim),
                 )
             }));
@@ -1167,13 +1223,12 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                     .collect();
                 card(
                     EntityKind::Adr,
-                    &item.short_code,
+                    (&item.short_code, item.version, column_id),
                     &item.title,
                     meta,
                     None,
                     None,
-                    None,
-                    None,
+                    (None, None, false),
                     None,
                 )
             }));
@@ -1222,31 +1277,187 @@ fn doc_parent_options(view: &data::BoardView) -> Vec<(String, String)> {
         .collect()
 }
 
-/// One read of the board, for the gate (COLLIERY-T-0261). The read ends
-/// when this value drops: at the end of the read, and also when the page
-/// stops a read before its end. The gate thus cannot stay closed.
-struct BoardRead {
-    gate: StoredValue<data::RefetchGate>,
+/// What the board body shows of each card, read from the model in ONE
+/// pass for each change (KAIROS-T-0615). The memos of the body read this,
+/// and not the model: before, each of them read each card again.
+#[derive(Clone, Default, PartialEq)]
+struct BoardSummary {
+    /// The columns and their cards, before the filters of the view.
+    columns: Vec<ColumnModel>,
+    /// [`doc_parent_options`].
+    doc_parents: Vec<(String, String)>,
+    /// Each repository slug of the tasks, sorted, once each.
+    repos: Vec<String>,
+    /// Each team slug of the strategies and initiatives, sorted, once
+    /// each.
+    teams: Vec<String>,
+    /// [`data::completed_task_count`].
+    completed: usize,
+}
+
+/// The [`BoardSummary`] of a view. Pure, host-tested.
+fn board_summary(view: &data::BoardView) -> BoardSummary {
+    let mut repos: Vec<String> = view
+        .items
+        .columns
+        .iter()
+        .flat_map(|c| c.tasks.iter())
+        .filter_map(|t| t.repository.as_ref().map(|r| r.slug.clone()))
+        .collect();
+    repos.sort_unstable();
+    repos.dedup();
+    let mut teams: Vec<String> = view
+        .items
+        .item_teams
+        .values()
+        .flat_map(|teams| teams.iter().map(|team| team.slug.clone()))
+        .collect();
+    teams.sort_unstable();
+    teams.dedup();
+    BoardSummary {
+        columns: column_models(view),
+        doc_parents: doc_parent_options(view),
+        repos,
+        teams,
+        completed: data::completed_task_count(&view.items),
+    }
+}
+
+/// The live reads of the board view (KAIROS-T-0615): the queue, the
+/// trigger of a full read, and the model that a card read patches.
+#[derive(Clone, Copy)]
+struct LiveReads {
+    auth: crate::auth::Auth,
+    queue: StoredValue<data::LiveQueue>,
+    /// Bumped for a full read: re-runs the board resource.
     refresh: RwSignal<u64>,
+    model: RwSignal<Option<data::BoardView>>,
+}
+
+impl LiveReads {
+    /// Ask for a read. The first request of a window starts its timer;
+    /// the reads of the window run together when it fires.
+    fn request(self, refresh: data::Refresh) {
+        let open = self
+            .queue
+            .try_update_value(|queue| queue.request(refresh))
+            .unwrap_or(false);
+        if open {
+            set_timeout(
+                move || {
+                    if let Some(batch) =
+                        self.queue.try_update_value(data::LiveQueue::fire).flatten()
+                    {
+                        self.run(batch);
+                    }
+                },
+                std::time::Duration::from_millis(data::LIVE_WINDOW_MS),
+            );
+        }
+    }
+
+    /// Ask for a full read with no window: a change of this person (a
+    /// move, a create) shows at once.
+    fn read_board_now(self) {
+        let batch = self.queue.try_update_value(|queue| {
+            queue.ask(data::Refresh::Board);
+            queue.fire()
+        });
+        if let Some(batch) = batch.flatten() {
+            self.run(batch);
+        }
+    }
+
+    /// Run one batch.
+    fn run(self, batch: data::Batch) {
+        match batch {
+            data::Batch::Board => {
+                // The board resource runs the read; its `BoardRead` ends it.
+                if self.refresh.try_update(|n| *n += 1).is_none() {
+                    self.finished();
+                }
+            }
+            data::Batch::Cards(codes) => {
+                let end = BatchEnd(self);
+                let Some(board) = self
+                    .model
+                    .with_untracked(|m| m.as_ref().map(|view| view.items.board.id.clone()))
+                else {
+                    return;
+                };
+                let auth = self.auth;
+                leptos::task::spawn_local(async move {
+                    let reads = codes
+                        .iter()
+                        .map(|code| data::load_board_card(auth, &board, code));
+                    let pages = futures_util::future::join_all(reads).await;
+                    let mut whole = false;
+                    self.model.try_update(|model| match model.as_mut() {
+                        // The page shows a different board now.
+                        Some(view) if view.items.board.id != board => {}
+                        Some(view) => {
+                            for (code, page) in codes.iter().zip(pages) {
+                                whole |= match page {
+                                    Ok(page) => {
+                                        view.items.patch_card(code, page) == data::Patched::Board
+                                    }
+                                    Err(_) => true,
+                                };
+                            }
+                        }
+                        None => {}
+                    });
+                    if whole {
+                        self.queue
+                            .try_update_value(|queue| queue.ask(data::Refresh::Board));
+                    }
+                    drop(end);
+                });
+            }
+        }
+    }
+
+    /// A read ended: run the batch that waits, if any.
+    fn finished(self) {
+        if let Some(batch) = self
+            .queue
+            .try_update_value(data::LiveQueue::finished)
+            .flatten()
+        {
+            self.run(batch);
+        }
+    }
+}
+
+/// The end of a batch of card reads: on drop, also when the page stops
+/// the reads before their end. The queue thus cannot stay closed.
+struct BatchEnd(LiveReads);
+
+impl Drop for BatchEnd {
+    fn drop(&mut self) {
+        self.0.finished();
+    }
+}
+
+/// One read of the board, for the queue (COLLIERY-T-0261). The read ends
+/// when this value drops: at the end of the read, and also when the page
+/// stops a read before its end. The queue thus cannot stay closed.
+struct BoardRead {
+    live: LiveReads,
 }
 
 impl BoardRead {
-    fn start(gate: StoredValue<data::RefetchGate>, refresh: RwSignal<u64>) -> Self {
-        gate.try_update_value(data::RefetchGate::started);
-        BoardRead { gate, refresh }
+    fn start(live: LiveReads) -> Self {
+        live.queue
+            .try_update_value(data::LiveQueue::board_read_started);
+        BoardRead { live }
     }
 }
 
 impl Drop for BoardRead {
     fn drop(&mut self) {
-        let again = self
-            .gate
-            .try_update_value(data::RefetchGate::finished)
-            .unwrap_or(false);
-        // An event came during the read: one more read.
-        if again {
-            self.refresh.try_update(|n| *n += 1);
-        }
+        // An event came during the read: the next batch runs.
+        self.live.finished();
     }
 }
 
@@ -1259,32 +1470,37 @@ pub fn BoardPage() -> impl IntoView {
     // The shell's shared identity (KAIROS-T-0072): powers derive from it.
     let whoami = use_context::<LocalResource<Result<crate::api::Whoami, ApiError>>>();
 
-    // Bumped by mutations and /ws/events messages: re-runs the resource
-    // (silently — the previous value stays up while the fetch runs).
+    // Bumped for a full read: re-runs the resource (silently — the
+    // previous value stays up while the fetch runs).
     let refresh = RwSignal::new(0u64);
-    // COLLIERY-T-0261: a read of a large board is 2 requests or more. One
-    // read runs at a time: the events that come during a read give one
-    // more read after it, and not one read for each event.
-    let gate = StoredValue::new(data::RefetchGate::default());
+    // The live model behind the fine-grained board (KAIROS-T-0074):
+    // reads update THIS SIGNAL and the mounted BoardBody diffs against
+    // it through memos + keyed <For>s — the DOM is not rebuilt, so
+    // transient UI state (open modals, element identity) survives
+    // WS-driven updates.
+    let model: RwSignal<Option<data::BoardView>> = RwSignal::new(None);
+    // KAIROS-T-0615: an event of one card reads that card and patches the
+    // model; the events of a 250 ms window read together, and one read
+    // runs at a time (COLLIERY-T-0261: a full read of a large board is 2
+    // requests or more).
+    let live = LiveReads {
+        auth,
+        queue: StoredValue::new(data::LiveQueue::default()),
+        refresh,
+        model,
+    };
     let board = LocalResource::new(move || {
         auth.track_session();
         let _ = refresh.get();
         let param = params.read().get("board").unwrap_or_default();
-        let read = BoardRead::start(gate, refresh);
+        let read = BoardRead::start(live);
         async move {
             let view = data::load_board_view(auth, &param).await;
             drop(read);
             view
         }
     });
-    let refetch = move || {
-        let now = gate
-            .try_update_value(data::RefetchGate::request)
-            .unwrap_or(false);
-        if now {
-            refresh.update(|n| *n += 1);
-        }
-    };
+    let refetch = move || live.read_board_now();
 
     // Failed mutations (transition/create) surface as an error toast
     // (COLLIERY-T-1836: it was a fixed banner of this page).
@@ -1309,17 +1525,14 @@ pub fn BoardPage() -> impl IntoView {
         if current.as_deref() == Some(board_id.as_str()) {
             return;
         }
-        let guard = live::subscribe_board_events(auth, board_id.clone(), refetch);
+        let subscribed = board_id.clone();
+        let guard = live::subscribe_board_events(auth, board_id.clone(), move |event| {
+            live.request(data::refresh_of(event, &subscribed));
+        });
         live_guard.set_value(Some((board_id, guard)));
     });
     on_cleanup(move || live_guard.set_value(None));
 
-    // The live model behind the fine-grained board (KAIROS-T-0074):
-    // refetches update THIS SIGNAL and the mounted BoardBody diffs against
-    // it through memos + keyed <For>s — the DOM is not rebuilt, so
-    // transient UI state (open modals, element identity) survives
-    // WS-driven updates.
-    let model: RwSignal<Option<data::BoardView>> = RwSignal::new(None);
     Effect::new(move |_| {
         if let Some(Ok(view)) = board.get() {
             model.set(Some(view));
@@ -1452,14 +1665,12 @@ fn BoardBody(
     let flow_board = StoredValue::new(board.slug.clone());
     // KAIROS-T-0412: the members panel of the board, in its admin page.
     let members_href = StoredValue::new(members_panel_href(&board.id));
+    // KAIROS-T-0615: the one read of the cards of the model. The memos
+    // below read this, and not the model.
+    let summary =
+        Memo::new(move |_| model.with(|m| m.as_ref().map(board_summary).unwrap_or_default()));
     // KAIROS-T-0363: the tasks that "Archive completed" takes.
-    let completed = Memo::new(move |_| {
-        model.with(|m| {
-            m.as_ref()
-                .map(|view| data::completed_task_count(&view.items))
-                .unwrap_or(0)
-        })
-    });
+    let completed = Memo::new(move |_| summary.with(|s| s.completed));
 
     // ---- memos over the live model (notify only on actual change) --------
     let header_text = Memo::new(move |_| {
@@ -1491,8 +1702,7 @@ fn BoardBody(
     });
     // Document create ("New document") — not offered on ADR boards:
     // documents attach to strategies/initiatives/tasks.
-    let doc_parents =
-        Memo::new(move |_| model.with(|m| m.as_ref().map(doc_parent_options).unwrap_or_default()));
+    let doc_parents = Memo::new(move |_| summary.with(|s| s.doc_parents.clone()));
     let documents_offered = Memo::new(move |_| !is_adr && !doc_parents.with(Vec::is_empty));
     // KAIROS-T-0109 (A-0019): the repository lens. `?repo=a,b` in the URL
     // is the source of truth for the selection, so it survives WS
@@ -1510,24 +1720,7 @@ fn BoardBody(
     let (by_repo_query, set_by_repo_query) =
         query_signal_with_options::<String>("by_repo", lens_nav());
     // Every repository slug present on the board, sorted — the chip set.
-    let board_repos = Memo::new(move |_| {
-        model.with(|m| {
-            let mut slugs: Vec<String> = m
-                .as_ref()
-                .map(|view| {
-                    view.items
-                        .columns
-                        .iter()
-                        .flat_map(|c| c.tasks.iter())
-                        .filter_map(|t| t.repository.as_ref().map(|r| r.slug.clone()))
-                        .collect()
-                })
-                .unwrap_or_default();
-            slugs.sort_unstable();
-            slugs.dedup();
-            slugs
-        })
-    });
+    let board_repos = Memo::new(move |_| summary.with(|s| s.repos.clone()));
     // What the URL asks for vs. what the board can show (KAIROS-T-0114):
     // a stale `?repo=<slug no longer here>` must not blank every task
     // with no chip lit, so the EFFECTIVE selection is pruned against the
@@ -1603,23 +1796,7 @@ fn BoardBody(
     let (team_query, set_team_query) = query_signal_with_options::<String>("team", lens_nav());
     let (no_team_query, set_no_team_query) =
         query_signal_with_options::<String>("no_team", lens_nav());
-    let board_teams = Memo::new(move |_| {
-        model.with(|m| {
-            let mut slugs: Vec<String> = m
-                .as_ref()
-                .map(|view| {
-                    view.items
-                        .item_teams
-                        .values()
-                        .flat_map(|teams| teams.iter().map(|team| team.slug.clone()))
-                        .collect()
-                })
-                .unwrap_or_default();
-            slugs.sort_unstable();
-            slugs.dedup();
-            slugs
-        })
-    });
+    let board_teams = Memo::new(move |_| summary.with(|s| s.teams.clone()));
     let team_selection = Memo::new(move |_| {
         team_selection_of(team_query.get().as_deref(), no_team_query.get().as_deref())
     });
@@ -1647,8 +1824,8 @@ fn BoardBody(
     let columns = Memo::new(move |_| {
         let selected = selected_repos.get();
         let team = team_selection.get();
-        model.with(|m| {
-            let mut columns = m.as_ref().map(column_models).unwrap_or_default();
+        summary.with(|s| {
+            let mut columns = s.columns.clone();
             if !selected.is_empty() || team != TeamSelection::All {
                 for column in columns.iter_mut() {
                     column
@@ -4491,8 +4668,129 @@ mod tests {
             teams: Vec::new(),
             progress: None,
             blocks: None,
-            key: String::new(),
+            key: CardKey {
+                short_code: "X-1".into(),
+                version: 1,
+                column_id: "c".into(),
+                extras: 0,
+            },
         }
+    }
+
+    /// A view of one task `DEMO-T-0001` with the fields of `task`, in the
+    /// column `column`.
+    fn view_of(task: serde_json::Value, column: &str) -> data::BoardView {
+        let mut card = serde_json::json!({
+            "short_code": "DEMO-T-0001", "title": "T", "version": 1,
+            "task_type": "task", "work_class": "planned"
+        });
+        if let (Some(card), Some(fields)) = (card.as_object_mut(), task.as_object()) {
+            card.extend(fields.clone());
+        }
+        let group = |id: &str| {
+            let tasks = if id == column {
+                vec![card.clone()]
+            } else {
+                Vec::new()
+            };
+            serde_json::json!({
+                "column": {"id": id, "name": id, "position": 0},
+                "strategies": [], "initiatives": [], "tasks": tasks, "adrs": []
+            })
+        };
+        data::BoardView {
+            detail: serde_json::from_value(serde_json::json!({
+                "id": "b", "name": "B", "slug": "b", "board_level": "delivery",
+                "columns": [], "transitions": []
+            }))
+            .expect("detail"),
+            items: serde_json::from_value(serde_json::json!({
+                "board": {"id": "b", "name": "B", "slug": "b", "board_level": "delivery"},
+                "columns": [group("todo"), group("doing")],
+                "total": 1
+            }))
+            .expect("items"),
+        }
+    }
+
+    /// The key of the one card of a view.
+    fn key_of(view: &data::BoardView) -> CardKey {
+        board_summary(view)
+            .columns
+            .iter()
+            .flat_map(|column| column.cards.iter())
+            .map(|card| card.key.clone())
+            .next()
+            .expect("one card")
+    }
+
+    /// KAIROS-T-0615: the key of a card comes from its version and its
+    /// column, and from the fields that change with no new version. The
+    /// same card has the same key.
+    #[test]
+    fn the_key_of_a_card_follows_the_version_the_column_and_the_extras() {
+        let base = key_of(&view_of(serde_json::json!({}), "todo"));
+        assert_eq!(base.short_code, "DEMO-T-0001");
+        assert_eq!(base.version, 1);
+        assert_eq!(base.column_id, "todo");
+        assert_eq!(
+            key_of(&view_of(serde_json::json!({}), "todo")),
+            base,
+            "stable"
+        );
+        let new_version = key_of(&view_of(
+            serde_json::json!({"version": 2, "title": "U"}),
+            "todo",
+        ));
+        assert_ne!(new_version, base);
+        assert_eq!(new_version.extras, base.extras);
+        let moved = key_of(&view_of(serde_json::json!({}), "doing"));
+        assert_ne!(moved, base);
+        // A state write makes no new version: the extras change the key.
+        let state = key_of(&view_of(
+            serde_json::json!({"state": {"next_step": "Push", "updated_at": "2026-10-17T00:00:00Z"}}),
+            "todo",
+        ));
+        assert_eq!(state.version, base.version);
+        assert_ne!(state, base);
+        let claim = key_of(&view_of(
+            serde_json::json!({"claim": {"user_id": "u", "display_name": "Robin"}}),
+            "todo",
+        ));
+        assert_ne!(claim, base);
+        let cancelled = key_of(&view_of(
+            serde_json::json!({"cancellation": {"reason": "No need"}}),
+            "todo",
+        ));
+        assert_ne!(cancelled, base);
+    }
+
+    /// KAIROS-T-0615: one pass over the model gives the repositories, the
+    /// teams, the document parents and the completed count.
+    #[test]
+    fn the_summary_reads_the_model_once() {
+        let mut view = view_of(
+            serde_json::json!({"repository": {"id": "r", "slug": "web", "name": "web"}}),
+            "todo",
+        );
+        view.items.item_teams.insert(
+            "DEMO-I-0001".to_string(),
+            vec![data::ItemTeam {
+                slug: "payments".into(),
+                name: "Payments".into(),
+                from_tasks: true,
+                set_by_hand: false,
+            }],
+        );
+        let summary = board_summary(&view);
+        assert_eq!(summary.repos, ["web"]);
+        assert_eq!(summary.teams, ["payments"]);
+        assert_eq!(
+            summary.doc_parents,
+            [("DEMO-T-0001".to_string(), "T".to_string())]
+        );
+        assert_eq!(summary.completed, 0);
+        assert_eq!(summary.columns.len(), 2);
     }
 
     fn owned(kind: EntityKind, owner: Option<(&str, &str)>) -> CardModel {
