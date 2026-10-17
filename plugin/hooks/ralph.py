@@ -307,6 +307,7 @@ Stop the loop, and do not guess, when one of these conditions occurs:
 To stop the loop:
 - Write the reason on the task and on its parent initiative with `append_note`.
 - For a decision or another team, also `transition_item` the task to Blocked, as /kairos:implement says.
+- Do the "Abort" section of /kairos:implement for the task: the note, the state, the claim and the worktree.
 - Write the reason in your reply, and end the reply with <promise>{stop}</promise>.
 
 When each task is in the Completed column, end your reply with <promise>{done}</promise>.

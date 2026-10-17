@@ -16,4 +16,4 @@ The command removes the state file of this session (`~/.claude/kairos-ralph/<ses
 
 Give the output of the command to the user. The output names the tasks of the loop and the iteration. If no loop is active, the output says so.
 
-The cancel does not change the items. A task keeps its column and its notes. If a task is in Active and its work is not complete, tell the user its short code.
+The cancel does not change the items. A task keeps its column and its notes. If a task is in Active and its work is not complete, tell the user its short code. Then do the "Abort" section of `/kairos:implement` for that task: the note, the state, the claim and the worktree.

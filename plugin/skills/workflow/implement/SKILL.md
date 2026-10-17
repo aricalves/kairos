@@ -23,7 +23,7 @@ Anything procedural you write while implementing — a how-to or reference page,
 
 The task must be workable: acceptance criteria present and independently verifiable, blockers resolved. When it isn't, stop, note the gap on the item, and tell the lead it needs `/kairos:triage` — surface the gap rather than quietly filling it yourself.
 
-`transition_item` to **Active** before the first change. The move gives the task your **claim**: the board and `get_item` show that you (or your agent) work on it. If `get_item` shows a claim of a different person, the task is theirs: ask before you start, and do not take it over. A change to a task that a different person has the claim on succeeds, and the answer ends with a `Warning:` line that names the person; stop and tell the lead.
+`transition_item` to **Active** before the first change. The move gives the task your **claim**: the board and `get_item` show that you (or your agent) work on it. If `get_item` shows a claim of a different person, the task is theirs: ask before you start, and do not take it over. A change to a task with the claim of a different person succeeds. The answer then ends with a `Warning:` line that names the person. Stop, do "Abort", and tell the lead.
 
 **Read your notifications.** While you have unread notifications, each answer of a Kairos tool ends with a block `## Your notifications (N unread)`: the 5 newest, then `N more: call get_events`. A notification tells you of a claim handed off to you, a blocker of your claimed task that is done or archived, a task that you created that someone cancelled, a mention of your user name, or a P0 bug on the board of your team. `get_events` lists them with their ids. Act on each one that changes your work (a cleared blocker can make a task workable; a P0 bug can come before your pick), tell the lead about the others, then `mark_events_read` (`ids`, or `all: true`). Do not mark a notification read before you have read it.
 
@@ -67,7 +67,7 @@ When you split the task, or add a task for work that you find, link the tasks wi
 
 **What remains lives on the items.** The remaining work is the open tasks of the initiative and their `blocks` edges, not a list you rewrite from memory each turn. When asked what is left: `get_item` the initiative, then `search` with `traverse: {from: <initiative>, relationships: [parent, blocks], direction: both, depth: 2}`, and present the open tasks in the order of their edges. A new step goes on the record before you answer: a task with its `blocks` edge, or a note on the task when it is small. A deliverable of the active task is never "out of scope" in a reply: it is done, split into a task with a reason and an edge, or left on the task as open.
 
-Use the `tdd` skill at pre-agreed seams where possible. Run the repo's fast checks — formatter, typecheck, single test files — as you go; the full suite once at the end.
+Use the `tdd` skill at the seams that the task names, or that the lead agrees. Run the repo's fast checks — formatter, typecheck, single test files — as you go; the full suite once at the end.
 
 ## The completion gate
 
@@ -90,6 +90,19 @@ Do this step at Completed. When the branch is pushed and the PR is open, remove 
 `git -C <clone> worktree remove ../wt-<code>`
 
 Keep the branch, because the PR uses it. Do not use `--force`. When the command refuses, the worktree has changes that are not committed: keep it. Also keep the worktree when the branch is not pushed or no PR is open. When this session runs in the worktree, keep it and tell the user to remove it after the session. Write the path of a kept worktree and the reason in the closing note.
+
+## Abort
+
+Do these steps when you stop a task before Completed. Examples: the user cancels the work, `/kairos:cancel-ralph` stops the loop, or a different person has the claim. Do not leave a task with no record. A task that waits on a decision or another team goes to Blocked first (the next section).
+
+1. Look for changes that are not committed: `git -C <worktree> status --porcelain`.
+2. When the output is empty, remove the worktree: `git -C <clone> worktree remove ../wt-<code>`. Keep the branch.
+3. When the output is not empty, keep the worktree. Do not use `--force`.
+4. `append_note` on the task. Write what is done and what is not done. Write the path of a kept worktree and the reason. End with a `Next step:` line.
+5. `set_state` with each field: `branch`, the last `commit`, `pushed` (true or false), `pr_url`, and `next_step`.
+6. When the task is in Active and you hold the claim, `release_item` the task. The task stays in Active, free for the next person. Do not release the claim of a different person.
+
+Then tell the lead the short code, the state and the worktree.
 
 ## Blocked
 

@@ -51,7 +51,7 @@ The loop ends in one of three ways:
   - a task has no acceptance criteria that you can check;
   - the work needs a design decision, a push, a deploy, or a change in a different repository.
 
-  Write the reason on the task and on its parent initiative. Give the reason in your reply. End the reply with `<promise>LOOP STOPPED</promise>`.
+  Write the reason on the task and on its parent initiative. Do the "Abort" section of `/kairos:implement` for the task. Give the reason in your reply. End the reply with `<promise>LOOP STOPPED</promise>`.
 - **The loop gets to the iteration limit** (`--max-iterations N`, no limit by default). The hook then lets the session stop. A task can be in an intermediate state.
 
 Write a promise only when it is true. To stop the loop at a different time, the user runs `/kairos:cancel-ralph`.

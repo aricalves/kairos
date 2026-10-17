@@ -442,6 +442,50 @@ class TheWorkIsInAWorktree(unittest.TestCase):
         self.assertIn("close the work", skill)
 
 
+class AbortLeavesARecord(unittest.TestCase):
+    """KAIROS-T-0523: implement has an Abort section: the note, the state
+    with each field, the release of the claim, and the worktree removed or
+    kept. cancel-ralph, the Ralph procedure and the channel name it."""
+
+    def setUp(self):
+        self.text = read(os.path.join(SKILLS, "workflow", "implement", "SKILL.md"))
+        match = re.search(r"^## Abort\n(.*?)(?=^## )", self.text, re.S | re.M)
+        self.assertIsNotNone(match, "no Abort section in implement")
+        self.abort = match.group(1)
+
+    def test_the_section_writes_the_note_with_what_is_done_and_not_done(self):
+        self.assertIn("`append_note`", self.abort)
+        self.assertIn("what is done and what is not done", self.abort)
+        self.assertIn("`Next step:`", self.abort)
+
+    def test_the_section_writes_each_field_of_the_state(self):
+        self.assertIn("`set_state` with each field", self.abort)
+        for field in ("branch", "commit", "pushed", "pr_url", "next_step"):
+            self.assertIn(f"`{field}`", self.abort)
+
+    def test_the_section_releases_only_its_own_claim(self):
+        self.assertIn("you hold the claim, `release_item` the task", self.abort)
+        self.assertIn("Do not release the claim of a different person", self.abort)
+
+    def test_the_worktree_is_removed_when_clean_and_kept_else(self):
+        self.assertIn("git -C <worktree> status --porcelain", self.abort)
+        self.assertIn("git -C <clone> worktree remove ../wt-<code>", self.abort)
+        self.assertIn("keep the worktree", self.abort)
+        self.assertIn("path of a kept worktree", self.abort)
+
+    def test_the_claim_of_a_different_person_leads_to_abort(self):
+        self.assertIn('Stop, do "Abort", and tell the lead.', self.text)
+
+    def test_cancel_ralph_ralph_and_the_channel_name_the_section(self):
+        cancel = read(os.path.join(SKILLS, "workflow", "cancel-ralph", "SKILL.md"))
+        self.assertIn('"Abort" section of `/kairos:implement`', cancel)
+        ralph_skill = read(os.path.join(SKILLS, "workflow", "ralph", "SKILL.md"))
+        self.assertIn('"Abort" section of `/kairos:implement`', ralph_skill)
+        self.assertIn('"Abort" section of /kairos:implement', read(os.path.join(HERE, "ralph.py")))
+        channel = read(os.path.join(PLUGIN, "bin", "kairos-channel"))
+        self.assertIn("do the Abort section of kairos:implement", channel)
+
+
 class BootstrapWritesNoRepositoryConnection(unittest.TestCase):
     """The MCP connection belongs to the user: the plugin server or a
     user-scope entry. A project `.mcp.json` only when the user asks."""
