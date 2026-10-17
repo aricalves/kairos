@@ -89,17 +89,19 @@ pub(crate) async fn get_children_progress(
             let (item_id, _) =
                 resolve_family_item(conn, &family, &short_code, Liveness::IncludeArchived)?;
             let rows = graph::children_progress(conn, item_id).map_err(ApiError::internal)?;
-            let (done, total) = kairos_core::items::children_progress_counts(
+            let counts = kairos_core::items::children_progress_counts(
                 &rows
                     .iter()
-                    .map(|row| (row.is_done, row.count))
+                    .map(|row| (row.is_done, row.count, row.cancelled))
                     .collect::<Vec<_>>(),
             );
             let has_done_columns = rows.iter().any(|row| row.board_has_done);
             Ok(dto::ChildrenProgressResponse {
                 short_code,
-                total,
-                done,
+                total: counts.total,
+                done: counts.done,
+                cancelled: counts.cancelled,
+                open: counts.open,
                 has_done_columns,
                 by_column: rows
                     .into_iter()
@@ -109,6 +111,7 @@ pub(crate) async fn get_children_progress(
                         board_id: row.board_id.to_string(),
                         is_done: row.is_done,
                         count: row.count,
+                        cancelled: row.cancelled,
                     })
                     .collect(),
             })
@@ -308,6 +311,7 @@ fn group_neighbors(
             title: neighbor.title,
             archived_at: neighbor.archived_at.map(timestamp),
             done: neighbor.done,
+            cancelled: neighbor.cancelled,
         };
         match groups.last_mut() {
             Some(group) if group.relationship == relationship => group.items.push(item),

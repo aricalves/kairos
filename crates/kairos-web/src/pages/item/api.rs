@@ -357,6 +357,9 @@ pub struct MetadataDefinition {
 pub struct ChildrenProgress {
     pub total: i64,
     pub done: i64,
+    /// KAIROS-T-0567: cancelled children, apart from `done`.
+    #[serde(default)]
+    pub cancelled: i64,
     /// False = no involved board has done columns; composition only.
     #[serde(default)]
     pub has_done_columns: bool,
@@ -370,6 +373,9 @@ pub struct ChildColumnProgress {
     pub column_name: String,
     pub is_done: bool,
     pub count: i64,
+    /// KAIROS-T-0567: the cancelled tasks among `count`.
+    #[serde(default)]
+    pub cancelled: i64,
 }
 
 /// mirror of: `kairos_client::types_meta::ItemRelationshipsResponse`
@@ -415,6 +421,11 @@ pub struct RelatedItem {
     /// without the mark a finished blocker reads as one still in the way.
     #[serde(default)]
     pub done: bool,
+    /// `true` when this neighbour is a cancelled task (KAIROS-T-0567). A
+    /// cancelled blocker still blocks: the panel marks it `cancelled`, not
+    /// `done`.
+    #[serde(default)]
+    pub cancelled: bool,
 }
 
 /// mirror of: `kairos_client::types_meta::Template` (partial).

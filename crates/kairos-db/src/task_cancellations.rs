@@ -215,15 +215,11 @@ pub fn cancel_task(
             .execute(conn)?;
         // The done column holds no claims: the claim ends.
         crate::task_claims::after_column_change(conn, task_id, to_column_id, actor_id, "cancel")?;
-        // KAIROS-T-0381: the person who created the task is told, and the
-        // task no longer blocks.
+        // KAIROS-T-0381: the person who created the task is told.
         crate::notifications::on_cancel(conn, task_id, reason, actor_id)?;
-        crate::notifications::on_blockers_cleared(
-            conn,
-            &[task_id],
-            crate::notifications::Cleared::Done,
-            actor_id,
-        )?;
+        // KAIROS-T-0567: a cancelled blocker still blocks. Its dependants
+        // are told; Kairos unblocks nothing.
+        crate::notifications::on_blocker_cancelled(conn, task_id, reason, actor_id)?;
         // KAIROS-T-0385: the dispatch rules of the done column.
         crate::dispatch::on_task_entered_column(conn, task_id, to_column_id, actor_id)?;
         // KAIROS-T-0386: the GitHub write-back of its pull requests.

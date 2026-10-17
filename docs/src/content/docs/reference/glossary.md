@@ -593,6 +593,11 @@ when:
 - the item at either end is in a [done column](#done-column), or
 - the item at the other end is [put away](#put-away).
 
+A cancelled blocker is the exception (KAIROS-T-0567). A cancel means "won't
+do", not done. So a cancel does not resolve a blocker, and its edge still counts.
+A person decides: remove the edge, put the blocker away, or reopen it. The list
+marks a cancelled end `cancelled` in REST and `[cancelled]` in MCP.
+
 The edge stays in the relationship list of each item, as history. The list
 marks the end in a done column (`done` in REST, `[done]` in MCP). It marks the
 end that is put away (`archived_at` in REST, `[archived]` in MCP). The counts on

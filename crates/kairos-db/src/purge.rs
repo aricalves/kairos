@@ -21,6 +21,11 @@
 //!   codes (`retired_codes`);
 //! - the notifications about it (`notifications`, KAIROS-T-0381).
 //!
+//! A purge of a task that blocks (live, and not done) frees the items that
+//! it blocks (KAIROS-T-0568): each one gets `blocker_cleared` and, with no
+//! open blocker left, fires the `unblocked` dispatch rules
+//! ([`crate::notifications::on_blocks_removed`]).
+//!
 //! # What a purge keeps
 //!
 //! The `activity_log` rows about the task stay: the log is the audit of
@@ -85,6 +90,14 @@ pub fn purge_task(
         // The event first: it reads the placement of the row, and the
         // clients of the board refetch when the transaction commits.
         events::emit_item_event_by_id(conn, EventKind::ItemDeleted, "task", task_id, actor_id)?;
+        // KAIROS-T-0568: the items that the task blocks now lose a blocker,
+        // after the delete of the edges. A done or archived task blocked
+        // nothing.
+        let freed = if crate::notifications::blocks_now(conn, task_id)? {
+            crate::dispatch::dependants_of(conn, &[task_id], &[task_id])?
+        } else {
+            Vec::new()
+        };
 
         diesel::delete(
             item_relationships::table.filter(
@@ -117,6 +130,12 @@ pub fn purge_task(
         diesel::delete(retired_codes::table.filter(retired_codes::item_id.eq(task_id)))
             .execute(conn)?;
         diesel::delete(tasks::table.filter(tasks::id.eq(task_id))).execute(conn)?;
+        crate::notifications::on_blocks_removed(
+            conn,
+            &freed,
+            crate::notifications::Cleared::Purged,
+            actor_id,
+        )?;
 
         diesel::insert_into(crate::schema::activity_log::table)
             .values(NewActivityLogEntry {

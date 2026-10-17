@@ -2460,7 +2460,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "One item by short code: type, board and column, version, markdown content, metadata, relationships (parent chain, children, blockers and blocked, supporting documents; a done end is marked [done]), and as it applies: the claim of a task in Active, the owner and teams of a strategy or initiative, the owner board and impacted repositories of a document or ADR, the cancel mark of a task, the external references (URIs with a label) of any item. A retired code finds the item and names the current code."
+        description = "One item by short code: type, board and column, version, markdown content, metadata, relationships (parent chain, children, blockers and blocked, supporting documents; a done end is marked [done], a cancelled one [cancelled]), and as it applies: the claim of a task in Active, the owner and teams of a strategy or initiative, the owner board and impacted repositories of a document or ADR, the cancel mark of a task, the external references (URIs with a label) of any item. A retired code finds the item and names the current code."
     )]
     pub async fn get_item(
         &self,
@@ -6873,9 +6873,15 @@ fn relationship_lines(
         |label: &'static str, entry: String| groups.entry(label).or_default().push(entry);
 
     /// One neighbour line, tagged when the neighbour is archived, and,
-    /// on a `blocks` edge, when the neighbour is done.
+    /// on a `blocks` edge, when the neighbour is done or cancelled.
+    /// KAIROS-T-0567: a cancelled blocker is unresolved, so it is
+    /// `[cancelled]`, never `[done]`.
     fn line(neighbor: &kairos_db::graph::Neighbor) -> String {
-        let done = if neighbor.relationship == RelationshipType::Blocks && neighbor.done {
+        let done = if neighbor.relationship != RelationshipType::Blocks {
+            ""
+        } else if neighbor.cancelled {
+            " [cancelled]"
+        } else if neighbor.done {
             " [done]"
         } else {
             ""

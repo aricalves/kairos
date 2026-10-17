@@ -1265,6 +1265,8 @@ pub(crate) async fn board_items(
                                 dto::ProgressCounts {
                                     done: counts.done,
                                     total: counts.total,
+                                    cancelled: counts.cancelled,
+                                    open: counts.open(),
                                     has_done: counts.has_done,
                                 },
                             )
