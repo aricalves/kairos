@@ -1440,11 +1440,12 @@ pub(crate) fn update_column_as(
         && body.position.is_none()
         && body.is_done.is_none()
         && body.claims.is_none()
+        && body.keeps_claims.is_none()
         && body.wip_limit.is_none()
     {
         return Err(ApiError::validation(
             "The request has no field to change. Send one or more of name, position, is_done, \
-             claims and wip_limit.",
+             claims, keeps_claims and wip_limit.",
         ));
     }
     if let Some(Some(limit)) = body.wip_limit
@@ -1479,6 +1480,13 @@ pub(crate) fn update_column_as(
     // KAIROS-T-0359: the same path and capability as `is_done`.
     if let Some(claims) = body.claims.filter(|claims| *claims != column.claims) {
         boards::set_column_claims(conn, column_id, claims, user).map_err(map_config_error)?;
+    }
+    // KAIROS-T-0529: the same path and capability as `claims`.
+    if let Some(keeps) = body
+        .keeps_claims
+        .filter(|keeps| *keeps != column.keeps_claims)
+    {
+        boards::set_column_keeps_claims(conn, column_id, keeps, user).map_err(map_config_error)?;
     }
     // KAIROS-T-0371: the same path and capability as `claims`.
     if let Some(limit) = body.wip_limit.filter(|limit| *limit != column.wip_limit) {

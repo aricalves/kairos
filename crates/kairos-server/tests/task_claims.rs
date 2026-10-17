@@ -11,7 +11,9 @@
 //! 3. A hand-off to bob makes the claim bob's.
 //! 4. A release leaves no claim, and the next person who moves the task
 //!    to Active (out and back in) gets the claim.
-//! 5. The claim ends when the task goes out of Active.
+//! 5. The claim ends when the task goes out of Active, to a column that
+//!    holds no claim. Blocked holds claims: the claim survives
+//!    Active -> Blocked -> Active (KAIROS-T-0529).
 //!
 //! And: a move to Active by a service account makes no claim; an archive
 //! of a claimed task ends the claim; a person with no claim and no
@@ -271,6 +273,13 @@ async fn a_task_in_active_has_a_claim() {
         .map(|c| c.name.as_str())
         .collect();
     assert_eq!(flagged, vec!["Active"], "the column DTO has the flag");
+    let keeping: Vec<&str> = detail
+        .columns
+        .iter()
+        .filter(|c| c.keeps_claims)
+        .map(|c| c.name.as_str())
+        .collect();
+    assert_eq!(keeping, vec!["Blocked"], "the seed: Blocked keeps claims");
     let to = |name: &str| columns[name].clone();
 
     let agent_key = alice
@@ -494,10 +503,13 @@ async fn a_task_in_active_has_a_claim() {
         .call_ok("get_item", json!({"short_code": task.short_code}))
         .await;
     assert!(text.contains("- claim: none."), "{text}");
-    alice
+    // Blocked keeps claims and gives none (KAIROS-T-0529): the free task
+    // moves there with no claim.
+    let blocked = alice
         .transition_task(&task.short_code, &to("Blocked"))
         .await
-        .expect("out of Active");
+        .expect("to Blocked");
+    assert_eq!(blocked.claim, None, "a move into Blocked gives no claim");
     let back = bob
         .transition_task(&task.short_code, &to("Active"))
         .await
@@ -505,6 +517,26 @@ async fn a_task_in_active_has_a_claim() {
     let claim = back.claim.expect("bob moved it in");
     assert_eq!(claim.user_id, bob_id.to_string());
     assert!(!claim.agent);
+    // The claim survives Active -> Blocked -> Active, whoever moves it.
+    let blocked = alice
+        .transition_task(&task.short_code, &to("Blocked"))
+        .await
+        .expect("alice blocks bob's task");
+    assert_eq!(
+        blocked.claim.expect("the claim stays").user_id,
+        bob_id.to_string(),
+        "a block does not end the claim"
+    );
+    let text = bob_mcp.call_ok("my_work", json!({})).await;
+    assert!(
+        text.contains(&task.short_code),
+        "the blocked task stays in bob's work: {text}"
+    );
+    let back = alice
+        .transition_task(&task.short_code, &to("Active"))
+        .await
+        .expect("alice unblocks it");
+    assert_eq!(back.claim.expect("still bob's").user_id, bob_id.to_string());
     // The release over MCP.
     let text = bob_mcp
         .call_ok("release_item", json!({"short_code": task.short_code}))

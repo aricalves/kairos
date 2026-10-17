@@ -90,7 +90,7 @@ Codes an agent can receive, and what each means.
 | `CYCLE_DETECTED` | The edge would create a cycle. |
 | `ALREADY_LINKED` | That edge already exists. For `impacts`: the item impacts that repository already. |
 | `RENAME_NOT_NEEDED` | A `move_item` with `rename` to a board whose prefix the code has already. |
-| `NOT_CLAIMABLE` | A `hand_off_item` or a `release_item` of a task that is not in Active (a column that holds claims). |
+| `NOT_CLAIMABLE` | A `hand_off_item` or a `release_item` of a task that is not in a column that holds claims (Active or Blocked). |
 | `NO_CLAIM` | A `release_item` of a task that has no claim. |
 | `NO_OWNER` | A `release_item` of a strategy or an initiative that has no owner. |
 | `NOT_BOARD_MEMBER` | A `hand_off_item` of a strategy or an initiative to a person who is not a member of the board of the item. |
@@ -2017,6 +2017,7 @@ Changes a column, as `PATCH /api/boards/{id}/columns/{col_id}` does.
 | `position` | integer | no | no change | From 0, the first column. |
 | `is_done` | boolean | no | no change | A done column. |
 | `claims` | boolean | no | no change | A task in the column has a claim. |
+| `keeps_claims` | boolean | no | no change | A task with a claim keeps it in the column, and a task with no claim gets none there (Blocked, KAIROS-T-0529). |
 | `wip_limit` | integer | no | no change | The WIP limit, 1 or more. |
 | `no_wip_limit` | boolean | no | `false` | `true` removes the WIP limit. Not with `wip_limit`. |
 

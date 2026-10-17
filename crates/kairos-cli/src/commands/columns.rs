@@ -38,7 +38,7 @@ pub enum ColumnsCommand {
         common: Common,
     },
     /// Change a column (needs configure_boards): its name, position, done
-    /// flag or claims flag. `kairos boards wip-limit` sets the WIP limit
+    /// flag or claims flags. `kairos boards wip-limit` sets the WIP limit
     Update {
         /// Board slug or id (UUID)
         #[arg(value_name = "BOARD")]
@@ -58,6 +58,9 @@ pub enum ColumnsCommand {
         /// true: a task in the column has a claim
         #[arg(long)]
         claims: Option<bool>,
+        /// true: a task keeps its claim in the column and gets none there (Blocked)
+        #[arg(long = "keeps-claims")]
+        keeps_claims: Option<bool>,
         #[command(flatten)]
         common: Common,
     },
@@ -148,13 +151,22 @@ fn column_name(detail: &BoardDetail, id: &str) -> String {
 }
 
 fn columns_table(detail: &BoardDetail) -> Table {
-    let mut table = Table::new(&["POSITION", "COLUMN", "DONE", "CLAIMS", "WIP LIMIT", "ID"]);
+    let mut table = Table::new(&[
+        "POSITION",
+        "COLUMN",
+        "DONE",
+        "CLAIMS",
+        "KEEPS CLAIMS",
+        "WIP LIMIT",
+        "ID",
+    ]);
     for c in &detail.columns {
         table.row(vec![
             c.position.to_string(),
             c.name.clone(),
             if c.is_done { "yes" } else { "no" }.into(),
             if c.claims { "yes" } else { "no" }.into(),
+            if c.keeps_claims { "yes" } else { "no" }.into(),
             c.wip_limit
                 .map(|limit| limit.to_string())
                 .unwrap_or_else(|| "-".into()),
@@ -208,11 +220,18 @@ impl ColumnsCommand {
                 position,
                 done,
                 claims,
+                keeps_claims,
                 common,
             } => {
-                if name.is_none() && position.is_none() && done.is_none() && claims.is_none() {
+                if name.is_none()
+                    && position.is_none()
+                    && done.is_none()
+                    && claims.is_none()
+                    && keeps_claims.is_none()
+                {
                     return Err(CliError::Failure(
-                        "The command has no change. Use --name, --position, --done or --claims."
+                        "The command has no change. Use --name, --position, --done, --claims or \
+                         --keeps-claims."
                             .to_string(),
                     ));
                 }
@@ -228,6 +247,7 @@ impl ColumnsCommand {
                             position,
                             is_done: done,
                             claims,
+                            keeps_claims,
                             wip_limit: None,
                         },
                     )
@@ -236,12 +256,13 @@ impl ColumnsCommand {
                     return print_json(&updated);
                 }
                 println!(
-                    "The column {} of the board {}: position {}, done {}, claims {}.",
+                    "The column {} of the board {}: position {}, done {}, claims {}, keeps claims {}.",
                     updated.name,
                     detail.board.slug,
                     updated.position,
                     updated.is_done,
-                    updated.claims
+                    updated.claims,
+                    updated.keeps_claims
                 );
                 Ok(())
             }

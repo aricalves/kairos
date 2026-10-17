@@ -167,6 +167,7 @@ fn wip_request(limit: Option<i32>) -> UpdateColumnRequest {
         position: None,
         is_done: None,
         claims: None,
+        keeps_claims: None,
         wip_limit: Some(limit),
     }
 }
