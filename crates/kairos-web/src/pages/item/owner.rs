@@ -107,7 +107,7 @@ pub fn OwnerBoardPanel(
     let navigate = leptos_router::hooks::use_navigate();
     let whoami = use_context::<LocalResource<Result<crate::api::Whoami, ApiError>>>();
     let all_boards = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         boards::data::list_boards(auth)
     });
     // The board of now, as `(slug, team)`. `None` while the read is not
@@ -293,7 +293,7 @@ pub fn ImpactsPanel(
         })
     });
     let directory = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         async move { repositories::api::list_repositories(auth, None).await }
     });
     let options: Memo<Vec<(String, String)>> = Memo::new(move |_| {

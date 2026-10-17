@@ -92,11 +92,11 @@ pub fn SearchPage() -> impl IntoView {
 
     // ---- option sources ---------------------------------------------------
     let boards = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         data::boards(auth)
     });
     let columns = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let slug = board_sel.get();
         let boards_now = boards.get();
         async move {
@@ -117,7 +117,7 @@ pub fn SearchPage() -> impl IntoView {
 
     // ---- results ----------------------------------------------------------
     let results = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let request = submitted.get();
         async move {
             match request {

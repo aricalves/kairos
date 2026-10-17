@@ -157,7 +157,7 @@ fn ClaimControls(code: String, holder: String, on_moved: Callback<String>) -> im
     let busy = RwSignal::new(false);
     let error = RwSignal::new(None::<ApiError>);
     let members = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         async move { crate::api::get_all::<Member>(auth, "/api/members").await }
     });
     let hand_off: Callback<()> = Callback::new(move |()| {

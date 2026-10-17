@@ -175,7 +175,7 @@ fn ItemDetailView(family: Family, #[prop(into)] code: String) -> impl IntoView {
     let toaster = use_toaster();
 
     let detail = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let _ = reload.get();
         api::fetch_item(auth, family, code.get_value())
     });
@@ -308,7 +308,7 @@ fn ItemLoaded(
     // or it is a document that names no owner board (COLLIERY-T-0269).
     let board_id_for_fetch = StoredValue::new(board_id);
     let board = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let id = board_id_for_fetch.get_value();
         async move {
             match id {
@@ -631,7 +631,7 @@ fn ArchivedBanner(
     let auth = use_auth();
     let item_id = StoredValue::new(item_id);
     let who = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         api::fetch_archived_by(auth, item_id.get_value())
     });
     let when = put_away_when(&archived_at);
@@ -861,7 +861,7 @@ fn ChildrenProgressBar(family: Family, #[prop(into)] code: String) -> impl IntoV
     let auth = use_auth();
     let code = StoredValue::new(code);
     let progress = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         api::fetch_children_progress(auth, family, code.get_value())
     });
     view! {
@@ -1155,7 +1155,7 @@ fn RepositoryControl(
     });
     let board_team = StoredValue::new(team_id);
     let repos = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         async move { repositories::api::list_repositories(auth, None).await }
     });
     let submit: Callback<()> = Callback::new(move |()| {
@@ -1278,7 +1278,7 @@ fn MoveBoardControl(
     );
     let whoami = use_context::<LocalResource<Result<crate::api::Whoami, ApiError>>>();
     let all_boards = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         boards::data::list_boards(auth)
     });
     // Target half, from the ONE derivation the board view uses.
@@ -1541,7 +1541,7 @@ fn EdgeProposalsPanel(#[prop(into)] code: String) -> impl IntoView {
     let busy = RwSignal::new(false);
     let error: RwSignal<Option<ApiError>> = RwSignal::new(None);
     let proposals = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let _ = reload.get();
         api::fetch_edge_proposals(auth, code.get_value())
     });
@@ -1668,7 +1668,7 @@ fn RelatedWorkPanel(#[prop(into)] code: String) -> impl IntoView {
     // duplicates. A button also makes it a question the person asked, which is
     // the framing rule 5 wants.
     let related = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let ask = asked.get();
         async move {
             if !ask {
@@ -1772,7 +1772,7 @@ fn RelationshipsPanel(family: Family, #[prop(into)] code: String) -> impl IntoVi
     let code = StoredValue::new(code);
     let reload = RwSignal::new(0u32);
     let relationships = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let _ = reload.get();
         api::fetch_relationships(auth, family, code.get_value())
     });
@@ -1861,7 +1861,7 @@ fn DevelopmentPanel(family: Family, #[prop(into)] code: String) -> impl IntoView
     let code = StoredValue::new(code);
     let reload = RwSignal::new(0u32);
     let links = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let _ = reload.get();
         api::fetch_links(auth, family, code.get_value())
     });

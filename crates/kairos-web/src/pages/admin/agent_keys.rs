@@ -77,7 +77,7 @@ pub fn OrgAgentKeysPanel(reload: RwSignal<u32>) -> impl IntoView {
     let target: RwSignal<Option<(String, String, String)>> = RwSignal::new(None);
 
     let keys = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         reload.get();
         list_org_agent_keys(auth)
     });

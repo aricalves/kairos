@@ -227,7 +227,7 @@ pub fn DispatchPanel(
     let reload = RwSignal::new(0u32);
     let board = StoredValue::new(board_id);
     let data = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         reload.get();
         load(auth, board.get_value())
     });

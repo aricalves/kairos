@@ -79,7 +79,7 @@ pub fn GraphView(#[prop(into)] short_code: String) -> impl IntoView {
     // Base subgraph (depth 2) + in-place expansions, merged reactively —
     // expanding never remounts and never loses prior expansions.
     let base = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let _ = reload.get();
         let code = code.get_value();
         async move { data::item_graph(auth, &code, None).await }
@@ -147,7 +147,7 @@ pub fn GraphView(#[prop(into)] short_code: String) -> impl IntoView {
 
     // Whoami drives the org-admin manage panel (roles from whoami, §6).
     let whoami = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         api::whoami(auth)
     });
     let is_admin = move || matches!(whoami.get(), Some(Ok(me)) if me.organization.role == "admin");
@@ -877,7 +877,7 @@ fn ManagePanel(
     let reload = RwSignal::new(0u32);
 
     let rels = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let _ = reload.get();
         let code = code.get_value();
         async move { data::relationships(auth, &code).await }

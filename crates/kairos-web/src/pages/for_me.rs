@@ -258,7 +258,7 @@ pub fn ForMePage() -> impl IntoView {
     let auth = use_auth();
     let reload = RwSignal::new(0u32);
     let my_work = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         reload.get();
         work(auth)
     });

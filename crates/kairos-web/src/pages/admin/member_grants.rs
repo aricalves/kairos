@@ -208,7 +208,7 @@ pub fn AdminMemberGrantsPage() -> impl IntoView {
     let busy = RwSignal::new(false);
 
     let grants = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         reload.get();
         let user_id = user_id.get();
         async move { api::user_grants(auth, &user_id).await }
@@ -445,7 +445,7 @@ fn TeamsPanel(
 ) -> impl IntoView {
     let auth = use_auth();
     let all_teams = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         api::list_teams(auth)
     });
     let member_of: BTreeSet<String> = teams.iter().map(|t| t.team_id.clone()).collect();
