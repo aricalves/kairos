@@ -272,6 +272,26 @@ organization nouns (`boards`, `teams`, `members`, `streams`, `admin tenants`)
 have no archived mode. `kairos search` carries the same flag. See
 [Archiving](../../explanation/archiving/).
 
+#### The pages of a list
+
+A `list` verb prints one page. After the table, it prints the count and the
+page:
+
+```
+total: 340 (limit 200, offset 0)
+Next: --offset 200
+```
+
+The `Next:` line is there only when more rows follow the page. To read the
+next page, run the command again with that option. The last page has no
+`Next:` line. With `--json`, the command prints the envelope of the server
+as it is: `items`, `total`, `limit` and `offset`.
+
+These verbs page so: `<noun> list`, `boards list`,
+`members list`, `teams list`, `streams list`, `repos list`, `metadata list`,
+`templates list`, `admin agent-keys list`, `admin tenants list` and
+`kairos search`.
+
 ### `<noun> get`
 
 ```
@@ -782,7 +802,18 @@ Raw body:
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--query-json <JSON>` | JSON, `@FILE`, or `-` | none | The full search request body as raw JSON. `@FILE` reads a file; `-` reads standard input. Cannot be combined with any other search flag. |
+| `--query-json <JSON>` | JSON, `@FILE`, or `-` | none | The full search request body as raw JSON. `@FILE` reads a file; `-` reads standard input. |
+
+The command sends the `--query-json` body to the server as it is. The server
+checks each field and refuses an unknown field by its name. So an older CLI
+can send a field that only a newer server knows.
+
+`--query-json` does not accept a search flag beside it. The command then
+exits 1, and the message names each flag. Put the values in the JSON, or use
+the flags alone. Paging is in the JSON too: `"limit"` and `"offset"`.
+
+The output pages as [the pages of a list](#the-pages-of-a-list) tell. The
+`Next:` line counts the hits of all the groups.
 
 ### `kairos boards list`
 
@@ -1292,8 +1323,8 @@ kairos repos list [OPTIONS]
 | `--offset <OFFSET>` | integer | 0 | Rows to skip. |
 
 After the table, the command prints the count of the repositories and the
-page: `total: 12 (limit 50, offset 0)`. With `--json`, the command prints
-the page: `items`, `total`, `limit` and `offset`.
+page: `total: 12 (limit 50, offset 0)`. See
+[the pages of a list](#the-pages-of-a-list).
 
 ### `kairos repos get`
 
@@ -1683,14 +1714,18 @@ kairos metadata delete <DEFINITION> [OPTIONS]
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
 | `<DEFINITION>` | slug or UUID | required on `update` and `delete` | The metadata definition. |
+| `--limit <LIMIT>` | integer | server default 50, maximum 200 | On `list`: the page size. |
+| `--offset <OFFSET>` | integer | 0 | On `list`: the rows to skip. |
 | `--name <NAME>` | string | required on `create` | The name. |
 | `--slug <SLUG>` | string | required on `create` | The slug. |
-| `--type <TYPE>` | string | required on `create` | `text`, `number`, `date`, `enum` or `boolean`. It does not change later. |
+| `--type <TYPE>` | string | required on `create` | `string`, `enum` or `date`. It does not change later. |
 | `--option <VALUE>` | string | none | A value of an enum. Repeat it for each value, in the order of the scale. On `update`, the values replace the list. |
 | `--entity-type <TYPE>` | string | each type | An entity type of the definition: `strategy`, `initiative`, `task`, `document` or `adr`. Repeat it. On `update`, the values replace the list. |
 
-`list` shows the metadata definitions. Only an organization admin can create,
-update or delete a definition. `delete` refuses a definition that an item or a
+`list` shows one page of the metadata definitions. See
+[the pages of a list](#the-pages-of-a-list). `update` and `delete` find the
+slug on each page. Only an organization admin can create, update or delete a
+definition. `delete` refuses a definition that an item or a
 template uses, and the message names them.
 
 ### `kairos templates`
@@ -1705,13 +1740,17 @@ kairos templates delete <TEMPLATE> [OPTIONS]
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
 | `<TEMPLATE>` | slug or UUID | required on `update` and `delete` | The template. |
+| `--limit <LIMIT>` | integer | server default 50, maximum 200 | On `list`: the page size. |
+| `--offset <OFFSET>` | integer | 0 | On `list`: the rows to skip. |
 | `--name <NAME>` | string | required on `create` | The name. |
 | `--slug <SLUG>` | string | required on `create` | The slug. |
 | `--content <TEXT>` | string | empty | The markdown of a new item of the template. |
 | `--field <FIELD>` | string | none | A metadata field: `SLUG`, `SLUG=DEFAULT`, `SLUG!` or `SLUG=DEFAULT!`. The `!` makes the field required. Repeat it. On `update`, the values replace the list. |
 
-`list` shows the templates. Only an organization admin can create, update or
-delete a template. Items from a deleted template keep their content and their
+`list` shows one page of the templates. See
+[the pages of a list](#the-pages-of-a-list). `update` and `delete` find the
+slug on each page. Only an organization admin can create, update or delete a
+template. Items from a deleted template keep their content and their
 metadata.
 
 ## Machine access

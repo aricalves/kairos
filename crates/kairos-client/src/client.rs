@@ -2667,6 +2667,13 @@ impl KairosClient {
         self.post_ok("/api/search", request).await
     }
 
+    /// `POST /api/search` with a body as it is (KAIROS-T-0593): the server
+    /// judges each field, so a field that this client does not know still
+    /// goes to a server that knows it.
+    pub async fn search_raw(&self, body: &serde_json::Value) -> Result<SearchResponse, Error> {
+        self.post_ok("/api/search", body).await
+    }
+
     // -- identity ------------------------------------------------------------------------------
 
     /// `GET /api/whoami` — the resolved user/tenant/teams identity probe.
