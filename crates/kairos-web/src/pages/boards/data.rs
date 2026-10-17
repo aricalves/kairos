@@ -1121,6 +1121,9 @@ pub struct NewItem {
     pub hypothesis: Option<String>,
     /// initiative: optional complexity (`xs`|`s`|`m`|`l`|`xl`).
     pub complexity: Option<String>,
+    /// initiative: the kind of a bucket (`tech_debt`|`bug`|`ad_hoc`), or
+    /// `None` for an initiative that is not a bucket (KAIROS-T-0587).
+    pub bucket_type: Option<String>,
     /// task: `task` | `bug` | `tech_debt` | `support`.
     pub task_type: Option<String>,
     /// task: `planned` | `support` lane (KAIROS-T-0077). `None` lets the
@@ -1157,6 +1160,9 @@ struct CreateInitiativeRequest<'a> {
     content: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     complexity: Option<&'a str>,
+    /// KAIROS-T-0587: a bucket initiative; the server derives `is_bucket`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bucket_type: Option<&'a str>,
 }
 
 /// mirror of: `kairos_client::types::CreateTaskRequest`.
@@ -1237,6 +1243,7 @@ pub async fn create_item(
                     title: &item.title,
                     content: &item.content,
                     complexity: item.complexity.as_deref(),
+                    bucket_type: item.bucket_type.as_deref(),
                 },
             )
             .await?
