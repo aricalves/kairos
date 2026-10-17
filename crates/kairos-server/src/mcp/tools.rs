@@ -210,6 +210,10 @@ pub struct SetBoardPolicyParams {
     /// column only with an owner, and its owner cannot release it in Active
     /// or Monitoring. False: no check.
     pub owner_gate: Option<bool>,
+    /// A delivery board only. True: a task with an open blocker does not
+    /// move into a claims column or a done column (BLOCKED). False: the
+    /// move goes on with a warning.
+    pub blockers_gate: Option<bool>,
 }
 
 /// `delete_dispatch_rule` (KAIROS-T-0385).
@@ -2272,7 +2276,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Set the policies of a board. `parent_gate` (a delivery board): when true (the default), a task moves into a claims column (Active) by a transition, a board move or a create only while its parent initiative is in Active or Monitoring, or is a bucket; else PARENT_NOT_ACTIVE. A task with no parent initiative moves freely. `owner_gate` (an initiative board): when true (the default), an initiative moves into Active only with an owner, and the owner of an initiative in Active or Monitoring cannot release it (hand_off_item changes it); else OWNER_REQUIRED. Send at least one policy; a policy of a different level is VALIDATION. Needs configure_boards; `my_boards` shows the policies."
+        description = "Set the policies of a board. `parent_gate` (a delivery board): when true (the default), a task moves into a claims column (Active) by a transition, a board move or a create only while its parent initiative is in Active or Monitoring, or is a bucket; else PARENT_NOT_ACTIVE. A task with no parent initiative moves freely. `owner_gate` (an initiative board): when true (the default), an initiative moves into Active only with an owner, and the owner of an initiative in Active or Monitoring cannot release it (hand_off_item changes it); else OWNER_REQUIRED. `blockers_gate` (a delivery board): when true, a task with an open blocker (a cancelled blocker is open) does not move into a claims column or a done column by a transition, a reopen or a board move; else BLOCKED, with the blockers. When false (the default), the move goes on with a warning that names each open blocker. Send at least one policy; a policy of a different level is VALIDATION. Needs configure_boards; `my_boards` shows the policies."
     )]
     pub async fn set_board_policy(
         &self,
@@ -2290,6 +2294,7 @@ impl KairosMcp {
                 crate::api::org::boards::PolicyChange {
                     parent_gate: params.parent_gate,
                     owner_gate: params.owner_gate,
+                    blockers_gate: params.blockers_gate,
                 },
             )?;
             Ok(format!(
@@ -3084,7 +3089,8 @@ impl KairosMcp {
                 .rename
                 .as_ref()
                 .map_or(item.short_code.clone(), |rename| rename.new_code.clone());
-            crate::claims::note_wip(conn, moved.column_id, &moved_code)?;
+            // KAIROS-T-0565: and the open blockers.
+            crate::claims::note_task_move(conn, item.id, moved.column_id, &moved_code)?;
             let column = board_columns(conn, target.id)?
                 .into_iter()
                 .find(|c| c.id == moved.column_id)
@@ -3649,7 +3655,12 @@ impl KairosMcp {
             .map_err(map_board_error)?;
             crate::agent_triage::record(conn, &auth, item.id, triaged)?;
             // KAIROS-T-0371: a move into a column over its WIP limit.
-            crate::claims::note_wip(conn, to_column_id, &item.short_code)?;
+            // KAIROS-T-0565: the open blockers of a task.
+            if item.item_type == ItemType::Task {
+                crate::claims::note_task_move(conn, item.id, to_column_id, &item.short_code)?;
+            } else {
+                crate::claims::note_wip(conn, to_column_id, &item.short_code)?;
+            }
 
             let name_of = |id: Uuid| {
                 columns
@@ -7248,8 +7259,10 @@ fn policy_text(board: &Board) -> Option<String> {
     match board.board_level {
         BoardLevel::Delivery => Some(format!(
             "parent_gate {} (a task moves to a claims column only while its initiative is \
-             active)",
-            if board.parent_gate { "on" } else { "off" }
+             active); blockers_gate {} (on: a task with an open blocker cannot move to a claims \
+             or done column; off: the move gets a warning)",
+            if board.parent_gate { "on" } else { "off" },
+            if board.blockers_gate { "on" } else { "off" }
         )),
         BoardLevel::Initiative => Some(format!(
             "owner_gate {} (an initiative moves to Active only with an owner)",

@@ -160,7 +160,8 @@ here, not from a refused `transition_item`.
 Each delivery board and each initiative board has a `policy:` line with its
 [board policies](#set_board_policy), for example
 `policy: parent_gate on (a task moves to a claims column only while its
-initiative is active)`.
+initiative is active); blockers_gate off (on: a task with an open blocker cannot
+move to a claims or done column; off: the move gets a warning)`.
 
 Each ADR board names its team
 (`ADR board of the team <slug>`), or the organization. A team ADR board holds
@@ -1315,6 +1316,17 @@ rule. See [`set_board_policy`](#set_board_policy).
 Kairos refuses `OWNER_REQUIRED` for an initiative that goes into Active with
 no owner. The board policy `owner_gate` sets this rule.
 
+A task can have open blockers: the items that block it and are not done.
+Kairos counts a cancelled blocker as open. Such a task can move into a claims
+column or a done column. The answer then ends with a warning line:
+
+```text
+Warning: ACME-T-0012 is blocked by ACME-T-0009 (open). Your move into Active is recorded.
+```
+
+With the board policy `blockers_gate` on, Kairos refuses the move with
+`BLOCKED` instead. The details name each blocker.
+
 ### `move_item`
 
 Moves a task to another delivery board. It lands in that board's entry column
@@ -1334,8 +1346,9 @@ move is not an edit. The creator of the task gets no right to move it.
 
 The task keeps its repository. The move does not look at the repository.
 
-The entry column of the target board can hold claims. Then the policy
-`parent_gate` of the target board applies, as for `transition_item`.
+The entry column of the target board can hold claims. Then the policies
+`parent_gate` and `blockers_gate` of the target board apply, as for
+`transition_item`. The warning of open blockers applies too.
 
 A task in a done column does not move: the refusal is `TASK_DONE`. A move
 would put a completed or cancelled task live on the other board. Reopen the
@@ -1576,8 +1589,8 @@ board that is not done.
 The column is the first live column without the done flag, by position. On a
 default delivery board, that column is Backlog. The transition rules of the
 board do not apply: a default board has no transition out of Completed. The
-policy `parent_gate` applies when the column holds claims, as for
-`transition_item`.
+policies `parent_gate` and `blockers_gate` apply when the column holds claims,
+as for `transition_item`. The warning of open blockers applies too.
 
 The rest is the same as a transition. The activity log gets a row
 `transition`. The event is `item_transitioned`. The reopen removes the cancel
@@ -1603,6 +1616,8 @@ Refuses:
 - `NO_OPEN_COLUMN` for a board with only done columns.
 - `PARENT_NOT_ACTIVE` when the column holds claims, the policy `parent_gate`
   is on, and the initiative of the task is not active.
+- `BLOCKED` when the column holds claims, the policy `blockers_gate` is on,
+  and the task has open blockers.
 
 ## Relationships
 
@@ -2527,14 +2542,15 @@ Requires `configure_boards` on the board. REST:
 
 ### `set_board_policy`
 
-Sets the policies of a board (KAIROS-T-0641, KAIROS-T-0643). Each policy is
-on or off per board.
+Sets the policies of a board (KAIROS-T-0641, KAIROS-T-0643, KAIROS-T-0565).
+Each policy is on or off per board.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `board` | string | yes | — | Slug or UUID. |
 | `parent_gate` | boolean | no | — | A delivery board only. `true`: a task moves into a claims column only while its parent initiative is active. `false`: no check. |
 | `owner_gate` | boolean | no | — | An initiative board only. `true`: an initiative moves into Active only with an owner, and the owner of an initiative in Active or Monitoring cannot release it. `false`: no check. |
+| `blockers_gate` | boolean | no | — | A delivery board only. `true`: a task with open blockers does not move into a claims column or a done column. `false`: the move gets a warning. |
 
 `parent_gate` is on by default. With it on, a task moves into a claims column
 only while its parent initiative is in Active or Monitoring. A bucket
@@ -2551,6 +2567,14 @@ In Active and in Monitoring, Kairos refuses a release of the owner, also for
 an organization admin. A hand-off to a member
 of the board changes the owner. The refusal is `OWNER_REQUIRED`. An
 initiative in Active with no owner stays there.
+
+`blockers_gate` is off by default. An open blocker is an item that blocks the
+task and is not done. Kairos counts a cancelled blocker as open.
+
+With the policy off, a move into a claims column or a done column succeeds
+with a warning. With it on, Kairos refuses the move with `BLOCKED`. The check
+runs on a transition, a reopen and a move to the board. A cancel is no move of
+this kind. A task in Active with open blockers stays there.
 
 Send at least one policy. A policy of a different level of board is
 `VALIDATION`. `my_boards` shows the policies of each board.
