@@ -538,7 +538,7 @@ ACME-T-0001 is already in the planned lane: nothing changed.
 ### `state`
 
 ```
-kairos state <SHORT_CODE> [--branch <BRANCH>] [--commit <COMMIT>] [--pushed] [--pr <URL>] [--next <TEXT>] [OPTIONS]
+kairos state <SHORT_CODE> [--branch <BRANCH>] [--commit <COMMIT>] [--pushed | --not-pushed] [--pr <URL>] [--next <TEXT>] [--clear <FIELD>]... [--expected-updated-at <INSTANT>] [OPTIONS]
 ```
 
 | Argument / Option | Type | Default | Description |
@@ -546,14 +546,20 @@ kairos state <SHORT_CODE> [--branch <BRANCH>] [--commit <COMMIT>] [--pushed] [--
 | `<SHORT_CODE>` | string | required | The task's short code. |
 | `--branch <BRANCH>` | string | none | The branch of the work. |
 | `--commit <COMMIT>` | string | none | The last commit (a hash or a short hash). |
-| `--pushed` | flag | off | The last commit is pushed. |
-| `--pr <URL>` | string | none | The URL of the PR. |
-| `--next <TEXT>` | string | none | What comes next. |
+| `--pushed` | flag | kept | The last commit is pushed. |
+| `--not-pushed` | flag | kept | The last commit is not pushed. |
+| `--pr <URL>` | string | kept | The URL of the PR. |
+| `--next <TEXT>` | string | kept | What comes next. |
+| `--clear <FIELD>` | `branch`, `commit`, `pr` or `next` | none | Clear a field. Repeat the option for more than one. |
+| `--expected-updated-at <INSTANT>` | RFC 3339 | none | The `updated_at` of the state you read. The write is refused with `CONFLICT` when the state changed since. |
 
 Writes the live state of a task: one current line, separate from the notes.
-The write replaces the whole state: send each option each time. Kairos
-clears an option that you do not send. Send at least one option. The state
-is not content: the write makes no new version of the task.
+The write is a patch (KAIROS-T-0533). An option that you give sets its field.
+A field in `--clear` becomes empty. A field that you do not name keeps its
+value. Send at least one.
+
+The state is not content: the write makes no new version of the task. A
+hand-off or a release clears the next step.
 
 The edit rule applies, as for `note`. It passes the creator of the task, the
 holder of its claim (KAIROS-T-0532), and `manage_tasks` on its board. `tasks get` shows the state in the field

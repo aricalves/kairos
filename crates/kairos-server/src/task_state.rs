@@ -15,13 +15,16 @@ use kairos_client::types as dto;
 use kairos_core::short_code::ItemType;
 use kairos_db::models::TaskState;
 use kairos_db::task_claims::display_names;
-use kairos_db::task_state::{self, StateWrite};
+use kairos_db::task_state::{self, Field, PatchError, StatePatch};
 use uuid::Uuid;
 
 use crate::error::ApiError;
 
-/// The write of REST and MCP: the edit rule, then the row is replaced.
-/// An empty write is refused: send at least one field.
+/// The write of REST and MCP (KAIROS-T-0533): the edit rule, then the patch.
+/// A field that is not sent is kept, `null` clears it; an empty patch is
+/// refused; a stale `expected_updated_at` is a `CONFLICT` with the current
+/// state in the details. The write emits `item_updated`, so the cards and
+/// the item page refresh.
 pub fn write_state(
     conn: &mut PgConnection,
     slug: &str,
@@ -29,22 +32,58 @@ pub fn write_state(
     task_id: Uuid,
     body: &dto::SetTaskStateRequest,
 ) -> Result<dto::TaskState, ApiError> {
-    let write = StateWrite {
-        branch: body.branch.clone(),
-        commit: body.commit.clone(),
+    let expected_updated_at = body
+        .expected_updated_at
+        .as_deref()
+        .map(|text| {
+            DateTime::parse_from_rfc3339(text)
+                .map(|t| t.with_timezone(&Utc))
+                .map_err(|_| {
+                    ApiError::validation(format!(
+                        "{text:?} is not an RFC 3339 instant. Send expected_updated_at as the \
+                         updated_at of the state you read."
+                    ))
+                })
+        })
+        .transpose()?;
+    let patch = StatePatch {
+        branch: Field::of(body.branch.clone()),
+        commit: Field::of(body.commit.clone()),
         pushed: body.pushed,
-        pr_url: body.pr_url.clone(),
-        next_step: body.next_step.clone(),
-    }
-    .cleaned();
-    if write.is_empty() {
+        pr_url: Field::of(body.pr_url.clone()),
+        next_step: Field::of(body.next_step.clone()),
+        expected_updated_at,
+    };
+    if patch.is_empty() {
         return Err(ApiError::validation(
-            "The state has no field with a value. Send at least one of branch, commit, pushed, \
-             pr_url and next_step. The write replaces the whole state.",
+            "The patch changes nothing. Send at least one of branch, commit, pushed, pr_url and \
+             next_step: a field that you send is set, null clears it, a field that you do not \
+             send is kept.",
         ));
     }
     crate::api::require_item_edit(conn, slug, user, task_id, ItemType::Task)?;
-    let state = task_state::set(conn, task_id, write, user).map_err(ApiError::internal)?;
+    let state = match task_state::patch(conn, task_id, patch, user) {
+        Ok(state) => state,
+        Err(PatchError::Conflict(current)) => {
+            let names = display_names(conn, &[current.updated_by]).map_err(ApiError::internal)?;
+            let current = state_dto(&current, &names);
+            return Err(ApiError::conflict(format!(
+                "The state of the task changed at {} ({}). Read it, then write again with that \
+                 updated_at.",
+                current.updated_at, current.updated_by_name
+            ))
+            .with_details(serde_json::json!({ "state": current })));
+        }
+        Err(PatchError::Database(error)) => return Err(ApiError::internal(error)),
+    };
+    kairos_db::events::emit_item_event_by_id(
+        conn,
+        kairos_db::events::EventKind::ItemUpdated,
+        "task",
+        task_id,
+        user,
+    )
+    .map_err(ApiError::internal)?;
     let names = display_names(conn, &[state.updated_by]).map_err(ApiError::internal)?;
     Ok(state_dto(&state, &names))
 }
@@ -148,7 +187,7 @@ pub fn state_text(state: &dto::TaskState, now: DateTime<Utc>) -> String {
 
 /// The tag of the state on a `board_items` line: the branch and the next
 /// step, when they have a value.
-pub fn state_tag(state: &dto::TaskState) -> String {
+pub fn state_tag(state: &dto::TaskState, now: DateTime<Utc>) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(branch) = &state.branch {
         parts.push(format!("branch {branch}"));
@@ -159,7 +198,15 @@ pub fn state_tag(state: &dto::TaskState) -> String {
     if parts.is_empty() {
         return String::new();
     }
-    format!(" [state: {}]", parts.join("; "))
+    // KAIROS-T-0533: the age, so a stale state does not read as current.
+    let age = DateTime::parse_from_rfc3339(&state.updated_at)
+        .map(|t| ago(t.with_timezone(&Utc), now))
+        .unwrap_or_default();
+    if age.is_empty() {
+        format!(" [state: {}]", parts.join("; "))
+    } else {
+        format!(" [state: {}; {age}]", parts.join("; "))
+    }
 }
 
 /// `just now`, `5 min ago`, `3 h ago`, `2 days ago`.
@@ -227,15 +274,18 @@ mod tests {
     }
 
     #[test]
-    fn the_tag_has_the_branch_and_the_next_step() {
+    fn the_tag_has_the_branch_the_next_step_and_the_age() {
+        let now = DateTime::parse_from_rfc3339("2026-10-17T10:00:00+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
         assert_eq!(
-            state_tag(&state()),
-            " [state: branch kairos-t-0506; next: Wait for CI]"
+            state_tag(&state(), now),
+            " [state: branch kairos-t-0506; next: Wait for CI; 2 days ago]"
         );
         let mut none = state();
         none.branch = None;
         none.next_step = None;
-        assert_eq!(state_tag(&none), "");
+        assert_eq!(state_tag(&none, now), "");
     }
 
     #[test]

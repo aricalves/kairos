@@ -1,6 +1,7 @@
 //! `kairos state` — the live state of a task (KAIROS-T-0506,
 //! `PUT /api/tasks/{short_code}/state`): branch, last commit, pushed, PR,
-//! next step. The write replaces the whole state.
+//! next step. The write is a patch (KAIROS-T-0533): an option that is not
+//! given keeps its value, `--clear` empties a field.
 
 use clap::Args;
 
@@ -10,8 +11,9 @@ use crate::context::{Common, client, print_json};
 use crate::error::CliError;
 
 /// Write the live state of a task: branch, last commit, pushed, PR and
-/// next step. The write replaces the whole state: send each field each
-/// time. The state is not a note; `kairos tasks get` shows it.
+/// next step. The write is a patch: a flag you give is set, a field you
+/// name in --clear is cleared, a field you do not name is kept. The state
+/// is not a note; `kairos tasks get` shows it.
 #[derive(Args, Debug)]
 pub struct StateArgs {
     /// The task's short code (e.g. ACME-T-0001)
@@ -23,14 +25,24 @@ pub struct StateArgs {
     #[arg(long, value_name = "COMMIT")]
     pub commit: Option<String>,
     /// The last commit is pushed
-    #[arg(long)]
+    #[arg(long, conflicts_with = "not_pushed")]
     pub pushed: bool,
+    /// The last commit is not pushed
+    #[arg(long = "not-pushed")]
+    pub not_pushed: bool,
     /// The URL of the PR
     #[arg(long = "pr", value_name = "URL")]
     pub pr_url: Option<String>,
     /// What comes next
     #[arg(long = "next", value_name = "TEXT")]
     pub next_step: Option<String>,
+    /// Clear a field: branch, commit, pr or next (repeat the flag for more)
+    #[arg(long = "clear", value_name = "FIELD", value_parser = ["branch", "commit", "pr", "next"])]
+    pub clear: Vec<String>,
+    /// The updated_at of the state you read: refuse the write when the
+    /// state changed since
+    #[arg(long = "expected-updated-at", value_name = "INSTANT")]
+    pub expected_updated_at: Option<String>,
     #[command(flatten)]
     pub common: Common,
 }
@@ -38,12 +50,26 @@ pub struct StateArgs {
 impl StateArgs {
     pub async fn run(self) -> Result<(), CliError> {
         let client = client(&self.common)?;
+        let field = |value: Option<String>, name: &str| -> Option<Option<String>> {
+            if self.clear.iter().any(|c| c == name) {
+                Some(None)
+            } else {
+                value.map(Some)
+            }
+        };
         let body = SetTaskStateRequest {
-            branch: self.branch,
-            commit: self.commit,
-            pushed: self.pushed,
-            pr_url: self.pr_url,
-            next_step: self.next_step,
+            branch: field(self.branch.clone(), "branch"),
+            commit: field(self.commit.clone(), "commit"),
+            pushed: if self.pushed {
+                Some(true)
+            } else if self.not_pushed {
+                Some(false)
+            } else {
+                None
+            },
+            pr_url: field(self.pr_url.clone(), "pr"),
+            next_step: field(self.next_step.clone(), "next"),
+            expected_updated_at: self.expected_updated_at.clone(),
         };
         let task = client.set_task_state(&self.short_code, &body).await?;
         emit_state(&self.common, &task)

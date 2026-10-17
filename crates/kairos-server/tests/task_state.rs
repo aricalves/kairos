@@ -1,7 +1,9 @@
 //! KAIROS-T-0506 — `PUT /api/tasks/{short_code}/state`: a task has one
 //! live state (branch, commit, pushed, PR, next step), separate from its
-//! notes. A write replaces the whole state and makes no new version. The
-//! task endpoints and the board items carry it. The edit rule applies.
+//! notes. A write is a patch (KAIROS-T-0533): a field that is not sent is
+//! kept, `null` clears it, a stale `expected_updated_at` is a CONFLICT.
+//! It makes no new version. The task endpoints and the board items carry
+//! it. The edit rule applies.
 //! The MCP tool `set_state` is in `tests/mcp.rs`.
 //!
 //! Runs against the LIVE compose stack (`angreal services up`). Owns the
@@ -50,7 +52,7 @@ fn column_id(conn: &mut PgConnection, board_slug: &str, name: &str) -> String {
 }
 
 #[tokio::test]
-async fn a_task_has_one_live_state_that_a_write_replaces_against_live_stack() {
+async fn a_task_has_one_live_state_that_a_write_patches_against_live_stack() {
     let mut admin_conn = recreate_scratch_db(SCRATCH_DB);
     let scratch_url = with_database(&common::admin_database_url(), SCRATCH_DB);
     let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
@@ -198,7 +200,7 @@ async fn a_task_has_one_live_state_that_a_write_replaces_against_live_stack() {
         "the board items carry the state: {board_text}"
     );
 
-    // --- replace: a field that is not sent is cleared --------------------------
+    // --- patch (KAIROS-T-0533): a field that is not sent is kept ---------------
     let (status, answer) = send(
         Method::PUT,
         state_uri.clone(),
@@ -208,22 +210,67 @@ async fn a_task_has_one_live_state_that_a_write_replaces_against_live_stack() {
     .await;
     assert_eq!(status, StatusCode::OK, "{answer}");
     let state = &answer["state"];
-    assert!(state["branch"].is_null(), "{answer}");
-    assert!(state["commit"].is_null(), "{answer}");
-    assert_eq!(state["pushed"], false);
-    assert!(state["pr_url"].is_null(), "{answer}");
+    assert_eq!(state["branch"], "pay-1", "kept: {answer}");
     assert_eq!(state["next_step"], "Rebase on main", "trimmed: {answer}");
+    let stamp = state["updated_at"]
+        .as_str()
+        .expect("updated_at")
+        .to_string();
 
-    // --- refusals: no value, an unknown field, the edit rule -------------------
+    // null clears one field and keeps the others.
     let (status, answer) = send(
         Method::PUT,
         state_uri.clone(),
         token.clone(),
-        Some(json!({"branch": "  "})),
+        Some(json!({"pr_url": null, "expected_updated_at": stamp})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert!(answer["state"]["pr_url"].is_null(), "cleared: {answer}");
+    assert_eq!(answer["state"]["branch"], "pay-1", "kept: {answer}");
+    assert_eq!(
+        answer["state"]["next_step"], "Rebase on main",
+        "kept: {answer}"
+    );
+
+    // A stale expected_updated_at is a CONFLICT with the current state.
+    let (status, answer) = send(
+        Method::PUT,
+        state_uri.clone(),
+        token.clone(),
+        Some(json!({"next_step": "Over an old read", "expected_updated_at": stamp})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{answer}");
+    assert_eq!(answer["error"]["code"], "CONFLICT", "{answer}");
+    assert_eq!(
+        answer["error"]["details"]["state"]["next_step"], "Rebase on main",
+        "the current state rides along: {answer}"
+    );
+    // An empty patch is refused.
+    let (status, answer) = send(
+        Method::PUT,
+        state_uri.clone(),
+        token.clone(),
+        Some(json!({})),
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
     assert_eq!(answer["error"]["code"], "VALIDATION", "{answer}");
+
+    // A blank text clears the field, like null (KAIROS-T-0533).
+    let (status, answer) = send(
+        Method::PUT,
+        state_uri.clone(),
+        token.clone(),
+        Some(json!({"commit": "  "})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert!(answer["state"]["commit"].is_null(), "cleared: {answer}");
+    assert_eq!(answer["state"]["branch"], "pay-1", "kept: {answer}");
+
+    // --- refusals: an unknown field, the edit rule, an unknown code -----------
     let (status, answer) = send(
         Method::PUT,
         state_uri.clone(),
@@ -266,8 +313,9 @@ async fn a_task_has_one_live_state_that_a_write_replaces_against_live_stack() {
         "a refused write changes nothing: {got}"
     );
 
-    // --- the state stays when the task reaches a done column ------------------
-    for column in ["Todo", "Active", "Completed"] {
+    // --- the state stays when the task reaches a done column; a change of
+    // the claim clears the next step (KAIROS-T-0533) ---------------------------
+    for column in ["Todo", "Active"] {
         let to_column_id = column_id(&mut conn, "payments-delivery", column);
         let (status, moved) = send(
             Method::POST,
@@ -278,6 +326,15 @@ async fn a_task_has_one_live_state_that_a_write_replaces_against_live_stack() {
         .await;
         assert!(status.is_success(), "{column}: {status} {moved}");
     }
+    // In Active with the claim: a release clears the next step, the rest stays.
+    let (status, released) = send(
+        Method::POST,
+        format!("/api/tasks/{code}/release"),
+        token.clone(),
+        None,
+    )
+    .await;
+    assert!(status.is_success(), "{status} {released}");
     let (_, got) = send(
         Method::GET,
         format!("/api/tasks/{code}"),
@@ -285,7 +342,31 @@ async fn a_task_has_one_live_state_that_a_write_replaces_against_live_stack() {
         None,
     )
     .await;
-    assert_eq!(got["state"]["next_step"], "Rebase on main", "{got}");
+    assert!(
+        got["state"]["next_step"].is_null(),
+        "cleared by the release: {got}"
+    );
+    assert_eq!(got["state"]["branch"], "pay-1", "the facts stay: {got}");
+    let to_column_id = column_id(&mut conn, "payments-delivery", "Completed");
+    let (status, moved) = send(
+        Method::POST,
+        format!("/api/tasks/{code}/transition"),
+        token.clone(),
+        Some(json!({"to_column_id": to_column_id})),
+    )
+    .await;
+    assert!(status.is_success(), "Completed: {status} {moved}");
+    let (_, got) = send(
+        Method::GET,
+        format!("/api/tasks/{code}"),
+        token.clone(),
+        None,
+    )
+    .await;
+    assert_eq!(
+        got["state"]["branch"], "pay-1",
+        "the state stays when done: {got}"
+    );
 
     drop(pool);
     drop(conn);

@@ -1958,7 +1958,7 @@ async fn mcp_endpoint_against_live_stack() {
         "the first line of the note: {text}"
     );
     // KAIROS-T-0506: the live state of a task. The creator writes it; the
-    // write replaces the whole state; get_item and board_items show it.
+    // write is a patch (KAIROS-T-0533); get_item and board_items show it.
     let text = bob_session
         .call_ok(
             "set_state",
@@ -1992,8 +1992,8 @@ async fn mcp_endpoint_against_live_stack() {
         .await;
     assert!(
         text.contains(&format!("- {filed} [task"))
-            && text.contains("[state: branch fix-refunds; next: Wait for CI]"),
-        "{text}"
+            && text.contains("[state: branch fix-refunds; next: Wait for CI; just now]"),
+        "the tag carries the age (KAIROS-T-0533): {text}"
     );
     let text = bob_session
         .call_ok(
@@ -2003,9 +2003,22 @@ async fn mcp_endpoint_against_live_stack() {
         .await;
     assert!(
         text.starts_with(&format!(
-            "State of {filed}: Next: Rebase on main. (updated just now by bob)"
+            "State of {filed}: branch fix-refunds at abc1234, pushed, PR https://example.com/pr/12. Next: Rebase on main. (updated just now by bob)"
         )),
-        "a write replaces the whole state: {text}"
+        "a write is a patch, the branch stays (KAIROS-T-0533): {text}"
+    );
+    // `null` clears one field; the others stay.
+    let text = bob_session
+        .call_ok(
+            "set_state",
+            json!({"short_code": filed, "pr_url": null, "pushed": false}),
+        )
+        .await;
+    assert!(
+        text.starts_with(&format!(
+            "State of {filed}: branch fix-refunds at abc1234, not pushed. Next: Rebase on main. (updated just now by bob)"
+        )),
+        "null clears the PR (KAIROS-T-0533): {text}"
     );
     let text = bob_session
         .call_err("set_state", json!({"short_code": filed}))
