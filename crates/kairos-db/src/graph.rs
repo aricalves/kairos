@@ -895,14 +895,22 @@ pub fn item_subgraph(
     depth: u32,
 ) -> Result<(Vec<SubgraphNode>, Vec<SubgraphEdge>), GraphError> {
     // 1. The walk: visited ids with their MINIMUM discovery depth.
+    // KAIROS-T-0628: one UNION ALL arm per direction, so each arm probes its
+    // relationship index (source or target); the CHECK source_id != target_id
+    // keeps the arms disjoint, so no edge is counted twice.
     let visited: Vec<DepthRow> = sql_query(
         "WITH RECURSIVE walk(id, depth) AS (
              SELECT $1::uuid, 0
              UNION
-             SELECT CASE WHEN r.source_id = w.id THEN r.target_id ELSE r.source_id END,
-                    w.depth + 1
+             SELECT n.other_id, w.depth + 1
              FROM walk w
-             JOIN item_relationships r ON (r.source_id = w.id OR r.target_id = w.id)
+             CROSS JOIN LATERAL (
+                 SELECT r.target_id AS other_id FROM item_relationships r
+                     WHERE r.source_id = w.id
+                 UNION ALL
+                 SELECT r.source_id FROM item_relationships r
+                     WHERE r.target_id = w.id
+             ) n
              WHERE w.depth < $2
          )
          SELECT id, MIN(depth)::int4 AS depth FROM walk GROUP BY id",
@@ -940,11 +948,14 @@ pub fn item_subgraph(
          )
          SELECT d.id, d.short_code, d.entity_type, d.title, s.status, d.deleted_at,
                 COALESCE(bc.is_done, false) AS done,
-                (SELECT COUNT(*) FROM item_relationships r
-                    JOIN entity_directory other
-                      ON other.id = CASE WHEN r.source_id = d.id
-                                         THEN r.target_id ELSE r.source_id END
-                    WHERE r.source_id = d.id OR r.target_id = d.id) AS degree
+                (SELECT COUNT(*) FROM (
+                     SELECT r.target_id AS other_id FROM item_relationships r
+                         WHERE r.source_id = d.id
+                     UNION ALL
+                     SELECT r.source_id FROM item_relationships r
+                         WHERE r.target_id = d.id
+                 ) e
+                 JOIN entity_directory other ON other.id = e.other_id) AS degree
          FROM entity_directory d
          JOIN status_of s ON s.id = d.id
          LEFT JOIN ({ITEM_COLUMNS_SQL}) p ON p.id = d.id
@@ -1064,17 +1075,26 @@ pub fn blocks_summary(
     conn: &mut PgConnection,
     ids: &[Uuid],
 ) -> Result<std::collections::HashMap<Uuid, BlocksCounts>, DieselError> {
+    // KAIROS-T-0628: one UNION ALL arm per direction, so each arm probes its
+    // relationship index (source or target); the CHECK source_id != target_id
+    // keeps the arms disjoint, so no edge is counted twice.
     let rows: Vec<BlocksRow> = sql_query(format!(
         "SELECT n.id,
-                COUNT(*) FILTER (WHERE r.target_id = n.id) AS blocked_by,
-                COUNT(*) FILTER (WHERE r.source_id = n.id) AS blocks
-         FROM unnest($1::uuid[]) AS n(id)
-         JOIN item_relationships r
-           ON (r.source_id = n.id OR r.target_id = n.id)
-          AND r.relationship = 'blocks'
+                COUNT(*) FILTER (WHERE n.blocked) AS blocked_by,
+                COUNT(*) FILTER (WHERE NOT n.blocked) AS blocks
+         FROM (
+             SELECT i.id, r.source_id AS other_id, true AS blocked
+             FROM unnest($1::uuid[]) AS i(id)
+             JOIN item_relationships r
+               ON r.target_id = i.id AND r.relationship = 'blocks'
+             UNION ALL
+             SELECT i.id, r.target_id, false
+             FROM unnest($1::uuid[]) AS i(id)
+             JOIN item_relationships r
+               ON r.source_id = i.id AND r.relationship = 'blocks'
+         ) n
          JOIN entity_directory other
-           ON other.id = CASE WHEN r.source_id = n.id
-                              THEN r.target_id ELSE r.source_id END
+           ON other.id = n.other_id
           AND other.deleted_at IS NULL
          LEFT JOIN ({ITEM_COLUMNS_SQL}) own_place ON own_place.id = n.id
          LEFT JOIN board_columns own_column ON own_column.id = own_place.column_id

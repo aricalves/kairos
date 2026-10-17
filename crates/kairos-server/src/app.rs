@@ -738,7 +738,7 @@ async fn whoami(
 
     // The caller's explicit board-scoped capability grants (KAIROS-A-0006),
     // one indexed load over `board_member_capabilities` joined to `boards`
-    // (idx_board_member_cap_board_user), ordered so grouping is a linear
+    // (its primary key, board_id first), ordered so grouping is a linear
     // fold and both boards and grants come out sorted. Org admins get only
     // their explicit rows here (usually none — their real access is the
     // org-admin bypass, reported via `organization.role`).
