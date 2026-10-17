@@ -1215,6 +1215,15 @@ pub async fn release_task(auth: Auth, code: &str) -> Result<ItemDetail, ApiError
     send_json(auth, Verb::Post, &path, None::<&()>).await
 }
 
+/// `POST /api/tasks/{short_code}/claim` — the signed-in person takes the
+/// claim of a task with no claim in a claims column (KAIROS-T-0528). The
+/// caller holds `transition_items` on the board. A different holder is
+/// refused with `CLAIMED`.
+pub async fn claim_task(auth: Auth, code: &str) -> Result<ItemDetail, ApiError> {
+    let path = format!("/api/tasks/{code}/claim");
+    send_json(auth, Verb::Post, &path, None::<&()>).await
+}
+
 /// `POST /api/{family}/{short_code}/owner/claim` — the signed-in person
 /// becomes the owner of a strategy or an initiative with no owner
 /// (KAIROS-T-0411). A member of the board, or an org admin.
