@@ -32,6 +32,15 @@
 //! database work fails): an outage of the throttle must not lock out every
 //! person.
 //!
+//! # API keys (KAIROS-T-0539)
+//!
+//! An API-key attempt is counted by the key, and by its address at a second,
+//! higher limit ([`KEY_ADDRESS_FACTOR`] times the limit). A stale key in a loop
+//! locks itself out and no other key: the attempts that the lockout refuses are
+//! not counted, so the address sees at most the limit of one key in each
+//! lockout. A flood of different keys from one address still locks the
+//! address. The 429 says which limit refused the attempt.
+//!
 //! # Time is a parameter
 //!
 //! Every method takes `now`. Decay is arithmetic on times, and a test that has
@@ -52,6 +61,17 @@ use std::time::Duration;
 use crate::blocking::BlockingTenantPool;
 use crate::error::ApiError;
 
+/// The address limit of the API keys is this many times
+/// `KAIROS_AUTH_MAX_FAILURES` (KAIROS-T-0539): 100 failures in the window by
+/// default. One stale key adds at most the limit (5) to its address in each
+/// lockout, so a few stale keys behind one address do not reach it.
+pub const KEY_ADDRESS_FACTOR: u32 = 20;
+
+/// The namespace of the API-key rows (KAIROS-T-0539). It keeps the rows of
+/// the keys apart from the rows of the password login, and it makes the hash
+/// of a key different from `api_keys.token_hash`.
+const KEY_NAMESPACE: &str = "api_key:";
+
 /// What is being counted against. Both are tracked, deliberately.
 ///
 /// Per-identity alone lets an attacker spray one attempt each at a thousand
@@ -61,34 +81,81 @@ use crate::error::ApiError;
 /// they cover the realistic attacks.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Subject {
-    /// The identity being attempted — an email, or an API key's tenant.
+    /// The identity being attempted by a password login: an email.
     Identity(String),
-    /// Where the attempt came from.
+    /// Where a password login came from.
     Source(IpAddr),
+    /// The API key that was presented, the full key (KAIROS-T-0539). Not its
+    /// display prefix: anyone who saw a prefix in a key list could lock that
+    /// key out, and two keys can share a prefix.
+    Key(String),
+    /// Where an API-key attempt came from: the second, higher limit
+    /// (KAIROS-T-0539).
+    KeyAddress(IpAddr),
+}
+
+/// Which limit refused an attempt (KAIROS-T-0539). The 429 says it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Limit {
+    /// A password login: the account or the address. One uniform 429.
+    Login,
+    /// One API key failed too often. Other keys still work.
+    Key,
+    /// API keys from one address failed too often.
+    KeyAddress,
 }
 
 impl Subject {
-    /// The metric/log label for this kind of subject. The kind is safe to record
-    /// where the value is not.
+    /// The kind of the row (the table allows `identity` and `source`). A key
+    /// is an identity and its address a source, in the API-key namespace.
     pub fn kind(&self) -> &'static str {
+        match self {
+            Subject::Identity(_) | Subject::Key(_) => "identity",
+            Subject::Source(_) | Subject::KeyAddress(_) => "source",
+        }
+    }
+
+    /// The metric/log label of this subject. The label is safe to record
+    /// where the value is not.
+    pub fn label(&self) -> &'static str {
         match self {
             Subject::Identity(_) => "identity",
             Subject::Source(_) => "source",
+            Subject::Key(_) => "key",
+            Subject::KeyAddress(_) => "key_address",
+        }
+    }
+
+    /// The limit that this subject sets.
+    pub fn limit(&self) -> Limit {
+        match self {
+            Subject::Identity(_) | Subject::Source(_) => Limit::Login,
+            Subject::Key(_) => Limit::Key,
+            Subject::KeyAddress(_) => Limit::KeyAddress,
         }
     }
 
     /// The key of the row of this subject: its kind and the SHA-256 (hex) of
-    /// its value. The table holds no email and no address.
+    /// its value. The table holds no email, no address and no key.
     pub fn key(&self) -> SubjectKey {
         let value = match self {
             Subject::Identity(identity) => identity.clone(),
             Subject::Source(addr) => addr.to_string(),
+            Subject::Key(key) => format!("{KEY_NAMESPACE}{key}"),
+            Subject::KeyAddress(addr) => format!("{KEY_NAMESPACE}{addr}"),
         };
         let digest = Sha256::digest(value.as_bytes());
         SubjectKey {
             kind: self.kind().to_string(),
             subject: digest.iter().map(|b| format!("{b:02x}")).collect(),
         }
+    }
+
+    /// True when a success removes the count of this subject. A key that
+    /// verifies does not remove the count of its address: else one good key
+    /// would let a flood from its address go on.
+    fn cleared_by_success(&self) -> bool {
+        !matches!(self, Subject::KeyAddress(_))
     }
 }
 
@@ -133,6 +200,8 @@ pub struct AuthThrottle {
 pub struct LockedOut {
     /// Seconds until the subject may try again — the `Retry-After` value.
     pub retry_after_secs: u64,
+    /// The limit that refused the attempt (KAIROS-T-0539).
+    pub limit: Limit,
 }
 
 /// What a check found: no lockout, and whether the subjects have counts.
@@ -147,9 +216,15 @@ impl AuthThrottle {
         Self { config, blocking }
     }
 
-    fn rules(&self) -> Rules {
+    /// The rules of `subject`: the address of an API key has the higher
+    /// limit (KAIROS-T-0539).
+    fn rules(&self, subject: &Subject) -> Rules {
+        let max_failures = match subject {
+            Subject::KeyAddress(_) => self.config.max_failures.saturating_mul(KEY_ADDRESS_FACTOR),
+            _ => self.config.max_failures,
+        };
         Rules {
-            max_failures: i32::try_from(self.config.max_failures).unwrap_or(i32::MAX),
+            max_failures: i32::try_from(max_failures).unwrap_or(i32::MAX),
             window_secs: self.config.window.as_secs_f64(),
             lockout_secs: self.config.lockout.as_secs_f64(),
         }
@@ -186,6 +261,10 @@ impl AuthThrottle {
             // rather than one millisecond short and refused again.
             Some(until) if until > now => Err(LockedOut {
                 retry_after_secs: (until - now).to_std().unwrap_or_default().as_secs() + 1,
+                limit: status
+                    .locked
+                    .and_then(|locked| subjects.iter().find(|s| s.key() == locked))
+                    .map_or(Limit::Login, Subject::limit),
             }),
             _ => Ok(Clear {
                 known: status.known,
@@ -194,31 +273,64 @@ impl AuthThrottle {
     }
 
     /// Record a failed attempt, and lock out any subject that has now had too
-    /// many. Returns the lockout if one was tripped, for logging. One upsert.
+    /// many. Returns the lockout if one was tripped, for logging.
     pub async fn record_failure(
         &self,
         subjects: &[Subject],
         now: DateTime<Utc>,
     ) -> Option<LockedOut> {
-        if subjects.is_empty() {
-            return None;
+        self.record_failure_tripped(subjects, now)
+            .await
+            .first()
+            .map(|subject| LockedOut {
+                retry_after_secs: self.config.lockout.as_secs(),
+                limit: subject.limit(),
+            })
+    }
+
+    /// Record a failed attempt, and return the subjects that it locked out.
+    /// One upsert for each rule set: one for a password login, two for an API
+    /// key (the key and its address have different limits).
+    async fn record_failure_tripped(
+        &self,
+        subjects: &[Subject],
+        now: DateTime<Utc>,
+    ) -> Vec<Subject> {
+        let mut groups: Vec<(Rules, Vec<Subject>)> = Vec::new();
+        for subject in subjects {
+            let rules = self.rules(subject);
+            match groups.iter_mut().find(|(r, _)| *r == rules) {
+                Some((_, group)) => group.push(subject.clone()),
+                None => groups.push((rules, vec![subject.clone()])),
+            }
         }
-        let keys: Vec<SubjectKey> = subjects.iter().map(Subject::key).collect();
-        let rules = self.rules();
+        if groups.is_empty() {
+            return Vec::new();
+        }
+        let batches: Vec<(Vec<SubjectKey>, Rules)> = groups
+            .iter()
+            .map(|(rules, group)| (group.iter().map(Subject::key).collect(), *rules))
+            .collect();
         match self
             .blocking
             .run_public(move |conn| {
-                store::record_failure(conn, &keys, now, rules).map_err(ApiError::internal)
+                batches
+                    .iter()
+                    .map(|(keys, rules)| store::record_failure(conn, keys, now, *rules))
+                    .collect::<Result<Vec<bool>, _>>()
+                    .map_err(ApiError::internal)
             })
             .await
         {
-            Ok(true) => Some(LockedOut {
-                retry_after_secs: self.config.lockout.as_secs(),
-            }),
-            Ok(false) => None,
+            Ok(tripped) => groups
+                .into_iter()
+                .zip(tripped)
+                .filter(|(_, tripped)| *tripped)
+                .flat_map(|((_, group), _)| group)
+                .collect(),
             Err(e) => {
                 tracing::warn!(error = ?e, "the throttle cannot count a failure");
-                None
+                Vec::new()
             }
         }
     }
@@ -228,11 +340,17 @@ impl AuthThrottle {
     /// Only the counters — a live lockout is NOT cleared. Otherwise an attacker
     /// who locks an account out and then authenticates as themselves from the
     /// same address would lift it.
+    ///
+    /// The address of an API key keeps its count (KAIROS-T-0539).
     pub async fn record_success(&self, subjects: &[Subject], now: DateTime<Utc>) {
-        if subjects.is_empty() {
+        let keys: Vec<SubjectKey> = subjects
+            .iter()
+            .filter(|s| s.cleared_by_success())
+            .map(Subject::key)
+            .collect();
+        if keys.is_empty() {
             return;
         }
-        let keys: Vec<SubjectKey> = subjects.iter().map(Subject::key).collect();
         if let Err(e) = self
             .blocking
             .run_public(move |conn| {
@@ -312,7 +430,12 @@ pub fn client_addr(req: &Request, trusted_proxy: bool) -> Option<IpAddr> {
 /// `Ok` — unusual enough to say out loud, which is why it lives here and not
 /// inline at each call site.
 pub fn locked_out_response(locked: LockedOut) -> Response {
-    let mut response = ApiError::too_many_requests(locked.retry_after_secs).into_response();
+    let error = match locked.limit {
+        Limit::Login => ApiError::too_many_requests(locked.retry_after_secs),
+        Limit::Key => ApiError::key_locked_out(locked.retry_after_secs),
+        Limit::KeyAddress => ApiError::address_locked_out(locked.retry_after_secs),
+    };
+    let mut response = error.into_response();
     if let Ok(value) = HeaderValue::from_str(&locked.retry_after_secs.to_string()) {
         response.headers_mut().insert(RETRY_AFTER, value);
     }
@@ -385,25 +508,39 @@ impl<'a> Attempt<'a> {
         }
     }
 
+    /// Begin an API-key attempt (KAIROS-T-0539): counted by the key, and by
+    /// `source` at the higher address limit.
+    pub fn api_key(state: &'a crate::app::AppState, source: Option<IpAddr>, key: &str) -> Self {
+        let mut subjects = vec![Subject::Key(key.to_string())];
+        if let Some(source) = source {
+            subjects.push(Subject::KeyAddress(source));
+        }
+        Self {
+            throttle: state.throttle.as_deref(),
+            metrics: &state.metrics,
+            subjects,
+            now: Utc::now(),
+            known: true,
+        }
+    }
+
     /// Report that the credential did not verify.
     pub async fn failed(&self) {
         let Some(throttle) = self.throttle else {
             return;
         };
-        if let Some(locked) = throttle.record_failure(&self.subjects, self.now).await {
-            // WARN, not INFO: a lockout is the one event here an operator wants to
-            // find in a log. The subject KIND is recorded and the subject VALUE is
-            // not — an email or an address in a log line outlives the incident it
-            // was gathered for.
-            for subject in &self.subjects {
-                let kind = subject.kind();
-                self.metrics.record_lockout(kind);
-                tracing::warn!(
-                    subject = kind,
-                    retry_after_secs = locked.retry_after_secs,
-                    "authentication lockout"
-                );
-            }
+        let tripped = throttle
+            .record_failure_tripped(&self.subjects, self.now)
+            .await;
+        let retry_after_secs = throttle.config.lockout.as_secs();
+        // WARN, not INFO: a lockout is the one event here an operator wants to
+        // find in a log. The subject LABEL is recorded and the subject VALUE is
+        // not — an email, an address or a key in a log line outlives the
+        // incident it was gathered for.
+        for subject in &tripped {
+            let label = subject.label();
+            self.metrics.record_lockout(label);
+            tracing::warn!(subject = label, retry_after_secs, "authentication lockout");
         }
     }
 
@@ -434,5 +571,23 @@ mod tests {
             Subject::Source("203.0.113.9".parse().unwrap()).key(),
             "the same value, the same row"
         );
+    }
+
+    #[test]
+    fn the_rows_of_a_key_are_apart_from_the_rows_of_a_login() {
+        let addr: IpAddr = "203.0.113.9".parse().unwrap();
+        let key_address = Subject::KeyAddress(addr).key();
+        assert_eq!(key_address.kind, "source");
+        assert_ne!(key_address, Subject::Source(addr).key());
+        let key = crate::service_accounts::auth::generate_key("acme");
+        let row = Subject::Key(key.clone()).key();
+        assert_eq!(row.kind, "identity");
+        assert_ne!(
+            row.subject,
+            crate::service_accounts::auth::hash_key(&key),
+            "the row is not the token hash of the key"
+        );
+        assert_eq!(Subject::Key(key).label(), "key");
+        assert_eq!(Subject::KeyAddress(addr).label(), "key_address");
     }
 }

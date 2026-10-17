@@ -110,13 +110,15 @@ fn hand_off_question(members: &[Member], to: &str) -> String {
 pub fn OwnerPanel(
     family: Family,
     #[prop(into)] code: String,
-    owner: Option<Owner>,
+    /// The owner of the item. A signal (KAIROS-T-0618): the page stays
+    /// mounted when the owner changes.
+    #[prop(into)]
+    owner: Signal<Option<Owner>>,
     /// The page's shared board read.
     board: LocalResource<Result<Option<BoardInfo>, ApiError>>,
-    archived: bool,
+    #[prop(into)] archived: Signal<bool>,
     on_moved: Callback<String>,
 ) -> impl IntoView {
-    let owner = StoredValue::new(owner);
     let code = StoredValue::new(code);
     let whoami = use_context::<LocalResource<Result<crate::api::Whoami, ApiError>>>();
     let powers = Memo::new(move |_| {
@@ -130,7 +132,7 @@ pub fn OwnerPanel(
             Some(Ok(Some(board))) => is_board_member(&me, &board.slug),
             _ => false,
         };
-        owner.with_value(|o| {
+        owner.with(|o| {
             owner_powers(
                 &me.user.id,
                 me.organization.role == "admin",
@@ -143,7 +145,7 @@ pub fn OwnerPanel(
         <Panel title="Owner" caption="who answers for the item">
             <div class="kairos-item__owner" data-testid="owner-panel">
                 <Stack gap="sm">
-                    {match owner.with_value(|o| o.as_ref().map(owner_text)) {
+                    {move || match owner.with(|o| o.as_ref().map(owner_text)) {
                         Some(text) => view! {
                             <Text size="sm" bright=true>{text}</Text>
                         }.into_any(),
@@ -151,7 +153,7 @@ pub fn OwnerPanel(
                             <Text size="sm" dimmed=true>{NO_OWNER}</Text>
                         }.into_any(),
                     }}
-                    {move || (!archived && powers.get() != OwnerPowers::default()).then(|| view! {
+                    {move || (!archived.get() && powers.get() != OwnerPowers::default()).then(|| view! {
                         <OwnerControls
                             family
                             code=code.get_value()
@@ -159,7 +161,7 @@ pub fn OwnerPanel(
                                 Some(Ok(Some(board))) => Some(board.slug),
                                 _ => None,
                             }
-                            owner=owner.with_value(|o| o.as_ref().map(|o| o.user_id.clone()))
+                            owner=owner.with(|o| o.as_ref().map(|o| o.user_id.clone()))
                             powers=powers.get()
                             on_moved
                         />

@@ -52,7 +52,8 @@ pub fn ExternalRefsPanel(
     #[prop(into)]
     created_by: String,
     /// The item is archived: each write resolves live items only.
-    archived: bool,
+    #[prop(into)]
+    archived: Signal<bool>,
 ) -> impl IntoView {
     let auth = use_auth();
     let code = StoredValue::new(code);
@@ -151,7 +152,7 @@ pub fn ExternalRefsPanel(
                                         <Text mono=true dimmed=true size="xs">{shown_uri}</Text>
                                     })}
                                 </Stack>
-                                {move || (!archived && can_edit.get()).then(|| {
+                                {move || (!archived.get() && can_edit.get()).then(|| {
                                     let id = id.clone();
                                     let disabled = busy.get();
                                     view! {
@@ -169,7 +170,7 @@ pub fn ExternalRefsPanel(
                     }.into_any(),
                     None => ().into_any(),
                 }}
-                {move || (!archived && can_edit.get()).then(|| view! {
+                {move || (!archived.get() && can_edit.get()).then(|| view! {
                     <Stack gap="xs" attr:data-testid="external-refs-add">
                         <TextInput label="URI" placeholder="https://example.com/wiki/rfc-42" value=uri/>
                         <TextInput label="Label" placeholder="RFC: the title, accepted 2026-10-05" value=label/>
