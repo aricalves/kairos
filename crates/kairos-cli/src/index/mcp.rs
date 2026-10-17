@@ -274,6 +274,9 @@ impl CodeTools {
             ..Default::default()
         };
         let found = super::base::find(&root, &remote).await;
+        // KAIROS-T-0526: this server is the `kairos` binary of the session
+        // start. Say so when the deployment is newer.
+        let behind = crate::self_update::behind_server_line().await;
         let (db, _exclude) = super::prepare_quiet(&root)?;
         // One process at a time (KAIROS-T-0357): another agent can fetch the
         // index of this checkout now. The wait is off the async threads.
@@ -394,6 +397,9 @@ impl CodeTools {
             plural(linked, "summary", "summaries"),
             left
         ));
+        if let Some(line) = behind {
+            lines.push(line);
+        }
         Ok(lines.join(" "))
     }
 

@@ -13,6 +13,10 @@
 //!   current code.
 //! - A write with the retired code is refused, and the refusal names the
 //!   current code (REST 404 `details.current_code`; MCP tool error).
+//! - KAIROS-T-0560: `link_items`, `unlink_items`, `create_item.parent` and
+//!   `POST /api/relationships` follow a retired code, and the answer names
+//!   the current code. A code in input ignores case. A write to an archived
+//!   item says that it is archived and names `restore_item`.
 //!
 //! The database part (the sequence, the trigger) is in
 //! `kairos-db/tests/retired_codes.rs`.
@@ -386,6 +390,196 @@ async fn a_retired_code_finds_its_item_and_names_the_current_code() {
         .collect();
     assert_eq!(codes, vec!["SKADI-T-0577"], "{body}");
 
+    // =======================================================================
+    // KAIROS-T-0560: a reference in a write follows a retired code
+    // =======================================================================
+    let text = mcp
+        .call_ok(
+            "create_item",
+            json!({"item_type": "task", "board": "skadi", "title": "Read the downloads"}),
+        )
+        .await;
+    let other = created_code(&text);
+    let other_lower = other.to_ascii_lowercase();
+
+    // MCP link_items: the retired source follows, the lower-case target
+    // finds its item, and the answer names the current code.
+    let text = mcp
+        .call_ok(
+            "link_items",
+            json!({"source": "COLLIERY-T-2430", "target": other_lower, "relationship": "blocks"}),
+        )
+        .await;
+    assert_eq!(
+        text,
+        format!("Linked SKADI-T-0577 -[blocks]-> {other}.\nCOLLIERY-T-2430 is now SKADI-T-0577."),
+    );
+    let text = mcp
+        .call_ok(
+            "unlink_items",
+            json!({"source": "colliery-t-2430", "target": other, "relationship": "blocks"}),
+        )
+        .await;
+    assert_eq!(
+        text,
+        format!("Unlinked SKADI-T-0577 -[blocks]-> {other}.\nCOLLIERY-T-2430 is now SKADI-T-0577."),
+    );
+
+    // REST POST /api/relationships: the same, and the answer has the
+    // current codes.
+    let (status, body) = request(
+        &router,
+        Method::POST,
+        "/api/relationships",
+        Some(&svc_token),
+        &tenant,
+        Some(json!({
+            "source_short_code": "COLLIERY-T-2430",
+            "target_short_code": other_lower,
+            "relationship": "blocks",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["source_id"], task.id.to_string());
+    assert_eq!(body["source_short_code"], "SKADI-T-0577");
+    assert_eq!(body["target_short_code"], other.as_str());
+
+    // create_item.parent: a document supports the item of a retired code.
+    let text = mcp
+        .call_ok(
+            "create_item",
+            json!({
+                "item_type": "document", "board": "skadi",
+                "title": "Download notes", "parent": "COLLIERY-T-2430",
+            }),
+        )
+        .await;
+    assert!(text.contains(", supports SKADI-T-0577."), "{text}");
+    assert!(
+        text.ends_with("\nCOLLIERY-T-2430 is now SKADI-T-0577."),
+        "{text}"
+    );
+
+    // create_item.parent: a task under an initiative with a retired code,
+    // given in lower case.
+    let text = mcp
+        .call_ok(
+            "create_item",
+            json!({"item_type": "initiative", "board": "initiatives", "title": "Downloads"}),
+        )
+        .await;
+    let old_initiative = created_code(&text);
+    let new_initiative = format!("{}0900", &old_initiative[..old_initiative.len() - 4]);
+    let initiative_id: Uuid = kairos_db::schema::initiatives::table
+        .filter(kairos_db::schema::initiatives::short_code.eq(&old_initiative))
+        .select(kairos_db::schema::initiatives::id)
+        .first(&mut conn)
+        .expect("the initiative");
+    sql_query("UPDATE initiatives SET short_code = $2 WHERE id = $1")
+        .bind::<SqlUuid, _>(initiative_id)
+        .bind::<Text, _>(&new_initiative)
+        .execute(&mut conn)
+        .expect("changing the initiative code");
+    retired_codes::retire_code(&mut conn, &old_initiative, initiative_id, "renamed")
+        .expect("retiring the initiative code");
+    let text = mcp
+        .call_ok(
+            "create_item",
+            json!({
+                "item_type": "task", "board": "skadi", "title": "Sort the downloads",
+                "parent": old_initiative.to_ascii_lowercase(),
+            }),
+        )
+        .await;
+    assert!(
+        text.ends_with(&format!(
+            "\nparent: {new_initiative} (parent edge created).\n{old_initiative} is now {new_initiative}."
+        )),
+        "{text}"
+    );
+
+    // =======================================================================
+    // KAIROS-T-0560: a code in input ignores case
+    // =======================================================================
+    let text = mcp
+        .call_ok("get_item", json!({"short_code": "skadi-t-0577"}))
+        .await;
+    assert!(
+        text.starts_with("# SKADI-T-0577 — Find the downloads\n"),
+        "{text}"
+    );
+    let (status, body) = request(
+        &router,
+        Method::GET,
+        "/api/tasks/skadi-t-0577",
+        Some(&svc_token),
+        &tenant,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["short_code"], "SKADI-T-0577");
+
+    // =======================================================================
+    // KAIROS-T-0560: a write to an archived item says so
+    // =======================================================================
+    mcp.call_ok("delete_item", json!({"short_code": other, "confirm": true}))
+        .await;
+    let (text, is_error) = mcp
+        .call(
+            "edit_item",
+            json!({"short_code": other_lower, "search": "Read", "replace": "Copy"}),
+        )
+        .await;
+    assert!(is_error, "{text}");
+    assert_eq!(
+        text,
+        format!(
+            "NOT_FOUND: The item {other} is archived. A write needs a live item. Restore the \
+             item first with restore_item."
+        )
+    );
+    let (status, body) = request(
+        &router,
+        Method::PATCH,
+        &format!("/api/tasks/{other}"),
+        Some(&svc_token),
+        &tenant,
+        Some(json!({"content": "changed", "version": 1})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let message = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("is archived") && message.contains("restore_item"),
+        "{message}"
+    );
+    let (text, is_error) = mcp
+        .call(
+            "link_items",
+            json!({"source": "SKADI-T-0577", "target": other, "relationship": "blocks"}),
+        )
+        .await;
+    assert!(is_error, "{text}");
+    assert_eq!(
+        text,
+        format!(
+            "VALIDATION: The target {other} is archived. A write needs a live item. Restore \
+             the item first with restore_item."
+        )
+    );
+
     drop(conn);
     drop_scratch_db(&mut admin_conn, SCRATCH_DB);
+}
+
+/// The short code in the answer of `create_item`:
+/// `Created task SKADI-T-0001: …`.
+fn created_code(text: &str) -> String {
+    text.split_whitespace()
+        .nth(2)
+        .unwrap_or_else(|| panic!("no code in {text:?}"))
+        .trim_end_matches(':')
+        .to_string()
 }

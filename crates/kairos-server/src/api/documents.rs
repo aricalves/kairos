@@ -56,7 +56,7 @@ use uuid::Uuid;
 use super::convert::{IntoDto, attach_impact, attach_impacts};
 use super::{
     Liveness, atomically, clamp_pagination, map_graph_error, map_item_error, parse_enum,
-    parse_opt_uuid, require_capability, require_edge_write, require_item_edit, resolve_short_code,
+    parse_opt_uuid, require_capability, require_edge_write, require_item_edit,
 };
 use crate::app::AppState;
 use crate::body::ApiJson;
@@ -338,8 +338,12 @@ pub(crate) struct CreatedDocument {
     pub document: Document,
     /// The owner board of the document.
     pub board: Board,
-    /// The short code of the item that the document supports, if one.
+    /// The current short code of the item that the document supports, if
+    /// one.
     pub parent: Option<String>,
+    /// `OLD is now NEW.` when the parent came in with a retired code
+    /// (KAIROS-T-0560).
+    pub parent_renamed: Option<String>,
 }
 
 /// A live board by slug or UUID, or the 404 of [`super::board_id_by_ref`].
@@ -422,13 +426,10 @@ pub(crate) fn create(
     let parent = input
         .parent
         .map(|parent_code| {
-            let (parent_id, parent_type) =
-                resolve_short_code(conn, parent_code, Liveness::LiveOnly)?.ok_or_else(|| {
-                    ApiError::validation(format!(
-                        "The {parent_field} {parent_code:?} is not the short code of a live \
-                         item."
-                    ))
-                })?;
+            // KAIROS-T-0560: a retired code follows to its item.
+            let parent = super::resolve_live_ref(conn, parent_code, parent_field)?;
+            let (parent_id, parent_type) = parent.typed();
+            let parent_code = parent.code.as_str();
             if !matches!(
                 parent_type,
                 ItemType::Strategy | ItemType::Initiative | ItemType::Task
@@ -438,7 +439,7 @@ pub(crate) fn create(
                      The parent of a document is a strategy, an initiative, or a task."
                 )));
             }
-            Ok((parent_code, parent_id, parent_type))
+            Ok((parent, parent_id, parent_type))
         })
         .transpose()?;
 
@@ -487,7 +488,8 @@ pub(crate) fn create(
     Ok(CreatedDocument {
         document: created,
         board,
-        parent: parent.map(|(code, ..)| code.to_string()),
+        parent_renamed: parent.as_ref().and_then(|(p, ..)| p.renamed()),
+        parent: parent.map(|(p, ..)| p.code),
     })
 }
 

@@ -9,6 +9,7 @@ use kairos_client::types_meta::{
     TemplateMetadataEntry, UpdateMetadataDefinitionRequest, UpdateTemplateRequest,
 };
 
+use crate::commands::entities::require_confirm;
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
 use crate::table::{Table, print_page_footer};
@@ -62,12 +63,15 @@ pub enum MetadataCommand {
         #[command(flatten)]
         common: Common,
     },
-    /// Delete a metadata definition (organization admins). Refused while an
-    /// item has a value or a template has the field
+    /// Delete a metadata definition (organization admins; needs --confirm).
+    /// Refused while an item has a value or a template has the field
     Delete {
         /// The definition: slug or id (UUID)
         #[arg(value_name = "DEFINITION")]
         definition: String,
+        /// Required: without it, the command deletes nothing
+        #[arg(long)]
+        confirm: bool,
         #[command(flatten)]
         common: Common,
     },
@@ -117,12 +121,15 @@ pub enum TemplatesCommand {
         #[command(flatten)]
         common: Common,
     },
-    /// Delete a template (organization admins). Items made from it keep
-    /// their content and their metadata
+    /// Delete a template (organization admins; needs --confirm). Items made
+    /// from it keep their content and their metadata
     Delete {
         /// The template: slug or id (UUID)
         #[arg(value_name = "TEMPLATE")]
         template: String,
+        /// Required: without it, the command deletes nothing
+        #[arg(long)]
+        confirm: bool,
         #[command(flatten)]
         common: Common,
     },
@@ -313,8 +320,10 @@ impl MetadataCommand {
             }
             Self::Delete {
                 definition: reference,
+                confirm,
                 common,
             } => {
+                require_confirm(confirm, &format!("the metadata definition {reference}"))?;
                 let client = client(&common)?;
                 let current = definition(&client, &reference).await?;
                 let deleted = client.delete_metadata_definition(&current.id).await?;
@@ -407,8 +416,10 @@ impl TemplatesCommand {
             }
             Self::Delete {
                 template: reference,
+                confirm,
                 common,
             } => {
+                require_confirm(confirm, &format!("the template {reference}"))?;
                 let client = client(&common)?;
                 let current = template(&client, &reference).await?;
                 let deleted = client.delete_template(&current.id).await?;
