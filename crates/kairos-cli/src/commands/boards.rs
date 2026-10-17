@@ -297,6 +297,7 @@ impl BoardsCommand {
                             position: None,
                             is_done: None,
                             claims: None,
+                            keeps_claims: None,
                             wip_limit: Some(wip_limit),
                         },
                     )

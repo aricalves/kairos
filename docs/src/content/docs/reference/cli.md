@@ -904,7 +904,7 @@ The board marks the column.
 ```
 kairos boards columns list   <BOARD> [OPTIONS]
 kairos boards columns add    <BOARD> <NAME> [--position <N>] [OPTIONS]
-kairos boards columns update <BOARD> <COLUMN> [--name <NAME>] [--position <N>] [--done <BOOL>] [--claims <BOOL>] [OPTIONS]   (one option at least)
+kairos boards columns update <BOARD> <COLUMN> [--name <NAME>] [--position <N>] [--done <BOOL>] [--claims <BOOL>] [--keeps-claims <BOOL>] [OPTIONS]   (one option at least)
 kairos boards columns remove <BOARD> <COLUMN> --confirm [OPTIONS]
 ```
 
@@ -917,6 +917,7 @@ kairos boards columns remove <BOARD> <COLUMN> --confirm [OPTIONS]
 | `--name <NAME>` | string | no change | The new name. |
 | `--done <BOOL>` | `true` or `false` | no change | A done column. |
 | `--claims <BOOL>` | `true` or `false` | no change | A task in the column has a claim. |
+| `--keeps-claims <BOOL>` | `true` or `false` | no change | A task with a claim keeps it in the column, and a task with no claim gets none there (Blocked, KAIROS-T-0529). |
 | `--confirm` | flag | off | Required on `remove` for the removal to happen. Without it, the command exits 1. |
 
 `list` shows the columns in their order. `add`, `update` and `remove` need
