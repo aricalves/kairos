@@ -707,9 +707,14 @@ pub(crate) async fn update_board(
                     "board",
                     format!("board_settings:{}", updated.slug),
                 )?;
+                // KAIROS-T-0574: the board page reads the board again.
+                kairos_db::events::emit_board_configured(conn, board_id, user, "board_settings")
+                    .map_err(ApiError::internal)?;
             }
             if apply_policies(conn, user, &board, policies)? {
                 updated = load_board(conn, board_id)?;
+                kairos_db::events::emit_board_configured(conn, board_id, user, "board_policy")
+                    .map_err(ApiError::internal)?;
             }
             Ok(updated.into_dto())
         })
@@ -1421,14 +1426,15 @@ pub(crate) async fn board_items(
                 }
             }
 
-            let progress = kairos_db::graph::board_children_progress(conn, board_id)
+            let item_ids: Vec<Uuid> = item_codes.iter().map(|(id, _)| *id).collect();
+            // KAIROS-T-0627: the rollup of the items of the page only.
+            let progress = kairos_db::graph::page_children_progress(conn, board_id, &item_ids)
                 .map_err(ApiError::internal)?;
             // KAIROS-T-0091: blocked-by/blocks counts, one grouped query;
             // only items with at least one open blocks edge get an entry.
             // Open means both ends can still move (COLLIERY-T-0214): a
             // card in a terminal column has no entry, and adds nothing to
             // the entry of the card at the other end.
-            let item_ids: Vec<Uuid> = item_codes.iter().map(|(id, _)| *id).collect();
             let blocks =
                 kairos_db::graph::blocks_summary(conn, &item_ids).map_err(ApiError::internal)?;
             let blocks_summary: std::collections::BTreeMap<String, dto::BlocksCounts> = item_codes
@@ -1446,7 +1452,7 @@ pub(crate) async fn board_items(
                 })
                 .collect();
             // KAIROS-T-0321: the teams of each strategy and initiative of
-            // the page, one query for the board.
+            // the page, one query for the page (KAIROS-T-0627).
             let item_teams =
                 crate::api::meta::item_teams::board_item_teams(conn, board_id, &item_codes)?;
             // KAIROS-T-0368: the metadata values of the page, one query,

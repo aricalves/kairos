@@ -1263,7 +1263,9 @@ pub struct FlowAgeingItem {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CumulativeFlow {
     /// The columns: those of the board in position order, then an old name
-    /// of a column that the history has (a column that has a new name now).
+    /// of a column that the history has (a column that has a new name now),
+    /// in name order. An old name is in the list only when it has an item
+    /// on a day of the range (KAIROS-T-0627).
     pub columns: Vec<String>,
     /// One row for each day; `counts` has the order of `columns`.
     pub days: Vec<CumulativeFlowDay>,

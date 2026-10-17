@@ -17,9 +17,10 @@ public_url = "/"
 
 # KAIROS-T-0326: Aurora, "Linked stylesheet, no flash". Trunk checks the
 # assets of index.html before it builds, so the stylesheets are written in
-# a pre_build hook, by a small crate of this workspace that calls
-# `aurora_dark::write_css` and `write_hyper_css` (KAIROS-T-0397; it shares
-# the Cargo.lock; nothing to install).
+# a pre_build hook, by a small crate of this workspace (it shares the
+# Cargo.lock; nothing to install). KAIROS-T-0605: it writes
+# `style/kairos.css` (Aurora, then app.css) and the hyper theme
+# (`style/hyper-<hash>.css`, KAIROS-T-0397).
 [[hooks]]
 stage = "pre_build"
 command = "cargo"

@@ -1984,9 +1984,9 @@ impl KairosMcp {
             let item_ids: Vec<Uuid> = items.iter().map(|i| i.id).collect();
             let blocks = graph::blocks_summary(conn, &item_ids).map_err(ApiError::internal)?;
             // KAIROS-T-0321: the teams of the strategies and the
-            // initiatives, one query for the board.
-            let teams =
-                kairos_db::item_teams::board_teams(conn, board.id).map_err(ApiError::internal)?;
+            // initiatives of the page, one query (KAIROS-T-0627).
+            let teams = kairos_db::item_teams::page_teams(conn, board.id, &item_ids)
+                .map_err(ApiError::internal)?;
             // KAIROS-T-0359: the claims of the tasks, one query.
             let claims = crate::claims::claim_texts(conn, &item_ids)?;
             // KAIROS-T-0411: the owners of the strategies and the

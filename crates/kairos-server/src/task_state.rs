@@ -24,7 +24,7 @@ use crate::error::ApiError;
 /// A field that is not sent is kept, `null` clears it; an empty patch is
 /// refused; a stale `expected_updated_at` is a `CONFLICT` with the current
 /// state in the details. The write emits `item_updated`, so the cards and
-/// the item page refresh.
+/// the item page refresh, then `task_state_changed` (KAIROS-T-0574).
 pub fn write_state(
     conn: &mut PgConnection,
     slug: &str,
@@ -79,6 +79,15 @@ pub fn write_state(
     kairos_db::events::emit_item_event_by_id(
         conn,
         kairos_db::events::EventKind::ItemUpdated,
+        "task",
+        task_id,
+        user,
+    )
+    .map_err(ApiError::internal)?;
+    // KAIROS-T-0574: the precise kind, after the coarse one.
+    kairos_db::events::emit_item_event_by_id(
+        conn,
+        kairos_db::events::EventKind::TaskStateChanged,
         "task",
         task_id,
         user,

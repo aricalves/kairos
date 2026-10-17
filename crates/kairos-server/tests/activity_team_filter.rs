@@ -348,3 +348,51 @@ async fn the_server_filters_the_activity_by_team_against_live_stack() {
 
     stack.shutdown();
 }
+
+/// KAIROS-T-0627: `total` is exact up to 1000 entries (or up to the end of
+/// the page), and past that it is the bound + 1: "more than the bound".
+#[tokio::test]
+async fn the_activity_count_stops_past_1000_entries() {
+    let mut stack = Stack::boot("kairos_activity_count_cap_t0627_test").await;
+    diesel::sql_query(
+        "INSERT INTO activity_log (actor_id, action, details, occurred_at) \
+         SELECT $1, 'transition', 'column:Todo->Active', \
+                now() - make_interval(secs => g) \
+           FROM generate_series(1, 1100) AS g",
+    )
+    .bind::<diesel::sql_types::Uuid, _>(stack.svc_id)
+    .execute(&mut stack.conn)
+    .expect("1100 entries");
+
+    #[derive(QueryableByName)]
+    struct Count {
+        #[diesel(sql_type = diesel::sql_types::BigInt)]
+        count: i64,
+    }
+    let all = diesel::sql_query("SELECT count(*) AS count FROM activity_log")
+        .get_result::<Count>(&mut stack.conn)
+        .expect("the count")
+        .count;
+    assert!(all >= 1100);
+
+    let near_end = all - 10;
+    for (query, total) in [
+        // The first page: the count stops at 1000 + 1.
+        ("limit=25".to_string(), 1001),
+        // A page that ends past 1000: the bound is the end of the page.
+        ("limit=25&offset=990".to_string(), 1016),
+        // A page at the end of the feed: the count is exact.
+        (format!("limit=25&offset={near_end}"), all),
+    ] {
+        let page = stack
+            .ok(Method::GET, &format!("/api/activity?{query}"), None)
+            .await;
+        assert_eq!(page["total"], total, "{query}");
+        assert!(
+            !page["items"].as_array().expect("items").is_empty(),
+            "{query}"
+        );
+    }
+
+    stack.shutdown();
+}
