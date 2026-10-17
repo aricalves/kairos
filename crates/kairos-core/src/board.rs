@@ -47,7 +47,11 @@ fn find_column(columns: &[Column], id: Uuid) -> Option<&Column> {
 }
 
 /// The allowed target columns out of `from`, ordered by column position.
-fn allowed_targets(columns: &[Column], transitions: &[Transition], from: Uuid) -> Vec<ColumnRef> {
+pub fn allowed_targets(
+    columns: &[Column],
+    transitions: &[Transition],
+    from: Uuid,
+) -> Vec<ColumnRef> {
     let mut targets: Vec<&Column> = transitions
         .iter()
         .filter(|t| t.from_column_id == from)
