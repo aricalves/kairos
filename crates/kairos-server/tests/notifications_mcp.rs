@@ -84,6 +84,8 @@ struct Mcp {
     token: String,
     session: Option<String>,
     next_id: i64,
+    /// The text blocks of the last answer (KAIROS-T-0549).
+    last_blocks: Vec<String>,
 }
 
 impl Mcp {
@@ -113,6 +115,7 @@ impl Mcp {
             token: token.to_string(),
             session: None,
             next_id: 0,
+            last_blocks: Vec::new(),
         };
         let (status, body) = mcp
             .post(json!({
@@ -143,10 +146,18 @@ impl Mcp {
             .await;
         assert!(status.is_success(), "{tool}: {body}");
         let result = rpc_message(&body)["result"].clone();
-        let text = result["content"][0]["text"]
-            .as_str()
-            .unwrap_or_else(|| panic!("{tool} gave no text: {result}"))
-            .to_string();
+        // KAIROS-T-0549: the answer is the first block; the notifications,
+        // when the person has unread ones, are a block of their own. `text`
+        // joins every text block, so the assertions on the whole stay.
+        let blocks: Vec<&str> = result["content"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{tool} gave no content: {result}"))
+            .iter()
+            .filter_map(|block| block["text"].as_str())
+            .collect();
+        assert!(!blocks.is_empty(), "{tool} gave no text: {result}");
+        self.last_blocks = blocks.iter().map(|b| b.to_string()).collect();
+        let text = blocks.join("\n\n");
         (text, result["isError"].as_bool().unwrap_or(false))
     }
 
@@ -256,7 +267,21 @@ async fn notifications_ride_along_until_read() {
         .split("## Your notifications (7 unread)")
         .nth(1)
         .unwrap_or_else(|| panic!("the block: {text}"));
-    assert_eq!(ids_in(block).len(), 5, "the 5 newest: {block}");
+    // KAIROS-T-0549: the 5 newest as lines with no id, in a content block of
+    // their own; the answer block has no trace of them.
+    assert_eq!(block.matches("\n- ").count(), 5, "the 5 newest: {block}");
+    assert_eq!(ids_in(block).len(), 0, "no id in the ride-along: {block}");
+    assert_eq!(
+        agent.last_blocks.len(),
+        2,
+        "two blocks: {:?}",
+        agent.last_blocks
+    );
+    assert!(
+        !agent.last_blocks[0].contains("Your notifications"),
+        "the answer block is the answer alone: {}",
+        agent.last_blocks[0]
+    );
     assert!(block.contains("2 more: call get_events"), "{block}");
     assert!(block.contains("mark_events_read"), "{block}");
     assert!(block.contains("mention"), "{block}");

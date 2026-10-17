@@ -152,13 +152,12 @@ impl ServerHandler for KairosMcp {
                         })
                         .await;
                     match block {
-                        Ok(Some(block)) => match result.content.first_mut() {
-                            Some(ContentBlock::Text(text)) => {
-                                text.text.push_str("\n\n");
-                                text.text.push_str(&block);
-                            }
-                            _ => result.content.push(ContentBlock::text(block)),
-                        },
+                        // KAIROS-T-0549: a content block of its own, after the
+                        // answer. Appended to the answer's text, the block
+                        // landed after the raw content of `get_item`, and an
+                        // agent that copied "the content" into `update_item`
+                        // wrote the inbox into the item.
+                        Ok(Some(block)) => result.content.push(ContentBlock::text(block)),
                         Ok(None) => {}
                         // The answer of the tool stands: the notifications
                         // come with the next answer.

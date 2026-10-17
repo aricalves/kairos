@@ -7750,6 +7750,20 @@ pub(super) fn notification_line(n: &kairos_db::notifications::Notification) -> S
     )
 }
 
+/// One notification in the ride-along block (KAIROS-T-0549): the time, the
+/// kind, the item and the text, with no id. The ids are 36 characters each
+/// and the block repeats on every answer until the notifications are read;
+/// `get_events` gives the ids.
+fn ride_along_line(n: &kairos_db::notifications::Notification) -> String {
+    format!(
+        "- {} · {} · {}: {}\n",
+        n.created_at.format("%Y-%m-%d %H:%MZ"),
+        n.kind,
+        n.short_code.as_deref().unwrap_or("(item gone)"),
+        n.text,
+    )
+}
+
 /// How many unread notifications come at the end of an answer.
 pub(super) const RIDE_ALONG: i64 = 5;
 
@@ -7764,13 +7778,16 @@ pub(super) fn ride_along(conn: &mut PgConnection, user: Uuid) -> Result<Option<S
     }
     let mut out = format!("## Your notifications ({} unread)\n", unread.total);
     for n in &unread.newest {
-        out.push_str(&notification_line(n));
+        out.push_str(&ride_along_line(n));
     }
     let more = unread.total - unread.newest.len() as i64;
     if more > 0 {
         out.push_str(&format!("{more} more: call get_events\n"));
     }
-    out.push_str("Mark them read with mark_events_read when you have acted on them.\n");
+    out.push_str(
+        "get_events gives each with its id; mark them read with mark_events_read when you \
+         have acted on them.\n",
+    );
     Ok(Some(out))
 }
 
