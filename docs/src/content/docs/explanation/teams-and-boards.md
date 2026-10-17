@@ -251,6 +251,21 @@ takes a free task with a **claim** (`claim_item`, `kairos tasks claim`). The
 next person who moves a free task into Active gets the claim too. An archive of
 the task ends its claim.
 
+A claim names a person of the organization. So a claim ends when its person
+leaves (KAIROS-T-0531). An admin removes the member, or the identity provider
+deprovisions the person through SCIM. Each task of the person stays in its
+column, free, and the members of the team of the board get a notification. The
+team then decides who takes the task. A claim that names a person who left
+would answer "who has this?" with a wrong name.
+
+A claim does not end by age. A person can work on a long task with no write
+for some days. But a claim with no write for many days is often forgotten. So
+Kairos reports a **stale** claim: a claim with no write to the task and no
+change of its state for `KAIROS_STALE_CLAIM_DAYS` days (default 14). The holder
+and the owner of the initiative of the task get a notification, once. The claim
+stays. A write starts the count again. To end the claim is a decision of a
+person: a release or a hand-off.
+
 A claim does not lock the task. A different person can still change it, and the
 change is recorded as usual. The response of the change carries a warning that
 names the person who has the claim, so that nobody overwrites the work of a
@@ -285,6 +300,8 @@ the [MCP tools reference](../../reference/mcp-tools/) and the
   (KAIROS-A-0001).
 - A task in Active has a claim (KAIROS-T-0359, KAIROS-A-0024: a person is
   always responsible, and a service account takes no claim).
+- A claim ends when its person leaves, and a stale claim is reported, not
+  ended (KAIROS-T-0531).
 - A board always has a team, in two forms (COLLIERY-T-0230, a decision of the
   product owner on 2026-09-27).
 - A board owns a document (COLLIERY-T-0269, a decision of the product owner

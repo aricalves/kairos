@@ -37,6 +37,14 @@
 //! - `agent_key_revoked`: an organization admin revokes the agent key of a
 //!   person ([`on_agent_key_revoked`]). The person is told the name and the
 //!   prefix of the key.
+//! - `claim_dropped`: a person leaves the organization, so each claim of
+//!   the person ends ([`crate::task_claims::drop_claims_of_user`],
+//!   KAIROS-T-0531). Each member of the team of the board of the task is
+//!   told: the task is free.
+//! - `claim_stale`: a claim had no write and no state change for some days
+//!   ([`crate::task_claims::notify_stale_claims`], KAIROS-T-0531). The
+//!   holder and the owner of the initiative of the task are told, once for
+//!   each quiet period. Kairos is the actor.
 //!
 //! # Who gets a notification
 //!
@@ -289,6 +297,90 @@ pub fn on_cancel(
         &text,
         actor,
     )?;
+    Ok(())
+}
+
+/// `claim_dropped` (KAIROS-T-0531): the person `left` left the
+/// organization, and their claim on the task ended. The members of the
+/// team of the board of the task are told.
+pub fn on_claim_dropped(
+    conn: &mut PgConnection,
+    task_id: Uuid,
+    left: Uuid,
+    actor: Uuid,
+) -> Result<(), DieselError> {
+    use crate::schema::{board_columns, boards, tasks, team_members};
+    let Some((code, title, _)) = task_head(conn, task_id)? else {
+        return Ok(());
+    };
+    let place: Option<(String, Option<Uuid>)> = tasks::table
+        .inner_join(board_columns::table)
+        .inner_join(boards::table)
+        .filter(tasks::id.eq(task_id))
+        .select((board_columns::name, boards::team_id))
+        .first(conn)
+        .optional()?;
+    let Some((column, Some(team_id))) = place else {
+        return Ok(());
+    };
+    let members: Vec<Uuid> = team_members::table
+        .filter(team_members::team_id.eq(team_id))
+        .filter(team_members::user_id.ne(left))
+        .select(team_members::user_id)
+        .load(conn)?;
+    let text = format!(
+        "{} left the organization, so the claim on {code} ended. The task is free in {column}: \
+         {title}",
+        name_of(conn, left)?
+    );
+    notify(
+        conn,
+        &members,
+        NotificationKind::ClaimDropped,
+        Some((task_id, &code)),
+        &text,
+        actor,
+    )?;
+    Ok(())
+}
+
+/// `claim_stale` (KAIROS-T-0531): the claim had no write since
+/// `claim.last_write`. The holder is told, and the owner of the initiative
+/// of the task when it is a different person. Kairos is the actor.
+pub fn on_claim_stale(
+    conn: &mut PgConnection,
+    claim: &crate::task_claims::StaleClaim,
+    now: DateTime<Utc>,
+) -> Result<(), DieselError> {
+    let days = (now - claim.last_write).num_days().max(1);
+    let (code, title) = (&claim.short_code, &claim.title);
+    let text = format!(
+        "Your claim on {code} has no write and no state change for {days} days: {title}. \
+         Write a note or the state, or release the task."
+    );
+    notify(
+        conn,
+        &[claim.user_id],
+        NotificationKind::ClaimStale,
+        Some((claim.task_id, code)),
+        &text,
+        Uuid::nil(),
+    )?;
+    if let Some(owner) = claim.owner_id.filter(|owner| *owner != claim.user_id) {
+        let text = format!(
+            "The claim of {} on {code} has no write and no state change for {days} days. \
+             The task is part of an initiative that you own: {title}",
+            name_of(conn, claim.user_id)?
+        );
+        notify(
+            conn,
+            &[owner],
+            NotificationKind::ClaimStale,
+            Some((claim.task_id, code)),
+            &text,
+            Uuid::nil(),
+        )?;
+    }
     Ok(())
 }
 
