@@ -2953,7 +2953,7 @@ impl KairosMcp {
         self.run_tool(&tenant, move |conn| {
             let reader = crate::api::notifications::reader_for(conn, user, key)?;
             let before = params.before.as_deref();
-            let (items, unread) = crate::api::notifications::list_for(conn, &reader, before)?;
+            let (items, unread) = crate::api::notifications::list_for(conn, &reader, before, None)?;
             Ok(events_text(&items, unread, before.is_some()))
         })
         .await
