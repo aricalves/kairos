@@ -38,14 +38,45 @@ Command groups, each detailed below:
 | Code | Meaning |
 |---|---|
 | 0 | Success. |
-| 1 | API or validation error: not found, forbidden, conflict, invalid transition, bad input, transport failure. Also the case of several cached deployments with no `--url`. |
-| 2 | Authentication error: no cached credentials, expired or rejected credentials, a failed token refresh, an expired local session, a rejected email and password, HTTP 401, a corrupted credential cache. |
+| 1 | API or validation error: not found, forbidden, conflict, invalid transition, bad input. A transport failure: the deployment or the OIDC issuer gave no answer, also during a token refresh. Also the case of several cached deployments with no `--url`. |
+| 2 | Authentication error: no cached credentials, expired or rejected credentials, a token refresh that the issuer refused, an expired local session, a rejected email and password, HTTP 401, a corrupted credential cache. |
+| 3 | `self-update --check`: the server is newer than the CLI. |
+| 64 | Usage error: an argument or a command that this CLI does not know, a missing argument, two options that exclude each other. The message is the one of the argument parser. An older CLI exits with this code for a new option. |
+
+`--help` and `--version` exit with 0.
 
 Structured API rejections are rendered with their actionable detail: a 409
 `CONFLICT` prints the server-current version and title, a 422
 `INVALID_TRANSITION` prints the allowed target columns with their ids, a 403
 prints the required board capability when the server names one, and a 422
-`LAST_ADMIN` prints the keep-one-admin constraint.
+`LAST_ADMIN` prints the keep-one-admin constraint. A 401 gives the `kairos
+login` command with the URL of the deployment. A 403 `MEMBERSHIP_REQUIRED`
+says that you are not a member of the organization. A body that the CLI
+cannot read names `kairos self-update --check`.
+
+### Errors with `--json`
+
+With `--json`, an error goes to stderr as one JSON object, the error envelope
+of the API:
+
+```json
+{"error": {"code": "VALIDATION", "message": "422 VALIDATION: team_id is not a UUID", "details": {"field": "team_id"}}}
+```
+
+`code` and `details` are the ones of the deployment when the deployment
+refused the request. `message` is the text that the CLI prints without
+`--json`. A failure of the CLI itself has one of these codes and `null`
+details:
+
+| Code | Meaning | Exit code |
+|---|---|---|
+| `LOGIN_REQUIRED` | No credentials, expired credentials, or a refresh that the issuer refused. | 2 |
+| `TRANSPORT` | The deployment or the issuer gave no answer. | 1 |
+| `BAD_RESPONSE` | The CLI cannot read the answer of the deployment. | 1 |
+| `CLI_ERROR` | Any other failure of the CLI: a bad value, a file, a missing `--confirm`. | 1 |
+
+A usage error (exit code 64) is not JSON: the argument parser prints it
+before the CLI reads `--json`. Stdout stays empty on an error.
 
 ## Common options
 
@@ -128,8 +159,8 @@ Failures of `login`:
 |---|---|---|
 | No `--email`, and the deployment has no issuer | 1 | `This deployment has no OIDC issuer. It uses local accounts.` The message gives the command with `--email`. |
 | `--email`, and the deployment has local accounts off | 1 | `Local accounts are off on this deployment.` The message gives the command without `--email`. |
-| `--email` with `--issuer`, `--client-id` or `--bearer` | 2 | A usage error from the argument parser. |
-| `--password` | 2 | A usage error from the argument parser. |
+| `--email` with `--issuer`, `--client-id` or `--bearer` | 64 | A usage error from the argument parser. |
+| `--password` | 64 | A usage error from the argument parser. |
 | Wrong password, or no account with that email | 2 | `The deployment did not accept the email and the password.` The two conditions give the same message. |
 | Too many failed attempts (HTTP 429) | 1 | `The number of incorrect logins is too large.` The message gives the wait in seconds. |
 | No password given | 1 | `The command got no password.` |
@@ -1869,7 +1900,7 @@ kairos self-update [--url <URL>] [--version <VERSION> | --latest | --check]
 | `--url <URL>` | string | `KAIROS_URL`, then the only cached deployment | The deployment whose version to install. |
 | `--version <VERSION>` | string | the version of the server | Install this version (e.g. `0.12.0`). |
 | `--latest` | flag | off | Install the latest release on GitHub. |
-| `--check` | flag | off | Print the version of the CLI and of the server, and change nothing. |
+| `--check` | flag | off | Print the version of the CLI and of the server, and change nothing. The exit code is 3 when the server is newer, else 0. |
 
 Installs the version of the server in place of the running binary. The server
 tells its version at `GET /version` (open). It also gives the links of the
@@ -1883,6 +1914,9 @@ binary as `kairos.bak` and renames the new file over the old path. A failed
 download or a bad checksum changes nothing. With `--version` or `--latest`,
 the CLI takes the tarball from the GitHub releases; `KAIROS_RELEASES_URL`
 replaces that URL, for a mirror.
+
+`--check` is for a script: `kairos self-update --check || kairos self-update`
+updates the CLI only when the server is newer.
 
 A server older than this command does not tell its version: name one with
 `--version`, or use `--latest`. The CLI refuses a server whose links

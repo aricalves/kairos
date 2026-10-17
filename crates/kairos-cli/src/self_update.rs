@@ -12,6 +12,7 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -19,7 +20,7 @@ use sha2::{Digest, Sha256};
 
 use crate::auth::{self, Source};
 use crate::credentials;
-use crate::error::CliError;
+use crate::error::{CliError, EXIT_OUTDATED};
 
 /// The version of this CLI.
 pub const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -53,25 +54,23 @@ pub struct SelfUpdateArgs {
     /// Install the latest release instead of the version of the server
     #[arg(long)]
     pub latest: bool,
-    /// Only say which version the server has and which this CLI has
+    /// Only say which version the server has and which this CLI has. The exit
+    /// code is 3 when the server is newer, else 0
     #[arg(long, conflicts_with_all = ["version", "latest"])]
     pub check: bool,
 }
 
 impl SelfUpdateArgs {
-    pub async fn run(self) -> Result<(), CliError> {
+    /// The exit code of the command: 0, or 3 for `--check` when the server
+    /// is newer than the CLI (KAIROS-T-0588), so a script can update on it.
+    pub async fn run(self) -> Result<ExitCode, CliError> {
         let http = http()?;
         if self.check {
             let deployment = deployment(self.url.as_deref())?;
             let server = server_version(&http, &deployment).await?.version;
-            match compare(CLI_VERSION, &server) {
-                std::cmp::Ordering::Less => println!(
-                    "The CLI is {CLI_VERSION}; the server {deployment} is {server}. \
-                     Run `kairos self-update`."
-                ),
-                _ => println!("The CLI is {CLI_VERSION}; the server {deployment} is {server}."),
-            }
-            return Ok(());
+            let (line, code) = check_line(&deployment, &server);
+            println!("{line}");
+            return Ok(code);
         }
         let release = match (self.version, self.latest) {
             (Some(version), _) => Release::published(version.trim_start_matches('v'))?,
@@ -90,7 +89,25 @@ impl SelfUpdateArgs {
             }
         };
         println!("{}", update_to(&http, &release).await?);
-        Ok(())
+        Ok(ExitCode::SUCCESS)
+    }
+}
+
+/// The line of `--check` and its exit code: 3 when the server is newer than
+/// this CLI, else 0 (KAIROS-T-0588).
+fn check_line(deployment: &str, server: &str) -> (String, ExitCode) {
+    match compare(CLI_VERSION, server) {
+        std::cmp::Ordering::Less => (
+            format!(
+                "The CLI is {CLI_VERSION}; the server {deployment} is {server}. \
+                 Run `kairos self-update`."
+            ),
+            ExitCode::from(EXIT_OUTDATED),
+        ),
+        _ => (
+            format!("The CLI is {CLI_VERSION}; the server {deployment} is {server}."),
+            ExitCode::SUCCESS,
+        ),
     }
 }
 
@@ -499,6 +516,22 @@ mod tests {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect()
+    }
+
+    /// KAIROS-T-0588: `--check` exits 3 when the server is newer, 0 when
+    /// the CLI is the same version or newer.
+    #[test]
+    fn check_exits_3_when_the_server_is_newer() {
+        let (line, code) = check_line("https://k.test", "999.0.0");
+        assert!(line.contains("Run `kairos self-update`"), "{line}");
+        assert_eq!(code, ExitCode::from(EXIT_OUTDATED));
+
+        let (line, code) = check_line("https://k.test", CLI_VERSION);
+        assert!(!line.contains("self-update"), "{line}");
+        assert_eq!(code, ExitCode::SUCCESS);
+
+        let (_, code) = check_line("https://k.test", "0.0.1");
+        assert_eq!(code, ExitCode::SUCCESS);
     }
 
     #[test]

@@ -46,6 +46,28 @@ pub struct IssuerEndpoints {
     pub device_authorization_endpoint: String,
 }
 
+/// Why a call to the issuer gave nothing (KAIROS-T-0588). The refresh path
+/// of [`crate::provider`] needs the difference: an issuer that the CLI
+/// cannot reach is not a reason to log in again.
+#[derive(Debug)]
+pub enum IssuerError {
+    /// The issuer gave no usable answer: a transport failure, or a 5xx.
+    /// The text names the URL.
+    Unreachable(String),
+    /// The issuer answered and refused the call, or its answer was not
+    /// readable. The text says what it answered.
+    Refused(String),
+}
+
+impl From<IssuerError> for CliError {
+    /// At login, both are a failure of the command (exit 1).
+    fn from(err: IssuerError) -> Self {
+        match err {
+            IssuerError::Unreachable(text) | IssuerError::Refused(text) => CliError::Failure(text),
+        }
+    }
+}
+
 /// RFC 8628 device authorization response.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DeviceAuthorization {
@@ -194,26 +216,27 @@ pub async fn discover_issuer(
 pub async fn discover_endpoints(
     http: &reqwest::Client,
     issuer: &str,
-) -> Result<IssuerEndpoints, CliError> {
+) -> Result<IssuerEndpoints, IssuerError> {
     let discovery_url = format!(
         "{}/.well-known/openid-configuration",
         issuer.trim_end_matches('/')
     );
-    let response = http
-        .get(&discovery_url)
-        .send()
-        .await
-        .map_err(|err| {
-            CliError::Failure(format!(
-                "The CLI cannot reach the OIDC issuer at {issuer}: {err}."
-            ))
-        })?
-        .error_for_status()
-        .map_err(|err| {
-            CliError::Failure(format!(
-                "The OIDC discovery at {discovery_url} did not complete: {err}."
-            ))
-        })?;
+    let response = http.get(&discovery_url).send().await.map_err(|err| {
+        IssuerError::Unreachable(format!(
+            "The CLI cannot reach the OIDC issuer at {issuer}: {err}."
+        ))
+    })?;
+    let status = response.status();
+    if status.is_server_error() {
+        return Err(IssuerError::Unreachable(format!(
+            "The OIDC discovery at {discovery_url} answered {status}."
+        )));
+    }
+    if !status.is_success() {
+        return Err(IssuerError::Refused(format!(
+            "The OIDC discovery at {discovery_url} answered {status}."
+        )));
+    }
     #[derive(Deserialize)]
     struct Discovery {
         token_endpoint: String,
@@ -221,13 +244,13 @@ pub async fn discover_endpoints(
         device_authorization_endpoint: Option<String>,
     }
     let discovery: Discovery = response.json().await.map_err(|err| {
-        CliError::Failure(format!(
+        IssuerError::Refused(format!(
             "The CLI cannot read the OIDC discovery document from {discovery_url}: {err}."
         ))
     })?;
     let device_authorization_endpoint =
         discovery.device_authorization_endpoint.ok_or_else(|| {
-            CliError::Failure(format!(
+            IssuerError::Refused(format!(
                 "The issuer {issuer} gives no device_authorization_endpoint. `kairos login` \
                  needs the Device Authorization Grant (KAIROS-A-0010). Enable that grant on \
                  the issuer."
@@ -326,13 +349,15 @@ pub async fn poll_device_grant(
 }
 
 /// The refresh grant (RFC 6749 §6). Returns the new tokens; the caller
-/// persists them (issuers like Dex rotate the refresh token).
+/// persists them (issuers like Dex rotate the refresh token). A transport
+/// failure or a 5xx is [`IssuerError::Unreachable`]: the refresh token may
+/// still be good (KAIROS-T-0588).
 pub async fn refresh_grant(
     http: &reqwest::Client,
     token_endpoint: &str,
     client_id: &str,
     refresh_token: &str,
-) -> Result<TokenResponse, String> {
+) -> Result<TokenResponse, IssuerError> {
     let response = http
         .post(token_endpoint)
         .form(&[
@@ -343,16 +368,26 @@ pub async fn refresh_grant(
         ])
         .send()
         .await
-        .map_err(|err| format!("The CLI cannot reach the token endpoint: {err}."))?;
+        .map_err(|err| {
+            IssuerError::Unreachable(format!(
+                "The CLI cannot reach the token endpoint {token_endpoint}: {err}."
+            ))
+        })?;
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
-    if !status.is_success() {
-        return Err(format!(
-            "The issuer did not accept the refresh ({status}): {body}"
-        ));
+    if status.is_server_error() {
+        return Err(IssuerError::Unreachable(format!(
+            "The token endpoint {token_endpoint} answered {status}."
+        )));
     }
-    serde_json::from_str(&body)
-        .map_err(|err| format!("The CLI cannot read the token response: {err}."))
+    if !status.is_success() {
+        return Err(IssuerError::Refused(format!(
+            "The issuer did not accept the refresh ({status}): {body}"
+        )));
+    }
+    serde_json::from_str(&body).map_err(|err| {
+        IssuerError::Refused(format!("The CLI cannot read the token response: {err}."))
+    })
 }
 
 #[cfg(test)]

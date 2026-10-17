@@ -526,7 +526,8 @@ async fn the_password_is_not_an_argument() {
         None,
     )
     .await;
-    assert_eq!(run.code, 2, "clap's usage error: {}", run.all());
+    // KAIROS-T-0588: a usage error is 64, not the auth code 2.
+    assert_eq!(run.code, 64, "clap's usage error: {}", run.all());
     assert!(
         run.stderr.contains("unexpected argument '--password'"),
         "{}",
@@ -563,7 +564,7 @@ async fn the_password_is_not_an_argument() {
             None,
         )
         .await;
-        assert_eq!(run.code, 2, "{flag}: {}", run.all());
+        assert_eq!(run.code, 64, "{flag}: {}", run.all());
         assert!(run.stderr.contains("cannot be used with"), "{}", run.stderr);
     }
 }
