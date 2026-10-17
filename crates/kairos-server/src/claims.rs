@@ -381,21 +381,39 @@ pub fn claim_text(
     column_id: Option<Uuid>,
 ) -> Result<String, ApiError> {
     if let Some((holder, since)) = claim_texts(conn, &[task_id])?.remove(&task_id) {
-        return Ok(format!(
-            "- claim: {holder} since {}\n",
-            since.format("%Y-%m-%dT%H:%M:%SZ")
-        ));
+        return Ok(held_line(&holder, since));
     }
     let claims_column = match column_id {
         Some(column) => task_claims::column_claims(conn, column).map_err(ApiError::internal)?,
         None => false,
     };
-    Ok(if claims_column {
+    Ok(free_line(claims_column))
+}
+
+/// [`claim_text`] from what was read already (KAIROS-T-0626): the claim as
+/// (name of the holder, made with an agent key, since), and whether the
+/// column of the task holds claims.
+pub fn claim_line(claim: Option<(&str, bool, DateTime<Utc>)>, claims_column: bool) -> String {
+    match claim {
+        Some((name, agent, since)) => held_line(&holder_text(name, agent), since),
+        None => free_line(claims_column),
+    }
+}
+
+fn held_line(holder: &str, since: DateTime<Utc>) -> String {
+    format!(
+        "- claim: {holder} since {}\n",
+        since.format("%Y-%m-%dT%H:%M:%SZ")
+    )
+}
+
+fn free_line(claims_column: bool) -> String {
+    if claims_column {
         "- claim: none. The task is free: claim_item takes it, and a move to Active gives it.\n"
             .to_string()
     } else {
         String::new()
-    })
+    }
 }
 
 /// WHO MAY HAND OFF OR RELEASE the claim of a task: the person who has

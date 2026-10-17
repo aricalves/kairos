@@ -64,6 +64,9 @@ use crate::app::AppState;
 use crate::middleware::{auth, tenant};
 
 pub use service::KairosMcp;
+/// The answer text of `get_item` (KAIROS-T-0626), for the statement-count test.
+#[doc(hidden)]
+pub use tools::get_item_text;
 
 /// The RFC 9728 well-known path for the `/mcp` protected resource.
 const WELL_KNOWN_MCP: &str = "/.well-known/oauth-protected-resource/mcp";
