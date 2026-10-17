@@ -158,23 +158,21 @@ const EXPECTED_SEQUENCES: [&str; 5] = [
 /// block no longer re-pins (KAIROS-T-0093), and it now compares the whole schema
 /// rather than named objects — so this list is a readable statement of what a
 /// tenant carries, not a rescue from a test that kept forgetting.
-const EXPECTED_INDEXES: [&str; 26] = [
+const EXPECTED_INDEXES: [&str; 24] = [
     "board_columns_live_name_key",
     // COLLIERY-T-3099: (prefix, level) is unique among the live boards.
     "boards_live_code_prefix_key",
     "board_columns_live_position_key",
     "idx_activity_log_actor",
-    "idx_activity_log_entity",
+    // KAIROS-T-0628: entity then time; it replaces idx_activity_log_entity.
+    "idx_activity_log_entity_time",
     "idx_activity_log_time",
     "idx_adrs_tsv",
-    "idx_board_member_cap_board_user",
     "idx_documents_tsv",
     "idx_initiatives_board",
     "idx_initiatives_column",
     "idx_initiatives_tsv",
-    "idx_item_history_item",
     "idx_item_metadata_definition",
-    "idx_item_metadata_item",
     "idx_item_relationships_source",
     "idx_item_relationships_target",
     "idx_strategies_board",
@@ -186,8 +184,19 @@ const EXPECTED_INDEXES: [&str; 26] = [
     "idx_tasks_tsv",
     // KAIROS-T-0411: the items that a person owns.
     "item_owners_user_id_idx",
+    // KAIROS-T-0628: the read list of a person.
+    "notifications_user_read_idx",
     // KAIROS-T-0359: the claims of a person.
     "task_claims_user_id_idx",
+];
+
+/// The indexes KAIROS-T-0628 dropped: each is the prefix of a unique index or
+/// of `idx_activity_log_entity_time`, so it only cost writes.
+const DROPPED_INDEXES: [&str; 4] = [
+    "idx_activity_log_entity",
+    "idx_board_member_cap_board_user",
+    "idx_item_history_item",
+    "idx_item_metadata_item",
 ];
 
 fn admin_database_url() -> String {
@@ -497,6 +506,12 @@ fn tenant_provisioning_lifecycle() {
         assert!(
             indexes.contains(&index.to_string()),
             "missing index {index} in org_acme"
+        );
+    }
+    for index in DROPPED_INDEXES {
+        assert!(
+            !indexes.contains(&index.to_string()),
+            "index {index} in org_acme was dropped by KAIROS-T-0628"
         );
     }
     // KAIROS-T-0157: the five full-text indexes are WHOLE, not partial. A

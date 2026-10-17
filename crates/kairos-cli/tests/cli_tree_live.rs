@@ -742,9 +742,24 @@ async fn cli_command_tree_golden_path_live() {
     let detail: serde_json::Value = serde_json::from_str(&stdout).expect("detail JSON");
     assert_eq!(detail["credential"]["set"], true, "{detail}");
     assert!(!stdout.contains(TOKEN), "{stdout}");
-    let (code, stdout, stderr) = run_cli(
+    // KAIROS-T-0590: refused without --confirm; the token stays.
+    let (code, _, stderr) = run_cli(
         config_dir.path(),
         &["repos", "credential", "remove", "payments-api"],
+    )
+    .await;
+    assert_eq!(code, 1, "credential remove without --confirm must exit 1");
+    assert!(stderr.contains("--confirm"), "{stderr}");
+    let (_, stdout, _) = run_cli(
+        config_dir.path(),
+        &["repos", "get", "payments-api", "--json"],
+    )
+    .await;
+    let detail: serde_json::Value = serde_json::from_str(&stdout).expect("detail JSON");
+    assert_eq!(detail["credential"]["set"], true, "{detail}");
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["repos", "credential", "remove", "payments-api", "--confirm"],
     )
     .await;
     assert_eq!(code, 0, "repos credential remove failed: {stderr}");

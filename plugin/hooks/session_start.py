@@ -199,7 +199,9 @@ def cli_note(cli, server, plugin=None):
     return (
         f"- cli: the kairos CLI is {cli}; {' and '.join(behind)}. "
         "Tell the user. Update the CLI: `kairos self-update` installs the "
-        "version of the server."
+        "version of the server. `kairos-code` runs the old binary until the "
+        "session starts again: restart the session after the update "
+        "(KAIROS-T-0526)."
     )
 
 
