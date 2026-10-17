@@ -31,7 +31,7 @@ pub use relationships::RelationshipsPage;
 const ENTITY_TYPES: [&str; 5] = ["strategy", "initiative", "task", "document", "adr"];
 
 /// The task-type vocabulary (S-0005 `filter.task_type`).
-const TASK_TYPES: [&str; 3] = ["task", "bug", "tech_debt"];
+const TASK_TYPES: [&str; 4] = ["task", "bug", "tech_debt", "support"];
 
 /// The relationship vocabulary (S-0005 `traverse.relationships`).
 const RELATIONSHIPS: [&str; 5] = ["parent", "supports", "informs", "supersedes", "blocks"];
@@ -67,7 +67,8 @@ pub fn SearchPage() -> impl IntoView {
     // ---- form state ------------------------------------------------------
     let q = RwSignal::new(String::new());
     let entity_flags: [RwSignal<bool>; 5] = std::array::from_fn(|_| RwSignal::new(false));
-    let task_flags: [RwSignal<bool>; 3] = std::array::from_fn(|_| RwSignal::new(false));
+    let task_flags: [RwSignal<bool>; TASK_TYPES.len()] =
+        std::array::from_fn(|_| RwSignal::new(false));
     let board_sel = RwSignal::new(ANY.to_string());
     let column_sel = RwSignal::new(ANY.to_string());
     let created_after = RwSignal::new(String::new());

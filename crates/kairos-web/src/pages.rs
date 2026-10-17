@@ -1,12 +1,7 @@
-//! Route pages (KAIROS-T-0039). One `*Page` component per route; the
-//! T-0040..T-0044 fan-out replaces each stub in place (grow a page into
-//! `src/pages/<name>.rs` + submodule when it outgrows a screenful — keep
-//! the `pages::XxxPage` export stable so `app.rs` never changes shape).
-//!
-//! Stub convention: `PageHeader` (real title) + `Panel` + `Empty` naming
-//! the task that fills it — so a half-built deployment is honest about
-//! what's missing, and every stub already demonstrates the page skeleton
-//! later tasks should keep.
+//! Route pages (KAIROS-T-0039). One `*Page` component per route. A page
+//! that outgrows a screenful moves to `src/pages/<name>.rs` and its
+//! submodules. Keep the `pages::XxxPage` export stable, so that `app.rs`
+//! changes only to add a route.
 
 use aurora_dark::components::{Anchor, Button, Loading, Stack, Text, TextInput};
 use aurora_dark::frame::{AuthCard, CenterScreen};
@@ -272,7 +267,7 @@ pub fn CallbackPage() -> impl IntoView {
     }
 }
 
-// ---- feature stubs (T-0040..T-0044 replace these) -------------------------
+// ---- feature pages ---------------------------------------------------------
 
 // Copy-link button (KAIROS-T-0076): shared by the board cards and the
 // item detail header.
