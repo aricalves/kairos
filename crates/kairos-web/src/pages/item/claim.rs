@@ -121,26 +121,27 @@ fn hand_off_question(members: &[Member], to: &str) -> String {
 #[component]
 pub fn ClaimPanel(
     #[prop(into)] code: String,
-    claim: Option<Claim>,
+    /// The claim of the task. A signal (KAIROS-T-0618): the page stays
+    /// mounted when the claim changes.
+    #[prop(into)]
+    claim: Signal<Option<Claim>>,
     /// The page's shared board read.
     board: LocalResource<Result<Option<BoardInfo>, ApiError>>,
-    column_id: Option<String>,
-    archived: bool,
+    #[prop(into)] column_id: Signal<Option<String>>,
+    #[prop(into)] archived: Signal<bool>,
     on_moved: Callback<String>,
 ) -> impl IntoView {
-    let claim = StoredValue::new(claim);
-    let column_id = StoredValue::new(column_id);
     let code = StoredValue::new(code);
     // Show the panel when the task has a claim, or sits in a column that
     // gives one.
     let shown = Memo::new(move |_| {
-        if claim.with_value(Option::is_some) {
+        if claim.with(Option::is_some) {
             return true;
         }
         let Some(Ok(Some(board))) = board.get() else {
             return false;
         };
-        column_id.with_value(|column| {
+        column_id.with(|column| {
             board
                 .columns
                 .iter()
@@ -148,7 +149,7 @@ pub fn ClaimPanel(
         })
     });
     let whoami = use_context::<LocalResource<Result<crate::api::Whoami, ApiError>>>();
-    let holder = move || claim.with_value(|c| c.as_ref().map(|c| c.user_id.clone()));
+    let holder = Memo::new(move |_| claim.with(|c| c.as_ref().map(|c| c.user_id.clone())));
     let actions = Memo::new(move |_| {
         let Some(me) = whoami
             .and_then(|resource| resource.get())
@@ -162,14 +163,14 @@ pub fn ClaimPanel(
             }
             _ => false,
         };
-        claim_actions(&me.user.id, holder().as_deref(), can_move)
+        claim_actions(&me.user.id, holder.get().as_deref(), can_move)
     });
     view! {
         {move || shown.get().then(|| view! {
             <Panel title="Claim" caption="who works on the task">
                 <div class="kairos-item__claim" data-testid="claim-panel">
                     <Stack gap="sm">
-                        {match claim.with_value(|c| c.as_ref().map(claim_text)) {
+                        {move || match claim.with(|c| c.as_ref().map(claim_text)) {
                             Some(text) => view! {
                                 <Text size="sm" bright=true>{text}</Text>
                             }.into_any(),
@@ -177,10 +178,10 @@ pub fn ClaimPanel(
                                 <Text size="sm" dimmed=true>{NO_CLAIM}</Text>
                             }.into_any(),
                         }}
-                        {move || (actions.get() != ClaimActions::default() && !archived).then(|| view! {
+                        {move || (actions.get() != ClaimActions::default() && !archived.get()).then(|| view! {
                             <ClaimControls
                                 code=code.get_value()
-                                holder=holder().unwrap_or_default()
+                                holder=holder.get().unwrap_or_default()
                                 actions=actions.get()
                                 on_moved
                             />

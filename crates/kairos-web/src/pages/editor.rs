@@ -24,6 +24,10 @@
 //! the server opens the merge dialog and overwrites nothing. A save, Take
 //! theirs and Discard remove it; a logout removes each draft. While the
 //! draft is dirty, a `beforeunload` guard asks before the tab closes.
+//!
+//! The editor stays mounted when its page gets a new copy of the item
+//! (KAIROS-T-0618). The page gives the copy as the `server` signal, and
+//! [`server_change`] decides what the editor does with it.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -81,6 +85,53 @@ struct Draft {
     title: String,
     content: String,
     version: i32,
+}
+
+/// One copy of the content on the server: the title, the markdown and the
+/// version (KAIROS-T-0618).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServerCopy {
+    pub title: String,
+    pub content: String,
+    pub version: i32,
+}
+
+/// What the editor does with a new server copy (KAIROS-T-0618).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ServerChange {
+    /// The copy is not newer than the known copy.
+    Ignore,
+    /// The editor is clean: it shows the new copy, based on its version.
+    Adopt,
+    /// Only the version moved under the draft: the draft stays and is based
+    /// on the new version.
+    Rebase,
+    /// The text changed under the draft: the draft stays on its old base,
+    /// so a save opens the merge dialog and overwrites nothing.
+    Keep,
+}
+
+/// The rule for a new server copy. `known` is the last copy that the editor
+/// knows, `base_version` the version that the draft is based on. Pure,
+/// host-tested.
+fn server_change(
+    known: &ServerCopy,
+    incoming: &ServerCopy,
+    base_version: i32,
+    dirty: bool,
+) -> ServerChange {
+    if incoming.version <= known.version {
+        return ServerChange::Ignore;
+    }
+    if !dirty {
+        return ServerChange::Adopt;
+    }
+    let same_text = incoming.title == known.title && incoming.content == known.content;
+    if same_text && base_version == known.version {
+        ServerChange::Rebase
+    } else {
+        ServerChange::Keep
+    }
 }
 
 /// The draft to restore on mount: the stored one, when it reads and it
@@ -179,6 +230,12 @@ pub fn MarkdownEditor(
     /// read more than they change, such as the page of an item.
     #[prop(optional)]
     start_in_preview: bool,
+    /// The copy on the server as the page knows it (KAIROS-T-0618). The
+    /// page gives a new copy after a save or a panel action, and the
+    /// editor stays mounted: [`server_change`] decides. `None` for a page
+    /// that mounts the editor again for each copy.
+    #[prop(optional, into)]
+    server: Option<Signal<ServerCopy>>,
 ) -> impl IntoView {
     // KAIROS-T-0581: a stored draft of this item, when it differs from
     // the server copy.
@@ -206,7 +263,13 @@ pub fn MarkdownEditor(
     // every save; rebased by the merge dialog's outcomes). A restored
     // draft keeps its own base version.
     let base_version = RwSignal::new(draft_version);
-    let server_version = StoredValue::new(initial_version);
+    // The last server copy that the editor knows: the copy of the mount,
+    // a save, the merge dialog, or a copy from the page (KAIROS-T-0618).
+    let known = StoredValue::new(ServerCopy {
+        title: orig_title.get_untracked(),
+        content: orig_content.get_untracked(),
+        version: initial_version,
+    });
     let draft_key = StoredValue::new(draft_key);
     let saving = RwSignal::new(false);
     let error = RwSignal::new(None::<String>);
@@ -246,13 +309,42 @@ pub fn MarkdownEditor(
         }
     });
     on_cleanup(move || unload_guard.remove());
-    // Discard the restored draft: back to the server copy of the mount.
+    // Discard the restored draft: back to the last known server copy.
     let discard = Callback::new(move |_| {
-        title.set(orig_title.get_untracked());
-        content.set(orig_content.get_untracked());
-        base_version.set(server_version.get_value());
+        let copy = known.get_value();
+        title.set(copy.title.clone());
+        content.set(copy.content.clone());
+        orig_title.set(copy.title);
+        orig_content.set(copy.content);
+        base_version.set(copy.version);
         draft_restored.set(false);
     });
+    // KAIROS-T-0618: a new copy from the page. The editor stays mounted,
+    // so the draft and the read-only state stay as they are.
+    if let Some(server) = server {
+        Effect::new(move |_| {
+            let incoming = server.get();
+            let dirty_now = title.with_untracked(|t| orig_title.with_untracked(|o| t != o))
+                || content.with_untracked(|c| orig_content.with_untracked(|o| c != o));
+            let change = known.with_value(|known| {
+                server_change(known, &incoming, base_version.get_untracked(), dirty_now)
+            });
+            match change {
+                ServerChange::Ignore => return,
+                ServerChange::Adopt => {
+                    title.set(incoming.title.clone());
+                    content.set(incoming.content.clone());
+                    orig_title.set(incoming.title.clone());
+                    orig_content.set(incoming.content.clone());
+                    base_version.set(incoming.version);
+                    draft_restored.set(false);
+                }
+                ServerChange::Rebase => base_version.set(incoming.version),
+                ServerChange::Keep => {}
+            }
+            known.set_value(incoming);
+        });
+    }
 
     // One save routine; the merge dialog re-enters it with the rebased
     // version ("keep mine"). `new_local`: the saver is an `Rc` (wasm is
@@ -276,6 +368,11 @@ pub fn MarkdownEditor(
                     reference.set(None);
                     // The saved text is the new baseline: the stored
                     // draft goes (KAIROS-T-0581).
+                    known.set_value(ServerCopy {
+                        title: sent_title.clone(),
+                        content: sent_content.clone(),
+                        version: new_version,
+                    });
                     orig_title.set(sent_title);
                     orig_content.set(sent_content);
                     base_version.set(new_version);
@@ -305,8 +402,13 @@ pub fn MarkdownEditor(
             title.set(s.title.clone());
             content.set(s.content.clone());
             orig_title.set(s.title.clone());
-            orig_content.set(s.content);
+            orig_content.set(s.content.clone());
             base_version.set(s.version);
+            known.set_value(ServerCopy {
+                title: s.title,
+                content: s.content,
+                version: s.version,
+            });
         }
         draft_restored.set(false);
         conflict.set(None);
@@ -315,6 +417,11 @@ pub fn MarkdownEditor(
     let merge_manually = Callback::new(move |_| {
         if let Some(s) = conflict.get_untracked() {
             base_version.set(s.version);
+            known.set_value(ServerCopy {
+                title: s.title.clone(),
+                content: s.content.clone(),
+                version: s.version,
+            });
             reference.set(Some(s));
         }
         conflict.set(None);
@@ -587,6 +694,75 @@ mod tests {
         assert_eq!(draft_to_restore(stored.as_deref(), "t", "mine"), None);
         assert_eq!(draft_to_restore(Some("not json"), "t", "c"), None);
         assert_eq!(draft_to_restore(None, "t", "c"), None);
+    }
+
+    fn copy(title: &str, content: &str, version: i32) -> ServerCopy {
+        ServerCopy {
+            title: title.to_string(),
+            content: content.to_string(),
+            version,
+        }
+    }
+
+    /// KAIROS-T-0618: a copy that is not newer changes nothing. The page
+    /// gives the copy of a save after the editor knows it.
+    #[test]
+    fn an_older_or_equal_copy_is_ignored() {
+        let known = copy("t", "c", 4);
+        assert_eq!(
+            server_change(&known, &copy("t", "c", 4), 4, false),
+            ServerChange::Ignore
+        );
+        assert_eq!(
+            server_change(&known, &copy("t", "old", 3), 4, true),
+            ServerChange::Ignore
+        );
+    }
+
+    /// KAIROS-T-0618: a clean editor shows the new copy (a move gave a new
+    /// version, or someone else saved).
+    #[test]
+    fn a_clean_editor_takes_the_new_copy() {
+        let known = copy("t", "c", 4);
+        assert_eq!(
+            server_change(&known, &copy("t", "c", 5), 4, false),
+            ServerChange::Adopt
+        );
+        assert_eq!(
+            server_change(&known, &copy("t", "theirs", 5), 4, false),
+            ServerChange::Adopt
+        );
+    }
+
+    /// KAIROS-T-0618: a panel action moves the version and not the text.
+    /// The draft stays, and a save does not open the merge dialog.
+    #[test]
+    fn a_draft_moves_its_base_when_only_the_version_moved() {
+        let known = copy("t", "c", 4);
+        assert_eq!(
+            server_change(&known, &copy("t", "c", 5), 4, true),
+            ServerChange::Rebase
+        );
+    }
+
+    /// KAIROS-T-0618: the text changed under the draft, or the draft is
+    /// based on an older copy (a restored draft). The draft keeps its base:
+    /// a save opens the merge dialog and overwrites nothing.
+    #[test]
+    fn a_draft_keeps_its_base_when_the_text_changed() {
+        let known = copy("t", "c", 4);
+        assert_eq!(
+            server_change(&known, &copy("t", "theirs", 5), 4, true),
+            ServerChange::Keep
+        );
+        assert_eq!(
+            server_change(&known, &copy("new", "c", 5), 4, true),
+            ServerChange::Keep
+        );
+        assert_eq!(
+            server_change(&known, &copy("t", "c", 5), 2, true),
+            ServerChange::Keep
+        );
     }
 
     /// One key for each item, under the prefix that a logout clears.

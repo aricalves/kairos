@@ -75,6 +75,8 @@ test('a move with rename retires the old code, and its item page goes to the cur
     await page.goto(`/items/${oldCode}`);
     const mover = page.locator('[data-testid="move-board"]');
     await expect(mover).toBeVisible({ timeout: 15_000 });
+    // KAIROS-T-0618: the boards load when the control opens.
+    await mover.getByRole('button', { name: 'Move to another board' }).click();
     await mover.locator('select').selectOption(TARGET_SLUG);
     const rename = mover.getByRole('switch', { name: 'Give it a code of the new board' });
     await expect(rename).toHaveAttribute('aria-checked', 'false');
@@ -147,6 +149,7 @@ test('a document that moves to a new owner board with rename gets a code of that
     await page.goto(`/items/${oldCode}`);
     const control = page.locator('[data-testid="owner-board-control"]');
     await expect(control).toBeVisible({ timeout: 15_000 });
+    await control.getByRole('button', { name: 'Change owner board' }).click();
     await control.locator('select').selectOption(TARGET_SLUG);
     const rename = control.getByRole('switch', { name: 'Give it a code of the new board' });
     await expect(rename).toHaveAttribute('aria-checked', 'false');
