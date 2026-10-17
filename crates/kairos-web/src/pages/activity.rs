@@ -12,8 +12,9 @@
 //!   between two selected versions (the `similar` crate — pure Rust,
 //!   wasm-clean), and rollback via the A-0004 copy-forward flow: fetch the
 //!   old snapshot, save it as a NEW version through the standard
-//!   optimistic-concurrency PATCH (a 409 is surfaced and the list
-//!   refreshed, per the conventions' conflict handling).
+//!   optimistic-concurrency PATCH, based on the version that the page
+//!   loaded (KAIROS-T-0578; a 409 is surfaced and the list refreshed, per
+//!   the conventions' conflict handling).
 //!
 //! **Route contract for KAIROS-T-0041 (item detail's "history link"):**
 //! `/activity/history/{short_code}`.
@@ -851,11 +852,18 @@ pub fn ItemHistoryPage() -> impl IntoView {
         let Some(version) = rollback_target.get_untracked() else {
             return;
         };
+        // KAIROS-T-0578: the version of the item that the page shows.
+        let Some(loaded) = head.with_untracked(|head| match head {
+            Some(Ok((item, _))) => Some(item.version),
+            _ => None,
+        }) else {
+            return;
+        };
         let code = code.get_untracked();
         rollback_busy.set(true);
         notice.set(None);
         leptos::task::spawn_local(async move {
-            let outcome = rollback(auth, code, version).await;
+            let outcome = rollback(auth, code, version, loaded).await;
             rollback_busy.set(false);
             confirm_open.set(false);
             match outcome {
@@ -950,9 +958,9 @@ pub fn ItemHistoryPage() -> impl IntoView {
                     <Alert title="Version conflict (409)" color=token::GOLD>
                         <Text size="sm">
                             {format!(
-                                "A person saved a newer version during the rollback. {message} \
-                                 The list below has the new versions. Select a version and \
-                                 roll back again."
+                                "Someone saved a newer version after this page loaded. {message} \
+                                 Kairos did not roll back. The list below has the new versions. \
+                                 Read them, then roll back again if necessary."
                             )}
                         </Text>
                     </Alert>
@@ -1080,18 +1088,26 @@ pub fn ItemHistoryPage() -> impl IntoView {
 }
 
 /// The A-0004 copy-forward rollback: old snapshot → standard versioned
-/// PATCH (fresh `version` fetched immediately before; a concurrent edit in
-/// the gap still 409s and is surfaced to the caller).
-async fn rollback(auth: Auth, code: String, version: i32) -> Result<i32, ApiError> {
+/// PATCH. KAIROS-T-0578: the PATCH carries `loaded`, the version of the
+/// item that the page loaded, and not a version read just before. An edit
+/// after the page loaded thus gives a 409, which the page shows; before,
+/// the rollback overwrote it.
+async fn rollback(auth: Auth, code: String, version: i32, loaded: i32) -> Result<i32, ApiError> {
+    let family = family_of_short_code(&code).ok_or(ApiError::Network)?;
     let snapshot = fetch_snapshot(auth, code.clone(), version).await?;
-    let (current, family) = fetch_item_head(auth, code.clone()).await?;
-    let body = serde_json::json!({
-        "title": snapshot.title,
-        "content": snapshot.content,
-        "version": current.version,
-    });
+    let body = rollback_body(&snapshot, loaded);
     let updated: ItemHead = api::patch_json(auth, &format!("/api/{family}/{code}"), &body).await?;
     Ok(updated.version)
+}
+
+/// The body of the rollback PATCH: the old snapshot, based on the version
+/// that the page loaded (KAIROS-T-0578). Pure, host-tested.
+fn rollback_body(snapshot: &HistorySnapshot, loaded: i32) -> serde_json::Value {
+    serde_json::json!({
+        "title": snapshot.title,
+        "content": snapshot.content,
+        "version": loaded,
+    })
 }
 
 /// The version-list table: view / diff-select / rollback per row.
@@ -1186,6 +1202,20 @@ fn VersionsTable(
     }
 }
 
+/// The lines of one diff, each with its sign and its color. The history
+/// page and the merge dialog of the editor (KAIROS-T-0578) show a diff
+/// the same way.
+#[component]
+pub(crate) fn DiffLines(lines: Vec<DiffLine>) -> impl IntoView {
+    lines
+        .into_iter()
+        .map(|line| {
+            let style = diff_line_style(line.sign);
+            view! { <pre style=style>{format!("{} {}", line.sign, line.text)}</pre> }
+        })
+        .collect_view()
+}
+
 /// Rendered diff between the two selected versions.
 #[component]
 fn DiffPanel(view_model: DiffView) -> impl IntoView {
@@ -1195,15 +1225,7 @@ fn DiffPanel(view_model: DiffView) -> impl IntoView {
         title_lines,
         content_lines,
     } = view_model;
-    let render = |lines: Vec<DiffLine>| {
-        lines
-            .into_iter()
-            .map(|line| {
-                let style = diff_line_style(line.sign);
-                view! { <pre style=style>{format!("{} {}", line.sign, line.text)}</pre> }
-            })
-            .collect_view()
-    };
+    let render = |lines: Vec<DiffLine>| view! { <DiffLines lines/> };
     let changed = title_lines
         .iter()
         .chain(content_lines.iter())
@@ -1607,6 +1629,28 @@ mod tests {
         assert_eq!(
             actor_label(&members, "b7a7f5b6-83fb-46f6-a3ed-9a0d1a11e001"),
             "b7a7f5b6…"
+        );
+    }
+
+    /// KAIROS-T-0578: the rollback sends the version that the page loaded,
+    /// so an edit after the load gives a 409 and overwrites nothing.
+    #[test]
+    fn the_rollback_sends_the_loaded_version() {
+        let snapshot = HistorySnapshot {
+            version: 2,
+            title: "Old title".to_string(),
+            content: "Old content".to_string(),
+            edited_by: "u".to_string(),
+            edited_at: "2026-10-17T00:00:00Z".to_string(),
+            agent_key_id: None,
+        };
+        assert_eq!(
+            rollback_body(&snapshot, 5),
+            serde_json::json!({
+                "title": "Old title",
+                "content": "Old content",
+                "version": 5,
+            })
         );
     }
 }

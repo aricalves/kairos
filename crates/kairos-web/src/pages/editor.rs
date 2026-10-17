@@ -6,9 +6,14 @@
 //! forking the merge dialog.
 //!
 //! Save carries the version the edit was based on. A 409 opens the merge
-//! dialog — server-current vs. yours side by side — with three ways out,
-//! all of which carry the *new* version forward:
+//! dialog — a line diff of the server copy and yours, as the history page
+//! shows one (KAIROS-T-0578) — with four ways out, all of which carry the
+//! *new* version forward:
 //!
+//! - **Append my change after theirs** (KAIROS-T-0578): the lines that
+//!   your draft adds to its base go after the server text
+//!   ([`append_after_theirs`]). The result is your draft, based on the
+//!   server version; you read it and save it.
 //! - **Keep mine**: retry the save immediately, based on the server's
 //!   current version (overwrites their text with yours).
 //! - **Take theirs**: load the server-current title/content into the
@@ -34,13 +39,14 @@ use std::pin::Pin;
 use std::rc::Rc;
 
 use aurora_dark::components::{
-    ActionIcon, Alert, Button, Group, Panel, Pill, SegmentedControl, SimpleGrid, Text, TextInput,
+    ActionIcon, Alert, Button, Group, Panel, Pill, SegmentedControl, Stack, Text, TextInput,
 };
 use aurora_dark::frame::Modal;
 use aurora_dark::tokens::token;
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use super::activity::{DiffLines, diff_lines};
 use super::item::api::{CurrentVersion, SaveError};
 use super::item::markdown;
 
@@ -165,6 +171,66 @@ fn draft_to_store(
     .ok()
 }
 
+/// The text with a newline at its end, so that a line diff does not take
+/// the last line for a changed line only because one copy ends with a
+/// newline and the other does not.
+fn ended(text: &str) -> String {
+    if text.is_empty() || text.ends_with('\n') {
+        text.to_string()
+    } else {
+        format!("{text}\n")
+    }
+}
+
+/// The lines that `mine` adds to `base`, in their order (KAIROS-T-0578).
+/// Added lines that are apart in `mine` are apart here: a blank line goes
+/// between two blocks. Pure, host-tested.
+fn added_lines(base: &str, mine: &str) -> String {
+    let (base, mine) = (ended(base), ended(mine));
+    let mut blocks: Vec<String> = Vec::new();
+    let mut block = String::new();
+    for change in similar::TextDiff::from_lines(&base, &mine).iter_all_changes() {
+        if change.tag() == similar::ChangeTag::Insert {
+            block.push_str(change.value());
+        } else if change.tag() == similar::ChangeTag::Equal && !block.is_empty() {
+            blocks.push(std::mem::take(&mut block));
+        }
+    }
+    blocks.push(block);
+    blocks
+        .iter()
+        .map(|block| block.trim_end())
+        .filter(|block| !block.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// "Append my change after theirs" (KAIROS-T-0578): the title and the
+/// content of the new draft. The draft adds its lines (against its base)
+/// after the server text; a title that the draft changed wins over the
+/// server title. `None` when the draft adds nothing and keeps the title:
+/// there is nothing to append. Pure, host-tested.
+fn append_after_theirs(
+    base: (&str, &str),
+    mine: (&str, &str),
+    theirs: (&str, &str),
+) -> Option<(String, String)> {
+    let added = added_lines(base.1, mine.1);
+    let title_changed = mine.0 != base.0;
+    if added.is_empty() && !title_changed {
+        return None;
+    }
+    let title = if title_changed { mine.0 } else { theirs.0 };
+    let content = if added.is_empty() {
+        theirs.1.to_string()
+    } else if theirs.1.trim().is_empty() {
+        added
+    } else {
+        format!("{}\n\n{added}", theirs.1.trim_end())
+    };
+    Some((title.to_string(), content))
+}
+
 fn session_storage() -> Option<web_sys::Storage> {
     web_sys::window()?.session_storage().ok().flatten()
 }
@@ -277,6 +343,8 @@ pub fn MarkdownEditor(
     let conflict = RwSignal::new(None::<CurrentVersion>);
     // Some = manual merge in progress; the server copy stays visible.
     let reference = RwSignal::new(None::<CurrentVersion>);
+    // True after "Append my change after theirs", until the next save.
+    let appended = RwSignal::new(false);
 
     let textarea_ref = NodeRef::<leptos::html::Textarea>::new();
 
@@ -377,6 +445,7 @@ pub fn MarkdownEditor(
                     orig_content.set(sent_content);
                     base_version.set(new_version);
                     draft_restored.set(false);
+                    appended.set(false);
                     on_saved.run(new_version);
                 }
                 Err(SaveError::Conflict(current)) => conflict.set(Some(current)),
@@ -411,6 +480,42 @@ pub fn MarkdownEditor(
             });
         }
         draft_restored.set(false);
+        appended.set(false);
+        conflict.set(None);
+        reference.set(None);
+    });
+    // KAIROS-T-0578: the draft that "Append my change after theirs" makes,
+    // from the base of the draft, the draft, and the server copy.
+    let appended_draft = Memo::new(move |_| {
+        conflict.with(|server| {
+            server.as_ref().and_then(|server| {
+                append_after_theirs(
+                    (&orig_title.read(), &orig_content.read()),
+                    (&title.read(), &content.read()),
+                    (&server.title, &server.content),
+                )
+            })
+        })
+    });
+    let append_mine = Callback::new(move |_| {
+        let (Some(server), Some((new_title, new_content))) =
+            (conflict.get_untracked(), appended_draft.get_untracked())
+        else {
+            return;
+        };
+        title.set(new_title);
+        content.set(new_content);
+        orig_title.set(server.title.clone());
+        orig_content.set(server.content.clone());
+        base_version.set(server.version);
+        known.set_value(ServerCopy {
+            title: server.title,
+            content: server.content,
+            version: server.version,
+        });
+        mode.set("Edit".to_string());
+        draft_restored.set(false);
+        appended.set(true);
         conflict.set(None);
         reference.set(None);
     });
@@ -513,6 +618,16 @@ pub fn MarkdownEditor(
                     </div>
                 })}
 
+                {move || (appended.get() && dirty() && !read_only.get()).then(|| view! {
+                    <div data-testid="editor-appended">
+                        <Alert title="Your change is after their text" color=token::GOLD>
+                            <Text size="sm" dimmed=true>
+                                "Read the draft, then save it. Kairos saves nothing until you click Save."
+                            </Text>
+                        </Alert>
+                    </div>
+                })}
+
                 {move || error.get().map(|message| view! {
                     <Alert title="Save failed" color=token::BAD>
                         <Text size="sm" dimmed=true>{message}</Text>
@@ -600,48 +715,62 @@ pub fn MarkdownEditor(
                 </Button>
                 <Button variant="default" on_click=take_theirs>"Take theirs"</Button>
                 <Button variant="default" on_click=merge_manually>"Merge manually"</Button>
+                <Button
+                    variant="default"
+                    disabled=Signal::derive(move || appended_draft.with(Option::is_none))
+                    on_click=append_mine
+                >
+                    "Append my change after theirs"
+                </Button>
                 <Button loading=saving loading_label="Saving…" on_click=keep_mine>
                     "Keep mine (overwrite)"
                 </Button>
             }.into_any())
         >
-            {move || conflict.get().map(|server| view! {
-                <Group justify="between">
-                    <Text size="sm" dimmed=true>
-                        "Someone saved this content while you were editing. Nothing was overwritten — pick how to resolve; every path retries against the server's current version."
-                    </Text>
-                    <Pill color=token::BAD>
-                        {format!(
-                            "server is at v{} — you edited v{}",
-                            server.version,
-                            base_version.get_untracked(),
-                        )}
-                    </Pill>
-                </Group>
-                <SimpleGrid cols=2>
-                    <Panel
-                        title=format!("On the server — v{}", server.version)
-                        caption="theirs"
-                    >
-                        <Text size="sm" bright=true>{server.title.clone()}</Text>
-                        <textarea
-                            class="kairos-editor__textarea kairos-editor__textarea--pane"
-                            readonly=true
-                            prop:value=server.content.clone()
-                        ></textarea>
-                    </Panel>
-                    <Panel
-                        title=format!("Your edit — based on v{}", base_version.get_untracked())
-                        caption="yours"
-                    >
-                        <Text size="sm" bright=true>{title.get_untracked()}</Text>
-                        <textarea
-                            class="kairos-editor__textarea kairos-editor__textarea--pane"
-                            readonly=true
-                            prop:value=content.get_untracked()
-                        ></textarea>
-                    </Panel>
-                </SimpleGrid>
+            {move || conflict.get().map(|server| {
+                // KAIROS-T-0578: a line diff, as the history page shows one:
+                // "-" is only on the server, "+" is only in your edit.
+                let mine_title = title.get_untracked();
+                let title_lines = (server.title != mine_title)
+                    .then(|| diff_lines(&server.title, &mine_title));
+                let content_lines =
+                    diff_lines(&ended(&server.content), &ended(&content.get_untracked()));
+                let nothing_to_append = appended_draft.with_untracked(Option::is_none);
+                view! {
+                    <Stack gap="sm">
+                        <Group justify="between">
+                            <Text size="sm" dimmed=true>
+                                "Someone saved this content while you edited it. Kairos did not overwrite their change. Select how to continue."
+                            </Text>
+                            <Pill color=token::BAD>
+                                {format!(
+                                    "server is at v{} — you edited v{}",
+                                    server.version,
+                                    base_version.get_untracked(),
+                                )}
+                            </Pill>
+                        </Group>
+                        <Text size="xs" dimmed=true>
+                            "A line with a minus sign is only on the server. A line with a plus sign is only in your edit."
+                        </Text>
+                        {nothing_to_append.then(|| view! {
+                            <Text size="xs" dimmed=true>
+                                "Your edit adds no line, so there is nothing to append."
+                            </Text>
+                        })}
+                        <div class="kairos-editor__diff" data-testid="merge-diff"
+                            style="max-height:420px;overflow:auto;">
+                            <Stack gap="xs">
+                                {title_lines.map(|lines| view! {
+                                    <Text dimmed=true size="xs" bold=true>"Title"</Text>
+                                    <DiffLines lines/>
+                                })}
+                                <Text dimmed=true size="xs" bold=true>"Content"</Text>
+                                <DiffLines lines=content_lines/>
+                            </Stack>
+                        </div>
+                    </Stack>
+                }
             })}
         </Modal>
     }
@@ -770,5 +899,49 @@ mod tests {
     fn the_draft_key_names_the_item() {
         assert_eq!(draft_key("DEMO-T-0007"), "kairos-draft:DEMO-T-0007");
         assert!(draft_key("X-T-0001").starts_with(DRAFT_PREFIX));
+    }
+
+    /// KAIROS-T-0578: the lines that the draft adds, block by block; a
+    /// missing newline at the end is not a change.
+    #[test]
+    fn the_added_lines_of_a_draft() {
+        assert_eq!(added_lines("a\nb", "a\nb\nmine"), "mine");
+        assert_eq!(
+            added_lines("a\nb\n", "a\nmine 1\nb\nmine 2\n"),
+            "mine 1\n\nmine 2"
+        );
+        assert_eq!(added_lines("a\nb", "a\nb\n"), "");
+        assert_eq!(added_lines("a\nb", "a"), "");
+        assert_eq!(added_lines("a\nb", "a\nB"), "B");
+        assert_eq!(added_lines("", "mine"), "mine");
+    }
+
+    /// KAIROS-T-0578: "Append my change after theirs" keeps their note and
+    /// puts the lines of the draft after it.
+    #[test]
+    fn append_puts_my_change_after_theirs() {
+        let base = ("Title", "Intro.");
+        let theirs = ("Title", "Intro.\n\n## Note n-1\n\nTheir note.");
+        let mine = ("Title", "Intro.\nMy line.");
+        assert_eq!(
+            append_after_theirs(base, mine, theirs),
+            Some((
+                "Title".to_string(),
+                "Intro.\n\n## Note n-1\n\nTheir note.\n\nMy line.".to_string()
+            ))
+        );
+        // A new title of the draft wins; the content is theirs when the
+        // draft adds no line.
+        assert_eq!(
+            append_after_theirs(base, ("My title", "Intro."), theirs),
+            Some(("My title".to_string(), theirs.1.to_string()))
+        );
+        // The title of the server stays when the draft did not change it.
+        assert_eq!(
+            append_after_theirs(base, mine, ("Their title", "")),
+            Some(("Their title".to_string(), "My line.".to_string()))
+        );
+        // Nothing to append: the draft only removes lines.
+        assert_eq!(append_after_theirs(base, ("Title", ""), theirs), None);
     }
 }
