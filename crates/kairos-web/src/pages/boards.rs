@@ -669,36 +669,17 @@ fn lens_hides_request(request: &SentRequest, selected: &[String]) -> bool {
             .is_some_and(|slug| selected.contains(slug))
 }
 
-/// Apply one [`DropEffect`] and report through the standard board
-/// callbacks — the drop handler's mutation path (the keyboard-accessible
-/// path lives on the item detail page, KAIROS-T-0075). A diagonal drop is
-/// two sequential writes (transition, then lane); a failure after the
-/// first still refetches nothing stale — `on_error` surfaces it and the
-/// next WS event reconciles.
-fn run_drop(
-    auth: crate::auth::Auth,
+/// One drop of a card (KAIROS-T-0619): the card and what the drop does.
+/// [`LiveReads::run_drop`] runs it.
+#[derive(Clone, Debug, PartialEq)]
+struct CardDrop {
     kind: EntityKind,
-    code: String,
+    short_code: String,
     effect: DropEffect,
-    on_changed: Callback<()>,
-    on_error: Callback<ApiError>,
-) {
-    leptos::task::spawn_local(async move {
-        if let Some(column_id) = effect.transition_to
-            && let Err(error) = data::transition(auth, kind, &code, &column_id).await
-        {
-            on_error.run(error);
-            return;
-        }
-        if let Some(work_class) = effect.set_work_class
-            && let Err(error) = data::set_work_class(auth, &code, &work_class).await
-        {
-            on_error.run(error);
-            return;
-        }
-        on_changed.run(());
-    });
 }
+
+/// The toast of a drop of a card while its last drop runs.
+const DROP_BUSY: &str = "This card moves now. Wait for the move to end, then try again.";
 
 // ---------------------------------------------------------------------------
 // Board list
@@ -1348,6 +1329,8 @@ struct LiveReads {
     /// Bumped for a full read: re-runs the board resource.
     refresh: RwSignal<u64>,
     model: RwSignal<Option<data::BoardView>>,
+    /// The drops that run (KAIROS-T-0619): a read of their card waits.
+    drops: StoredValue<data::DropsInFlight>,
 }
 
 impl LiveReads {
@@ -1407,12 +1390,24 @@ impl LiveReads {
                         .iter()
                         .map(|code| data::load_board_card(auth, &board, code));
                     let pages = futures_util::future::join_all(reads).await;
+                    // KAIROS-T-0619: the read of a card with a drop that
+                    // runs waits for the end of the drop.
+                    let pages: Vec<_> = codes
+                        .iter()
+                        .zip(pages)
+                        .filter(|(code, _)| {
+                            !self
+                                .drops
+                                .try_update_value(|drops| drops.holds(code))
+                                .unwrap_or(false)
+                        })
+                        .collect();
                     let mut whole = false;
                     self.model.try_update(|model| match model.as_mut() {
                         // The page shows a different board now.
                         Some(view) if view.items.board.id != board => {}
                         Some(view) => {
-                            for (code, page) in codes.iter().zip(pages) {
+                            for (code, page) in pages {
                                 whole |= match page {
                                     Ok(page) => {
                                         view.items.patch_card(code, page) == data::Patched::Board
@@ -1431,6 +1426,66 @@ impl LiveReads {
                 });
             }
         }
+    }
+
+    /// Run one drop (KAIROS-T-0619). The card moves in the model at once;
+    /// then the transition and the lane write go to the server, one after
+    /// the other (no route does both). A refusal moves back what the
+    /// server did not take, and `on_error` shows the message of the
+    /// server. The board is not read again: the echo of the drop patches
+    /// the card. `false`: a drop of this card runs, and this drop does
+    /// not start.
+    fn run_drop(self, card_drop: CardDrop, on_error: Callback<ApiError>) -> bool {
+        let CardDrop {
+            kind,
+            short_code: code,
+            effect,
+        } = card_drop;
+        if !self
+            .drops
+            .try_update_value(|drops| drops.start(&code))
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        let end = DropEnd {
+            live: self,
+            code: code.clone(),
+        };
+        let mut undo = None;
+        self.model.try_update(|model| {
+            if let Some(view) = model.as_mut() {
+                undo = view.items.move_card(
+                    &code,
+                    effect.transition_to.as_deref(),
+                    effect.set_work_class.as_deref(),
+                );
+            }
+        });
+        let auth = self.auth;
+        leptos::task::spawn_local(async move {
+            let refused = |column: bool, error: ApiError| {
+                if let Some(undo) = undo.as_ref() {
+                    self.model.try_update(|model| {
+                        if let Some(view) = model.as_mut() {
+                            view.items.undo_move(undo, column, true);
+                        }
+                    });
+                }
+                on_error.run(error);
+            };
+            if let Some(column_id) = effect.transition_to.as_deref()
+                && let Err(error) = data::transition(auth, kind, &code, column_id).await
+            {
+                refused(true, error);
+            } else if let Some(work_class) = effect.set_work_class.as_deref()
+                && let Err(error) = data::set_work_class(auth, &code, work_class).await
+            {
+                refused(false, error);
+            }
+            drop(end);
+        });
+        true
     }
 
     /// A read ended: run the batch that waits, if any.
@@ -1452,6 +1507,27 @@ struct BatchEnd(LiveReads);
 impl Drop for BatchEnd {
     fn drop(&mut self) {
         self.0.finished();
+    }
+}
+
+/// The end of a drop (KAIROS-T-0619): on drop, also when the page stops
+/// the drop before its end. A read of the card that waited runs now.
+struct DropEnd {
+    live: LiveReads,
+    code: String,
+}
+
+impl Drop for DropEnd {
+    fn drop(&mut self) {
+        let waited = self
+            .live
+            .drops
+            .try_update_value(|drops| drops.end(&self.code))
+            .unwrap_or(false);
+        if waited {
+            self.live
+                .request(data::Refresh::Card(std::mem::take(&mut self.code)));
+        }
     }
 }
 
@@ -1504,6 +1580,7 @@ pub fn BoardPage() -> impl IntoView {
         queue: StoredValue::new(data::LiveQueue::default()),
         refresh,
         model,
+        drops: StoredValue::new(data::DropsInFlight::default()),
     };
     let board = LocalResource::new(move || {
         auth.track_session();
@@ -1526,6 +1603,12 @@ pub fn BoardPage() -> impl IntoView {
     });
     let on_changed = Callback::new(move |_: ()| {
         refetch();
+    });
+    // KAIROS-T-0619: a drop moves the card at once; the echo patches it.
+    let on_drop = Callback::new(move |card_drop: CardDrop| {
+        if !live.run_drop(card_drop, on_error) {
+            toaster.error(DROP_BUSY.to_string());
+        }
     });
 
     // The live subscription follows whichever board is loaded; the guard
@@ -1625,7 +1708,7 @@ pub fn BoardPage() -> impl IntoView {
             _ => None,
         }}
         {move || board_key.get().map(|_| view! {
-            <BoardBody model powers mode me on_changed on_error/>
+            <BoardBody model powers mode me on_changed on_drop/>
         })}
     }
 }
@@ -1652,7 +1735,8 @@ fn BoardBody(
     /// The user id of the reader, when `whoami` resolved (KAIROS-T-0416).
     me: Signal<Option<String>>,
     on_changed: Callback<()>,
-    on_error: Callback<ApiError>,
+    /// A drop of a card (KAIROS-T-0619).
+    on_drop: Callback<CardDrop>,
 ) -> impl IntoView {
     let auth = use_auth();
     // Identity fields are stable for this instance's lifetime (a board-id
@@ -2226,7 +2310,7 @@ fn BoardBody(
                     key=|lane: &OwnerLane| (lane.user_id.clone(), lane.mine)
                     children=move |lane: OwnerLane| {
                         view! {
-                            <OwnerLaneSection lane columns drag powers on_changed on_error/>
+                            <OwnerLaneSection lane columns drag powers on_drop/>
                         }
                     }
                 />
@@ -2242,7 +2326,7 @@ fn BoardBody(
                                 key=|lane: &LaneKey| lane.clone()
                                 children=move |lane: LaneKey| {
                                     view! {
-                                        <RepoLaneSection repo=lane columns drag powers on_changed on_error/>
+                                        <RepoLaneSection repo=lane columns drag powers on_drop/>
                                     }
                                 }
                             />
@@ -2251,9 +2335,9 @@ fn BoardBody(
                     } else {
                         view! {
                             <LaneSection lane=LANE_SUPPORT label="Support" caption="unplanned intake"
-                                color=token::GOLD columns drag powers on_changed on_error/>
+                                color=token::GOLD columns drag powers on_drop/>
                             <LaneSection lane=LANE_PLANNED label="Planned" caption="scheduled work"
-                                color=token::TEAL columns drag powers on_changed on_error/>
+                                color=token::TEAL columns drag powers on_drop/>
                         }.into_any()
                     }}
                 }
@@ -2263,7 +2347,7 @@ fn BoardBody(
                     {move || if group_by_owner.get() {
                         owner_view().into_any()
                     } else {
-                        view! { <LaneColumns lane=None group=GroupLane::Any columns drag powers on_changed on_error/> }
+                        view! { <LaneColumns lane=None group=GroupLane::Any columns drag powers on_drop/> }
                             .into_any()
                     }}
                 }
@@ -2406,8 +2490,7 @@ fn LaneSection(
     columns: Memo<Vec<ColumnModel>>,
     drag: RwSignal<Option<DragData>>,
     powers: Signal<BoardPowers>,
-    on_changed: Callback<()>,
-    on_error: Callback<ApiError>,
+    on_drop: Callback<CardDrop>,
 ) -> impl IntoView {
     let count = Memo::new(move |_| {
         columns.with(|columns| {
@@ -2442,7 +2525,7 @@ fn LaneSection(
                 view! { <LaneSummary lane=Some(lane) group=GroupLane::Any columns/> }.into_any()
             } else {
                 view! {
-                    <LaneColumns lane=Some(lane) group=GroupLane::Any columns drag powers on_changed on_error/>
+                    <LaneColumns lane=Some(lane) group=GroupLane::Any columns drag powers on_drop/>
                 }.into_any()
             }}
         </section>
@@ -2895,8 +2978,7 @@ fn OwnerLaneSection(
     columns: Memo<Vec<ColumnModel>>,
     drag: RwSignal<Option<DragData>>,
     powers: Signal<BoardPowers>,
-    on_changed: Callback<()>,
-    on_error: Callback<ApiError>,
+    on_drop: Callback<CardDrop>,
 ) -> impl IntoView {
     let group = GroupLane::Owner(lane.user_id.clone());
     let count_group = group.clone();
@@ -2941,7 +3023,7 @@ fn OwnerLaneSection(
                 view! { <LaneSummary lane=None group=group.get_value() columns/> }.into_any()
             } else {
                 view! {
-                    <LaneColumns lane=None group=group.get_value() columns drag powers on_changed on_error/>
+                    <LaneColumns lane=None group=group.get_value() columns drag powers on_drop/>
                 }.into_any()
             }}
         </section>
@@ -2957,8 +3039,7 @@ fn RepoLaneSection(
     columns: Memo<Vec<ColumnModel>>,
     drag: RwSignal<Option<DragData>>,
     powers: Signal<BoardPowers>,
-    on_changed: Callback<()>,
-    on_error: Callback<ApiError>,
+    on_drop: Callback<CardDrop>,
 ) -> impl IntoView {
     let lane = match &repo {
         Some(slug) => GroupLane::Slug(slug.clone()),
@@ -2999,7 +3080,7 @@ fn RepoLaneSection(
                 view! { <LaneSummary lane=None group=lane.get_value() columns/> }.into_any()
             } else {
                 view! {
-                    <LaneColumns lane=None group=lane.get_value() columns drag powers on_changed on_error/>
+                    <LaneColumns lane=None group=lane.get_value() columns drag powers on_drop/>
                 }.into_any()
             }}
         </section>
@@ -3078,10 +3159,8 @@ fn LaneColumns(
     columns: Memo<Vec<ColumnModel>>,
     drag: RwSignal<Option<DragData>>,
     powers: Signal<BoardPowers>,
-    on_changed: Callback<()>,
-    on_error: Callback<ApiError>,
+    on_drop: Callback<CardDrop>,
 ) -> impl IntoView {
-    let auth = use_auth();
     let group = StoredValue::new(group);
     // KAIROS-T-0582: this lane shows the WIP chips when it is the lane of
     // [`WipLane`], or when there is no such lane.
@@ -3192,7 +3271,11 @@ fn LaneColumns(
                                 else {
                                     return;
                                 };
-                                run_drop(auth, data.kind, data.short_code, effect, on_changed, on_error);
+                                on_drop.run(CardDrop {
+                                    kind: data.kind,
+                                    short_code: data.short_code,
+                                    effect,
+                                });
                             }
                         >
                             <header class="kairos-board__column-head">

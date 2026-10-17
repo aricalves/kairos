@@ -212,6 +212,29 @@ pub struct Auth {
     /// live session refreshes its token. Resources track this, so the
     /// silent refresh before expiry does not refetch every panel.
     session_generation: RwSignal<u64>,
+    /// KAIROS-T-0622: the whoami body of the session probe, with the
+    /// session generation that it belongs to. The shell takes it as its
+    /// first whoami value, so a reload does not ask whoami twice.
+    whoami_seed: StoredValue<Option<WhoamiSeed>>,
+}
+
+/// The whoami answer of the session probe, for the session generation
+/// that the probe started (KAIROS-T-0622).
+type WhoamiSeed = (u64, crate::api::Whoami);
+
+/// Take the seed when it belongs to the `current` session generation. A
+/// seed is read once (a retry asks the server), a seed of an older session
+/// goes unread, and a seed of a session that has not started yet stays.
+/// Pure, host-tested.
+fn take_seed<T>(seed: &mut Option<(u64, T)>, current: u64) -> Option<T> {
+    match seed.take() {
+        Some((generation, value)) if generation == current => Some(value),
+        Some((generation, value)) if generation > current => {
+            *seed = Some((generation, value));
+            None
+        }
+        _ => None,
+    }
 }
 
 /// Create the auth state and put it into context. Call once, in `App`.
@@ -229,6 +252,7 @@ pub fn provide_auth() -> Auth {
         restoring: RwSignal::new(true),
         generation: StoredValue::new(0),
         session_generation: RwSignal::new(0),
+        whoami_seed: StoredValue::new(None),
     };
     provide_context(auth);
     leptos::task::spawn_local(async move { restore_session(auth).await });
@@ -247,8 +271,10 @@ async fn restore_session(auth: Auth) {
     if let Some(refresh_token) = stored {
         auth.refresh_with(&refresh_token).await;
     }
-    if !auth.session.with_untracked(Option::is_some) && cookie_session_is_live().await {
-        auth.install_cookie_session();
+    if !auth.session.with_untracked(Option::is_some)
+        && let Some(whoami) = probe_cookie_session().await
+    {
+        auth.install_cookie_session(whoami);
     }
     auth.restoring.set(false);
 }
@@ -257,11 +283,16 @@ async fn restore_session(auth: Auth) {
 /// browser hold the HttpOnly session cookie of a password login? Ask
 /// `whoami` with NO `Authorization` header; the browser sends the cookie
 /// (same origin). The page never reads the cookie — it cannot.
-async fn cookie_session_is_live() -> bool {
-    gloo_net::http::Request::get("/api/whoami")
+///
+/// `None`: no live session. `Some(body)`: a live session, and the whoami
+/// body when it parses (KAIROS-T-0622: the shell's first whoami value).
+async fn probe_cookie_session() -> Option<Option<crate::api::Whoami>> {
+    let response = gloo_net::http::Request::get("/api/whoami")
         .send()
         .await
-        .is_ok_and(|response| response.ok())
+        .ok()
+        .filter(gloo_net::http::Response::ok)?;
+    Some(response.json::<crate::api::Whoami>().await.ok())
 }
 
 /// `POST /api/logout`: end the password session on the server and clear
@@ -295,6 +326,21 @@ impl Auth {
 
     fn bump_session_generation(&self) {
         self.session_generation.update(|g| *g += 1);
+    }
+
+    /// Is there a session, outside a reactive context?
+    pub fn has_session_untracked(&self) -> bool {
+        self.session.with_untracked(Option::is_some)
+    }
+
+    /// The whoami body of the session probe, once, when it belongs to the
+    /// current session (KAIROS-T-0622). Untracked.
+    pub fn take_whoami_seed(&self) -> Option<crate::api::Whoami> {
+        let current = self.session_generation.get_untracked();
+        let mut seed = None;
+        self.whoami_seed
+            .update_value(|stored| seed = take_seed(stored, current));
+        seed
     }
 
     /// Current bearer token (reactive).
@@ -345,6 +391,7 @@ impl Auth {
         // KAIROS-T-0581: the next person in this tab sees no draft.
         crate::pages::editor::clear_drafts();
         self.signed_out.set(true);
+        self.whoami_seed.set_value(None);
         self.session.set(None);
         self.bump_session_generation();
     }
@@ -352,8 +399,15 @@ impl Auth {
     /// A session whose credential is the HttpOnly cookie (KAIROS-T-0327):
     /// no token in memory, so each request goes without `Authorization` and
     /// the browser sends the cookie. Nothing to refresh.
-    fn install_cookie_session(&self) {
+    ///
+    /// `whoami` is the body of the probe that found the session
+    /// (KAIROS-T-0622): it is kept for the session generation that starts
+    /// here, before the bump that makes the shell read it.
+    fn install_cookie_session(&self, whoami: Option<crate::api::Whoami>) {
         self.generation.update_value(|g| *g += 1);
+        let next = self.session_generation.get_untracked() + 1;
+        self.whoami_seed
+            .set_value(whoami.map(|whoami| (next, whoami)));
         self.signed_out.set(false);
         self.session.set(Some(Session {
             access_token: String::new(),
@@ -370,6 +424,7 @@ impl Auth {
     pub fn expire(&self) {
         self.generation.update_value(|g| *g += 1);
         clear_stored_refresh();
+        self.whoami_seed.set_value(None);
         self.session.set(None);
         self.bump_session_generation();
     }
@@ -879,8 +934,39 @@ fn form_component(value: &str) -> String {
 mod tests {
     use super::{
         ApiBearer, AuthConfig, TokenResponse, base64url, form_component, form_encode,
-        is_pages_path, pages_next,
+        is_pages_path, pages_next, take_seed,
     };
+
+    /// KAIROS-T-0622: the probe's whoami body is the first value of the
+    /// session that it started, read once, and never the value of a later
+    /// session.
+    #[test]
+    fn the_whoami_seed_is_read_once_and_only_for_its_session() {
+        let mut seed = Some((1, "alice"));
+        assert_eq!(take_seed(&mut seed, 1), Some("alice"));
+        assert_eq!(seed, None, "read once");
+        assert_eq!(take_seed(&mut seed, 1), None, "a retry asks the server");
+
+        let mut stale = Some((1, "alice"));
+        assert_eq!(
+            take_seed(&mut stale, 3),
+            None,
+            "a later session asks the server"
+        );
+        assert_eq!(stale, None, "the stale seed goes");
+
+        let mut early = Some((2, "alice"));
+        assert_eq!(
+            take_seed(&mut early, 1),
+            None,
+            "not before its session starts"
+        );
+        assert_eq!(
+            take_seed(&mut early, 2),
+            Some("alice"),
+            "but when it starts"
+        );
+    }
 
     /// KAIROS-T-0403: the login page takes only a path of the docs sites.
     #[test]
