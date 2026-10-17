@@ -525,9 +525,10 @@ const ITEM_COLUMNS_SQL: &str = "SELECT id, column_id FROM strategies \
      UNION ALL SELECT id, column_id FROM tasks \
      UNION ALL SELECT id, column_id FROM adrs";
 
-/// One direction of [`relationships_for`]: edges where `item_id` sits in
-/// `own_column`, hydrating the OTHER end (`other_column`) through
-/// `entity_directory`. Each query is backed by the matching S-0004 index
+/// Both directions of [`relationships_for`] in one statement
+/// (KAIROS-T-0626): the edges where `item_id` is the source and the edges
+/// where it is the target, hydrating the OTHER end through
+/// `entity_directory`. Each branch is backed by the matching S-0004 index
 /// (`idx_item_relationships_source` / `idx_item_relationships_target`).
 ///
 /// **Archived-inclusive, marked** (KAIROS-T-0158). This join deliberately
@@ -545,31 +546,54 @@ const ITEM_COLUMNS_SQL: &str = "SELECT id, column_id FROM strategies \
 /// [`Neighbor::done`], in this same query. The row is never dropped for
 /// it: a completed blocker is still part of the record, it has only
 /// stopped being in the way.
-fn neighbors_of(
-    conn: &mut PgConnection,
-    item_id: Uuid,
-    own_column: &str,
-    other_column: &str,
-) -> Result<Vec<Neighbor>, GraphError> {
-    let rows: Vec<NeighborRow> = sql_query(format!(
-        "SELECT r.relationship, d.id, d.short_code, d.entity_type, d.title, d.deleted_at, \
+fn neighbors_of(conn: &mut PgConnection, item_id: Uuid) -> Result<ItemRelationships, GraphError> {
+    // KAIROS-T-0626: both directions in one statement. Each branch of the
+    // UNION ALL keeps its own index (`source_id = $1`, `target_id = $1`).
+    let rows: Vec<DirectedNeighborRow> = sql_query(format!(
+        "SELECT r.outgoing, r.relationship, d.id, d.short_code, d.entity_type, d.title, \
+                d.deleted_at, \
                 COALESCE(bc.is_done, false) AS done, \
                 EXISTS (SELECT 1 FROM task_cancellations k WHERE k.task_id = d.id) AS cancelled \
-         FROM item_relationships r \
-         JOIN entity_directory d ON d.id = r.{other_column} \
+         FROM (SELECT true AS outgoing, relationship, target_id AS other_id, created_at \
+                 FROM item_relationships WHERE source_id = $1 \
+               UNION ALL \
+               SELECT false, relationship, source_id, created_at \
+                 FROM item_relationships WHERE target_id = $1) r \
+         JOIN entity_directory d ON d.id = r.other_id \
          LEFT JOIN ({ITEM_COLUMNS_SQL}) p ON p.id = d.id \
          LEFT JOIN board_columns bc ON bc.id = p.column_id \
-         WHERE r.{own_column} = $1 \
-         ORDER BY r.relationship ASC, r.created_at ASC, d.short_code ASC"
+         ORDER BY r.outgoing DESC, r.relationship ASC, r.created_at ASC, d.short_code ASC"
     ))
     .bind::<SqlUuid, _>(item_id)
     .load(conn)?;
-    rows.into_iter().map(NeighborRow::into_neighbor).collect()
+    let mut relationships = ItemRelationships {
+        outgoing: Vec::new(),
+        incoming: Vec::new(),
+    };
+    for row in rows {
+        let neighbor = row.row.into_neighbor()?;
+        if row.outgoing {
+            relationships.outgoing.push(neighbor);
+        } else {
+            relationships.incoming.push(neighbor);
+        }
+    }
+    Ok(relationships)
+}
+
+/// A row of [`neighbors_of`]: the direction of the edge and the neighbour.
+#[derive(QueryableByName)]
+struct DirectedNeighborRow {
+    /// True when the item is the source of the edge.
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    outgoing: bool,
+    #[diesel(embed)]
+    row: NeighborRow,
 }
 
 /// Every relationship touching `item_id`, in BOTH directions, grouped by
-/// relationship type (see [`ItemRelationships`] for orientation). Two
-/// indexed lookups: `source_id = item` uses
+/// relationship type (see [`ItemRelationships`] for orientation). One
+/// statement with two indexed branches: `source_id = item` uses
 /// `idx_item_relationships_source(source_id, relationship)` and
 /// `target_id = item` uses `idx_item_relationships_target(target_id,
 /// relationship)` (S-0004). The item itself is not required to exist — an
@@ -584,10 +608,7 @@ pub fn relationships_for(
     conn: &mut PgConnection,
     item_id: Uuid,
 ) -> Result<ItemRelationships, GraphError> {
-    Ok(ItemRelationships {
-        outgoing: neighbors_of(conn, item_id, "source_id", "target_id")?,
-        incoming: neighbors_of(conn, item_id, "target_id", "source_id")?,
-    })
+    neighbors_of(conn, item_id)
 }
 
 // ---------------------------------------------------------------------------

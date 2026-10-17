@@ -153,6 +153,13 @@ pub fn state_line(conn: &mut PgConnection, task_id: Uuid) -> Result<String, ApiE
     })
 }
 
+/// [`state_line`] from a state that was read already (KAIROS-T-0626), with
+/// the name of who wrote it.
+pub fn state_line_of(state: &TaskState, updated_by_name: &str, now: DateTime<Utc>) -> String {
+    let names = HashMap::from([(state.updated_by, updated_by_name.to_string())]);
+    format!("- state: {}\n", state_text(&state_dto(state, &names), now))
+}
+
 /// The text of a state: the fields that have a value, then the next step,
 /// then who wrote it when.
 pub fn state_text(state: &dto::TaskState, now: DateTime<Utc>) -> String {

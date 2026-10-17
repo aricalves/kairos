@@ -9,6 +9,11 @@
 //! field sends `null` (the A-0003 "null clears" contract); saving PATCHes
 //! only the fields that changed. Metadata is not versioned (A-0004):
 //! last-write-wins, no conflict UI here.
+//!
+//! KAIROS-T-0581: a person who may not edit sees the values read-only,
+//! with the reason ([`super::access`]). A value with no definition in
+//! scope shows read-only too, so no value disappears. The text for no
+//! definition follows the role: only an org admin can add one.
 
 use std::collections::BTreeMap;
 
@@ -18,6 +23,7 @@ use aurora_dark::components::{
 use aurora_dark::tokens::token;
 use leptos::prelude::*;
 
+use super::access;
 use super::api::{self, Family, MetadataDefinition, MetadataValue};
 use crate::auth::use_auth;
 
@@ -40,11 +46,23 @@ pub fn MetadataPanel(
     /// shown — they are part of what the record said, and KAIROS-T-0152's
     /// `DEFINITION_IN_USE` refusal sends admins here to read them — but
     /// the metadata PATCH resolves live-only, so the editors are disabled
-    /// rather than left to fail.
-    #[prop(optional)]
-    read_only: bool,
+    /// rather than left to fail. KAIROS-T-0581: also when the person may
+    /// not edit the item; a signal, because whoami resolves later.
+    #[prop(into)]
+    read_only: Signal<bool>,
+    /// Why the values are read-only; empty while the page does not know.
+    #[prop(into)]
+    read_only_reason: Signal<String>,
 ) -> impl IntoView {
     let auth = use_auth();
+    let whoami =
+        use_context::<LocalResource<Result<crate::api::Whoami, aurora_dark::tokens::ApiError>>>();
+    let is_admin = Signal::derive(move || {
+        whoami
+            .and_then(|resource| resource.get())
+            .and_then(Result::ok)
+            .is_some_and(|me| me.organization.role == "admin")
+    });
     let code = StoredValue::new(code);
     let reload = RwSignal::new(0u32);
 
@@ -64,9 +82,15 @@ pub fn MetadataPanel(
             {move || match data.get() {
                 None => view! { <Loading label="Loading metadata…"/> }.into_any(),
                 Some(Err(error)) => view! { <ErrorState error on_retry=retry/> }.into_any(),
-                Some(Ok((definitions, _))) if definitions.is_empty() => view! {
-                    <Empty message="No metadata definitions yet — add them from Admin."/>
-                }.into_any(),
+                Some(Ok((definitions, values))) if definitions.is_empty() => {
+                    let orphans = access::orphan_values(&definitions, &values);
+                    view! {
+                        <span data-testid="metadata-no-definitions">
+                            <Empty message=access::no_definitions_text(is_admin.get())/>
+                        </span>
+                        <OrphanValues orphans/>
+                    }.into_any()
+                }
                 Some(Ok((definitions, values))) => view! {
                     <MetadataForm
                         family
@@ -74,6 +98,7 @@ pub fn MetadataPanel(
                         definitions
                         values
                         read_only
+                        read_only_reason
                         on_saved=Callback::new(move |_| reload.update(|n| *n += 1))
                     />
                 }.into_any(),
@@ -94,10 +119,15 @@ fn MetadataForm(
     #[prop(into)] code: String,
     definitions: Vec<MetadataDefinition>,
     values: Vec<MetadataValue>,
-    /// Show the values, refuse the writes (KAIROS-T-0164).
-    read_only: bool,
+    /// Show the values, refuse the writes (KAIROS-T-0164, KAIROS-T-0581).
+    read_only: Signal<bool>,
+    /// Why the values are read-only.
+    read_only_reason: Signal<String>,
     on_saved: Callback<()>,
 ) -> impl IntoView {
+    // KAIROS-T-0581: the values with no definition in scope; read-only.
+    let orphans = access::orphan_values(&definitions, &values);
+    let has_orphans = !orphans.is_empty();
     let auth = use_auth();
     let code = StoredValue::new(code);
     let saving = RwSignal::new(false);
@@ -213,10 +243,10 @@ fn MetadataForm(
                         .cloned()
                         .collect()
                 });
-                if current.is_empty() {
+                if current.is_empty() && !has_orphans {
                     view! {
                         <Text size="sm" dimmed=true>
-                            "No metadata on this item — its template declared none. Add a field below if one applies."
+                            {access::no_values_text(read_only.get())}
                         </Text>
                     }.into_any()
                 } else {
@@ -227,7 +257,8 @@ fn MetadataForm(
                         .into_any()
                 }
             }}
-            {(!read_only).then(|| view! {{move || {
+            <OrphanValues orphans=orphans.clone()/>
+            {move || (!read_only.get()).then(|| view! {{move || {
                 let shown = visible.get();
                 let available: Vec<String> = all_rows.with_value(|rows| {
                     rows.iter()
@@ -244,17 +275,14 @@ fn MetadataForm(
                 })
             }}})}
             <Group justify="between">
-                <Text size="xs" dimmed=true>
-                    {if read_only {
-                        "Read-only: this item is put away (archived). Restore it to change \
-                         its fields."
-                    } else {
-                        "Blank clears a field. Last write wins (not versioned)."
-                    }}
-                </Text>
+                <span data-testid="metadata-read-only-reason">
+                    <Text size="xs" dimmed=true>
+                        {move || metadata_hint(read_only.get(), read_only_reason.get())}
+                    </Text>
+                </span>
                 <Button
                     size="xs"
-                    disabled=move || read_only || !dirty()
+                    disabled=move || read_only.get() || !dirty()
                     loading=saving
                     loading_label="Saving…"
                     on_click=Callback::new(save)
@@ -266,11 +294,47 @@ fn MetadataForm(
     }
 }
 
+/// The line under the editors: the reason while read-only, else the rules
+/// of a save. Pure, host-tested.
+fn metadata_hint(read_only: bool, reason: String) -> String {
+    if !read_only {
+        "Blank clears a field. Last write wins (not versioned).".to_string()
+    } else {
+        reason
+    }
+}
+
+/// The values with no definition in scope (KAIROS-T-0581): the slug and
+/// the value, read-only. Nothing renders when there is none.
+#[component]
+fn OrphanValues(orphans: Vec<MetadataValue>) -> impl IntoView {
+    (!orphans.is_empty()).then(|| {
+        view! {
+            <div class="kairos-metadata__orphans" data-testid="metadata-orphans">
+                <Text size="xs" dimmed=true>
+                    "These values have no definition for this item type. They are read-only."
+                </Text>
+                {orphans.into_iter().map(|MetadataValue { slug, value }| {
+                    let label = slug.clone();
+                    view! {
+                        <div class="kairos-metadata__field" data-slug=slug>
+                            <span class="kairos-metadata__type">
+                                <Pill color=token::GOLD>"no definition"</Pill>
+                            </span>
+                            <TextInput label value=RwSignal::new(value) disabled=true/>
+                        </div>
+                    }
+                }).collect_view()}
+            </div>
+        }
+    })
+}
+
 /// One typed editor row: label + the editor its `field_type` calls for.
 /// `read_only` disables the control itself (KAIROS-T-0164) — a field that
 /// accepts typing and then cannot save is worse than one that says no.
 #[component]
-fn FieldEditor(row: FieldRow, read_only: bool) -> impl IntoView {
+fn FieldEditor(row: FieldRow, read_only: Signal<bool>) -> impl IntoView {
     let FieldRow {
         definition, draft, ..
     } = row;
@@ -315,5 +379,20 @@ fn FieldEditor(row: FieldRow, read_only: bool) -> impl IntoView {
             </span>
             {editor}
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// KAIROS-T-0581: read-only shows the reason; else the save rules.
+    #[test]
+    fn the_hint_is_the_reason_while_read_only() {
+        assert_eq!(
+            metadata_hint(true, "You cannot edit this item.".to_string()),
+            "You cannot edit this item."
+        );
+        assert!(metadata_hint(false, "ignored".to_string()).starts_with("Blank clears"));
     }
 }

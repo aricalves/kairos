@@ -189,6 +189,12 @@ restore do not accept: they need a grant, as above.
 [Capabilities](../../reference/capabilities/#the-edit-rule) has the list against
 the routes.
 
+The item page of the web GUI follows the edit rule. A person who may not edit
+the item sees its content and its metadata read-only. A line names the facts of
+the rule that the person does not have. Archive shows only to a person who may
+archive the item. An unsaved draft stays in the browser tab until a save or a
+discard.
+
 **What does not count is movement**, and this is the half to remember. Moving
 an item between columns, changing its lane, and moving it to another board all
 still require the capability on the board, and having created the item buys
