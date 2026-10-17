@@ -8,7 +8,8 @@
 //   1. carol sees the content read-only, with the reason; no Edit tab, no
 //      Archive, Save and Save metadata disabled, with the reason
 //   2. alice sees Archive, and types a draft
-//   3. a panel action (Set lane) reloads the page; the draft stays
+//   3. a panel action (Set lane) keeps the page mounted (KAIROS-T-0618);
+//      the draft stays
 //   4. a reload of the tab restores the draft; Discard draft drops it
 //   5. a save removes the stored draft: the next reload shows no draft
 //
@@ -83,7 +84,7 @@ test('the item page is read-only with a reason, and a draft survives', async ({ 
     await textarea(alice).fill(mine);
   });
 
-  await test.step('a panel action reloads the page, and the draft stays', async () => {
+  await test.step('a panel action keeps the page mounted, and the draft stays', async () => {
     const boardPanel = alice.locator('.cl-panel', {
       has: alice.locator('.cl-panel__title', { hasText: 'Board' }),
     });
@@ -94,7 +95,8 @@ test('the item page is read-only with a reason, and a draft survives', async ({ 
     await boardPanel.getByRole('button', { name: 'Set lane', exact: true }).click();
     await expect(alice.locator('.cl-toast', { hasText: 'Lane set to support.' })).toBeVisible();
     await expect(textarea(alice)).toHaveValue(mine);
-    await expect(alice.getByTestId('editor-draft-restored')).toBeVisible();
+    // KAIROS-T-0618: the editor did not mount again, so it restored nothing.
+    await expect(alice.getByTestId('editor-draft-restored')).toHaveCount(0);
   });
 
   await test.step('a reload restores the draft; Discard draft drops it', async () => {

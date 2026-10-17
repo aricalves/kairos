@@ -224,6 +224,9 @@ test('the vision of a repository: owner board, impacts link, repository pages', 
     await page.goto(`/items/${code}`);
     const impacts = page.locator('[data-testid="impacts"]');
     const add = impacts.locator('[data-testid="impacts-add"]');
+    // KAIROS-T-0618: the repositories load when the control opens.
+    await add.getByRole('button', { name: 'Add a repository' }).click();
+    await expect(add.locator('select')).toBeVisible();
     // The picker offers the repositories that the document does not
     // impact now.
     await expect(
@@ -352,6 +355,8 @@ test('each document has an owner board, and the last supports edge can go', asyn
     await expect(owner).toContainText(board.name);
     await expect(owner.getByRole('button', { name: 'Remove owner board' })).toHaveCount(0);
     const control = owner.locator('[data-testid="owner-board-control"]');
+    // KAIROS-T-0618: the boards load when the control opens.
+    await control.getByRole('button', { name: 'Change owner board' }).click();
     await control.locator('select').selectOption('web-delivery');
     await control.getByRole('button', { name: 'Set owner board' }).click();
     await expect(owner.locator('a[href="/boards/web-delivery"]')).toBeVisible();

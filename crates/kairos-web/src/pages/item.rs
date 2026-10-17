@@ -23,7 +23,10 @@
 //!   KAIROS-T-0369);
 //! - who may edit ([`access`], KAIROS-T-0581): the editor and the metadata
 //!   panel are read-only, with the reason, for a person who may not edit;
-//!   Archive shows only to a person who may archive.
+//!   Archive shows only to a person who may archive;
+//! - the page stays mounted on a save and a panel action (KAIROS-T-0618):
+//!   the new item goes into a signal, and no panel reads again. The lists
+//!   of repositories and boards load when their control opens ([`picker`]).
 
 mod access;
 pub(crate) mod api;
@@ -37,6 +40,7 @@ mod item_owner;
 pub(crate) use kairos_markdown as markdown;
 mod metadata;
 mod owner;
+mod picker;
 mod state;
 mod teams;
 
@@ -53,6 +57,7 @@ use leptos_router::hooks::use_params_map;
 
 use super::boards;
 use super::copy_link;
+use super::editor::ServerCopy;
 use super::repositories;
 use crate::auth::use_auth;
 use api::{Family, ItemDetail, RelationshipGroup};
@@ -65,6 +70,7 @@ use external::ExternalRefsPanel;
 use item_owner::OwnerPanel;
 use metadata::MetadataPanel;
 use owner::{ImpactsPanel, OwnerBoardPanel};
+use picker::{Picker, load_on_open, picker_state};
 use state::StatePanel;
 use teams::TeamsPanel;
 // The dialog of a repository gives a document to a board with the rule of
@@ -167,16 +173,16 @@ pub fn ItemPage() -> impl IntoView {
     }
 }
 
-/// The detail resource + the four async view states. `reload` is the
-/// refetch handle mutations bump (server state is the source of truth).
+/// The first read of the item, and the four async view states. The read
+/// runs again only on Retry or for a new session (KAIROS-T-0618): a save or
+/// a panel action gives [`ItemLoaded`] the new item, and the page stays
+/// mounted. A new code (a board move with a rename) is a new route, so a
+/// new page.
 #[component]
 fn ItemDetailView(family: Family, #[prop(into)] code: String) -> impl IntoView {
     let auth = use_auth();
     let code = StoredValue::new(code);
     let reload = RwSignal::new(0u32);
-    // Page-level transient notice (COLLIERY-T-1836: an Aurora toast, so it
-    // survives the refetch that recreates the loaded subtree).
-    let toaster = use_toaster();
 
     let detail = LocalResource::new(move || {
         auth.track_session();
@@ -203,52 +209,48 @@ fn ItemDetailView(family: Family, #[prop(into)] code: String) -> impl IntoView {
             }
         }
     });
-    let on_saved = Callback::new(move |version: i32| {
-        toaster.success(format!("Saved — the item is now at v{version}."));
-        reload.update(|n| *n += 1);
-    });
-    // The move/lane controls' success path (KAIROS-T-0075/T-0077): the
-    // item changed server-side; show the control's message and refetch.
-    let on_moved = Callback::new(move |message: String| {
-        toaster.success(message);
-        reload.update(|n| *n += 1);
-    });
 
     view! {
         {move || match detail.get() {
             None => view! { <Loading label="Loading item…"/> }.into_any(),
             Some(Err(error)) => view! { <ErrorState error on_retry=retry/> }.into_any(),
-            Some(Ok(item)) => view! {
-                <ItemLoaded item family on_saved on_moved/>
-            }.into_any(),
+            Some(Ok(item)) => view! { <ItemLoaded item family/> }.into_any(),
         }}
     }
 }
 
+/// Does the page take a copy of the item that a read or a write gave
+/// (KAIROS-T-0618)? Not when it is older than the copy on the page. A copy
+/// of the same version is taken: a claim does not change the version.
+/// Pure, host-tested.
+fn takes_copy(shown_version: i32, incoming_version: i32) -> bool {
+    incoming_version >= shown_version
+}
+
 /// The loaded page: header + actions, the editor column, and the facts /
 /// metadata / relationships column.
+///
+/// KAIROS-T-0618: the page keeps the item in a signal and stays mounted
+/// while it shows the item (the code is the key). A save gives the item
+/// that the PATCH returned; a panel action reads the item once. The panels
+/// take the parts that they show as signals, so no panel reads again, and
+/// the socket of the Development panel stays open. `refresh` is the one
+/// path for a new copy: the live item page (KAIROS-T-0578) can call it for
+/// an event of this item.
 #[component]
-fn ItemLoaded(
-    item: ItemDetail,
-    family: Family,
-    on_saved: Callback<i32>,
-    on_moved: Callback<String>,
-) -> impl IntoView {
+fn ItemLoaded(item: ItemDetail, family: Family) -> impl IntoView {
     let auth = use_auth();
+    // Page-level transient notice (COLLIERY-T-1836: an Aurora toast).
+    let toaster = use_toaster();
     let create_open = RwSignal::new(false);
     let delete_open = RwSignal::new(false);
     let cancel_open = RwSignal::new(false);
     let purge_open = RwSignal::new(false);
 
-    // Pre-compute every view input so the view! closures never capture
-    // `item` itself (it is not Copy).
-    let facts = item.clone();
-    let header_title = item.title.clone();
-    // The short code renders as its own element with a copy-link button
-    // (KAIROS-T-0076), not folded into the subtitle string.
-    let header_code = item.short_code.clone();
-    let copy_code = item.short_code.clone();
-    let version_label = format!("v{}", item.version);
+    // The facts that do not change while the page shows this code.
+    let code = StoredValue::new(item.short_code.clone());
+    let item_id = item.id.clone();
+    let created_by = item.created_by.clone();
     let history_href = format!("/activity/history/{}", item.short_code);
     // KAIROS-T-0408: the page of a document or an ADR in the docs sites. The
     // org path is enough: the server sends a team's item on to its team site,
@@ -263,59 +265,98 @@ fn ItemLoaded(
             crate::app::docs_sites_path().map(|org| format!("{org}{section}/{}/", item.short_code))
         })
         .flatten();
-    let code = item.short_code.clone();
-    let delete_title = item.title.clone();
-    let cancel_title = item.title.clone();
-    let purge_title = item.title.clone();
-    let cancellation = item.cancellation.clone();
-    let cancelled = cancellation.is_some();
-    let task_column = item.column_id.clone();
-    let claim_column = item.column_id.clone();
-    let task_claim = item.claim.clone();
-    let task_state = item.state.clone();
-    let item_owner = item.owner.clone();
-    let lane = item.work_class.clone();
-    let repository = item.repository.as_ref().map(|r| r.slug.clone());
-    let lifecycle = item.lifecycle.clone();
-    let lifecycle_badge = item.lifecycle.clone();
+    let site_href = StoredValue::new(site_href);
+    let (initial_title, initial_content, initial_version) =
+        (item.title.clone(), item.content.clone(), item.version);
+
+    let current = RwSignal::new(item);
+    // Show a new copy, unless it is older than the copy on the page. The
+    // `try_` reads: the copy can come after the page is gone.
+    let show = move |next: ItemDetail| {
+        let Some(shown) = current.try_with_untracked(|item| item.version) else {
+            return;
+        };
+        if takes_copy(shown, next.version) {
+            let _ = current.try_set(next);
+        }
+    };
+    // One read of the item. Only the answer of the last read counts.
+    let reads = StoredValue::new(0u32);
+    let refresh = Callback::new(move |()| {
+        let mine = reads.get_value().wrapping_add(1);
+        reads.set_value(mine);
+        leptos::task::spawn_local(async move {
+            let Some(code) = code.try_get_value() else {
+                return;
+            };
+            match api::fetch_item(auth, family, code).await {
+                Ok(next) if reads.try_get_value() == Some(mine) => show(next),
+                Ok(_) => {}
+                Err(e) => {
+                    toaster.error(format!(
+                        "Kairos did not read the item again: {}",
+                        api::error_text(&e)
+                    ));
+                }
+            }
+        });
+    });
+    let on_saved = Callback::new(move |item: ItemDetail| {
+        toaster.success(format!("Saved — the item is now at v{}.", item.version));
+        show(item);
+    });
+    // The success path of each panel action (KAIROS-T-0075/T-0077): the
+    // item changed on the server; show the message and read the item.
+    let on_moved = Callback::new(move |message: String| {
+        toaster.success(message);
+        refresh.run(());
+    });
+
+    // The parts of the item, each a memo: a part that did not change
+    // notifies nothing.
+    let title = Memo::new(move |_| current.with(|item| item.title.clone()));
+    let version = Memo::new(move |_| current.with(|item| item.version));
+    let board_id = Memo::new(move |_| current.with(|item| item.board_id.clone()));
+    let column_id = Memo::new(move |_| current.with(|item| item.column_id.clone()));
+    let work_class = Memo::new(move |_| current.with(|item| item.work_class.clone()));
+    let repository =
+        Memo::new(move |_| current.with(|item| item.repository.as_ref().map(|r| r.slug.clone())));
+    let claim = Memo::new(move |_| current.with(|item| item.claim.clone()));
+    let state = Memo::new(move |_| current.with(|item| item.state.clone()));
+    let owner = Memo::new(move |_| current.with(|item| item.owner.clone()));
+    let impacts = Memo::new(move |_| current.with(|item| item.impacts.clone()));
+    let lifecycle = Memo::new(move |_| current.with(|item| item.lifecycle.clone()));
+    let cancellation = Memo::new(move |_| current.with(|item| item.cancellation.clone()));
+    let cancelled = Memo::new(move |_| cancellation.with(Option::is_some));
     // KAIROS-T-0164 / ADR-20: `archived_at` is the "put away" state — the
     // item is hidden by default and read-only, NOT gone. Deliberately not
-    // the same thing as `lifecycle == "archived"` two lines up, which is a
-    // document's EDITORIAL state (KAIROS-T-0078) and says nothing about
-    // visibility; both can be true at once on this page, so the copy keeps
-    // them apart: the editorial badge always reads "lifecycle: …", the
-    // put-away state always reads "put away".
-    let archived_at = item.archived_at.clone();
-    let archived = archived_at.is_some();
-    let banner_code = item.short_code.clone();
-    let item_id = item.id.clone();
-    let created_by = item.created_by.clone();
-    let edit_creator = item.created_by.clone();
-    let edit_claim = item.claim.clone();
-    let editorial_archived = item.lifecycle.as_deref() == Some("archived");
-    let impacts_creator = item.created_by.clone();
-    let external_creator = item.created_by.clone();
-    let teams_creator = item.created_by.clone();
-    let ItemDetail {
-        short_code,
-        title,
-        content,
-        version,
-        board_id,
-        column_id,
-        impacts,
-        ..
-    } = item;
+    // the same thing as `lifecycle == "archived"`, which is a document's
+    // EDITORIAL state (KAIROS-T-0078) and says nothing about visibility;
+    // both can be true at once on this page, so the copy keeps them apart:
+    // the editorial badge always reads "lifecycle: …", the put-away state
+    // always reads "put away".
+    let archived_at = Memo::new(move |_| current.with(|item| item.archived_at.clone()));
+    let archived = Memo::new(move |_| archived_at.with(Option::is_some));
+    let editorial_archived =
+        Memo::new(move |_| lifecycle.with(|l| l.as_deref() == Some("archived")));
+    let server = Memo::new(move |_| {
+        current.with(|item| ServerCopy {
+            title: item.title.clone(),
+            content: item.content.clone(),
+            version: item.version,
+        })
+    });
 
     // ONE board read for the page (KAIROS-T-0164): the placement panel
     // renders it and the Restore affordance's capability mirror needs the
-    // board's slug/team — a second fetch would be the same request.
-    // `Ok(None)` = the item sits on no board at all (an off-board ADR),
-    // or it is a document that names no owner board (COLLIERY-T-0269).
-    let board_id_for_fetch = StoredValue::new(board_id);
+    // board's slug/team — a second fetch would be the same request. It
+    // reads again only when the board of the item changes (a board move,
+    // KAIROS-T-0618). `Ok(None)` = the item sits on no board at all (an
+    // off-board ADR), or it is a document that names no owner board
+    // (COLLIERY-T-0269).
     let board = LocalResource::new(move || {
         auth.track_session();
-        let id = board_id_for_fetch.get_value();
+        let id = board_id.get();
         async move {
             match id {
                 Some(id) => api::fetch_board(auth, id).await.map(Some),
@@ -328,42 +369,48 @@ fn ItemLoaded(
     // restore (no claim); Archive shows only to a person who passes it,
     // as Cancel does.
     let can_archive = can_restore;
-    let task_powers = task_end_powers(family, board, task_column);
+    let task_powers = task_end_powers(family, board, column_id.into());
     // KAIROS-T-0581: the edit rule with the claim, for the editor and the
     // metadata panel. The reason names the board when the page knows it.
-    let may_edit = edit_power(family, board, edit_creator, edit_claim);
+    let may_edit = edit_power(family, board, created_by.clone(), claim.into());
     let edit = Memo::new(move |_| {
         let slug = match board.get() {
             Some(Ok(Some(board))) => Some(board.slug),
             _ => None,
         };
-        access::edit_access(archived, may_edit.get(), family, slug.as_deref())
+        access::edit_access(archived.get(), may_edit.get(), family, slug.as_deref())
     });
     let edit_read_only = Signal::derive(move || edit.with(access::EditAccess::is_read_only));
     let edit_reason = Signal::derive(move || edit.with(access::EditAccess::reason));
 
     view! {
-        <PageHeader title=header_title sub=family.label()/>
-        {cancellation.map(|mark| view! { <CancelledBanner mark/> })}
-        {archived_at.map(|when| view! {
-            <ArchivedBanner
-                family
-                code=banner_code
-                item_id
-                archived_at=when
-                editorial_archived
-                can_restore
-                on_restored=on_moved
-            />
-        })}
+        {move || view! { <PageHeader title=title.get() sub=family.label()/> }}
+        {move || cancellation.get().map(|mark| view! { <CancelledBanner mark/> })}
+        {move || {
+            let item_id = item_id.clone();
+            archived_at.get().map(|when| view! {
+                <ArchivedBanner
+                    family
+                    code=code.get_value()
+                    item_id
+                    archived_at=when
+                    editorial_archived=editorial_archived.get()
+                    can_restore
+                    on_restored=on_moved
+                />
+            })
+        }}
         <Group justify="between">
             <Group gap="sm">
-                <Text mono=true dimmed=true size="sm">{header_code}</Text>
-                <copy_link::CopyLinkButton code=copy_code/>
-                <Pill color=token::ICE>{version_label}</Pill>
+                // The short code renders as its own element with a
+                // copy-link button (KAIROS-T-0076), not folded into the
+                // subtitle string.
+                <Text mono=true dimmed=true size="sm">{code.get_value()}</Text>
+                <copy_link::CopyLinkButton code=code.get_value()/>
+                <Pill color=token::ICE>{move || format!("v{}", version.get())}</Pill>
                 // The ADR-20 state, in the words the banner uses. Never
                 // "archived" on its own next to the lifecycle badge below.
-                {archived.then(|| view! {
+                {move || archived.get().then(|| view! {
                     <span class="kairos-archived-badge">
                         <Pill color=token::GOLD>"put away"</Pill>
                     </span>
@@ -371,15 +418,15 @@ fn ItemLoaded(
                 // The document lifecycle badge (KAIROS-T-0078): an
                 // editorial label, deliberately distinct from anything
                 // board-status-shaped — its own class + state color.
-                {lifecycle_badge.map(|state| view! {
+                {move || lifecycle.get().map(|state| view! {
                     <span class="kairos-lifecycle-badge">
                         <Pill color=lifecycle_color(&state)>{format!("lifecycle: {state}")}</Pill>
                     </span>
                 })}
-                <TypeFacts item=facts/>
+                {move || view! { <TypeFacts item=current.get()/> }}
             </Group>
             <Group gap="sm">
-                {site_href.filter(|_| !archived).map(|href| view! {
+                {move || site_href.get_value().filter(|_| !archived.get()).map(|href| view! {
                     <Anchor href=href attr:rel="external" attr:data-testid="open-in-site">
                         "Open in site"
                     </Anchor>
@@ -390,7 +437,7 @@ fn ItemLoaded(
                 // DISABLED with the reason next to them rather than
                 // removed — a missing button reads as a broken page, and a
                 // live one that 404s reads as a bug.
-                {archived.then(|| view! {
+                {move || archived.get().then(|| view! {
                     <Text size="xs" dimmed=true>"read-only while put away"</Text>
                 })}
                 {family.is_workflow().then(|| view! {
@@ -401,7 +448,7 @@ fn ItemLoaded(
                 })}
                 // KAIROS-T-0362: a task can be cancelled (not when it is
                 // done) and deleted for good (board managers only).
-                {move || (task_powers.get().cancel && !archived && !cancelled).then(|| view! {
+                {move || (task_powers.get().cancel && !archived.get() && !cancelled.get()).then(|| view! {
                     <Button variant="default" size="xs"
                         on_click=Callback::new(move |_| cancel_open.set(true))>
                         "Cancel task"
@@ -421,16 +468,17 @@ fn ItemLoaded(
                 })}
             </Group>
         </Group>
-        <ChildrenProgressBar family code=short_code.clone()/>
+        <ChildrenProgressBar family code=code.get_value()/>
         <div class="kairos-item__grid">
             <ContentEditor
                 family
-                code=short_code.clone()
-                initial_title=title
-                initial_content=content
-                initial_version=version
+                code=code.get_value()
+                initial_title
+                initial_content
+                initial_version
                 read_only=edit_read_only
                 read_only_reason=edit_reason
+                server
                 on_saved
             />
             <Stack gap="sm">
@@ -439,63 +487,68 @@ fn ItemLoaded(
                 // lane and no transition, so it gets a panel of its own.
                 {if family == Family::Document {
                     view! {
-                        <OwnerBoardPanel code=short_code.clone() board archived on_moved/>
+                        <OwnerBoardPanel code=code.get_value() board archived on_moved/>
                     }.into_any()
                 } else {
                     view! {
-                        <BoardPanel family code=short_code.clone() board column_id
-                            work_class=lane repository created_by archived on_moved/>
+                        <BoardPanel family code=code.get_value() board column_id work_class
+                            repository created_by=created_by.clone() archived on_moved/>
                     }.into_any()
                 }}
                 // KAIROS-T-0369: the claim of a task, with Hand off and
                 // Release.
                 {(family == Family::Task).then(|| view! {
-                    <ClaimPanel code=short_code.clone() claim=task_claim board
-                        column_id=claim_column archived on_moved/>
+                    <ClaimPanel code=code.get_value() claim board column_id archived on_moved/>
                 })}
                 // KAIROS-T-0506: the live state of a task.
-                {(family == Family::Task).then(|| view! {
-                    <StatePanel state=task_state/>
+                {move || (family == Family::Task).then(|| view! {
+                    <StatePanel state=state.get()/>
                 })}
                 {matches!(family, Family::Document | Family::Adr).then(|| view! {
-                    <ImpactsPanel family code=short_code.clone() impacts board
-                        created_by=impacts_creator archived on_moved/>
+                    <ImpactsPanel family code=code.get_value() impacts board
+                        created_by=created_by.clone() archived on_moved/>
                 })}
                 // KAIROS-T-0411: the owner of a strategy or an initiative,
                 // with Claim, Hand off and Clear.
                 {matches!(family, Family::Strategy | Family::Initiative).then(|| view! {
-                    <OwnerPanel family code=short_code.clone() owner=item_owner board
-                        archived on_moved/>
+                    <OwnerPanel family code=code.get_value() owner board archived on_moved/>
                 })}
                 // KAIROS-T-0322: the teams of an initiative or a strategy.
                 {matches!(family, Family::Strategy | Family::Initiative).then(|| view! {
-                    <TeamsPanel family code=short_code.clone() board
-                        created_by=teams_creator archived/>
+                    <TeamsPanel family code=code.get_value() board
+                        created_by=created_by.clone() archived/>
                 })}
-                {lifecycle.map(|current| view! {
-                    <LifecyclePanel code=short_code.clone() current archived on_moved/>
+                {move || lifecycle.get().map(|current| view! {
+                    <LifecyclePanel code=code.get_value() current archived=archived.get()
+                        on_moved/>
                 })}
-                <MetadataPanel family code=short_code.clone() read_only=edit_read_only
+                <MetadataPanel family code=code.get_value() read_only=edit_read_only
                     read_only_reason=edit_reason/>
                 // KAIROS-T-0508: the URIs that the item names, with a label.
-                <ExternalRefsPanel family code=short_code.clone() board
-                    created_by=external_creator archived/>
-                <DevelopmentPanel family code=short_code.clone()/>
-                <EdgeProposalsPanel code=short_code.clone()/>
+                <ExternalRefsPanel family code=code.get_value() board
+                    created_by=created_by.clone() archived/>
+                <DevelopmentPanel family code=code.get_value()/>
+                <EdgeProposalsPanel code=code.get_value()/>
                 // KAIROS-T-0195: below the agent-made suggestions, because this
                 // is the same idea from the other direction — one you were
                 // handed, one you asked for.
-                <RelatedWorkPanel code=short_code.clone()/>
-                <RelationshipsPanel family code=short_code/>
+                <RelatedWorkPanel code=code.get_value()/>
+                <RelationshipsPanel family code=code.get_value()/>
             </Stack>
         </div>
-        <CreateDocumentDialog parent_code=code.clone() open=create_open/>
-        <DeleteDialog family code=code.clone() title=delete_title open=delete_open/>
-        {(family == Family::Task).then(|| view! {
-            <CancelDialog code=code.clone() title=cancel_title open=cancel_open
-                on_cancelled=on_moved/>
-            <PurgeDialog code=code.clone() title=purge_title open=purge_open/>
-        })}
+        <CreateDocumentDialog parent_code=code.get_value() open=create_open/>
+        // The dialogs name the title: they mount again when it changes.
+        {move || {
+            let title = title.get();
+            view! {
+                <DeleteDialog family code=code.get_value() title=title.clone() open=delete_open/>
+                {(family == Family::Task).then(|| view! {
+                    <CancelDialog code=code.get_value() title=title.clone() open=cancel_open
+                        on_cancelled=on_moved/>
+                    <PurgeDialog code=code.get_value() title=title.clone() open=purge_open/>
+                })}
+            }
+        }}
     }
 }
 
@@ -567,11 +620,10 @@ fn edit_power(
     family: Family,
     board: LocalResource<Result<Option<api::BoardInfo>, ApiError>>,
     created_by: String,
-    claim: Option<api::Claim>,
+    claim: Signal<Option<api::Claim>>,
 ) -> Memo<Option<bool>> {
     let whoami = use_context::<LocalResource<Result<crate::api::Whoami, ApiError>>>();
     let created_by = StoredValue::new(created_by);
-    let claim = StoredValue::new(claim);
     Memo::new(move |_| {
         let me = whoami
             .and_then(|resource| resource.get())
@@ -589,7 +641,7 @@ fn edit_power(
             ),
             Ok(None) | Err(_) => Some(boards::may_edit_item(&me, created_by, None, None, required)),
         })?;
-        Some(by_rule || claim.with_value(|claim| access::holds_claim(&me, claim.as_ref())))
+        Some(by_rule || claim.with(|claim| access::holds_claim(&me, claim.as_ref())))
     })
 }
 
@@ -609,10 +661,9 @@ struct TaskEndPowers {
 fn task_end_powers(
     family: Family,
     board: LocalResource<Result<Option<api::BoardInfo>, ApiError>>,
-    column_id: Option<String>,
+    column_id: Signal<Option<String>>,
 ) -> Memo<TaskEndPowers> {
     let whoami = use_context::<LocalResource<Result<crate::api::Whoami, ApiError>>>();
-    let column_id = StoredValue::new(column_id);
     Memo::new(move |_| {
         if family != Family::Task {
             return TaskEndPowers::default();
@@ -626,7 +677,7 @@ fn task_end_powers(
         let Some(Ok(Some(board))) = board.get() else {
             return TaskEndPowers::default();
         };
-        let done = column_id.with_value(|column| {
+        let done = column_id.with(|column| {
             board
                 .columns
                 .iter()
@@ -1024,26 +1075,29 @@ fn BoardPanel(
     #[prop(into)] code: String,
     /// The page's shared board read (`Ok(None)` = off-board).
     board: LocalResource<Result<Option<api::BoardInfo>, ApiError>>,
-    column_id: Option<String>,
+    /// The column of the item. The parts of the item are signals
+    /// (KAIROS-T-0618): the page stays mounted when they change.
+    #[prop(into)]
+    column_id: Signal<Option<String>>,
     /// The task's Planned/Support lane (KAIROS-T-0077) — `Some` enables
     /// the lane control.
-    work_class: Option<String>,
+    #[prop(into)]
+    work_class: Signal<Option<String>>,
     /// The task's bound repository slug (KAIROS-T-0109), if any.
-    repository: Option<String>,
+    #[prop(into)]
+    repository: Signal<Option<String>>,
     /// The user id of the creator of the item. It opens the repository
     /// control, which is an edit, and NO move control (COLLIERY-T-0228).
     created_by: String,
     /// The item is archived (ADR-20): its placement is a record of where
     /// it was put away, and every move endpoint resolves live-only, so the
     /// write controls are replaced by the reason they are gone.
-    archived: bool,
+    #[prop(into)]
+    archived: Signal<bool>,
     on_moved: Callback<String>,
 ) -> impl IntoView {
     let code = StoredValue::new(code);
-    let work_class = StoredValue::new(work_class);
-    let repository = StoredValue::new(repository);
     let created_by = StoredValue::new(created_by);
-    let column_id = StoredValue::new(column_id);
     view! {
         <Panel title="Board" caption="placement">
             {move || match board.get() {
@@ -1056,6 +1110,10 @@ fn BoardPanel(
                     view! { <Text size="sm" dimmed=true>{message}</Text> }.into_any()
                 }
                 Some(Ok(Some(board))) => {
+                    let slug = board.slug.clone();
+                    let name = board.name.clone();
+                    let team_id = board.team_id.clone();
+                    let board = StoredValue::new(board);
                     // The column the item is IN — which, for an archived
                     // card, may be one that has since been removed from
                     // the board (KAIROS-T-0161). That is exactly the fact
@@ -1065,39 +1123,44 @@ fn BoardPanel(
                     // this one reason. Removed columns are never move
                     // targets — the transition list is live-only
                     // server-side, so `MoveControl` cannot offer one.
-                    let column = column_id.with_value(|id| {
-                        id.as_ref()
-                            .and_then(|id| board.columns.iter().find(|c| &c.id == id))
-                            .cloned()
-                    });
-                    let (column_label, column_color) = match &column {
-                        Some(c) if c.removed_at.is_some() => (
-                            format!("{} (column since removed)", c.name),
-                            token::GOLD,
-                        ),
-                        Some(c) => (c.name.clone(), token::ICE),
-                        None => ("unknown column".to_string(), token::MUTED),
+                    let column_pill = move || {
+                        let column = column_id.with(|id| {
+                            board.with_value(|board| {
+                                id.as_ref()
+                                    .and_then(|id| board.columns.iter().find(|c| &c.id == id))
+                                    .cloned()
+                            })
+                        });
+                        let (column_label, column_color) = match &column {
+                            Some(c) if c.removed_at.is_some() => (
+                                format!("{} (column since removed)", c.name),
+                                token::GOLD,
+                            ),
+                            Some(c) => (c.name.clone(), token::ICE),
+                            None => ("unknown column".to_string(), token::MUTED),
+                        };
+                        view! { <Pill color=column_color>{column_label}</Pill> }
                     };
-                    let slug = board.slug.clone();
-                    let name = board.name.clone();
+                    let board_slug = StoredValue::new(slug.clone());
+                    let team = StoredValue::new(team_id);
                     view! {
                         <Stack gap="sm">
                             <Group justify="between">
                                 <Anchor href=format!("/boards/{slug}")>{name}</Anchor>
-                                <Pill color=column_color>{column_label}</Pill>
+                                {column_pill}
                             </Group>
-                            {archived.then(|| view! {
+                            {move || archived.get().then(|| view! {
                                 <Text size="xs" dimmed=true>
                                     "Placement is frozen while this item is put away — it is \
                                      the record of where the work sat. Restore it to move it."
                                 </Text>
                             })}
-                            {(!archived && matches!(family, Family::Task)).then(|| view! {
+                            {move || (!archived.get() && matches!(family, Family::Task)).then(|| view! {
                                 <RepositoryControl
                                     code=code.get_value()
-                                    board_slug=board.slug.clone()
-                                    team_id=board.team_id.clone()
-                                    current=repository.get_value()
+                                    board_slug=board_slug.get_value()
+                                    team_id=team.get_value()
+                                    current=repository
                                     created_by=created_by.get_value()
                                     on_moved
                                 />
@@ -1106,21 +1169,24 @@ fn BoardPanel(
                             // creator of an item gets no right to move it
                             // (COLLIERY-T-0228): they take no `created_by`,
                             // and must not.
-                            {(!archived && matches!(family, Family::Task)).then(|| view! {
+                            {move || (!archived.get() && matches!(family, Family::Task)).then(|| view! {
                                 <MoveBoardControl
                                     code=code.get_value()
-                                    board_slug=board.slug.clone()
-                                    team_id=board.team_id.clone()
+                                    board_slug=board_slug.get_value()
+                                    team_id=team.get_value()
                                     on_moved
                                 />
                             })}
-                            {(!archived).then(|| view! {
+                            // The targets follow the column: this control
+                            // mounts again when the column or the lane
+                            // changes. It reads nothing.
+                            {move || (!archived.get()).then(|| view! {
                                 <MoveControl
                                     family
                                     code=code.get_value()
-                                    board=board.clone()
-                                    column_id=column_id.with_value(Clone::clone)
-                                    work_class=work_class.get_value()
+                                    board=board.get_value()
+                                    column_id=column_id.get()
+                                    work_class=work_class.get()
                                     on_moved
                                 />
                             })}
@@ -1182,6 +1248,8 @@ use repositories::api::NO_REPOSITORY;
 /// repository that a live task links to. COLLIERY-T-0219 added the current
 /// link as an extra option because the list stopped at one team; that
 /// option is removed, because it would now repeat an entry.
+///
+/// The list loads when the person opens the control (KAIROS-T-0618).
 #[component]
 fn RepositoryControl(
     code: String,
@@ -1190,18 +1258,18 @@ fn RepositoryControl(
     /// The board's owning team (UUID): its repositories are first in the
     /// picker.
     team_id: Option<String>,
-    /// The current link (slug).
-    current: Option<String>,
+    /// The current link (slug). A signal (KAIROS-T-0618): the control
+    /// stays open after a set.
+    current: Signal<Option<String>>,
     /// The user id of the creator of the task.
     created_by: String,
     on_moved: Callback<String>,
 ) -> impl IntoView {
     let auth = use_auth();
     let code = StoredValue::new(code);
-    let current = StoredValue::new(current);
     let value = RwSignal::new(
         current
-            .get_value()
+            .get_untracked()
             .unwrap_or_else(|| NO_REPOSITORY.to_string()),
     );
     let busy = RwSignal::new(false);
@@ -1229,9 +1297,19 @@ fn RepositoryControl(
             })
     });
     let board_team = StoredValue::new(team_id);
-    let repos = LocalResource::new(move || {
+    // KAIROS-T-0618: the repositories load when the control opens.
+    let open = RwSignal::new(false);
+    let repos = load_on_open(open, move || {
         auth.track_session();
         async move { repositories::api::list_repositories(auth, None).await }
+    });
+    let picker = Memo::new(move |_| {
+        let read = repos.get().flatten();
+        let count = match &read {
+            Some(Ok(list)) => list.len(),
+            _ => 0,
+        };
+        picker_state(open.get(), read.as_ref(), count)
     });
     let submit: Callback<()> = Callback::new(move |()| {
         let chosen = value.get_untracked();
@@ -1239,30 +1317,45 @@ fn RepositoryControl(
         busy.set(true);
         error.set(None);
         leptos::task::spawn_local(async move {
-            match repositories::api::set_repository(auth, &code.get_value(), repository.as_deref())
-                .await
-            {
+            let result =
+                repositories::api::set_repository(auth, &code.get_value(), repository.as_deref())
+                    .await;
+            // The control stays mounted (KAIROS-T-0618): it is free for
+            // the next change.
+            busy.set(false);
+            match result {
                 Ok(()) => on_moved.run(match repository {
                     Some(slug) => format!("Repository set to {slug}."),
                     None => "Repository cleared.".to_string(),
                 }),
-                Err(e) => {
-                    error.set(Some(e));
-                    busy.set(false);
-                }
+                Err(e) => error.set(Some(e)),
             }
         });
     });
     view! {
         {move || can_bind.get().then(|| view! {
         <div class="kairos-item__repository" data-testid="repository-control">
-            {move || match repos.get() {
-                None => view! { <Text size="xs" dimmed=true>"Loading repositories…"</Text> }.into_any(),
-                Some(Err(_)) => view! { <Text size="xs" dimmed=true>"Repositories unavailable."</Text> }.into_any(),
-                Some(Ok(list)) if list.is_empty() => view! {
+            {move || match picker.get() {
+                Picker::Closed => view! {
+                    <Button variant="default" size="xs"
+                        on_click=Callback::new(move |_| open.set(true))>
+                        "Change repository"
+                    </Button>
+                }.into_any(),
+                Picker::Loading => view! {
+                    <Text size="xs" dimmed=true>"Loading repositories…"</Text>
+                }.into_any(),
+                Picker::Failed => view! {
+                    <Text size="xs" dimmed=true>"The repositories are not available."</Text>
+                }.into_any(),
+                Picker::Empty => view! {
                     <Text size="xs" dimmed=true>"No repositories in this organization."</Text>
                 }.into_any(),
-                Some(Ok(list)) => {
+                Picker::Ready => {
+                    let list = match repos.get().flatten() {
+                        Some(Ok(list)) => list,
+                        _ => Vec::new(),
+                    };
                     // Options are `(value, label)`: the slug stays the value
                     // (what the server takes). The label adds the forge full
                     // name and, for a repository of a different team, the
@@ -1275,16 +1368,18 @@ fn RepositoryControl(
                         repositories::picker_options(&list, team.as_deref())
                     }))
                     .collect();
-                    let bound = current
-                        .get_value()
-                        .unwrap_or_else(|| NO_REPOSITORY.to_string());
                     view! {
                         <Stack gap="xs">
                             <Group align="end" gap="sm">
                                 <Select label="Repository" option_pairs=options value=value/>
                                 <Button
                                     size="xs"
-                                    disabled=move || value.get() == bound
+                                    disabled=move || {
+                                        let bound = current
+                                            .get()
+                                            .unwrap_or_else(|| NO_REPOSITORY.to_string());
+                                        value.get() == bound
+                                    }
                                     loading=busy
                                     loading_label="Setting…"
                                     on_click=submit
@@ -1321,7 +1416,8 @@ const THIS_BOARD: &str = "(this board)";
 /// shared powers mirror grants it HERE, and offers only the targets
 /// [`boards::movable_delivery_boards`] returns — nothing the server would
 /// 403. Everything it cannot know (the T-0104 repository rule above all)
-/// comes back as a 422 and is shown inline.
+/// comes back as a 422 and is shown inline. The list of boards loads when
+/// the person opens the control (KAIROS-T-0618).
 #[component]
 fn MoveBoardControl(
     code: String,
@@ -1352,7 +1448,10 @@ fn MoveBoardControl(
         |powers| powers.create,
     );
     let whoami = use_context::<LocalResource<Result<crate::api::Whoami, ApiError>>>();
-    let all_boards = LocalResource::new(move || {
+    // KAIROS-T-0618: the boards load when the control opens, and only for
+    // a person who holds the source half.
+    let open = RwSignal::new(false);
+    let all_boards = load_on_open(open, move || {
         auth.track_session();
         boards::data::list_boards(auth)
     });
@@ -1361,10 +1460,14 @@ fn MoveBoardControl(
         let me = whoami
             .and_then(|resource| resource.get())
             .and_then(Result::ok);
-        let (Some(me), Some(Ok(list))) = (me, all_boards.get()) else {
+        let (Some(me), Some(Ok(list))) = (me, all_boards.get().flatten()) else {
             return Vec::new();
         };
         here.with_value(|here| boards::movable_delivery_boards(&me, &list, here))
+    });
+    let picker = Memo::new(move |_| {
+        let read = all_boards.get().flatten();
+        picker_state(open.get(), read.as_ref(), targets.with(Vec::len))
     });
 
     let submit: Callback<()> = Callback::new(move |()| {
@@ -1398,9 +1501,9 @@ fn MoveBoardControl(
                     ));
                     navigate(&format!("/items/{}", moved.short_code), Default::default());
                 }
-                // Success refetches the whole detail (on_moved bumps the
-                // reload), which re-renders this panel with the new board
-                // and its entry column — no busy reset, this view is gone.
+                // Success reads the item (on_moved). The board of the item
+                // changes, so the Board panel shows the new board and its
+                // entry column, and this control mounts again.
                 Ok(_) => on_moved.run(format!("Moved to {label}.")),
                 Err(e) => {
                     error.set(Some(e));
@@ -1411,27 +1514,48 @@ fn MoveBoardControl(
     });
 
     view! {
-        {move || (can_move.get() && !targets.with(Vec::is_empty)).then(|| view! {
+        {move || can_move.get().then(|| view! {
             <div class="kairos-item__move-board" data-testid="move-board">
-                <Group align="end" gap="sm">
-                    <Select
-                        label="Board"
-                        option_pairs={std::iter::once((THIS_BOARD.to_string(), THIS_BOARD.to_string()))
-                            .chain(targets.get())
-                            .collect::<Vec<_>>()}
-                        value=value
-                    />
-                    <Switch checked=rename label="Give it a code of the new board"/>
-                    <Button
-                        size="xs"
-                        disabled=move || value.get() == THIS_BOARD
-                        loading=busy
-                        loading_label="Moving…"
-                        on_click=submit
-                    >
-                        "Move board"
-                    </Button>
-                </Group>
+                {move || match picker.get() {
+                    Picker::Closed => view! {
+                        <Button variant="default" size="xs"
+                            on_click=Callback::new(move |_| open.set(true))>
+                            "Move to another board"
+                        </Button>
+                    }.into_any(),
+                    Picker::Loading => view! {
+                        <Text size="xs" dimmed=true>"Loading boards…"</Text>
+                    }.into_any(),
+                    Picker::Failed => view! {
+                        <Text size="xs" dimmed=true>"The boards are not available."</Text>
+                    }.into_any(),
+                    Picker::Empty => view! {
+                        <Text size="xs" dimmed=true>
+                            "You cannot move this task to another delivery board."
+                        </Text>
+                    }.into_any(),
+                    Picker::Ready => view! {
+                        <Group align="end" gap="sm">
+                            <Select
+                                label="Board"
+                                option_pairs={std::iter::once((THIS_BOARD.to_string(), THIS_BOARD.to_string()))
+                                    .chain(targets.get())
+                                    .collect::<Vec<_>>()}
+                                value=value
+                            />
+                            <Switch checked=rename label="Give it a code of the new board"/>
+                            <Button
+                                size="xs"
+                                disabled=move || value.get() == THIS_BOARD
+                                loading=busy
+                                loading_label="Moving…"
+                                on_click=submit
+                            >
+                                "Move board"
+                            </Button>
+                        </Group>
+                    }.into_any(),
+                }}
                 {move || error.get().map(|e| view! {
                     <Alert title="Could not move to that board" color=token::BAD>
                         <Text size="sm">{api::error_text(&e)}</Text>
@@ -1524,8 +1648,8 @@ fn MoveControl(
         error.set(None);
         leptos::task::spawn_local(async move {
             match boards::data::transition(auth, kind, &code.get_value(), &to_column_id).await {
-                // Success refetches the whole detail (on_moved bumps the
-                // reload), which drops this instance — no busy reset.
+                // Success reads the item (on_moved). The column changes,
+                // so this control mounts again — no busy reset.
                 Ok(()) => on_moved.run(format!("Moved to {column_name}.")),
                 Err(e) => {
                     error.set(Some(e));
@@ -2132,6 +2256,16 @@ mod tests {
         let (details, graph) = tab_hrefs("DEMO-T-0007").expect("resolved code");
         assert_eq!(details, "/items/DEMO-T-0007");
         assert_eq!(graph, "/items/DEMO-T-0007?view=graph");
+    }
+
+    /// KAIROS-T-0618: the page takes a copy of the same version or newer,
+    /// and not an older copy (a read that answered late).
+    #[test]
+    fn the_page_takes_no_older_copy() {
+        assert!(takes_copy(4, 5));
+        // A claim or a hand-off does not change the version.
+        assert!(takes_copy(4, 4));
+        assert!(!takes_copy(5, 4));
     }
 
     /// The banner says WHEN, in something a person reads (KAIROS-T-0164):
