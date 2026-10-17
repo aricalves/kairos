@@ -363,8 +363,11 @@ pub struct SearchFilterParams {
     pub board_id: Option<String>,
     /// Restrict to items on this board, by slug or UUID. Not with `board_id`.
     pub board: Option<String>,
-    /// Restrict to items in this column (UUID).
+    /// Restrict to items in this column (UUID). Not with `column`.
     pub column_id: Option<String>,
+    /// Restrict to items in this column, by name (with `board`) or UUID
+    /// (KAIROS-T-0552). Not with `column_id`.
+    pub column: Option<String>,
     /// Restrict to tasks of this team (UUID). Not with `team`.
     pub team_id: Option<String>,
     /// Restrict to tasks of this team, by slug or UUID. Not with `team_id`.
@@ -791,8 +794,8 @@ pub struct HandOffItemParams {
     pub short_code: String,
     /// The person who gets the claim (a task) or who becomes the owner (a
     /// strategy or an initiative): a user id, an email or a user name of a
-    /// person of the organization. A new owner must be a member of the
-    /// board of the item.
+    /// person of the organization, or `me`. A new owner must be a member
+    /// of the board of the item.
     pub to: String,
 }
 
@@ -809,7 +812,8 @@ pub struct ReleaseItemParams {
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 pub struct ClaimItemParams {
-    /// The short code of a strategy or an initiative with no owner.
+    /// The short code of a task in Active with no claim, or of a strategy
+    /// or an initiative with no owner.
     pub short_code: String,
 }
 
@@ -1711,6 +1715,8 @@ impl KairosMcp {
                 .map(|board| board.id)
                 .collect();
             let mut columns_of: HashMap<Uuid, Vec<String>> = HashMap::new();
+            let mut counts_of: HashMap<Uuid, Vec<kairos_db::board_items::ColumnCardCount>> =
+                HashMap::new();
             for column in kairos_db::board_items::live_column_counts(conn, &mine)
                 .map_err(ApiError::internal)?
             {
@@ -1718,6 +1724,23 @@ impl KairosMcp {
                     .entry(column.board_id)
                     .or_default()
                     .push(format!("{} ({})", column.name, column.count));
+                counts_of.entry(column.board_id).or_default().push(column);
+            }
+            // KAIROS-T-0554: the rules of each board of mine, so an agent
+            // does not learn them by failing: each live column with its
+            // flags (entry, done, claims, WIP) and the columns a card can
+            // move to from it. One query for the transitions of every board
+            // of mine; the columns come with the counts above.
+            let transitions = kairos_db::board_items::transitions_of_boards(conn, &mine)
+                .map_err(ApiError::internal)?;
+            let mut moves_of: HashMap<Uuid, String> = HashMap::new();
+            for (board_id, columns) in &counts_of {
+                let edges: Vec<(Uuid, Uuid)> = transitions
+                    .iter()
+                    .filter(|(board, _, _)| board == board_id)
+                    .map(|(_, from, to)| (*from, *to))
+                    .collect();
+                moves_of.insert(*board_id, moves_line(columns, &edges));
             }
 
             // COLLIERY-T-3102: an ADR board can have a team. The list names
@@ -1760,6 +1783,9 @@ impl KairosMcp {
                     out.push_str(" [mine]\n");
                     let rendered = columns_of.remove(&board.id).unwrap_or_default();
                     out.push_str(&format!("  columns: {}\n", rendered.join(" | ")));
+                    if let Some(moves) = moves_of.remove(&board.id) {
+                        out.push_str(&format!("  moves: {moves}\n"));
+                    }
                 } else {
                     out.push('\n');
                 }
@@ -2472,7 +2498,18 @@ impl KairosMcp {
                 // column it was put away in is exactly what this line is
                 // for (KAIROS-T-0161).
                 let column = column_label(conn, column_id)?;
-                out.push_str(&format!("- board: {} / column: {column}\n", board.slug));
+                out.push_str(&format!("- board: {} / column: {column}", board.slug));
+                // KAIROS-T-0554: where it can move to from here, for a live
+                // item on a live board.
+                if item.archived_at.is_none() {
+                    let next = next_columns(conn, column_id)?;
+                    if next.is_empty() {
+                        out.push_str(" · next: none (no transition starts here)");
+                    } else {
+                        out.push_str(&format!(" · next: {}", next.join(", ")));
+                    }
+                }
+                out.push('\n');
             }
             // KAIROS-T-0359: who has the task in Active.
             if item.item_type == ItemType::Task && item.archived_at.is_none() {
@@ -2772,7 +2809,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Search items: full-text `q`, a structured `filter` (types, board, column, team, repository, task_type, metadata, metadata_missing, updated_before, updated_after, claimed_by, owned_by, created_by) and a graph `traverse`, in any mix; at least one. Board and team take a slug or UUID. claimed_by, owned_by and created_by take `me`, a user id, an email or a user name; a claim by an agent key counts for its person. \"Untouched for 90 days\" is `updated_before` = now minus 90 days; \"bugs without a priority\" is `{entity_type: [task], task_type: [bug], metadata_missing: [priority]}`. `filter.repository` gives the tasks linked to it and the documents and ADRs that impact it. Compact results by type; `get_item` gives the content."
+        description = "Search items: full-text `q`, a structured `filter` (types, board, column, team, repository, task_type, metadata, metadata_missing, updated_before, updated_after, claimed_by, owned_by, created_by) and a graph `traverse`, in any mix; at least one. Board and team take a slug or UUID; `column` takes a name with `board`, or a UUID. claimed_by, owned_by and created_by take `me`, a user id, an email or a user name; a claim by an agent key counts for its person. \"Untouched for 90 days\" is `updated_before` = now minus 90 days; \"bugs without a priority\" is `{entity_type: [task], task_type: [bug], metadata_missing: [priority]}`. `filter.repository` gives the tasks linked to it and the documents and ADRs that impact it. Compact results by type; `get_item` gives the content."
     )]
     pub async fn search(
         &self,
@@ -2791,6 +2828,7 @@ impl KairosMcp {
                 (f.board.clone(), f.board_id.is_some()),
                 (f.team.clone(), f.team_id.is_some()),
             )
+            .and_then(|refs| refs.with_column(f.column.clone(), f.column_id.is_some()))
             .map(|refs| {
                 refs.with_people(
                     f.claimed_by.clone(),
@@ -3745,7 +3783,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Become the owner of a STRATEGY or INITIATIVE that has none: the one person who answers for it. You must be a person and a member of its board (a grant), or an org admin. An item with an owner is refused with the owner's name. The owner gives no extra right. A task has no owner: moving it to Active gives a claim."
+        description = "Take a free TASK in Active (no claim): the claim names you, so the board shows who works it. Or become the owner of a STRATEGY or INITIATIVE that has none: the one person who answers for it. A task: you need `transition_items` on its board or the right to edit the task; a task that a different person holds is refused with CLAIMED and the holder's name (ask for `hand_off_item`). A strategy or initiative: you must be a person and a member of its board (a grant), or an org admin; an item with an owner is refused with the owner's name. The owner gives no extra right. Moving a task to Active gives you the claim too."
     )]
     pub async fn claim_item(
         &self,
@@ -3757,24 +3795,37 @@ impl KairosMcp {
         let slug = tenant.slug.clone();
         self.run_tool(&tenant, move |conn| {
             let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
-            crate::owners::claim(
-                conn,
-                &slug,
-                user,
-                (item.id, item.item_type),
-                &item.short_code,
-            )?;
+            if kairos_db::item_owners::is_subject(item.item_type) {
+                crate::owners::claim(
+                    conn,
+                    &slug,
+                    user,
+                    (item.id, item.item_type),
+                    &item.short_code,
+                )?;
+                return Ok(format!(
+                    "Claimed {}.\n{}",
+                    item.short_code,
+                    crate::owners::owner_text(conn, item.id, item.item_type)?.trim_end()
+                ));
+            }
+            // KAIROS-T-0528: a task in Active with no claim.
+            let item = task_for_claim(item)?;
+            let board_id = item.board_id.unwrap_or_default();
+            crate::claims::require_claim_take(conn, &slug, item.id, board_id, user)?;
+            kairos_db::task_claims::claim(conn, item.id, user)
+                .map_err(crate::claims::map_claim_error)?;
             Ok(format!(
                 "Claimed {}.\n{}",
                 item.short_code,
-                crate::owners::owner_text(conn, item.id, item.item_type)?.trim_end()
+                crate::claims::claim_text(conn, item.id, item.column_id)?.trim_end()
             ))
         })
         .await
     }
 
     #[tool(
-        description = "Give the claim of a TASK in Active, or the owner of a STRATEGY or INITIATIVE, to another person (`to`: user id, email or user name; not a service account). A task stays in Active; you can hand off your own claim, or any claim with `transition_items` on its board. A strategy or initiative: the owner hands it off, or an org admin sets it; the new owner must be a member of its board (else NOT_BOARD_MEMBER). The person gets a notification."
+        description = "Give the claim of a TASK in Active, or the owner of a STRATEGY or INITIATIVE, to another person (`to`: user id, email, user name or `me`; not a service account). A task stays in Active; you can hand off your own claim, or any claim with `transition_items` on its board. A strategy or initiative: the owner hands it off, or an org admin sets it; the new owner must be a member of its board (else NOT_BOARD_MEMBER). The person gets a notification."
     )]
     pub async fn hand_off_item(
         &self,
@@ -3804,7 +3855,7 @@ impl KairosMcp {
             let item = task_for_claim(item)?;
             let board_id = item.board_id.unwrap_or_default();
             crate::claims::require_claim_change(conn, &slug, item.id, board_id, user)?;
-            let to = crate::claims::resolve_person(conn, &slug, &params.to)?;
+            let to = crate::claims::resolve_person(conn, &slug, &params.to, user)?;
             kairos_db::task_claims::hand_off(conn, item.id, to, user)
                 .map_err(crate::claims::map_claim_error)?;
             Ok(format!(
@@ -3817,7 +3868,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "End the claim on a TASK in Active (it stays in Active, free for the next person who moves it there), or remove the owner of a STRATEGY or INITIATIVE. A task: your own claim, or any with `transition_items` on its board. A strategy or initiative: the owner, or an org admin."
+        description = "End the claim on a TASK in Active (it stays in Active, free for anyone: `claim_item` takes it), or remove the owner of a STRATEGY or INITIATIVE. A task: your own claim, or any with `transition_items` on its board. A strategy or initiative: the owner, or an org admin."
     )]
     pub async fn release_item(
         &self,
@@ -6612,8 +6663,8 @@ fn rename_history(conn: &mut PgConnection, item_id: Uuid) -> Result<String, ApiE
     Ok(out)
 }
 
-/// The live TASK of `hand_off_item` and `release_item`, or a refusal for an
-/// item that is not a task (KAIROS-T-0359). A strategy and an initiative
+/// The live TASK of `claim_item`, `hand_off_item` and `release_item`, or a
+/// refusal for an item that is not a task (KAIROS-T-0359). A strategy and an initiative
 /// have an owner instead (KAIROS-T-0411), and the tools take that path
 /// before.
 fn task_for_claim(item: ItemView) -> Result<ItemView, ApiError> {
@@ -7776,6 +7827,20 @@ pub(super) fn notification_line(n: &kairos_db::notifications::Notification) -> S
     )
 }
 
+/// One notification in the ride-along block (KAIROS-T-0549): the time, the
+/// kind, the item and the text, with no id. The ids are 36 characters each
+/// and the block repeats on every answer until the notifications are read;
+/// `get_events` gives the ids.
+fn ride_along_line(n: &kairos_db::notifications::Notification) -> String {
+    format!(
+        "- {} · {} · {}: {}\n",
+        n.created_at.format("%Y-%m-%d %H:%MZ"),
+        n.kind,
+        n.short_code.as_deref().unwrap_or("(item gone)"),
+        n.text,
+    )
+}
+
 /// How many unread notifications come at the end of an answer.
 pub(super) const RIDE_ALONG: i64 = 5;
 
@@ -7790,13 +7855,16 @@ pub(super) fn ride_along(conn: &mut PgConnection, user: Uuid) -> Result<Option<S
     }
     let mut out = format!("## Your notifications ({} unread)\n", unread.total);
     for n in &unread.newest {
-        out.push_str(&notification_line(n));
+        out.push_str(&ride_along_line(n));
     }
     let more = unread.total - unread.newest.len() as i64;
     if more > 0 {
         out.push_str(&format!("{more} more: call get_events\n"));
     }
-    out.push_str("Mark them read with mark_events_read when you have acted on them.\n");
+    out.push_str(
+        "get_events gives each with its id; mark them read with mark_events_read when you \
+         have acted on them.\n",
+    );
     Ok(Some(out))
 }
 
@@ -7942,5 +8010,117 @@ mod create_item_parity_tests {
             description.contains("bucket_type"),
             "the create_item description must mention bucket_type"
         );
+    }
+}
+
+/// The columns a card can move to from `column_id`, by board position
+/// (KAIROS-T-0554): the live targets of the transitions that start there.
+fn next_columns(conn: &mut PgConnection, column_id: Uuid) -> Result<Vec<String>, ApiError> {
+    use kairos_db::schema::{board_columns, board_transitions};
+    board_transitions::table
+        .inner_join(board_columns::table.on(board_columns::id.eq(board_transitions::to_column_id)))
+        .filter(board_transitions::from_column_id.eq(column_id))
+        .filter(board_columns::deleted_at.is_null())
+        .order(board_columns::position.asc())
+        .select(board_columns::name)
+        .load::<String>(conn)
+        .map_err(ApiError::internal)
+}
+
+/// The rules of a board on one line (KAIROS-T-0554): each live column in
+/// its order with its flags, then the columns a card can move to from it.
+/// `Backlog [entry] → Todo | Active [claims, WIP 3] → Completed, Blocked |
+/// Completed [done]`. The entry column is the first by position, the rule
+/// of `kairos_db::boards::entry_column`. Pure.
+fn moves_line(
+    columns: &[kairos_db::board_items::ColumnCardCount],
+    transitions: &[(Uuid, Uuid)],
+) -> String {
+    let mut ordered: Vec<&kairos_db::board_items::ColumnCardCount> = columns.iter().collect();
+    ordered.sort_by_key(|c| c.position);
+    let entry = ordered.first().map(|c| c.column_id);
+    let mut parts = Vec::with_capacity(ordered.len());
+    for column in &ordered {
+        let mut flags = Vec::new();
+        if entry == Some(column.column_id) {
+            flags.push("entry".to_string());
+        }
+        if column.is_done {
+            flags.push("done".to_string());
+        }
+        if column.claims {
+            flags.push("claims".to_string());
+        }
+        if let Some(limit) = column.wip_limit {
+            flags.push(format!("WIP {limit}"));
+        }
+        let mut part = column.name.clone();
+        if !flags.is_empty() {
+            part.push_str(&format!(" [{}]", flags.join(", ")));
+        }
+        let targets: Vec<&str> = ordered
+            .iter()
+            .filter(|c| {
+                transitions
+                    .iter()
+                    .any(|(from, to)| *from == column.column_id && *to == c.column_id)
+            })
+            .map(|c| c.name.as_str())
+            .collect();
+        if !targets.is_empty() {
+            part.push_str(&format!(" → {}", targets.join(", ")));
+        }
+        parts.push(part);
+    }
+    parts.join(" | ")
+}
+
+#[cfg(test)]
+mod moves_line_tests {
+    use super::moves_line;
+    use kairos_db::board_items::ColumnCardCount;
+    use uuid::Uuid;
+
+    fn column(
+        board: Uuid,
+        name: &str,
+        position: i32,
+        is_done: bool,
+        claims: bool,
+        wip_limit: Option<i32>,
+    ) -> ColumnCardCount {
+        ColumnCardCount {
+            board_id: board,
+            column_id: Uuid::new_v4(),
+            name: name.to_string(),
+            count: 0,
+            position,
+            is_done,
+            claims,
+            wip_limit,
+        }
+    }
+
+    #[test]
+    fn the_line_names_the_flags_and_the_targets_in_board_order() {
+        let board = Uuid::new_v4();
+        let columns = vec![
+            column(board, "Active", 2, false, true, Some(3)),
+            column(board, "Backlog", 0, false, false, None),
+            column(board, "Todo", 1, false, false, None),
+            column(board, "Completed", 3, true, false, None),
+        ];
+        let id = |name: &str| columns.iter().find(|c| c.name == name).unwrap().column_id;
+        let transitions = vec![
+            (id("Backlog"), id("Todo")),
+            (id("Todo"), id("Active")),
+            (id("Active"), id("Completed")),
+            (id("Active"), id("Todo")),
+        ];
+        assert_eq!(
+            moves_line(&columns, &transitions),
+            "Backlog [entry] → Todo | Todo → Active | Active [claims, WIP 3] → Todo, Completed | Completed [done]"
+        );
+        assert_eq!(moves_line(&[], &[]), "");
     }
 }

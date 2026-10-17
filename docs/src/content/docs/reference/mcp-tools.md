@@ -90,8 +90,9 @@ Codes an agent can receive, and what each means.
 | `CYCLE_DETECTED` | The edge would create a cycle. |
 | `ALREADY_LINKED` | That edge already exists. For `impacts`: the item impacts that repository already. |
 | `RENAME_NOT_NEEDED` | A `move_item` with `rename` to a board whose prefix the code has already. |
-| `NOT_CLAIMABLE` | A `hand_off_item` or a `release_item` of a task that is not in Active (a column that holds claims). |
+| `NOT_CLAIMABLE` | A `claim_item`, a `hand_off_item` or a `release_item` of a task that is not in Active (a column that holds claims). |
 | `NO_CLAIM` | A `release_item` of a task that has no claim. |
+| `CLAIMED` | A `claim_item` of a task that a different person holds. The text names the holder. |
 | `NO_OWNER` | A `release_item` of a strategy or an initiative that has no owner. |
 | `NOT_BOARD_MEMBER` | A `hand_off_item` of a strategy or an initiative to a person who is not a member of the board of the item. |
 | `TASK_DONE` | A `cancel_item` of a task that is in a done column. |
@@ -144,7 +145,17 @@ Refuses: nothing beyond transport-level authentication.
 ### `my_boards`
 
 Boards in the organization, grouped by level, with column names and per-column
-item counts for the caller's delivery boards. Each ADR board names its team
+item counts for the caller's delivery boards. Each of those boards also has a
+`moves:` line (KAIROS-T-0554). The line shows each live column in its order.
+The flags of a column are in brackets: `entry`, `done`, `claims`, `WIP <limit>`.
+An arrow gives the columns a card can move to from it. Read the allowed moves
+here, not from a refused `transition_item`.
+
+```text
+  moves: Backlog [entry] → Todo | Todo → Active, Blocked | Active [claims, WIP 3] → Completed, Blocked | Blocked → Todo, Active | Completed [done]
+```
+
+Each ADR board names its team
 (`ADR board of the team <slug>`), or the organization. A team ADR board holds
 the delivery ADRs of the team, with the prefix of the team. Each board of a team
 of the caller has a `team capabilities:` line. This line shows the
@@ -574,6 +585,14 @@ supporting documents.
 |---|---|---|---|---|
 | `short_code` | string | yes | — | The item's short code. |
 
+The line `board` of a live item ends with `next:` (KAIROS-T-0554). It names
+the columns a card can move to from its column, in board order. With no
+transition from the column, it says `next: none`:
+
+```text
+- board: platform-delivery / column: Todo · next: Active, Blocked
+```
+
 A document has no column. It shows its owner board in the line `owner board`,
 for example `- owner board: platform-delivery`. Each document has an owner
 board.
@@ -600,7 +619,7 @@ line too:
 
 ```text
 - claim: Alice (agent) since 2026-10-09T10:00:00Z
-- claim: none. The task is free: the next person who moves it to Active gets the claim.
+- claim: none. The task is free: claim_item takes it, and a move to Active gives it.
 ```
 
 A strategy and an initiative have the line `owner`, in each column and in the
@@ -758,7 +777,8 @@ are compact and grouped by type.
 | `entity_type` | array of string | no | all | `strategy`, `initiative`, `task`, `document`, `adr`. Must not be an empty array. |
 | `board_id` | UUID string | no | — | Items on this board. A document is not a card, so this filter gives no document. Do not send with `board`. |
 | `board` | string | no | — | Items on this board, by slug or UUID. Do not send with `board_id`. |
-| `column_id` | UUID string | no | — | Items in this column. |
+| `column_id` | UUID string | no | — | Items in this column. Do not send with `column`. |
+| `column` | string | no | — | Items in this column, by name (with `board`) or UUID. A name with no `board`, or a name the board does not have, is refused and the refusal lists the columns. Do not send with `column_id`. |
 | `team_id` | UUID string | no | — | Tasks of this team. Do not send with `team`. |
 | `team` | string | no | — | Tasks of this team, by slug or UUID. Do not send with `team_id`. |
 | `repository` | string | no | — | The items of this repository: see below. Slug or UUID of a live repository. |
@@ -1143,8 +1163,9 @@ clears a field that you do not send. Send at least one field. The state is
 not content: the write makes no new version of the task. The state stays
 when the task reaches a done column.
 
-The edit rule applies, as for `append_note`: the creator of the task, or
-`manage_tasks` on its board. The rule is that of
+The edit rule applies, as for `append_note`. It passes the creator of the
+task, the holder of its claim (KAIROS-T-0532), and `manage_tasks` on its
+board. The rule is that of
 `PUT /api/tasks/{short_code}/state`. The result is one line:
 
 ```text
@@ -1338,25 +1359,42 @@ The tool refuses with these codes:
 
 ### `claim_item`
 
-Makes you the [owner](../glossary/#owner) of a strategy or an initiative that
-has no owner. The owner is the one person who answers for the item.
+Gives you the [claim](../glossary/#claim) of a task in Active that has no
+claim (KAIROS-T-0528). Or makes you the [owner](../glossary/#owner) of a
+strategy or an initiative that has no owner.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `short_code` | string | yes | — | The short code of a strategy or an initiative with no owner. |
+| `short_code` | string | yes | — | The short code of a task in Active with no claim, or of a strategy or an initiative with no owner. |
 
-You must be a person and a member of the board of the item. A member has a
-grant on the board. An organization admin can also claim. The owner stays in each
-column, Completed too. The owner gets no right from the claim. The answer has
-the line `owner` with the new owner.
+A task: you need `transition_items` on the board of the task, or the right
+to edit the task. The creator of the task has that right, and so does
+`manage_tasks`. The claim names you. With your agent key, it names you and
+marks the agent. The answer has the line `claim`.
+
+A task that a different person holds gets `CLAIMED` and the name of the
+holder: ask for a `hand_off_item`. A move of a task to Active
+gives you the claim too.
+
+A strategy or an initiative: you must be a person and a member of the board
+of the item. A member has a grant on the board. An organization admin can also
+claim. The owner stays in each column, Completed too. The owner gets no right
+from the claim. The answer has the line `owner` with the new owner.
 
 Refuses:
 
 - `NOT_FOUND` for an unknown short code or an archived item.
-- `RELATIONSHIP_RULE` for an item that is not a strategy or an initiative.
-- `FORBIDDEN` for a service account, and for a person who is not a member of
-  the board and not an organization admin.
-- `CONFLICT` when the item has an owner. The text names the owner.
+- `VALIDATION` for an item that is not a task, a strategy or an initiative.
+- `VALIDATION` for a task, when the caller is a service account.
+- `FORBIDDEN` for a task, without `transition_items` and without the right to
+  edit the task.
+- `FORBIDDEN` for a strategy or an initiative, for a service account, and for
+  a person who is not a member of the board and not an organization admin.
+- `NOT_CLAIMABLE` for a task that is not in Active.
+- `CLAIMED` for a task that a different person holds. The text names the
+  holder.
+- `CONFLICT` when you have the claim, or when the item has an owner. The text
+  names the owner.
 
 ### `hand_off_item`
 
@@ -1366,7 +1404,7 @@ Changes the [claim](../glossary/#claim) of a task in Active, or the
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `short_code` | string | yes | — | The short code of a task in Active, or of a strategy or an initiative. |
-| `to` | string | yes | — | The person who gets the claim or who becomes the owner: a user id, an email or a user name of a person of the organization. A new owner must be a member of the board of the item. |
+| `to` | string | yes | — | The person who gets the claim or who becomes the owner: a user id, an email or a user name of a person of the organization, or `me`. A new owner must be a member of the board of the item. |
 
 A task: the person who has the claim can hand it off. Any other principal needs
 `transition_items` on the board of the task. A task in Active with no claim can
@@ -1404,9 +1442,9 @@ Ends the [claim](../glossary/#claim) of a task in Active, or removes the
 |---|---|---|---|---|
 | `short_code` | string | yes | — | The short code of a task in Active, or of a strategy or an initiative. |
 
-A task: the task stays in Active with no claim, free for anyone. The next
-person who moves the task to Active gets the claim. The person who has the
-claim can release it. Any other principal needs `transition_items` on the
+A task: the task stays in Active with no claim, free for anyone. A
+`claim_item` takes it. A move of the task to Active gives it too. The person
+who has the claim can release it. Any other principal needs `transition_items` on the
 board of the task.
 
 A strategy or an initiative: the owner can release it. An organization admin
@@ -2223,14 +2261,16 @@ You get no notification for a change that you made. You can turn a kind off
 with `PUT /api/me/notification-settings` or on the Notifications page of the
 GUI.
 
-The block at the end of an answer:
+The block at the end of an answer. It is a content block of its own, after
+the answer (KAIROS-T-0549). The content that `get_item` gives stays the
+content of the item. Its lines have no id: `get_events` gives the ids.
 
 ```text
 ## Your notifications (7 unread)
-- 6f1a1f9e-... · 2026-10-12 09:15Z · hand_off · ACME-T-0012: Robin gave you the claim on ACME-T-0012: Fix the login
+- 2026-10-12 09:15Z · hand_off · ACME-T-0012: Robin gave you the claim on ACME-T-0012: Fix the login
 - ...
 2 more: call get_events
-Mark them read with mark_events_read when you have acted on them.
+get_events gives each with its id; mark them read with mark_events_read when you have acted on them.
 ```
 
 ### `get_events`

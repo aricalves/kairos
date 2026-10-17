@@ -208,6 +208,10 @@ pub struct Auth {
     restoring: RwSignal<bool>,
     /// Bumped on every install/clear so stale refresh timers no-op.
     generation: StoredValue<u64>,
+    /// KAIROS-T-0620: changes when a session starts or ends, not when a
+    /// live session refreshes its token. Resources track this, so the
+    /// silent refresh before expiry does not refetch every panel.
+    session_generation: RwSignal<u64>,
 }
 
 /// Create the auth state and put it into context. Call once, in `App`.
@@ -224,6 +228,7 @@ pub fn provide_auth() -> Auth {
         signed_out: RwSignal::new(false),
         restoring: RwSignal::new(true),
         generation: StoredValue::new(0),
+        session_generation: RwSignal::new(0),
     };
     provide_context(auth);
     leptos::task::spawn_local(async move { restore_session(auth).await });
@@ -281,6 +286,17 @@ impl Auth {
         self.session.with(Option::is_some)
     }
 
+    /// Track the session, not its token (KAIROS-T-0620): a resource that
+    /// calls this re-runs when a session starts or ends, and not when the
+    /// silent refresh installs a new token in a live session.
+    pub fn track_session(&self) {
+        self.session_generation.track();
+    }
+
+    fn bump_session_generation(&self) {
+        self.session_generation.update(|g| *g += 1);
+    }
+
     /// Current bearer token (reactive).
     pub fn token(&self) -> Option<String> {
         self.session
@@ -328,6 +344,7 @@ impl Auth {
         clear_stored_refresh();
         self.signed_out.set(true);
         self.session.set(None);
+        self.bump_session_generation();
     }
 
     /// A session whose credential is the HttpOnly cookie (KAIROS-T-0327):
@@ -340,6 +357,7 @@ impl Auth {
             access_token: String::new(),
             refresh_token: None,
         }));
+        self.bump_session_generation();
     }
 
     /// Drop the session WITHOUT marking an explicit sign-out (refresh
@@ -351,6 +369,7 @@ impl Auth {
         self.generation.update_value(|g| *g += 1);
         clear_stored_refresh();
         self.session.set(None);
+        self.bump_session_generation();
     }
 
     /// Install a token response and schedule the silent refresh.
@@ -360,6 +379,9 @@ impl Auth {
     /// config before exchanging tokens, so it is populated here. If it is
     /// somehow absent, the default is the access token — today's behavior.
     fn install(&self, tokens: TokenResponse) {
+        // KAIROS-T-0620: a new session (login, restore) changes the session
+        // generation; a refresh of a live session does not.
+        let was_live = self.session.with_untracked(Option::is_some);
         self.generation.update_value(|g| *g += 1);
         let generation = self.generation.get_value();
         let refresh_token = tokens.refresh_token.clone();
@@ -379,6 +401,9 @@ impl Auth {
             access_token: tokens.bearer_for(api_bearer),
             refresh_token: refresh_token.clone(),
         }));
+        if !was_live {
+            self.bump_session_generation();
+        }
 
         let (Some(_), Some(expires_in)) = (refresh_token, tokens.expires_in) else {
             return; // nothing to refresh with, or no known expiry

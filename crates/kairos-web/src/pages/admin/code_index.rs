@@ -287,7 +287,7 @@ pub fn AdminCodeIndexPage() -> impl IntoView {
     let outcome: RwSignal<MutationOutcome> = RwSignal::new(None);
     let busy = RwSignal::new(false);
     let settings = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         reload.get();
         load_settings(auth)
     });
@@ -798,7 +798,7 @@ fn ReadTokens(outcome: RwSignal<MutationOutcome>) -> impl IntoView {
     let secret = RwSignal::new(String::new());
     let removing = RwSignal::new(String::new());
     let tokens = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         reload.get();
         get_json::<Vec<OrgReadToken>>(auth, "/api/org/read-tokens")
     });
@@ -963,7 +963,7 @@ fn Breakers() -> impl IntoView {
     let auth = use_auth();
     let reload = RwSignal::new(0u32);
     let repos = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         reload.get();
         list_repositories(auth, None)
     });

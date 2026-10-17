@@ -92,12 +92,12 @@ pub fn AdminTemplatesPage() -> impl IntoView {
     let busy = RwSignal::new(false);
 
     let templates = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         reload.get();
         api::list_templates(auth)
     });
     let definitions = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         reload.get();
         api::list_definitions(auth)
     });

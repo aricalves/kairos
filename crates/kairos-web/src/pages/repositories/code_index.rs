@@ -342,7 +342,7 @@ pub fn CodeIndexPanel(
     });
 
     let state = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let _ = reload.get();
         let wanted = open.get();
         async move {

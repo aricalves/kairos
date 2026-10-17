@@ -56,7 +56,7 @@ fn TemplatePicker(#[prop(into)] parent_code: String) -> impl IntoView {
     let auth = use_auth();
     let reload = RwSignal::new(0u32);
     let templates = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let _ = reload.get();
         api::fetch_templates(auth)
     });
@@ -89,7 +89,7 @@ fn TemplateForm(
     let owner = RwSignal::new(String::new());
     let whoami = use_context::<LocalResource<Result<crate::api::Whoami, ApiError>>>();
     let all_boards = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         boards::data::list_boards(auth)
     });
     let targets: Memo<Vec<(String, String)>> = Memo::new(move |_| {
@@ -108,7 +108,7 @@ fn TemplateForm(
 
     // The declared-fields + content preview for the selected template.
     let detail = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         api::fetch_template_detail(auth, selected_id.get())
     });
 

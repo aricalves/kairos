@@ -82,6 +82,7 @@ use crate::app::AppState;
         crate::api::tasks::transition_task,
         // Task board move (KAIROS-I-0012).
         crate::api::tasks::move_task,
+        crate::api::tasks::claim_task,
         crate::api::tasks::hand_off_task,
         crate::api::tasks::release_task,
         crate::api::tasks::cancel_task,

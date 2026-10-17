@@ -1,9 +1,11 @@
 //! [`CachedTokenProvider`] — the CLI's implementation of
 //! `kairos_client::TokenProvider` (the KAIROS-T-0024 seam): draws the
 //! bearer token from the credential cache and transparently refreshes it
-//! on (imminent) expiry, persisting rotated tokens back to disk. A failed
-//! refresh surfaces as `Error::Token` with a re-login instruction, which
-//! `main` maps to exit code 2 (KAIROS-A-0015).
+//! on (imminent) expiry, persisting rotated tokens back to disk. A refresh
+//! that the issuer refuses surfaces as `Error::Token` with a re-login
+//! instruction, which `main` maps to exit code 2 (KAIROS-A-0015). An issuer
+//! that the CLI cannot reach is `Error::IssuerUnreachable`, exit code 1
+//! (KAIROS-T-0588): the login stays.
 //!
 //! A local session (COLLIERY-T-0213) is not refreshed. It is used until it
 //! expires, and then the same `Error::Token` gives the command to log in
@@ -79,13 +81,7 @@ impl CachedTokenProvider {
 
         let endpoints = oidc::discover_endpoints(&self.http, &entry.issuer)
             .await
-            .map_err(|err| {
-                Error::Token(format!(
-                    "The CLI cannot refresh the access token ({err}).\n\
-                     Run `kairos login --url {url}` to log in again.",
-                    url = self.deployment
-                ))
-            })?;
+            .map_err(|err| self.refresh_error(err))?;
         let refreshed = oidc::refresh_grant(
             &self.http,
             &endpoints.token_endpoint,
@@ -93,13 +89,7 @@ impl CachedTokenProvider {
             refresh_token,
         )
         .await
-        .map_err(|reason| {
-            Error::Token(format!(
-                "The session for {url} expired, and the CLI could not refresh it ({reason}).\n\
-                 Run `kairos login --url {url}` to log in again.",
-                url = self.deployment
-            ))
-        })?;
+        .map_err(|err| self.refresh_error(err))?;
 
         // Re-select the same bearer kind the session was established with
         // (T-0054): an `id_token` deployment must keep sending the id_token.
@@ -126,6 +116,27 @@ impl CachedTokenProvider {
         credentials::save(&self.path, &store).map_err(|err| Error::Token(err.to_string()))?;
 
         Ok(new_bearer)
+    }
+}
+
+impl CachedTokenProvider {
+    /// The error of a refresh that gave no token (KAIROS-T-0588). An issuer
+    /// that the CLI cannot reach is a transport failure (exit 1): the login
+    /// stays, and a new login would not help. A refusal of the issuer is the
+    /// end of the session (exit 2): the person must log in again.
+    fn refresh_error(&self, err: oidc::IssuerError) -> Error {
+        match err {
+            oidc::IssuerError::Unreachable(text) => Error::IssuerUnreachable(format!(
+                "The CLI cannot refresh the access token for {url}: {text}\n\
+                 Make sure that the network connection works. Then run the command again.",
+                url = self.deployment
+            )),
+            oidc::IssuerError::Refused(text) => Error::Token(format!(
+                "The session for {url} expired, and the CLI could not refresh it ({text}).\n\
+                 Run `kairos login --url {url}` to log in again.",
+                url = self.deployment
+            )),
+        }
     }
 }
 
@@ -192,6 +203,43 @@ mod tests {
         );
         assert!(!message.contains("refresh"), "{message}");
         assert!(!message.contains(BEARER), "{message}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// KAIROS-T-0588: an issuer that the CLI cannot reach is a transport
+    /// failure, not the end of the session. The text does not say to log in
+    /// again.
+    #[test]
+    fn an_unreachable_issuer_is_not_a_login_error() {
+        let (provider, dir) = provider_with("unreachable", unix_now() + 3600);
+        let err = provider.refresh_error(oidc::IssuerError::Unreachable(
+            "The CLI cannot reach the OIDC issuer at http://issuer.test: no route.".into(),
+        ));
+        let Error::IssuerUnreachable(text) = err else {
+            panic!("expected IssuerUnreachable, got {err}");
+        };
+        assert!(text.contains("http://issuer.test"), "{text}");
+        assert!(text.contains("network connection"), "{text}");
+        assert!(!text.contains("kairos login"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// KAIROS-T-0588: a refusal of the issuer is the end of the session. The
+    /// text gives the login command.
+    #[test]
+    fn a_refused_refresh_is_a_login_error() {
+        let (provider, dir) = provider_with("refused", unix_now() + 3600);
+        let err = provider.refresh_error(oidc::IssuerError::Refused(
+            "The issuer did not accept the refresh (400 Bad Request): invalid_grant".into(),
+        ));
+        let Error::Token(text) = err else {
+            panic!("expected Token, got {err}");
+        };
+        assert!(text.contains("could not refresh it"), "{text}");
+        assert!(
+            text.contains("kairos login --url http://one.kairos.test"),
+            "{text}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

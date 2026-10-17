@@ -132,7 +132,7 @@ pub fn FlowPanel(#[prop(into)] board: String) -> impl IntoView {
     let board = StoredValue::new(board);
     let range = RwSignal::new("90".to_string());
     let flow = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let days: u32 = range.get().parse().unwrap_or(90);
         fetch_flow(auth, board.get_value(), days)
     });

@@ -252,20 +252,70 @@ fn NoWork() -> impl IntoView {
     }
 }
 
+/// How long the page waits after an event before it reads again
+/// (KAIROS-T-0617): a burst of events is one read.
+const DEBOUNCE_MS: u64 = 250;
+
+/// The debounce of the live refetch (KAIROS-T-0617): `arm` says whether to
+/// start the timer (false while one runs), `fire` ends it. Pure, host-tested.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Debounce {
+    armed: bool,
+}
+
+impl Debounce {
+    /// An event came. `true`: start the timer. `false`: one runs already.
+    fn arm(&mut self) -> bool {
+        !std::mem::replace(&mut self.armed, true)
+    }
+
+    /// The timer fired: the next event starts a new one.
+    fn fire(&mut self) {
+        self.armed = false;
+    }
+}
+
 /// `/`: the work of the signed-in person.
 #[component]
 pub fn ForMePage() -> impl IntoView {
     let auth = use_auth();
     let reload = RwSignal::new(0u32);
+    // KAIROS-T-0617: one read at a time, and a burst of events is one read.
+    // The gate (the board's, `data::RefetchGate`) merges the events that
+    // come during a read into one more read; the debounce waits 250 ms
+    // after an event before it asks, so N events in a burst ask once.
+    let gate = StoredValue::new(super::boards::data::RefetchGate::default());
+    let debounce = StoredValue::new(Debounce::default());
     let my_work = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         reload.get();
-        work(auth)
+        async move {
+            gate.update_value(|g| g.started());
+            let result = work(auth).await;
+            if gate.try_update_value(|g| g.finished()).unwrap_or(false) {
+                reload.try_update(|n| *n += 1);
+            }
+            result
+        }
     });
+    let ask = move || {
+        let now = gate.try_update_value(|g| g.request()).unwrap_or(false);
+        if now {
+            reload.try_update(|n| *n += 1);
+        }
+    };
     // Live: each item event of the organization, and each reconnect, reads
-    // the work again.
+    // the work again, through the debounce and the gate.
     let guard = super::boards::live::subscribe_all_events(auth, move |_| {
-        reload.try_update(|n| *n += 1);
+        if debounce.try_update_value(Debounce::arm).unwrap_or(false) {
+            set_timeout(
+                move || {
+                    debounce.try_update_value(Debounce::fire);
+                    ask();
+                },
+                std::time::Duration::from_millis(DEBOUNCE_MS),
+            );
+        }
     });
     let live_guard: StoredValue<Option<super::boards::live::LiveBoardGuard>, LocalStorage> =
         StoredValue::new_local(Some(guard));
@@ -298,6 +348,16 @@ pub fn ForMePage() -> impl IntoView {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_burst_of_events_arms_one_timer() {
+        let mut debounce = super::Debounce::default();
+        assert!(debounce.arm(), "the first event starts the timer");
+        assert!(!debounce.arm(), "the second does not");
+        assert!(!debounce.arm());
+        debounce.fire();
+        assert!(debounce.arm(), "after the timer, the next event starts one");
+    }
+
     use super::*;
 
     fn item(code: &str, state: &str) -> WorkItem {

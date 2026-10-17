@@ -71,8 +71,13 @@ pub struct SearchFilter {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub board: Option<String>,
     /// Restrict to items in this board column (UUID; excludes documents).
+    /// Not with `column`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub column_id: Option<String>,
+    /// Restrict to items in this board column, by name (with `board`) or
+    /// UUID (KAIROS-T-0552). Not with `column_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<String>,
     /// Restrict to tasks assigned to this team (UUID; task-level attribute,
     /// other entity types are excluded).
     #[serde(default, skip_serializing_if = "Option::is_none")]

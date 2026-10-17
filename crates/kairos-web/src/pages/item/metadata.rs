@@ -49,7 +49,7 @@ pub fn MetadataPanel(
     let reload = RwSignal::new(0u32);
 
     let data = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let _ = reload.get();
         async move {
             let definitions = api::fetch_definitions(auth, family).await?;

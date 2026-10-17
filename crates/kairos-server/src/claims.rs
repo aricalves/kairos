@@ -52,6 +52,7 @@
 //! and the MCP tool call writes the line, only for a response that is a
 //! success.
 
+use kairos_core::short_code::ItemType;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -386,7 +387,7 @@ pub fn claim_text(
         None => false,
     };
     Ok(if claims_column {
-        "- claim: none. The task is free: the next person who moves it to Active gets the claim.\n"
+        "- claim: none. The task is free: claim_item takes it, and a move to Active gives it.\n"
             .to_string()
     } else {
         String::new()
@@ -419,16 +420,47 @@ pub fn require_claim_change(
     crate::api::require_capability(conn, slug, Some(board_id), user, "transition_items")
 }
 
+/// The right to take the claim of a free task (KAIROS-T-0528):
+/// `transition_items` on the board of the task, or the edit rule of the
+/// task (its creator, or `manage_tasks`).
+pub fn require_claim_take(
+    conn: &mut PgConnection,
+    slug: &str,
+    task_id: Uuid,
+    board_id: Uuid,
+    user: Uuid,
+) -> Result<(), ApiError> {
+    if crate::api::require_capability(conn, slug, Some(board_id), user, "transition_items").is_ok()
+    {
+        return Ok(());
+    }
+    crate::api::require_item_edit(conn, slug, user, task_id, ItemType::Task).map_err(|_| {
+        ApiError::forbidden(
+            "To claim a task, you need transition_items on its board, or the right to edit the \
+             task: its creator has it, and so does manage_tasks.",
+        )
+        .with_details(serde_json::json!({ "board_id": board_id, "capability": "transition_items" }))
+    })
+}
+
 /// The person that `reference` names, for a hand-off: a user id, an email
-/// or a user name of a member of the organization `slug`. A service
-/// account is refused: only a person can have a claim.
+/// or a user name of a member of the organization `slug`, or `me` for the
+/// caller `me` (KAIROS-T-0528). A service account is refused: only a
+/// person can have a claim.
 pub fn resolve_person(
     conn: &mut PgConnection,
     slug: &str,
     reference: &str,
+    me: Uuid,
 ) -> Result<Uuid, ApiError> {
     use kairos_db::schema::users;
+    let me_text = me.to_string();
     let reference = reference.trim();
+    let reference = if reference.eq_ignore_ascii_case("me") {
+        me_text.as_str()
+    } else {
+        reference
+    };
     let found: Option<(Uuid, String)> = if let Ok(id) = reference.parse::<Uuid>() {
         users::table
             .filter(users::id.eq(id))
@@ -481,6 +513,11 @@ pub fn map_claim_error(e: ClaimError) -> ApiError {
         }
         ClaimError::NoClaim { .. } => ApiError::unprocessable("NO_CLAIM", e.to_string()),
         ClaimError::AlreadyHolder { .. } => ApiError::conflict(e.to_string()),
+        // KAIROS-T-0528: a different person has the claim.
+        ClaimError::Claimed {
+            holder_id, since, ..
+        } => ApiError::new(axum::http::StatusCode::CONFLICT, "CLAIMED", e.to_string())
+            .with_details(serde_json::json!({ "holder_id": holder_id, "since": since })),
         ClaimError::NotAPerson(_) => ApiError::validation(e.to_string()),
         ClaimError::Database(db) => ApiError::internal(db),
     }

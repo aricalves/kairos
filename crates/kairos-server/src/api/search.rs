@@ -228,6 +228,8 @@ pub(crate) async fn search(
 pub(crate) struct FilterRefs {
     pub repository: Option<String>,
     pub board: Option<String>,
+    /// A column by name (needs the board) or by UUID (KAIROS-T-0552).
+    pub column: Option<String>,
     pub team: Option<String>,
     pub claimed_by: Option<String>,
     pub owned_by: Option<String>,
@@ -246,6 +248,7 @@ impl FilterRefs {
             (filter.board.clone(), filter.board_id.is_some()),
             (filter.team.clone(), filter.team_id.is_some()),
         )?
+        .with_column(filter.column.clone(), filter.column_id.is_some())?
         .with_people(
             filter.claimed_by.clone(),
             filter.owned_by.clone(),
@@ -265,6 +268,23 @@ impl FilterRefs {
         self.owned_by = owned_by;
         self.created_by = created_by;
         self
+    }
+
+    /// The column (KAIROS-T-0552): a name, resolved within the board of the
+    /// filter, or a UUID. `column` with `column_id` is refused.
+    pub(crate) fn with_column(
+        mut self,
+        column: Option<String>,
+        has_column_id: bool,
+    ) -> Result<Self, ApiError> {
+        if column.is_some() && has_column_id {
+            return Err(field_invalid(
+                "filter.column",
+                "The filter has column and column_id. Send only one of them.",
+            ));
+        }
+        self.column = column;
+        Ok(self)
     }
 
     /// From the values; each pair is the slug-or-UUID reference and
@@ -297,6 +317,7 @@ impl FilterRefs {
     pub(crate) fn is_empty(&self) -> bool {
         self.repository.is_none()
             && self.board.is_none()
+            && self.column.is_none()
             && self.team.is_none()
             && self.claimed_by.is_none()
             && self.owned_by.is_none()
@@ -375,6 +396,63 @@ impl FilterRefs {
                 })?;
             filter.board_id = Some(id);
         }
+        if let Some(reference) = self.column.as_deref() {
+            use kairos_db::schema::board_columns;
+            // KAIROS-T-0552: a UUID stands alone; a name needs the board.
+            let by_id = Uuid::parse_str(reference).ok();
+            let Some(board_id) = filter.board_id else {
+                match by_id {
+                    Some(id) => {
+                        filter.column_id = Some(id);
+                        return self.resolve_team(conn, filter);
+                    }
+                    None => {
+                        return Err(field_invalid(
+                            "filter.column",
+                            "A column by name needs the board: send filter.board with it.",
+                        ));
+                    }
+                }
+            };
+            let mut query = board_columns::table
+                .filter(board_columns::board_id.eq(board_id))
+                .filter(board_columns::deleted_at.is_null())
+                .select(board_columns::id)
+                .into_boxed();
+            query = match by_id {
+                Some(id) => query.filter(board_columns::id.eq(id)),
+                None => query.filter(board_columns::name.eq(reference)),
+            };
+            let id: Option<Uuid> = query.first(conn).optional().map_err(ApiError::internal)?;
+            let Some(id) = id else {
+                let names: Vec<String> = board_columns::table
+                    .filter(board_columns::board_id.eq(board_id))
+                    .filter(board_columns::deleted_at.is_null())
+                    .order(board_columns::position.asc())
+                    .select(board_columns::name)
+                    .load(conn)
+                    .map_err(ApiError::internal)?;
+                return Err(field_invalid(
+                    "filter.column",
+                    format!(
+                        "The board has no live column {reference:?}. Its columns are: {}.",
+                        names.join(", ")
+                    ),
+                ));
+            };
+            filter.column_id = Some(id);
+        }
+        self.resolve_team(conn, filter)
+    }
+
+    /// The team of the filter (split out so the column branch can finish
+    /// early; KAIROS-T-0552).
+    fn resolve_team(
+        &self,
+        conn: &mut diesel::pg::PgConnection,
+        filter: &mut core_search::SearchFilter,
+    ) -> Result<(), ApiError> {
+        use diesel::prelude::*;
         if let Some(reference) = self.team.as_deref() {
             use kairos_db::schema::teams;
             let mut query = teams::table

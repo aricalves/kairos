@@ -257,15 +257,9 @@ def run_logged(command, project, out, log):
     return code
 
 
-def refused_link_only(log):
-    """True when the last lines of the log are the refusal of an old kairos
-    for --link-only (clap: "unexpected argument '--link-only'")."""
-    try:
-        with open(log, encoding="utf-8", errors="replace") as handle:
-            tail = handle.read()[-2000:]
-    except OSError:
-        return False
-    return "--link-only" in tail and "unexpected argument" in tail
+# The exit code of kairos for an argument that it does not know
+# (KAIROS-T-0588): EX_USAGE. An auth error is 2, a failure 1.
+EXIT_USAGE = 64
 
 
 def run_update(project, folder):
@@ -295,11 +289,12 @@ def run_update(project, folder):
             out.write("Edited in a session since the last update: no files\n")
         out.flush()
         code = run_logged(command, project, out, log)
-        if code == 2 and "--link-only" in command and refused_link_only(log):
-            # A kairos from before COLLIERY-T-2529 has no --link-only. Run the
-            # update that it has, so the index does not stop updating.
+        if code == EXIT_USAGE and "--link-only" in command:
+            # A kairos that does not know --link-only refuses it with the
+            # usage code (KAIROS-T-0588). Run the update that it has, so the
+            # index does not stop updating.
             command = [part for part in command if part != "--link-only"]
-            out.write("This kairos has no --link-only option. Install a newer kairos. "
+            out.write("This kairos has no --link-only option. Run `kairos self-update`. "
                       "The update runs again with no option.\n")
             out.write(f"Command: {' '.join(command)}\n")
             out.flush()

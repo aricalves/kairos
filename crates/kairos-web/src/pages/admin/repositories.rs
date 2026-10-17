@@ -178,12 +178,12 @@ pub fn AdminRepositoriesPage() -> impl IntoView {
     let refused: RwSignal<Option<api::Refusal>> = RwSignal::new(None);
 
     let repos = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         reload.get();
         api::list_repositories(auth, None)
     });
     let teams = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         api::list_teams(auth)
     });
 
@@ -886,7 +886,7 @@ fn IssueImportStatus(
     let auth = use_auth();
     let slug = StoredValue::new(slug);
     let import = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let _ = reload.get();
         async move { api::issue_import(auth, &slug.get_value()).await }
     });

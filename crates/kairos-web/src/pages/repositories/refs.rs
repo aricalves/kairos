@@ -49,7 +49,7 @@ pub fn UnlinkedRefs(
     let open = RwSignal::new(false);
     let reload = RwSignal::new(0u32);
     let refs = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let _ = reload.get();
         let wanted = open.get();
         async move {

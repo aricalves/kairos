@@ -71,7 +71,7 @@ pub fn TeamsPanel(
     // A set or a clear reads the teams again.
     let version = RwSignal::new(0u32);
     let teams = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let _ = version.get();
         async move { api::fetch_item_teams(auth, family, &code.get_value()).await }
     });
@@ -99,7 +99,7 @@ pub fn TeamsPanel(
         })
     });
     let directory = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         async move { crate::pages::teams::api::list_teams(auth).await }
     });
     let current = Memo::new(move |_| match teams.get() {

@@ -29,8 +29,10 @@
 //! index of a checkout and serves its code tools to an agent over stdio
 //! ([`index`]).
 //!
-//! Exit codes (KAIROS-A-0015): 0 success · 1 API/validation error ·
-//! 2 auth error.
+//! Exit codes (KAIROS-A-0015, KAIROS-T-0588): 0 success · 1 API/validation
+//! error, a transport failure · 2 auth error · 3 `self-update --check` with a
+//! newer server · 64 usage error. With `--json`, an error is the S-0005
+//! envelope on stderr.
 
 mod auth;
 mod commands;
@@ -46,6 +48,7 @@ mod table;
 
 use std::process::ExitCode;
 
+use clap::error::ErrorKind;
 use clap::{Parser, Subcommand};
 
 use commands::admin::AdminCommand;
@@ -64,7 +67,7 @@ use commands::service_accounts::ServiceAccountsCommand;
 use commands::streams::StreamsCommand;
 use commands::teams::TeamsCommand;
 use credentials::{CredentialStore, DeploymentCredentials, unix_now};
-use error::CliError;
+use error::{CliError, EXIT_USAGE};
 use index::IndexArgs;
 use kairos_client::types_auth::LoginRequest;
 use kairos_client::types_org::WhoamiResponse;
@@ -76,7 +79,9 @@ use kairos_client::{Error as ApiError, KairosClient};
     version,
     about = "The Kairos command-line interface",
     long_about = "The Kairos command-line interface (KAIROS-A-0015).\nThe exit codes are: 0 for \
-         success, 1 for an error of the API or of the input, 2 for an error of the login.\n\n\
+         success, 1 for an error of the API, of the input or of the network, 2 for an error of \
+         the login, 3 for `self-update --check` when the server is newer, 64 for an argument \
+         that the CLI does not know. With --json, an error is a JSON envelope on stderr.\n\n\
          The credentials: `kairos login`, or a key in the environment. With KAIROS_KEY (else \
          KAIROS_MCP_KEY) set to an agent key or a service-account key, each command sends that \
          key and does not use the login. KAIROS_URL (or --url) names the deployment."
@@ -221,17 +226,45 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let cli = Cli::parse();
-    match run(cli.command).await {
-        Ok(()) => ExitCode::SUCCESS,
+    // KAIROS-T-0588: a usage error exits 64, not clap's 2, which is the
+    // auth code. `--help` and `--version` are not errors.
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
         Err(err) => {
-            eprintln!("error: {err}");
+            let _ = err.print();
+            return match err.kind() {
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => ExitCode::SUCCESS,
+                _ => ExitCode::from(EXIT_USAGE),
+            };
+        }
+    };
+    let json = json_requested(std::env::args().skip(1));
+    match run(cli.command).await {
+        Ok(code) => code,
+        Err(err) => {
+            if json {
+                eprintln!("{}", err.to_json());
+            } else {
+                eprintln!("error: {err}");
+            }
             ExitCode::from(err.exit_code())
         }
     }
 }
 
-async fn run(command: Command) -> Result<(), CliError> {
+/// Whether the command has `--json` (KAIROS-T-0588): then an error is the
+/// JSON envelope on stderr. The flag belongs to each command, not to the
+/// root, so the parsed tree has no one place for it. The arguments do: a
+/// `--json` that is not the flag does not parse (clap takes no value that
+/// starts with `--`), so after `try_parse` the only `--json` before `--` is
+/// the flag.
+fn json_requested(args: impl IntoIterator<Item = String>) -> bool {
+    args.into_iter()
+        .take_while(|arg| arg != "--")
+        .any(|arg| arg == "--json")
+}
+
+async fn run(command: Command) -> Result<ExitCode, CliError> {
     // KAIROS-T-0432: one line a day when the server is newer, after a
     // command that succeeded. Not for the commands that set up the CLI, and
     // not for `index`: its MCP server is a long stdio session.
@@ -239,11 +272,15 @@ async fn run(command: Command) -> Result<(), CliError> {
         command,
         Command::Login { .. } | Command::Logout { .. } | Command::Index(_) | Command::SelfUpdate(_)
     );
+    // `self-update --check` has an exit code of its own (KAIROS-T-0588).
+    if let Command::SelfUpdate(args) = command {
+        return args.run().await;
+    }
     let result = dispatch(command).await;
     if check && result.is_ok() {
         self_update::daily_check().await;
     }
-    result
+    result.map(|()| ExitCode::SUCCESS)
 }
 
 async fn dispatch(command: Command) -> Result<(), CliError> {
@@ -288,7 +325,7 @@ async fn dispatch(command: Command) -> Result<(), CliError> {
         Command::Unlink(args) => args.run().await,
         Command::Metadata(command) => command.run().await,
         Command::Templates(command) => command.run().await,
-        Command::SelfUpdate(args) => args.run().await,
+        Command::SelfUpdate(args) => args.run().await.map(|_| ()),
     }
 }
 
@@ -672,6 +709,45 @@ mod tests {
     #[test]
     fn smoke() {
         assert_eq!(env!("CARGO_PKG_NAME"), "kairos-cli");
+    }
+
+    /// KAIROS-T-0588: an argument the CLI does not know is a usage error
+    /// (64); `--help` and `--version` are not errors.
+    #[test]
+    fn usage_errors_are_not_help() {
+        let kind = |args: &[&str]| match Cli::try_parse_from(args) {
+            Ok(_) => panic!("{args:?} must not parse"),
+            Err(err) => err.kind(),
+        };
+        assert_eq!(
+            kind(&["kairos", "index", "update", "--no-such-flag"]),
+            ErrorKind::UnknownArgument
+        );
+        assert_eq!(EXIT_USAGE, 64);
+        assert_eq!(kind(&["kairos", "--help"]), ErrorKind::DisplayHelp);
+        assert_eq!(kind(&["kairos", "--version"]), ErrorKind::DisplayVersion);
+        assert_eq!(
+            kind(&["kairos"]),
+            ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        );
+    }
+
+    /// KAIROS-T-0588: `--json` anywhere before `--` asks for the JSON
+    /// envelope; after `--` it is a value.
+    #[test]
+    fn json_is_found_in_the_arguments() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(json_requested(args(&["tasks", "get", "X-T-1", "--json"])));
+        assert!(json_requested(args(&[
+            "whoami",
+            "--json",
+            "--url",
+            "https://x"
+        ])));
+        assert!(!json_requested(args(&["tasks", "get", "X-T-1"])));
+        assert!(!json_requested(args(&[
+            "tasks", "note", "X-T-1", "--", "--json"
+        ])));
     }
 
     /// KAIROS-T-0337: `grants add` grants manage_structure by default, on
