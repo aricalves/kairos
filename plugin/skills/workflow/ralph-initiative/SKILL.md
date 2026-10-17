@@ -41,7 +41,7 @@ The script writes the state of the loop to `~/.claude/kairos-ralph/<session id>.
 
 ## 3. Do the tasks
 
-The output of the script gives the tasks in sequence and the procedure. It also gives the skipped tasks and the reasons. Write the skipped tasks and their reasons on the initiative with `edit_item`.
+The output of the script gives the tasks in sequence and the procedure. It also gives the skipped tasks and the reasons. Write the skipped tasks and their reasons on the initiative with `append_note`.
 
 Do the tasks in that sequence. Each task goes through each step of `/kairos:implement`:
 

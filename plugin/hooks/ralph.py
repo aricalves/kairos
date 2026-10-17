@@ -293,7 +293,7 @@ PROCEDURE = """Each task goes through the steps of /kairos:implement (the `imple
 5. Do the work. Every few steps, write a short progress note on the task with `append_note`. End each note with a `Next step:` line.
 6. Do the completion gate. Run the formatter check, the linter with warnings denied, and the full test suite.
 7. For each acceptance criterion, write the command and its output on the task as evidence.
-8. Review the diff (the `code-review` skill). Commit to the current branch.
+8. Review the diff (the `kairos:code-review` skill). Commit to the current branch.
 9. Follow the commit rules of the repository and of the user. An example: a rule that forbids a session line in a commit.
 10. `transition_item` the task to Completed. Then go to the next task.
 
