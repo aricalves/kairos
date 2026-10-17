@@ -406,3 +406,28 @@ class SkillsWriteNoRepoFileForWiringOrNotes(unittest.TestCase):
         text = read(os.path.join(PLUGIN, "skills", "engineering", "prototype", "SKILL.md"))
         self.assertNotIn("NOTES.md", text)
         self.assertIn("append_note", text)
+
+class AgentKeyHowToMatchesTheManifest(unittest.TestCase):
+    """KAIROS-T-0600: the how-to "Give an agent your key" describes the
+    connection that `.claude-plugin/plugin.json` ships: the plugin's own
+    `kairos` server, fed by the variables of the user settings. The two
+    variable names come from the manifest, so a rename there fails here."""
+
+    REPO = os.path.dirname(PLUGIN)
+    HOW_TO = os.path.join(REPO, "docs", "src", "content", "docs", "how-to", "give-an-agent-your-key.md")
+    MANIFEST = os.path.join(REPO, ".claude-plugin", "plugin.json")
+
+    def test_the_how_to_names_the_variables_of_the_plugin_server(self):
+        import json
+        import re
+
+        manifest = json.load(open(self.MANIFEST))
+        server = manifest["mcpServers"]["kairos"]
+        names = set(re.findall(r"\$\{([A-Z_]+)\}", server["url"] + json.dumps(server.get("headers", {}))))
+        self.assertEqual(names, {"KAIROS_URL", "KAIROS_MCP_KEY"})
+        text = read(self.HOW_TO)
+        for name in names:
+            self.assertIn(name, text, f"the how-to must name {name}")
+        self.assertIn(".claude/kairos.local.md", text)
+        self.assertIn("writes only", text)
+        self.assertNotIn("writes this entry", text)

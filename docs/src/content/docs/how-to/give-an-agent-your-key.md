@@ -47,33 +47,48 @@ a different expiry. The flag `--no-expiry` makes a key with no expiry. Kairos ke
 hash of the key only. It cannot show the key again. If you lose the key, make a
 new key and revoke the old key.
 
-## 3. Put the key in the settings of the agent
+## 3. Put the key and the URL in the settings of the agent
 
-For Claude Code, put the key in the `env` section of your user settings,
-`~/.claude/settings.json`:
+For Claude Code, put the key and the deployment URL in the `env` section
+of your user settings, `~/.claude/settings.json`:
 
 ```json
-{ "env": { "KAIROS_MCP_KEY": "kairos_sk_acme_9f8e7d6c5b4a…" } }
+{
+  "env": {
+    "KAIROS_URL": "https://kairos.example.com",
+    "KAIROS_MCP_KEY": "kairos_sk_acme_9f8e7d6c5b4a…"
+  }
+}
 ```
 
-Do not put the key in a repository. Do not put the key in a chat.
+`KAIROS_URL` has no `/mcp` and no slash at the end. Do not put the key in a
+repository. Do not put the key in a chat.
 
-The MCP configuration of the repository holds the name of the variable only:
+The `kairos` plugin has its own `kairos` MCP server. It reads the two
+variables and connects in each repository of yours. You write no `.mcp.json`
+and you run no `claude mcp add`. The key holds its tenant, so the connection
+needs no `X-Tenant` header. In a repository, `/kairos:bootstrap` writes only
+`.claude/kairos.local.md`: the deployment, the board of your team and the
+repository.
+
+Write a project `.mcp.json` only when one repository must use a different
+deployment. Then the entry holds the name of the variable, not the key:
 
 ```json
 {
   "mcpServers": {
     "kairos": {
       "type": "http",
-      "url": "https://kairos.example.com/mcp",
+      "url": "https://other.example.com/mcp",
       "headers": { "Authorization": "Bearer ${KAIROS_MCP_KEY}" }
     }
   }
 }
 ```
 
-The key holds its tenant. The entry needs no `X-Tenant` header. The
-`/kairos:bootstrap` skill of the plugin writes this entry.
+Some deployments use OpenID Connect and no agent key. There, leave
+`KAIROS_URL` unset and add a user-scope server with no header. See
+[Connect over MCP](../connect-over-mcp/).
 
 ## 4. Make sure that it works
 
