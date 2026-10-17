@@ -354,3 +354,83 @@ pub fn transitions_of_boards(
         ))
         .load(conn)
 }
+
+// ---------------------------------------------------------------------------
+// The rows of the cards (KAIROS-T-0602)
+// ---------------------------------------------------------------------------
+
+/// The columns of a strategy card: the row without `content`,
+/// `created_by` and `updated_by` (KAIROS-T-0602). The board route reads
+/// these when the query does not ask for `fields=full`.
+#[derive(Debug, Clone, PartialEq, Eq, Queryable, Selectable)]
+#[diesel(table_name = crate::schema::strategies)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+pub struct StrategyCardRow {
+    pub id: Uuid,
+    pub short_code: String,
+    pub title: String,
+    pub board_id: Uuid,
+    pub column_id: Uuid,
+    pub hypothesis: Option<String>,
+    pub version: i32,
+    pub deleted_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// The columns of an initiative card (KAIROS-T-0602).
+#[derive(Debug, Clone, PartialEq, Eq, Queryable, Selectable)]
+#[diesel(table_name = crate::schema::initiatives)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+pub struct InitiativeCardRow {
+    pub id: Uuid,
+    pub short_code: String,
+    pub title: String,
+    pub board_id: Uuid,
+    pub column_id: Uuid,
+    pub complexity: Option<crate::models::Complexity>,
+    pub is_bucket: bool,
+    pub bucket_type: Option<crate::models::BucketType>,
+    pub version: i32,
+    pub deleted_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// The columns of a task card (KAIROS-T-0602).
+#[derive(Debug, Clone, PartialEq, Eq, Queryable, Selectable)]
+#[diesel(table_name = crate::schema::tasks)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+pub struct TaskCardRow {
+    pub id: Uuid,
+    pub short_code: String,
+    pub title: String,
+    pub board_id: Uuid,
+    pub column_id: Uuid,
+    pub task_type: crate::models::TaskType,
+    pub work_class: crate::models::WorkClass,
+    pub team_id: Option<Uuid>,
+    pub repository_id: Option<Uuid>,
+    pub version: i32,
+    pub deleted_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// The columns of an ADR card (KAIROS-T-0602).
+#[derive(Debug, Clone, PartialEq, Eq, Queryable, Selectable)]
+#[diesel(table_name = crate::schema::adrs)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+pub struct AdrCardRow {
+    pub id: Uuid,
+    pub short_code: String,
+    pub title: String,
+    pub board_id: Option<Uuid>,
+    pub column_id: Option<Uuid>,
+    pub decision_maker: Option<String>,
+    pub decision_date: Option<chrono::NaiveDate>,
+    pub version: i32,
+    pub deleted_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}

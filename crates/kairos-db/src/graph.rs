@@ -1146,7 +1146,7 @@ pub fn blocks_summary(
          LEFT JOIN board_columns other_column ON other_column.id = other_place.column_id
          WHERE NOT COALESCE(own_column.is_done, false)
            AND (NOT COALESCE(other_column.is_done, false)
-                OR (r.target_id = n.id
+                OR (n.blocked
                     AND EXISTS (SELECT 1 FROM task_cancellations k
                                  WHERE k.task_id = other.id)))
          GROUP BY n.id"

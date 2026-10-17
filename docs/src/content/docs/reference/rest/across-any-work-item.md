@@ -639,6 +639,10 @@ Reject a proposal. Recorded, not erased.
 Unified search (KAIROS-A-0007): full-text `q`, structured `filter`, and
 graph `traverse` compose freely; at least one must be present.
 
+A hit is a card (KAIROS-T-0602). It has the title and a `snippet` of
+the content near the match. It has no content. The item route of the
+hit gives the content.
+
 Request body (required): `application/json`, [`SearchRequest`](../schemas/#searchrequest)
 
 | Response | Body | Meaning |

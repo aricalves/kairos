@@ -106,11 +106,14 @@ pub(crate) fn state_dto(state: &TaskState, names: &HashMap<Uuid, String>) -> dto
 }
 
 /// Put the states of the tasks on their DTOs. Two queries for the list.
-pub fn attach_states(
+pub fn attach_states<T: crate::api::convert::TaskDto>(
     conn: &mut PgConnection,
-    tasks: &mut [dto::Task],
+    tasks: &mut [T],
 ) -> Result<(), diesel::result::Error> {
-    let ids: Vec<Uuid> = tasks.iter().filter_map(|t| t.id.parse().ok()).collect();
+    let ids: Vec<Uuid> = tasks
+        .iter()
+        .filter_map(|t| t.task_id().parse().ok())
+        .collect();
     let states = task_state::states_of(conn, &ids)?;
     if states.is_empty() {
         return Ok(());
@@ -118,10 +121,10 @@ pub fn attach_states(
     let users: Vec<Uuid> = states.values().map(|s| s.updated_by).collect();
     let names = display_names(conn, &users)?;
     for task in tasks {
-        let Ok(id) = task.id.parse::<Uuid>() else {
+        let Ok(id) = task.task_id().parse::<Uuid>() else {
             continue;
         };
-        task.state = states.get(&id).map(|state| state_dto(state, &names));
+        task.set_state(states.get(&id).map(|state| state_dto(state, &names)));
     }
     Ok(())
 }

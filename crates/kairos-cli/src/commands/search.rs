@@ -11,7 +11,6 @@ use kairos_client::types_search::{
     SearchFilter, SearchRequest, SearchResponse, SearchSort, SearchTraverse, SearchTraverseFrom,
 };
 
-use crate::commands::entities::EntityView;
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
 use crate::table::Table;
@@ -329,13 +328,49 @@ fn non_empty(values: &[String]) -> Option<Vec<String>> {
     (!values.is_empty()).then(|| values.to_vec())
 }
 
+/// The fields of a hit that the table shows (KAIROS-T-0602): a hit is a
+/// card, not the item.
+trait HitRow {
+    fn short_code(&self) -> &str;
+    fn title(&self) -> &str;
+    fn version(&self) -> i32;
+    fn archived_at(&self) -> Option<&str>;
+}
+
+macro_rules! hit_row {
+    ($($type:ty),*) => {$(
+        impl HitRow for $type {
+            fn short_code(&self) -> &str {
+                &self.short_code
+            }
+            fn title(&self) -> &str {
+                &self.title
+            }
+            fn version(&self) -> i32 {
+                self.version
+            }
+            fn archived_at(&self) -> Option<&str> {
+                self.archived_at.as_deref()
+            }
+        }
+    )*};
+}
+
+hit_row!(
+    kairos_client::types_cards::StrategyCard,
+    kairos_client::types_cards::InitiativeCard,
+    kairos_client::types_cards::TaskCard,
+    kairos_client::types_cards::DocumentCard,
+    kairos_client::types_cards::AdrCard
+);
+
 /// The human rendering: one CODE/TITLE/VER section per non-empty group.
 /// An archived hit carries an `[archived]` marker on its title
 /// (KAIROS-A-0020, KAIROS-T-0157): `--include-deleted` mixes put-away work
 /// in with live work, and a reader who cannot tell them apart will act on
 /// the wrong one.
 fn print_results(response: &SearchResponse) {
-    fn section<T: EntityView>(label: &str, items: &[T]) {
+    fn section<T: HitRow>(label: &str, items: &[T]) {
         if items.is_empty() {
             return;
         }
