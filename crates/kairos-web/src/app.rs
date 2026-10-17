@@ -119,7 +119,7 @@ fn Shell() -> impl IntoView {
     let auth = use_auth();
     let whoami = LocalResource::new(move || {
         // Track the session so a fresh login refetches.
-        let _ = auth.token();
+        auth.track_session();
         api::whoami(auth)
     });
     // Pages under the shell consume the same identity (KAIROS-T-0072: the

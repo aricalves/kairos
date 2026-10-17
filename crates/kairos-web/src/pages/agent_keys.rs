@@ -121,7 +121,7 @@ pub fn AgentKeysPage() -> impl IntoView {
     let made: RwSignal<Option<(String, String)>> = RwSignal::new(None);
 
     let keys = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         reload.get();
         list_agent_keys(auth)
     });

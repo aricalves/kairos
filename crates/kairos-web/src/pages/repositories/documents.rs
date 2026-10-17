@@ -61,7 +61,7 @@ pub fn RepositoryDocuments(
     let create_open = RwSignal::new(false);
     let reload = RwSignal::new(0u32);
     let items = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let _ = reload.get();
         let wanted = open.get();
         async move {
@@ -144,11 +144,11 @@ fn NewDocumentForm(#[prop(into)] slug: String) -> impl IntoView {
     let error = RwSignal::new(None::<String>);
     let whoami = use_context::<LocalResource<Result<crate::api::Whoami, ApiError>>>();
     let templates = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         item_api::fetch_templates(auth)
     });
     let all_boards = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         boards::data::list_boards(auth)
     });
     let targets: Memo<Vec<(String, String)>> = Memo::new(move |_| {

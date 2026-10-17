@@ -287,7 +287,7 @@ pub fn ForMePage() -> impl IntoView {
     let gate = StoredValue::new(super::boards::data::RefetchGate::default());
     let debounce = StoredValue::new(Debounce::default());
     let my_work = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         reload.get();
         async move {
             gate.update_value(|g| g.started());

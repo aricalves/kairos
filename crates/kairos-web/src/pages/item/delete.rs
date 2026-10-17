@@ -129,7 +129,7 @@ fn DeleteFlow(
     // transitive descendant set the server would cascade to, computed by
     // the same BFS as the delete — not just the item's direct children.
     let preview = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let _ = asked.get();
         async move { api::fetch_cascade_preview(auth, family, code.get_value()).await }
     });

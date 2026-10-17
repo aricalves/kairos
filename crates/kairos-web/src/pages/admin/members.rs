@@ -35,12 +35,12 @@ pub fn AdminMembersPage() -> impl IntoView {
     let busy = RwSignal::new(false);
 
     let members = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         reload.get();
         api::list_org_members(auth)
     });
     let whoami = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         crate::api::whoami(auth)
     });
     // The org-admin controls show only when whoami says so.

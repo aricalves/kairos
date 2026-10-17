@@ -55,7 +55,7 @@ struct DirectoryRow {
 pub fn TeamsPage() -> impl IntoView {
     let auth = use_auth();
     let rows = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         async move {
             let teams = api::list_teams(auth).await?;
             let mut rows = Vec::with_capacity(teams.len());
@@ -252,7 +252,7 @@ pub fn TeamPage() -> impl IntoView {
     let auth = use_auth();
     let params = use_params_map();
     let team = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let slug = params.read().get("slug").unwrap_or_default();
         async move { load_team_view(auth, &slug).await }
     });

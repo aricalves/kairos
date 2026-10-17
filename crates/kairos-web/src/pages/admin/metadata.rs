@@ -69,7 +69,7 @@ pub fn AdminMetadataPage() -> impl IntoView {
     let busy = RwSignal::new(false);
 
     let definitions = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         reload.get();
         api::list_definitions(auth)
     });

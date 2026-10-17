@@ -867,14 +867,14 @@ fn band_tiles(groups: Vec<BoardGroup>) -> Vec<(Option<(String, String)>, data::B
 pub fn BoardsPage() -> impl IntoView {
     let auth = use_auth();
     let boards = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         data::list_boards(auth)
     });
     // Team names for the delivery grouping. Optional enhancement data: a
     // failed teams read degrades to the "Team not found" group, never a
     // dead page.
     let teams = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         crate::pages::teams::api::list_teams(auth)
     });
     view! {
@@ -1267,7 +1267,7 @@ pub fn BoardPage() -> impl IntoView {
     // more read after it, and not one read for each event.
     let gate = StoredValue::new(data::RefetchGate::default());
     let board = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let _ = refresh.get();
         let param = params.read().get("board").unwrap_or_default();
         let read = BoardRead::start(gate, refresh);
@@ -1680,7 +1680,7 @@ fn BoardBody(
     // the teams of the person, who is not in this one. The list of teams
     // loads only for a person who can send a request.
     let teams = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let wanted = mode.get() == Some(CreateMode::Request);
         async move {
             if wanted {
@@ -3211,7 +3211,7 @@ fn CreateItemModal(
     // the tenant has one repository or more.
     let repos_team = StoredValue::new(team_id.clone());
     let repos = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let wanted = open.get() && matches!(kind, EntityKind::Task);
         async move {
             if wanted {
@@ -3414,7 +3414,7 @@ fn CreateDocumentModal(
 
     // Templates load lazily, first time the modal opens.
     let templates = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let wanted = open.get();
         async move {
             if wanted {

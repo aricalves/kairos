@@ -30,7 +30,7 @@ pub fn AdminStreamsPage() -> impl IntoView {
     let refused: RwSignal<Option<api::Refusal>> = RwSignal::new(None);
 
     let streams = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         reload.get();
         api::list_streams(auth)
     });
@@ -219,13 +219,13 @@ fn StreamTeamsPanel(
     let auth = use_auth();
     let stream = StoredValue::new(stream_id);
     let member_teams = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         reload.get();
         let id = stream.get_value();
         async move { api::stream_teams(auth, &id).await }
     });
     let all_teams = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         api::list_teams(auth)
     });
     let add_slug = RwSignal::new(String::new());

@@ -43,7 +43,7 @@ pub fn AdminTeamsPage() -> impl IntoView {
     let refused: RwSignal<Option<api::Refusal>> = RwSignal::new(None);
 
     let teams = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         reload.get();
         api::list_teams(auth)
     });
@@ -296,13 +296,13 @@ fn TeamMembersPanel(
     let auth = use_auth();
     let team = StoredValue::new(team_id);
     let members = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         reload.get();
         let id = team.get_value();
         async move { api::team_members(auth, &id).await }
     });
     let org_members = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         api::list_org_members(auth)
     });
     let add_email = RwSignal::new(String::new());

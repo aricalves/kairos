@@ -80,7 +80,7 @@ pub fn TeamDocPage() -> impl IntoView {
     let params = use_params_map();
     let whoami = use_context::<LocalResource<Result<crate::api::Whoami, ApiError>>>();
     let data = LocalResource::new(move || {
-        let _ = auth.token();
+        auth.track_session();
         let slug = params.read().get("slug").unwrap_or_default();
         async move {
             let team = api::team_by_slug(auth, &slug).await?;
