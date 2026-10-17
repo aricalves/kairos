@@ -18,7 +18,7 @@ The item is the record of the interview. A compaction loses the conversation, bu
 - **A short code** (`PREFIX-I-NNNN` or `PREFIX-S-NNNN`): call `get_item`. If it does not find the item, tell the user and stop. Then read:
   - each document that supports it (for example the PRD), with `get_item`;
   - the parent strategy of an initiative;
-  - the ADRs that inform it;
+  - the ADRs that support it;
   - the ADRs and the documents that impact the repository, and `related_work` on the item: [GROUND.md](../../meta/kairos/GROUND.md). Write its "Read: ..." sentence before the first question.
 - **A title**: confirm the title and the board with the user. The board is `initiative_board` in `.claude/kairos.local.md`, else find it with `my_boards`. Then call `create_item` (`item_type: initiative`). Send `parent` only when the user names a parent strategy. From then on, name the initiative only by the short code in the result.
 - **No argument**: ask the user which item to grill. Do not guess.
@@ -85,7 +85,7 @@ Rules for the text:
 
 Offer an ADR only when the three tests of `engineering/domain-modeling` hold. The decision is hard to reverse, surprising without context, and a real trade-off. Most decisions are lines under the Decisions heading. When the user agrees, record the ADR with `engineering/domain-modeling/ADR-FORMAT.md`:
 
-- `link_items` with `informs` from the ADR to the initiative;
+- `create_item` with `parent` the initiative (a `supports` edge);
 - `link_items` with `impacts` from the ADR to each repository that it is about.
 
 Then write the short code of the ADR on its line under the Decisions heading.
