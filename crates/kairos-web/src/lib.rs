@@ -12,7 +12,7 @@
 //! - [`auth`] — PKCE against the deployment issuer (A-0010): in-memory
 //!   tokens, silent refresh, login redirect, logout
 //! - [`api`] — thin fetch layer over the same-origin `/api` + mirror DTOs
-//! - [`pages`] — one module per route; T-0040..T-0044 replace the stubs
+//! - [`pages`] — one module per route
 
 pub mod api;
 pub mod app;
