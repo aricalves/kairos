@@ -153,11 +153,23 @@ The plugin gives each session the code index of the checkout (COLLIERY-T-1855, C
   update reads the deployment, the repository and the key (`KAIROS_KEY` or `KAIROS_MCP_KEY`)
   itself (COLLIERY-T-1854). The hook holds no credentials.
 - **The list of changed files.** `hooks/index_update.py record` is a `PostToolUse` hook on
-  `Edit`, `Write`, `MultiEdit` and `NotebookEdit`. It adds the path of each edited source file
-  of the checkout (`.rs`, `.py`, `.ts`, `.tsx`, `.js`, `.jsx`, `.go`) to a list. The background
-  job takes the list first, writes it to the log, runs the update, and clears the list only when
-  the update succeeds. The update finds each changed file by its content hash, also with no
-  list, so the list does not make the update faster today.
+  `Edit`, `Write`, `MultiEdit` and `NotebookEdit`. It finds the checkout of each edited source
+  file (`.rs`, `.py`, `.ts`, `.tsx`, `.js`, `.jsx`, `.go`): the nearest folder above the file with
+  `.git`. It adds the path of the file to the list of that checkout. In a board folder, each
+  edit goes to the list of its own clone or worktree (KAIROS-T-0524). An edit outside a git
+  checkout records nothing. The checkout needs the wiring: its own, the one of its clone, or
+  the one of the session folder above it. The background job takes the list
+  first, writes it to the log, runs the update, and clears the list only when the update
+  succeeds. The update finds each changed file by its content hash, also with no list, so the
+  list does not make the update faster today.
+- **The update after edits.** After an edit, `record` starts a detached
+  `index_update.py debounce` for the checkout of the file, if none waits already
+  (`debounce.lock`). This job waits until no edit came for 30 seconds. Then it waits for an
+  update that runs, and it runs the same update as the start. An edit during the update makes
+  it run again. So a burst of edits gives one update. The code tools are current about a
+  minute after the last edit (KAIROS-T-0524). `KAIROS_INDEX_DEBOUNCE_SECONDS` sets the
+  number of seconds. `off` stops the update after an edit. With no `kairos` on PATH, no job
+  starts.
 - **The result of the last update.** After each update, the background job writes
   `last-update.json` in the state folder: the exit code, the time, the command and the refusal.
   The refusal is the last `error: ` line of the output of `kairos` (KAIROS-T-0519). The next
@@ -166,8 +178,9 @@ The plugin gives each session the code index of the checkout (COLLIERY-T-1855, C
   line: the exit code, the refusal, the command to run again and the log. A success, no file, a
   file that does not parse, or a result older than 7 days gives no line.
 - **The state** is outside the checkout: `~/.claude/kairos-index/<name>-<hash>/` holds
-  `changed-files`, `update.log` (and `update.log.1`), `last-update.json` and `lock`. `KAIROS_INDEX_STATE_DIR`
-  overrides the parent folder. Only one update runs at a time for each checkout.
+  `changed-files`, `update.log` (and `update.log.1`), `last-update.json`, `lock`, `last-edit` and
+  `debounce.lock`. `KAIROS_INDEX_STATE_DIR` overrides the parent folder. Only one update runs at
+  a time for each checkout.
 - Tests: `hooks/test_index_update.py` (also `bin/kairos-code`), part of `angreal test unit`.
 
 ## The dispatch channel pushes a delivery into the session
