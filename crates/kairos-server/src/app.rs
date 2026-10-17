@@ -901,8 +901,8 @@ pub async fn serve(
 }
 
 /// The background work of `serve` for the role of the server
-/// (KAIROS-T-0394): the embedding refresher and retention where the API
-/// runs, the code index builder where the builds run, and the job worker
+/// (KAIROS-T-0394): the embedding refresher, retention and the report of
+/// the stale claims (KAIROS-T-0531) where the API runs, the code index builder where the builds run, and the job worker
 /// on each server. The job worker of `state` registers only the kinds of
 /// its role.
 async fn start_background(state: &AppState, retention: kairos_core::retention::RetentionConfig) {
@@ -941,6 +941,22 @@ async fn start_background(state: &AppState, retention: kairos_core::retention::R
     // refresher: a job that a stop cuts short keeps its lease until it runs
     // out, and then a server takes it again.
     tokio::spawn(Arc::clone(&state.jobs).run());
+    // KAIROS-T-0531: the report of the stale claims is a periodic job too.
+    // `KAIROS_STALE_CLAIM_DAYS=0` turns it off.
+    let stale_days = state.config.stale_claim_days;
+    if stale_days > 0 && role.runs_pass(crate::periodic::STALE_CLAIMS) {
+        if let Err(e) = state
+            .jobs
+            .add_periodic(
+                crate::periodic::STALE_CLAIMS,
+                crate::periodic::STALE_CLAIMS_INTERVAL,
+                crate::periodic::stale_claims_pass(state.config.database_url.clone(), stale_days),
+            )
+            .await
+        {
+            tracing::error!(error = ?e, "stale claims: the first run of the pass was not added");
+        }
+    }
     // KAIROS-T-0366, KAIROS-T-0376: retention is a periodic job. The queue
     // gives each run to one server, and each run adds the next.
     if !role.runs_pass(crate::periodic::RETENTION) {

@@ -219,6 +219,15 @@ saw>`; the first element is the one under the caller's control.
 The keys that exist keep their expiry: the setting applies to new keys. See
 [Rotate keys](../../how-to/rotate-keys/).
 
+### Stale claims
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `KAIROS_STALE_CLAIM_DAYS` | integer | `14` | A claim on a task with no write and no state change for this many days is stale. Each hour, a periodic pass tells the holder and the owner of the initiative of the task (the notification `claim_stale`). It tells them once for each quiet period. The claim stays. `0` turns the pass off. The value applies to each tenant of the deployment. |
+
+A server with `KAIROS_ROLE=worker` does not run the pass. See
+[Teams and boards](../../explanation/teams-and-boards/#who-works-on-a-task-the-claim).
+
 ### Security headers
 
 The server sends these headers on each response:

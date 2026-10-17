@@ -364,6 +364,13 @@ pub struct AppConfig {
     /// makes a key with no expiry. `0` turns the default off: a new key has
     /// no expiry unless the request names one.
     pub api_key_ttl_days: u32,
+    /// `KAIROS_STALE_CLAIM_DAYS` (KAIROS-T-0531): a claim on a task with no
+    /// write and no state change for this many days is stale, default
+    /// **14**. The periodic pass `stale-claims` tells the holder and the
+    /// owner of the initiative of the task, once for each quiet period. The
+    /// claim stays. `0` turns the pass off. The value applies to each
+    /// tenant of the deployment.
+    pub stale_claim_days: u32,
     /// `KAIROS_API_KEY_ROTATION_GRACE_SECS` (KAIROS-T-0370): after a
     /// rotation, the old secret of a key stays valid for this time, default
     /// **86400** (1 day), so that the agents can change to the new secret.
@@ -766,6 +773,7 @@ impl AppConfig {
             local_auth,
             session_ttl_secs,
             api_key_ttl_days: parse_num(&get, "KAIROS_API_KEY_TTL_DAYS", 90)?,
+            stale_claim_days: parse_num(&get, "KAIROS_STALE_CLAIM_DAYS", 14)?,
             api_key_rotation_grace_secs: parse_num(
                 &get,
                 "KAIROS_API_KEY_ROTATION_GRACE_SECS",
@@ -990,6 +998,22 @@ mod tests {
         // the old secret for 1 day.
         assert_eq!(config.api_key_ttl_days, 90);
         assert_eq!(config.api_key_rotation_grace_secs, 24 * 60 * 60);
+        // KAIROS-T-0531: a claim is stale after 14 days with no write.
+        assert_eq!(config.stale_claim_days, 14);
+    }
+
+    #[test]
+    fn the_stale_claim_days_parse_and_0_turns_the_pass_off() {
+        for (value, days) in [("0", 0), ("30", 30)] {
+            let mut vars = MINIMAL.to_vec();
+            vars.push(("KAIROS_STALE_CLAIM_DAYS", value));
+            let config = AppConfig::from_lookup(lookup(&vars)).expect("valid config");
+            assert_eq!(config.stale_claim_days, days, "{value}");
+        }
+        let mut vars = MINIMAL.to_vec();
+        vars.push(("KAIROS_STALE_CLAIM_DAYS", "two weeks"));
+        let err = AppConfig::from_lookup(lookup(&vars)).unwrap_err();
+        assert!(err.to_string().contains("KAIROS_STALE_CLAIM_DAYS"), "{err}");
     }
 
     #[test]
@@ -1389,6 +1413,9 @@ mod tests {
         assert!(ServerRole::All.runs_pass(sweep) && ServerRole::All.runs_pass(retention));
         assert!(!ServerRole::Api.runs_pass(sweep) && ServerRole::Api.runs_pass(retention));
         assert!(ServerRole::Worker.runs_pass(sweep) && !ServerRole::Worker.runs_pass(retention));
+        // KAIROS-T-0531: the report of the stale claims runs where the API runs.
+        let stale = crate::periodic::STALE_CLAIMS;
+        assert!(ServerRole::Api.runs_pass(stale) && !ServerRole::Worker.runs_pass(stale));
         assert!(ServerRole::Api.serves_api() && !ServerRole::Worker.serves_api());
     }
 
