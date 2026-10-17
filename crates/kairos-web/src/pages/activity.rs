@@ -737,6 +737,8 @@ fn FeedPager(page: ListEnvelope<ActivityEntry>, applied: RwSignal<FeedFilters>) 
     let offset = RwSignal::new(usize::try_from(page.offset).unwrap_or(0));
     let limit = RwSignal::new(usize::try_from(PAGE_SIZE).unwrap_or(25));
     let total = usize::try_from(page.total).unwrap_or(0);
+    // KAIROS-T-0627: past 1000 entries the server stops the count.
+    let capped = api::feed_count_bound(page.offset, page.limit, page.total);
     let go = Callback::new(move |(to, _): (usize, usize)| {
         applied.update(|filters| filters.offset = i64::try_from(to).unwrap_or(0));
     });
@@ -744,7 +746,10 @@ fn FeedPager(page: ListEnvelope<ActivityEntry>, applied: RwSignal<FeedFilters>) 
         // KAIROS-T-0326: Aurora 0.4.1 takes the range text, so the pager
         // says the sentence of COLLIERY-T-0258 in place of "1–25 of 212".
         <Pagination offset limit total=total on_change=go
-            range_label=Callback::new(|range| api::page_range_text(&range))/>
+            range_label=Callback::new(move |range| match capped {
+                Some(bound) => api::capped_range_text(&range, bound),
+                None => api::page_range_text(&range),
+            })/>
     }
 }
 

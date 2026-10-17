@@ -5,14 +5,29 @@
 //!
 //! Each member of the organization can read a board, so each member can
 //! read its flow.
+//!
+//! # The cache (KAIROS-T-0627)
+//!
+//! The result is kept in the memory of the server, by board, range and
+//! [`flow::FlowBoard::stamp`], for [`CACHE_TTL`] at most. The stamp changes
+//! with each move, each new or archived item, each title and each column of
+//! the board, so a read after a transition computes again on each server,
+//! and no write drops an entry. A read reads the columns, the items and the
+//! cancel marks each time (5 queries); a hit does not read the activity log.
+//! The age of the work in progress is set at each read.
 
 use axum::extract::{Extension, Path, State};
 use axum::routing::get;
 use axum::{Json, Router};
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
+
 use chrono::{DateTime, Days, NaiveDate, SecondsFormat, Utc};
 use diesel::pg::PgConnection;
 use kairos_client::types_org as dto;
-use kairos_db::flow::{self, Flow, MAX_RANGE_DAYS};
+use kairos_db::flow::{self, Flow, FlowInput, MAX_RANGE_DAYS};
+use uuid::Uuid;
 
 use super::load_board_by_ref;
 use crate::app::AppState;
@@ -145,6 +160,64 @@ pub fn to_dto(board_id: String, board_slug: String, flow: &Flow) -> dto::BoardFl
     }
 }
 
+/// The longest time that a result stays in the cache (module docs).
+pub const CACHE_TTL: Duration = Duration::from_secs(300);
+
+/// The most results in the cache. A full cache drops its old entries,
+/// then everything.
+pub const CACHE_CAPACITY: usize = 256;
+
+/// The key of a result: the board, the range, and the stamp of the board.
+type CacheKey = (Uuid, NaiveDate, NaiveDate, u64);
+
+static CACHE: LazyLock<Mutex<HashMap<CacheKey, (Instant, Flow)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn cached(key: &CacheKey) -> Option<Flow> {
+    let mut cache = CACHE.lock().expect("the flow cache lock");
+    match cache.get(key) {
+        Some((at, flow)) if at.elapsed() < CACHE_TTL => Some(flow.clone()),
+        Some(_) => {
+            cache.remove(key);
+            None
+        }
+        None => None,
+    }
+}
+
+fn keep(key: CacheKey, flow: Flow) {
+    let mut cache = CACHE.lock().expect("the flow cache lock");
+    if cache.len() >= CACHE_CAPACITY && !cache.contains_key(&key) {
+        cache.retain(|_, (at, _)| at.elapsed() < CACHE_TTL);
+        if cache.len() >= CACHE_CAPACITY {
+            cache.clear();
+        }
+    }
+    cache.insert(key, (Instant::now(), flow));
+}
+
+/// The metrics of the board `board_id` for the days `from..=to` at `now`,
+/// from the cache when the board has not changed (module docs).
+pub fn flow_of_board(
+    conn: &mut PgConnection,
+    board_id: Uuid,
+    from: NaiveDate,
+    to: NaiveDate,
+    now: DateTime<Utc>,
+) -> Result<Flow, ApiError> {
+    let board = flow::load_board(conn, board_id).map_err(ApiError::internal)?;
+    let key = (board_id, from, to, board.stamp);
+    if let Some(mut flow) = cached(&key) {
+        flow.age_at(now);
+        return Ok(flow);
+    }
+    let moves = flow::load_moves(conn, board_id, &board, flow::start_of(from))
+        .map_err(ApiError::internal)?;
+    let flow = flow::compute(&FlowInput::new(board, moves), from, to, now);
+    keep(key, flow.clone());
+    Ok(flow)
+}
+
 /// The flow of the board `reference` (slug or UUID) for the range; the
 /// shared body of REST and MCP.
 pub fn board_flow_of(
@@ -156,8 +229,7 @@ pub fn board_flow_of(
     let now = Utc::now();
     let (from, to) = resolve_range(from, to, now.date_naive())?;
     let board = load_board_by_ref(conn, reference)?;
-    let input = flow::load_input(conn, board.id).map_err(ApiError::internal)?;
-    let flow = flow::compute(&input, from, to, now);
+    let flow = flow_of_board(conn, board.id, from, to, now)?;
     Ok(to_dto(board.id.to_string(), board.slug, &flow))
 }
 

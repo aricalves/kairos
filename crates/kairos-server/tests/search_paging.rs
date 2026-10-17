@@ -105,12 +105,24 @@ fn oracle_rows(conn: &mut PgConnection) -> Vec<OracleRow> {
     sql_query(sql).load(conn).expect("oracle rows")
 }
 
-/// The `ts_rank_cd` of each item that matches `q`, from the view.
+/// The `ts_rank_cd` of each item that matches `q`. The vector is the
+/// expression over the title and the content of the item tables, not the
+/// stored vector of `item_search` (KAIROS-T-0624): so the pages prove that
+/// the stored vector matches and ranks as the expression does.
 fn oracle_scores(conn: &mut PgConnection, q: &str) -> HashMap<Uuid, f32> {
-    let rows: Vec<ScoreRow> = sql_query(
+    let arm = |table: &str| {
+        format!(
+            "SELECT id, setweight(to_tsvector('english', coalesce(title, '')), 'A') \
+             || setweight(to_tsvector('english', coalesce(content, '')), 'B') AS tsv FROM {table}"
+        )
+    };
+    let items = ["strategies", "initiatives", "tasks", "documents", "adrs"]
+        .map(arm)
+        .join(" UNION ALL ");
+    let rows: Vec<ScoreRow> = sql_query(format!(
         "SELECT id, ts_rank_cd(tsv, websearch_to_tsquery('english', $1)) AS score \
-         FROM searchable_items WHERE tsv @@ websearch_to_tsquery('english', $1)",
-    )
+         FROM ({items}) i WHERE tsv @@ websearch_to_tsquery('english', $1)"
+    ))
     .bind::<Text, _>(q)
     .load(conn)
     .expect("oracle scores");
@@ -650,7 +662,7 @@ async fn search_pages_in_sql_over_a_thousand_items() {
         }
         times.sort();
         eprintln!(
-            "T-0623 evidence: {label}: median {:?} (min {:?}, max {:?}), {size} bytes",
+            "search evidence: {label}: median {:?} (min {:?}, max {:?}), {size} bytes",
             times[3], times[0], times[6]
         );
     }

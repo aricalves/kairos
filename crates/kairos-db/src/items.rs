@@ -2078,7 +2078,7 @@ fn soft_delete_planned(
 
         // KAIROS-T-0022: one thin event for the cascade root, delivered on
         // commit ([`events::item_placement`] still sees the soft-deleted
-        // row). Clients re-fetch, which also reveals cascaded descendants.
+        // row).
         events::emit_item_event_by_id(
             conn,
             EventKind::ItemDeleted,
@@ -2086,6 +2086,11 @@ fn soft_delete_planned(
             item_id,
             actor,
         )?;
+        // KAIROS-T-0574: and one for each cascaded descendant, with its own
+        // board, so a socket filtered to the board of a descendant hears it.
+        for code in &cascaded_short_codes {
+            events::emit_item_event_by_code(conn, EventKind::ItemDeleted, code, actor)?;
+        }
 
         Ok(SoftDeleteOutcome {
             root_short_code,
@@ -2382,6 +2387,8 @@ pub fn restore_item(
             item_type.entity_type(),
             details,
         )?;
+        // One event: a restore puts back the named item only. Its archived
+        // descendants stay archived, so they get no event (KAIROS-T-0574).
         events::emit_item_event_by_id(
             conn,
             EventKind::ItemRestored,

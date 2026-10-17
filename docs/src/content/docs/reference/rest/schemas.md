@@ -906,7 +906,7 @@ The number of live items in each column at the end of each day of the range (UTC
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `columns` | array of `string` | yes | The columns: those of the board in position order, then an old name of a column that the history has (a column that has a new name now). |
+| `columns` | array of `string` | yes | The columns: those of the board in position order, then an old name of a column that the history has (a column that has a new name now), in name order. An old name is in the list only when it has an item on a day of the range (KAIROS-T-0627). |
 | `days` | array of [`CumulativeFlowDay`](#cumulativeflowday) | yes | One row for each day; `counts` has the order of `columns`. |
 
 ## CumulativeFlowDay
@@ -1473,7 +1473,7 @@ The S-0005 list envelope: `{items, total, limit, offset}`.
 | `items` | array of `object` | yes |  |
 | `limit` | `integer` | yes | The applied limit. |
 | `offset` | `integer` | yes | The applied offset. |
-| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
 
 ## ListEnvelope_Adr
 
@@ -1484,7 +1484,7 @@ The S-0005 list envelope: `{items, total, limit, offset}`.
 | `items` | array of `object` | yes |  |
 | `limit` | `integer` | yes | The applied limit. |
 | `offset` | `integer` | yes | The applied offset. |
-| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
 
 ## ListEnvelope_Board
 
@@ -1495,7 +1495,7 @@ The S-0005 list envelope: `{items, total, limit, offset}`.
 | `items` | array of `object` | yes |  |
 | `limit` | `integer` | yes | The applied limit. |
 | `offset` | `integer` | yes | The applied offset. |
-| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
 
 ## ListEnvelope_DeliveryStream
 
@@ -1506,7 +1506,7 @@ The S-0005 list envelope: `{items, total, limit, offset}`.
 | `items` | array of `object` | yes |  |
 | `limit` | `integer` | yes | The applied limit. |
 | `offset` | `integer` | yes | The applied offset. |
-| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
 
 ## ListEnvelope_Document
 
@@ -1517,7 +1517,7 @@ The S-0005 list envelope: `{items, total, limit, offset}`.
 | `items` | array of `object` | yes |  |
 | `limit` | `integer` | yes | The applied limit. |
 | `offset` | `integer` | yes | The applied offset. |
-| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
 
 ## ListEnvelope_HistoryVersion
 
@@ -1528,7 +1528,7 @@ The S-0005 list envelope: `{items, total, limit, offset}`.
 | `items` | array of `object` | yes |  |
 | `limit` | `integer` | yes | The applied limit. |
 | `offset` | `integer` | yes | The applied offset. |
-| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
 
 ## ListEnvelope_Initiative
 
@@ -1539,7 +1539,7 @@ The S-0005 list envelope: `{items, total, limit, offset}`.
 | `items` | array of `object` | yes |  |
 | `limit` | `integer` | yes | The applied limit. |
 | `offset` | `integer` | yes | The applied offset. |
-| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
 
 ## ListEnvelope_MetadataDefinition
 
@@ -1550,7 +1550,7 @@ The S-0005 list envelope: `{items, total, limit, offset}`.
 | `items` | array of `object` | yes |  |
 | `limit` | `integer` | yes | The applied limit. |
 | `offset` | `integer` | yes | The applied offset. |
-| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
 
 ## ListEnvelope_OrgAgentKey
 
@@ -1561,7 +1561,7 @@ The S-0005 list envelope: `{items, total, limit, offset}`.
 | `items` | array of `object` | yes |  |
 | `limit` | `integer` | yes | The applied limit. |
 | `offset` | `integer` | yes | The applied offset. |
-| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
 
 ## ListEnvelope_OrgMember
 
@@ -1572,7 +1572,7 @@ The S-0005 list envelope: `{items, total, limit, offset}`.
 | `items` | array of `object` | yes |  |
 | `limit` | `integer` | yes | The applied limit. |
 | `offset` | `integer` | yes | The applied offset. |
-| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
 
 ## ListEnvelope_Repository
 
@@ -1583,7 +1583,7 @@ The S-0005 list envelope: `{items, total, limit, offset}`.
 | `items` | array of `object` | yes |  |
 | `limit` | `integer` | yes | The applied limit. |
 | `offset` | `integer` | yes | The applied offset. |
-| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
 
 ## ListEnvelope_SitePublish
 
@@ -1594,7 +1594,7 @@ The S-0005 list envelope: `{items, total, limit, offset}`.
 | `items` | array of `object` | yes |  |
 | `limit` | `integer` | yes | The applied limit. |
 | `offset` | `integer` | yes | The applied offset. |
-| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
 
 ## ListEnvelope_Strategy
 
@@ -1605,7 +1605,7 @@ The S-0005 list envelope: `{items, total, limit, offset}`.
 | `items` | array of `object` | yes |  |
 | `limit` | `integer` | yes | The applied limit. |
 | `offset` | `integer` | yes | The applied offset. |
-| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
 
 ## ListEnvelope_Task
 
@@ -1616,7 +1616,7 @@ The S-0005 list envelope: `{items, total, limit, offset}`.
 | `items` | array of `object` | yes |  |
 | `limit` | `integer` | yes | The applied limit. |
 | `offset` | `integer` | yes | The applied offset. |
-| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
 
 ## ListEnvelope_Team
 
@@ -1627,7 +1627,7 @@ The S-0005 list envelope: `{items, total, limit, offset}`.
 | `items` | array of `object` | yes |  |
 | `limit` | `integer` | yes | The applied limit. |
 | `offset` | `integer` | yes | The applied offset. |
-| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
 
 ## ListEnvelope_Template
 
@@ -1638,7 +1638,7 @@ The S-0005 list envelope: `{items, total, limit, offset}`.
 | `items` | array of `object` | yes |  |
 | `limit` | `integer` | yes | The applied limit. |
 | `offset` | `integer` | yes | The applied offset. |
-| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
 
 ## ListEnvelope_TenantSummary
 
@@ -1649,7 +1649,7 @@ The S-0005 list envelope: `{items, total, limit, offset}`.
 | `items` | array of `object` | yes |  |
 | `limit` | `integer` | yes | The applied limit. |
 | `offset` | `integer` | yes | The applied offset. |
-| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
 
 ## LocalAccountView
 

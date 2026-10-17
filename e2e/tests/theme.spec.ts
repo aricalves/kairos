@@ -14,7 +14,9 @@
 //      data-theme before the app loads
 //   4b. Hyper (KAIROS-T-0397): the toggle sets data-theme "hyper", the
 //      background is different from light and dark, and the choice
-//      survives a reload
+//      survives a reload. KAIROS-T-0605: the page has no hyper stylesheet
+//      until Hyper is chosen; the toggle then adds it, and after a reload
+//      index.html loads it before the first paint
 //   5. the main pages (boards, a board, an item, the graph, search,
 //      activity, admin) render in the two themes with no raw colour in an
 //      inline style or in an SVG fill/stroke attribute (the tokens only)
@@ -36,6 +38,13 @@ async function bodyBackground(page: Page): Promise<string> {
 
 async function themeAttr(page: Page): Promise<string | null> {
   return page.evaluate(() => document.documentElement.getAttribute('data-theme'));
+}
+
+/** The number of hyper stylesheets on the page (KAIROS-T-0605). */
+async function hyperLinks(page: Page): Promise<number> {
+  return page.evaluate(
+    () => document.querySelectorAll('link[rel="stylesheet"][href^="/hyper-"]').length,
+  );
 }
 
 /** Each inline style and each SVG fill/stroke attribute with a raw colour. */
@@ -174,6 +183,8 @@ test('theme: follows the OS, the toggle switches and persists, pages use tokens 
     await choose(page, 'Light');
     expect(await themeAttr(page)).toBe('light');
     lightBackground = await bodyBackground(page);
+    // Light and dark need no hyper stylesheet (KAIROS-T-0605).
+    expect(await hyperLinks(page)).toBe(0);
     await choose(page, 'Dark');
     expect(await themeAttr(page)).toBe('dark');
     darkBackground = await bodyBackground(page);
@@ -198,14 +209,24 @@ test('theme: follows the OS, the toggle switches and persists, pages use tokens 
 
   // 4b. Hyper applies and survives a reload (KAIROS-T-0397) -------------------
   await test.step('Hyper applies and survives a reload', async () => {
+    expect(await hyperLinks(page)).toBe(0);
     await choose(page, 'Hyper');
     expect(await themeAttr(page)).toBe('hyper');
+    // The toggle adds the hyper stylesheet; the background changes when it
+    // has loaded (KAIROS-T-0605).
+    expect(await hyperLinks(page)).toBe(1);
+    await expect
+      .poll(async () => {
+        const background = await bodyBackground(page);
+        return background !== lightBackground && background !== darkBackground;
+      })
+      .toBe(true);
     const hyperBackground = await bodyBackground(page);
-    expect(hyperBackground).not.toBe(lightBackground);
-    expect(hyperBackground).not.toBe(darkBackground);
     await page.reload();
-    // The init script runs before the WASM: the attribute is there at once.
+    // The init script runs before the WASM: the attribute is there at once,
+    // and index.html loads the hyper stylesheet before the first paint.
     expect(await themeAttr(page)).toBe('hyper');
+    expect(await hyperLinks(page)).toBe(1);
     expect(await bodyBackground(page)).toBe(hyperBackground);
     await expect(toggle(page)).toBeVisible({ timeout: 20_000 });
     await expect(toggle(page).getByRole('button', { name: 'Hyper', exact: true })).toHaveAttribute(

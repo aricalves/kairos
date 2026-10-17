@@ -60,33 +60,78 @@ One JSON object per WebSocket text message
 | Field | Meaning |
 |---|---|
 | `event` | One of the values in the tables below |
-| `entity_type` | `strategy` \| `initiative` \| `task` \| `document` \| `adr` \| `repository` \| `notification` |
-| `short_code` | The affected item — re-fetch it via the REST API. For `repository`, the slug of the repository |
+| `entity_type` | `strategy` \| `initiative` \| `task` \| `document` \| `adr` \| `repository` \| `board` \| `notification` |
+| `short_code` | The affected item — re-fetch it via the REST API. For `repository` and `board`, the slug |
 | `board_id` | The item's board (UUID); `null` for off-board items (documents, unplaced ADRs) |
 | `column_id` | The item's (new) column (UUID); omitted when not applicable |
+| `change` | What changed, for `claim_changed` and `board_configured`; omitted for each other kind |
 | `actor` | The acting user's id (UUID). For a change that an agent made with the agent key of a person, the person |
 | `agent_key_id` | The agent key (UUID) of the change, when an agent made it with the agent key of a person; omitted otherwise |
 | `occurred_at` | RFC 3339 timestamp |
 
 ### The `event` vocabulary
 
-Ten values are for the items and the repositories. Two values are for the
-notifications of a person (see [The events of a person](#the-events-of-a-person)).
+Fourteen values are for the items, the boards and the repositories. Two values
+are for the notifications of a person (see [The events of a person](#the-events-of-a-person)).
 A client that does not recognise a value should re-fetch the item and otherwise
 ignore it.
 
 | `event` | Emitted when |
 |---|---|
 | `item_created` | An item was created |
-| `item_updated` | An item's content changed (an edit, or a rollback) Also a write of the live state of a task (`set_state`, KAIROS-T-0533). |
+| `item_updated` | An item's content changed (an edit, or a rollback). Also a write of the live state of a task (`set_state`), a claim, a hand-off and a release |
 | `item_transitioned` | An item moved to another column of its own board |
 | `item_moved` | A task moved to another delivery board. Emitted **twice**: once for the board it left (`board_id` = the source, no `column_id`) and once for the board it joined, so both boards' subscribers re-fetch |
-| `item_deleted` | An item was soft-deleted (put away) |
-| `item_restored` | An archived item was put back. **Distinct from `item_created`**: the item and its history existed all along, so a client that treats this as a create shows a new card carrying an old version number |
+| `item_deleted` | An item was soft-deleted (put away). An archive cascade sends one event for each item that it puts away, each with the board of that item |
+| `item_restored` | An archived item was put back. **Distinct from `item_created`**: the item and its history existed all along, so a client that treats this as a create shows a new card carrying an old version number. A restore puts back only the named item, so it sends one event |
 | `relationship_changed` | A relationship edge touching the item was added or removed. An `impacts` link of the item was added or removed. The owner board of a document changed |
 | `metadata_changed` | The item's metadata values changed |
 | `item_links_changed` | The item's forge links (branches, pull or merge requests) changed |
 | `code_index_build_changed` | A run of the code index builder started or ended for a repository. `entity_type` is `repository`, `short_code` is its slug, and `board_id` is `null`. Read its runs again: `GET /api/repositories/{slug}/code-indexes/builds` |
+| `task_state_changed` | The live state of a task changed. A write of the state sends it. A hand-off or the end of a claim that clears the next step also sends it |
+| `task_cancelled` | A person cancelled a task. `column_id` is the done column of the board |
+| `claim_changed` | The claim of a task changed. `change` tells what changed (see below) |
+| `board_configured` | The configuration of a board changed: a column, a transition, a flag or a setting. `entity_type` is `board`, `short_code` is the slug of the board, `board_id` is the board. `change` names the setting (see below). Read the board again |
+
+### The precise kinds
+
+The kinds `task_state_changed`, `task_cancelled` and `claim_changed` come
+**in addition** to the kind that Kairos sent before:
+
+| Write | Events |
+|---|---|
+| A write of the state | `item_updated`, `task_state_changed` |
+| A claim | `item_updated`, `claim_changed` (`taken`) |
+| A hand-off | `item_updated`, `claim_changed` (`handed_off`), and `task_state_changed` when the next step is cleared |
+| A release | `item_updated`, `claim_changed` (`released`), and `task_state_changed` when the next step is cleared |
+| A cancel | `item_transitioned`, `task_cancelled`, and `claim_changed` (`ended`) when the task had a claim |
+| A move into Active by a person | `item_transitioned`, `claim_changed` (`taken`) |
+| A move out of Active | `item_transitioned`, `claim_changed` (`ended`) |
+
+Thus a client that knows only the older kinds keeps working. A client that
+must know what changed reads the precise kind. The events of one write come
+in one transaction. Their order is not part of the contract.
+
+The values of `change` for `claim_changed`:
+
+| `change` | Meaning |
+|---|---|
+| `taken` | A person took the claim: a claim, or a move into Active |
+| `handed_off` | A hand-off gave the claim to a person |
+| `released` | A release ended the claim. The task stays in its column, free |
+| `ended` | The claim ended for a different reason: a move out of Active, a cancel, an archive, a change of a column flag, or a person who left the organization |
+
+The values of `change` for `board_configured` name the setting:
+
+| `change` | The setting |
+|---|---|
+| `column_add`, `column_remove`, `column_rename`, `columns_reorder` | The columns |
+| `column_done`, `column_claims`, `column_keeps_claims`, `column_wip_limit` | A flag or the WIP limit of a column |
+| `transition_add`, `transition_remove` | The transitions |
+| `board_settings` | The name or the slug of the board |
+| `agents_decide_triage` | The triage setting of the board |
+
+A client that does not know a value reads the board again.
 
 Events carry **no payloads**: fetch the new state through the REST
 endpoints in the OpenAPI spec.
