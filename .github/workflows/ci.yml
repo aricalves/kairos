@@ -13,9 +13,21 @@
 #   web          Gate 7: the GUI wasm build (release on main, debug on a PR)
 #   ci           the one required check: it fails when a gate failed
 #
-# A change to the docs only runs lint. On main each commit gets a full run:
-# a new push does not cancel the run of the commit before it. On a pull
-# request a new push cancels the old run.
+# A change to the docs only runs lint. On a pull request a new push cancels
+# the old run.
+#
+# Merges to main go through the GitHub merge queue (KAIROS-T-0650), and
+# `ci` is the check that the ruleset of main requires. The `changes` job
+# gives the stage of the run:
+#
+#   pr     a pull request: lint, unit (with the Python tests) and web. The
+#          fast gates; the agent ran the integration tests it needs.
+#   queue  the merge queue, on the merge commit of a group of pull
+#          requests: every gate, integration and bdd included. It checks
+#          the parts that the group changes against main.
+#   push   main: the queue tested this commit, and main moves to it. It
+#          runs lint, build-tests and web only, to save the caches that
+#          pull requests read. A push does not cancel the run before it.
 #
 # Run one shard locally: `cargo nextest run --profile ci --partition hash:2/4`
 # with the compose stack up (`angreal services up`).
@@ -26,6 +38,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
+    types: [checks_requested]
 
 # A pull request: one group, and a new push cancels the old run. main: a
 # group for each commit, because GitHub keeps one waiting run per group and
@@ -56,6 +70,7 @@ jobs:
       helm: ${{ steps.filter.outputs.helm }}
       python: ${{ steps.filter.outputs.python }}
       image: ${{ steps.filter.outputs.image }}
+      stage: ${{ steps.filter.outputs.stage }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -65,15 +80,24 @@ jobs:
         id: filter
         env:
           EVENT: ${{ github.event_name }}
-          BASE: ${{ github.event.pull_request.base.sha }}
+          # A pull request diffs against its base; a merge queue run diffs
+          # against the main commit under the group.
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: |
           set -euo pipefail
-          if [ "${EVENT}" != "pull_request" ]; then
-            # main: every gate, each commit.
+          if [ "${EVENT}" = "push" ]; then
+            # main: build each part, to save the caches.
             for part in rust web helm python; do echo "${part}=true" >> "$GITHUB_OUTPUT"; done
             # The release workflow builds the images of a tag.
             echo "image=false" >> "$GITHUB_OUTPUT"
+            # The merge queue tested this commit (KAIROS-T-0650).
+            echo "stage=push" >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+          if [ "${EVENT}" = "merge_group" ]; then
+            echo "stage=queue" >> "$GITHUB_OUTPUT"
+          else
+            echo "stage=pr" >> "$GITHUB_OUTPUT"
           fi
           files="$(git diff --name-only "${BASE}...HEAD")"
           echo "${files}"
@@ -207,7 +231,7 @@ jobs:
 
   # The Python tests alone, for a change that touches no Rust (the plugin
   # hooks and the Metis import script). With Rust, `angreal test unit` in
-  # build-tests runs them.
+  # the unit job runs them.
   python:
     name: python
     needs: changes
@@ -231,7 +255,8 @@ jobs:
   build-tests:
     name: build-tests
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    # Not on a pull request: no integration or bdd job reads the archive.
+    if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.stage != 'pr'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -315,7 +340,7 @@ jobs:
   unit:
     name: unit
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.stage != 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -364,7 +389,8 @@ jobs:
 
   integration:
     name: integration (${{ matrix.shard }}/4)
-    needs: build-tests
+    needs: [changes, build-tests]
+    if: needs.changes.outputs.stage == 'queue'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
@@ -399,7 +425,8 @@ jobs:
 
   bdd:
     name: bdd (${{ matrix.suite.name }})
-    needs: build-tests
+    needs: [changes, build-tests]
+    if: needs.changes.outputs.stage == 'queue'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
@@ -485,14 +512,15 @@ jobs:
 
       # KAIROS-T-0039 (A-0015): the GUI must keep compiling to wasm.
       # `angreal web build` provisions the wasm32 target and trunk itself.
-      # The release profile (wasm-opt) runs on main; a pull request gets the
-      # debug profile, which compiles the same code faster.
+      # The release profile (wasm-opt) runs on main; a pull request and a
+      # merge queue run get the debug profile, which compiles the same code
+      # faster.
       - name: Gate 7 — GUI wasm build
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            angreal web build
-          else
+          if [ "${{ github.event_name }}" = "push" ]; then
             angreal web build --release
+          else
+            angreal web build
           fi
 
   # A pull request that changes the Dockerfile builds the hosted image for

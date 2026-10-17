@@ -45,7 +45,7 @@ static SCRATCH_DB: scratch::ScratchName =
 /// The tenant tables (sorted): the 21 from the KAIROS-S-0004 DDL plus
 /// `scim_tokens` (KAIROS-T-0025 / A-0016) and `api_keys` (KAIROS-T-0057 /
 /// A-0017 service-account API keys).
-const EXPECTED_TABLES: [&str; 66] = [
+const EXPECTED_TABLES: [&str; 67] = [
     "activity_log",
     "adrs",
     "api_keys",
@@ -90,6 +90,8 @@ const EXPECTED_TABLES: [&str; 66] = [
     // KAIROS-T-0411: the owner of a strategy or an initiative.
     "item_owners",
     "item_relationships",
+    // KAIROS-T-0624: the stored tsvector of each item.
+    "item_search",
     // KAIROS-T-0201: sessions minted by a password login (KAIROS-I-0018).
     "metadata_definition_scopes",
     "metadata_definitions",
@@ -158,7 +160,7 @@ const EXPECTED_SEQUENCES: [&str; 5] = [
 /// block no longer re-pins (KAIROS-T-0093), and it now compares the whole schema
 /// rather than named objects — so this list is a readable statement of what a
 /// tenant carries, not a rescue from a test that kept forgetting.
-const EXPECTED_INDEXES: [&str; 24] = [
+const EXPECTED_INDEXES: [&str; 20] = [
     "board_columns_live_name_key",
     // COLLIERY-T-3099: (prefix, level) is unique among the live boards.
     "boards_live_code_prefix_key",
@@ -167,21 +169,18 @@ const EXPECTED_INDEXES: [&str; 24] = [
     // KAIROS-T-0628: entity then time; it replaces idx_activity_log_entity.
     "idx_activity_log_entity_time",
     "idx_activity_log_time",
-    "idx_adrs_tsv",
-    "idx_documents_tsv",
     "idx_initiatives_board",
     "idx_initiatives_column",
-    "idx_initiatives_tsv",
     "idx_item_metadata_definition",
     "idx_item_relationships_source",
     "idx_item_relationships_target",
+    // KAIROS-T-0624: the GIN index of the stored tsvector.
+    "idx_item_search_tsv",
     "idx_strategies_board",
     "idx_strategies_column",
-    "idx_strategies_tsv",
     "idx_tasks_board",
     "idx_tasks_column",
     "idx_tasks_team",
-    "idx_tasks_tsv",
     // KAIROS-T-0411: the items that a person owns.
     "item_owners_user_id_idx",
     // KAIROS-T-0628: the read list of a person.
@@ -191,12 +190,19 @@ const EXPECTED_INDEXES: [&str; 24] = [
 ];
 
 /// The indexes KAIROS-T-0628 dropped: each is the prefix of a unique index or
-/// of `idx_activity_log_entity_time`, so it only cost writes.
-const DROPPED_INDEXES: [&str; 4] = [
+/// of `idx_activity_log_entity_time`, so it only cost writes. And the five
+/// expression indexes of the tsvector that KAIROS-T-0624 dropped:
+/// `idx_item_search_tsv` over the stored vector replaces them.
+const DROPPED_INDEXES: [&str; 9] = [
     "idx_activity_log_entity",
+    "idx_adrs_tsv",
     "idx_board_member_cap_board_user",
+    "idx_documents_tsv",
+    "idx_initiatives_tsv",
     "idx_item_history_item",
     "idx_item_metadata_item",
+    "idx_strategies_tsv",
+    "idx_tasks_tsv",
 ];
 
 fn admin_database_url() -> String {
@@ -486,8 +492,9 @@ fn tenant_provisioning_lifecycle() {
     // Carried forward from KAIROS-T-0156's fleet-upgrade block when a re-pin
     // retired it: both views read all FIVE entity tables. It was the proof that
     // a view rebuild is a rebuild rather than a patch, and it is just as true of
-    // a freshly provisioned tenant.
-    for view in EXPECTED_VIEWS {
+    // a freshly provisioned tenant. Since KAIROS-T-0624 `searchable_items`
+    // also reads `item_search`, for the stored tsvector.
+    for (view, tables) in [("entity_directory", 5), ("searchable_items", 6)] {
         assert_eq!(
             count(
                 &mut conn,
@@ -496,7 +503,7 @@ fn tenant_provisioning_lifecycle() {
                      WHERE view_schema = 'org_acme' AND view_name = '{view}'"
                 )
             ),
-            5,
+            tables,
             "org_acme's {view} reads all five entity tables"
         );
     }
@@ -511,7 +518,7 @@ fn tenant_provisioning_lifecycle() {
     for index in DROPPED_INDEXES {
         assert!(
             !indexes.contains(&index.to_string()),
-            "index {index} in org_acme was dropped by KAIROS-T-0628"
+            "index {index} in org_acme was dropped (KAIROS-T-0628, KAIROS-T-0624)"
         );
     }
     // KAIROS-T-0157: the five full-text indexes are WHOLE, not partial. A
@@ -547,31 +554,38 @@ fn tenant_provisioning_lifecycle() {
         Vec::<String>::new(),
         "no idx_*_board index is partial in a freshly provisioned tenant"
     );
-    // KAIROS-T-0186: the five full-text indexes and the view they serve are
-    // WEIGHTED, and — the part that matters — weighted identically. An index
-    // whose expression differs from `searchable_items`' own by a character
-    // stops covering the view's `tsv`, and nothing fails: search keeps
-    // answering, from a sequential scan, forever. So assert both sides.
+    // KAIROS-T-0186: the vector is WEIGHTED, title above content. Since
+    // KAIROS-T-0624 it is stored: the trigger function writes it, and the
+    // view reads it from `item_search`, whose GIN index serves the match.
     assert_eq!(
-        names(
+        count(
             &mut conn,
-            "SELECT indexname::text AS name FROM pg_indexes \
-             WHERE schemaname = $1 AND indexname LIKE '%\\_tsv' \
-               AND indexdef NOT LIKE '%setweight%'",
-            "org_acme",
+            "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace \
+             WHERE n.nspname = 'org_acme' AND p.proname = 'item_search_write' \
+               AND p.prosrc LIKE '%setweight%'"
         ),
-        Vec::<String>::new(),
-        "every idx_*_tsv index is weighted in a freshly provisioned tenant"
+        1,
+        "the trigger function writes the weighted vector in a freshly provisioned tenant"
     );
     assert_eq!(
         count(
             &mut conn,
             "SELECT count(*) FROM pg_views \
              WHERE schemaname = 'org_acme' AND viewname = 'searchable_items' \
-               AND definition LIKE '%setweight%'"
+               AND definition LIKE '%item_search%'"
         ),
         1,
-        "the searchable_items view is weighted in a freshly provisioned tenant"
+        "the searchable_items view reads the stored vector in a freshly provisioned tenant"
+    );
+    assert_eq!(
+        count(
+            &mut conn,
+            "SELECT count(*) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             WHERE n.nspname = 'org_acme' AND t.tgname LIKE '%\\_item\\_search\\_%'"
+        ),
+        15,
+        "each item table has the insert, update and delete triggers of item_search"
     );
     // KAIROS-T-0187: the `vector` extension is installed once at DATABASE scope,
     // in `public` — not per tenant. Two tenants exist by the end of this test
@@ -913,8 +927,8 @@ fn tenant_provisioning_lifecycle() {
              WHERE schemaname = 'org_widgets' AND indexname LIKE '%\\_tsv' \
                AND indexdef NOT LIKE '%WHERE%'"
         ),
-        5,
-        "all five idx_*_tsv indexes are non-partial in widgets after the fleet upgrade"
+        1,
+        "the idx_item_search_tsv index is non-partial in widgets after the fleet upgrade"
     );
     // KAIROS-T-0093: the assertion that replaces every per-migration one this
     // block used to carry — an UPGRADED tenant's schema must equal a

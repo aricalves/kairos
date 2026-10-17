@@ -6,6 +6,11 @@
     <meta name="color-scheme" content="light dark" />
     <title>Kairos</title>
     <!--
+      KAIROS-T-0605: the IBM Plex fonts of Aurora come from this host. The
+      preconnect opens the connection before the stylesheet asks for a font.
+    -->
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!--
       Aurora THEME_INIT_SCRIPT (COLLIERY-T-1836; the 0.6 script, which
       accepts "hyper", KAIROS-T-0397), copied as it is. It sets
       data-theme on <html> from the stored choice before the first paint, so
@@ -15,16 +20,43 @@
     -->
     <script>(function(){try{var t=localStorage.getItem("aurora-theme");if(t==="light"||t==="dark"||t==="hyper"){var d=document.documentElement;d.setAttribute("data-theme",t);if(t!=="hyper")d.style.colorScheme=t;}}catch(e){}})();</script>
     <!--
-      KAIROS-T-0326: the Aurora stylesheet is a linked file, written by the
-      pre_build hook of Trunk.toml (crates/kairos-web-css), so the page has
-      it at the first paint. app.css carries the Kairos-only rules (tokens
-      only) and comes after it. KAIROS-T-0397: the hook writes the opt-in
-      hyper theme of Aurora too (style/hyper.css); it comes after
-      aurora.css, as Aurora asks.
+      KAIROS-T-0326, KAIROS-T-0605: one linked stylesheet, written by the
+      pre_build hook of Trunk.toml (crates/kairos-web-css): the Aurora
+      stylesheet, then app.css (the Kairos-only rules, tokens only). The
+      page so has it at the first paint.
     -->
-    <link data-trunk rel="css" href="style/aurora.css" />
-    <link data-trunk rel="css" href="style/hyper.css" />
-    <link data-trunk rel="css" href="app.css" />
+    <link data-trunk rel="css" href="style/kairos.css" />
+    <!--
+      KAIROS-T-0397, KAIROS-T-0605: the opt-in hyper theme of Aurora. The
+      hook writes it with a hash in its name (assets are immutable), and
+      trunk copies it with no link. This script loads it after the
+      stylesheet, as Aurora asks, only for data-theme "hyper":
+      - At page load with a stored "hyper" (THEME_INIT_SCRIPT), it writes
+        the link into the page. The parser makes that link, so it blocks
+        the first paint and the WASM, and the toggle shows Hyper.
+      - When the ThemeToggle sets "hyper" later, it adds the link.
+      A unit test (crates/kairos-web-css) checks the name of the file.
+    -->
+    <link data-trunk rel="copy-file" href="style/hyper-166e269f8b1f9ce6.css" />
+    <script>
+      (function () {
+        var H = "/hyper-166e269f8b1f9ce6.css";
+        var ID = "kairos-hyper-css";
+        var root = document.documentElement;
+        function hyper() { return root.getAttribute("data-theme") === "hyper"; }
+        if (hyper()) {
+          document.write('<link id="' + ID + '" rel="stylesheet" href="' + H + '" />');
+        }
+        new MutationObserver(function () {
+          if (!hyper() || document.getElementById(ID)) return;
+          var link = document.createElement("link");
+          link.id = ID;
+          link.rel = "stylesheet";
+          link.href = H;
+          document.head.appendChild(link);
+        }).observe(root, { attributes: true, attributeFilter: ["data-theme"] });
+      })();
+    </script>
     <link data-trunk rel="rust" data-wasm-opt="z" />
     <!--
       KAIROS-T-0324: mermaid fences. The markdown renderer writes each

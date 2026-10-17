@@ -29,8 +29,15 @@ about 0.1 s on Kairos), so the list does not make it faster today. The list
 tells the log what the agent edited, and it is ready for an update that
 parses only the listed files.
 
+The worker writes the result of each update to `last-update.json` in the
+state folder (KAIROS-T-0519): the exit code, the time, the command and the
+refusal (the last `error: ` line of the output). The next `start`, and
+`active_work.py compact`, read it. When the update failed, they give the
+agent one line with the refusal and the command to run again. A result
+older than 7 days, or a file that does not parse, gives no line.
+
 The state is outside the checkout: `~/.claude/kairos-index/<name>-<hash>/`
-(`changed-files`, `update.log`, `update.log.1`, `lock`);
+(`changed-files`, `update.log`, `update.log.1`, `last-update.json`, `lock`);
 KAIROS_INDEX_STATE_DIR overrides the parent folder. The hook holds no
 credentials: `kairos index update` reads KAIROS_KEY or KAIROS_MCP_KEY and
 `.claude/kairos.local.md` itself (COLLIERY-T-1854). Each error gives no
@@ -46,10 +53,17 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 SOURCE_SUFFIXES = (".rs", ".py", ".ts", ".tsx", ".js", ".jsx", ".go")
 SKIPPED_DIRS = (".kairos", ".git", "target", "node_modules")
 LOG_KEEP_BYTES = 256 * 1024
+RESULT_FILE = "last-update.json"
+RESULT_FORMAT = 1
+# A result older than this gives no line: the CLI or the checkout can have
+# changed since (KAIROS-T-0519).
+RESULT_MAX_AGE_SECONDS = 7 * 24 * 3600
+REFUSAL_MAX_CHARS = 600
 
 
 def update_command():
@@ -190,6 +204,67 @@ def session_text(project, log):
     return "\n".join(lines)
 
 
+# --------------------------------------------------- the previous result
+
+
+def read_result(folder):
+    """The result of the last update in folder, or None when there is no
+    file, the file does not parse, or the result is too old."""
+    try:
+        with open(os.path.join(folder, RESULT_FILE), encoding="utf-8") as handle:
+            result = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(result, dict) or result.get("format") != RESULT_FORMAT:
+        return None
+    finished = result.get("finished_epoch")
+    if not isinstance(finished, (int, float)) or isinstance(finished, bool):
+        return None
+    if time.time() - finished > RESULT_MAX_AGE_SECONDS:
+        return None
+    code = result.get("exit_code")
+    if code is not None and (not isinstance(code, int) or isinstance(code, bool)):
+        return None
+    return result
+
+
+def failure_line(folder):
+    """One line for the agent when the last update in folder failed, else
+    None. It gives the refusal of kairos and the command to run again."""
+    result = read_result(folder)
+    if result is None or result.get("exit_code") == 0:
+        return None
+    code = result.get("exit_code")
+    status = "no exit code" if code is None else f"exit code {code}"
+    when = result.get("finished")
+    when = f" at {when}" if isinstance(when, str) and when else ""
+    refusal = result.get("refusal")
+    if not isinstance(refusal, str) or not refusal.strip():
+        refusal = "no error text"
+    refusal = clip(refusal.strip())
+    command = result.get("command")
+    if not isinstance(command, str) or not command.startswith("kairos "):
+        command = " ".join(update_command())
+    log = os.path.join(folder, "update.log")
+    return (
+        f"The last background update of the index failed{when}, with {status}. "
+        f'The index can be old. The update gave this error: "{refusal}" '
+        f"To try again, run `{command}` in this checkout. The log: {log}."
+    )
+
+
+def last_failure_line(project):
+    """failure_line for the state folder of project (for active_work.py)."""
+    return failure_line(state_dir(os.path.realpath(project)))
+
+
+def clip(text):
+    text = " ".join(text.split())
+    if len(text) > REFUSAL_MAX_CHARS:
+        text = text[: REFUSAL_MAX_CHARS - 3].rstrip() + "..."
+    return text
+
+
 def context(text):
     return {
         "hookSpecificOutput": {
@@ -208,6 +283,8 @@ def start(payload):
         return
     folder = state_dir(project)
     os.makedirs(folder, exist_ok=True)
+    # Read the result of the previous update before the new one starts.
+    failure = failure_line(folder)
     subprocess.Popen(
         [sys.executable, os.path.abspath(__file__), "worker", project],
         stdin=subprocess.DEVNULL,
@@ -217,10 +294,10 @@ def start(payload):
         start_new_session=True,
         close_fds=True,
     )
-    json.dump(
-        context(session_text(project, os.path.join(folder, "update.log"))),
-        sys.stdout,
-    )
+    text = session_text(project, os.path.join(folder, "update.log"))
+    if failure:
+        text += "\n" + failure
+    json.dump(context(text), sys.stdout)
 
 
 # ---------------------------------------------------------------- worker
@@ -297,6 +374,7 @@ def run_update(project, folder):
         else:
             out.write("Edited in a session since the last update: no files\n")
         out.flush()
+        start = out.tell()
         code = run_logged(command, project, out, log)
         if code == EXIT_USAGE and "--link-only" in command:
             # A kairos that does not know --link-only refuses it with the
@@ -307,7 +385,9 @@ def run_update(project, folder):
                       "The update runs again with no option.\n")
             out.write(f"Command: {' '.join(command)}\n")
             out.flush()
+            start = out.tell()
             code = run_logged(command, project, out, log)
+        refusal = None if code == 0 else refusal_text(log, start)
         out.write(f"=== exit code {code}\n")
         if code == 0:
             os.remove(taken)
@@ -316,6 +396,43 @@ def run_update(project, folder):
             append_unique(changed, entries)
             os.remove(taken)
             out.write("The list of changed files is kept for the next update.\n")
+    write_result(folder, code, command, refusal)
+
+
+def refusal_text(log, start):
+    """The refusal in the output of one run of kairos: the log from start.
+    The last `error: ` line, else the last line that is not empty."""
+    try:
+        with open(log, "rb") as handle:
+            handle.seek(start)
+            output = handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    for line in reversed(lines):
+        if line.startswith("error: "):
+            return line[len("error: "):].strip()
+    return lines[-1] if lines else None
+
+
+def write_result(folder, code, command, refusal):
+    """Write last-update.json in folder: a temporary file, then a rename,
+    so that a hook never reads half a file."""
+    now = datetime.datetime.now().astimezone()
+    result = {
+        "format": RESULT_FORMAT,
+        "exit_code": code,
+        "finished": now.isoformat(timespec="seconds"),
+        "finished_epoch": now.timestamp(),
+        "command": " ".join(command),
+        "refusal": refusal,
+    }
+    path = os.path.join(folder, RESULT_FILE)
+    temporary = path + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(result, handle)
+        handle.write("\n")
+    os.replace(temporary, path)
 
 
 # ------------------------------------------------------------------ main

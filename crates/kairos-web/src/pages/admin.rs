@@ -43,8 +43,6 @@ use leptos::prelude::*;
 use leptos_router::components::Outlet;
 use leptos_router::hooks::use_location;
 
-use crate::auth::use_auth;
-
 pub(crate) mod gating;
 
 mod agent_keys;
@@ -80,12 +78,7 @@ pub use templates::AdminTemplatesPage;
 /// docs), never a blank screen.
 #[component]
 pub fn AdminPage() -> impl IntoView {
-    let auth = use_auth();
-    let whoami = LocalResource::new(move || {
-        // Track the session so a fresh login refetches.
-        auth.track_session();
-        crate::api::whoami(auth)
-    });
+    let whoami = crate::app::use_whoami();
     view! {
         {move || match whoami.get() {
             None => view! { <Loading label="Checking access…"/> }.into_any(),
@@ -140,11 +133,7 @@ fn NotAdminGate(role: String) -> impl IntoView {
 /// Markup matches `app.rs`'s `NavLink` so styling/active state stay uniform.
 #[component]
 pub fn AdminNavLink() -> impl IntoView {
-    let auth = use_auth();
-    let whoami = LocalResource::new(move || {
-        auth.track_session();
-        crate::api::whoami(auth)
-    });
+    let whoami = crate::app::use_whoami();
     view! {
         {move || match whoami.get() {
             Some(Ok(me)) if gating::can_access(&me) => view! {
@@ -213,11 +202,7 @@ fn SectionTabs(is_admin: bool, assigns_members: bool) -> impl IntoView {
 /// caller's reach.
 #[component]
 pub fn AdminHomePage() -> impl IntoView {
-    let auth = use_auth();
-    let whoami = LocalResource::new(move || {
-        auth.track_session();
-        crate::api::whoami(auth)
-    });
+    let whoami = crate::app::use_whoami();
     let card = |href: &'static str, title: &'static str, blurb: &'static str| {
         view! {
             <Panel title=title>
