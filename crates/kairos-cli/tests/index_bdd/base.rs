@@ -396,6 +396,7 @@ fn config(scratch_url: &str) -> AppConfig {
         auth_max_failures: 5,
         auth_failure_window_secs: 300,
         auth_lockout_secs: 60,
+        auth_cache_secs: 60,
         trusted_proxy: false,
         local_auth: false,
         session_ttl_secs: 14 * 24 * 60 * 60,
