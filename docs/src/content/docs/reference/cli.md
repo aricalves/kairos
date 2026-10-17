@@ -38,14 +38,45 @@ Command groups, each detailed below:
 | Code | Meaning |
 |---|---|
 | 0 | Success. |
-| 1 | API or validation error: not found, forbidden, conflict, invalid transition, bad input, transport failure. Also the case of several cached deployments with no `--url`. |
-| 2 | Authentication error: no cached credentials, expired or rejected credentials, a failed token refresh, an expired local session, a rejected email and password, HTTP 401, a corrupted credential cache. |
+| 1 | API or validation error: not found, forbidden, conflict, invalid transition, bad input. A transport failure: the deployment or the OIDC issuer gave no answer, also during a token refresh. Also the case of several cached deployments with no `--url`. |
+| 2 | Authentication error: no cached credentials, expired or rejected credentials, a token refresh that the issuer refused, an expired local session, a rejected email and password, HTTP 401, a corrupted credential cache. |
+| 3 | `self-update --check`: the server is newer than the CLI. |
+| 64 | Usage error: an argument or a command that this CLI does not know, a missing argument, two options that exclude each other. The message is the one of the argument parser. An older CLI exits with this code for a new option. |
+
+`--help` and `--version` exit with 0.
 
 Structured API rejections are rendered with their actionable detail: a 409
 `CONFLICT` prints the server-current version and title, a 422
 `INVALID_TRANSITION` prints the allowed target columns with their ids, a 403
 prints the required board capability when the server names one, and a 422
-`LAST_ADMIN` prints the keep-one-admin constraint.
+`LAST_ADMIN` prints the keep-one-admin constraint. A 401 gives the `kairos
+login` command with the URL of the deployment. A 403 `MEMBERSHIP_REQUIRED`
+says that you are not a member of the organization. A body that the CLI
+cannot read names `kairos self-update --check`.
+
+### Errors with `--json`
+
+With `--json`, an error goes to stderr as one JSON object, the error envelope
+of the API:
+
+```json
+{"error": {"code": "VALIDATION", "message": "422 VALIDATION: team_id is not a UUID", "details": {"field": "team_id"}}}
+```
+
+`code` and `details` are the ones of the deployment when the deployment
+refused the request. `message` is the text that the CLI prints without
+`--json`. A failure of the CLI itself has one of these codes and `null`
+details:
+
+| Code | Meaning | Exit code |
+|---|---|---|
+| `LOGIN_REQUIRED` | No credentials, expired credentials, or a refresh that the issuer refused. | 2 |
+| `TRANSPORT` | The deployment or the issuer gave no answer. | 1 |
+| `BAD_RESPONSE` | The CLI cannot read the answer of the deployment. | 1 |
+| `CLI_ERROR` | Any other failure of the CLI: a bad value, a file, a missing `--confirm`. | 1 |
+
+A usage error (exit code 64) is not JSON: the argument parser prints it
+before the CLI reads `--json`. Stdout stays empty on an error.
 
 ## Common options
 
@@ -128,8 +159,8 @@ Failures of `login`:
 |---|---|---|
 | No `--email`, and the deployment has no issuer | 1 | `This deployment has no OIDC issuer. It uses local accounts.` The message gives the command with `--email`. |
 | `--email`, and the deployment has local accounts off | 1 | `Local accounts are off on this deployment.` The message gives the command without `--email`. |
-| `--email` with `--issuer`, `--client-id` or `--bearer` | 2 | A usage error from the argument parser. |
-| `--password` | 2 | A usage error from the argument parser. |
+| `--email` with `--issuer`, `--client-id` or `--bearer` | 64 | A usage error from the argument parser. |
+| `--password` | 64 | A usage error from the argument parser. |
 | Wrong password, or no account with that email | 2 | `The deployment did not accept the email and the password.` The two conditions give the same message. |
 | Too many failed attempts (HTTP 429) | 1 | `The number of incorrect logins is too large.` The message gives the wait in seconds. |
 | No password given | 1 | `The command got no password.` |
@@ -202,6 +233,7 @@ differ.
 | `edit` | yes | yes | yes | yes | yes |
 | `transition` | yes | yes | yes | no | yes |
 | `move` | no | no | yes | yes | no |
+| `claim` | no | no | yes | no | no |
 | `hand-off` | no | no | yes | no | no |
 | `release` | no | no | yes | no | no |
 | `cancel` | no | no | yes | no | no |
@@ -419,6 +451,22 @@ team. The command needs `manage_tasks` on both boards. The task keeps its
 repository.
 See [Move work between boards](../../how-to/move-work-between-boards/).
 
+### `tasks claim`
+
+```
+kairos tasks claim <SHORT_CODE> [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<SHORT_CODE>` | string | required | The task's short code. The task must be in Active, with no claim. |
+
+Gives you the [claim](../glossary/#claim) of a free task in Active
+(KAIROS-T-0528). You need `transition_items` on the board of the task, or the
+right to edit the task. Kairos refuses a task that a different person holds
+with `CLAIMED` and the name of the holder. A move of a task to Active gives
+you the claim too.
+
 ### `tasks hand-off`
 
 ```
@@ -428,7 +476,7 @@ kairos tasks hand-off <SHORT_CODE> --to <PERSON> [OPTIONS]
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
 | `<SHORT_CODE>` | string | required | The task's short code. The task must be in Active. |
-| `--to <PERSON>` | string | required | The person who gets the claim: a user id, an email or a user name of a person of the organization. |
+| `--to <PERSON>` | string | required | The person who gets the claim: a user id, an email or a user name of a person of the organization, or `me`. |
 
 Gives the [claim](../glossary/#claim) of a task in Active to a different person.
 The task stays in Active. You can hand off a claim that you have. To hand off
@@ -445,8 +493,8 @@ kairos tasks release <SHORT_CODE> [OPTIONS]
 |---|---|---|---|
 | `<SHORT_CODE>` | string | required | The task's short code. The task must be in Active. |
 
-Ends the claim of a task in Active. The task stays in Active with no claim. The
-next person who moves the task to Active gets the claim. You can release a
+Ends the claim of a task in Active. The task stays in Active with no claim.
+`tasks claim` takes it, and a move to Active gives it. You can release a
 claim that you have. To release the claim of a different person, you need
 `transition_items` on the board of the task.
 
@@ -490,7 +538,7 @@ ACME-T-0001 is already in the planned lane: nothing changed.
 ### `state`
 
 ```
-kairos state <SHORT_CODE> [--branch <BRANCH>] [--commit <COMMIT>] [--pushed] [--pr <URL>] [--next <TEXT>] [OPTIONS]
+kairos state <SHORT_CODE> [--branch <BRANCH>] [--commit <COMMIT>] [--pushed | --not-pushed] [--pr <URL>] [--next <TEXT>] [--clear <FIELD>]... [--expected-updated-at <INSTANT>] [OPTIONS]
 ```
 
 | Argument / Option | Type | Default | Description |
@@ -498,17 +546,23 @@ kairos state <SHORT_CODE> [--branch <BRANCH>] [--commit <COMMIT>] [--pushed] [--
 | `<SHORT_CODE>` | string | required | The task's short code. |
 | `--branch <BRANCH>` | string | none | The branch of the work. |
 | `--commit <COMMIT>` | string | none | The last commit (a hash or a short hash). |
-| `--pushed` | flag | off | The last commit is pushed. |
-| `--pr <URL>` | string | none | The URL of the PR. |
-| `--next <TEXT>` | string | none | What comes next. |
+| `--pushed` | flag | kept | The last commit is pushed. |
+| `--not-pushed` | flag | kept | The last commit is not pushed. |
+| `--pr <URL>` | string | kept | The URL of the PR. |
+| `--next <TEXT>` | string | kept | What comes next. |
+| `--clear <FIELD>` | `branch`, `commit`, `pr` or `next` | none | Clear a field. Repeat the option for more than one. |
+| `--expected-updated-at <INSTANT>` | RFC 3339 | none | The `updated_at` of the state you read. The write is refused with `CONFLICT` when the state changed since. |
 
 Writes the live state of a task: one current line, separate from the notes.
-The write replaces the whole state: send each option each time. Kairos
-clears an option that you do not send. Send at least one option. The state
-is not content: the write makes no new version of the task.
+The write is a patch (KAIROS-T-0533). An option that you give sets its field.
+A field in `--clear` becomes empty. A field that you do not name keeps its
+value. Send at least one.
 
-The edit rule applies, as for `note`: the creator of the task, or
-`manage_tasks` on its board. `tasks get` shows the state in the field
+The state is not content: the write makes no new version of the task. A
+hand-off or a release clears the next step.
+
+The edit rule applies, as for `note`. It passes the creator of the task, the
+holder of its claim (KAIROS-T-0532), and `manage_tasks` on its board. `tasks get` shows the state in the field
 `state`. The board card and the item page of the GUI show it too. The
 command prints one line:
 
@@ -1852,7 +1906,7 @@ kairos self-update [--url <URL>] [--version <VERSION> | --latest | --check]
 | `--url <URL>` | string | `KAIROS_URL`, then the only cached deployment | The deployment whose version to install. |
 | `--version <VERSION>` | string | the version of the server | Install this version (e.g. `0.12.0`). |
 | `--latest` | flag | off | Install the latest release on GitHub. |
-| `--check` | flag | off | Print the version of the CLI and of the server, and change nothing. |
+| `--check` | flag | off | Print the version of the CLI and of the server, and change nothing. The exit code is 3 when the server is newer, else 0. |
 
 Installs the version of the server in place of the running binary. The server
 tells its version at `GET /version` (open). It also gives the links of the
@@ -1866,6 +1920,9 @@ binary as `kairos.bak` and renames the new file over the old path. A failed
 download or a bad checksum changes nothing. With `--version` or `--latest`,
 the CLI takes the tarball from the GitHub releases; `KAIROS_RELEASES_URL`
 replaces that URL, for a mirror.
+
+`--check` is for a script: `kairos self-update --check || kairos self-update`
+updates the CLI only when the server is newer.
 
 A server older than this command does not tell its version: name one with
 `--version`, or use `--latest`. The CLI refuses a server whose links

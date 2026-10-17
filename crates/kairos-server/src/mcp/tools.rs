@@ -630,6 +630,16 @@ pub struct PromoteNoteParams {
     pub title: Option<String>,
 }
 
+/// `None` when the field is absent, `Some(None)` for `null`, `Some(Some(v))`
+/// for a value (KAIROS-T-0533): the three states of a patch field.
+fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
 /// Parameters for `set_state` (KAIROS-T-0506).
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -637,21 +647,25 @@ pub struct PromoteNoteParams {
 pub struct SetStateParams {
     /// The short code of the task (e.g. "ACME-T-0012").
     pub short_code: String,
-    /// The branch of the work.
-    #[serde(default)]
-    pub branch: Option<String>,
-    /// The last commit (a hash or a short hash).
-    #[serde(default)]
-    pub commit: Option<String>,
-    /// True when the last commit is pushed. Default false.
+    /// The branch of the work. Not sent: kept. `null`: cleared.
+    #[serde(default, deserialize_with = "present")]
+    pub branch: Option<Option<String>>,
+    /// The last commit (a hash or a short hash). Not sent: kept. `null`: cleared.
+    #[serde(default, deserialize_with = "present")]
+    pub commit: Option<Option<String>>,
+    /// True when the last commit is pushed. Not sent: kept.
     #[serde(default)]
     pub pushed: Option<bool>,
-    /// The URL of the PR.
+    /// The URL of the PR. Not sent: kept. `null`: cleared.
+    #[serde(default, deserialize_with = "present")]
+    pub pr_url: Option<Option<String>>,
+    /// The `updated_at` of the state you read (RFC 3339). A state that
+    /// changed since refuses the write with CONFLICT and the current state.
     #[serde(default)]
-    pub pr_url: Option<String>,
-    /// What comes next.
-    #[serde(default)]
-    pub next_step: Option<String>,
+    pub expected_updated_at: Option<String>,
+    /// What comes next. Not sent: kept. `null`: cleared.
+    #[serde(default, deserialize_with = "present")]
+    pub next_step: Option<Option<String>>,
 }
 
 /// Parameters for `set_team` and `clear_team` (KAIROS-T-0321).
@@ -794,8 +808,8 @@ pub struct HandOffItemParams {
     pub short_code: String,
     /// The person who gets the claim (a task) or who becomes the owner (a
     /// strategy or an initiative): a user id, an email or a user name of a
-    /// person of the organization. A new owner must be a member of the
-    /// board of the item.
+    /// person of the organization, or `me`. A new owner must be a member
+    /// of the board of the item.
     pub to: String,
 }
 
@@ -812,7 +826,8 @@ pub struct ReleaseItemParams {
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 pub struct ClaimItemParams {
-    /// The short code of a strategy or an initiative with no owner.
+    /// The short code of a task in Active with no claim, or of a strategy
+    /// or an initiative with no owner.
     pub short_code: String,
 }
 
@@ -2021,7 +2036,7 @@ impl KairosMcp {
                             .unwrap_or_default(),
                         states
                             .get(&item.id)
-                            .map(crate::task_state::state_tag)
+                            .map(|s| crate::task_state::state_tag(s, chrono::Utc::now()))
                             .unwrap_or_default(),
                         if item.archived { " [archived]" } else { "" },
                         if details {
@@ -3370,7 +3385,7 @@ impl KairosMcp {
 
     // KAIROS-T-0506: the live state of a task.
     #[tool(
-        description = "Write the live state of a TASK: `branch`, `commit`, `pushed`, `pr_url`, `next_step` (each optional; send at least one). The write replaces the whole state: send every field each time. The state is not a note: it is one current line that `get_item`, `board_items` and the card show, with who wrote it when. Write it after each commit, each push, a PR, and before you stop. The edit rule applies: the creator of the task, or `manage_tasks` on its board."
+        description = "Write the live state of a TASK: `branch`, `commit`, `pushed`, `pr_url`, `next_step` (send at least one). The write is a patch: a field that you send is set, `null` clears it, a field that you do not send is kept. `expected_updated_at` (the `updated_at` you read) refuses a write over a state that changed since, with CONFLICT and the current state. A hand-off or a release clears `next_step`. The state is not a note: it is one current line that `get_item`, `board_items` and the card show, with who wrote it when. Write it after each commit, each push, a PR, and before you stop. The edit rule applies: the creator of the task, or `manage_tasks` on its board."
     )]
     pub async fn set_state(
         &self,
@@ -3391,9 +3406,10 @@ impl KairosMcp {
             let body = kairos_client::types::SetTaskStateRequest {
                 branch: params.branch,
                 commit: params.commit,
-                pushed: params.pushed.unwrap_or(false),
+                pushed: params.pushed,
                 pr_url: params.pr_url,
                 next_step: params.next_step,
+                expected_updated_at: params.expected_updated_at,
             };
             let state = crate::task_state::write_state(conn, &slug, user, item.id, &body)?;
             Ok(format!(
@@ -3782,7 +3798,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Become the owner of a STRATEGY or INITIATIVE that has none: the one person who answers for it. You must be a person and a member of its board (a grant), or an org admin. An item with an owner is refused with the owner's name. The owner gives no extra right. A task has no owner: moving it to Active gives a claim."
+        description = "Take a free TASK in Active (no claim): the claim names you, so the board shows who works it. Or become the owner of a STRATEGY or INITIATIVE that has none: the one person who answers for it. A task: you need `transition_items` on its board or the right to edit the task; a task that a different person holds is refused with CLAIMED and the holder's name (ask for `hand_off_item`). A strategy or initiative: you must be a person and a member of its board (a grant), or an org admin; an item with an owner is refused with the owner's name. The owner gives no extra right. Moving a task to Active gives you the claim too."
     )]
     pub async fn claim_item(
         &self,
@@ -3794,24 +3810,37 @@ impl KairosMcp {
         let slug = tenant.slug.clone();
         self.run_tool(&tenant, move |conn| {
             let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
-            crate::owners::claim(
-                conn,
-                &slug,
-                user,
-                (item.id, item.item_type),
-                &item.short_code,
-            )?;
+            if kairos_db::item_owners::is_subject(item.item_type) {
+                crate::owners::claim(
+                    conn,
+                    &slug,
+                    user,
+                    (item.id, item.item_type),
+                    &item.short_code,
+                )?;
+                return Ok(format!(
+                    "Claimed {}.\n{}",
+                    item.short_code,
+                    crate::owners::owner_text(conn, item.id, item.item_type)?.trim_end()
+                ));
+            }
+            // KAIROS-T-0528: a task in Active with no claim.
+            let item = task_for_claim(item)?;
+            let board_id = item.board_id.unwrap_or_default();
+            crate::claims::require_claim_take(conn, &slug, item.id, board_id, user)?;
+            kairos_db::task_claims::claim(conn, item.id, user)
+                .map_err(crate::claims::map_claim_error)?;
             Ok(format!(
                 "Claimed {}.\n{}",
                 item.short_code,
-                crate::owners::owner_text(conn, item.id, item.item_type)?.trim_end()
+                crate::claims::claim_text(conn, item.id, item.column_id)?.trim_end()
             ))
         })
         .await
     }
 
     #[tool(
-        description = "Give the claim of a TASK in Active, or the owner of a STRATEGY or INITIATIVE, to another person (`to`: user id, email or user name; not a service account). A task stays in Active; you can hand off your own claim, or any claim with `transition_items` on its board. A strategy or initiative: the owner hands it off, or an org admin sets it; the new owner must be a member of its board (else NOT_BOARD_MEMBER). The person gets a notification."
+        description = "Give the claim of a TASK in Active, or the owner of a STRATEGY or INITIATIVE, to another person (`to`: user id, email, user name or `me`; not a service account). A task stays in Active; you can hand off your own claim, or any claim with `transition_items` on its board. A strategy or initiative: the owner hands it off, or an org admin sets it; the new owner must be a member of its board (else NOT_BOARD_MEMBER). The person gets a notification."
     )]
     pub async fn hand_off_item(
         &self,
@@ -3841,7 +3870,7 @@ impl KairosMcp {
             let item = task_for_claim(item)?;
             let board_id = item.board_id.unwrap_or_default();
             crate::claims::require_claim_change(conn, &slug, item.id, board_id, user)?;
-            let to = crate::claims::resolve_person(conn, &slug, &params.to)?;
+            let to = crate::claims::resolve_person(conn, &slug, &params.to, user)?;
             kairos_db::task_claims::hand_off(conn, item.id, to, user)
                 .map_err(crate::claims::map_claim_error)?;
             Ok(format!(
@@ -3854,7 +3883,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "End the claim on a TASK in Active (it stays in Active, free for the next person who moves it there), or remove the owner of a STRATEGY or INITIATIVE. A task: your own claim, or any with `transition_items` on its board. A strategy or initiative: the owner, or an org admin."
+        description = "End the claim on a TASK in Active (it stays in Active, free for anyone: `claim_item` takes it), or remove the owner of a STRATEGY or INITIATIVE. A task: your own claim, or any with `transition_items` on its board. A strategy or initiative: the owner, or an org admin."
     )]
     pub async fn release_item(
         &self,
@@ -6649,8 +6678,8 @@ fn rename_history(conn: &mut PgConnection, item_id: Uuid) -> Result<String, ApiE
     Ok(out)
 }
 
-/// The live TASK of `hand_off_item` and `release_item`, or a refusal for an
-/// item that is not a task (KAIROS-T-0359). A strategy and an initiative
+/// The live TASK of `claim_item`, `hand_off_item` and `release_item`, or a
+/// refusal for an item that is not a task (KAIROS-T-0359). A strategy and an initiative
 /// have an owner instead (KAIROS-T-0411), and the tools take that path
 /// before.
 fn task_for_claim(item: ItemView) -> Result<ItemView, ApiError> {

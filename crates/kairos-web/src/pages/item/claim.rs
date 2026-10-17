@@ -45,7 +45,7 @@ pub(crate) fn claim_text(claim: &Claim) -> String {
 
 /// The text when the task is in a claims column with no claim.
 pub(crate) const NO_CLAIM: &str =
-    "No claim. The next person who moves the task to Active gets the claim.";
+    "No claim. A claim, or a move to Active, gives it to the next person.";
 
 /// May the signed-in person hand off or release the claim? The holder
 /// may, and a person who can move the task may. Pure, host-tested.

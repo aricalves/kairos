@@ -744,11 +744,19 @@ pub fn edit_facts(
         }
         (None, _) => false,
     };
+    // KAIROS-T-0532: the claim of a task counts for an edit, not for an
+    // archive. Read only when the other facts refuse: one query less on
+    // the common path.
+    let holds_claim = !(created_item || holds_manage || is_org_admin)
+        && edit_use == kairos_core::abac::EditUse::Edit
+        && crate::task_claims::claim_of(conn, item_id)?
+            .is_some_and(|claim| claim.user_id == user_id);
     Ok((
         kairos_core::abac::EditFacts {
             created_item,
             holds_manage,
             is_org_admin,
+            holds_claim,
         },
         board,
     ))
@@ -884,6 +892,8 @@ pub fn edit_facts_of_items(
                     created_item: row.created_by == user_id,
                     holds_manage,
                     is_org_admin,
+                    // The cascade of an archive: a claim gives no archive.
+                    holds_claim: false,
                 },
                 manage_capability,
                 board_id,
