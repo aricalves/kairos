@@ -223,6 +223,8 @@ pub(crate) async fn revoke_agent_key(
             })
         })
         .await?;
+    // KAIROS-T-0609: the next request with the key is refused.
+    state.auth_cache.drop_key(key_id);
     Ok(Json(outcome))
 }
 
@@ -270,5 +272,7 @@ pub(crate) async fn rotate_agent_key(
             rotate(conn, &slug, &existing, user, grace, "agent_key_rotate")
         })
         .await?;
+    // KAIROS-T-0609: the old key takes its new expiry at the next request.
+    state.auth_cache.drop_key(key_id);
     Ok((StatusCode::CREATED, Json(rotated)))
 }

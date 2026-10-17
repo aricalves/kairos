@@ -326,6 +326,12 @@ pub struct AppConfig {
     /// aim at a known account, and it turns one person's typo into a support
     /// request.
     pub auth_lockout_secs: u64,
+    /// `KAIROS_AUTH_CACHE_SECS` (KAIROS-T-0609): how long the auth cache
+    /// keeps a key, a session, a user, an org and a role, default **60**.
+    /// A write that makes an entry wrong drops it on the server that made
+    /// the write; another server keeps it for at most this time. `0`
+    /// turns the cache off.
+    pub auth_cache_secs: u64,
     /// `KAIROS_TRUSTED_PROXY` (KAIROS-T-0202): trust `X-Forwarded-For` for the
     /// client address, default **false**.
     ///
@@ -582,6 +588,7 @@ impl AppConfig {
         let auth_failure_window_secs =
             parse_num::<u64>(&get, "KAIROS_AUTH_FAILURE_WINDOW_SECS", 300)?;
         let auth_lockout_secs = parse_num::<u64>(&get, "KAIROS_AUTH_LOCKOUT_SECS", 60)?;
+        let auth_cache_secs = parse_num::<u64>(&get, "KAIROS_AUTH_CACHE_SECS", 60)?;
         let trusted_proxy = match get("KAIROS_TRUSTED_PROXY").as_deref() {
             None | Some("") | Some("false") | Some("0") => false,
             Some("true") | Some("1") => true,
@@ -762,6 +769,7 @@ impl AppConfig {
             auth_max_failures,
             auth_failure_window_secs,
             auth_lockout_secs,
+            auth_cache_secs,
             trusted_proxy,
             local_auth,
             session_ttl_secs,

@@ -122,6 +122,8 @@ services:
       KAIROS_AUTH_MAX_FAILURES: ${KAIROS_AUTH_MAX_FAILURES:-}
       KAIROS_AUTH_FAILURE_WINDOW_SECS: ${KAIROS_AUTH_FAILURE_WINDOW_SECS:-}
       KAIROS_AUTH_LOCKOUT_SECS: ${KAIROS_AUTH_LOCKOUT_SECS:-}
+      # KAIROS-T-0609: how long the auth cache keeps an entry; 0 turns it off.
+      KAIROS_AUTH_CACHE_SECS: ${KAIROS_AUTH_CACHE_SECS:-}
       # Hard-coded, like KAIROS_BIND_ADDR above, because it is a fact about THIS
       # topology rather than a choice: the kairos service only `expose`s 8080, so
       # every request arrives through a front door — Caddy, or `tailscale serve`

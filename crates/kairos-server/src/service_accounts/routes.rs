@@ -451,6 +451,8 @@ pub(crate) async fn delete_service_account(
             })
         })
         .await?;
+    // KAIROS-T-0609: the next request with a key of the account is refused.
+    state.auth_cache.drop_user(sa_id);
     Ok(Json(outcome))
 }
 
@@ -643,6 +645,8 @@ pub(crate) async fn revoke_key(
             })
         })
         .await?;
+    // KAIROS-T-0609: the next request with the key is refused.
+    state.auth_cache.drop_key(key_id);
     Ok(Json(outcome))
 }
 
@@ -695,5 +699,7 @@ pub(crate) async fn rotate_key(
             rotate(conn, &slug, &existing, user, grace, "api_key_rotate")
         })
         .await?;
+    // KAIROS-T-0609: the old key takes its new expiry at the next request.
+    state.auth_cache.drop_key(key_id);
     Ok((StatusCode::CREATED, Json(rotated)))
 }

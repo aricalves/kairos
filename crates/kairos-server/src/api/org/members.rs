@@ -382,6 +382,8 @@ pub(crate) async fn update_member(
             Ok(member_view(&membership, &identity))
         })
         .await?;
+    // KAIROS-T-0609: the next request of the member sees the role.
+    state.auth_cache.drop_role(org_id, target);
     Ok(Json(member))
 }
 
@@ -460,5 +462,7 @@ pub(crate) async fn remove_member(
             })
         })
         .await?;
+    // KAIROS-T-0609: the next request of the person is refused.
+    state.auth_cache.drop_user(target);
     Ok(Json(outcome))
 }

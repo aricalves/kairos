@@ -21,7 +21,7 @@ use axum::middleware::Next;
 use axum::response::Response;
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
-use kairos_db::models::{OrgRole, Organization};
+use kairos_db::models::OrgRole;
 use kairos_db::schema::{organization_members, organizations};
 use kairos_db::tenant::is_valid_tenant_slug;
 use kairos_db::{TenantConnection, TenantPool};
@@ -202,6 +202,71 @@ async fn auto_join(
     Ok(joined)
 }
 
+/// The org of `slug` and the role of `user_id` in it, as one LEFT JOIN
+/// (KAIROS-T-0609). `None`: no organization has the slug.
+async fn org_and_role(
+    state: &AppState,
+    slug: &str,
+    user_id: Uuid,
+) -> Result<Option<(Uuid, Option<OrgRole>)>, ApiError> {
+    let mut conn = state.pool.public_conn().await.map_err(ApiError::internal)?;
+    organizations::table
+        .left_join(
+            organization_members::table.on(organization_members::organization_id
+                .eq(organizations::id)
+                .and(organization_members::user_id.eq(user_id))),
+        )
+        .filter(organizations::slug.eq(slug))
+        .select((organizations::id, organization_members::role.nullable()))
+        .first::<(Uuid, Option<OrgRole>)>(&mut conn)
+        .await
+        .optional()
+        .map_err(ApiError::internal)
+}
+
+/// The role of `user_id` in the org, when the org is known already.
+async fn membership(
+    state: &AppState,
+    org_id: Uuid,
+    user_id: Uuid,
+) -> Result<Option<OrgRole>, ApiError> {
+    let mut conn = state.pool.public_conn().await.map_err(ApiError::internal)?;
+    organization_members::table
+        .filter(organization_members::organization_id.eq(org_id))
+        .filter(organization_members::user_id.eq(user_id))
+        .select(organization_members::role)
+        .first(&mut conn)
+        .await
+        .optional()
+        .map_err(ApiError::internal)
+}
+
+/// [`org_and_role`], with the first-login provisioning of the pinned single
+/// tenant. 404 `TENANT_NOT_FOUND` when no organization has the slug.
+async fn org_and_membership(
+    state: &AppState,
+    auth: &AuthContext,
+    slug: &str,
+) -> Result<(Uuid, Option<OrgRole>), ApiError> {
+    let mut found = org_and_role(state, slug, auth.user_id).await?;
+    let mut provision_error = None;
+    if found.is_none() && provisions_on_first_login(&state.config, auth, slug) {
+        if let Err(e) = provision_pinned_tenant(state, auth, slug).await {
+            provision_error = Some(e);
+        }
+        // Read again either way: a concurrent first request may have
+        // provisioned it, and then this one's failure does not matter.
+        found = org_and_role(state, slug, auth.user_id).await?;
+    }
+    match (found, provision_error) {
+        (Some(found), _) => Ok(found),
+        (None, Some(e)) => Err(e),
+        (None, None) => Err(ApiError::tenant_not_found(format!(
+            "No organization has the slug {slug:?}."
+        ))),
+    }
+}
+
 /// The tenant layer: resolve the slug, load the organization, require
 /// membership, and hand the request its [`TenantContext`] + [`TenantDb`].
 pub async fn require_tenant(
@@ -218,11 +283,14 @@ pub async fn require_tenant(
     // A service-account API key carries its own tenant (KAIROS-A-0017): pin
     // that slug instead of resolving one from the Host/X-Tenant. Membership is
     // still enforced below, so a key only works on the org it belongs to.
-    let slug = match req
+    // KAIROS-T-0609: the key brings its org id too, so the org is not read
+    // again here.
+    let pinned = req
         .extensions()
         .get::<crate::service_accounts::auth::ApiKeyTenant>()
-    {
-        Some(pinned) => pinned.0.clone(),
+        .cloned();
+    let slug = match &pinned {
+        Some(pinned) => pinned.slug.clone(),
         None => resolve_slug(&state.config, req.headers())?,
     };
     if !is_valid_tenant_slug(&slug) {
@@ -241,60 +309,36 @@ pub async fn require_tenant(
         db.system = "postgresql",
         kairos.tenant = %slug,
     );
-    // Both statements in one span, sharing one connection as they did before.
-    // Two spans would measure the same connection checkout twice and suggest a
-    // round trip that is not there.
-    let (org, role) = async {
-        let mut conn = state.pool.public_conn().await.map_err(ApiError::internal)?;
-        let mut org: Option<Organization> = organizations::table
-            .filter(organizations::slug.eq(&slug))
-            .select(Organization::as_select())
-            .first(&mut conn)
-            .await
-            .optional()
-            .map_err(ApiError::internal)?;
-        let mut provision_error = None;
-        if org.is_none() && provisions_on_first_login(&state.config, &auth, &slug) {
-            if let Err(e) = provision_pinned_tenant(&state, &auth, &slug).await {
-                provision_error = Some(e);
-            }
-            // Read again either way: a concurrent first request may have
-            // provisioned it, and then this one's failure does not matter.
-            org = organizations::table
-                .filter(organizations::slug.eq(&slug))
-                .select(Organization::as_select())
-                .first(&mut conn)
-                .await
-                .optional()
-                .map_err(ApiError::internal)?;
-        }
-        let org = match (org, provision_error) {
-            (Some(org), _) => org,
-            (None, Some(e)) => return Err(e),
-            (None, None) => {
-                return Err(ApiError::tenant_not_found(format!(
-                    "No organization has the slug {slug:?}."
-                )));
+    // KAIROS-T-0609: the org and the role come from the auth cache when it
+    // has them. On a miss both are one LEFT JOIN. A missing membership is
+    // not cached: an added member works at once.
+    let (org_id, role) = async {
+        let cache = &state.auth_cache;
+        let known_org = pinned
+            .as_ref()
+            .map(|pinned| pinned.org_id)
+            .or_else(|| cache.org(&slug));
+        let known_role = known_org.and_then(|org_id| cache.role(org_id, auth.user_id));
+        let (org_id, role) = match (known_org, known_role) {
+            (Some(org_id), Some(role)) => (org_id, Some(role)),
+            (Some(org_id), None) => (org_id, membership(&state, org_id, auth.user_id).await?),
+            (None, _) => {
+                let (org_id, role) = org_and_membership(&state, &auth, &slug).await?;
+                cache.put_org(slug.clone(), org_id);
+                (org_id, role)
             }
         };
-        let role: Option<OrgRole> = organization_members::table
-            .filter(organization_members::organization_id.eq(org.id))
-            .filter(organization_members::user_id.eq(auth.user_id))
-            .select(organization_members::role)
-            .first(&mut conn)
-            .await
-            .optional()
-            .map_err(ApiError::internal)?;
         let role = match role {
             Some(role) => role,
             None if auto_join_domain(&state.config, &auth, &slug).is_some() => {
-                auto_join(&state, &auth, &slug, org.id)
+                auto_join(&state, &auth, &slug, org_id)
                     .await?
                     .ok_or_else(|| ApiError::membership_required(&slug))?
             }
             None => return Err(ApiError::membership_required(&slug)),
         };
-        Ok::<_, ApiError>((org, role))
+        cache.put_role(org_id, auth.user_id, role);
+        Ok::<_, ApiError>((org_id, role))
     }
     .instrument(tenant_span)
     .await?;
@@ -304,7 +348,7 @@ pub async fn require_tenant(
     state.tenant_readiness.require_ready(&state, &slug).await?;
 
     let context = TenantContext {
-        org_id: org.id,
+        org_id,
         slug: slug.clone(),
         role,
     };
@@ -374,6 +418,7 @@ mod tests {
             auth_max_failures: 5,
             auth_failure_window_secs: 300,
             auth_lockout_secs: 60,
+            auth_cache_secs: 60,
             trusted_proxy: false,
             local_auth: false,
             session_ttl_secs: 14 * 24 * 60 * 60,

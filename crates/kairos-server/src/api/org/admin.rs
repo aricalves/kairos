@@ -342,5 +342,7 @@ pub(crate) async fn delete_tenant(
         })
     })
     .await?;
+    // KAIROS-T-0609: a new tenant with the slug has a new id.
+    state.auth_cache.drop_org(&response.slug);
     Ok(Json(response))
 }

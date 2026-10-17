@@ -80,6 +80,9 @@ data:
   {{- with include "kairos.setValue" .Values.config.auth.lockoutSecs }}
   KAIROS_AUTH_LOCKOUT_SECS: {{ . | quote }}
   {{- end }}
+  {{- with include "kairos.setValue" .Values.config.auth.cacheSecs }}
+  KAIROS_AUTH_CACHE_SECS: {{ . | quote }}
+  {{- end }}
   # Whether X-Forwarded-For is trusted. Unset FOLLOWS THE INGRESS, because that
   # is what decides the answer: behind the chart's Ingress the socket peer is
   # the ingress controller, so counting it would pool every client into one

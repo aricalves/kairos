@@ -209,6 +209,26 @@ When the header is trusted, the **last** value in the list is used, not the firs
 A proxy appends, so the list reads `<whatever the client sent>, <what the proxy
 saw>`; the first element is the one under the caller's control.
 
+### The auth cache
+
+The server keeps each accepted API key, session, OIDC user, organization and
+role for a short time (KAIROS-T-0609). A request with a known credential then
+needs no database read for its authentication.
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `KAIROS_AUTH_CACHE_SECS` | integer | `60` | How long the auth cache keeps an entry, in seconds. `0` turns the cache off. |
+
+A write that makes an entry wrong removes it on the server that made the write.
+These writes are a key revoke or rotation, a role change, a member removal and
+a logout. A revoke of sessions also removes them. The next request on that
+server sees the change. Other servers of the same deployment keep the entry
+until it expires. To make that delay shorter, set a lower value or `0`.
+
+A cached API key skips the failed-authentication throttle. So a source in a
+lockout can still use a key that the server accepted recently. The throttle
+stops guesses, and a cached key is not a guess.
+
 ### API keys and agent keys
 
 | Variable | Type | Default | Description |
@@ -1343,6 +1363,7 @@ The read-only root filesystem is compatible with a filesystem
 | `config.auth.maxFailures` | integer or `""` | `""` | Sets `KAIROS_AUTH_MAX_FAILURES`. Emitted when set, **including `0`**, which turns throttling off. |
 | `config.auth.failureWindowSecs` | integer or `""` | `""` | Sets `KAIROS_AUTH_FAILURE_WINDOW_SECS`. Emitted only when set. |
 | `config.auth.lockoutSecs` | integer or `""` | `""` | Sets `KAIROS_AUTH_LOCKOUT_SECS`. Emitted only when set. |
+| `config.auth.cacheSecs` | integer or `""` | `""` | Sets `KAIROS_AUTH_CACHE_SECS`. Emitted when set, **including `0`**, which turns the cache off. |
 | `config.localAuth.enabled` | bool | `false` | Sets `KAIROS_LOCAL_AUTH`. |
 | `config.localAuth.sessionTtlSecs` | integer or `""` | `""` | Sets `KAIROS_SESSION_TTL_SECS`. Emitted only when set. |
 | `config.localAuth.bootstrapAdmin` | string | `""` | Sets `KAIROS_BOOTSTRAP_ADMIN`. Rendering fails if it is set without a password, or a password without it. |
