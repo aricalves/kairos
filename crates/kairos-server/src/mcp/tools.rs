@@ -3,7 +3,7 @@
 //! (KAIROS-I-0012), `restore_item` (KAIROS-A-0020), `related_work`
 //! (KAIROS-T-0191), `propose_edge` (KAIROS-T-0192), `set_repository`
 //! (COLLIERY-T-0220), and `add_repository` and `update_repository`
-//! (COLLIERY-T-0266); later tasks added more (67 in all, in the profiles
+//! (COLLIERY-T-0266); later tasks added more (70 in all, in the profiles
 //! of `profiles.rs`, KAIROS-T-0454) — each a
 //! thin wrapper over the same `kairos-core`/`kairos-db` services the REST
 //! handlers call — through [`crate::blocking::BlockingTenantPool`], never
@@ -709,8 +709,8 @@ pub struct AddRepositoryParams {
     pub description: Option<String>,
 }
 
-/// Parameters for `update_repository` (COLLIERY-T-0266). There is no `slug`
-/// and no `team`: see the description of the tool.
+/// Parameters for `update_repository` (COLLIERY-T-0266). KAIROS-T-0443 added
+/// `slug` and `team`: see the description of the tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
@@ -1273,7 +1273,7 @@ pub struct SaveTemplateParams {
 }
 
 // ---------------------------------------------------------------------------
-// The tools (67; the list of each profile is asserted in tests/mcp.rs)
+// The tools (70; the list of each profile is asserted in tests/mcp.rs)
 // ---------------------------------------------------------------------------
 
 #[tool_router(vis = "pub(super)")]
@@ -3532,10 +3532,10 @@ impl KairosMcp {
         .await
     }
 
-    // COLLIERY-T-0266. The tool has no `slug` and no `team`, and the REST
-    // route has the two. A checkout keeps the slug in
+    // COLLIERY-T-0266. KAIROS-T-0443 added `slug` and `team`, as the REST
+    // route has them. A checkout keeps the slug in
     // `.claude/kairos.local.md`, so a new slug breaks each checkout. A new
-    // owner team is a decision of the two teams. A person does these.
+    // owner team needs the right on the two teams.
     //
     // The gate and the write are those of `PATCH /api/repositories/{slug}`
     // (`crate::api::org::repositories::change`). That function compares the
