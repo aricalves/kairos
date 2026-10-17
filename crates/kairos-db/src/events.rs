@@ -208,8 +208,26 @@ pub fn blocks_boards(
     short_code: &str,
     own_board: Option<Uuid>,
 ) -> Result<Vec<Uuid>, DieselError> {
+    // KAIROS-T-0628: one UNION ALL arm per direction, so each arm probes its
+    // relationship index (source or target); the CHECK source_id != target_id
+    // keeps the arms disjoint, so no edge is counted twice.
     let rows: Vec<BoardRow> = sql_query(
-        "SELECT DISTINCT other.board_id          FROM entity_directory me          JOIN item_relationships r            ON r.relationship = 'blocks'           AND (r.source_id = me.id OR r.target_id = me.id)          JOIN entity_directory other            ON other.id = CASE WHEN r.source_id = me.id                               THEN r.target_id ELSE r.source_id END           AND other.deleted_at IS NULL          WHERE me.short_code = $1            AND other.board_id IS NOT NULL            AND other.board_id IS DISTINCT FROM $2          ORDER BY other.board_id",
+        "SELECT DISTINCT other.board_id \
+         FROM entity_directory me \
+         CROSS JOIN LATERAL ( \
+             SELECT r.target_id AS other_id FROM item_relationships r \
+                 WHERE r.source_id = me.id AND r.relationship = 'blocks' \
+             UNION ALL \
+             SELECT r.source_id FROM item_relationships r \
+                 WHERE r.target_id = me.id AND r.relationship = 'blocks' \
+         ) n \
+         JOIN entity_directory other \
+           ON other.id = n.other_id \
+          AND other.deleted_at IS NULL \
+         WHERE me.short_code = $1 \
+           AND other.board_id IS NOT NULL \
+           AND other.board_id IS DISTINCT FROM $2 \
+         ORDER BY other.board_id",
     )
     .bind::<Text, _>(short_code)
     .bind::<Nullable<SqlUuid>, _>(own_board)
