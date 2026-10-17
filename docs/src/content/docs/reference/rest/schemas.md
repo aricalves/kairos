@@ -1627,12 +1627,13 @@ The `user` object of [`LoginResponse`].
 
 ## MarkNotificationsReadRequest
 
-`POST /api/me/notifications/read` body: `ids`, or `all: true`. Not both.
+`POST /api/me/notifications/read` body: `ids`, or `all: true` with `up_to`. Not both.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `all` | `boolean`, nullable | no | `true`: each unread notification of the caller. |
+| `all` | `boolean`, nullable | no | `true`: each unread notification of the caller up to `up_to`. |
 | `ids` | `array`, nullable | no | The ids of notifications of the caller. |
+| `up_to` | `string`, nullable | no | With `all: true`, required: the id of the newest notification that the caller read. Kairos marks it and each older unread one, and no newer one (KAIROS-T-0550). |
 
 The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
 

@@ -95,16 +95,22 @@ pub struct NotificationList {
     pub items: Vec<Notification>,
 }
 
-/// `POST /api/me/notifications/read` body: `ids`, or `all: true`. Not both.
+/// `POST /api/me/notifications/read` body: `ids`, or `all: true` with
+/// `up_to`. Not both.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MarkNotificationsReadRequest {
     /// The ids of notifications of the caller.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ids: Option<Vec<String>>,
-    /// `true`: each unread notification of the caller.
+    /// `true`: each unread notification of the caller up to `up_to`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub all: Option<bool>,
+    /// With `all: true`, required: the id of the newest notification that
+    /// the caller read. Kairos marks it and each older unread one, and no
+    /// newer one (KAIROS-T-0550).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub up_to: Option<String>,
 }
 
 /// `POST /api/me/notifications/read` response.
