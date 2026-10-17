@@ -87,14 +87,28 @@ impl std::fmt::Debug for BlockingTenantPool {
 
 impl BlockingTenantPool {
     /// Build a lazy pool of at most `max_size` connections against
-    /// `database_url`. `build_unchecked` + `min_idle(0)`: connections are
-    /// established on first use, so constructing state stays sync and
-    /// fail-fast behavior remains with the async pool (KAIROS-T-0017).
+    /// `database_url`, with no idle minimum: connections are established on
+    /// first use, so constructing state stays sync and fail-fast behavior
+    /// remains with the async pool (KAIROS-T-0017). Tests use this one.
     pub fn new(database_url: &str, max_size: u32) -> Self {
+        Self::with_min_idle(database_url, max_size, 0)
+    }
+
+    /// Build the pool of a server (KAIROS-T-0608): `build_unchecked`, so
+    /// nothing blocks here; `min_idle` connections are opened in the
+    /// background by r2d2 and kept, so the first requests after a start do
+    /// not pay the connect; no `test_on_check_out`, because every checkout
+    /// runs `SET search_path` first and a dead connection fails there, one
+    /// round trip later than a ping and only when it is dead; a 5 s
+    /// `connection_timeout`, so a full pool answers with an error instead
+    /// of 30 s of silence.
+    pub fn with_min_idle(database_url: &str, max_size: u32, min_idle: u32) -> Self {
         let manager = ConnectionManager::<PgConnection>::new(database_url);
         let pool = Pool::builder()
             .max_size(max_size)
-            .min_idle(Some(0))
+            .min_idle(Some(min_idle.min(max_size)))
+            .test_on_check_out(false)
+            .connection_timeout(std::time::Duration::from_secs(5))
             .build_unchecked(manager);
         Self { pool }
     }

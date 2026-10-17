@@ -64,6 +64,15 @@ a deployment, use [`kairos login --email`](../cli/#kairos-login).
 | `KAIROS_LOG_FORMAT` | `json` \| `pretty` | `json` | Log encoding. Any other value fails startup. |
 | `KAIROS_PUBLIC_URL` | URL | unset | The deployment's externally reachable base URL. Required to render the webhook delivery URL an operator pastes into a forge. A trailing slash is stripped. Not inferred from the request `Host` header. |
 
+### Database pools
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `KAIROS_POOL_SIZE` | integer | `16` | The connections of each of the two pools of a server: the async pool of the middleware and the blocking pool of the handlers and the jobs. A server holds up to twice this many connections, plus one for `LISTEN`. Size it against `max_connections` of PostgreSQL and the number of replicas. |
+| `KAIROS_POOL_MIN_IDLE` | integer | `2` | The connections the blocking pool opens at start and keeps idle, so the first requests after a start do not pay the connect. Capped at `KAIROS_POOL_SIZE`. |
+
+Neither pool pings a connection on checkout: every checkout sets `search_path` first, and a dead connection fails there. A checkout waits 5 seconds for a free connection, then fails the request.
+
 ### Local password accounts
 
 | Variable | Type | Default | Description |

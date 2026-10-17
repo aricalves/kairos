@@ -82,15 +82,15 @@ pub enum BuildError {
     SiteStore(#[from] crate::site_store::StoreError),
 }
 
-/// Pool size for the server. Fixed for now; becomes configuration when a
-/// deployment needs it (A-0013 keeps the env surface minimal).
-const POOL_SIZE: u32 = 16;
-
 /// Build the shared state: connect the pool and resolve the OIDC issuer
 /// (discovery + JWKS priming — fails fast if the issuer is unreachable).
 pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
-    let pool = TenantPool::new(&config.database_url, POOL_SIZE).await?;
-    let blocking = BlockingTenantPool::new(&config.database_url, POOL_SIZE);
+    let pool = TenantPool::new(&config.database_url, config.pool_size).await?;
+    let blocking = BlockingTenantPool::with_min_idle(
+        &config.database_url,
+        config.pool_size,
+        config.pool_min_idle,
+    );
     // KAIROS-T-0208: discover only what is there. With no issuer there is no
     // discovery document to fetch, and a `disabled()` authenticator refuses every
     // JWT with a message that names the misconfiguration. An issuer that IS named
@@ -314,7 +314,8 @@ fn build_embedding_service() -> Option<Arc<crate::embedding::EmbeddingService>> 
 /// The sync service pool ([`crate::blocking`]) is lazy, so it is built
 /// here from `config.database_url` either way.
 pub fn state_with(config: AppConfig, pool: TenantPool, auth: Arc<Authenticator>) -> AppState {
-    let blocking = BlockingTenantPool::new(&config.database_url, POOL_SIZE);
+    // No idle minimum here: a test run builds hundreds of states.
+    let blocking = BlockingTenantPool::new(&config.database_url, config.pool_size);
     // KAIROS-T-0202: built from the passed config like everything else here, so a
     // test that wants a throttle sets the variables and a test that does not set
     // `KAIROS_AUTH_MAX_FAILURES` to 0.
