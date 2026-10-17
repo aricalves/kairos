@@ -95,11 +95,22 @@ Two dev-stack facts worth knowing (both are deployment config, not code):
 Aurora (it was "Aurora Dark"; crates.io: `colliery-io-aurora` 0.6, the
 workspace key is still `aurora-dark`, so the code imports `aurora_dark`)
 is the design system. The stylesheet is a linked file: the trunk
-`pre_build` hook (`Trunk.toml`) runs `crates/kairos-web-css`, which calls
-`aurora_dark::write_css` and `aurora_dark::write_hyper_css` to write
-`crates/kairos-web/style/aurora.css` and `style/hyper.css` (git ignores
-them), and `index.html` links them in that order, before `app.css`. The
-page so has the styles at its first paint (KAIROS-T-0326, KAIROS-T-0397).
+`pre_build` hook (`Trunk.toml`) runs `crates/kairos-web-css`. The hook
+writes `crates/kairos-web/style/kairos.css`: the Aurora stylesheet, then
+`app.css`. Git ignores the `style/` folder. `index.html` links this one
+file, so the page has the styles at its first paint (KAIROS-T-0326,
+KAIROS-T-0605).
+
+The hook also writes the hyper theme as `style/hyper-<hash>.css`. The
+server sends each asset as immutable, so the name holds a hash of the
+content. Trunk copies the file with no link. A script in `index.html`
+loads it only for `data-theme="hyper"` (KAIROS-T-0397, KAIROS-T-0605).
+After an Aurora upgrade, write the new name in `index.html`. A unit test
+in `crates/kairos-web-css` gives the name.
+
+Aurora takes the IBM Plex fonts from `fonts.gstatic.com`. `index.html`
+has a `preconnect` to that host, so the connection opens early. The fonts
+are not in the repository (KAIROS-T-0605).
 
 **Light, dark and hyper (COLLIERY-T-1836, KAIROS-T-0397).** Aurora has a
 light and a dark theme, and the opt-in hyper theme (neon on a dark base,
@@ -110,8 +121,11 @@ light and a dark theme, and the opt-in hyper theme (neon on a dark base,
 choice in the browser (`aurora-theme`); "System" removes it. `index.html` has
 Aurora's `THEME_INIT_SCRIPT` in the `<head>`, before the stylesheet, so
 the first paint has the stored theme (a unit test in `app.rs` compares it
-with the crate constant). `e2e/tests/theme.spec.ts` checks the toggle,
-the reload (of dark and of hyper), and the main pages in light and dark.
+with the crate constant). With a stored "hyper", the script of `index.html`
+writes the hyper link before the first paint. When the toggle sets
+"hyper", the script adds the link. `e2e/tests/theme.spec.ts` checks the
+toggle, the reload (of dark and of hyper), the hyper link, and the main
+pages in light and dark.
 
 **The token rule.** No raw color literals anywhere in this crate — not
 in Rust, not in CSS, not in inline `style=`, not in SVG. Color arrives
@@ -153,7 +167,7 @@ the history diff, the badges of Kairos states) lives in `app.css`, uses
 
 ```
 crates/kairos-web/
-  index.html        trunk target (app.css link; wasm-opt config)
+  index.html        trunk target (stylesheet link, hyper loader; wasm-opt config)
   app.css           Kairos-specific layout chrome (tokens only)
   src/
     main.rs         wasm entry (mounts App; keep 5 lines)
