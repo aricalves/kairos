@@ -5,7 +5,7 @@
 use crate::commands::entities::{EntityView, ListArgs};
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
-use crate::table::Table;
+use crate::table::{Table, print_page_footer};
 
 use kairos_client::types_org::{
     BoardItemsQuery, BoardItemsResponse, CreateBoardRequest, UpdateColumnRequest,
@@ -197,9 +197,11 @@ impl BoardsCommand {
                     }
                     print!("{}", table.render());
                 }
-                println!(
-                    "total: {} (limit {}, offset {})",
-                    envelope.total, envelope.limit, envelope.offset
+                print_page_footer(
+                    envelope.total,
+                    envelope.limit,
+                    envelope.offset,
+                    envelope.items.len(),
                 );
                 Ok(())
             }
