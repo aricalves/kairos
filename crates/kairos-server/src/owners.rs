@@ -163,17 +163,28 @@ pub fn owner_text(
         return Ok(String::new());
     }
     Ok(match owner_of(conn, item_id)? {
-        Some(owner) => format!(
-            "- owner: {} since {}\n",
-            owner.display_name,
-            owner
-                .claimed_at
-                .parse::<chrono::DateTime<chrono::Utc>>()
-                .map(|t| t.format("%Y-%m-%dT%H:%M:%SZ").to_string())
-                .unwrap_or(owner.claimed_at)
+        Some(owner) => match owner.claimed_at.parse::<chrono::DateTime<chrono::Utc>>() {
+            Ok(since) => owner_line(Some((&owner.display_name, since))),
+            Err(_) => format!(
+                "- owner: {} since {}\n",
+                owner.display_name, owner.claimed_at
+            ),
+        },
+        None => owner_line(None),
+    })
+}
+
+/// [`owner_text`] from what was read already (KAIROS-T-0626): the owner as
+/// (name, since), or `None`. The caller checks that the item has an owner
+/// ([`item_owners::is_subject`]).
+pub fn owner_line(owner: Option<(&str, chrono::DateTime<chrono::Utc>)>) -> String {
+    match owner {
+        Some((name, since)) => format!(
+            "- owner: {name} since {}\n",
+            since.format("%Y-%m-%dT%H:%M:%SZ")
         ),
         None => "- owner: none. A member of the board can claim it (claim_item).\n".to_string(),
-    })
+    }
 }
 
 /// Only a strategy or an initiative has an owner.
