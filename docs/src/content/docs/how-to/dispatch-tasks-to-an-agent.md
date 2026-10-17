@@ -103,8 +103,9 @@ The filter is optional. Each part that you set must match:
 - `--repository`: the repository of the task.
 
 A rule can also fire when an item loses its last open blocker. The blocker
-goes into a done column, or a person cancels, archives or purges it. A person
-can also remove the `blocks` link. The item can be a task, an initiative or a
+goes into a done column, or a person archives or purges it. A person can also
+remove the `blocks` link. A cancel does not fire the rule: a cancelled blocker
+still blocks. The item can be a task, an initiative or a
 strategy.
 
 The event is `task.unblocked`. Its `blocker` is the code of the blocker. Use

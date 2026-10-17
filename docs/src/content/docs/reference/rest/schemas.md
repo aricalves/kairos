@@ -353,6 +353,7 @@ One column bucket of a children-progress rollup (KAIROS-T-0080).
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `board_id` | `string` | yes | The column's board (children may span boards). |
+| `cancelled` | `integer` | yes | The cancelled tasks among `count` (KAIROS-T-0567). |
 | `column_id` | `string` | yes | Column id (UUID). |
 | `column_name` | `string` | yes |  |
 | `count` | `integer` | yes |  |
@@ -365,8 +366,10 @@ Response of `GET /api/{entity_type}/{short_code}/children-progress` (KAIROS-T-00
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `by_column` | array of [`ChildColumnProgress`](#childcolumnprogress) | yes | Per-column composition, board-then-position order. |
-| `done` | `integer` | yes | Children sitting in `is_done` columns. |
+| `cancelled` | `integer` | yes | Cancelled tasks among the children (KAIROS-T-0567). A cancel is "won't do", not done. The default is for the client only: a response of an older server has no `cancelled`. |
+| `done` | `integer` | yes | Children sitting in `is_done` columns, less the cancelled tasks (KAIROS-T-0567). |
 | `has_done_columns` | `boolean` | yes | False when no board hosting the children has a done-flagged column — show composition only, never a done fraction. The server sends it in each response, so the schema shows it as required (COLLIERY-T-0254). The default is for the client only: a response of an older server has no `has_done_columns`, and it reads as `false`. |
+| `open` | `integer` | yes | Children that are not done and not cancelled: `total - done - cancelled`. |
 | `short_code` | `string` | yes | The parent item's short code. |
 | `total` | `integer` | yes | Direct live children (soft-deleted excluded; supports/informs material never counts). |
 
@@ -1711,7 +1714,7 @@ One notification of the caller (KAIROS-T-0382).
 | `created_at` | `string` | yes | When Kairos made the notification (RFC 3339). |
 | `entity_type` | `string`, nullable | no | `strategy|initiative|task|document|adr`; `null` when the item is gone. |
 | `id` | `string` | yes | The id (UUID). `POST /api/me/notifications/read` takes it. |
-| `kind` | `string` | yes | `hand_off|blocker_cleared|blocked_again|cancelled|mention|p0_bug|delivery_failing|agent_key_revoked`. |
+| `kind` | `string` | yes | `hand_off|blocker_cleared|blocked_again|cancelled|blocker_cancelled|mention|p0_bug|delivery_failing|agent_key_revoked`. |
 | `read_at` | `string`, nullable | no | When the person read it (RFC 3339); `null` while unread. |
 | `short_code` | `string`, nullable | no | The code of the item now; `null` when the item is gone. |
 | `text` | `string` | yes | What happened, in one sentence or two. |
@@ -1734,6 +1737,7 @@ One notification of the caller (KAIROS-T-0382).
 |---|---|---|---|
 | `agent_key_revoked` | `boolean` | yes | An organization admin revoked an agent key of yours (KAIROS-T-0388). |
 | `blocked_again` | `boolean` | yes | A blocker of an item that you have the claim on (or own, or made) left a done column, so it blocks again (KAIROS-T-0568). |
+| `blocker_cancelled` | `boolean` | yes | A person cancelled a task that blocks an item that you have the claim on, own or made. The cancelled task still blocks (KAIROS-T-0567). |
 | `blocker_cleared` | `boolean` | yes | A blocker of an item that you have the claim on (or own) is done, archived or purged, or its `blocks` link is removed. |
 | `cancelled` | `boolean` | yes | A person cancelled a task that you created. |
 | `delivery_failing` | `boolean` | yes | A webhook target that you own was turned off after failed deliveries (KAIROS-T-0384). |
@@ -1809,8 +1813,10 @@ A `(done, total)` children rollup (KAIROS-T-0080). `done` counts the children si
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `done` | `integer` | yes |  |
+| `cancelled` | `integer` | yes | Cancelled tasks among the children (KAIROS-T-0567). The default is for the client only: a response of an older server has no `cancelled`. |
+| `done` | `integer` | yes | Children in a done column, less the cancelled tasks (KAIROS-T-0567). |
 | `has_done` | `boolean` | yes | False when no board hosting the children has a done-flagged column — clients show composition only, never a done fraction. The server sends it in each response, so the schema shows it as required (COLLIERY-T-0254). The default is for the client only: a response of an older server has no `has_done`, and it reads as `false`. |
+| `open` | `integer` | yes | Children that are not done and not cancelled. |
 | `total` | `integer` | yes |  |
 
 ## PromoteNoteRequest
@@ -1914,6 +1920,7 @@ One hydrated neighbor of an item in the relationship graph.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `archived_at` | `string`, nullable | no | When this neighbour was archived, RFC 3339; absent while it is live. Relationship lists are archived-INCLUSIVE (KAIROS-T-0158): an item's edges describe what it contains and depends on, and dropping an archived endpoint silently shrinks that answer. The row therefore comes back with this marker, and every renderer must show it — ADR-20: anything serving an archived row says so, or an auditor mistakes it for live work. |
+| `cancelled` | `boolean` | no | `true` when the neighbour is a cancelled task (KAIROS-T-0567); absent otherwise. A cancelled task is in a done column, so `done` is `true` too. But a cancelled blocker is unresolved: it still blocks, and a client shows it as cancelled, not done. |
 | `done` | `boolean` | no | `true` when this neighbour sits in a terminal column (a column the board marks `is_done`); absent otherwise (COLLIERY-T-0214). Done work does not block and is not blocked, so a `blocks` edge to a done neighbour is history, not an open blocker: the board's `blocks_summary` does not count it. The edge still comes back here, because the list is the record, and every renderer of a `blocks` neighbour must show this marker. It follows the neighbour's current column; nothing is stored. |
 | `entity_type` | `string` | yes | `strategy|initiative|task|document|adr`. |
 | `id` | `string` | yes | The neighbor's entity id (UUID). |
@@ -2845,6 +2852,7 @@ The server refuses a body with a field that is not in this table ([Errors](../..
 |---|---|---|---|
 | `agent_key_revoked` | `boolean`, nullable | no |  |
 | `blocked_again` | `boolean`, nullable | no |  |
+| `blocker_cancelled` | `boolean`, nullable | no |  |
 | `blocker_cleared` | `boolean`, nullable | no |  |
 | `cancelled` | `boolean`, nullable | no |  |
 | `delivery_failing` | `boolean`, nullable | no |  |

@@ -488,8 +488,20 @@ pub struct BlocksCounts {
 /// children sitting in `is_done` columns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ProgressCounts {
+    /// Children in a done column, less the cancelled tasks
+    /// (KAIROS-T-0567).
     pub done: i64,
     pub total: i64,
+    /// Cancelled tasks among the children (KAIROS-T-0567). The default is
+    /// for the client only: a response of an older server has no
+    /// `cancelled`.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub cancelled: i64,
+    /// Children that are not done and not cancelled.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub open: i64,
     /// False when no board hosting the children has a done-flagged
     /// column — clients show composition only, never a done fraction.
     ///

@@ -867,21 +867,32 @@ fn ChildrenProgressBar(family: Family, #[prop(into)] code: String) -> impl IntoV
     view! {
         {move || match progress.get() {
             Some(Ok(p)) if p.total > 0 => {
-                let label = if p.has_done_columns {
-                    format!("{} of {} done", p.done, p.total)
-                } else {
-                    format!("{} children", p.total)
+                let label = match (p.has_done_columns, p.cancelled) {
+                    (false, _) => format!("{} children", p.total),
+                    (true, 0) => format!("{} of {} done", p.done, p.total),
+                    (true, cancelled) => {
+                        format!("{} of {} done, {cancelled} cancelled", p.done, p.total)
+                    }
                 };
                 // COLLIERY-T-1836: the Aurora `SegmentedBar`: one part per
                 // column, a done column in the ok hue, the others neutral.
-                let segments: Vec<Segment> = p
-                    .by_column
-                    .iter()
-                    .map(|column| {
-                        let color = if column.is_done { token::OK } else { token::MUTED };
-                        Segment::new(column.column_name.clone(), column.count as f64, color)
-                    })
-                    .collect();
+                // KAIROS-T-0567: the cancelled tasks of a column are a part
+                // of their own, in gold: a cancel is not done.
+                let mut segments: Vec<Segment> = Vec::new();
+                for column in &p.by_column {
+                    let color = if column.is_done { token::OK } else { token::MUTED };
+                    let kept = column.count - column.cancelled;
+                    if kept > 0 {
+                        segments.push(Segment::new(column.column_name.clone(), kept as f64, color));
+                    }
+                    if column.cancelled > 0 {
+                        segments.push(Segment::new(
+                            format!("{} (cancelled)", column.column_name),
+                            column.cancelled as f64,
+                            token::GOLD,
+                        ));
+                    }
+                }
                 view! {
                     <div class="kairos-progress">
                         <SegmentedBar segments label="Children by column" height=6/>
@@ -1989,14 +2000,23 @@ fn RelationshipGroupView(
                 // edges: that is where the mark changes what the reader
                 // does next. "done" is the board admin's word for the
                 // column flag, in the same colour.
-                let done = (is_blocks && item.done).then(|| view! {
+                // KAIROS-T-0567: a cancelled blocker still blocks, so it is
+                // "cancelled", never "done".
+                let done = (is_blocks && item.cancelled).then(|| view! {
+                    <span
+                        class="kairos-done-badge"
+                        title="Cancelled: this edge still blocks until a person removes it"
+                    >
+                        <Pill color=token::GOLD>"cancelled"</Pill>
+                    </span>
+                }.into_any()).or_else(|| (is_blocks && item.done).then(|| view! {
                     <span
                         class="kairos-done-badge"
                         title="In a done column: this edge no longer blocks"
                     >
                         <Pill color=token::OK>"done"</Pill>
                     </span>
-                });
+                }.into_any()));
                 view! {
                     <Group gap="sm" justify="between">
                         <Anchor href=format!("/items/{}", item.short_code)>

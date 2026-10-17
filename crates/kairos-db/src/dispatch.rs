@@ -21,9 +21,11 @@
 //!
 //! A rule with the trigger [`TRIGGER_UNBLOCKED`] (KAIROS-T-0427) fires when
 //! an item loses its last open blocker ([`on_dependants_freed`]): the event
-//! [`EVENT_UNBLOCKED`]. The blocker is done, archived or cancelled
+//! [`EVENT_UNBLOCKED`]. The blocker is done or archived
 //! ([`on_blockers_closed`]), or its `blocks` edge is gone: an unlink or a
-//! purge (KAIROS-T-0568). The item can be a strategy, an initiative or a
+//! purge (KAIROS-T-0568). A cancelled blocker stays open (KAIROS-T-0567):
+//! its cancel fires nothing, and it holds the item until a person removes
+//! the edge, archives it or reopens it. The item can be a strategy, an initiative or a
 //! task. The rule can name a column that the item must be in. An item with
 //! two blockers fires once, when the second closes. A blocker that opens
 //! again blocks the item again, so its next close fires again.
@@ -381,18 +383,23 @@ pub(crate) const WORKFLOW_ITEMS: &str = "(SELECT id, 'task'::text AS entity_type
      created_by, NULL::text, NULL::text, NULL::uuid FROM strategies)";
 
 /// The SQL condition that the item `alias` of [`WORKFLOW_ITEMS`] blocks
-/// the targets of its `blocks` edges now: it is live, and it is not in a
-/// done column.
+/// the targets of its `blocks` edges now: it is live, and it is open
+/// ([`open_sql`]).
 pub(crate) fn blocks_now_sql(alias: &str) -> String {
     format!("({alias}.deleted_at IS NULL AND {})", open_sql(alias))
 }
 
 /// The SQL condition that the item `alias` of [`WORKFLOW_ITEMS`] is open,
-/// live or archived: it is not in a done column.
+/// live or archived: it is not in a done column, or it is a cancelled
+/// task. KAIROS-T-0567: a cancelled blocker is unresolved, not done. The
+/// work it stood for will not be done, so a person must decide: remove
+/// the `blocks` link, archive the blocker, or reopen it.
 pub(crate) fn open_sql(alias: &str) -> String {
     format!(
         "(NOT EXISTS (SELECT 1 FROM board_columns {alias}_c \
-                       WHERE {alias}_c.id = {alias}.column_id AND {alias}_c.is_done))"
+                       WHERE {alias}_c.id = {alias}.column_id AND {alias}_c.is_done) \
+          OR EXISTS (SELECT 1 FROM task_cancellations {alias}_k \
+                      WHERE {alias}_k.task_id = {alias}.id))"
     )
 }
 

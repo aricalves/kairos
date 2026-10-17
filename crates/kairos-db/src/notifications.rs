@@ -20,6 +20,11 @@
 //!   dependant when it has neither.
 //! - `cancelled`: a cancel of a task ([`crate::task_cancellations::cancel_task`])
 //!   tells the person who created the task, with the reason.
+//! - `blocker_cancelled`: a cancel of a task that blocks an item
+//!   (KAIROS-T-0567). A cancelled blocker is unresolved, not done: it still
+//!   blocks, and Kairos unblocks nothing. The person with the claim on each
+//!   dependant that is not done (or its owner) and the person who created
+//!   it are told, with the reason.
 //! - `mention`: `@user_name` in the content of a new item, or a NEW mention
 //!   in an update of the content (a note of `append_note` is an update). A
 //!   mention is new when the content has more mentions of the name than
@@ -336,7 +341,8 @@ pub fn on_blockers_cleared(
     if blockers.is_empty() {
         return Ok(());
     }
-    // A blocker that was done before its archive closed nothing now.
+    // A blocker that was done before its archive closed nothing now. A
+    // cancelled blocker was open (KAIROS-T-0567): its archive closes it.
     let closed: Vec<Uuid> = match how {
         Cleared::Archived => blockers_open(conn, blockers)?,
         _ => blockers.to_vec(),
@@ -439,6 +445,10 @@ pub fn on_blocker_reopened(
     blocker: Uuid,
     actor: Uuid,
 ) -> Result<(), DieselError> {
+    // KAIROS-T-0567: a cancelled blocker never stopped blocking.
+    if crate::task_cancellations::mark_of(conn, blocker)?.is_some() {
+        return Ok(());
+    }
     let edges = crate::dispatch::dependants_of(conn, &[blocker], &[blocker])?;
     if edges.is_empty() {
         return Ok(());
@@ -464,8 +474,71 @@ pub fn on_blocker_reopened(
     Ok(())
 }
 
+/// `blocker_cancelled` (KAIROS-T-0567): `actor` cancelled the task
+/// `blocker`, with `reason`. The task still blocks, so nothing is
+/// unblocked. For each live item that it blocks and that is not done, the
+/// person with the claim on the task (or the owner of the strategy or the
+/// initiative) and the person who created the item are told.
+pub fn on_blocker_cancelled(
+    conn: &mut PgConnection,
+    blocker: Uuid,
+    reason: &str,
+    actor: Uuid,
+) -> Result<(), DieselError> {
+    let edges = crate::dispatch::dependants_of(conn, &[blocker], &[blocker])?;
+    if edges.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<Uuid> = edges.iter().map(|f| f.dependant).collect();
+    let mut rows = claimants(conn, &ids, false)?;
+    rows.extend(creators(conn, &ids)?);
+    for edge in &edges {
+        let mut told: Vec<Uuid> = rows
+            .iter()
+            .filter(|r| r.item_id == edge.dependant)
+            .map(|r| r.user_id)
+            .collect();
+        told.sort();
+        told.dedup();
+        let Some(row) = rows.iter().find(|r| r.item_id == edge.dependant) else {
+            continue;
+        };
+        let text = format!(
+            "{} is cancelled, and it still blocks {}. Remove the blocks link, or reopen {}. \
+             The reason: {}",
+            edge.blocker_code,
+            row.item_code,
+            edge.blocker_code,
+            reason.trim()
+        );
+        notify(
+            conn,
+            &told,
+            NotificationKind::BlockerCancelled,
+            Some((row.item_id, &row.item_code)),
+            &text,
+            actor,
+        )?;
+    }
+    Ok(())
+}
+
+/// The person who created each live item of `ids` that is not done.
+fn creators(conn: &mut PgConnection, ids: &[Uuid]) -> Result<Vec<ClaimantRow>, DieselError> {
+    sql_query(format!(
+        "SELECT d.id AS item_id, d.short_code AS item_code, d.created_by AS user_id \
+           FROM {items} d \
+           JOIN board_columns dc ON dc.id = d.column_id AND NOT dc.is_done \
+          WHERE d.id = ANY($1) AND d.deleted_at IS NULL \
+          ORDER BY d.short_code",
+        items = crate::dispatch::WORKFLOW_ITEMS,
+    ))
+    .bind::<Array<SqlUuid>, _>(ids)
+    .load(conn)
+}
+
 /// The items of `ids` that are open, live or archived: not in a done
-/// column.
+/// column, or cancelled ([`crate::dispatch::open_sql`]).
 fn blockers_open(conn: &mut PgConnection, ids: &[Uuid]) -> Result<Vec<Uuid>, DieselError> {
     #[derive(QueryableByName)]
     struct Row {

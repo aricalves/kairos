@@ -661,7 +661,9 @@ soft-deleted rather than dropped, and this lookup deliberately ignores that so
 
 The `blocked by` and `blocks` lines list each `blocks` edge of the item. The
 mark `[done]` shows an item in a done column. The mark `[archived]` shows an
-item that someone put away. An edge to an item with a mark does not block. When
+item that someone put away. An edge to an item with a mark does not block. The
+mark `[cancelled]` shows a cancelled blocker, which still blocks
+(KAIROS-T-0567). When
 the item itself is in a done column, the two labels change to
 `blocked by (resolved: this item is done)` and
 `blocks (resolved: this item is done)`.
@@ -1535,8 +1537,9 @@ graph view shows serial work as a row and parallel work in one column.
 A `blocks` edge counts only while the items at both ends can move. Complete
 work does not block, and nothing blocks complete work. The edge stops counting
 when the item at either end is in a done column. The edge stays, and `get_item`
-marks the done end `[done]`. `link_items` does not refuse an edge to an item in
-a done column.
+marks the done end `[done]`. A cancelled blocker still blocks, and `get_item`
+marks it `[cancelled]` (KAIROS-T-0567). `link_items` does not refuse an edge to
+an item in a done column.
 
 The tool refuses with these codes:
 
@@ -2259,9 +2262,10 @@ A notification tells a person about an event of their work (KAIROS-T-0381):
 | Kind | You get it when |
 |---|---|
 | `hand_off` | A person or a service account gives you the claim of a task. |
-| `blocker_cleared` | An open blocker of your item stops blocking it. The blocker goes into a done column, or a person archives or purges it, or removes the `blocks` link. Your item is a task that you have the claim on, or a strategy or initiative that you own. |
+| `blocker_cleared` | An open blocker of your item stops blocking it. The blocker goes into a done column, or a person archives or purges it, or removes the `blocks` link. A cancel sends `blocker_cancelled` in its place. Your item is a task that you have the claim on, or a strategy or initiative that you own. |
 | `blocked_again` | A done blocker of your item leaves the done column, so it blocks again. Your item is a task that you have the claim on, or a strategy or initiative that you own. With no claim and no owner, the person who created the item gets it. |
 | `cancelled` | A person cancels a task that you created. The text has the reason. |
+| `blocker_cancelled` | A person cancels a task that blocks your item. The cancelled task still blocks, and Kairos unblocks nothing. Remove the `blocks` link, or reopen the blocker. You get it when you have the claim on the item, own it, or created it. The text has the reason. |
 | `mention` | A person writes `@your_user_name` in a note or in the content of an item. A mention in code does not count. An update tells only the new mentions. |
 | `p0_bug` | A bug with the priority `critical` (or `p0`) lands on the board of your team: its priority changes to P0, or it moves to the board. |
 | `delivery_failing` | Kairos turns off a webhook target that you made, or a target of a board that you manage, after failed deliveries. See [Webhook deliveries](../webhooks/). |
@@ -2340,8 +2344,9 @@ A task enters a column in 3 ways:
 
 A rule with the trigger `unblocked` (KAIROS-T-0427) fires when an item loses
 its last open blocker. The blocker goes into a done column, or a person
-cancels, archives or purges it. A person can also remove the `blocks` link
-with `unlink_items` (KAIROS-T-0568). The item can be a task, an initiative or
+archives or purges it. A person can also remove the `blocks` link with
+`unlink_items` (KAIROS-T-0568). A cancel does not fire the rule: a cancelled
+blocker still blocks (KAIROS-T-0567). The item can be a task, an initiative or
 a strategy.
 
 The event is `task.unblocked` for each type. Its `data` has the

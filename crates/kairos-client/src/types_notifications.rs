@@ -20,6 +20,10 @@ pub struct NotificationSettings {
     pub blocked_again: bool,
     /// A person cancelled a task that you created.
     pub cancelled: bool,
+    /// A person cancelled a task that blocks an item that you have the
+    /// claim on, own or made. The cancelled task still blocks
+    /// (KAIROS-T-0567).
+    pub blocker_cancelled: bool,
     /// A person wrote `@your_user_name` in a note or in the content of an
     /// item.
     pub mention: bool,
@@ -47,6 +51,8 @@ pub struct UpdateNotificationSettingsRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancelled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocker_cancelled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mention: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub p0_bug: Option<bool>,
@@ -61,7 +67,7 @@ pub struct UpdateNotificationSettingsRequest {
 pub struct Notification {
     /// The id (UUID). `POST /api/me/notifications/read` takes it.
     pub id: String,
-    /// `hand_off|blocker_cleared|blocked_again|cancelled|mention|p0_bug|delivery_failing|agent_key_revoked`.
+    /// `hand_off|blocker_cleared|blocked_again|cancelled|blocker_cancelled|mention|p0_bug|delivery_failing|agent_key_revoked`.
     pub kind: String,
     /// The code of the item now; `null` when the item is gone.
     pub short_code: Option<String>,

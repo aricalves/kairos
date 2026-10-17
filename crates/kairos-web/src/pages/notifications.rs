@@ -50,6 +50,7 @@ struct NotificationSettings {
     blocker_cleared: bool,
     blocked_again: bool,
     cancelled: bool,
+    blocker_cancelled: bool,
     mention: bool,
     p0_bug: bool,
     delivery_failing: bool,
@@ -90,6 +91,7 @@ fn kind_label(kind: &str) -> &'static str {
         "blocker_cleared" => "Blocker cleared",
         "blocked_again" => "Blocked again",
         "cancelled" => "Cancelled",
+        "blocker_cancelled" => "Blocker cancelled",
         "mention" => "Mention",
         "p0_bug" => "P0 bug",
         "delivery_failing" => "Delivery failing",
@@ -316,6 +318,7 @@ pub fn NotificationsPage() -> impl IntoView {
     let blocker_cleared = RwSignal::new(true);
     let blocked_again = RwSignal::new(true);
     let cancelled = RwSignal::new(true);
+    let blocker_cancelled = RwSignal::new(true);
     let mention = RwSignal::new(true);
     let p0_bug = RwSignal::new(true);
     let delivery_failing = RwSignal::new(true);
@@ -332,6 +335,7 @@ pub fn NotificationsPage() -> impl IntoView {
             blocker_cleared.set(s.blocker_cleared);
             blocked_again.set(s.blocked_again);
             cancelled.set(s.cancelled);
+            blocker_cancelled.set(s.blocker_cancelled);
             mention.set(s.mention);
             p0_bug.set(s.p0_bug);
             delivery_failing.set(s.delivery_failing);
@@ -344,6 +348,7 @@ pub fn NotificationsPage() -> impl IntoView {
             "blocker_cleared": blocker_cleared.get_untracked(),
             "blocked_again": blocked_again.get_untracked(),
             "cancelled": cancelled.get_untracked(),
+            "blocker_cancelled": blocker_cancelled.get_untracked(),
             "mention": mention.get_untracked(),
             "p0_bug": p0_bug.get_untracked(),
             "delivery_failing": delivery_failing.get_untracked(),
@@ -420,6 +425,8 @@ pub fn NotificationsPage() -> impl IntoView {
                                     label="A done blocker of your task is open again"/>
                                 <Switch checked=cancelled
                                     label="A person cancels a task that you created"/>
+                                <Switch checked=blocker_cancelled
+                                    label="A person cancels a blocker of your task"/>
                                 <Switch checked=mention label="A person writes your user name"/>
                                 <Switch checked=p0_bug label="A P0 bug lands on the board of your team"/>
                                 <Switch checked=delivery_failing
@@ -455,6 +462,7 @@ mod tests {
             "blocker_cleared",
             "blocked_again",
             "cancelled",
+            "blocker_cancelled",
             "mention",
             "p0_bug",
             "delivery_failing",

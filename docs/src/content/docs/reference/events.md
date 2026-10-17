@@ -113,10 +113,13 @@ The `kind` of a notification says what happened. The blocker kinds:
 |---|---|
 | `blocker_cleared` | An open blocker of your item stops blocking it. The blocker is done, archived or purged, or a person removes the `blocks` link |
 | `blocked_again` | A done blocker of your item leaves the done column (KAIROS-T-0568) |
+| `blocker_cancelled` | A person cancels a blocker of your item. The blocker still blocks (KAIROS-T-0567) |
 
 "Your item" is a task that you have the claim on, or a strategy or initiative
 that you own. For `blocked_again`, the person who created the item gets it
-when nobody has the claim or owns it. The
+when nobody has the claim or owns it. For `blocker_cancelled`, the person who
+created the item gets it too. A cancel does not resolve a blocker, so it sends no
+`blocker_cleared`. The
 [MCP tools reference](../mcp-tools/#your-notifications) lists each kind.
 
 ## Client → server: board filter
