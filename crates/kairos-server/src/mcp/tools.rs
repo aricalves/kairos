@@ -809,7 +809,8 @@ pub struct HandOffItemParams {
     /// The person who gets the claim (a task) or who becomes the owner (a
     /// strategy or an initiative): a user id, an email or a user name of a
     /// person of the organization, or `me`. A new owner must be a member
-    /// of the board of the item.
+    /// of the board of the item. A new claim holder must hold
+    /// `transition_items` on the board of the task.
     pub to: String,
 }
 
@@ -3840,7 +3841,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Give the claim of a TASK in Active, or the owner of a STRATEGY or INITIATIVE, to another person (`to`: user id, email, user name or `me`; not a service account). A task stays in Active; you can hand off your own claim, or any claim with `transition_items` on its board. A strategy or initiative: the owner hands it off, or an org admin sets it; the new owner must be a member of its board (else NOT_BOARD_MEMBER). The person gets a notification."
+        description = "Give the claim of a TASK in Active, or the owner of a STRATEGY or INITIATIVE, to another person (`to`: user id, email, user name or `me`; not a service account). A task stays in Active; you can hand off your own claim, or any claim with `transition_items` on its board; the person must hold `transition_items` on that board too (team, grant or org admin), else VALIDATION names the board. A strategy or initiative: the owner hands it off, or an org admin sets it; the new owner must be a member of its board (else NOT_BOARD_MEMBER). The person gets a notification."
     )]
     pub async fn hand_off_item(
         &self,
@@ -3871,6 +3872,14 @@ impl KairosMcp {
             let board_id = item.board_id.unwrap_or_default();
             crate::claims::require_claim_change(conn, &slug, item.id, board_id, user)?;
             let to = crate::claims::resolve_person(conn, &slug, &params.to, user)?;
+            crate::claims::require_claim_target(
+                conn,
+                &slug,
+                board_id,
+                to,
+                &params.to,
+                &item.short_code,
+            )?;
             kairos_db::task_claims::hand_off(conn, item.id, to, user)
                 .map_err(crate::claims::map_claim_error)?;
             Ok(format!(

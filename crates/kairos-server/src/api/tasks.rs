@@ -43,6 +43,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/tasks/{short_code}/move", post(move_task))
         .route("/api/tasks/{short_code}/claim", post(claim_task))
         .route("/api/tasks/{short_code}/hand-off", post(hand_off_task))
+        .route(
+            "/api/tasks/{short_code}/hand-off-targets",
+            get(hand_off_targets),
+        )
         .route("/api/tasks/{short_code}/release", post(release_task))
         .route("/api/tasks/{short_code}/cancel", post(cancel_task))
         .route("/api/tasks/{short_code}/purge", post(purge_task))
@@ -838,8 +842,12 @@ pub(crate) async fn transition_task(
 
 /// Give the claim of a task in Active to a person (KAIROS-T-0359,
 /// KAIROS-A-0024). `to` is a user id, an email or a user name of a person
-/// of the organization. The task stays in Active, and the person gets the
-/// claim. A service account cannot have a claim.
+/// of the organization, or `me`. The task stays in Active, and the person
+/// gets the claim. A service account cannot have a claim.
+///
+/// The person must hold `transition_items` on the board of the task
+/// (KAIROS-T-0530). The team of the board gives it, and so do a grant and
+/// the organization admin role. Else the answer is 422 VALIDATION on `to`.
 ///
 /// The person who has the claim may hand it off. Any other caller needs
 /// `transition_items` on the board of the task. That capability moves the
@@ -856,7 +864,7 @@ pub(crate) async fn transition_task(
         (status = 403, description = "The caller does not have the claim and does not have transition_items", body = dto::ErrorEnvelope),
         (status = 404, description = "Unknown short code", body = dto::ErrorEnvelope),
         (status = 409, description = "The person has the claim already", body = dto::ErrorEnvelope),
-        (status = 422, description = "NOT_CLAIMABLE (the task is not in Active), or VALIDATION (`to` is not a person of the organization)", body = dto::ErrorEnvelope),
+        (status = 422, description = "NOT_CLAIMABLE (the task is not in Active), or VALIDATION (`to` is not a person of the organization, or does not hold transition_items on the board of the task)", body = dto::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn hand_off_task(
@@ -874,6 +882,14 @@ pub(crate) async fn hand_off_task(
             let task = load(conn, &short_code, Liveness::LiveOnly)?;
             crate::claims::require_claim_change(conn, &slug, task.id, task.board_id, user)?;
             let to = crate::claims::resolve_person(conn, &slug, &body.to, user)?;
+            crate::claims::require_claim_target(
+                conn,
+                &slug,
+                task.board_id,
+                to,
+                &body.to,
+                &short_code,
+            )?;
             kairos_db::task_claims::hand_off(conn, task.id, to, user)
                 .map_err(crate::claims::map_claim_error)?;
             let task = load(conn, &short_code, Liveness::LiveOnly)?.into_dto();
@@ -881,6 +897,39 @@ pub(crate) async fn hand_off_task(
         })
         .await?;
     Ok(Json(task))
+}
+
+/// The persons who can get the claim of a task (KAIROS-T-0530). Each
+/// person holds `transition_items` on the board of the task. The team of
+/// the board gives it, and so do a grant and the organization admin role.
+/// The list is in the order of the email. It has no service account.
+///
+/// Each member of the organization can read the list, as with the
+/// members of a board (KAIROS-A-0006).
+#[utoipa::path(
+    get,
+    path = "/api/tasks/{short_code}/hand-off-targets",
+    tag = "tasks",
+    params(("short_code" = String, Path, description = "Task short code")),
+    responses(
+        (status = 200, description = "The persons who can get the claim", body = [dto::HandOffTarget]),
+        (status = 404, description = "Unknown short code", body = dto::ErrorEnvelope),
+    ),
+)]
+pub(crate) async fn hand_off_targets(
+    State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Path(short_code): Path<String>,
+) -> Result<Json<Vec<dto::HandOffTarget>>, ApiError> {
+    let slug = tenant.slug.clone();
+    let targets = state
+        .blocking
+        .run(&tenant.slug, move |conn| {
+            let task = load(conn, &short_code, Liveness::LiveOnly)?;
+            crate::claims::hand_off_targets(conn, &slug, task.board_id)
+        })
+        .await?;
+    Ok(Json(targets))
 }
 
 /// Take the claim of a task in Active that has no claim (KAIROS-T-0528).

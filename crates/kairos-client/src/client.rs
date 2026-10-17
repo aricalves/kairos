@@ -613,13 +613,25 @@ impl KairosClient {
     /// `POST /api/tasks/{short_code}/hand-off` — give the claim of a task
     /// in Active to a person (KAIROS-T-0359). `to` is a user id, an email
     /// or a user name of a person of the organization, or `me`. The caller has the
-    /// claim, or holds `transition_items` on the board of the task.
+    /// claim, or holds `transition_items` on the board of the task. The
+    /// person must hold `transition_items` on that board too (KAIROS-T-0530).
     pub async fn hand_off_task(&self, short_code: &str, to: &str) -> Result<Task, Error> {
         self.post_ok(
             &format!("/api/tasks/{short_code}/hand-off"),
             &crate::types::HandOffRequest { to: to.to_string() },
         )
         .await
+    }
+
+    /// `GET /api/tasks/{short_code}/hand-off-targets` — the persons who
+    /// can get the claim of the task: each person who holds
+    /// `transition_items` on its board (KAIROS-T-0530).
+    pub async fn hand_off_targets(
+        &self,
+        short_code: &str,
+    ) -> Result<Vec<crate::types::HandOffTarget>, Error> {
+        self.get(&format!("/api/tasks/{short_code}/hand-off-targets"))
+            .await
     }
 
     /// `POST /api/tasks/{short_code}/release` — end the claim of a task in
