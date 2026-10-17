@@ -612,6 +612,7 @@ fn relationship_graph_service() {
                 title: "Task Two".into(),
                 archived_at: None,
                 done: false,
+                cancelled: false,
             },
             Neighbor {
                 relationship: RelationshipType::Parent,
@@ -621,6 +622,7 @@ fn relationship_graph_service() {
                 title: "Task One".into(),
                 archived_at: None,
                 done: false,
+                cancelled: false,
             },
             Neighbor {
                 relationship: RelationshipType::Parent,
@@ -630,6 +632,7 @@ fn relationship_graph_service() {
                 title: "Task Two".into(),
                 archived_at: None,
                 done: false,
+                cancelled: false,
             },
             Neighbor {
                 relationship: RelationshipType::Supports,
@@ -639,6 +642,7 @@ fn relationship_graph_service() {
                 title: "Document One".into(),
                 archived_at: None,
                 done: false,
+                cancelled: false,
             },
         ],
         "outgoing edges of i1, grouped by relationship (alphabetical), then insertion order"
@@ -654,6 +658,7 @@ fn relationship_graph_service() {
                 title: "Document One".into(),
                 archived_at: None,
                 done: false,
+                cancelled: false,
             },
             Neighbor {
                 relationship: RelationshipType::Parent,
@@ -663,6 +668,7 @@ fn relationship_graph_service() {
                 title: "Strategy One".into(),
                 archived_at: None,
                 done: false,
+                cancelled: false,
             },
         ],
         "incoming edges of i1"
@@ -973,13 +979,17 @@ fn children_progress_rollups() {
         "multi-board children group by column: {buckets:?}"
     );
     assert!(rows.iter().all(|row| row.board_has_done));
-    let (done, total) = kairos_core::items::children_progress_counts(
+    let counts = kairos_core::items::children_progress_counts(
         &rows
             .iter()
-            .map(|row| (row.is_done, row.count))
+            .map(|row| (row.is_done, row.count, row.cancelled))
             .collect::<Vec<_>>(),
     );
-    assert_eq!((done, total), (1, 3), "doc + soft-deleted child excluded");
+    assert_eq!(
+        (counts.done, counts.cancelled, counts.open, counts.total),
+        (1, 0, 2, 3),
+        "doc + soft-deleted child excluded"
+    );
 
     // A leaf has no rollup at all.
     assert!(

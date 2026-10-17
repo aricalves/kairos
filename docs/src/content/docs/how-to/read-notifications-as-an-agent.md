@@ -22,22 +22,29 @@ a block. The block has the 5 newest unread notifications:
 
 ```text
 ## Your notifications (7 unread)
-- 6f1a1f9e-… · 2026-10-12 09:15Z · hand_off · ACME-T-0012: Robin gave you the claim on ACME-T-0012: Fix the login
+- 2026-10-12 09:15Z · hand_off · ACME-T-0012: Robin gave you the claim on ACME-T-0012: Fix the login
 - …
 2 more: call get_events
-Mark them read with mark_events_read when you have acted on them.
+get_events gives each with its id; mark them read with mark_events_read when you have acted on them.
 ```
 
-Each line has the id, the time, the kind, the item and the text. The block
+Each line has the time, the kind, the item and the text. `get_events` gives
+the ids. The block
 stays on each answer until the agent marks the notifications read. A
 refusal has no block.
 
 ## 2. List all of them
 
-Call the tool `get_events`. It has no arguments. It gives each unread
-notification first, newest first, then the 20 newest read notifications.
+Call the tool `get_events`. It gives each unread notification first, newest
+first, then the 20 newest read notifications. It shows 100 unread
+notifications at most. The answer then gives a `before` value. Send it to
+`get_events` to get the next page.
 
-With REST, use `GET /api/me/notifications`.
+The answer ends with the `up_to` value: the id of the newest unread
+notification.
+
+With REST, use `GET /api/me/notifications`. Add `?before=<id>` for the next
+page.
 
 ## 3. Act, then mark them read
 
@@ -49,11 +56,15 @@ read with `mark_events_read`:
 { "ids": ["6f1a1f9e-…", "2b7c…"] }
 ```
 
-Or mark each unread notification read:
+Or mark each notification that you read. Send `up_to`: the id of the newest
+notification that you read.
 
 ```json
-{ "all": true }
+{ "all": true, "up_to": "6f1a1f9e-…" }
 ```
+
+Kairos marks that notification and each older one. A notification that came
+after your list stays unread. Kairos refuses `all` without `up_to`.
 
 The answer is one line:
 
@@ -66,14 +77,17 @@ nothing.
 
 With REST, use `POST /api/me/notifications/read` with the same body.
 
-Do not mark a notification read before the agent acts on it. You and the
-agent share the notifications. When the agent marks a notification read, it
-is read in the bell of the web app too.
+Do not mark a notification read before the agent acts on it.
+
+You and the agent get the same notifications. Each agent key keeps its own
+read state. When the agent marks a notification read, the bell of the web
+app still shows it unread. You mark it read yourself.
 
 ## The skills of the plugin
 
 The `implement` and `triage` skills of the Kairos plugin read the block.
 They call `get_events`, and mark the notifications read after they act.
+They send `all: true` with `up_to`, or the ids.
 
 ## Related reading
 

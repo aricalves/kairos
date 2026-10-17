@@ -466,6 +466,11 @@ work. An edge with either end in a terminal column (`is_done`) adds to
 neither card. The edge stays on the relationship list of each item,
 with a mark on the done end.
 
+Each item is a card (KAIROS-T-0602). A card has no `content`,
+`created_by` or `updated_by`. `?fields=full` adds them: then the
+response has the shape that the route had before cards. The item route
+of a card gives its content.
+
 The path takes the slug or the id of the board (COLLIERY-T-0265). An
 unknown slug and an unknown id are a 404.
 
@@ -479,6 +484,7 @@ unknown slug and an unknown id are a 404.
 | `team` | query | no | `string` | Narrow the STRATEGIES and the INITIATIVES to those of this team (slug or UUID), from tasks or set by hand (KAIROS-T-0321). Tasks and ADRs are unaffected. Unknown team → 422. Not with `no_team`. |
 | `no_team` | query | no | `boolean` | Narrow the STRATEGIES and the INITIATIVES to those with no team (KAIROS-T-0321). Tasks and ADRs are unaffected. Not with `team`. |
 | `with_metadata` | query | no | `boolean` | Add `item_metadata` to the response: the metadata values of each item of the page (KAIROS-T-0368). Default false. |
+| `fields` | query | no | `string` (`card`, `full`) | `card` (the default): the cards have no `content`, `created_by` or `updated_by`. `full`: the cards have them, as before cards (KAIROS-T-0602). An other value is refused. |
 
 | Response | Body | Meaning |
 |---|---|---|
@@ -871,7 +877,7 @@ Get one team (open tenant-wide).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Team id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the team |
 
 | Response | Body | Meaning |
 |---|---|---|
@@ -890,7 +896,7 @@ applies the rule to each board, and it removes each board with the team
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Team id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the team |
 
 | Response | Body | Meaning |
 |---|---|---|
@@ -912,7 +918,7 @@ before the rule keeps that slug.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Team id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the team |
 
 Request body (required): `application/json`, [`UpdateTeamRequest`](../schemas/#updateteamrequest)
 
@@ -932,7 +938,7 @@ repository is attributed to the team. Open tenant-wide.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Team id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the team |
 | `state` | query | no | `string` | Comma-separated states; defaults to `open,draft` — the panel's question is "what is in flight", not merged history. |
 | `limit` | query | no | `integer` | Result cap (default 100). |
 
@@ -947,7 +953,7 @@ List a team's members (open tenant-wide).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Team id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the team |
 
 | Response | Body | Meaning |
 |---|---|---|
@@ -961,7 +967,7 @@ on the organization (KAIROS-T-0337).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Team id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the team |
 
 Request body (required): `application/json`, [`AddTeamMemberRequest`](../schemas/#addteammemberrequest)
 
@@ -980,7 +986,7 @@ Remove a member from a team. An organization admin, or
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Team id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the team |
 | `user_id` | path | yes | `string` | User id (UUID) |
 
 | Response | Body | Meaning |
@@ -997,7 +1003,7 @@ rollup of `/api/teams/{id}/links`. Open tenant-wide.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Team id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the team |
 | `state` | query | no | `string` | Comma-separated states; defaults to `open,draft` — the panel's question is "what is in flight", not merged history. |
 | `limit` | query | no | `integer` | Result cap (default 100). |
 
@@ -1015,7 +1021,7 @@ Open tenant-wide.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Team id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the team |
 
 | Response | Body | Meaning |
 |---|---|---|
@@ -1030,7 +1036,7 @@ The team's announcements, pinned first then newest (open tenant-wide).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Team id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the team |
 
 | Response | Body | Meaning |
 |---|---|---|
@@ -1044,7 +1050,7 @@ is no edit route).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Team id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the team |
 
 Request body (required): `application/json`, [`CreateTeamAnnouncementRequest`](../schemas/#createteamannouncementrequest)
 
@@ -1061,7 +1067,7 @@ Delete an announcement (its author or an org admin).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Team id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the team |
 | `announcement_id` | path | yes | `string` | Announcement id (UUID) |
 
 | Response | Body | Meaning |
@@ -1077,7 +1083,7 @@ KAIROS-T-0439).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Team id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the team |
 
 | Response | Body | Meaning |
 |---|---|---|
@@ -1090,7 +1096,7 @@ The team's live page tree as a flat list (open tenant-wide).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Team id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the team |
 
 | Response | Body | Meaning |
 |---|---|---|
@@ -1103,7 +1109,7 @@ Create a page or folder (team member or org admin).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Team id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the team |
 
 Request body (required): `application/json`, [`CreateTeamPageRequest`](../schemas/#createteampagerequest)
 
@@ -1120,7 +1126,7 @@ One live page (open tenant-wide).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Team id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the team |
 | `page_id` | path | yes | `string` | Page id (UUID) |
 
 | Response | Body | Meaning |
@@ -1134,7 +1140,7 @@ Archive a page, or a folder with everything in it (the Charter never).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Team id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the team |
 | `page_id` | path | yes | `string` | Page id (UUID) |
 
 | Response | Body | Meaning |
@@ -1151,7 +1157,7 @@ not both in one call.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Team id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the team |
 | `page_id` | path | yes | `string` | Page id (UUID) |
 
 Request body (required): `application/json`, [`UpdateTeamPageRequest`](../schemas/#updateteampagerequest)
@@ -1171,7 +1177,7 @@ KAIROS-T-0439).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Team id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the team |
 | `page_id` | path | yes | `string` | Page id (UUID) |
 
 | Response | Body | Meaning |
@@ -1186,7 +1192,7 @@ organization admin, KAIROS-T-0439).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Team id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the team |
 | `page_id` | path | yes | `string` | Page id (UUID) |
 
 | Response | Body | Meaning |
@@ -1203,7 +1209,7 @@ tenant-wide, KAIROS-T-0437).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Team id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the team |
 
 | Response | Body | Meaning |
 |---|---|---|
@@ -1218,7 +1224,7 @@ Put a document or an ADR of the team in a folder of its tree
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Team id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the team |
 | `item` | path | yes | `string` | The short code or the id of a document or an ADR of the team |
 
 Request body (required): `application/json`, [`PlaceTeamItemRequest`](../schemas/#placeteamitemrequest)
@@ -1398,7 +1404,8 @@ Request body (required): `application/json`, [`AddOrgMemberRequest`](../schemas/
 Remove a member. Removing the LAST admin is rejected (422 `LAST_ADMIN`).
 Kairos revokes the agent keys of the member in the same transaction
 (KAIROS-T-0388). Then the strategies and the initiatives of the member
-have no owner (KAIROS-T-0411). Org-admin-only.
+have no owner (KAIROS-T-0411). The tasks that the member has the claim
+on are free (KAIROS-T-0531). Org-admin-only.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|

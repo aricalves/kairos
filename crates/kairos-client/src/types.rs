@@ -311,6 +311,17 @@ pub struct HandOffRequest {
     pub to: String,
 }
 
+/// A person who can get the claim of a task (KAIROS-T-0530). The person
+/// holds `transition_items` on the board of the task. `GET
+/// /api/tasks/{short_code}/hand-off-targets` gives a list of them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct HandOffTarget {
+    /// `public.users.id` (UUID).
+    pub user_id: String,
+    pub email: String,
+    pub display_name: String,
+}
+
 /// The owner of a strategy or an initiative (KAIROS-T-0411): the one
 /// person who answers for the item.
 ///

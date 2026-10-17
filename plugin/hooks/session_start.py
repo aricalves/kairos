@@ -106,8 +106,9 @@ def live_state_hint(values):
             f"This checkout is repository `{repository}`. For live state, call the "
             f"kairos MCP tools now: `get_repository` for `{repository}` (read its "
             "\"How to work here\" description and in-flight PRs first). The result "
-            "lists the documents and the ADRs that impact this repository: its "
-            "vision, its architecture and the decisions about it. Read them with "
+            "lists the documents and the ADRs that impact this repository (its "
+            "vision, its architecture and the decisions about it) and the other "
+            "ADRs of the owner team. Read them with "
             "`get_item` before you plan work. Then call "
             f"`board_items` for the board of your team ({team_board}) with "
             f"`repository={repository}`. That is your queue. The board without "
@@ -198,7 +199,9 @@ def cli_note(cli, server, plugin=None):
     return (
         f"- cli: the kairos CLI is {cli}; {' and '.join(behind)}. "
         "Tell the user. Update the CLI: `kairos self-update` installs the "
-        "version of the server."
+        "version of the server. `kairos-code` runs the old binary until the "
+        "session starts again: restart the session after the update "
+        "(KAIROS-T-0526)."
     )
 
 

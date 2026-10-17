@@ -58,7 +58,7 @@ pub struct BoardDetail {
 
 // ---- mirrors: the grouped items view --------------------------------------
 
-/// mirror of: `kairos_client::types::Strategy` (partial — card fields).
+/// mirror of: `kairos_client::types_cards::StrategyCard` (partial).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Strategy {
     pub short_code: String,
@@ -84,7 +84,7 @@ pub(crate) fn owner_pill(owner: Option<&ItemOwner>) -> Option<String> {
     owner.map(|owner| format!("owner: {}", owner.display_name))
 }
 
-/// mirror of: `kairos_client::types::Initiative` (partial — card fields).
+/// mirror of: `kairos_client::types_cards::InitiativeCard` (partial).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Initiative {
     pub short_code: String,
@@ -101,7 +101,7 @@ pub struct Initiative {
     pub owner: Option<ItemOwner>,
 }
 
-/// mirror of: `kairos_client::types::Task` (partial — card fields).
+/// mirror of: `kairos_client::types_cards::TaskCard` (partial).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Task {
     pub short_code: String,
@@ -166,7 +166,7 @@ pub struct TaskClaim {
     pub claimed_at: String,
 }
 
-/// mirror of: `kairos_client::types::Adr` (partial — card fields).
+/// mirror of: `kairos_client::types_cards::AdrCard` (partial).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Adr {
     pub short_code: String,
@@ -244,6 +244,28 @@ pub struct ProgressCounts {
     /// False = no involved board has done columns; show composition only.
     #[serde(default)]
     pub has_done: bool,
+    /// KAIROS-T-0567: cancelled children, apart from `done`.
+    #[serde(default)]
+    pub cancelled: i64,
+}
+
+impl ProgressCounts {
+    /// The words of the card badge: `3/5 done, 1 cancelled`, or the
+    /// composition only when no board of the children has a done column.
+    /// Pure, host-tested.
+    pub fn label(&self) -> String {
+        if !self.has_done {
+            return format!("{} children", self.total);
+        }
+        if self.cancelled > 0 {
+            format!(
+                "{}/{} done, {} cancelled",
+                self.done, self.total, self.cancelled
+            )
+        } else {
+            format!("{}/{} done", self.done, self.total)
+        }
+    }
 }
 
 // ---- mirrors: templates + events ------------------------------------------
@@ -772,6 +794,25 @@ pub async fn create_document(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// KAIROS-T-0567: the card badge counts a cancel apart from done.
+    #[test]
+    fn the_progress_badge_counts_cancelled_apart() {
+        let counts = |done, cancelled, total, has_done| ProgressCounts {
+            done,
+            total,
+            has_done,
+            cancelled,
+        };
+        assert_eq!(counts(3, 1, 5, true).label(), "3/5 done, 1 cancelled");
+        assert_eq!(counts(3, 0, 5, true).label(), "3/5 done");
+        assert_eq!(counts(0, 0, 4, false).label(), "4 children");
+        // An older server sends no `cancelled`.
+        let old: ProgressCounts =
+            serde_json::from_value(serde_json::json!({"done": 2, "total": 3, "has_done": true}))
+                .expect("progress");
+        assert_eq!(old.label(), "2/3 done");
+    }
 
     /// One page of the items of a board: the tasks `first..first + count`
     /// in the column `column`, with an entry in each map for each task.

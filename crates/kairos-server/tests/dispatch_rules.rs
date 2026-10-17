@@ -14,9 +14,9 @@
 //!    list_dispatch_rules, delete_dispatch_rule, and the refusal for a
 //!    person who cannot configure the board.
 //! 6. KAIROS-T-0427: an `unblocked` rule fires when the last open blocker
-//!    of a task closes (a cancel, an archive), once for a task with two
+//!    of a task closes (done, an archive), once for a task with two
 //!    blockers, with the code of the blocker; its column and its filter
-//!    must match.
+//!    must match. KAIROS-T-0567: a cancelled blocker does not close.
 //!
 //! Runs against the LIVE compose stack (`angreal services up`), with
 //! KAIROS_WEBHOOK_ALLOW_PRIVATE on (the receiver is on 127.0.0.1). Owns the
@@ -751,11 +751,21 @@ async fn a_task_that_enters_the_column_of_a_rule_fires_one_signed_delivery() {
         .await
         .expect("to Todo");
     let before = receiver.received().len();
+    // A blocker goes to Completed, one hop each.
+    let finish = |code: String| {
+        let alice = &alice;
+        let column = &column;
+        async move {
+            for name in ["Todo", "Active", "Completed"] {
+                alice
+                    .transition_task(&code, &column[name])
+                    .await
+                    .unwrap_or_else(|e| panic!("{code} to {name}: {e}"));
+            }
+        }
+    };
     // The first of two blockers closes: nothing.
-    alice
-        .cancel_task(&first, "Done elsewhere")
-        .await
-        .expect("cancel");
+    finish(first.clone()).await;
     deliver(&worker, &scratch_url).await;
     let unblocked = |from: usize| -> Vec<Value> {
         receiver.received()[from..]
@@ -766,17 +776,11 @@ async fn a_task_that_enters_the_column_of_a_rule_fires_one_signed_delivery() {
     };
     assert!(unblocked(before).is_empty(), "{:?}", unblocked(before));
     // The second closes: one delivery, with its code.
-    alice
-        .cancel_task(&second, "Done elsewhere")
-        .await
-        .expect("cancel");
+    finish(second.clone()).await;
     // An archived blocker unblocks the bug in Todo (U2).
     alice.delete_task(&bug_blocker).await.expect("archive");
     // The bug in Backlog: U2 wants Todo, U1 wants a task. Nothing.
-    alice
-        .cancel_task(&other_blocker, "Done elsewhere")
-        .await
-        .expect("cancel");
+    finish(other_blocker.clone()).await;
     deliver(&worker, &scratch_url).await;
     let mut got: Vec<(String, String, String)> = unblocked(before)
         .iter()
@@ -806,13 +810,21 @@ async fn a_task_that_enters_the_column_of_a_rule_fires_one_signed_delivery() {
             .await
             .expect("blocks");
     }
+    for source in [&race_a, &race_b] {
+        for name in ["Todo", "Active"] {
+            alice
+                .transition_task(source, &column[name])
+                .await
+                .expect("to Active");
+        }
+    }
     let before_race = receiver.received().len();
     let (a, b) = tokio::join!(
-        alice.cancel_task(&race_a, "Done elsewhere"),
-        alice.cancel_task(&race_b, "Done elsewhere"),
+        alice.transition_task(&race_a, &column["Completed"]),
+        alice.transition_task(&race_b, &column["Completed"]),
     );
-    a.expect("cancel a");
-    b.expect("cancel b");
+    a.expect("done a");
+    b.expect("done b");
     deliver(&worker, &scratch_url).await;
     let raced: Vec<(String, String)> = unblocked(before_race)
         .iter()

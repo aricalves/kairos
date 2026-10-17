@@ -40,6 +40,11 @@ static SCRATCH_DB: scratch::ScratchName =
 /// The migration under test, verbatim.
 const UP: &str = include_str!("../migrations/tenant/2026-10-09-000003_task_claims/up.sql");
 const DOWN: &str = include_str!("../migrations/tenant/2026-10-09-000003_task_claims/down.sql");
+/// A later migration that adds a column to `task_claims` (KAIROS-T-0531).
+/// The down and the up above drop and remake the table, so the test runs
+/// this one again to give the table its present shape.
+const LATER: &str =
+    include_str!("../migrations/tenant/2026-10-17-000731_claim_dropped_and_stale/up.sql");
 
 fn admin_database_url() -> String {
     std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
@@ -242,6 +247,7 @@ fn a_task_in_active_has_a_claim() {
     };
     conn.batch_execute(DOWN).expect("down");
     conn.batch_execute(UP).expect("up");
+    conn.batch_execute(LATER).expect("the later migration");
     for board in [web, ops] {
         let active: Vec<String> = column_flags(&mut conn, board)
             .into_iter()

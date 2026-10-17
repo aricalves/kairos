@@ -11,8 +11,6 @@
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
-use crate::types::{Adr, Initiative, Strategy, Task};
-
 // ---------------------------------------------------------------------------
 // Boards
 // ---------------------------------------------------------------------------
@@ -236,10 +234,12 @@ pub struct BoardColumnItems {
     #[serde(default)]
     #[schema(required = true)]
     pub over_wip_limit: bool,
-    pub strategies: Vec<Strategy>,
-    pub initiatives: Vec<Initiative>,
-    pub tasks: Vec<Task>,
-    pub adrs: Vec<Adr>,
+    /// The cards of the column (KAIROS-T-0602): no `content` unless the
+    /// query has `fields=full`.
+    pub strategies: Vec<crate::types_cards::StrategyCard>,
+    pub initiatives: Vec<crate::types_cards::InitiativeCard>,
+    pub tasks: Vec<crate::types_cards::TaskCard>,
+    pub adrs: Vec<crate::types_cards::AdrCard>,
 }
 
 /// The default of `limit` of `GET /api/boards/{id}/items`
@@ -284,6 +284,12 @@ pub struct BoardItemsQuery {
     /// item of the page (KAIROS-T-0368). Default false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub with_metadata: bool,
+    /// `card` (the default): the cards have no `content`, `created_by` or
+    /// `updated_by`. `full`: the cards have them, as before cards
+    /// (KAIROS-T-0602). An other value is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[param(inline)]
+    pub fields: Option<crate::types_cards::CardFields>,
 }
 
 /// One team of an initiative or a strategy (KAIROS-T-0321). The item gets
@@ -495,8 +501,20 @@ pub struct BlocksCounts {
 /// children sitting in `is_done` columns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ProgressCounts {
+    /// Children in a done column, less the cancelled tasks
+    /// (KAIROS-T-0567).
     pub done: i64,
     pub total: i64,
+    /// Cancelled tasks among the children (KAIROS-T-0567). The default is
+    /// for the client only: a response of an older server has no
+    /// `cancelled`.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub cancelled: i64,
+    /// Children that are not done and not cancelled.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub open: i64,
     /// False when no board hosting the children has a done-flagged
     /// column — clients show composition only, never a done fraction.
     ///

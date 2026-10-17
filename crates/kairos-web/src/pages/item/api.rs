@@ -357,6 +357,9 @@ pub struct MetadataDefinition {
 pub struct ChildrenProgress {
     pub total: i64,
     pub done: i64,
+    /// KAIROS-T-0567: cancelled children, apart from `done`.
+    #[serde(default)]
+    pub cancelled: i64,
     /// False = no involved board has done columns; composition only.
     #[serde(default)]
     pub has_done_columns: bool,
@@ -370,6 +373,9 @@ pub struct ChildColumnProgress {
     pub column_name: String,
     pub is_done: bool,
     pub count: i64,
+    /// KAIROS-T-0567: the cancelled tasks among `count`.
+    #[serde(default)]
+    pub cancelled: i64,
 }
 
 /// mirror of: `kairos_client::types_meta::ItemRelationshipsResponse`
@@ -415,6 +421,11 @@ pub struct RelatedItem {
     /// without the mark a finished blocker reads as one still in the way.
     #[serde(default)]
     pub done: bool,
+    /// `true` when this neighbour is a cancelled task (KAIROS-T-0567). A
+    /// cancelled blocker still blocks: the panel marks it `cancelled`, not
+    /// `done`.
+    #[serde(default)]
+    pub cancelled: bool,
 }
 
 /// mirror of: `kairos_client::types_meta::Template` (partial).
@@ -1201,6 +1212,15 @@ pub async fn hand_off_task(auth: Auth, code: &str, to: &str) -> Result<ItemDetai
 /// Active (KAIROS-T-0359). The task stays in Active with no claim.
 pub async fn release_task(auth: Auth, code: &str) -> Result<ItemDetail, ApiError> {
     let path = format!("/api/tasks/{code}/release");
+    send_json(auth, Verb::Post, &path, None::<&()>).await
+}
+
+/// `POST /api/tasks/{short_code}/claim` — the signed-in person takes the
+/// claim of a task with no claim in a claims column (KAIROS-T-0528). The
+/// caller holds `transition_items` on the board. A different holder is
+/// refused with `CLAIMED`.
+pub async fn claim_task(auth: Auth, code: &str) -> Result<ItemDetail, ApiError> {
+    let path = format!("/api/tasks/{code}/claim");
     send_json(auth, Verb::Post, &path, None::<&()>).await
 }
 

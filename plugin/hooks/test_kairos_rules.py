@@ -179,6 +179,10 @@ class TheRulesText(KairosRulesCase):
             "Backlog, Todo, Active, Completed",
             "Ground before you plan",
             "ADR",
+            # KAIROS-T-0599: the two routes to the ADRs and the documents.
+            "`get_repository <slug>`",
+            "the ADRs of the owner team",
+            "`team_pages <team>`",
             "local memory",
             '"not checked"',
         ):

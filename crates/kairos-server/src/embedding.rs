@@ -42,7 +42,7 @@ use kairos_db::embeddings::{
     ChunkWrite, EmbeddingError, PendingItem, StoredModel, metadata_for, pending_primary,
     store_primary, stored_chunk_hashes, sync_chunks,
 };
-use kairos_embed::{EmbedError, EmbeddingProvider};
+use kairos_embed::{EmbedError, Embedding, EmbeddingProvider};
 
 /// Errors from a refresh.
 #[derive(Debug, thiserror::Error)]
@@ -159,7 +159,8 @@ impl EmbeddingService {
         )
     }
 
-    /// Bring one item's vectors up to date.
+    /// Bring one item's vectors up to date on one connection:
+    /// [`Self::plan_item`], [`Self::embed_plan`], [`Self::store_plan`].
     ///
     /// `metadata` is the item's stamped `(label, value)` pairs, which the caller
     /// fetches for a whole batch at once — see [`metadata_for`].
@@ -169,8 +170,22 @@ impl EmbeddingService {
         item: &PendingItem,
         metadata: &[(String, String)],
     ) -> Result<RefreshOutcome, RefreshError> {
+        let plan = self.plan_item(conn, item, metadata)?;
+        let vectors = self.embed_plan(&plan)?;
+        self.store_plan(conn, &plan, &vectors)
+    }
+
+    /// The reads of one item (KAIROS-T-0614): what its vectors would be made
+    /// of now, against what is stored. The plan holds all that
+    /// [`Self::store_plan`] writes, so the connection can go back to the
+    /// pool while the provider runs.
+    pub fn plan_item(
+        &self,
+        conn: &mut diesel::pg::PgConnection,
+        item: &PendingItem,
+        metadata: &[(String, String)],
+    ) -> Result<ItemPlan, RefreshError> {
         let item_type = parse_entity_type(&item.entity_type)?;
-        let mut outcome = RefreshOutcome::default();
 
         // ---- the primary vector -------------------------------------------
         let inputs = PrimaryInputs {
@@ -191,7 +206,6 @@ impl EmbeddingService {
         // so the stored offsets still point into the stored content.
         let content = mask_import_footer(&item.content);
         let chunks = chunk(&content);
-        outcome.chunks_total = chunks.len();
         let stored: HashMap<i32, String> = stored_chunk_hashes(conn, item.id, &self.model)?
             .into_iter()
             .collect();
@@ -215,20 +229,70 @@ impl EmbeddingService {
             .collect();
         to_embed.extend(stale_chunks.iter().map(|&i| texts[i].clone()));
 
-        if to_embed.is_empty() {
+        Ok(ItemPlan {
+            id: item.id,
+            entity_type: item.entity_type.clone(),
+            primary: primary_stale.then_some(hash),
+            chunks,
+            hashes,
+            stale_chunks,
+            to_embed,
+        })
+    }
+
+    /// The vectors of a plan, from the provider (KAIROS-T-0614): one call
+    /// for the item however many of its sections moved, and no call when
+    /// none did. It needs no connection: a job runs it with none checked
+    /// out.
+    pub fn embed_plan(&self, plan: &ItemPlan) -> Result<Vec<Embedding>, RefreshError> {
+        if plan.to_embed.is_empty() {
+            return Ok(Vec::new());
+        }
+        let vectors = self.provider.embed(&plan.to_embed)?;
+        if vectors.len() != plan.to_embed.len() {
+            return Err(EmbedError::Failed(format!(
+                "the provider gave {} vectors for {} texts",
+                vectors.len(),
+                plan.to_embed.len()
+            ))
+            .into());
+        }
+        Ok(vectors)
+    }
+
+    /// The writes of one item (KAIROS-T-0614): the primary vector and the
+    /// chunks of `plan`, with the `vectors` of [`Self::embed_plan`].
+    pub fn store_plan(
+        &self,
+        conn: &mut diesel::pg::PgConnection,
+        plan: &ItemPlan,
+        vectors: &[Embedding],
+    ) -> Result<RefreshOutcome, RefreshError> {
+        let mut outcome = RefreshOutcome {
+            chunks_total: plan.chunks.len(),
+            ..RefreshOutcome::default()
+        };
+        if plan.to_embed.is_empty() {
             return Ok(outcome);
         }
-        let vectors = self.provider.embed(&to_embed)?;
+        if vectors.len() != plan.to_embed.len() {
+            return Err(EmbedError::Failed(format!(
+                "{} vectors for {} texts",
+                vectors.len(),
+                plan.to_embed.len()
+            ))
+            .into());
+        }
 
         let mut next = 0usize;
-        if primary_stale {
+        if let Some(hash) = &plan.primary {
             store_primary(
                 conn,
-                item.id,
-                &item.entity_type,
+                plan.id,
+                &plan.entity_type,
                 &vectors[next],
                 &self.model,
-                &hash,
+                hash,
             )?;
             outcome.primary_embedded = true;
             next += 1;
@@ -237,13 +301,14 @@ impl EmbeddingService {
         // `None` for every chunk that did not move: the store leaves those rows
         // untouched rather than rewriting them with identical content.
         let mut fresh: HashMap<usize, &[f32]> = HashMap::new();
-        for &i in &stale_chunks {
+        for &i in &plan.stale_chunks {
             fresh.insert(i, vectors[next].as_slice());
             next += 1;
         }
-        outcome.chunks_embedded = stale_chunks.len();
+        outcome.chunks_embedded = plan.stale_chunks.len();
 
-        let writes: Vec<ChunkWrite<'_>> = chunks
+        let writes: Vec<ChunkWrite<'_>> = plan
+            .chunks
             .iter()
             .enumerate()
             .map(|(i, c)| ChunkWrite {
@@ -252,13 +317,39 @@ impl EmbeddingService {
                 char_start: c.char_start as i32,
                 char_end: c.char_end as i32,
                 text: &c.text,
-                content_hash: &hashes[i],
+                content_hash: &plan.hashes[i],
                 vector: fresh.get(&i).copied(),
             })
             .collect();
-        sync_chunks(conn, item.id, &item.entity_type, &writes, &self.model)?;
+        sync_chunks(conn, plan.id, &plan.entity_type, &writes, &self.model)?;
 
         Ok(outcome)
+    }
+
+    /// The plans of one page of the sweep (KAIROS-T-0614): the reads of
+    /// [`Self::refresh_page_with`], with no call of the provider.
+    pub fn plan_page(
+        &self,
+        conn: &mut diesel::pg::PgConnection,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<ItemPlan>, RefreshError> {
+        let items = pending_primary(conn, &self.model, limit, offset)?;
+        let ids: Vec<uuid::Uuid> = items.iter().map(|i| i.id).collect();
+
+        // One metadata query for the page, not one per item.
+        let mut by_item: HashMap<uuid::Uuid, Vec<(String, String)>> = HashMap::new();
+        for (id, label, value) in metadata_for(conn, &ids)? {
+            by_item.entry(id).or_default().push((label, value));
+        }
+
+        items
+            .iter()
+            .map(|item| {
+                let metadata = by_item.remove(&item.id).unwrap_or_default();
+                self.plan_item(conn, item, &metadata)
+            })
+            .collect()
     }
 
     /// Refresh up to `limit` items, oldest short code first.
@@ -302,32 +393,63 @@ impl EmbeddingService {
         offset: i64,
         progress: &mut dyn FnMut() -> bool,
     ) -> Result<BatchOutcome, RefreshError> {
-        let items = pending_primary(conn, &self.model, limit, offset)?;
-        let ids: Vec<uuid::Uuid> = items.iter().map(|i| i.id).collect();
-
-        // One metadata query for the page, not one per item.
-        let mut by_item: HashMap<uuid::Uuid, Vec<(String, String)>> = HashMap::new();
-        for (id, label, value) in metadata_for(conn, &ids)? {
-            by_item.entry(id).or_default().push((label, value));
-        }
-
+        let plans = self.plan_page(conn, limit, offset)?;
         let mut outcome = BatchOutcome {
-            items_seen: items.len(),
+            items_seen: plans.len(),
             ..Default::default()
         };
-        for item in &items {
+        for plan in &plans {
             if !progress() {
                 return Err(RefreshError::Stopped);
             }
-            let metadata = by_item.get(&item.id).cloned().unwrap_or_default();
-            let one = self.refresh_item(conn, item, &metadata)?;
-            if one.did_work() {
-                outcome.items_changed += 1;
-                outcome.texts_embedded += one.embedded();
-            }
+            let vectors = self.embed_plan(plan)?;
+            let one = self.store_plan(conn, plan, &vectors)?;
+            outcome.count(&one);
         }
         progress();
         Ok(outcome)
+    }
+}
+
+impl BatchOutcome {
+    /// Count one item's outcome.
+    fn count(&mut self, one: &RefreshOutcome) {
+        if one.did_work() {
+            self.items_changed += 1;
+            self.texts_embedded += one.embedded();
+        }
+    }
+}
+
+/// The work of one item (KAIROS-T-0614): what [`EmbeddingService::plan_item`]
+/// read, the texts for the provider, and what
+/// [`EmbeddingService::store_plan`] writes. It holds no connection, so a
+/// job keeps it while the provider runs with none checked out.
+#[derive(Debug)]
+pub struct ItemPlan {
+    id: uuid::Uuid,
+    entity_type: String,
+    /// The hash of the primary text, when the primary vector is stale.
+    primary: Option<String>,
+    chunks: Vec<kairos_core::chunk::Chunk>,
+    /// The hash of each chunk's text.
+    hashes: Vec<String>,
+    /// The chunks whose stored hash differs.
+    stale_chunks: Vec<usize>,
+    /// The primary text when stale, then the stale chunks: the provider's
+    /// input, in the order of the vectors.
+    to_embed: Vec<String>,
+}
+
+impl ItemPlan {
+    /// True: the item needs the provider.
+    pub fn needs_model(&self) -> bool {
+        !self.to_embed.is_empty()
+    }
+
+    /// The texts that go to the provider.
+    pub fn texts(&self) -> &[String] {
+        &self.to_embed
     }
 }
 
@@ -473,39 +595,81 @@ impl BatchHandler {
             JobError::fail(format!("The payload of the embedding batch is wrong: {e}"))
         })?;
         let (service, batch, offset) = (Arc::clone(&self.service), self.batch, payload.offset);
-        let progress = handle.clone();
-        let result = self
+        let failed = |reason: String| {
+            tracing::warn!(tenant = %tenant, job = %job.id, %reason, "embedding batch failed");
+            JobError::retry(format!(
+                "The embedding batch at item {offset} failed: {reason}"
+            ))
+        };
+        let no_database = |e: ApiError| {
+            JobError::retry(format!(
+                "The embedding batch at item {offset} could not reach the database: {}",
+                e.message
+            ))
+        };
+
+        // KAIROS-T-0614: three steps. One checkout reads the page; the
+        // provider runs with no connection checked out; a second checkout
+        // writes. A remote provider that takes seconds pins no connection
+        // of the pool while it runs.
+        let planner = Arc::clone(&service);
+        let (total, plans) = self
             .blocking
             .run(&tenant, move |conn| {
                 let total = kairos_db::embeddings::item_count(conn).map_err(ApiError::internal)?;
                 // The reason stays a text: the job keeps it in `last_error`.
-                Ok(service
-                    .refresh_page_with(conn, batch, offset, &mut || progress.progress())
-                    .map(|outcome| {
-                        // Wrap at the end, so the sweep keeps cycling: an edit
-                        // to an item anywhere in the organization is seen on
-                        // the next time round.
-                        let next = offset + batch;
-                        (outcome, if next >= total { 0 } else { next })
-                    })
+                Ok(planner
+                    .plan_page(conn, batch, offset)
+                    .map(|plans| (total, plans))
                     .map_err(|e| e.to_string()))
             })
-            .await;
-        let (outcome, next) = match result {
-            Ok(Ok(done)) => done,
-            Ok(Err(reason)) => {
-                tracing::warn!(tenant = %tenant, job = %job.id, %reason, "embedding batch failed");
-                return Err(JobError::retry(format!(
-                    "The embedding batch at item {offset} failed: {reason}"
-                )));
-            }
-            Err(e) => {
-                return Err(JobError::retry(format!(
-                    "The embedding batch at item {offset} could not reach the database: {}",
-                    e.message
-                )));
-            }
-        };
+            .await
+            .map_err(no_database)?
+            .map_err(failed)?;
+
+        let embedder = Arc::clone(&service);
+        let progress = handle.clone();
+        let embedded = tokio::task::spawn_blocking(move || {
+            plans
+                .into_iter()
+                .map(|plan| {
+                    if !progress.progress() {
+                        return Err(RefreshError::Stopped);
+                    }
+                    let vectors = embedder.embed_plan(&plan)?;
+                    Ok((plan, vectors))
+                })
+                .collect::<Result<Vec<_>, RefreshError>>()
+        })
+        .await
+        .map_err(|e| JobError::retry(format!("The embedding batch at item {offset} stopped: {e}")))?
+        .map_err(|e| failed(e.to_string()))?;
+
+        let writer = Arc::clone(&service);
+        let progress = handle.clone();
+        let outcome = self
+            .blocking
+            .run(&tenant, move |conn| {
+                let mut outcome = BatchOutcome {
+                    items_seen: embedded.len(),
+                    ..Default::default()
+                };
+                for (plan, vectors) in &embedded {
+                    match writer.store_plan(conn, plan, vectors) {
+                        Ok(one) => outcome.count(&one),
+                        Err(e) => return Ok(Err(e.to_string())),
+                    }
+                }
+                progress.progress();
+                Ok(Ok(outcome))
+            })
+            .await
+            .map_err(no_database)?
+            .map_err(failed)?;
+        // Wrap at the end, so the sweep keeps cycling: an edit to an item
+        // anywhere in the organization is seen on the next time round.
+        let next = offset + batch;
+        let next = if next >= total { 0 } else { next };
         if outcome.items_changed > 0 {
             tracing::info!(
                 tenant = %tenant,

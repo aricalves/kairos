@@ -30,34 +30,36 @@ pub struct Common {
 /// A `KairosClient` for the resolved deployment ([`auth::resolve`]): the
 /// key in the environment, else (auto-refreshing) tokens from the
 /// credential cache. Missing credentials are an auth error (exit 2) with
-/// the `kairos login` instruction.
+/// the `kairos login` instruction. `KAIROS_TIMEOUT` sets the request
+/// timeout (KAIROS-T-0607); a value that is not a positive integer is a
+/// failure (exit 1) that names the variable.
 pub fn client(common: &Common) -> Result<KairosClient, CliError> {
+    let timeout = kairos_client::timeout_from_env()?;
     let path = credentials::credentials_path()?;
     let source = auth::resolve(common.url.as_deref(), &auth::Env::from_process(), || {
         credentials::load(&path)
     })?;
-    let (deployment, store) = match source {
+    let (mut client, cached_tenant) = match source {
         Source::Key {
             deployment,
             var,
             key,
         } => {
             auth::note_deployment(&deployment);
-            let mut client = auth::key_client(&deployment, var, key);
-            if let Some(tenant) = common.tenant.clone() {
-                client = client.with_tenant(tenant);
-            }
-            return Ok(client);
+            (auth::key_client(&deployment, var, key), None)
         }
-        Source::Cache { deployment, store } => (deployment, store),
+        Source::Cache { deployment, store } => {
+            let entry = credentials::entry_for(&store, &deployment)?;
+            auth::note_deployment(&deployment);
+            let provider = Arc::new(CachedTokenProvider::new(path, deployment.clone()));
+            (KairosClient::new(&deployment, provider), entry.tenant)
+        }
     };
-    let entry = credentials::entry_for(&store, &deployment)?;
-    auth::note_deployment(&deployment);
-
-    let provider = Arc::new(CachedTokenProvider::new(path, deployment.clone()));
-    let mut client = KairosClient::new(&deployment, provider);
-    if let Some(tenant) = common.tenant.clone().or(entry.tenant) {
+    if let Some(tenant) = common.tenant.clone().or(cached_tenant) {
         client = client.with_tenant(tenant);
+    }
+    if let Some(timeout) = timeout {
+        client = client.with_timeout(timeout);
     }
     Ok(client)
 }

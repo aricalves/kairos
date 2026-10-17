@@ -20,15 +20,21 @@ pub(crate) fn timestamp(value: DateTime<Utc>) -> String {
     value.to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
 }
 
-impl IntoDto<dto::Relationship> for ItemRelationship {
-    fn into_dto(self) -> dto::Relationship {
-        dto::Relationship {
-            id: self.id.to_string(),
-            source_id: self.source_id.to_string(),
-            target_id: self.target_id.to_string(),
-            relationship: self.relationship.to_string(),
-            created_at: timestamp(self.created_at),
-        }
+/// The DTO of an edge, with the current short codes of its two ends
+/// (KAIROS-T-0560).
+pub(crate) fn relationship_dto(
+    edge: ItemRelationship,
+    source_short_code: String,
+    target_short_code: String,
+) -> dto::Relationship {
+    dto::Relationship {
+        id: edge.id.to_string(),
+        source_id: edge.source_id.to_string(),
+        target_id: edge.target_id.to_string(),
+        source_short_code,
+        target_short_code,
+        relationship: edge.relationship.to_string(),
+        created_at: timestamp(edge.created_at),
     }
 }
 

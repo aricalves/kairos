@@ -122,17 +122,6 @@ pub enum TeamPagesCommand {
     },
 }
 
-/// Whether a reference has the shape of a UUID (8-4-4-4-12 hex digits). A
-/// team slug never does: a slug starts with a letter and has no 36-character
-/// form of this shape in practice.
-pub(crate) fn looks_like_uuid(reference: &str) -> bool {
-    reference.len() == 36
-        && reference.char_indices().all(|(i, c)| match i {
-            8 | 13 | 18 | 23 => c == '-',
-            _ => c.is_ascii_hexdigit(),
-        })
-}
-
 /// The path of slugs of a page, from the root.
 fn page_path(pages: &[TeamPage], page: &TeamPage) -> String {
     let mut slugs = vec![page.slug.clone()];
@@ -256,7 +245,7 @@ impl TeamPagesCommand {
         match self {
             Self::List { team, common } => {
                 let client = client(&common)?;
-                let team_id = team_id(&client, &team).await?;
+                let team_id = team_id(&team);
                 let pages = client.list_team_pages(&team_id).await?;
                 if common.json {
                     return print_json(&pages);
@@ -266,7 +255,7 @@ impl TeamPagesCommand {
             }
             Self::Show { team, page, common } => {
                 let client = client(&common)?;
-                let team_id = team_id(&client, &team).await?;
+                let team_id = team_id(&team);
                 let pages = client.list_team_pages(&team_id).await?;
                 let page = page_by_ref(&pages, &page)?;
                 if common.json {
@@ -292,7 +281,7 @@ impl TeamPagesCommand {
                 common,
             } => {
                 let client = client(&common)?;
-                let team_id = team_id(&client, &team).await?;
+                let team_id = team_id(&team);
                 let pages = client.list_team_pages(&team_id).await?;
                 let parent_id = match &parent {
                     Some(reference) => Some(page_by_ref(&pages, reference)?.id.clone()),
@@ -339,7 +328,7 @@ impl TeamPagesCommand {
                 common,
             } => {
                 let client = client(&common)?;
-                let team_id = team_id(&client, &team).await?;
+                let team_id = team_id(&team);
                 let pages = client.list_team_pages(&team_id).await?;
                 let current = page_by_ref(&pages, &page)?;
                 let content = read_content(content, content_file)?;
@@ -383,7 +372,7 @@ impl TeamPagesCommand {
                     ));
                 }
                 let client = client(&common)?;
-                let team_id = team_id(&client, &team).await?;
+                let team_id = team_id(&team);
                 let pages = client.list_team_pages(&team_id).await?;
                 let current = page_by_ref(&pages, &page)?;
                 let parent_id = match &parent {
@@ -420,7 +409,7 @@ impl TeamPagesCommand {
             } => {
                 require_confirm(confirm, &format!("the page {page}"))?;
                 let client = client(&common)?;
-                let team_id = team_id(&client, &team).await?;
+                let team_id = team_id(&team);
                 let pages = client.list_team_pages(&team_id).await?;
                 let current = page_by_ref(&pages, &page)?;
                 let path = page_path(&pages, current);
@@ -471,13 +460,6 @@ mod tests {
         assert_eq!(page_by_ref(&pages, "2").unwrap().id, "2");
         assert!(page_by_ref(&pages, "documentation/nothing").is_err());
         assert_eq!(page_path(&pages, &pages[1]), "documentation/runbooks");
-    }
-
-    #[test]
-    fn a_uuid_is_told_from_a_slug() {
-        assert!(looks_like_uuid("762e994c-547e-4fd7-97dc-e4d3b3eb7dde"));
-        assert!(!looks_like_uuid("platform"));
-        assert!(!looks_like_uuid("762e994c-547e-4fd7-97dc-e4d3b3eb7ddz"));
     }
 
     #[test]

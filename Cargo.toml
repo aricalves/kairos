@@ -135,9 +135,13 @@ tokio-postgres = "=0.7.18"
 
 # Auth (KAIROS-A-0010: local JWKS validation) — added by KAIROS-T-0017
 jsonwebtoken = "9.3.1"
+# `gzip` and `brotli` (KAIROS-T-0607): the client sends `Accept-Encoding`
+# and decodes a compressed answer; the server compresses since KAIROS-T-0603.
 reqwest = { version = "0.12.24", default-features = false, features = [
     "json",
     "rustls-tls",
+    "gzip",
+    "brotli",
 ] }
 
 # GUI (KAIROS-T-0039, A-0015): the Leptos CSR app. `leptos_router` tracks the

@@ -7,13 +7,24 @@
 //!
 //! - `hand_off`: a hand-off of the claim of a task ([`crate::task_claims::hand_off`])
 //!   tells the person who gets the claim.
-//! - `blocker_cleared`: an item that blocks a task (a `blocks` edge from
-//!   the item to the task) goes into a done column, or is archived. The
-//!   person who has the claim on the task is told, when the task is not
-//!   done. An item that was done already when it was archived blocked
-//!   nothing, so its archive tells nobody.
+//! - `blocker_cleared`: an item that blocks an item (a `blocks` edge from
+//!   the blocker to the dependant) goes into a done column, or is archived
+//!   or purged, or the edge is removed (KAIROS-T-0568). The person who has
+//!   the claim on the dependant task, or the owner of the dependant
+//!   strategy or initiative, is told, when the dependant is not done. An
+//!   item that was done already blocked nothing, so its archive, its purge
+//!   or the removal of its edge tells nobody.
+//! - `blocked_again`: a blocker leaves a done column, so it blocks again
+//!   (KAIROS-T-0568). The person with the claim on each dependant that is
+//!   not done is told, or the owner, or the person who created the
+//!   dependant when it has neither.
 //! - `cancelled`: a cancel of a task ([`crate::task_cancellations::cancel_task`])
 //!   tells the person who created the task, with the reason.
+//! - `blocker_cancelled`: a cancel of a task that blocks an item
+//!   (KAIROS-T-0567). A cancelled blocker is unresolved, not done: it still
+//!   blocks, and Kairos unblocks nothing. The person with the claim on each
+//!   dependant that is not done (or its owner) and the person who created
+//!   it are told, with the reason.
 //! - `mention`: `@user_name` in the content of a new item, or a NEW mention
 //!   in an update of the content (a note of `append_note` is an update). A
 //!   mention is new when the content has more mentions of the name than
@@ -26,6 +37,14 @@
 //! - `agent_key_revoked`: an organization admin revokes the agent key of a
 //!   person ([`on_agent_key_revoked`]). The person is told the name and the
 //!   prefix of the key.
+//! - `claim_dropped`: a person leaves the organization, so each claim of
+//!   the person ends ([`crate::task_claims::drop_claims_of_user`],
+//!   KAIROS-T-0531). Each member of the team of the board of the task is
+//!   told: the task is free.
+//! - `claim_stale`: a claim had no write and no state change for some days
+//!   ([`crate::task_claims::notify_stale_claims`], KAIROS-T-0531). The
+//!   holder and the owner of the initiative of the task are told, once for
+//!   each quiet period. Kairos is the actor.
 //!
 //! # Who gets a notification
 //!
@@ -98,11 +117,6 @@ struct Recipient {
     #[diesel(sql_type = SqlUuid)]
     user_id: Uuid,
 }
-
-/// The columns of [`Notification`], with the item from `entity_directory`.
-const SELECT_NOTIFICATION: &str = "SELECT n.id, n.kind, n.item_id, d.short_code, d.entity_type, \
-     d.title, n.text, n.actor_id, n.created_at, n.read_at \
-     FROM notifications n LEFT JOIN entity_directory d ON d.id = n.item_id";
 
 /// Make one notification of `kind` for each person in `recipients` who may
 /// get it (module docs: a person of the organization, not the actor, the
@@ -281,19 +295,102 @@ pub fn on_cancel(
     Ok(())
 }
 
+/// `claim_dropped` (KAIROS-T-0531): the person `left` left the
+/// organization, and their claim on the task ended. The members of the
+/// team of the board of the task are told.
+pub fn on_claim_dropped(
+    conn: &mut PgConnection,
+    task_id: Uuid,
+    left: Uuid,
+    actor: Uuid,
+) -> Result<(), DieselError> {
+    use crate::schema::{board_columns, boards, tasks, team_members};
+    let Some((code, title, _)) = task_head(conn, task_id)? else {
+        return Ok(());
+    };
+    let place: Option<(String, Option<Uuid>)> = tasks::table
+        .inner_join(board_columns::table)
+        .inner_join(boards::table)
+        .filter(tasks::id.eq(task_id))
+        .select((board_columns::name, boards::team_id))
+        .first(conn)
+        .optional()?;
+    let Some((column, Some(team_id))) = place else {
+        return Ok(());
+    };
+    let members: Vec<Uuid> = team_members::table
+        .filter(team_members::team_id.eq(team_id))
+        .filter(team_members::user_id.ne(left))
+        .select(team_members::user_id)
+        .load(conn)?;
+    let text = format!(
+        "{} left the organization, so the claim on {code} ended. The task is free in {column}: \
+         {title}",
+        name_of(conn, left)?
+    );
+    notify(
+        conn,
+        &members,
+        NotificationKind::ClaimDropped,
+        Some((task_id, &code)),
+        &text,
+        actor,
+    )?;
+    Ok(())
+}
+
+/// `claim_stale` (KAIROS-T-0531): the claim had no write since
+/// `claim.last_write`. The holder is told, and the owner of the initiative
+/// of the task when it is a different person. Kairos is the actor.
+pub fn on_claim_stale(
+    conn: &mut PgConnection,
+    claim: &crate::task_claims::StaleClaim,
+    now: DateTime<Utc>,
+) -> Result<(), DieselError> {
+    let days = (now - claim.last_write).num_days().max(1);
+    let (code, title) = (&claim.short_code, &claim.title);
+    let text = format!(
+        "Your claim on {code} has no write and no state change for {days} days: {title}. \
+         Write a note or the state, or release the task."
+    );
+    notify(
+        conn,
+        &[claim.user_id],
+        NotificationKind::ClaimStale,
+        Some((claim.task_id, code)),
+        &text,
+        Uuid::nil(),
+    )?;
+    if let Some(owner) = claim.owner_id.filter(|owner| *owner != claim.user_id) {
+        let text = format!(
+            "The claim of {} on {code} has no write and no state change for {days} days. \
+             The task is part of an initiative that you own: {title}",
+            name_of(conn, claim.user_id)?
+        );
+        notify(
+            conn,
+            &[owner],
+            NotificationKind::ClaimStale,
+            Some((claim.task_id, code)),
+            &text,
+            Uuid::nil(),
+        )?;
+    }
+    Ok(())
+}
+
 #[derive(QueryableByName)]
-struct ClearedRow {
+struct ClaimantRow {
     #[diesel(sql_type = SqlUuid)]
     user_id: Uuid,
     #[diesel(sql_type = SqlUuid)]
-    task_id: Uuid,
+    item_id: Uuid,
     #[diesel(sql_type = Text)]
-    task_code: String,
-    #[diesel(sql_type = Text)]
-    blocker_code: String,
+    item_code: String,
 }
 
-/// Why a blocker no longer blocks: [`on_blockers_cleared`].
+/// Why a blocker no longer blocks: [`on_blockers_cleared`] and
+/// [`on_blocks_removed`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cleared {
     /// The blocker went into a done column.
@@ -301,11 +398,27 @@ pub enum Cleared {
     /// The blocker was archived. A blocker in a done column blocked nothing
     /// before the archive, so it tells nobody.
     Archived,
+    /// The `blocks` edge was removed (KAIROS-T-0568).
+    Unlinked,
+    /// The blocker was purged (KAIROS-T-0568).
+    Purged,
 }
 
-/// `blocker_cleared`: the items in `blockers` no longer block. For each
-/// live task that one of them blocks, that is not done and that is not in
-/// `blockers`, the person with the claim on the task is told.
+impl Cleared {
+    fn why(self) -> &'static str {
+        match self {
+            Cleared::Done => "it is done",
+            Cleared::Archived => "it is archived",
+            Cleared::Unlinked => "the blocks link is removed",
+            Cleared::Purged => "it is purged",
+        }
+    }
+}
+
+/// `blocker_cleared`: the items in `blockers` no longer block (`how` is
+/// [`Cleared::Done`] or [`Cleared::Archived`]). Each item that one of them
+/// blocks, and that is not in `blockers`, lost a blocker:
+/// [`on_blocks_removed`].
 pub fn on_blockers_cleared(
     conn: &mut PgConnection,
     blockers: &[Uuid],
@@ -315,50 +428,48 @@ pub fn on_blockers_cleared(
     if blockers.is_empty() {
         return Ok(());
     }
-    // KAIROS-T-0427: the dispatch rules that fire on `unblocked`. A blocker
-    // that was done before its archive closed nothing now.
+    // A blocker that was done before its archive closed nothing now. A
+    // cancelled blocker was open (KAIROS-T-0567): its archive closes it.
     let closed: Vec<Uuid> = match how {
-        Cleared::Done => blockers.to_vec(),
-        Cleared::Archived => blockers_not_done(conn, blockers)?,
+        Cleared::Archived => blockers_open(conn, blockers)?,
+        _ => blockers.to_vec(),
     };
-    crate::dispatch::on_blockers_closed(conn, &closed, actor)?;
-    let rows: Vec<ClearedRow> = sql_query(
-        "SELECT c.user_id, t.id AS task_id, t.short_code AS task_code, \
-                b.short_code AS blocker_code \
-           FROM item_relationships r \
-           JOIN entity_directory b ON b.id = r.source_id \
-           JOIN tasks t ON t.id = r.target_id AND t.deleted_at IS NULL \
-           JOIN board_columns tc ON tc.id = t.column_id AND NOT tc.is_done \
-           JOIN task_claims c ON c.task_id = t.id \
-          WHERE r.relationship = 'blocks' \
-            AND r.source_id = ANY($1) \
-            AND NOT (r.target_id = ANY($1)) \
-            AND (NOT $2 OR NOT EXISTS ( \
-                 SELECT 1 FROM (SELECT id, column_id FROM strategies \
-                                UNION ALL SELECT id, column_id FROM initiatives \
-                                UNION ALL SELECT id, column_id FROM tasks \
-                                UNION ALL SELECT id, column_id FROM adrs) p \
-                   JOIN board_columns bc ON bc.id = p.column_id \
-                  WHERE p.id = r.source_id AND bc.is_done)) \
-          ORDER BY t.short_code, b.short_code",
-    )
-    .bind::<Array<SqlUuid>, _>(blockers)
-    .bind::<Bool, _>(how == Cleared::Archived)
-    .load(conn)?;
-    for row in rows {
-        let why = match how {
-            Cleared::Done => "it is done",
-            Cleared::Archived => "it is archived",
+    let freed = crate::dispatch::dependants_of(conn, &closed, blockers)?;
+    on_blocks_removed(conn, &freed, how, actor)
+}
+
+/// The `blocks` edges of `freed` block nothing now: the blocker closed, or
+/// the edge is gone (KAIROS-T-0568). KAIROS-T-0427: the dispatch rules that
+/// fire on `unblocked`. `blocker_cleared`: for each live item of `freed`
+/// that is not done, the person with the claim on the task, or the owner
+/// of the strategy or the initiative, is told.
+pub fn on_blocks_removed(
+    conn: &mut PgConnection,
+    freed: &[crate::dispatch::Freed],
+    how: Cleared,
+    actor: Uuid,
+) -> Result<(), DieselError> {
+    if freed.is_empty() {
+        return Ok(());
+    }
+    crate::dispatch::on_dependants_freed(conn, freed, actor)?;
+    let ids: Vec<Uuid> = freed.iter().map(|f| f.dependant).collect();
+    let rows = claimants(conn, &ids, false)?;
+    for f in freed {
+        let Some(row) = rows.iter().find(|r| r.item_id == f.dependant) else {
+            continue;
         };
         let text = format!(
-            "{} does not block {} now: {why}.",
-            row.blocker_code, row.task_code
+            "{} does not block {} now: {}.",
+            f.blocker_code,
+            row.item_code,
+            how.why()
         );
         notify(
             conn,
             &[row.user_id],
             NotificationKind::BlockerCleared,
-            Some((row.task_id, &row.task_code)),
+            Some((row.item_id, &row.item_code)),
             &text,
             actor,
         )?;
@@ -366,21 +477,166 @@ pub fn on_blockers_cleared(
     Ok(())
 }
 
-/// The items of `ids` that are not in a done column.
-fn blockers_not_done(conn: &mut PgConnection, ids: &[Uuid]) -> Result<Vec<Uuid>, DieselError> {
+/// The person who answers for each live item of `ids` that is not done:
+/// the claim of a task, or the owner of a strategy or an initiative. With
+/// `or_creator`, the person who created the item when nobody has the claim
+/// or owns it. An item with nobody has no row.
+fn claimants(
+    conn: &mut PgConnection,
+    ids: &[Uuid],
+    or_creator: bool,
+) -> Result<Vec<ClaimantRow>, DieselError> {
+    sql_query(format!(
+        "SELECT d.id AS item_id, d.short_code AS item_code, \
+                COALESCE(c.user_id, o.user_id, CASE WHEN $2 THEN d.created_by END) AS user_id \
+           FROM {items} d \
+           JOIN board_columns dc ON dc.id = d.column_id AND NOT dc.is_done \
+           LEFT JOIN task_claims c ON c.task_id = d.id \
+           LEFT JOIN item_owners o ON o.item_id = d.id \
+          WHERE d.id = ANY($1) AND d.deleted_at IS NULL \
+            AND COALESCE(c.user_id, o.user_id, CASE WHEN $2 THEN d.created_by END) IS NOT NULL \
+          ORDER BY d.short_code",
+        items = crate::dispatch::WORKFLOW_ITEMS,
+    ))
+    .bind::<Array<SqlUuid>, _>(ids)
+    .bind::<Bool, _>(or_creator)
+    .load(conn)
+}
+
+/// Whether the item blocks the targets of its `blocks` edges now: a live
+/// strategy, initiative or task that is not in a done column.
+pub(crate) fn blocks_now(conn: &mut PgConnection, item_id: Uuid) -> Result<bool, DieselError> {
+    #[derive(QueryableByName)]
+    struct Row {
+        #[diesel(sql_type = Bool)]
+        blocks: bool,
+    }
+    let row: Option<Row> = sql_query(format!(
+        "SELECT {blocks} AS blocks FROM {items} p WHERE p.id = $1",
+        blocks = crate::dispatch::blocks_now_sql("p"),
+        items = crate::dispatch::WORKFLOW_ITEMS,
+    ))
+    .bind::<SqlUuid, _>(item_id)
+    .get_result(conn)
+    .optional()?;
+    Ok(row.is_some_and(|r| r.blocks))
+}
+
+/// `blocked_again` (KAIROS-T-0568): the blocker left a done column, so it
+/// blocks again. For each live item that it blocks and that is not done,
+/// the person with the claim on the task (or the owner of the strategy or
+/// the initiative) is told; the person who created the item when nobody
+/// has the claim.
+pub fn on_blocker_reopened(
+    conn: &mut PgConnection,
+    blocker: Uuid,
+    actor: Uuid,
+) -> Result<(), DieselError> {
+    // KAIROS-T-0567: a cancelled blocker never stopped blocking.
+    if crate::task_cancellations::mark_of(conn, blocker)?.is_some() {
+        return Ok(());
+    }
+    let edges = crate::dispatch::dependants_of(conn, &[blocker], &[blocker])?;
+    if edges.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<Uuid> = edges.iter().map(|f| f.dependant).collect();
+    for row in claimants(conn, &ids, true)? {
+        let Some(edge) = edges.iter().find(|f| f.dependant == row.item_id) else {
+            continue;
+        };
+        let text = format!(
+            "{} blocks {} again: it is not done now.",
+            edge.blocker_code, row.item_code
+        );
+        notify(
+            conn,
+            &[row.user_id],
+            NotificationKind::BlockedAgain,
+            Some((row.item_id, &row.item_code)),
+            &text,
+            actor,
+        )?;
+    }
+    Ok(())
+}
+
+/// `blocker_cancelled` (KAIROS-T-0567): `actor` cancelled the task
+/// `blocker`, with `reason`. The task still blocks, so nothing is
+/// unblocked. For each live item that it blocks and that is not done, the
+/// person with the claim on the task (or the owner of the strategy or the
+/// initiative) and the person who created the item are told.
+pub fn on_blocker_cancelled(
+    conn: &mut PgConnection,
+    blocker: Uuid,
+    reason: &str,
+    actor: Uuid,
+) -> Result<(), DieselError> {
+    let edges = crate::dispatch::dependants_of(conn, &[blocker], &[blocker])?;
+    if edges.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<Uuid> = edges.iter().map(|f| f.dependant).collect();
+    let mut rows = claimants(conn, &ids, false)?;
+    rows.extend(creators(conn, &ids)?);
+    for edge in &edges {
+        let mut told: Vec<Uuid> = rows
+            .iter()
+            .filter(|r| r.item_id == edge.dependant)
+            .map(|r| r.user_id)
+            .collect();
+        told.sort();
+        told.dedup();
+        let Some(row) = rows.iter().find(|r| r.item_id == edge.dependant) else {
+            continue;
+        };
+        let text = format!(
+            "{} is cancelled, and it still blocks {}. Remove the blocks link, or reopen {}. \
+             The reason: {}",
+            edge.blocker_code,
+            row.item_code,
+            edge.blocker_code,
+            reason.trim()
+        );
+        notify(
+            conn,
+            &told,
+            NotificationKind::BlockerCancelled,
+            Some((row.item_id, &row.item_code)),
+            &text,
+            actor,
+        )?;
+    }
+    Ok(())
+}
+
+/// The person who created each live item of `ids` that is not done.
+fn creators(conn: &mut PgConnection, ids: &[Uuid]) -> Result<Vec<ClaimantRow>, DieselError> {
+    sql_query(format!(
+        "SELECT d.id AS item_id, d.short_code AS item_code, d.created_by AS user_id \
+           FROM {items} d \
+           JOIN board_columns dc ON dc.id = d.column_id AND NOT dc.is_done \
+          WHERE d.id = ANY($1) AND d.deleted_at IS NULL \
+          ORDER BY d.short_code",
+        items = crate::dispatch::WORKFLOW_ITEMS,
+    ))
+    .bind::<Array<SqlUuid>, _>(ids)
+    .load(conn)
+}
+
+/// The items of `ids` that are open, live or archived: not in a done
+/// column, or cancelled ([`crate::dispatch::open_sql`]).
+fn blockers_open(conn: &mut PgConnection, ids: &[Uuid]) -> Result<Vec<Uuid>, DieselError> {
     #[derive(QueryableByName)]
     struct Row {
         #[diesel(sql_type = SqlUuid)]
         id: Uuid,
     }
-    let rows: Vec<Row> = sql_query(
-        "SELECT p.id FROM (SELECT id, column_id FROM strategies \
-                           UNION ALL SELECT id, column_id FROM initiatives \
-                           UNION ALL SELECT id, column_id FROM tasks \
-                           UNION ALL SELECT id, column_id FROM adrs) p \
-           JOIN board_columns c ON c.id = p.column_id \
-          WHERE p.id = ANY($1) AND NOT c.is_done",
-    )
+    let rows: Vec<Row> = sql_query(format!(
+        "SELECT p.id FROM {items} p WHERE p.id = ANY($1) AND {open}",
+        items = crate::dispatch::WORKFLOW_ITEMS,
+        open = crate::dispatch::open_sql("p"),
+    ))
     .bind::<Array<SqlUuid>, _>(ids)
     .load(conn)?;
     Ok(rows.into_iter().map(|row| row.id).collect())
@@ -529,17 +785,139 @@ pub fn on_p0_bug(conn: &mut PgConnection, item_id: Uuid, actor: Uuid) -> Result<
     Ok(())
 }
 
-/// The newest `limit` unread notifications of `user`, and the count of all
-/// the unread ones. One query, on the partial index of the unread rows.
-pub fn unread(conn: &mut PgConnection, user: Uuid, limit: i64) -> Result<Unread, DieselError> {
-    let rows: Vec<UnreadRow> = sql_query(
-        "SELECT n.id, n.kind, n.item_id, d.short_code, d.entity_type, d.title, n.text, \
-                n.actor_id, n.created_at, n.read_at, count(*) OVER () AS total \
-           FROM notifications n LEFT JOIN entity_directory d ON d.id = n.item_id \
-          WHERE n.user_id = $1 AND n.read_at IS NULL \
-          ORDER BY n.created_at DESC, n.id DESC LIMIT $2",
-    )
-    .bind::<SqlUuid, _>(user)
+/// Who reads the notifications of a person (KAIROS-T-0550): the person, or
+/// one agent key of the person. Each keeps its own read state. The person
+/// reads `notifications.read_at`; a key reads its rows in
+/// `notification_reads`. A notification is read for a key when the key, or
+/// a key that it replaced by a rotation, read it. It is read for the key
+/// also when the person read it before the first key of that chain was
+/// made, so a new key does not start with the old history unread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reader {
+    /// The person.
+    pub user: Uuid,
+    key: Option<KeyChain>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KeyChain {
+    /// The key of the request: a mark writes its rows.
+    id: Uuid,
+    /// The key, and each key that it replaced.
+    ids: Vec<Uuid>,
+    /// When the first key of the chain was made.
+    since: DateTime<Utc>,
+}
+
+#[derive(QueryableByName)]
+struct ChainRow {
+    #[diesel(sql_type = SqlUuid)]
+    id: Uuid,
+    #[diesel(sql_type = Timestamptz)]
+    created_at: DateTime<Utc>,
+}
+
+#[derive(QueryableByName)]
+struct IdRow {
+    #[diesel(sql_type = SqlUuid)]
+    id: Uuid,
+}
+
+#[derive(QueryableByName)]
+struct CountRow {
+    #[diesel(sql_type = BigInt)]
+    total: i64,
+}
+
+impl Reader {
+    /// The person reads.
+    pub fn person(user: Uuid) -> Reader {
+        Reader { user, key: None }
+    }
+
+    /// The reader of a request: the person, or the agent key of the person
+    /// (`agent_key`). One query for a key: the chain of its rotations.
+    pub fn of(
+        conn: &mut PgConnection,
+        user: Uuid,
+        agent_key: Option<Uuid>,
+    ) -> Result<Reader, DieselError> {
+        let Some(key) = agent_key else {
+            return Ok(Reader::person(user));
+        };
+        let rows: Vec<ChainRow> = sql_query(
+            "WITH RECURSIVE chain(id, created_at) AS ( \
+                 SELECT id, created_at FROM api_keys WHERE id = $1 AND user_id = $2 \
+                 UNION \
+                 SELECT k.id, k.created_at FROM api_keys k JOIN chain c ON k.replaced_by = c.id) \
+             SELECT id, created_at FROM chain",
+        )
+        .bind::<SqlUuid, _>(key)
+        .bind::<SqlUuid, _>(user)
+        .load(conn)?;
+        let since = rows
+            .iter()
+            .map(|r| r.created_at)
+            .min()
+            .unwrap_or_else(Utc::now);
+        let mut ids: Vec<Uuid> = rows.into_iter().map(|r| r.id).collect();
+        if !ids.contains(&key) {
+            ids.push(key);
+        }
+        Ok(Reader {
+            user,
+            key: Some(KeyChain {
+                id: key,
+                ids,
+                since,
+            }),
+        })
+    }
+
+    /// True when an agent key reads.
+    pub fn is_key(&self) -> bool {
+        self.key.is_some()
+    }
+
+    fn key_ids(&self) -> Vec<Uuid> {
+        self.key.as_ref().map(|k| k.ids.clone()).unwrap_or_default()
+    }
+
+    fn since(&self) -> Option<DateTime<Utc>> {
+        self.key.as_ref().map(|k| k.since)
+    }
+}
+
+/// The notifications of the reader as the view `v`, with the time that
+/// the reader read each one (`read_at`, NULL while unread). `$1` is the
+/// person, `$2` the ids of the key chain (empty for the person), `$3` the
+/// time of the first key of the chain (NULL for the person).
+const READER_VIEW: &str = "WITH v AS ( \
+     SELECT n.id, n.kind, n.item_id, n.text, n.actor_id, n.created_at, \
+            CASE WHEN $3::timestamptz IS NULL THEN n.read_at ELSE COALESCE( \
+                (SELECT min(r.read_at) FROM notification_reads r \
+                  WHERE r.notification_id = n.id AND r.api_key_id = ANY($2)), \
+                CASE WHEN n.read_at < $3 THEN n.read_at END) END AS read_at \
+       FROM notifications n WHERE n.user_id = $1)";
+
+/// The columns of [`Notification`] from the view `v` of [`READER_VIEW`].
+const SELECT_VIEW: &str = "SELECT v.id, v.kind, v.item_id, d.short_code, d.entity_type, \
+     d.title, v.text, v.actor_id, v.created_at, v.read_at \
+     FROM v LEFT JOIN entity_directory d ON d.id = v.item_id";
+
+/// The newest `limit` unread notifications of the reader, and the count of
+/// all the unread ones. One query.
+pub fn unread(conn: &mut PgConnection, reader: &Reader, limit: i64) -> Result<Unread, DieselError> {
+    let rows: Vec<UnreadRow> = sql_query(format!(
+        "{READER_VIEW} SELECT v.id, v.kind, v.item_id, d.short_code, d.entity_type, d.title, \
+                v.text, v.actor_id, v.created_at, v.read_at, count(*) OVER () AS total \
+           FROM v LEFT JOIN entity_directory d ON d.id = v.item_id \
+          WHERE v.read_at IS NULL \
+          ORDER BY v.created_at DESC, v.id DESC LIMIT $4"
+    ))
+    .bind::<SqlUuid, _>(reader.user)
+    .bind::<Array<SqlUuid>, _>(reader.key_ids())
+    .bind::<Nullable<Timestamptz>, _>(reader.since())
     .bind::<BigInt, _>(limit)
     .load(conn)?;
     let total = rows.first().map_or(0, |r| r.total);
@@ -549,63 +927,106 @@ pub fn unread(conn: &mut PgConnection, user: Uuid, limit: i64) -> Result<Unread,
     })
 }
 
-/// The notifications of `user` for a list: each unread one (newest first,
-/// at most `unread_limit`), then the newest `read_limit` read ones.
+/// The notifications of the reader for a list: the unread ones (newest
+/// first, at most `unread_limit`), then the newest `read_limit` read ones.
+/// With `before` (the id of a notification of the person), the next page:
+/// the unread ones older than it, and no read ones.
 pub fn list(
     conn: &mut PgConnection,
-    user: Uuid,
+    reader: &Reader,
+    before: Option<Uuid>,
     unread_limit: i64,
     read_limit: i64,
 ) -> Result<Vec<Notification>, DieselError> {
     let mut out: Vec<Notification> = sql_query(format!(
-        "{SELECT_NOTIFICATION} WHERE n.user_id = $1 AND n.read_at IS NULL \
-          ORDER BY n.created_at DESC, n.id DESC LIMIT $2"
+        "{READER_VIEW} {SELECT_VIEW} WHERE v.read_at IS NULL \
+           AND ($4::uuid IS NULL OR (v.created_at, v.id) < \
+                (SELECT b.created_at, b.id FROM notifications b WHERE b.id = $4 AND b.user_id = $1)) \
+          ORDER BY v.created_at DESC, v.id DESC LIMIT $5"
     ))
-    .bind::<SqlUuid, _>(user)
+    .bind::<SqlUuid, _>(reader.user)
+    .bind::<Array<SqlUuid>, _>(reader.key_ids())
+    .bind::<Nullable<Timestamptz>, _>(reader.since())
+    .bind::<Nullable<SqlUuid>, _>(before)
     .bind::<BigInt, _>(unread_limit)
     .load(conn)?;
-    let read: Vec<Notification> = sql_query(format!(
-        "{SELECT_NOTIFICATION} WHERE n.user_id = $1 AND n.read_at IS NOT NULL \
-          ORDER BY n.read_at DESC, n.id DESC LIMIT $2"
-    ))
-    .bind::<SqlUuid, _>(user)
-    .bind::<BigInt, _>(read_limit)
-    .load(conn)?;
-    out.extend(read);
+    if before.is_none() {
+        let read: Vec<Notification> = sql_query(format!(
+            "{READER_VIEW} {SELECT_VIEW} WHERE v.read_at IS NOT NULL \
+              ORDER BY v.read_at DESC, v.id DESC LIMIT $4"
+        ))
+        .bind::<SqlUuid, _>(reader.user)
+        .bind::<Array<SqlUuid>, _>(reader.key_ids())
+        .bind::<Nullable<Timestamptz>, _>(reader.since())
+        .bind::<BigInt, _>(read_limit)
+        .load(conn)?;
+        out.extend(read);
+    }
     Ok(out)
 }
 
-/// Mark notifications of `user` read: the ones in `ids`, or each unread
-/// one when `ids` is `None`. An id of a different person, or of a read
-/// notification, changes nothing. Returns the ids that changed, and sends
-/// the event `notifications_read` to the person when one changed.
+/// What [`mark_read`] marks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mark<'a> {
+    /// These ids.
+    Ids(&'a [Uuid]),
+    /// This notification of the person, and each older one: the order of
+    /// [`list`] (time, then id). A newer one stays unread.
+    UpTo(Uuid),
+}
+
+/// Mark notifications read for the reader. An id of a different person,
+/// or of a notification that the reader read already, changes nothing.
+/// Returns the ids that changed. A read of the person sends the event
+/// `notifications_read` to the person when one changed. A read of a key
+/// sends none: the bell of the person does not change.
 pub fn mark_read(
     conn: &mut PgConnection,
-    user: Uuid,
-    ids: Option<&[Uuid]>,
+    reader: &Reader,
+    mark: Mark<'_>,
 ) -> Result<Vec<Uuid>, DieselError> {
-    use crate::schema::notifications::dsl;
-    let changed: Vec<Uuid> = match ids {
-        Some(ids) => diesel::update(
-            dsl::notifications
-                .filter(dsl::user_id.eq(user))
-                .filter(dsl::read_at.is_null())
-                .filter(dsl::id.eq_any(ids)),
-        )
-        .set(dsl::read_at.eq(diesel::dsl::now))
-        .returning(dsl::id)
-        .get_results(conn)?,
-        None => diesel::update(
-            dsl::notifications
-                .filter(dsl::user_id.eq(user))
-                .filter(dsl::read_at.is_null()),
-        )
-        .set(dsl::read_at.eq(diesel::dsl::now))
-        .returning(dsl::id)
-        .get_results(conn)?,
+    let (ids, up_to): (Vec<Uuid>, Option<Uuid>) = match mark {
+        Mark::Ids(ids) => (ids.to_vec(), None),
+        Mark::UpTo(id) => (Vec::new(), Some(id)),
     };
-    if !changed.is_empty() {
-        events::emit_notification_event(conn, events::NOTIFICATIONS_READ, user, "", user)?;
+    let rows: Vec<IdRow> = match &reader.key {
+        None => sql_query(
+            "UPDATE notifications n SET read_at = now() \
+              WHERE n.user_id = $1 AND n.read_at IS NULL \
+                AND (n.id = ANY($2) OR (n.created_at, n.id) <= \
+                     (SELECT b.created_at, b.id FROM notifications b \
+                       WHERE b.id = $3 AND b.user_id = $1)) \
+             RETURNING n.id",
+        )
+        .bind::<SqlUuid, _>(reader.user)
+        .bind::<Array<SqlUuid>, _>(ids)
+        .bind::<Nullable<SqlUuid>, _>(up_to)
+        .load(conn)?,
+        Some(key) => sql_query(format!(
+            "{READER_VIEW} INSERT INTO notification_reads (notification_id, api_key_id) \
+             SELECT v.id, $6 FROM v WHERE v.read_at IS NULL \
+                AND (v.id = ANY($4) OR (v.created_at, v.id) <= \
+                     (SELECT b.created_at, b.id FROM notifications b \
+                       WHERE b.id = $5 AND b.user_id = $1)) \
+             ON CONFLICT DO NOTHING RETURNING notification_id AS id"
+        ))
+        .bind::<SqlUuid, _>(reader.user)
+        .bind::<Array<SqlUuid>, _>(reader.key_ids())
+        .bind::<Nullable<Timestamptz>, _>(reader.since())
+        .bind::<Array<SqlUuid>, _>(ids)
+        .bind::<Nullable<SqlUuid>, _>(up_to)
+        .bind::<SqlUuid, _>(key.id)
+        .load(conn)?,
+    };
+    let changed: Vec<Uuid> = rows.into_iter().map(|r| r.id).collect();
+    if !changed.is_empty() && !reader.is_key() {
+        events::emit_notification_event(
+            conn,
+            events::NOTIFICATIONS_READ,
+            reader.user,
+            "",
+            reader.user,
+        )?;
     }
     Ok(changed)
 }
@@ -626,14 +1047,16 @@ pub fn not_of(conn: &mut PgConnection, user: Uuid, ids: &[Uuid]) -> Result<Vec<U
         .collect())
 }
 
-/// The count of the unread notifications of `user`.
-pub fn unread_count(conn: &mut PgConnection, user: Uuid) -> Result<i64, DieselError> {
-    use crate::schema::notifications::dsl;
-    dsl::notifications
-        .filter(dsl::user_id.eq(user))
-        .filter(dsl::read_at.is_null())
-        .count()
-        .get_result(conn)
+/// The count of the unread notifications of the reader.
+pub fn unread_count(conn: &mut PgConnection, reader: &Reader) -> Result<i64, DieselError> {
+    let row: CountRow = sql_query(format!(
+        "{READER_VIEW} SELECT count(*) AS total FROM v WHERE v.read_at IS NULL"
+    ))
+    .bind::<SqlUuid, _>(reader.user)
+    .bind::<Array<SqlUuid>, _>(reader.key_ids())
+    .bind::<Nullable<Timestamptz>, _>(reader.since())
+    .get_result(conn)?;
+    Ok(row.total)
 }
 
 /// The settings of `user`: each kind, and whether it is on.

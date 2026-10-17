@@ -1,15 +1,17 @@
-// KAIROS-T-0369 — the claim of a task on the item page, and the ends of a
-// task, in the GUI:
+// KAIROS-T-0369, KAIROS-T-0535 — the claim of a task on the item page,
+// and the ends of a task, in the GUI:
 //
 //   1. a move to Active on the item page gives alice the claim;
-//   2. Hand off gives the claim to bob;
+//   2. Hand off gives the claim to bob: the picker starts with no person,
+//      and a dialog asks before the hand-off;
 //   3. the board grouped by owner (KAIROS-T-0416) puts the task in the
 //      lane of the person with the claim, and follows a hand-off back to
 //      alice live;
-//   4. Release ends the claim;
-//   5. Cancel with a reason puts the cancel mark on the task;
-//   6. Delete for good (a board manager) removes the task;
-//   7. the Agent keys page makes a key, rotates it and revokes it.
+//   4. Release ends the claim; the panel then shows Claim and Hand off;
+//   5. Claim gives alice the free task again;
+//   6. Cancel with a reason puts the cancel mark on the task;
+//   7. Delete for good (a board manager) removes the task;
+//   8. the Agent keys page makes a key, rotates it and revokes it.
 //
 // The task is new for each run (a timestamped title), so a retry starts
 // clean.
@@ -69,8 +71,16 @@ test('a task is claimed, handed off, released, cancelled and deleted', async ({
   });
 
   await test.step('Hand off gives the claim to bob', async () => {
-    await claim.locator('select').selectOption({ label: 'bob (bob@kairos.test)' });
-    await claim.getByRole('button', { name: 'Hand off', exact: true }).click();
+    const picker = claim.locator('select');
+    const handOff = claim.getByRole('button', { name: 'Hand off', exact: true });
+    // The picker starts with no person, so Hand off waits for a choice.
+    await expect(picker).toHaveValue('');
+    await expect(handOff).toBeDisabled();
+    await picker.selectOption({ label: 'bob (bob@kairos.test)' });
+    await handOff.click();
+    const dialog = page.getByRole('dialog', { name: `Hand off ${code}?` });
+    await expect(dialog).toContainText('Kairos gives the claim to bob (bob@kairos.test).');
+    await dialog.getByRole('button', { name: 'Hand off', exact: true }).click();
     await expect(page.locator('.cl-toast', { hasText: 'Kairos gave the claim to bob.' })).toBeVisible();
     await expect(claim).toContainText('bob has the claim since');
     expect((await readTask(GUI, token, code)).claim?.display_name).toBe('bob');
@@ -118,6 +128,17 @@ test('a task is claimed, handed off, released, cancelled and deleted', async ({
     await expect(page.locator('.cl-toast', { hasText: 'Kairos released the claim.' })).toBeVisible();
     await expect(claim).toContainText('No claim.');
     expect((await readTask(GUI, token, code)).claim ?? null).toBeNull();
+    // A task with no claim offers Claim and Hand off, and no Release.
+    await expect(claim.getByRole('button', { name: 'Claim', exact: true })).toBeVisible();
+    await expect(claim.getByRole('button', { name: 'Hand off', exact: true })).toBeVisible();
+    await expect(claim.getByRole('button', { name: 'Release', exact: true })).toHaveCount(0);
+  });
+
+  await test.step('Claim gives alice the free task again', async () => {
+    await claim.getByRole('button', { name: 'Claim', exact: true }).click();
+    await expect(page.locator('.cl-toast', { hasText: 'You have the claim.' })).toBeVisible();
+    await expect(claim).toContainText('alice has the claim since');
+    expect((await readTask(GUI, token, code)).claim?.display_name).toBe('alice');
   });
 
   await test.step('Cancel with a reason puts the mark on the task', async () => {

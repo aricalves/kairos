@@ -61,13 +61,13 @@ These hold for every tool.
 |---|---|
 | Tenant | There is no tenant argument. The tenant is the one resolved from the connection's host or the `X-Tenant` header. |
 | Identity | Every tool runs as the authenticated principal — a human user or a service account — under the same attribute-based access control as the REST handlers. Archiving is not a permission boundary: whoever could read an item before it was archived can read it after. |
-| Item identity | Items are named by short code, e.g. `ACME-T-0012`, in every input and every output. |
-| Retired codes | When an item gets a new short code, its old code is retired. Kairos does not issue a retired code again. A read tool (`get_item`, `get_history`, `search`) finds the item from a retired code and shows the current code. A write tool refuses a retired code with `NOT_FOUND`, and the refusal gives the current code. |
+| Item identity | Items are named by short code, e.g. `ACME-T-0012`, in every input and every output. Kairos changes a code in input to capital letters, so `acme-t-0012` finds `ACME-T-0012`. |
+| Retired codes | When an item gets a new short code, its old code is retired. Kairos does not issue a retired code again. A read tool (`get_item`, `get_history`, `search`) finds the item from a retired code and shows the current code. A write tool refuses a retired code for the item that it changes. The refusal is `NOT_FOUND`, and it gives the current code. A reference in a write follows a retired code: the `source` and the `target` of `link_items` and `unlink_items`, and the `parent` of `create_item`. The answer then has a line such as `COLLIERY-T-2430 is now SKADI-T-0577.` |
 | Board and team references | A `board`, `to_board`, `team` or `repository` argument accepts either a slug or a UUID. A `column` or `to_column` argument accepts either a column name, case-insensitively, or a UUID. |
 | Listing weight | Listings are compact: short code, title and key fields. Full markdown content arrives only from `get_item` and from `get_history` with a `version`. |
 | Errors | A refusal comes back as an MCP tool error whose text is `CODE: message`, the code being the same stable one as the REST API's error envelope. Where that code has structured `details`, a second line follows: `details: ` and the JSON object. See [Errors](../errors/) for what each code's `details` carries. |
 | Audit | Writes are recorded in the activity log by the same code path as the REST API. |
-| Notifications | While the person of the key has unread [notifications](#your-notifications), each answer (not a refusal) ends with a block: the 5 newest, then `N more: call get_events` when there are more. The block stops when the person marks them read. `get_events` itself has no block, because it lists them. A service account gets no notifications. |
+| Notifications | While the caller has unread [notifications](#your-notifications), each answer (not a refusal) ends with a block: the 5 newest, then `N more: call get_events` when there are more. The block stops when the caller marks them read. An agent key keeps its own read state, apart from the person. `get_events` itself has no block, because it lists them. A service account gets no notifications. |
 | Claims | A task in Active has a [claim](../glossary/#claim): the person who works on it. A write to a task that a different person has the claim on succeeds and is recorded. The text of the tool then ends with a line: `Warning: Alice (agent) has the claim on ACME-T-0012 (since 2026-10-09T10:00:00Z). Your change is recorded.` A write by the person who has the claim, also with the agent key of the person, gets no warning. |
 
 ### Refusal codes
@@ -76,7 +76,7 @@ Codes an agent can receive, and what each means.
 
 | Code | Meaning |
 |---|---|
-| `NOT_FOUND` | A short code, board or repository named as the subject of the call does not exist; an `unlink_items` edge does not exist; or a `search` `traverse.from` does not resolve. On a write tool it also means the item exists but is archived: writes resolve live items only, and the message reads `no live item with short code …`. |
+| `NOT_FOUND` | A short code, board or repository named as the subject of the call does not exist; an `unlink_items` edge does not exist; or a `search` `traverse.from` does not resolve. On a write tool it also means the item exists but is archived. Writes resolve live items only. The message says that the item is archived, and it names `restore_item`. A reference to an archived item, for example the `target` of `link_items`, is `VALIDATION` with the same text. |
 | `VALIDATION` | An argument is malformed, an enum value is outside its vocabulary, an argument does not apply to the item type, or something named as a *filter or reference* — a team, a repository filter, a parent, a metadata definition, a column — does not exist. A reference that does not resolve is `VALIDATION`; the call's own subject not existing is `NOT_FOUND`. **One exception:** `search`'s `traverse.from` is a reference and still answers `NOT_FOUND`, because a traversal's root is the subject of that traversal. |
 | `FORBIDDEN` | The rule for the write refuses the principal. For an edit, the [edit rule](../capabilities/#the-edit-rule): the principal did not create the item and lacks `manage_<type>` on its board. For an edge, the [link rule](../capabilities/#who-can-write-relationships): the principal can edit neither end. For a move or a create: the principal lacks the board capability. The message names the capability. For `add_repository` and `update_repository`: the principal is not a member of the owner team and is not an organization admin. The message names the team. For `create_team`, `create_board` and `add_team_member`: the principal is not an organization admin and has no `manage_structure` on the organization. The message names the capability and the scope. One case has a longer message: a move (`transition_item`, `move_item`) of a request that the caller created, while the request is in the entry column. That message says that the item is a request, that the team of the board moves it, that the caller can edit, link and archive it, and which capability the move needs. A `create_item` that sends `work_class: planned` to a board that the caller does not manage is also `FORBIDDEN`. |
 | `CONFLICT` | An optimistic-concurrency version mismatch. The refusal carries the current version and content. From `add_repository`: the directory has the slug already, or it has the repository already. |
@@ -121,9 +121,9 @@ must have that argument. …`. An argument with the wrong JSON type is
 [An input that a route does not accept](../errors/#an-input-that-a-route-does-not-accept)
 for the rule of the REST API.
 
-`DEFINITION_IN_USE`, the refusal that protects a metadata definition carrying
-values, belongs to the REST surface — `DELETE /api/metadata-definitions/{id}`.
-No MCP tool deletes a definition, so no MCP tool returns it. See
+`DEFINITION_IN_USE` protects a metadata definition that carries values.
+[`delete_metadata_definition`](#delete_metadata_definition) returns it, as
+`DELETE /api/metadata-definitions/{id}` does. See
 [Tenant configuration](../rest/tenant-configuration/).
 
 ## Orientation
@@ -269,6 +269,7 @@ One repository in full. The output has these parts:
   [Connect a git forge](../../how-to/connect-a-git-forge/).
 - the team's description of how to work in the repository
 - the documents and the ADRs that impact the repository
+- `## ADRs of the owner team`: the other ADRs of the owner team
 - the in-flight branches and pull requests, each with its work item
 - `## Not linked to an item`: the in-flight branches and pull requests that
   the forge filter admits, with no item that links to them
@@ -280,7 +281,7 @@ tasks that link to the repository.
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `repository` | string | yes | — | Slug or UUID. |
-| `include_deleted` | boolean | no | `false` | Add the archived documents and ADRs that impact the repository, each with the mark `[archived]`. |
+| `include_deleted` | boolean | no | `false` | Add the archived documents and ADRs of the two sections, each with the mark `[archived]`. |
 
 The section `## Documents and ADRs that impact this repository` has one line
 for each item. The documents come first, in the order of the short code. A
@@ -293,6 +294,26 @@ shows its column, if it is on a board. An empty section shows `(none)`.
 - ACME-D-0009 — An old plan · document · lifecycle: draft [archived]
 - ACME-A-0002 — Plugins are dynamic libraries · adr · column: Decided
 ```
+
+The section `## ADRs of the owner team` lists the ADRs on the boards of the
+owner team that have no `impacts` link. Most older ADRs have no link. An ADR
+with a link is in the first section of the repository that it names. Thus
+each ADR shows one time only. The section does not show a superseded ADR.
+
+Each line shows the column of the ADR. The newest ADR comes first. The
+section shows 50 ADRs at most. When there are more, the last line gives the
+count and names `team_pages`. An empty section shows `(none)`.
+
+```text
+## ADRs of the owner team
+The ADRs on the boards of the team platform that no `impacts` link names, newest first. A superseded ADR is not listed.
+- ACME-A-0007 — Retries use a fixed backoff · adr · column: Decided
+- ACME-A-0005 — One database per tenant · adr · column: Draft
+- 3 more: `team_pages platform` lists each ADR of the team.
+```
+
+`GET /api/repositories/{slug}` gives the same rows in `owner_team_adrs`.
+`owner_team_adrs_total` gives the count of all of them.
 
 Read these items with `get_item` before you plan work in the repository. See
 [impacts](../glossary/#impacts).
@@ -661,7 +682,9 @@ soft-deleted rather than dropped, and this lookup deliberately ignores that so
 
 The `blocked by` and `blocks` lines list each `blocks` edge of the item. The
 mark `[done]` shows an item in a done column. The mark `[archived]` shows an
-item that someone put away. An edge to an item with a mark does not block. When
+item that someone put away. An edge to an item with a mark does not block. The
+mark `[cancelled]` shows a cancelled blocker, which still blocks
+(KAIROS-T-0567). When
 the item itself is in a done column, the two labels change to
 `blocked by (resolved: this item is done)` and
 `blocks (resolved: this item is done)`.
@@ -712,6 +735,13 @@ The list of an item that a move renamed has the section **Renames**. Each
 line has the old code, the new code, the time and who did the move:
 
 ```text
+## Renames
+- COLLIERY-T-0100 -> SKADI-T-0001 — 2026-10-03T18:20:00Z by Dylan
+```
+
+Refuses: `NOT_FOUND` for an unknown short code, or for a `version` with no
+snapshot.
+
 ### `list_metadata_definitions`
 
 The metadata definitions of the organization, by slug. For each one: the
@@ -746,13 +776,6 @@ REST: `GET /api/templates` and `GET /api/templates/{id}`.
 
 Refuses: `NOT_FOUND` for a `slug` that names no template.
 
-## Renames
-- COLLIERY-T-0100 -> SKADI-T-0001 — 2026-10-03T18:20:00Z by Dylan
-```
-
-Refuses: `NOT_FOUND` for an unknown short code, or for a `version` with no
-snapshot.
-
 ## Searching
 
 ### `search`
@@ -766,7 +789,7 @@ are compact and grouped by type.
 | `q` | string | no | — | Full-text query. Websearch syntax: quoted phrases, `OR`, `-negation`. Must not be blank. When `q` is a short code, the result also has the item with that code, first. When `q` is a retired code, the result has the item with its current code, and a notice gives the current code. |
 | `filter` | object | no | — | See below. Fields AND together. |
 | `traverse` | object | no | — | See below. |
-| `sort` | object | no | `created_at` descending | See below. |
+| `sort` | object | no | `relevance` descending with `q`, else `created_at` descending | See below. |
 | `limit` | integer | no | `25` | Page size, 1–100. |
 | `offset` | integer | no | `0` | Offset into the combined result set. Must not be negative. |
 
@@ -1275,8 +1298,8 @@ person triaged out of the entry column moves as any other.
 Moves a task to another delivery board. It lands in that board's entry column
 and follows that board's team.
 
-The tool also moves a document to a different owner board, or removes the
-owner board of a document.
+The tool also moves a document to a different owner board. It cannot remove
+the owner board of a document.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
@@ -1376,9 +1399,8 @@ strategy or an initiative that has no owner.
 |---|---|---|---|---|
 | `short_code` | string | yes | — | The short code of a task in Active with no claim, or of a strategy or an initiative with no owner. |
 
-A task: you need `transition_items` on the board of the task, or the right
-to edit the task. The creator of the task has that right, and so does
-`manage_tasks`. The claim names you. With your agent key, it names you and
+A task: you need `transition_items` on the board of the task (KAIROS-T-0642).
+The creator of the task gets no claim from the edit rule. The claim names you. With your agent key, it names you and
 marks the agent. The answer has the line `claim`.
 
 A task that a different person holds gets `CLAIMED` and the name of the
@@ -1395,8 +1417,7 @@ Refuses:
 - `NOT_FOUND` for an unknown short code or an archived item.
 - `VALIDATION` for an item that is not a task, a strategy or an initiative.
 - `VALIDATION` for a task, when the caller is a service account.
-- `FORBIDDEN` for a task, without `transition_items` and without the right to
-  edit the task.
+- `FORBIDDEN` for a task, without `transition_items` on its board.
 - `FORBIDDEN` for a strategy or an initiative, for a service account, and for
   a person who is not a member of the board and not an organization admin.
 - `NOT_CLAIMABLE` for a task that is not in Active.
@@ -1413,12 +1434,18 @@ Changes the [claim](../glossary/#claim) of a task in Active, or the
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `short_code` | string | yes | — | The short code of a task in Active, or of a strategy or an initiative. |
-| `to` | string | yes | — | The person who gets the claim or who becomes the owner: a user id, an email or a user name of a person of the organization, or `me`. A new owner must be a member of the board of the item. |
+| `to` | string | yes | — | The person who gets the claim or who becomes the owner: a user id, an email or a user name of a person of the organization, or `me`. A new owner must be a member of the board of the item. A new claim holder must hold `transition_items` on the board of the task. |
 
 A task: the person who has the claim can hand it off. Any other principal needs
 `transition_items` on the board of the task. A task in Active with no claim can
 get a claim by a hand-off. The task stays in Active. The answer has the line
 `claim` with the new claim.
+
+The person who gets the claim must hold `transition_items` on the board of the
+task. The team of the board gives it, and so do a grant and the organization
+admin role. Else the tool refuses with `VALIDATION` on `to`. The text names the
+board and the capability. A person who cannot move the task cannot finish it.
+A hand-off to `me` passes only when you hold the capability.
 
 A strategy or an initiative: the owner can hand it off. An organization admin
 can set the owner of each item, also of an item with no owner. Nobody else can.
@@ -1535,8 +1562,9 @@ graph view shows serial work as a row and parallel work in one column.
 A `blocks` edge counts only while the items at both ends can move. Complete
 work does not block, and nothing blocks complete work. The edge stops counting
 when the item at either end is in a done column. The edge stays, and `get_item`
-marks the done end `[done]`. `link_items` does not refuse an edge to an item in
-a done column.
+marks the done end `[done]`. A cancelled blocker still blocks, and `get_item`
+marks it `[cancelled]` (KAIROS-T-0567). `link_items` does not refuse an edge to
+an item in a done column.
 
 The tool refuses with these codes:
 
@@ -1716,10 +1744,10 @@ no item. The confirm takes the
 confirms must be able to edit the item at one end. A refused confirm leaves the
 proposal pending.
 
-Refuses: `VALIDATION` for a relationship outside `parent`/`blocks` or a short
-code naming no live item; `CONFLICT` when an identical proposal is already
-waiting, or when the item already holds ten undecided ones — decide some rather
-than adding more.
+Refuses: `VALIDATION` for a relationship outside `parent`/`blocks`;
+`NOT_FOUND` for a short code that names no live item; `CONFLICT` when an
+identical proposal is already waiting, or when the item already holds ten
+undecided ones — decide some rather than adding more.
 
 Only `parent` and `blocks` are proposable. `supports`, `informs` and `supersedes`
 are editorial, cheap to undo, and remain a person's to draw with
@@ -1775,9 +1803,8 @@ The output has no such lines when the archive reached each descendant.
 Refuses: `VALIDATION` when `confirm` is `false` — checked before the short code
 is looked up, so such a call never reports an unknown item; `NOT_FOUND` for an
 unknown short code or an already-archived item; `FORBIDDEN` when the
-[edit rule](../capabilities/#the-edit-rule) refuses the caller. An *absent* `confirm` is a schema violation
-rather than a refusal — it is a required field, so the call is rejected before
-the tool body runs and carries no Kairos error code.
+[edit rule](../capabilities/#the-edit-rule) refuses the caller. A call with no `confirm` gets `VALIDATION`.
+The text names the argument, and `details.argument` is `confirm`.
 
 ### `restore_item`
 
@@ -2260,12 +2287,16 @@ A notification tells a person about an event of their work (KAIROS-T-0381):
 | Kind | You get it when |
 |---|---|
 | `hand_off` | A person or a service account gives you the claim of a task. |
-| `blocker_cleared` | An item that blocks a task that you have the claim on goes into a done column, or is archived. |
+| `blocker_cleared` | An open blocker of your item stops blocking it. The blocker goes into a done column, or a person archives or purges it, or removes the `blocks` link. A cancel sends `blocker_cancelled` in its place. Your item is a task that you have the claim on, or a strategy or initiative that you own. |
+| `blocked_again` | A done blocker of your item leaves the done column, so it blocks again. Your item is a task that you have the claim on, or a strategy or initiative that you own. With no claim and no owner, the person who created the item gets it. |
 | `cancelled` | A person cancels a task that you created. The text has the reason. |
+| `blocker_cancelled` | A person cancels a task that blocks your item. The cancelled task still blocks, and Kairos unblocks nothing. Remove the `blocks` link, or reopen the blocker. You get it when you have the claim on the item, own it, or created it. The text has the reason. |
 | `mention` | A person writes `@your_user_name` in a note or in the content of an item. A mention in code does not count. An update tells only the new mentions. |
 | `p0_bug` | A bug with the priority `critical` (or `p0`) lands on the board of your team: its priority changes to P0, or it moves to the board. |
 | `delivery_failing` | Kairos turns off a webhook target that you made, or a target of a board that you manage, after failed deliveries. See [Webhook deliveries](../webhooks/). |
 | `agent_key_revoked` | An organization admin revokes an agent key of yours. The text names the key and its prefix. |
+| `claim_dropped` | A person leaves the organization, and their claim on a task of the board of your team ends. The task stays in its column, free. |
+| `claim_stale` | A claim has no write and no state change for `KAIROS_STALE_CLAIM_DAYS` days (default 14). You get it for your claim, or for a claim on a task of an initiative that you own. The claim stays. Kairos sends it once for each quiet period. |
 
 You get no notification for a change that you made. You can turn a kind off
 with `PUT /api/me/notification-settings` or on the Notifications page of the
@@ -2283,28 +2314,61 @@ content of the item. Its lines have no id: `get_events` gives the ids.
 get_events gives each with its id; mark them read with mark_events_read when you have acted on them.
 ```
 
+### The read state
+
+Each reader keeps its own read state (KAIROS-T-0550). The person is one
+reader: the bell of the web app and the login of the person. Each agent key
+of the person is a different reader. When an agent marks a notification
+read, the bell of the person still shows it unread.
+
+- A new agent key starts with the state of the person at that time. A
+  notification that the person read before the key was made is read for the
+  key.
+- A rotated key keeps the reads of the key that it replaces.
+- `get_events`, `mark_events_read` and the block at the end of an answer
+  use the state of the caller. So do the two REST routes.
+
 ### `get_events`
 
 Gives your notifications: each unread one first (newest first, 100 at most),
 then the 20 newest read ones. Each line has the id, the time, the kind, the
-item and the text. No arguments.
+item and the text.
 
-REST: `GET /api/me/notifications`.
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `before` | string | no | — | The id of a notification. The page has the unread notifications older than it, and no read ones. |
+
+The answer ends with the `up_to` value for `mark_events_read`: the id of the
+newest unread notification. When the page has 100 unread notifications, the
+answer also gives the `before` value of the next page.
+
+Refuses: `NOT_FOUND` when `before` is not one of your notifications.
+
+REST: `GET /api/me/notifications`, with the query parameter `before`.
 
 ### `mark_events_read`
 
-Marks your notifications read. Send `ids` or `all`, not both.
+Marks your notifications read for the caller. Send `ids`, or `all: true`
+with `up_to`.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `ids` | array of strings | no | — | The ids of your notifications, as `get_events` gives them. |
-| `all` | boolean | no | — | `true`: each of your unread notifications. |
+| `all` | boolean | no | — | `true`: each of your unread notifications up to `up_to`. |
+| `up_to` | string | with `all` | — | The id of the newest notification that you read. Kairos marks it and each older unread notification. A newer notification stays unread. |
+
+Kairos refuses `all` without `up_to`. A notification can come after your list.
+Without a bound, Kairos would mark it read before you see it.
+
+`up_to` also marks the older unread notifications that are not on your
+page. Read each page before you send `all`.
 
 The result is one line: `Marked 2 notification(s) read. You have 5 unread.`
 
 Refuses: `VALIDATION` when the call has neither `ids` nor `all: true`, or has
-both. `NOT_FOUND` when an id is not one of your notifications; the message
-names the id, and nothing changes. An id that is read already does not change.
+both. `VALIDATION` when `all` has no `up_to`, or `up_to` comes with `ids`.
+`NOT_FOUND` when an id is not one of your notifications. The message names
+the id, and nothing changes. An id that is read already does not change.
 
 REST: `POST /api/me/notifications/read`.
 
@@ -2322,8 +2386,9 @@ The event is `task.entered_column`. Its `data` has these fields:
 
 | Field | Description |
 |---|---|
-| `code`, `title`, `task_type` | The task. |
-| `work_class` | The lane of the task: `planned` or `support`. |
+| `entity_type` | `task`. For `task.unblocked`, also `strategy` or `initiative`. |
+| `code`, `title`, `task_type` | The item. `task_type` is `null` for a strategy or an initiative. |
+| `work_class` | The lane of the task: `planned` or `support`. `null` for a strategy or an initiative. |
 | `link` | The URL of the task in the GUI. |
 | `board` | `id`, `slug` and `name` of the board. |
 | `column` | `id` and `name` of the column. |
@@ -2337,14 +2402,18 @@ A task enters a column in 3 ways:
 - a move to the board, into its entry column;
 - a cancel, into the done column.
 
-A rule with the trigger `unblocked` (KAIROS-T-0427) fires when the last open
-blocker of a task closes. The blocker closes when it goes into a done column,
-or when a person cancels or archives it. The event is `task.unblocked`. Its
-`data` has the fields above and `blocker`, the code of the blocker that
-closed. The column in `data` is the column of the task.
+A rule with the trigger `unblocked` (KAIROS-T-0427) fires when an item loses
+its last open blocker. The blocker goes into a done column, or a person
+archives or purges it. A person can also remove the `blocks` link with
+`unlink_items` (KAIROS-T-0568). A cancel does not fire the rule: a cancelled
+blocker still blocks (KAIROS-T-0567). The item can be a task, an initiative or
+a strategy.
 
-Removing the edge with `unlink_items` does not fire the rule. The rule names
-no done column: a task in a done column waits for nothing.
+The event is `task.unblocked` for each type. Its `data` has the
+fields above and `blocker`, the code of the blocker. The column in `data` is
+the column of the item.
+
+The rule names no done column: an item in a done column waits for nothing.
 
 The rule can name a column: the task must be in it. With no column, a task
 in each column that is not done matches. A task with two blockers fires once,

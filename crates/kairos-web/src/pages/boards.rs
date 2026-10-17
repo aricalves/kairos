@@ -3098,11 +3098,7 @@ fn ItemCard(
                 } else {
                     0
                 };
-                let label = if p.has_done {
-                    format!("{}/{} done", p.done, p.total)
-                } else {
-                    format!("{} children", p.total)
-                };
+                let label = p.label();
                 view! {
                     <div class="kairos-card__progress" title="direct children">
                         {p.has_done.then(|| view! {

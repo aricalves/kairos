@@ -44,7 +44,7 @@ use kairos_db::search::{SearchError, SearchResults, execute_search};
 use serde_json::json;
 use uuid::Uuid;
 
-use super::convert::IntoDto;
+use super::convert::IntoCard;
 use crate::app::AppState;
 use crate::body::ApiJson;
 use crate::error::ApiError;
@@ -156,6 +156,10 @@ pub(crate) struct RelatedQuery {
 
 /// Unified search (KAIROS-A-0007): full-text `q`, structured `filter`, and
 /// graph `traverse` compose freely; at least one must be present.
+///
+/// A hit is a card (KAIROS-T-0602). It has the title and a `snippet` of
+/// the content near the match. It has no content. The item route of the
+/// hit gives the content.
 #[utoipa::path(
     post,
     path = "/api/search",
@@ -200,7 +204,7 @@ pub(crate) async fn search(
                 core_search::validate(&core).map_err(map_validation_error)?;
             }
             let mut response = execute_search(conn, &core)
-                .map(into_response)
+                .map(|results| into_response(results, core.q.as_deref()))
                 .map_err(map_search_error)?;
             // KAIROS-T-0104: embed the repository ref on task hits.
             super::convert::attach_repositories(conn, &mut response.results.tasks)
@@ -803,31 +807,127 @@ fn map_search_error(e: SearchError) -> ApiError {
 // Results → response DTO
 // ---------------------------------------------------------------------------
 
-/// Convert the pipeline's typed results into the S-0005 response shape
-/// (empty groups are omitted by the DTO's serde attributes).
-fn into_response(results: SearchResults) -> dto_search::SearchResponse {
+/// The cards of the hits of one type (KAIROS-T-0602): the full row without
+/// `content`, `created_by` and `updated_by`, and with a snippet of the
+/// content. Documents do not use it: a document card has none of the
+/// three fields.
+macro_rules! hits {
+    ($rows:expr, $q:expr) => {
+        $rows
+            .into_iter()
+            .map(|row| {
+                let snippet = snippet(&row.content, $q);
+                let mut card = row.into_card();
+                card.content = None;
+                card.created_by = None;
+                card.updated_by = None;
+                card.snippet = snippet;
+                card
+            })
+            .collect()
+    };
+}
+
+/// The search response of the results: cards with a snippet, not the
+/// content (KAIROS-T-0602). `q` places the snippet.
+fn into_response(results: SearchResults, q: Option<&str>) -> dto_search::SearchResponse {
     dto_search::SearchResponse {
         results: dto_search::SearchResultGroups {
-            strategies: results
-                .strategies
-                .into_iter()
-                .map(IntoDto::into_dto)
-                .collect(),
-            initiatives: results
-                .initiatives
-                .into_iter()
-                .map(IntoDto::into_dto)
-                .collect(),
-            tasks: results.tasks.into_iter().map(IntoDto::into_dto).collect(),
+            strategies: hits!(results.strategies, q),
+            initiatives: hits!(results.initiatives, q),
+            tasks: hits!(results.tasks, q),
             documents: results
                 .documents
                 .into_iter()
-                .map(IntoDto::into_dto)
+                .map(|row| {
+                    let snippet = snippet(&row.content, q);
+                    let mut card: kairos_client::types_cards::DocumentCard = row.into_card();
+                    card.snippet = snippet;
+                    card
+                })
                 .collect(),
-            adrs: results.adrs.into_iter().map(IntoDto::into_dto).collect(),
+            adrs: hits!(results.adrs, q),
         },
         total: results.total,
         limit: results.limit,
         offset: results.offset,
+    }
+}
+
+/// The longest snippet of a search hit, in characters (KAIROS-T-0602).
+pub(crate) const SNIPPET_CHARS: usize = 200;
+
+/// The snippet of a search hit (KAIROS-T-0602): about [`SNIPPET_CHARS`]
+/// characters of `content`, with the white space collapsed. The window
+/// starts a little before the first word of `q` that the content has
+/// (case-insensitive). With no `q`, or with no word found, the window is
+/// the start of the content. An ellipsis marks a cut. `None` for an empty
+/// content. Pure.
+pub(crate) fn snippet(content: &str, q: Option<&str>) -> Option<String> {
+    let text: Vec<char> = {
+        let collapsed = content.split_whitespace().collect::<Vec<_>>().join(" ");
+        collapsed.chars().collect()
+    };
+    if text.is_empty() {
+        return None;
+    }
+    let lower: Vec<char> = text
+        .iter()
+        .map(|c| c.to_lowercase().next().unwrap_or(*c))
+        .collect();
+    let first_match = q
+        .into_iter()
+        .flat_map(str::split_whitespace)
+        .map(|word| {
+            word.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+                .chars()
+                .collect::<Vec<char>>()
+        })
+        .filter(|word| !word.is_empty())
+        .filter_map(|word| lower.windows(word.len()).position(|w| w == word.as_slice()))
+        .min();
+    // The window starts a quarter of the way before the match.
+    let start = first_match
+        .map(|at| at.saturating_sub(SNIPPET_CHARS / 4))
+        .unwrap_or(0)
+        .min(text.len().saturating_sub(SNIPPET_CHARS));
+    let end = (start + SNIPPET_CHARS).min(text.len());
+    let mut out = String::new();
+    if start > 0 {
+        out.push('…');
+    }
+    out.extend(&text[start..end]);
+    if end < text.len() {
+        out.push('…');
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod snippet_tests {
+    use super::*;
+
+    /// KAIROS-T-0602: the snippet is the start of the content without
+    /// `q`, and the window near the first word of `q` with it.
+    #[test]
+    fn snippet_window() {
+        assert_eq!(snippet("", None), None);
+        assert_eq!(snippet("  a\n\nb  ", None).as_deref(), Some("a b"));
+        let long = format!("{} needle {}", "x ".repeat(300), "y ".repeat(300));
+        let start = snippet(&long, None).expect("a snippet");
+        assert!(start.starts_with("x x"), "{start}");
+        assert!(start.ends_with('…'));
+        assert_eq!(start.chars().count(), SNIPPET_CHARS + 1);
+        let near = snippet(&long, Some("NEEDLE")).expect("a snippet");
+        assert!(near.starts_with('…') && near.ends_with('…'), "{near}");
+        assert!(near.contains("needle"), "{near}");
+        // A word that the content does not have: the start.
+        assert_eq!(snippet(&long, Some("absent")), Some(start));
+        // A short content is not cut.
+        assert_eq!(
+            snippet("Fix the login.", Some("login")).as_deref(),
+            Some("Fix the login.")
+        );
     }
 }

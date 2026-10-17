@@ -1,6 +1,7 @@
 //! `kairos boards dispatch` — the webhook targets, the agent dispatch rules
 //! and the delivery log of a board (KAIROS-T-0384, KAIROS-T-0385).
 
+use crate::commands::entities::require_confirm;
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
 use crate::table::Table;
@@ -38,7 +39,7 @@ pub enum DispatchCommand {
         common: Common,
     },
     /// Remove a webhook target, with its rules and its log (needs
-    /// configure_boards)
+    /// configure_boards and --confirm)
     #[command(name = "remove-target")]
     RemoveTarget {
         /// Board slug or id (UUID)
@@ -47,6 +48,9 @@ pub enum DispatchCommand {
         /// The id of the target
         #[arg(value_name = "TARGET")]
         target: String,
+        /// Required: without it, the command deletes nothing
+        #[arg(long)]
+        confirm: bool,
         #[command(flatten)]
         common: Common,
     },
@@ -125,8 +129,8 @@ pub enum DispatchCommand {
         #[command(flatten)]
         common: Common,
     },
-    /// Remove a dispatch rule (needs configure_boards). Its deliveries stay
-    /// in the log
+    /// Remove a dispatch rule (needs configure_boards and --confirm). Its
+    /// deliveries stay in the log
     #[command(name = "remove-rule")]
     RemoveRule {
         /// Board slug or id (UUID)
@@ -135,6 +139,9 @@ pub enum DispatchCommand {
         /// The id of the rule
         #[arg(value_name = "RULE")]
         rule: String,
+        /// Required: without it, the command deletes nothing
+        #[arg(long)]
+        confirm: bool,
         #[command(flatten)]
         common: Common,
     },
@@ -296,8 +303,15 @@ impl DispatchCommand {
             Self::RemoveTarget {
                 board,
                 target,
+                confirm,
                 common,
             } => {
+                require_confirm(
+                    confirm,
+                    &format!(
+                        "the webhook target {target} of the board {board} (with its rules and its log)"
+                    ),
+                )?;
                 let client = client(&common)?;
                 let removed = client.delete_webhook_target(&board, &target).await?;
                 if common.json {
@@ -411,8 +425,13 @@ impl DispatchCommand {
             Self::RemoveRule {
                 board,
                 rule,
+                confirm,
                 common,
             } => {
+                require_confirm(
+                    confirm,
+                    &format!("the dispatch rule {rule} of the board {board}"),
+                )?;
                 let client = client(&common)?;
                 let removed = client.delete_dispatch_rule(&board, &rule).await?;
                 if common.json {

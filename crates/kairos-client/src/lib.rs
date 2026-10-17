@@ -12,6 +12,7 @@ pub mod client;
 pub mod error;
 pub mod types;
 pub mod types_auth;
+pub mod types_cards;
 pub mod types_code_index;
 pub mod types_dispatch;
 pub mod types_forge;
@@ -32,7 +33,10 @@ pub mod types_events;
 
 pub mod types_work;
 
-pub use client::{EntityKind, KairosClient, StaticToken, TokenProvider};
+pub use client::{
+    DEFAULT_CONNECT_TIMEOUT, DEFAULT_TIMEOUT, EntityKind, KairosClient, StaticToken, TIMEOUT_VAR,
+    TokenProvider, parse_timeout, timeout_from_env,
+};
 pub use error::Error;
 pub use ws::EventStream;
 

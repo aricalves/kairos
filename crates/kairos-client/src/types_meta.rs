@@ -49,6 +49,12 @@ pub struct RelatedItem {
     /// neighbour's current column; nothing is stored.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub done: bool,
+    /// `true` when the neighbour is a cancelled task (KAIROS-T-0567); absent
+    /// otherwise. A cancelled task is in a done column, so `done` is `true`
+    /// too. But a cancelled blocker is unresolved: it still blocks, and a
+    /// client shows it as cancelled, not done.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cancelled: bool,
 }
 
 /// All of an item's neighbors under ONE relationship type in one direction.
@@ -86,8 +92,20 @@ pub struct ChildrenProgressResponse {
     /// Direct live children (soft-deleted excluded; supports/informs
     /// material never counts).
     pub total: i64,
-    /// Children sitting in `is_done` columns.
+    /// Children sitting in `is_done` columns, less the cancelled tasks
+    /// (KAIROS-T-0567).
     pub done: i64,
+    /// Cancelled tasks among the children (KAIROS-T-0567). A cancel is
+    /// "won't do", not done. The default is for the client only: a
+    /// response of an older server has no `cancelled`.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub cancelled: i64,
+    /// Children that are not done and not cancelled: `total - done -
+    /// cancelled`.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub open: i64,
     /// False when no board hosting the children has a done-flagged
     /// column — show composition only, never a done fraction.
     ///
@@ -112,6 +130,10 @@ pub struct ChildColumnProgress {
     pub board_id: String,
     pub is_done: bool,
     pub count: i64,
+    /// The cancelled tasks among `count` (KAIROS-T-0567).
+    #[serde(default)]
+    #[schema(required = true)]
+    pub cancelled: i64,
 }
 
 /// Body of `POST /api/relationships`. The caller may edit the item at
@@ -136,6 +158,12 @@ pub struct Relationship {
     pub source_id: String,
     /// Target entity id (UUID).
     pub target_id: String,
+    /// The current short code of the source. A retired code in the request
+    /// follows to its item (KAIROS-T-0560), so this code can differ from
+    /// the request.
+    pub source_short_code: String,
+    /// The current short code of the target (see `source_short_code`).
+    pub target_short_code: String,
     /// `parent|supports|informs|supersedes|blocks`.
     pub relationship: String,
     /// RFC 3339.
@@ -532,6 +560,7 @@ mod tests {
                     title: "t".into(),
                     archived_at: None,
                     done: false,
+                    cancelled: false,
                 }],
             }],
             incoming: vec![],

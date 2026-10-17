@@ -11,10 +11,9 @@ use kairos_client::types_search::{
     SearchFilter, SearchRequest, SearchResponse, SearchSort, SearchTraverse, SearchTraverseFrom,
 };
 
-use crate::commands::entities::EntityView;
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
-use crate::table::Table;
+use crate::table::{Table, print_page_footer};
 
 /// Search and traverse all entity types (POST /api/search).
 #[derive(Args, Debug, Default)]
@@ -125,67 +124,87 @@ pub struct SearchArgs {
 }
 
 impl SearchArgs {
-    /// Whether any flag other than `--query-json` (and the pagination
-    /// defaults) was supplied.
-    fn has_flag_query(&self) -> bool {
-        self.query.is_some()
-            || !self.entity_type.is_empty()
-            || self.board.is_some()
-            || self.column.is_some()
-            || self.team.is_some()
-            || self.repo.is_some()
-            || !self.task_type.is_empty()
-            || !self.work_class.is_empty()
-            || self.is_bucket.is_some()
-            || !self.metadata.is_empty()
-            || self.after.is_some()
-            || self.before.is_some()
-            || self.include_deleted
-            || self.claimed_by.is_some()
-            || self.owned_by.is_some()
-            || self.created_by.is_some()
-            || self.from.is_some()
-            || self.from_id.is_some()
-            || !self.relationships.is_empty()
-            || self.direction.is_some()
-            || self.depth.is_some()
-            || self.sort.is_some()
-            || self.order.is_some()
-            || self.limit.is_some()
-            || self.offset.is_some()
+    /// The search flags on the command line, by name: each argument but
+    /// `--query-json` and the common options (KAIROS-T-0593). A unit test
+    /// sets each clap argument in turn, so a new flag cannot be left out.
+    fn flags_given(&self) -> Vec<&'static str> {
+        [
+            (self.query.is_some(), "--query"),
+            (!self.entity_type.is_empty(), "--type"),
+            (self.board.is_some(), "--board"),
+            (self.column.is_some(), "--column"),
+            (self.team.is_some(), "--team"),
+            (self.repo.is_some(), "--repo"),
+            (!self.task_type.is_empty(), "--task-type"),
+            (!self.work_class.is_empty(), "--work-class"),
+            (self.is_bucket.is_some(), "--is-bucket"),
+            (!self.metadata.is_empty(), "--metadata"),
+            (self.after.is_some(), "--after"),
+            (self.before.is_some(), "--before"),
+            (self.updated_after.is_some(), "--updated-after"),
+            (self.updated_before.is_some(), "--updated-before"),
+            (!self.metadata_missing.is_empty(), "--metadata-missing"),
+            (self.include_deleted, "--include-deleted"),
+            (self.claimed_by.is_some(), "--claimed-by"),
+            (self.owned_by.is_some(), "--owned-by"),
+            (self.created_by.is_some(), "--created-by"),
+            (self.from.is_some(), "--from"),
+            (self.from_id.is_some(), "--from-id"),
+            (!self.relationships.is_empty(), "--relationships"),
+            (self.direction.is_some(), "--direction"),
+            (self.depth.is_some(), "--depth"),
+            (self.sort.is_some(), "--sort"),
+            (self.order.is_some(), "--order"),
+            (self.limit.is_some(), "--limit"),
+            (self.offset.is_some(), "--offset"),
+        ]
+        .into_iter()
+        .filter_map(|(given, name)| given.then_some(name))
+        .collect()
     }
 
-    /// Compose the S-0005 request body from the flags (or take
-    /// `--query-json` verbatim).
-    pub fn build_request(&self) -> Result<SearchRequest, CliError> {
-        if let Some(raw) = &self.query_json {
-            if self.has_flag_query() {
-                return Err(CliError::Failure(
-                    "--query-json has the full search body. Do not use it with the other \
-                     search flags."
-                        .to_string(),
-                ));
-            }
-            let text = if raw == "-" {
-                let mut text = String::new();
-                std::io::stdin().read_to_string(&mut text).map_err(|err| {
-                    CliError::Failure(format!("The CLI cannot read standard input: {err}."))
-                })?;
-                text
-            } else if let Some(path) = raw.strip_prefix('@') {
-                std::fs::read_to_string(path).map_err(|err| {
-                    CliError::Failure(format!("The CLI cannot read {path}: {err}."))
-                })?
-            } else {
-                raw.clone()
-            };
-            return serde_json::from_str(&text).map_err(|err| {
-                CliError::Failure(format!(
-                    "The value of --query-json is not a correct search body: {err}."
-                ))
-            });
+    /// The body of the search: `--query-json` as it is, or the body that
+    /// the flags compose. `--query-json` with a search flag is refused.
+    pub fn build_body(&self) -> Result<SearchBody, CliError> {
+        let Some(raw) = &self.query_json else {
+            return Ok(SearchBody::Flags(Box::new(self.build_request()?)));
+        };
+        let given = self.flags_given();
+        if !given.is_empty() {
+            return Err(CliError::Failure(format!(
+                "--query-json has the full search body. Do not use it with {}. Put the \
+                 values in the JSON, or use the flags without --query-json.",
+                given.join(", ")
+            )));
         }
+        let text = if raw == "-" {
+            let mut text = String::new();
+            std::io::stdin().read_to_string(&mut text).map_err(|err| {
+                CliError::Failure(format!("The CLI cannot read standard input: {err}."))
+            })?;
+            text
+        } else if let Some(path) = raw.strip_prefix('@') {
+            std::fs::read_to_string(path)
+                .map_err(|err| CliError::Failure(format!("The CLI cannot read {path}: {err}.")))?
+        } else {
+            raw.clone()
+        };
+        // The body goes to the server as it is: the server judges each
+        // field, so an older CLI sends a field that a newer server knows.
+        let body: serde_json::Value = serde_json::from_str(&text).map_err(|err| {
+            CliError::Failure(format!("The value of --query-json is not JSON: {err}."))
+        })?;
+        if !body.is_object() {
+            return Err(CliError::Failure(
+                "The value of --query-json is not a JSON object. The search body is an object."
+                    .to_string(),
+            ));
+        }
+        Ok(SearchBody::Raw(body))
+    }
 
+    /// Compose the S-0005 request body from the flags.
+    pub fn build_request(&self) -> Result<SearchRequest, CliError> {
         let metadata = self.parse_metadata()?;
         let has_filter = !self.entity_type.is_empty()
             || self.board.is_some()
@@ -314,9 +333,12 @@ impl SearchArgs {
     }
 
     pub async fn run(self) -> Result<(), CliError> {
-        let request = self.build_request()?;
+        let body = self.build_body()?;
         let client = client(&self.common)?;
-        let response = client.search(&request).await?;
+        let response = match &body {
+            SearchBody::Flags(request) => client.search(request).await?,
+            SearchBody::Raw(body) => client.search_raw(body).await?,
+        };
         if self.common.json {
             return print_json(&response);
         }
@@ -325,9 +347,53 @@ impl SearchArgs {
     }
 }
 
+/// The body of a search: composed from the flags, or `--query-json` as it
+/// is.
+#[derive(Debug)]
+pub enum SearchBody {
+    Flags(Box<SearchRequest>),
+    Raw(serde_json::Value),
+}
+
 fn non_empty(values: &[String]) -> Option<Vec<String>> {
     (!values.is_empty()).then(|| values.to_vec())
 }
+
+/// The fields of a hit that the table shows (KAIROS-T-0602): a hit is a
+/// card, not the item.
+trait HitRow {
+    fn short_code(&self) -> &str;
+    fn title(&self) -> &str;
+    fn version(&self) -> i32;
+    fn archived_at(&self) -> Option<&str>;
+}
+
+macro_rules! hit_row {
+    ($($type:ty),*) => {$(
+        impl HitRow for $type {
+            fn short_code(&self) -> &str {
+                &self.short_code
+            }
+            fn title(&self) -> &str {
+                &self.title
+            }
+            fn version(&self) -> i32 {
+                self.version
+            }
+            fn archived_at(&self) -> Option<&str> {
+                self.archived_at.as_deref()
+            }
+        }
+    )*};
+}
+
+hit_row!(
+    kairos_client::types_cards::StrategyCard,
+    kairos_client::types_cards::InitiativeCard,
+    kairos_client::types_cards::TaskCard,
+    kairos_client::types_cards::DocumentCard,
+    kairos_client::types_cards::AdrCard
+);
 
 /// The human rendering: one CODE/TITLE/VER section per non-empty group.
 /// An archived hit carries an `[archived]` marker on its title
@@ -335,7 +401,7 @@ fn non_empty(values: &[String]) -> Option<Vec<String>> {
 /// in with live work, and a reader who cannot tell them apart will act on
 /// the wrong one.
 fn print_results(response: &SearchResponse) {
-    fn section<T: EntityView>(label: &str, items: &[T]) {
+    fn section<T: HitRow>(label: &str, items: &[T]) {
         if items.is_empty() {
             return;
         }
@@ -364,10 +430,13 @@ fn print_results(response: &SearchResponse) {
         section("documents", &response.results.documents);
         section("adrs", &response.results.adrs);
     }
-    println!(
-        "total: {} (limit {}, offset {})",
-        response.total, response.limit, response.offset
-    );
+    let groups = &response.results;
+    let shown = groups.strategies.len()
+        + groups.initiatives.len()
+        + groups.tasks.len()
+        + groups.documents.len()
+        + groups.adrs.len();
+    print_page_footer(response.total, response.limit, response.offset, shown);
 }
 
 #[cfg(test)]
@@ -510,38 +579,47 @@ mod tests {
         );
     }
 
-    /// --query-json is the verbatim escape hatch: parsed as the full
-    /// S-0005 body, rejected when combined with flags or malformed, and an
-    /// empty flag set with no query at all is a usage error.
+    /// --query-json is the verbatim escape hatch: sent as it is, with a
+    /// field that the client does not know; refused with a flag, or when it
+    /// is not a JSON object (KAIROS-T-0593).
     #[test]
     fn query_json_escape_hatch() {
+        let body = r#"{"q": "auth", "limit": 5, "a_newer_field": true}"#;
         let args = SearchArgs {
-            query_json: Some(r#"{"q": "auth", "limit": 5}"#.into()),
+            query_json: Some(body.into()),
             ..Default::default()
         };
-        let request = args.build_request().expect("parses");
-        assert_eq!(request.q.as_deref(), Some("auth"));
-        assert_eq!(request.limit, Some(5));
+        let SearchBody::Raw(sent) = args.build_body().expect("parses") else {
+            panic!("--query-json is sent as it is");
+        };
+        assert_eq!(
+            sent,
+            serde_json::from_str::<serde_json::Value>(body).unwrap()
+        );
 
         let err = SearchArgs {
             query: Some("auth".into()),
+            updated_after: Some("2026-01-01T00:00:00Z".into()),
             query_json: Some(r#"{"q": "auth"}"#.into()),
             ..Default::default()
         }
-        .build_request()
+        .build_body()
         .expect_err("flags + --query-json conflict");
-        assert!(err.to_string().contains("Do not use it with"), "{err}");
-
-        let err = SearchArgs {
-            query_json: Some(r#"{"query": "typo"}"#.into()),
-            ..Default::default()
-        }
-        .build_request()
-        .expect_err("unknown fields rejected");
         assert!(
-            err.to_string().contains("is not a correct search body"),
+            err.to_string()
+                .contains("Do not use it with --query, --updated-after."),
             "{err}"
         );
+
+        for bad in ["[1, 2]", "not json"] {
+            let err = SearchArgs {
+                query_json: Some(bad.into()),
+                ..Default::default()
+            }
+            .build_body()
+            .expect_err("not an object");
+            assert!(err.to_string().contains("--query-json is not"), "{err}");
+        }
 
         let err = SearchArgs::default()
             .build_request()
@@ -558,5 +636,58 @@ mod tests {
         .build_request()
         .expect_err("bad metadata pair");
         assert!(err.to_string().contains("KEY=VALUE"), "{err}");
+    }
+
+    /// Each argument of `kairos search` but `--query-json` and the common
+    /// options is refused beside `--query-json`, and the refusal names it
+    /// (KAIROS-T-0593: three flags were dropped without a word).
+    #[test]
+    fn each_search_flag_is_refused_beside_query_json() {
+        use clap::{Args, CommandFactory, Parser};
+
+        #[derive(Parser, Debug)]
+        struct Harness {
+            #[command(flatten)]
+            search: SearchArgs,
+        }
+
+        let common: Vec<String> = Common::augment_args(clap::Command::new("common"))
+            .get_arguments()
+            .map(|a| a.get_id().to_string())
+            .collect();
+        let mut checked = 0;
+        for arg in Harness::command().get_arguments() {
+            let id = arg.get_id().to_string();
+            if ["query_json", "help", "version"].contains(&id.as_str()) || common.contains(&id) {
+                continue;
+            }
+            let long = format!("--{}", arg.get_long().expect("a long flag"));
+            let mut argv = vec![
+                "search".to_string(),
+                "--query-json".into(),
+                "{}".into(),
+                long.clone(),
+            ];
+            if arg.get_action().takes_values() {
+                argv.push("1".into());
+            }
+            let parsed = Harness::try_parse_from(&argv).or_else(|_| {
+                argv.pop();
+                argv.push("true".into());
+                Harness::try_parse_from(&argv)
+            });
+            let parsed = parsed.unwrap_or_else(|err| panic!("{long}: {err}"));
+            let err = parsed
+                .search
+                .build_body()
+                .expect_err("a flag beside --query-json is refused");
+            assert!(
+                err.to_string()
+                    .contains(&format!("Do not use it with {long}.")),
+                "{long}: {err}"
+            );
+            checked += 1;
+        }
+        assert!(checked >= 28, "only {checked} flags checked");
     }
 }

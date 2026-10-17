@@ -91,6 +91,29 @@ An Architecture Decision Record, as returned by `/api/adrs`. Board placement is 
 | `updated_by` | `string` | yes | Last editor user id (UUID). |
 | `version` | `integer` | yes | Optimistic-concurrency version (KAIROS-A-0004). |
 
+## AdrCard
+
+An ADR on a board or in a search (KAIROS-T-0602).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `archived_at` | `string`, nullable | no | When this work was put away, RFC 3339; absent while it is live (KAIROS-A-0020). |
+| `board_id` | `string`, nullable | no | ADR board (UUID), if placed on one. |
+| `column_id` | `string`, nullable | no | Current column (UUID), if placed on a board. |
+| `content` | `string`, nullable | no | Markdown content. Only with `fields=full` on the board route. |
+| `created_at` | `string` | yes | RFC 3339. |
+| `created_by` | `string`, nullable | no | Creator user id (UUID). Only with `fields=full` on the board route. |
+| `decision_date` | `string`, nullable | no | `YYYY-MM-DD`. |
+| `decision_maker` | `string`, nullable | no |  |
+| `id` | `string` | yes | Entity id (UUID). |
+| `impacts` | array of [`Impact`](#impact) | no | The repositories that the ADR impacts (COLLIERY-T-0269). |
+| `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-A-{NNNN}`). |
+| `snippet` | `string`, nullable | no | About 200 characters of the content, near the first match of `q`. Only on a search hit. |
+| `title` | `string` | yes |  |
+| `updated_at` | `string` | yes | RFC 3339. |
+| `updated_by` | `string`, nullable | no | Last editor user id (UUID). Only with `fields=full` on the board route. |
+| `version` | `integer` | yes | Optimistic-concurrency version (KAIROS-A-0004). |
+
 ## AgentTriage
 
 Who decides the triage of intake on a board (KAIROS-T-0428). Intake is a task in the support lane. Off (the default): an agent proposes with a note, and a person decides. On: an agent moves intake itself, and the activity log names the agent.
@@ -234,13 +257,13 @@ One column's items in the `GET /api/boards/{id}/items` view: every live workflow
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `adrs` | array of [`Adr`](#adr) | yes |  |
+| `adrs` | array of [`AdrCard`](#adrcard) | yes |  |
 | `column` | [`BoardColumn`](#boardcolumn) | yes |  |
-| `initiatives` | array of [`Initiative`](#initiative) | yes |  |
+| `initiatives` | array of [`InitiativeCard`](#initiativecard) | yes |  |
 | `item_count` | `integer` | yes | The live items in the column, on each page (KAIROS-T-0371): the count that the WIP limit is for. Not changed by the filters or the page. The default is for the client only (an older server). |
 | `over_wip_limit` | `boolean` | yes | `item_count` is above `column.wip_limit`. |
-| `strategies` | array of [`Strategy`](#strategy) | yes |  |
-| `tasks` | array of [`Task`](#task) | yes |  |
+| `strategies` | array of [`StrategyCard`](#strategycard) | yes | The cards of the column (KAIROS-T-0602): no `content` unless the query has `fields=full`. |
+| `tasks` | array of [`TaskCard`](#taskcard) | yes |  |
 
 ## BoardDetail
 
@@ -354,6 +377,7 @@ One column bucket of a children-progress rollup (KAIROS-T-0080).
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `board_id` | `string` | yes | The column's board (children may span boards). |
+| `cancelled` | `integer` | yes | The cancelled tasks among `count` (KAIROS-T-0567). |
 | `column_id` | `string` | yes | Column id (UUID). |
 | `column_name` | `string` | yes |  |
 | `count` | `integer` | yes |  |
@@ -366,8 +390,10 @@ Response of `GET /api/{entity_type}/{short_code}/children-progress` (KAIROS-T-00
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `by_column` | array of [`ChildColumnProgress`](#childcolumnprogress) | yes | Per-column composition, board-then-position order. |
-| `done` | `integer` | yes | Children sitting in `is_done` columns. |
+| `cancelled` | `integer` | yes | Cancelled tasks among the children (KAIROS-T-0567). A cancel is "won't do", not done. The default is for the client only: a response of an older server has no `cancelled`. |
+| `done` | `integer` | yes | Children sitting in `is_done` columns, less the cancelled tasks (KAIROS-T-0567). |
 | `has_done_columns` | `boolean` | yes | False when no board hosting the children has a done-flagged column — show composition only, never a done fraction. The server sends it in each response, so the schema shows it as required (COLLIERY-T-0254). The default is for the client only: a response of an older server has no `has_done_columns`, and it reads as `false`. |
+| `open` | `integer` | yes | Children that are not done and not cancelled: `total - done - cancelled`. |
 | `short_code` | `string` | yes | The parent item's short code. |
 | `total` | `integer` | yes | Direct live children (soft-deleted excluded; supports/informs material never counts). |
 
@@ -988,6 +1014,25 @@ A supporting document, as returned by `/api/documents`. Documents do not live on
 | `updated_by` | `string` | yes | Last editor user id (UUID). |
 | `version` | `integer` | yes | Optimistic-concurrency version (KAIROS-A-0004). |
 
+## DocumentCard
+
+A document in a search (KAIROS-T-0602). A document is on no board column, so only search gives document cards.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `archived_at` | `string`, nullable | no | When this work was put away, RFC 3339; absent while it is live (KAIROS-A-0020). |
+| `board_id` | `string` | yes | The owner board (UUID). |
+| `created_at` | `string` | yes | RFC 3339. |
+| `id` | `string` | yes | Entity id (UUID). |
+| `impacts` | array of [`Impact`](#impact) | no | The repositories that the document impacts (COLLIERY-T-0269). |
+| `lifecycle` | `string` | yes | Editorial lifecycle: `draft|review|published|archived`. |
+| `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-D-{NNNN}`). |
+| `snippet` | `string`, nullable | no | About 200 characters of the content, near the first match of `q`. |
+| `template_id` | `string`, nullable | no | Template the document was stamped from (UUID), if any. |
+| `title` | `string` | yes |  |
+| `updated_at` | `string` | yes | RFC 3339. |
+| `version` | `integer` | yes | Optimistic-concurrency version (KAIROS-A-0004). |
+
 ## EdgeProposalDto
 
 A proposed graph edge awaiting a human (KAIROS-A-0021 rule 6, KAIROS-T-0192).
@@ -1185,6 +1230,16 @@ Body of `POST /api/tasks/{short_code}/hand-off` (KAIROS-T-0359): the person who 
 
 The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
 
+## HandOffTarget
+
+A person who can get the claim of a task (KAIROS-T-0530). The person holds `transition_items` on the board of the task. `GET /api/tasks/{short_code}/hand-off-targets` gives a list of them.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `display_name` | `string` | yes |  |
+| `email` | `string` | yes |  |
+| `user_id` | `string` | yes | `public.users.id` (UUID). |
+
 ## HistoryVersion
 
 One row of `GET /api/{entity_type}/{short_code}/history`.
@@ -1258,6 +1313,30 @@ An initiative (Flight Level 2), as returned by `/api/initiatives`.
 | `title` | `string` | yes |  |
 | `updated_at` | `string` | yes | RFC 3339. |
 | `updated_by` | `string` | yes | Last editor user id (UUID). |
+| `version` | `integer` | yes | Optimistic-concurrency version (KAIROS-A-0004). |
+
+## InitiativeCard
+
+An initiative on a board or in a search (KAIROS-T-0602).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `archived_at` | `string`, nullable | no | When this work was put away, RFC 3339; absent while it is live (KAIROS-A-0020). |
+| `board_id` | `string` | yes | Board the initiative sits on (UUID). |
+| `bucket_type` | `string`, nullable | no | Bucket kind (`tech_debt|bug|ad_hoc`), set iff `is_bucket`. |
+| `column_id` | `string` | yes | Current column (UUID). |
+| `complexity` | `string`, nullable | no | T-shirt sizing (`xs|s|m|l|xl`). |
+| `content` | `string`, nullable | no | Markdown content. Only with `fields=full` on the board route. |
+| `created_at` | `string` | yes | RFC 3339. |
+| `created_by` | `string`, nullable | no | Creator user id (UUID). Only with `fields=full` on the board route. |
+| `id` | `string` | yes | Entity id (UUID). |
+| `is_bucket` | `boolean` | yes | Whether this initiative is a bucket. |
+| `owner` | [`ItemOwner`](#itemowner), nullable | no |  |
+| `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-I-{NNNN}`). |
+| `snippet` | `string`, nullable | no | About 200 characters of the content, near the first match of `q`. Only on a search hit. |
+| `title` | `string` | yes |  |
+| `updated_at` | `string` | yes | RFC 3339. |
+| `updated_by` | `string`, nullable | no | Last editor user id (UUID). Only with `fields=full` on the board route. |
 | `version` | `integer` | yes | Optimistic-concurrency version (KAIROS-A-0004). |
 
 ## IssueImport
@@ -1615,12 +1694,13 @@ The `user` object of [`LoginResponse`].
 
 ## MarkNotificationsReadRequest
 
-`POST /api/me/notifications/read` body: `ids`, or `all: true`. Not both.
+`POST /api/me/notifications/read` body: `ids`, or `all: true` with `up_to`. Not both.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `all` | `boolean`, nullable | no | `true`: each unread notification of the caller. |
+| `all` | `boolean`, nullable | no | `true`: each unread notification of the caller up to `up_to`. |
 | `ids` | `array`, nullable | no | The ids of notifications of the caller. |
+| `up_to` | `string`, nullable | no | With `all: true`, required: the id of the newest notification that the caller read. Kairos marks it and each older unread one, and no newer one (KAIROS-T-0550). |
 
 The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
 
@@ -1712,7 +1792,7 @@ One notification of the caller (KAIROS-T-0382).
 | `created_at` | `string` | yes | When Kairos made the notification (RFC 3339). |
 | `entity_type` | `string`, nullable | no | `strategy|initiative|task|document|adr`; `null` when the item is gone. |
 | `id` | `string` | yes | The id (UUID). `POST /api/me/notifications/read` takes it. |
-| `kind` | `string` | yes | `hand_off|blocker_cleared|cancelled|mention|p0_bug|delivery_failing|agent_key_revoked`. |
+| `kind` | `string` | yes | `hand_off|blocker_cleared|blocked_again|cancelled|blocker_cancelled|mention|p0_bug|delivery_failing|agent_key_revoked|claim_dropped|claim_stale`. |
 | `read_at` | `string`, nullable | no | When the person read it (RFC 3339); `null` while unread. |
 | `short_code` | `string`, nullable | no | The code of the item now; `null` when the item is gone. |
 | `text` | `string` | yes | What happened, in one sentence or two. |
@@ -1734,8 +1814,12 @@ One notification of the caller (KAIROS-T-0382).
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `agent_key_revoked` | `boolean` | yes | An organization admin revoked an agent key of yours (KAIROS-T-0388). |
-| `blocker_cleared` | `boolean` | yes | A blocker of a task that you have the claim on is done or archived. |
+| `blocked_again` | `boolean` | yes | A blocker of an item that you have the claim on (or own, or made) left a done column, so it blocks again (KAIROS-T-0568). |
+| `blocker_cancelled` | `boolean` | yes | A person cancelled a task that blocks an item that you have the claim on, own or made. The cancelled task still blocks (KAIROS-T-0567). |
+| `blocker_cleared` | `boolean` | yes | A blocker of an item that you have the claim on (or own) is done, archived or purged, or its `blocks` link is removed. |
 | `cancelled` | `boolean` | yes | A person cancelled a task that you created. |
+| `claim_dropped` | `boolean` | yes | A person left the organization, so their claim on a task of the board of your team ended. The task is free (KAIROS-T-0531). |
+| `claim_stale` | `boolean` | yes | A claim had no write and no state change for some days: your claim, or a claim on a task of an initiative that you own (KAIROS-T-0531). |
 | `delivery_failing` | `boolean` | yes | A webhook target that you own was turned off after failed deliveries (KAIROS-T-0384). |
 | `hand_off` | `boolean` | yes | A person handed off the claim of a task to you. |
 | `mention` | `boolean` | yes | A person wrote `@your_user_name` in a note or in the content of an item. |
@@ -1809,8 +1893,10 @@ A `(done, total)` children rollup (KAIROS-T-0080). `done` counts the children si
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `done` | `integer` | yes |  |
+| `cancelled` | `integer` | yes | Cancelled tasks among the children (KAIROS-T-0567). The default is for the client only: a response of an older server has no `cancelled`. |
+| `done` | `integer` | yes | Children in a done column, less the cancelled tasks (KAIROS-T-0567). |
 | `has_done` | `boolean` | yes | False when no board hosting the children has a done-flagged column — clients show composition only, never a done fraction. The server sends it in each response, so the schema shows it as required (COLLIERY-T-0254). The default is for the client only: a response of an older server has no `has_done`, and it reads as `false`. |
+| `open` | `integer` | yes | Children that are not done and not cancelled. |
 | `total` | `integer` | yes |  |
 
 ## PromoteNoteRequest
@@ -1914,6 +2000,7 @@ One hydrated neighbor of an item in the relationship graph.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `archived_at` | `string`, nullable | no | When this neighbour was archived, RFC 3339; absent while it is live. Relationship lists are archived-INCLUSIVE (KAIROS-T-0158): an item's edges describe what it contains and depends on, and dropping an archived endpoint silently shrinks that answer. The row therefore comes back with this marker, and every renderer must show it — ADR-20: anything serving an archived row says so, or an auditor mistakes it for live work. |
+| `cancelled` | `boolean` | no | `true` when the neighbour is a cancelled task (KAIROS-T-0567); absent otherwise. A cancelled task is in a done column, so `done` is `true` too. But a cancelled blocker is unresolved: it still blocks, and a client shows it as cancelled, not done. |
 | `done` | `boolean` | no | `true` when this neighbour sits in a terminal column (a column the board marks `is_done`); absent otherwise (COLLIERY-T-0214). Done work does not block and is not blocked, so a `blocks` edge to a done neighbour is history, not an open blocker: the board's `blocks_summary` does not count it. The edge still comes back here, because the list is the record, and every renderer of a `blocks` neighbour must show this marker. It follows the neighbour's current column; nothing is stored. |
 | `entity_type` | `string` | yes | `strategy|initiative|task|document|adr`. |
 | `id` | `string` | yes | The neighbor's entity id (UUID). |
@@ -1956,7 +2043,9 @@ A relationship edge, as returned by `POST /api/relationships`.
 | `id` | `string` | yes | Edge id (UUID). |
 | `relationship` | `string` | yes | `parent|supports|informs|supersedes|blocks`. |
 | `source_id` | `string` | yes | Source entity id (UUID). |
+| `source_short_code` | `string` | yes | The current short code of the source. A retired code in the request follows to its item (KAIROS-T-0560), so this code can differ from the request. |
 | `target_id` | `string` | yes | Target entity id (UUID). |
+| `target_short_code` | `string` | yes | The current short code of the target (see `source_short_code`). |
 
 ## RelationshipGroup
 
@@ -2199,15 +2288,15 @@ Response of `POST /api/search`: results grouped by entity type plus the paginati
 
 ## SearchResultGroups
 
-The `results` object: one fully-typed group per entity type, each group omitted entirely when empty. Group order follows the request's combined sort.
+The `results` object: one group of cards per entity type, each group omitted entirely when empty. Group order follows the request's combined sort. A hit is a card (KAIROS-T-0602): the title and a `snippet` of the content, not the content. The item route of the hit gives the content.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `adrs` | array of [`Adr`](#adr) | no | Matching ADRs. |
-| `documents` | array of [`Document`](#document) | no | Matching documents. |
-| `initiatives` | array of [`Initiative`](#initiative) | no | Matching initiatives. |
-| `strategies` | array of [`Strategy`](#strategy) | no | Matching strategies. |
-| `tasks` | array of [`Task`](#task) | no | Matching tasks. |
+| `adrs` | array of [`AdrCard`](#adrcard) | no | Matching ADRs. |
+| `documents` | array of [`DocumentCard`](#documentcard) | no | Matching documents. |
+| `initiatives` | array of [`InitiativeCard`](#initiativecard) | no | Matching initiatives. |
+| `strategies` | array of [`StrategyCard`](#strategycard) | no | Matching strategies. |
+| `tasks` | array of [`TaskCard`](#taskcard) | no | Matching tasks. |
 
 ## SearchSort
 
@@ -2456,6 +2545,28 @@ A strategy (Flight Level 3), as returned by `/api/strategies`.
 | `updated_by` | `string` | yes | Last editor user id (UUID). |
 | `version` | `integer` | yes | Optimistic-concurrency version (KAIROS-A-0004); submit it back on PATCH. |
 
+## StrategyCard
+
+A strategy on a board or in a search (KAIROS-T-0602).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `archived_at` | `string`, nullable | no | When this work was put away, RFC 3339; absent while it is live (KAIROS-A-0020). |
+| `board_id` | `string` | yes | Board the strategy sits on (UUID). |
+| `column_id` | `string` | yes | Current column (UUID). |
+| `content` | `string`, nullable | no | Markdown content. Only with `fields=full` on the board route. |
+| `created_at` | `string` | yes | RFC 3339. |
+| `created_by` | `string`, nullable | no | Creator user id (UUID). Only with `fields=full` on the board route. |
+| `hypothesis` | `string`, nullable | no |  |
+| `id` | `string` | yes | Entity id (UUID). |
+| `owner` | [`ItemOwner`](#itemowner), nullable | no |  |
+| `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-S-{NNNN}`). |
+| `snippet` | `string`, nullable | no | About 200 characters of the content, near the first match of `q`. Only on a search hit. |
+| `title` | `string` | yes |  |
+| `updated_at` | `string` | yes | RFC 3339. |
+| `updated_by` | `string`, nullable | no | Last editor user id (UUID). Only with `fields=full` on the board route. |
+| `version` | `integer` | yes | Optimistic-concurrency version (KAIROS-A-0004). |
+
 ## StructureGrant
 
 One grant of `manage_structure` (`GET /api/structure-grants` element). `scope` is `organization` or `board`. A grant on the organization covers teams, team members, boards and repositories. A grant on a board covers the configuration, the members and the grants of that board only.
@@ -2522,6 +2633,34 @@ The cancel mark of a task (KAIROS-T-0362). A cancel moves the task to the done c
 | `cancelled_by` | `string` | yes | The person or the service account that cancelled the task (UUID). |
 | `cancelled_by_name` | `string` | yes | The display name of `cancelled_by`. |
 | `reason` | `string` | yes | Why the task is cancelled. |
+
+## TaskCard
+
+A task on a board or in a search (KAIROS-T-0602).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `archived_at` | `string`, nullable | no | When this work was put away, RFC 3339; absent while it is live (KAIROS-A-0020). |
+| `board_id` | `string` | yes | Board the task sits on (UUID). |
+| `cancellation` | [`TaskCancellation`](#taskcancellation), nullable | no |  |
+| `claim` | [`TaskClaim`](#taskclaim), nullable | no |  |
+| `column_id` | `string` | yes | Current column (UUID). |
+| `content` | `string`, nullable | no | Markdown content. Only with `fields=full` on the board route. |
+| `created_at` | `string` | yes | RFC 3339. |
+| `created_by` | `string`, nullable | no | Creator user id (UUID). Only with `fields=full` on the board route. |
+| `id` | `string` | yes | Entity id (UUID). |
+| `repository` | [`RepositoryRef`](#repositoryref), nullable | no |  |
+| `repository_id` | `string`, nullable | no | The repository this task is issued against (UUID), if bound. |
+| `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-T-{NNNN}`). |
+| `snippet` | `string`, nullable | no | About 200 characters of the content, near the first match of `q`. Only on a search hit. |
+| `state` | [`TaskState`](#taskstate), nullable | no |  |
+| `task_type` | `string` | yes | `task|bug|tech_debt|support`. |
+| `team_id` | `string`, nullable | no | Owning team (UUID), if assigned. |
+| `title` | `string` | yes |  |
+| `updated_at` | `string` | yes | RFC 3339. |
+| `updated_by` | `string`, nullable | no | Last editor user id (UUID). Only with `fields=full` on the board route. |
+| `version` | `integer` | yes | Optimistic-concurrency version (KAIROS-A-0004). |
+| `work_class` | `string` | yes | Planned/Support lane (`planned|support`, KAIROS-T-0077). |
 
 ## TaskClaim
 
@@ -2845,8 +2984,12 @@ The server refuses a body with a field that is not in this table ([Errors](../..
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `agent_key_revoked` | `boolean`, nullable | no |  |
+| `blocked_again` | `boolean`, nullable | no |  |
+| `blocker_cancelled` | `boolean`, nullable | no |  |
 | `blocker_cleared` | `boolean`, nullable | no |  |
 | `cancelled` | `boolean`, nullable | no |  |
+| `claim_dropped` | `boolean`, nullable | no |  |
+| `claim_stale` | `boolean`, nullable | no |  |
 | `delivery_failing` | `boolean`, nullable | no |  |
 | `hand_off` | `boolean`, nullable | no |  |
 | `mention` | `boolean`, nullable | no |  |

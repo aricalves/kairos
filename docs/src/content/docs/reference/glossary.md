@@ -33,7 +33,7 @@ An entry has one of these actions:
 | `board_move` | A task moved to a different board. |
 | `claim` | A person moved a task to Active and got its [claim](#claim). |
 | `hand_off` | A person gave the claim of a task to a different person. |
-| `release` | The claim of a task ended. The details give the reason: a release, a move out of Active, an archive, a cancel, or a service account. |
+| `release` | The claim of a task ended. The details give the reason: a release, a move out of Active, an archive, a cancel, a service account, or a person who left (`left`). |
 | `cancel` | A person [cancelled](#cancel) a task. The details give the columns and the reason. |
 | `purge` | A person deleted a task for good (a [purge](#purge)). The details give the code and the title. |
 | `board_config` | A person changed the name, the slug, a column or a transition of a board. |
@@ -239,9 +239,19 @@ A column can also have the flag `keeps_claims`: the Blocked column has it
 An agent can move the task with the agent key of a person. Then the claim names
 the person, and the GUI shows "Alice (agent)". A service account gets no claim.
 
-The claim ends when the task leaves the columns that hold claims. It also ends at a hand-off, at a
-release, and at an archive. A different person can change the task. Kairos
-records the change and gives a warning. See
+A hand-off gives the claim to a person who holds `transition_items` on the
+board of the task (KAIROS-T-0530). A person who cannot move the task cannot
+finish it.
+
+The claim ends when the task leaves the columns that hold or keep claims. It
+also ends at a hand-off, at a release, and at an archive. It ends when its
+person leaves the organization (KAIROS-T-0531). Then the task stays in its
+column, free, and the team of the board gets a notification.
+
+A claim does not end by age. A claim with no write for some days is **stale**:
+Kairos tells the holder and the owner of the initiative. A different person can
+change the task. Kairos records the change
+and gives a warning. See
 [Teams and boards](../../explanation/teams-and-boards/#who-works-on-a-task-the-claim).
 
 ## column
@@ -591,6 +601,11 @@ when:
 
 - the item at either end is in a [done column](#done-column), or
 - the item at the other end is [put away](#put-away).
+
+A cancelled blocker is the exception (KAIROS-T-0567). A cancel means "won't
+do", not done. So a cancel does not resolve a blocker, and its edge still counts.
+A person decides: remove the edge, put the blocker away, or reopen it. The list
+marks a cancelled end `cancelled` in REST and `[cancelled]` in MCP.
 
 The edge stays in the relationship list of each item, as history. The list
 marks the end in a done column (`done` in REST, `[done]` in MCP). It marks the

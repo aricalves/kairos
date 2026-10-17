@@ -148,13 +148,18 @@ pub struct AppConfig {
     pub database_url: String,
     /// `KAIROS_POOL_SIZE` — the connections of each of the two pools of a
     /// server, the async one of the middleware and the blocking one of the
-    /// handlers and the jobs (default 16; KAIROS-T-0608). A server holds up
-    /// to twice this many connections, plus one for LISTEN.
+    /// handlers (default 16; KAIROS-T-0608). A server holds up to twice
+    /// this many connections, plus `KAIROS_JOB_POOL_SIZE` for the jobs and
+    /// one for LISTEN.
     pub pool_size: u32,
     /// `KAIROS_POOL_MIN_IDLE` — the connections the blocking pool opens at
     /// start and keeps idle (default 2), so the first requests after a
     /// start do not pay the connect. Capped at `KAIROS_POOL_SIZE`.
     pub pool_min_idle: u32,
+    /// `KAIROS_JOB_POOL_SIZE` — the connections of the blocking pool of the
+    /// job worker and the jobs (default 6; KAIROS-T-0614). A pool of its
+    /// own, so a burst of jobs leaves the handlers their connections.
+    pub job_pool_size: u32,
     /// `KAIROS_BIND_ADDR` — where axum listens (default `127.0.0.1:8080`).
     pub bind_addr: SocketAddr,
     /// `OIDC_ISSUER_URL` — the issuer; discovery + JWKS derive from it.
@@ -326,6 +331,12 @@ pub struct AppConfig {
     /// aim at a known account, and it turns one person's typo into a support
     /// request.
     pub auth_lockout_secs: u64,
+    /// `KAIROS_AUTH_CACHE_SECS` (KAIROS-T-0609): how long the auth cache
+    /// keeps a key, a session, a user, an org and a role, default **60**.
+    /// A write that makes an entry wrong drops it on the server that made
+    /// the write; another server keeps it for at most this time. `0`
+    /// turns the cache off.
+    pub auth_cache_secs: u64,
     /// `KAIROS_TRUSTED_PROXY` (KAIROS-T-0202): trust `X-Forwarded-For` for the
     /// client address, default **false**.
     ///
@@ -364,6 +375,13 @@ pub struct AppConfig {
     /// makes a key with no expiry. `0` turns the default off: a new key has
     /// no expiry unless the request names one.
     pub api_key_ttl_days: u32,
+    /// `KAIROS_STALE_CLAIM_DAYS` (KAIROS-T-0531): a claim on a task with no
+    /// write and no state change for this many days is stale, default
+    /// **14**. The periodic pass `stale-claims` tells the holder and the
+    /// owner of the initiative of the task, once for each quiet period. The
+    /// claim stays. `0` turns the pass off. The value applies to each
+    /// tenant of the deployment.
+    pub stale_claim_days: u32,
     /// `KAIROS_API_KEY_ROTATION_GRACE_SECS` (KAIROS-T-0370): after a
     /// rotation, the old secret of a key stays valid for this time, default
     /// **86400** (1 day), so that the agents can change to the new secret.
@@ -582,6 +600,7 @@ impl AppConfig {
         let auth_failure_window_secs =
             parse_num::<u64>(&get, "KAIROS_AUTH_FAILURE_WINDOW_SECS", 300)?;
         let auth_lockout_secs = parse_num::<u64>(&get, "KAIROS_AUTH_LOCKOUT_SECS", 60)?;
+        let auth_cache_secs = parse_num::<u64>(&get, "KAIROS_AUTH_CACHE_SECS", 60)?;
         let trusted_proxy = match get("KAIROS_TRUSTED_PROXY").as_deref() {
             None | Some("") | Some("false") | Some("0") => false,
             Some("true") | Some("1") => true,
@@ -684,6 +703,15 @@ impl AppConfig {
             });
         }
 
+        // KAIROS-T-0614: a pool of no connections would stop every job.
+        let job_pool_size: u32 = parse_num(&get, "KAIROS_JOB_POOL_SIZE", 6)?;
+        if job_pool_size == 0 {
+            return Err(ConfigError::Invalid {
+                var: "KAIROS_JOB_POOL_SIZE",
+                message: "must be at least 1".into(),
+            });
+        }
+
         let secrets_key = get(crate::secrets::SECRETS_KEY_VAR)
             .map(|raw| {
                 crate::secrets::SecretsKey::from_base64(&raw).map_err(|message| {
@@ -720,6 +748,7 @@ impl AppConfig {
             database_url,
             pool_size: parse_num(&get, "KAIROS_POOL_SIZE", 16)?,
             pool_min_idle: parse_num(&get, "KAIROS_POOL_MIN_IDLE", 2)?,
+            job_pool_size,
             bind_addr,
             oidc_issuer_url: oidc_issuer_url.map(|url| url.trim_end_matches('/').to_string()),
             oidc_audience,
@@ -762,10 +791,12 @@ impl AppConfig {
             auth_max_failures,
             auth_failure_window_secs,
             auth_lockout_secs,
+            auth_cache_secs,
             trusted_proxy,
             local_auth,
             session_ttl_secs,
             api_key_ttl_days: parse_num(&get, "KAIROS_API_KEY_TTL_DAYS", 90)?,
+            stale_claim_days: parse_num(&get, "KAIROS_STALE_CLAIM_DAYS", 14)?,
             api_key_rotation_grace_secs: parse_num(
                 &get,
                 "KAIROS_API_KEY_ROTATION_GRACE_SECS",
@@ -990,6 +1021,57 @@ mod tests {
         // the old secret for 1 day.
         assert_eq!(config.api_key_ttl_days, 90);
         assert_eq!(config.api_key_rotation_grace_secs, 24 * 60 * 60);
+        // KAIROS-T-0531: a claim is stale after 14 days with no write.
+        assert_eq!(config.stale_claim_days, 14);
+    }
+
+    #[test]
+    fn the_stale_claim_days_parse_and_0_turns_the_pass_off() {
+        for (value, days) in [("0", 0), ("30", 30)] {
+            let mut vars = MINIMAL.to_vec();
+            vars.push(("KAIROS_STALE_CLAIM_DAYS", value));
+            let config = AppConfig::from_lookup(lookup(&vars)).expect("valid config");
+            assert_eq!(config.stale_claim_days, days, "{value}");
+        }
+        let mut vars = MINIMAL.to_vec();
+        vars.push(("KAIROS_STALE_CLAIM_DAYS", "two weeks"));
+        let err = AppConfig::from_lookup(lookup(&vars)).unwrap_err();
+        assert!(err.to_string().contains("KAIROS_STALE_CLAIM_DAYS"), "{err}");
+    }
+
+    #[test]
+    fn the_pool_settings() {
+        // KAIROS-T-0608, KAIROS-T-0614: the defaults, and a job pool of its
+        // own size.
+        let config = AppConfig::from_lookup(lookup(MINIMAL)).expect("valid config");
+        assert_eq!(config.pool_size, 16);
+        assert_eq!(config.pool_min_idle, 2);
+        assert_eq!(config.job_pool_size, 6);
+
+        let mut vars = MINIMAL.to_vec();
+        vars.push(("KAIROS_JOB_POOL_SIZE", "3"));
+        let config = AppConfig::from_lookup(lookup(&vars)).expect("valid config");
+        assert_eq!(config.job_pool_size, 3);
+        assert_eq!(
+            config.pool_size, 16,
+            "the pool of the handlers is not changed"
+        );
+
+        let mut vars = MINIMAL.to_vec();
+        vars.push(("KAIROS_JOB_POOL_SIZE", "six"));
+        let err = AppConfig::from_lookup(lookup(&vars)).expect_err("not a number");
+        assert!(
+            err.to_string().contains("KAIROS_JOB_POOL_SIZE"),
+            "the error names the setting: {err}"
+        );
+
+        let mut vars = MINIMAL.to_vec();
+        vars.push(("KAIROS_JOB_POOL_SIZE", "0"));
+        let err = AppConfig::from_lookup(lookup(&vars)).expect_err("no connections");
+        assert!(
+            err.to_string().contains("KAIROS_JOB_POOL_SIZE"),
+            "the error names the setting: {err}"
+        );
     }
 
     #[test]
@@ -1389,6 +1471,9 @@ mod tests {
         assert!(ServerRole::All.runs_pass(sweep) && ServerRole::All.runs_pass(retention));
         assert!(!ServerRole::Api.runs_pass(sweep) && ServerRole::Api.runs_pass(retention));
         assert!(ServerRole::Worker.runs_pass(sweep) && !ServerRole::Worker.runs_pass(retention));
+        // KAIROS-T-0531: the report of the stale claims runs where the API runs.
+        let stale = crate::periodic::STALE_CLAIMS;
+        assert!(ServerRole::Api.runs_pass(stale) && !ServerRole::Worker.runs_pass(stale));
         assert!(ServerRole::Api.serves_api() && !ServerRole::Worker.serves_api());
     }
 

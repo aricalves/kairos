@@ -32,7 +32,7 @@ use kairos_client::types_repositories::{
 use crate::commands::entities::require_confirm;
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
-use crate::table::Table;
+use crate::table::{Table, print_page_footer};
 
 /// Operations on repositories.
 #[derive(clap::Subcommand, Debug)]
@@ -275,10 +275,14 @@ pub enum CredentialCommand {
         #[command(flatten)]
         common: Common,
     },
-    /// Remove the read token. The next fetch has no credential
+    /// Remove the read token (needs --confirm). The next fetch has no
+    /// credential
     Remove {
         /// Repository slug (or UUID)
         repository: String,
+        /// Required: without it, the command deletes nothing
+        #[arg(long)]
+        confirm: bool,
         #[command(flatten)]
         common: Common,
     },
@@ -313,7 +317,15 @@ impl CredentialCommand {
                 );
                 Ok(())
             }
-            Self::Remove { repository, common } => {
+            Self::Remove {
+                repository,
+                confirm,
+                common,
+            } => {
+                require_confirm(
+                    confirm,
+                    &format!("the read token of the repository {repository}"),
+                )?;
                 let client = client(&common)?;
                 let status = client.remove_repository_credential(&repository).await?;
                 if common.json {
@@ -355,10 +367,14 @@ pub enum WriteTokenCommand {
         #[command(flatten)]
         common: Common,
     },
-    /// Remove the write token. Kairos writes nothing more to GitHub
+    /// Remove the write token (needs --confirm). Kairos writes nothing more
+    /// to GitHub
     Remove {
         /// Repository slug (or UUID)
         repository: String,
+        /// Required: without it, the command deletes nothing
+        #[arg(long)]
+        confirm: bool,
         #[command(flatten)]
         common: Common,
     },
@@ -392,7 +408,15 @@ impl WriteTokenCommand {
                 );
                 Ok(())
             }
-            Self::Remove { repository, common } => {
+            Self::Remove {
+                repository,
+                confirm,
+                common,
+            } => {
+                require_confirm(
+                    confirm,
+                    &format!("the write token of the repository {repository}"),
+                )?;
                 let client = client(&common)?;
                 let status = client.remove_repository_write_token(&repository).await?;
                 if common.json {
@@ -554,9 +578,11 @@ impl ReposCommand {
                 } else {
                     print!("{}", repo_table(&envelope.items).render());
                 }
-                println!(
-                    "total: {} (limit {}, offset {})",
-                    envelope.total, envelope.limit, envelope.offset
+                print_page_footer(
+                    envelope.total,
+                    envelope.limit,
+                    envelope.offset,
+                    envelope.items.len(),
                 );
                 Ok(())
             }

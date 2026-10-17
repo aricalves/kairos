@@ -3,7 +3,7 @@
 //! (KAIROS-I-0012), `restore_item` (KAIROS-A-0020), `related_work`
 //! (KAIROS-T-0191), `propose_edge` (KAIROS-T-0192), `set_repository`
 //! (COLLIERY-T-0220), and `add_repository` and `update_repository`
-//! (COLLIERY-T-0266); later tasks added more (67 in all, in the profiles
+//! (COLLIERY-T-0266); later tasks added more (70 in all, in the profiles
 //! of `profiles.rs`, KAIROS-T-0454) — each a
 //! thin wrapper over the same `kairos-core`/`kairos-db` services the REST
 //! handlers call — through [`crate::blocking::BlockingTenantPool`], never
@@ -521,11 +521,16 @@ pub struct EditItemParams {
     pub replace_all: bool,
 }
 
-/// `get_events` has no arguments (KAIROS-T-0382).
+/// Parameters for `get_events` (KAIROS-T-0382, KAIROS-T-0550).
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
-pub struct GetEventsParams {}
+pub struct GetEventsParams {
+    /// The next page: the id of the oldest unread notification of the last
+    /// page. The page has the unread ones older than it, and no read ones.
+    #[serde(default)]
+    pub before: Option<String>,
+}
 
 /// `my_work` has no arguments (KAIROS-T-0489).
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -533,15 +538,20 @@ pub struct GetEventsParams {}
 #[serde(deny_unknown_fields)]
 pub struct MyWorkParams {}
 
-/// Parameters for `mark_events_read` (KAIROS-T-0382): `ids`, or `all: true`.
+/// Parameters for `mark_events_read` (KAIROS-T-0382): `ids`, or `all: true`
+/// with `up_to` (KAIROS-T-0550).
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 pub struct MarkEventsReadParams {
     /// The ids of your notifications, as `get_events` gives them.
     pub ids: Option<Vec<String>>,
-    /// `true`: each of your unread notifications.
+    /// `true`: each of your unread notifications up to `up_to`.
     pub all: Option<bool>,
+    /// With `all: true`, required: the id of the newest notification that
+    /// you read (`get_events` gives it first). Kairos marks it and each
+    /// older unread one, and no newer one.
+    pub up_to: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -709,8 +719,8 @@ pub struct AddRepositoryParams {
     pub description: Option<String>,
 }
 
-/// Parameters for `update_repository` (COLLIERY-T-0266). There is no `slug`
-/// and no `team`: see the description of the tool.
+/// Parameters for `update_repository` (COLLIERY-T-0266). KAIROS-T-0443 added
+/// `slug` and `team`: see the description of the tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
@@ -809,7 +819,8 @@ pub struct HandOffItemParams {
     /// The person who gets the claim (a task) or who becomes the owner (a
     /// strategy or an initiative): a user id, an email or a user name of a
     /// person of the organization, or `me`. A new owner must be a member
-    /// of the board of the item.
+    /// of the board of the item. A new claim holder must hold
+    /// `transition_items` on the board of the task.
     pub to: String,
 }
 
@@ -1275,7 +1286,7 @@ pub struct SaveTemplateParams {
 }
 
 // ---------------------------------------------------------------------------
-// The tools (67; the list of each profile is asserted in tests/mcp.rs)
+// The tools (70; the list of each profile is asserted in tests/mcp.rs)
 // ---------------------------------------------------------------------------
 
 #[tool_router(vis = "pub(super)")]
@@ -1523,7 +1534,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "One repository: owner team and its delivery board, open task count, default branch and where it comes from, the team's `description` of how to work in it (read it before working in an unfamiliar repository), the documents and ADRs that impact it (read them with `get_item` before planning), its open branches and pull requests with their items and those not linked to an item, the forge filters, and the lines read token, write-back, code index build and code index breaker (a tripped breaker stops builds until `rebuild_code_index` (admin profile)). `repository` is a slug or UUID; `include_deleted: true` adds archived documents and ADRs."
+        description = "One repository: owner team and its delivery board, open task count, default branch and where it comes from, the team's `description` of how to work in it (read it before working in an unfamiliar repository), the documents and ADRs that impact it, the other ADRs of the owner team (newest first, 50 at most, none superseded; read each with `get_item` before planning), its open branches and pull requests with their items and those not linked to an item, the forge filters, and the lines read token, write-back, code index build and code index breaker (a tripped breaker stops builds until `rebuild_code_index` (admin profile)). `repository` is a slug or UUID; `include_deleted: true` adds archived documents and ADRs."
     )]
     pub async fn get_repository(
         &self,
@@ -1535,13 +1546,17 @@ impl KairosMcp {
             let repo = repositories::resolve(conn, &params.repository)
                 .map_err(crate::api::org::repositories::map_error)?;
             let repo_id = repo.id;
+            let team_id = repo.team_id;
             let rendered = crate::api::org::repositories::render(conn, vec![repo])?.remove(0);
             // COLLIERY-T-0269: the same read as `GET /api/repositories/{slug}`.
-            let impacted_by = crate::api::org::repositories::impacted_by(
-                conn,
-                repo_id,
-                params.include_deleted.unwrap_or(false),
-            )?;
+            let include_deleted = params.include_deleted.unwrap_or(false);
+            let impacted_by =
+                crate::api::org::repositories::impacted_by(conn, repo_id, include_deleted)?;
+            // KAIROS-T-0599: the ADRs of the owner team that no `impacts`
+            // link names. Most ADRs have no link, and the grounding rule
+            // reads this tool, so it must find them here.
+            let (team_adrs, team_adrs_total) =
+                crate::api::org::repositories::owner_team_adrs(conn, team_id, include_deleted)?;
             // Slugs everywhere (KAIROS-T-0123): the delivery board is what
             // the skills pass to `board_items`, so print it the way they
             // will use it. It is the board of the OWNER, and the line says
@@ -1615,25 +1630,24 @@ impl KairosMcp {
             if impacted_by.is_empty() {
                 out.push_str("(none)\n");
             }
-            for item in impacted_by {
-                let kind = match (item.entity_type.as_str(), item.document_type) {
-                    ("document", Some(document_type)) => format!("document ({document_type})"),
-                    (entity_type, _) => entity_type.to_string(),
-                };
-                let state = match (item.lifecycle, item.column) {
-                    (Some(lifecycle), _) => format!(" · lifecycle: {lifecycle}"),
-                    (None, Some(column)) => format!(" · column: {column}"),
-                    (None, None) => String::new(),
-                };
+            for item in &impacted_by {
+                out.push_str(&impacting_item_line(item));
+            }
+            out.push_str(&format!(
+                "\n## ADRs of the owner team\nThe ADRs on the boards of the team {} that no `impacts` link names, newest first. A superseded ADR is not listed.\n",
+                rendered.team.slug
+            ));
+            if team_adrs.is_empty() {
+                out.push_str("(none)\n");
+            }
+            for item in &team_adrs {
+                out.push_str(&impacting_item_line(item));
+            }
+            let not_listed = team_adrs_total - team_adrs.len() as i64;
+            if not_listed > 0 {
                 out.push_str(&format!(
-                    "- {} — {} · {kind}{state}{}\n",
-                    item.short_code,
-                    item.title,
-                    if item.archived_at.is_some() {
-                        " [archived]"
-                    } else {
-                        ""
-                    }
+                    "- {not_listed} more: `team_pages {}` lists each ADR of the team.\n",
+                    rendered.team.slug
                 ));
             }
             out.push_str("\n## In flight\n");
@@ -2459,7 +2473,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "One item by short code: type, board and column, version, markdown content, metadata, relationships (parent chain, children, blockers and blocked, supporting documents; a done end is marked [done]), and as it applies: the claim of a task in Active, the owner and teams of a strategy or initiative, the owner board and impacted repositories of a document or ADR, the cancel mark of a task, the external references (URIs with a label) of any item. A retired code finds the item and names the current code."
+        description = "One item by short code: type, board and column, version, markdown content, metadata, relationships (parent chain, children, blockers and blocked, supporting documents; a done end is marked [done], a cancelled one [cancelled]), and as it applies: the claim of a task in Active, the owner and teams of a strategy or initiative, the owner board and impacted repositories of a document or ADR, the cancel mark of a task, the external references (URIs with a label) of any item. A retired code finds the item and names the current code."
     )]
     pub async fn get_item(
         &self,
@@ -3063,41 +3077,29 @@ impl KairosMcp {
         .await
     }
 
-    // KAIROS-T-0382: the notifications of the person of the key.
+    // KAIROS-T-0382: the notifications of the person of the key. The read
+    // state is of the caller (KAIROS-T-0550): the agent key, or the person.
     #[tool(
-        description = "Your notifications: a claim handed to you, a blocker of your claimed task closed, a task you created cancelled, a mention (`@name`), a P0 bug on your team's board. Unread first (newest first, 100 at most), then the 20 newest read ones, each with its id. While some are unread, each other tool's answer ends with the 5 newest. Mark them read with `mark_events_read`."
+        description = "Your notifications: a claim handed to you, a blocker of your claimed task closed, a task you created cancelled, a mention (`@name`), a P0 bug on your team's board. Unread first (newest first, 100 at most), then the 20 newest read ones, each with its id. `before` (an id) gives the next page of unread ones. An agent key keeps its own read state: a read by the key does not clear the person's bell. While some are unread, each other tool's answer ends with the 5 newest. Mark them read with `mark_events_read`."
     )]
     pub async fn get_events(
         &self,
-        Parameters(GetEventsParams {}): Parameters<GetEventsParams>,
+        Parameters(params): Parameters<GetEventsParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let (auth, tenant) = Self::caller(&context)?;
-        let user = auth.user_id;
+        let (user, key) = (auth.user_id, auth.agent_key);
         self.run_tool(&tenant, move |conn| {
-            let (items, unread) = crate::api::notifications::list_for(conn, user)?;
-            if items.is_empty() {
-                return Ok("# Your notifications\n(none)\n".to_string());
-            }
-            let mut out = format!("# Your notifications ({unread} unread)\n");
-            let mut read_heading = false;
-            for n in &items {
-                if n.read_at.is_some() && !read_heading {
-                    out.push_str("\n## Read\n");
-                    read_heading = true;
-                }
-                out.push_str(&notification_line(n));
-            }
-            if unread > 0 {
-                out.push_str("\nMark them read with mark_events_read (`ids`, or `all: true`).\n");
-            }
-            Ok(out)
+            let reader = crate::api::notifications::reader_for(conn, user, key)?;
+            let before = params.before.as_deref();
+            let (items, unread) = crate::api::notifications::list_for(conn, &reader, before)?;
+            Ok(events_text(&items, unread, before.is_some()))
         })
         .await
     }
 
     #[tool(
-        description = "Mark your notifications read: `ids` (the ids that `get_events` gives) or `all: true`, not both. A read notification no longer comes at the end of each answer. An id that is not one of your notifications is refused and named, and nothing changes."
+        description = "Mark your notifications read: `ids` (the ids that `get_events` gives), or `all: true` with `up_to` (the id of the newest notification that you read). `all` marks that one and each older unread one, and no newer one; `all` without `up_to` is refused. A read with an agent key is the key's: the person's bell keeps its own state. A read notification no longer comes at the end of each answer. An id that is not one of your notifications is refused and named, and nothing changes."
     )]
     pub async fn mark_events_read(
         &self,
@@ -3105,10 +3107,16 @@ impl KairosMcp {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let (auth, tenant) = Self::caller(&context)?;
-        let user = auth.user_id;
+        let (user, key) = (auth.user_id, auth.agent_key);
         self.run_tool(&tenant, move |conn| {
-            let (changed, unread) =
-                crate::api::notifications::mark_for(conn, user, params.ids, params.all)?;
+            let reader = crate::api::notifications::reader_for(conn, user, key)?;
+            let (changed, unread) = crate::api::notifications::mark_for(
+                conn,
+                &reader,
+                params.ids,
+                params.all,
+                params.up_to,
+            )?;
             Ok(format!(
                 "Marked {} notification(s) read. You have {unread} unread.",
                 changed.len()
@@ -3531,10 +3539,10 @@ impl KairosMcp {
         .await
     }
 
-    // COLLIERY-T-0266. The tool has no `slug` and no `team`, and the REST
-    // route has the two. A checkout keeps the slug in
+    // COLLIERY-T-0266. KAIROS-T-0443 added `slug` and `team`, as the REST
+    // route has them. A checkout keeps the slug in
     // `.claude/kairos.local.md`, so a new slug breaks each checkout. A new
-    // owner team is a decision of the two teams. A person does these.
+    // owner team needs the right on the two teams.
     //
     // The gate and the write are those of `PATCH /api/repositories/{slug}`
     // (`crate::api::org::repositories::change`). That function compares the
@@ -3801,7 +3809,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Take a free TASK in Active (no claim): the claim names you, so the board shows who works it. Or become the owner of a STRATEGY or INITIATIVE that has none: the one person who answers for it. A task: you need `transition_items` on its board or the right to edit the task; a task that a different person holds is refused with CLAIMED and the holder's name (ask for `hand_off_item`). A strategy or initiative: you must be a person and a member of its board (a grant), or an org admin; an item with an owner is refused with the owner's name. The owner gives no extra right. Moving a task to Active gives you the claim too."
+        description = "Take a free TASK in Active (no claim): the claim names you, so the board shows who works it. Or become the owner of a STRATEGY or INITIATIVE that has none: the one person who answers for it. A task: you need `transition_items` on its board; a task that a different person holds is refused with CLAIMED and the holder's name (ask for `hand_off_item`). A strategy or initiative: you must be a person and a member of its board (a grant), or an org admin; an item with an owner is refused with the owner's name. The owner gives no extra right. Moving a task to Active gives you the claim too."
     )]
     pub async fn claim_item(
         &self,
@@ -3830,7 +3838,7 @@ impl KairosMcp {
             // KAIROS-T-0528: a task in Active with no claim.
             let item = task_for_claim(item)?;
             let board_id = item.board_id.unwrap_or_default();
-            crate::claims::require_claim_take(conn, &slug, item.id, board_id, user)?;
+            crate::claims::require_claim_take(conn, &slug, board_id, user)?;
             kairos_db::task_claims::claim(conn, item.id, user)
                 .map_err(crate::claims::map_claim_error)?;
             Ok(format!(
@@ -3843,7 +3851,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Give the claim of a TASK in Active, or the owner of a STRATEGY or INITIATIVE, to another person (`to`: user id, email, user name or `me`; not a service account). A task stays in Active; you can hand off your own claim, or any claim with `transition_items` on its board. A strategy or initiative: the owner hands it off, or an org admin sets it; the new owner must be a member of its board (else NOT_BOARD_MEMBER). The person gets a notification."
+        description = "Give the claim of a TASK in Active, or the owner of a STRATEGY or INITIATIVE, to another person (`to`: user id, email, user name or `me`; not a service account). A task stays in Active; you can hand off your own claim, or any claim with `transition_items` on its board; the person must hold `transition_items` on that board too (team, grant or org admin), else VALIDATION names the board. A strategy or initiative: the owner hands it off, or an org admin sets it; the new owner must be a member of its board (else NOT_BOARD_MEMBER). The person gets a notification."
     )]
     pub async fn hand_off_item(
         &self,
@@ -3874,6 +3882,14 @@ impl KairosMcp {
             let board_id = item.board_id.unwrap_or_default();
             crate::claims::require_claim_change(conn, &slug, item.id, board_id, user)?;
             let to = crate::claims::resolve_person(conn, &slug, &params.to, user)?;
+            crate::claims::require_claim_target(
+                conn,
+                &slug,
+                board_id,
+                to,
+                &params.to,
+                &item.short_code,
+            )?;
             kairos_db::task_claims::hand_off(conn, item.id, to, user)
                 .map_err(crate::claims::map_claim_error)?;
             Ok(format!(
@@ -3953,14 +3969,15 @@ impl KairosMcp {
                     conn,
                     &tenant_ctx.slug,
                     user,
-                    source,
+                    source.typed(),
                     &params.target,
                     params.label.as_deref(),
                 )?;
                 return Ok(format!(
-                    "Linked {} -[external]-> {}.",
-                    params.source,
-                    external_ref_text(&made)
+                    "Linked {} -[external]-> {}.{}",
+                    source.code,
+                    external_ref_text(&made),
+                    renamed_lines(&[&source])
                 ));
             }
             if params.label.is_some() {
@@ -3976,31 +3993,35 @@ impl KairosMcp {
                     conn,
                     &tenant_ctx.slug,
                     user,
-                    source,
+                    source.typed(),
                     &params.target,
                     crate::api::meta::impacts::Surface::Mcp,
                 )?;
                 return Ok(format!(
-                    "Linked {} -[impacts]-> repository {}.",
-                    params.source, linked.slug
+                    "Linked {} -[impacts]-> repository {}.{}",
+                    source.code,
+                    linked.slug,
+                    renamed_lines(&[&source])
                 ));
             }
             let relationship = parse_relationship(&params.relationship)?;
-            let (source_id, source_type) = require_live_typed(conn, &params.source, "source")?;
-            let (target_id, target_type) = require_live_typed(conn, &params.target, "target")?;
+            let source = require_live_typed(conn, &params.source, "source")?;
+            let target = require_live_typed(conn, &params.target, "target")?;
             require_edge_write(
                 conn,
                 &tenant_ctx.slug,
                 user,
                 relationship.as_str(),
-                (source_id, source_type),
-                (target_id, target_type),
+                source.typed(),
+                target.typed(),
             )?;
-            graph::link_items(conn, source_id, target_id, relationship, user)
+            graph::link_items(conn, source.id, target.id, relationship, user)
                 .map_err(map_link_error)?;
             Ok(format!(
-                "Linked {} -[{relationship}]-> {}.",
-                params.source, params.target
+                "Linked {} -[{relationship}]-> {}.{}",
+                source.code,
+                target.code,
+                renamed_lines(&[&source, &target])
             ))
         })
         .await
@@ -4025,13 +4046,14 @@ impl KairosMcp {
                     conn,
                     &tenant_ctx.slug,
                     user,
-                    source,
+                    source.typed(),
                     &params.target,
                 )?;
                 return Ok(format!(
-                    "Unlinked {} -[external]-> {}.",
-                    params.source,
-                    external_ref_text(&removed)
+                    "Unlinked {} -[external]-> {}.{}",
+                    source.code,
+                    external_ref_text(&removed),
+                    renamed_lines(&[&source])
                 ));
             }
             // COLLIERY-T-0269: the target of `impacts` is a repository.
@@ -4041,18 +4063,20 @@ impl KairosMcp {
                     conn,
                     &tenant_ctx.slug,
                     user,
-                    source,
+                    source.typed(),
                     &params.target,
                     crate::api::meta::impacts::Surface::Mcp,
                 )?;
                 return Ok(format!(
-                    "Unlinked {} -[impacts]-> repository {}.",
-                    params.source, removed.slug
+                    "Unlinked {} -[impacts]-> repository {}.{}",
+                    source.code,
+                    removed.slug,
+                    renamed_lines(&[&source])
                 ));
             }
             let relationship = parse_relationship(&params.relationship)?;
-            let (source_id, source_type) = require_live_typed(conn, &params.source, "source")?;
-            let (target_id, target_type) = require_live_typed(conn, &params.target, "target")?;
+            let source = require_live_typed(conn, &params.source, "source")?;
+            let target = require_live_typed(conn, &params.target, "target")?;
             // COLLIERY-T-0235: the rule of the remove and the delete, in
             // one transaction, by the ONE function that REST
             // `DELETE /api/relationships/{id}` calls.
@@ -4061,12 +4085,14 @@ impl KairosMcp {
                 &tenant_ctx.slug,
                 user,
                 relationship,
-                (source_id, source_type),
-                (target_id, target_type),
+                source.typed(),
+                target.typed(),
             )?;
             Ok(format!(
-                "Unlinked {} -[{relationship}]-> {}.",
-                params.source, params.target
+                "Unlinked {} -[{relationship}]-> {}.{}",
+                source.code,
+                target.code,
+                renamed_lines(&[&source, &target])
             ))
         })
         .await
@@ -5538,6 +5564,14 @@ fn load_item(
         Some(found) => found,
         None => match crate::api::follow_retired(conn, short_code, liveness)? {
             Some(current) => resolve_short_code(conn, &current, liveness)?.ok_or_else(missing)?,
+            // KAIROS-T-0560: a write to an archived item says so.
+            None if liveness == Liveness::LiveOnly
+                && resolve_short_code(conn, short_code, Liveness::IncludeArchived)?.is_some() =>
+            {
+                return Err(crate::api::archived_write_refused(
+                    &short_code.to_ascii_uppercase(),
+                ));
+            }
             None => return Err(missing()),
         },
     };
@@ -6514,6 +6548,31 @@ fn owner_board_line(conn: &mut PgConnection, item: &ItemView) -> Result<String, 
     })
 }
 
+/// One line of a document or an ADR in a section of `get_repository`
+/// (COLLIERY-T-0269, KAIROS-T-0599): the short code, the title, the kind,
+/// the lifecycle or the column, and `[archived]`.
+fn impacting_item_line(item: &kairos_client::types_repositories::ImpactingItem) -> String {
+    let kind = match (item.entity_type.as_str(), item.document_type.as_deref()) {
+        ("document", Some(document_type)) => format!("document ({document_type})"),
+        (entity_type, _) => entity_type.to_string(),
+    };
+    let state = match (item.lifecycle.as_deref(), item.column.as_deref()) {
+        (Some(lifecycle), _) => format!(" · lifecycle: {lifecycle}"),
+        (None, Some(column)) => format!(" · column: {column}"),
+        (None, None) => String::new(),
+    };
+    format!(
+        "- {} — {} · {kind}{state}{}\n",
+        item.short_code,
+        item.title,
+        if item.archived_at.is_some() {
+            " [archived]"
+        } else {
+            ""
+        }
+    )
+}
+
 /// The line `- impacts: ...` of a document or of an ADR for `get_item`
 /// (COLLIERY-T-0269), or an empty string. A link to an archived
 /// repository is in the line, marked.
@@ -6727,17 +6786,24 @@ fn rename_lines(rename: &kairos_db::code_rename::CodeRename) -> String {
 }
 
 /// A live item by short code WITH its type (the edge-permission check needs
-/// it); 422 `VALIDATION` naming the field otherwise, mirroring REST.
+/// it); 422 `VALIDATION` naming the field otherwise, mirroring REST. A
+/// retired code follows to its item (KAIROS-T-0560): see
+/// [`crate::api::resolve_live_ref`].
 fn require_live_typed(
     conn: &mut PgConnection,
     short_code: &str,
     field: &str,
-) -> Result<(Uuid, ItemType), ApiError> {
-    resolve_short_code(conn, short_code, Liveness::LiveOnly)?.ok_or_else(|| {
-        ApiError::validation(format!(
-            "The {field} {short_code:?} is not the short code of a live item."
-        ))
-    })
+) -> Result<crate::api::LiveRef, ApiError> {
+    crate::api::resolve_live_ref(conn, short_code, field)
+}
+
+/// One line for each reference that came in with a retired code, e.g.
+/// `\nACME-T-0100 is now ACME-T-0200.` (KAIROS-T-0560). Empty otherwise.
+fn renamed_lines(refs: &[&crate::api::LiveRef]) -> String {
+    refs.iter()
+        .filter_map(|r| r.renamed())
+        .map(|line| format!("\n{line}"))
+        .collect()
 }
 
 /// An item's metadata values as compact `- slug: value` lines (ordered by
@@ -6840,9 +6906,15 @@ fn relationship_lines(
         |label: &'static str, entry: String| groups.entry(label).or_default().push(entry);
 
     /// One neighbour line, tagged when the neighbour is archived, and,
-    /// on a `blocks` edge, when the neighbour is done.
+    /// on a `blocks` edge, when the neighbour is done or cancelled.
+    /// KAIROS-T-0567: a cancelled blocker is unresolved, so it is
+    /// `[cancelled]`, never `[done]`.
     fn line(neighbor: &kairos_db::graph::Neighbor) -> String {
-        let done = if neighbor.relationship == RelationshipType::Blocks && neighbor.done {
+        let done = if neighbor.relationship != RelationshipType::Blocks {
+            ""
+        } else if neighbor.cancelled {
+            " [cancelled]"
+        } else if neighbor.done {
             " [done]"
         } else {
             ""
@@ -7208,6 +7280,9 @@ fn create_item_impl(
             out.push_str(&format!(", supports {parent_code}"));
         }
         out.push('.');
+        if let Some(renamed) = &created.parent_renamed {
+            out.push_str(&format!("\n{renamed}"));
+        }
         return Ok(out);
     }
 
@@ -7319,12 +7394,8 @@ fn create_item_impl(
         .parent
         .as_deref()
         .map(|parent_code| {
-            let (parent_id, parent_type) =
-                resolve_short_code(conn, parent_code, Liveness::LiveOnly)?.ok_or_else(|| {
-                    ApiError::validation(format!(
-                        "The parent {parent_code:?} is not the short code of a live item."
-                    ))
-                })?;
+            let parent = require_live_typed(conn, parent_code, "parent")?;
+            let parent_type = parent.item_type;
             let relationship = if item_type == ItemType::Adr {
                 RelationshipType::Supports
             } else {
@@ -7336,7 +7407,7 @@ fn create_item_impl(
                 item_type,
             )
             .map_err(|e| ApiError::validation(e.to_string()))?;
-            Ok::<_, ApiError>((parent_code, parent_id, parent_type, relationship))
+            Ok::<_, ApiError>((parent, relationship))
         })
         .transpose()?;
 
@@ -7448,7 +7519,7 @@ fn create_item_impl(
     if let Some(lane) = lane {
         out.push_str(&format!(" Lane: {lane}."));
     }
-    if let Some((parent_code, parent_id, parent_type, relationship)) = parent {
+    if let Some((parent, relationship)) = parent {
         // The link rule (COLLIERY-T-0228), by the ONE function that
         // `link_items` calls. The item and the edge are in one transaction
         // (COLLIERY-T-0227), so a refusal here leaves no item.
@@ -7457,13 +7528,15 @@ fn create_item_impl(
             slug,
             user,
             relationship.as_str(),
-            (parent_id, parent_type),
+            parent.typed(),
             (created_id, item_type),
         )?;
-        graph::link_items(conn, parent_id, created_id, relationship, user)
+        graph::link_items(conn, parent.id, created_id, relationship, user)
             .map_err(map_graph_error)?;
         out.push_str(&format!(
-            "\nparent: {parent_code} ({relationship} edge created)."
+            "\nparent: {} ({relationship} edge created).{}",
+            parent.code,
+            renamed_lines(&[&parent])
         ));
     }
     Ok(out)
@@ -7860,15 +7933,63 @@ fn ride_along_line(n: &kairos_db::notifications::Notification) -> String {
     )
 }
 
+/// The text of `get_events`: the unread lines, then the read ones, then
+/// what to send next. The newest unread id is the `up_to` of
+/// `mark_events_read`; the oldest unread one is the `before` of the next
+/// page when there are more. `page` is true for a page after the first.
+fn events_text(
+    items: &[kairos_db::notifications::Notification],
+    unread: i64,
+    page: bool,
+) -> String {
+    let unread_items: Vec<_> = items.iter().filter(|n| n.read_at.is_none()).collect();
+    if items.is_empty() {
+        return if page {
+            format!("# Your notifications ({unread} unread)\nNo older unread ones.\n")
+        } else {
+            "# Your notifications\n(none)\n".to_string()
+        };
+    }
+    let mut out = format!("# Your notifications ({unread} unread)\n");
+    let mut read_heading = false;
+    for n in items {
+        if n.read_at.is_some() && !read_heading {
+            out.push_str("\n## Read\n");
+            read_heading = true;
+        }
+        out.push_str(&notification_line(n));
+    }
+    if unread_items.len() as i64 == crate::api::notifications::LIST_UNREAD
+        && let Some(oldest) = unread_items.last()
+    {
+        out.push_str(&format!(
+            "\nMore unread ones: call get_events with `before`: \"{}\".\n",
+            oldest.id
+        ));
+    }
+    if !page && let Some(newest) = unread_items.first() {
+        out.push_str(&format!(
+            "\nMark them read with mark_events_read: `ids`, or `all: true` with `up_to`: \"{}\".\n",
+            newest.id
+        ));
+    }
+    out
+}
+
 /// How many unread notifications come at the end of an answer.
 pub(super) const RIDE_ALONG: i64 = 5;
 
 /// The block at the end of an answer to a person with unread notifications
 /// (KAIROS-T-0382): the [`RIDE_ALONG`] newest, then "N more". `None` when
 /// the person has none (a service account never has one). One query.
-pub(super) fn ride_along(conn: &mut PgConnection, user: Uuid) -> Result<Option<String>, ApiError> {
+pub(super) fn ride_along(
+    conn: &mut PgConnection,
+    user: Uuid,
+    agent_key: Option<Uuid>,
+) -> Result<Option<String>, ApiError> {
+    let reader = crate::api::notifications::reader_for(conn, user, agent_key)?;
     let unread =
-        kairos_db::notifications::unread(conn, user, RIDE_ALONG).map_err(ApiError::internal)?;
+        kairos_db::notifications::unread(conn, &reader, RIDE_ALONG).map_err(ApiError::internal)?;
     if unread.total == 0 {
         return Ok(None);
     }

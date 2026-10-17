@@ -347,7 +347,7 @@ async fn notifications_ride_along_until_read() {
     let err = bob
         .mark_notifications_read(&MarkNotificationsReadRequest {
             ids: Some(vec![mcp_ids[0].clone()]),
-            all: None,
+            ..Default::default()
         })
         .await
         .expect_err("not bob's");
@@ -386,17 +386,34 @@ async fn notifications_ride_along_until_read() {
         .call("mark_events_read", json!({"all": true, "everything": 1}))
         .await;
     assert!(error, "an unknown argument: {text}");
-    assert_eq!(alice.notifications().await.expect("list").unread, 5);
+    // KAIROS-T-0550: the agent key read 2; the person still has 7 unread.
+    assert_eq!(alice.notifications().await.expect("list").unread, 7);
 
-    // REST: all.
+    // REST: all, up to the newest. The person's read is the person's.
     let marked = alice
         .mark_notifications_read(&MarkNotificationsReadRequest {
-            ids: None,
             all: Some(true),
+            up_to: Some(mcp_ids[0].clone()),
+            ..Default::default()
         })
         .await
         .expect("all read");
-    assert_eq!((marked.marked.len(), marked.unread), (5, 0));
+    assert_eq!((marked.marked.len(), marked.unread), (7, 0));
+    let text = agent.call_ok("whoami", json!({})).await;
+    assert!(
+        text.contains("## Your notifications (5 unread)"),
+        "the key keeps its own state: {text}"
+    );
+    let text = agent
+        .call_ok(
+            "mark_events_read",
+            json!({"all": true, "up_to": mcp_ids[0]}),
+        )
+        .await;
+    assert!(
+        text.starts_with("Marked 5 notification(s) read. You have 0 unread."),
+        "{text}"
+    );
     let text = agent.call_ok("whoami", json!({})).await;
     assert!(
         !text.contains("Your notifications"),
@@ -410,4 +427,224 @@ async fn notifications_ride_along_until_read() {
     assert_eq!(ids_in(&events).len(), 7, "{events}");
     let list = alice.notifications().await.expect("list");
     assert!(list.items.iter().all(|n| n.read_at.is_some()));
+}
+
+/// The scratch database of [`each_key_keeps_its_own_read_state`].
+const SCRATCH_DB_T0550: &str = "kairos_notifications_t0550_server_test";
+
+/// KAIROS-T-0550: a read by an agent key is the key's. The person (the GUI
+/// bell, the person's own login) still sees the notification unread. `all`
+/// takes `up_to`, and a newer notification stays unread. A rotated key
+/// keeps the reads of the old key; a new key does not start with the
+/// history that the person read.
+#[tokio::test]
+async fn each_key_keeps_its_own_read_state() {
+    let _admin_conn = recreate_scratch_db(SCRATCH_DB_T0550);
+    let scratch_url = with_database(&common::admin_database_url(), SCRATCH_DB_T0550);
+    let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
+    run_public_migrations(&mut conn).expect("running public migrations");
+    provision_tenant(&mut conn, "acme", "Acme Inc").expect("provisioning acme");
+    let org_id: Uuid = organizations::table
+        .filter(organizations::slug.eq("acme"))
+        .select(organizations::id)
+        .first(&mut conn)
+        .expect("acme org row");
+
+    let http = reqwest::Client::new();
+    let svc_token = user_token(&http, "svc").await;
+    let alice_token = user_token(&http, "alice").await;
+    let bob_token = user_token(&http, "bob").await;
+    let pool = TenantPool::new(&scratch_url, 4).await.expect("pool");
+    let auth = Arc::new(
+        Authenticator::discover(ISSUER, AUDIENCE)
+            .await
+            .expect("OIDC discovery against live Dex"),
+    );
+    let state = app::state_with(base_config(&scratch_url), pool, auth);
+    let server = spawn_server(app::router(state)).await;
+    let admin = server.client(&svc_token, "acme");
+    let alice = server.client(&alice_token, "acme");
+    let bob = server.client(&bob_token, "acme");
+    for client in [&admin, &alice, &bob] {
+        let _ = client.whoami().await;
+    }
+    for (email, role) in [
+        ("svc@kairos.test", OrgRole::Admin),
+        ("alice@kairos.test", OrgRole::Member),
+        ("bob@kairos.test", OrgRole::Member),
+    ] {
+        let user_id = user(&mut conn, email);
+        diesel::insert_into(organization_members::table)
+            .values(NewOrganizationMember {
+                organization_id: org_id,
+                user_id,
+                role,
+            })
+            .execute(&mut conn)
+            .expect("granting membership");
+    }
+    diesel::update(users::table.filter(users::email.eq("alice@kairos.test")))
+        .set(users::user_name.eq("alice"))
+        .execute(&mut conn)
+        .expect("user name");
+    let bob_id = user(&mut conn, "bob@kairos.test");
+    let web = admin
+        .create_team(&CreateTeamRequest {
+            name: "Web".into(),
+            slug: "web".into(),
+            code_prefix: "WEB".into(),
+            team_type: None,
+        })
+        .await
+        .expect("team");
+    admin
+        .add_team_member(
+            &web.id,
+            &AddTeamMemberRequest {
+                user_id: bob_id.to_string(),
+            },
+        )
+        .await
+        .expect("bob in web");
+    let board = web.delivery_board_id.clone().expect("board");
+    let mention = |n: u32| CreateTaskRequest {
+        board_id: Some(board.clone()),
+        column_id: None,
+        title: format!("Task {n}"),
+        content: "Ask @alice.".into(),
+        task_type: None,
+        work_class: None,
+        team_id: None,
+        repository: None,
+        from_team: None,
+    };
+    for n in 1..=3 {
+        bob.create_task(&mention(n)).await.expect("task");
+    }
+
+    let key = alice
+        .create_agent_key(&key_request("laptop"))
+        .await
+        .expect("agent key");
+    let mut agent = Mcp::connect(&server.base_url, &key.key).await;
+    let mut own = Mcp::connect(&server.base_url, &alice_token).await;
+    let key_rest = server.client(&key.key, "acme");
+
+    // --- 1. A read by the key is the key's -----------------------------------
+    let events = agent.call_ok("get_events", json!({})).await;
+    let ids = ids_in(&events);
+    assert_eq!(ids.len(), 3, "{events}");
+    // ids[0] is the newest; get_events names it as the `up_to`.
+    assert!(
+        events.contains(&format!("`up_to`: \"{}\"", ids[0])),
+        "{events}"
+    );
+    let text = agent
+        .call_ok("mark_events_read", json!({"ids": [ids[2]]}))
+        .await;
+    assert!(
+        text.starts_with("Marked 1 notification(s) read. You have 2 unread."),
+        "{text}"
+    );
+    // The person: the bell (REST with the login) and the person's own MCP
+    // session still show it unread.
+    let list = alice.notifications().await.expect("person list");
+    assert_eq!(list.unread, 3);
+    assert!(list.items.iter().all(|n| n.read_at.is_none()), "{list:?}");
+    let text = own.call_ok("whoami", json!({})).await;
+    assert!(text.contains("## Your notifications (3 unread)"), "{text}");
+    // The key over REST reads the key's state, and writes it.
+    let list = key_rest.notifications().await.expect("key list");
+    assert_eq!(list.unread, 2);
+    let marked = key_rest
+        .mark_notifications_read(&MarkNotificationsReadRequest {
+            ids: Some(vec![ids[1].clone()]),
+            ..Default::default()
+        })
+        .await
+        .expect("key marks over REST");
+    assert_eq!((marked.marked.len(), marked.unread), (1, 1));
+    assert_eq!(alice.notifications().await.expect("list").unread, 3);
+    let text = agent.call_ok("whoami", json!({})).await;
+    assert!(text.contains("## Your notifications (1 unread)"), "{text}");
+
+    // --- 2. Pages: `before` --------------------------------------------------
+    let page = alice.notifications_before(&ids[1]).await.expect("page");
+    let page_ids: Vec<&str> = page.items.iter().map(|n| n.id.as_str()).collect();
+    assert_eq!(page_ids, vec![ids[2].as_str()], "older than ids[1] only");
+    let text = own.call_ok("get_events", json!({"before": ids[2]})).await;
+    assert!(text.contains("No older unread ones."), "{text}");
+    let unknown = Uuid::new_v4().to_string();
+    let (text, error) = own.call("get_events", json!({"before": unknown})).await;
+    assert!(
+        error && text.starts_with("NOT_FOUND") && text.contains(&unknown),
+        "{text}"
+    );
+
+    // --- 3. `all` takes `up_to`; a newer one stays unread --------------------
+    let seen = ids[0].clone();
+    bob.create_task(&mention(4)).await.expect("a newer one");
+    let (text, error) = agent.call("mark_events_read", json!({"all": true})).await;
+    assert!(
+        error && text.starts_with("VALIDATION") && text.contains("up_to"),
+        "{text}"
+    );
+    let err = alice
+        .mark_notifications_read(&MarkNotificationsReadRequest {
+            all: Some(true),
+            ..Default::default()
+        })
+        .await
+        .expect_err("all without up_to");
+    assert!(matches!(err, Error::Validation { .. }), "{err}");
+    let (text, error) = agent
+        .call("mark_events_read", json!({"ids": [seen], "up_to": seen}))
+        .await;
+    assert!(error && text.starts_with("VALIDATION"), "{text}");
+    let text = agent
+        .call_ok("mark_events_read", json!({"all": true, "up_to": seen}))
+        .await;
+    assert!(
+        text.starts_with("Marked 1 notification(s) read. You have 1 unread."),
+        "the newer one stays unread: {text}"
+    );
+    let events = agent.call_ok("get_events", json!({})).await;
+    let unread_ids = ids_in(events.split("## Read").next().unwrap_or_default());
+    assert_eq!(unread_ids.len(), 1, "{events}");
+    assert!(!ids.contains(&unread_ids[0]), "the 4th is unread: {events}");
+    let newest = unread_ids[0].clone();
+    let marked = alice
+        .mark_notifications_read(&MarkNotificationsReadRequest {
+            all: Some(true),
+            up_to: Some(seen.clone()),
+            ..Default::default()
+        })
+        .await
+        .expect("person: all up to");
+    assert_eq!((marked.marked.len(), marked.unread), (3, 1));
+    let list = alice.notifications().await.expect("list");
+    assert_eq!(list.items[0].id, newest);
+    assert!(list.items[0].read_at.is_none(), "{list:?}");
+
+    // --- 4. A rotation keeps the reads; a new key starts from the person -----
+    let rotated = alice.rotate_agent_key(&key.id).await.expect("rotate");
+    let mut agent2 = Mcp::connect(&server.base_url, &rotated.key).await;
+    let text = agent2.call_ok("whoami", json!({})).await;
+    assert!(
+        text.contains("## Your notifications (1 unread)"),
+        "the rotated key keeps the reads of the old key: {text}"
+    );
+    let fresh = alice
+        .create_agent_key(&key_request("desktop"))
+        .await
+        .expect("a new key");
+    let mut agent3 = Mcp::connect(&server.base_url, &fresh.key).await;
+    let text = agent3.call_ok("whoami", json!({})).await;
+    assert!(
+        text.contains("## Your notifications (1 unread)"),
+        "a new key: what the person read before it is read: {text}"
+    );
+    let events = agent3.call_ok("get_events", json!({})).await;
+    assert!(events.contains("## Read"), "{events}");
+    assert_eq!(ids_in(&events).len(), 4, "{events}");
 }

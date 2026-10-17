@@ -31,7 +31,10 @@
 //! `DELETE /api/members/{user_id}` and the SCIM deprovision (PATCH or PUT
 //! `active: false`, DELETE) call [`drop_on_leave`] in the transaction that
 //! removes the membership: the items of the person have no owner from that
-//! moment, and a `release` row with `reason:left` says why.
+//! moment, and a `release` row with `reason:left` says why. The claims of
+//! the person on tasks end in the same way (KAIROS-T-0531): each task stays
+//! in its column, free, and the team of its board is told
+//! (`kairos_db::task_claims::drop_claims_of_user`).
 
 use std::collections::HashMap;
 
@@ -319,12 +322,16 @@ pub fn release(
     item_owners::clear(conn, item_id, user).map_err(map_owner_error)
 }
 
-/// The person `user_id` leaves the organization (module docs). Call it in
-/// the transaction that removes the membership.
+/// The person `user_id` leaves the organization (module docs): the items
+/// that the person owns have no owner, and the tasks that the person has
+/// the claim on are free (KAIROS-T-0531). Call it in the transaction that
+/// removes the membership. Returns the items that had the person as owner.
 pub fn drop_on_leave(
     conn: &mut PgConnection,
     user_id: Uuid,
     actor: Uuid,
 ) -> Result<Vec<Uuid>, diesel::result::Error> {
-    item_owners::drop_owner_of_user(conn, user_id, actor)
+    let owned = item_owners::drop_owner_of_user(conn, user_id, actor)?;
+    kairos_db::task_claims::drop_claims_of_user(conn, user_id, actor)?;
+    Ok(owned)
 }

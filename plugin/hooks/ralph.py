@@ -6,7 +6,7 @@ One stdlib module, four subcommands:
 
     ralph.py start [--session ID] [--max-iterations N] [--missing CODE]... CODE...
     ralph.py start-initiative [--session ID] [--max-iterations N] CODE < plan.json
-    ralph.py cancel [--session ID]
+    ralph.py cancel [--session ID] [--loop ID]
     ralph.py stop                      (the Stop hook; hook input on stdin)
 
 The skills `/kairos:ralph`, `/kairos:ralph-initiative` and
@@ -18,23 +18,37 @@ then gives the script what it found: `--missing` for a task code that
 The state is one JSON file per Claude Code session, OUTSIDE the
 repository: `$KAIROS_RALPH_STATE_DIR/<session_id>.json`, default
 `~/.claude/kairos-ralph/`. The Stop hook only reads the file of its own
-session, so two sessions in one checkout do not interfere.
+session, so two sessions in one checkout do not interfere. A start and a
+cancel remove state files older than 30 days (KAIROS-T-0547), as the other
+state folders of the plugin do. `/clear` gives the session a new ID; cancel
+then finds the loop of the folder by its `project_dir`.
 
 The Stop hook blocks the stop and gives the next instruction until the last
-assistant message ends with `<promise>ALL TASKS COMPLETE</promise>` or
-`<promise>LOOP STOPPED</promise>`, or the iteration limit is reached. Each
-error in the hook lets the session stop: a broken loop must never trap a
-session.
+assistant message ends with `<promise>ALL TASKS COMPLETE</promise>`,
+`<promise>LOOP STOPPED</promise>` or `<promise>NEED INPUT</promise>`, or the
+iteration limit is reached (25 by default, KAIROS-T-0547). Each error in the
+hook lets the session stop: a broken loop must never trap a session.
 """
 
 import json
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone
 
 COMPLETION_PROMISE = "ALL TASKS COMPLETE"
 STOP_PROMISE = "LOOP STOPPED"
+# KAIROS-T-0547: the agent needs an answer from the user. It wrote the
+# question on the task with append_note; the loop ends so the user can answer.
+NEED_INPUT_PROMISE = "NEED INPUT"
+# KAIROS-T-0547: an iteration is one stop of the session. A task through
+# `implement` takes one to a few stops, so 25 covers a groomed initiative of
+# about ten tasks. It also ends a loop that cannot get out (each blocked stop
+# gives the procedure again, about 490 tokens) after 25 turns, not never.
+# `--max-iterations N` overrides it; 0 means no limit.
+DEFAULT_MAX_ITERATIONS = 25
+PRUNE_AFTER_SECONDS = 30 * 24 * 3600
 TASK_CODE = re.compile(r"^[A-Z][A-Z0-9]*-T-[0-9]+$")
 INITIATIVE_CODE = re.compile(r"^[A-Z][A-Z0-9]*-I-[0-9]+$")
 ANY_CODE = re.compile(r"^[A-Z][A-Z0-9]*-[A-Z]-[0-9]+$")
@@ -95,6 +109,53 @@ def remove_state(session):
         os.remove(state_path(session))
     except FileNotFoundError:
         pass
+
+
+def prune():
+    """Remove the state files (and left temporary files) older than 30
+    days. A running loop writes its file at each stop, so it stays. Errors
+    are ignored."""
+    limit = time.time() - PRUNE_AFTER_SECONDS
+    try:
+        names = os.listdir(state_dir())
+    except OSError:
+        return
+    for name in names:
+        path = os.path.join(state_dir(), name)
+        try:
+            if (name.endswith(".json") or ".json.tmp." in name) and os.path.getmtime(
+                path
+            ) < limit:
+                os.remove(path)
+        except OSError:
+            pass
+
+
+def project_dir():
+    return os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+
+
+def loops_of_folder(folder):
+    """The (session, state) of each valid loop whose `project_dir` is
+    `folder`, sorted by session."""
+    try:
+        names = sorted(os.listdir(state_dir()))
+    except OSError:
+        return []
+    wanted = os.path.realpath(folder)
+    found = []
+    for name in names:
+        session = name[: -len(".json")]
+        if not name.endswith(".json") or not SESSION_ID.match(session):
+            continue
+        try:
+            state = read_state(session)
+        except (OSError, ValueError):
+            continue
+        where = state.get("project_dir") if state else None
+        if isinstance(where, str) and os.path.realpath(where) == wanted:
+            found.append((session, state))
+    return found
 
 
 # --- the order of the tasks of an initiative ----------------------------------
@@ -253,7 +314,7 @@ def session_from(options):
 
 
 def max_iterations_from(options):
-    raw = options.get("--max-iterations", "0")
+    raw = options.get("--max-iterations", str(DEFAULT_MAX_ITERATIONS))
     if not re.match(r"^[0-9]+$", raw):
         raise Refusal(f"--max-iterations needs a number that is 0 or more, not {raw}.")
     return int(raw)
@@ -275,10 +336,12 @@ def begin(session, state):
             "iteration": 1,
             "completion_promise": COMPLETION_PROMISE,
             "stop_promise": STOP_PROMISE,
-            "project_dir": os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd()),
+            "need_input_promise": NEED_INPUT_PROMISE,
+            "project_dir": project_dir(),
             "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
     )
+    prune()
     write_state(session, state)
 
 
@@ -307,6 +370,10 @@ To stop the loop:
 - For a decision or another team, also `transition_item` the task to Blocked, as /kairos:implement says.
 - Write the reason in your reply, and end the reply with <promise>{stop}</promise>.
 
+If you need an answer from the user to continue, do not guess:
+- Write the question on the task with `append_note`.
+- Write the question in your reply, and end the reply with <promise>{need}</promise>.
+
 When each task is in the Completed column, end your reply with <promise>{done}</promise>.
 
 Write a promise only when it is true. Do not write a promise to get out of the loop. Refer to each item by its short code."""
@@ -325,7 +392,9 @@ def instruction(state):
     if state.get("skipped"):
         lines = "\n".join(f"  - {s['reason']}" for s in state["skipped"])
         text += f"\nThe loop does not do these tasks:\n{lines}\n"
-    text += "\n" + PROCEDURE.format(stop=STOP_PROMISE, done=COMPLETION_PROMISE)
+    text += "\n" + PROCEDURE.format(
+        stop=STOP_PROMISE, done=COMPLETION_PROMISE, need=NEED_INPUT_PROMISE
+    )
     return text
 
 
@@ -396,23 +465,52 @@ def started_message(state):
 
 
 def cmd_cancel(args):
-    options, extra = parse_args(args, {"--session": "value"})
+    """Cancel the loop of this session. With `--loop ID`, cancel the loop
+    of that session. With no loop in this session (the ID changed after
+    `/clear`), cancel the one loop of this folder; with several, name them
+    and cancel none."""
+    options, extra = parse_args(args, {"--session": "value", "--loop": "value"})
     if extra:
         raise Refusal(f"Unknown argument: {', '.join(extra)}.")
     session = session_from(options)
+    prune()
+    named = options.get("--loop")
+    if named is not None and not SESSION_ID.match(named):
+        raise Refusal(f"The session ID of --loop is not valid: {named}.")
+    target = named or session
     try:
-        state = read_state(session)
+        state = read_state(target)
     except ValueError:
-        remove_state(session)
+        remove_state(target)
         print("Removed a Ralph state file that was not valid.")
         return
-    if state is None:
-        print("No Ralph loop is active in this session.")
+    note = ""
+    if state is None and named:
+        print(f"No Ralph loop is active in the session {named}.")
         return
-    remove_state(session)
+    if state is None:
+        folder = project_dir()
+        loops = loops_of_folder(folder)
+        if not loops:
+            print("No Ralph loop is active in this session or in this folder.")
+            return
+        if len(loops) > 1:
+            listed = "; ".join(
+                f"{s} ({st.get('initiative') or ', '.join(st['tasks'])})" for s, st in loops
+            )
+            raise Refusal(
+                f"This session has no loop, and {len(loops)} loops are active in "
+                f"{folder}: {listed}. No loop is cancelled. To cancel one, give "
+                "--loop <session id>."
+            )
+        target, state = loops[0]
+        note = f" of the session {target} in this folder"
+    elif named:
+        note = f" of the session {target}"
+    remove_state(target)
     what = state.get("initiative") or ", ".join(state["tasks"])
     print(
-        f"Cancelled the Ralph loop on {what} (at iteration {state['iteration']}). "
+        f"Cancelled the Ralph loop{note} on {what} (at iteration {state['iteration']}). "
         "The items keep their columns and their notes."
     )
 
@@ -494,6 +592,17 @@ def cmd_stop(stdin):
         remove_state(session)
         emit({"systemMessage": "Ralph loop: the agent stopped the loop. The reason is in the reply and on the items."})
         return
+    if promise == state.get("need_input_promise", NEED_INPUT_PROMISE):
+        remove_state(session)
+        emit(
+            {
+                "systemMessage": (
+                    "Ralph loop: the agent needs an answer. The loop ended. The question "
+                    "is in the reply and on the task. Answer it, then start the loop again."
+                )
+            }
+        )
+        return
 
     limit = state["max_iterations"]
     if limit > 0 and state["iteration"] >= limit:
@@ -517,8 +626,8 @@ def cmd_stop(stdin):
             "systemMessage": (
                 f"Ralph loop iteration {state['iteration']}"
                 + (f" of {limit}" if limit else "")
-                + f" | end with <promise>{COMPLETION_PROMISE}</promise> "
-                f"or <promise>{STOP_PROMISE}</promise>"
+                + f" | end with <promise>{COMPLETION_PROMISE}</promise>, "
+                f"<promise>{STOP_PROMISE}</promise> or <promise>{NEED_INPUT_PROMISE}</promise>"
             ),
         }
     )

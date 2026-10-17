@@ -191,19 +191,36 @@ pub fn check_version(current_version: i32, expected_version: i32) -> VersionChec
     }
 }
 
-/// Sum a children-by-column rollup into `(done, total)` counts
-/// (KAIROS-T-0080): each entry is one column's `(is_done, occupant
-/// count)`; `done` is the sum over done-flagged columns. Pure — the
-/// grouping itself is the single SQL query in
-/// `kairos-db::graph::children_progress`.
-pub fn children_progress_counts(by_column: &[(bool, i64)]) -> (i64, i64) {
-    let total = by_column.iter().map(|(_, count)| count).sum();
-    let done = by_column
-        .iter()
-        .filter(|(is_done, _)| *is_done)
-        .map(|(_, count)| count)
-        .sum();
-    (done, total)
+/// The children of a parent, counted apart (KAIROS-T-0080,
+/// KAIROS-T-0567): `done + cancelled + open = total`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ChildrenCounts {
+    /// In a done column, and not cancelled.
+    pub done: i64,
+    /// Cancelled tasks. A cancel is "won't do", not done.
+    pub cancelled: i64,
+    /// Not in a done column.
+    pub open: i64,
+    pub total: i64,
+}
+
+/// Sum a children-by-column rollup into [`ChildrenCounts`] (KAIROS-T-0080):
+/// each entry is one column's `(is_done, occupant count, cancelled
+/// occupants)`. `done` is the sum over done-flagged columns, less the
+/// cancelled tasks (KAIROS-T-0567). Pure — the grouping itself is the
+/// single SQL query in `kairos-db::graph::children_progress`.
+pub fn children_progress_counts(by_column: &[(bool, i64, i64)]) -> ChildrenCounts {
+    let mut counts = ChildrenCounts::default();
+    for (is_done, count, cancelled) in by_column {
+        counts.total += count;
+        counts.cancelled += cancelled;
+        if *is_done {
+            counts.done += count - cancelled;
+        } else {
+            counts.open += count - cancelled;
+        }
+    }
+    counts
 }
 
 /// The heading of a note that `append_note` adds (KAIROS-T-0367,
@@ -349,13 +366,36 @@ mod tests {
     /// then show composition only, never a percentage).
     #[test]
     fn children_progress_counts_sums_done_columns() {
-        assert_eq!(children_progress_counts(&[]), (0, 0));
+        let counts = |done, cancelled, open, total| ChildrenCounts {
+            done,
+            cancelled,
+            open,
+            total,
+        };
+        assert_eq!(children_progress_counts(&[]), counts(0, 0, 0, 0));
         assert_eq!(
-            children_progress_counts(&[(false, 3), (true, 2), (false, 1), (true, 1)]),
-            (3, 7)
+            children_progress_counts(&[(false, 3, 0), (true, 2, 0), (false, 1, 0), (true, 1, 0)]),
+            counts(3, 0, 4, 7)
         );
         // Zero done-flagged columns: composition only.
-        assert_eq!(children_progress_counts(&[(false, 4), (false, 2)]), (0, 6));
+        assert_eq!(
+            children_progress_counts(&[(false, 4, 0), (false, 2, 0)]),
+            counts(0, 0, 6, 6)
+        );
+    }
+
+    /// KAIROS-T-0567: a cancelled task in the done column is not done.
+    #[test]
+    fn children_progress_counts_cancelled_apart() {
+        assert_eq!(
+            children_progress_counts(&[(false, 1, 0), (true, 4, 1)]),
+            ChildrenCounts {
+                done: 3,
+                cancelled: 1,
+                open: 1,
+                total: 5,
+            }
+        );
     }
 
     fn edge(parent_id: Uuid, child_id: Uuid) -> ParentEdge {

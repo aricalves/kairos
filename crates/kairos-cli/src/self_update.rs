@@ -294,6 +294,29 @@ pub async fn daily_check() {
     );
 }
 
+/// The line for a code tools server older than its deployment
+/// (KAIROS-T-0526), or None: no deployment, no answer in 2 s, or the
+/// CLI is not older. The MCP server `kairos-code` is this binary, started
+/// once per session: a `kairos self-update` does not change the running
+/// server, so the line says to restart the session.
+pub async fn behind_server_line() -> Option<String> {
+    let deployment = deployment(None).ok()?;
+    let probe = http_with_timeout(Duration::from_secs(2)).ok()?;
+    let server = server_version(&probe, &deployment).await.ok()?;
+    behind_line(CLI_VERSION, &server.version)
+}
+
+/// The text of [`behind_server_line`] (pure; testable).
+fn behind_line(cli: &str, server: &str) -> Option<String> {
+    if server.is_empty() || compare(cli, server) != std::cmp::Ordering::Less {
+        return None;
+    }
+    Some(format!(
+        "The kairos CLI is {cli} and the server is {server}. `kairos-code` runs this old \
+         binary: after `kairos self-update`, restart the session."
+    ))
+}
+
 /// What the daily check keeps between runs.
 #[derive(Debug, Serialize, Deserialize)]
 struct CheckState {
@@ -532,6 +555,16 @@ mod tests {
 
         let (_, code) = check_line("https://k.test", "0.0.1");
         assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn behind_line_names_the_restart() {
+        let line = behind_line("0.13.0", "0.15.0").expect("older");
+        assert!(line.contains("0.13.0") && line.contains("0.15.0"), "{line}");
+        assert!(line.contains("restart the session"), "{line}");
+        assert_eq!(behind_line("0.15.0", "0.15.0"), None);
+        assert_eq!(behind_line("0.16.0", "0.15.0"), None);
+        assert_eq!(behind_line("0.13.0", ""), None);
     }
 
     #[test]

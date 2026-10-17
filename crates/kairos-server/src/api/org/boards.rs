@@ -30,7 +30,7 @@ use kairos_db::{abac, boards, items};
 use serde_json::json;
 use uuid::Uuid;
 
-use super::super::convert::{IntoDto, attach_repositories};
+use super::super::convert::{IntoCard, IntoDto, attach_repositories};
 use super::super::{
     clamp_pagination, parse_enum, parse_uuid, require_capability, require_structure,
 };
@@ -944,6 +944,24 @@ macro_rules! rows_by_id {
     }};
 }
 
+/// The cards of one item type with the given ids, by id (KAIROS-T-0602):
+/// the narrow row `$card` by default, the full row `$model` when `$full`.
+macro_rules! cards_by_id {
+    ($conn:expr, $full:expr, $table:ident, $model:ty, $card:ty, $ids:expr) => {{
+        if $full {
+            rows_by_id!($conn, $table, $model, $ids)
+                .into_iter()
+                .map(|(id, row)| (id, row.into_card()))
+                .collect()
+        } else {
+            rows_by_id!($conn, $table, $card, $ids)
+                .into_iter()
+                .map(|(id, row)| (id, row.into_card()))
+                .collect()
+        }
+    }};
+}
+
 /// One page of the items on the board, grouped by column (columns in
 /// position order; every entity type — strategies, initiatives, tasks,
 /// ADRs). Open tenant-wide. `?repository=` narrows the tasks
@@ -972,6 +990,11 @@ macro_rules! rows_by_id {
 /// neither card. The edge stays on the relationship list of each item,
 /// with a mark on the done end.
 ///
+/// Each item is a card (KAIROS-T-0602). A card has no `content`,
+/// `created_by` or `updated_by`. `?fields=full` adds them: then the
+/// response has the shape that the route had before cards. The item route
+/// of a card gives its content.
+///
 /// The path takes the slug or the id of the board (COLLIERY-T-0265). An
 /// unknown slug and an unknown id are a 404.
 #[utoipa::path(
@@ -994,7 +1017,11 @@ pub(crate) async fn board_items(
     let response = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            use kairos_db::board_items::{BoardItemFilter, CardKind, board_item_page};
+            use kairos_client::types_cards::{self as cards, CardFields};
+            use kairos_db::board_items::{
+                AdrCardRow, BoardItemFilter, CardKind, InitiativeCardRow, StrategyCardRow,
+                TaskCardRow, board_item_page,
+            };
             use kairos_db::schema::{adrs, initiatives, strategies, tasks};
 
             let board = load_board_by_ref(conn, &id)?;
@@ -1075,7 +1102,9 @@ pub(crate) async fn board_items(
                 .collect();
 
             // The rows of the page: one query for each type that the page
-            // has, and no query for a card.
+            // has, and no query for a card. KAIROS-T-0602: a card reads
+            // the narrow columns (no `content`); `fields=full` reads the
+            // full rows.
             let ids_of = |kind: CardKind| -> Vec<Uuid> {
                 page.cards
                     .iter()
@@ -1083,12 +1112,27 @@ pub(crate) async fn board_items(
                     .map(|(_, id)| *id)
                     .collect()
             };
-            let mut strategy_rows =
-                rows_by_id!(conn, strategies, Strategy, ids_of(CardKind::Strategy));
-            let mut initiative_rows =
-                rows_by_id!(conn, initiatives, Initiative, ids_of(CardKind::Initiative));
-            let mut task_rows = rows_by_id!(conn, tasks, Task, ids_of(CardKind::Task));
-            let mut adr_rows = rows_by_id!(conn, adrs, Adr, ids_of(CardKind::Adr));
+            let full = query.fields == Some(CardFields::Full);
+            let mut strategy_rows: HashMap<Uuid, cards::StrategyCard> = cards_by_id!(
+                conn,
+                full,
+                strategies,
+                Strategy,
+                StrategyCardRow,
+                ids_of(CardKind::Strategy)
+            );
+            let mut initiative_rows: HashMap<Uuid, cards::InitiativeCard> = cards_by_id!(
+                conn,
+                full,
+                initiatives,
+                Initiative,
+                InitiativeCardRow,
+                ids_of(CardKind::Initiative)
+            );
+            let mut task_rows: HashMap<Uuid, cards::TaskCard> =
+                cards_by_id!(conn, full, tasks, Task, TaskCardRow, ids_of(CardKind::Task));
+            let mut adr_rows: HashMap<Uuid, cards::AdrCard> =
+                cards_by_id!(conn, full, adrs, Adr, AdrCardRow, ids_of(CardKind::Adr));
 
             // Parent short codes for the children-progress map
             // (KAIROS-T-0080): collected while bucketing so the rollup
@@ -1099,36 +1143,36 @@ pub(crate) async fn board_items(
             for (kind, id) in &page.cards {
                 match kind {
                     CardKind::Strategy => {
-                        if let Some(row) = strategy_rows.remove(id)
-                            && let Some(&i) = index_of.get(&row.column_id.to_string())
+                        if let Some(card) = strategy_rows.remove(id)
+                            && let Some(&i) = index_of.get(&card.column_id)
                         {
-                            item_codes.push((row.id, row.short_code.clone()));
-                            groups[i].strategies.push(row.into_dto());
+                            item_codes.push((*id, card.short_code.clone()));
+                            groups[i].strategies.push(card);
                         }
                     }
                     CardKind::Initiative => {
-                        if let Some(row) = initiative_rows.remove(id)
-                            && let Some(&i) = index_of.get(&row.column_id.to_string())
+                        if let Some(card) = initiative_rows.remove(id)
+                            && let Some(&i) = index_of.get(&card.column_id)
                         {
-                            item_codes.push((row.id, row.short_code.clone()));
-                            groups[i].initiatives.push(row.into_dto());
+                            item_codes.push((*id, card.short_code.clone()));
+                            groups[i].initiatives.push(card);
                         }
                     }
                     CardKind::Task => {
-                        if let Some(row) = task_rows.remove(id)
-                            && let Some(&i) = index_of.get(&row.column_id.to_string())
+                        if let Some(card) = task_rows.remove(id)
+                            && let Some(&i) = index_of.get(&card.column_id)
                         {
-                            item_codes.push((row.id, row.short_code.clone()));
-                            groups[i].tasks.push(row.into_dto());
+                            item_codes.push((*id, card.short_code.clone()));
+                            groups[i].tasks.push(card);
                         }
                     }
                     CardKind::Adr => {
-                        if let Some(row) = adr_rows.remove(id)
-                            && let Some(column_id) = row.column_id
-                            && let Some(&i) = index_of.get(&column_id.to_string())
+                        if let Some(card) = adr_rows.remove(id)
+                            && let Some(column_id) = card.column_id.as_deref()
+                            && let Some(&i) = index_of.get(column_id)
                         {
-                            item_codes.push((row.id, row.short_code.clone()));
-                            groups[i].adrs.push(row.into_dto());
+                            item_codes.push((*id, card.short_code.clone()));
+                            groups[i].adrs.push(card);
                         }
                     }
                 }
@@ -1136,7 +1180,7 @@ pub(crate) async fn board_items(
             // KAIROS-T-0104: embed the repository ref on every task — ONE
             // query for the whole page (collect, attach, redistribute).
             {
-                let mut all: Vec<kairos_client::types::Task> = groups
+                let mut all: Vec<cards::TaskCard> = groups
                     .iter_mut()
                     .flat_map(|g| std::mem::take(&mut g.tasks))
                     .collect();
@@ -1147,8 +1191,7 @@ pub(crate) async fn board_items(
                 crate::cancel::attach_cancellations(conn, &mut all).map_err(ApiError::internal)?;
                 // KAIROS-T-0506: the live state of each task.
                 crate::task_state::attach_states(conn, &mut all).map_err(ApiError::internal)?;
-                let mut by_column: HashMap<String, Vec<kairos_client::types::Task>> =
-                    HashMap::new();
+                let mut by_column: HashMap<String, Vec<cards::TaskCard>> = HashMap::new();
                 for task in all {
                     by_column
                         .entry(task.column_id.clone())
@@ -1196,7 +1239,7 @@ pub(crate) async fn board_items(
             // COLLIERY-T-0269: the `impacts` links of each ADR, ONE query
             // for the whole page.
             {
-                let mut all: Vec<kairos_client::types::Adr> = groups
+                let mut all: Vec<cards::AdrCard> = groups
                     .iter_mut()
                     .flat_map(|g| std::mem::take(&mut g.adrs))
                     .collect();
@@ -1265,6 +1308,8 @@ pub(crate) async fn board_items(
                                 dto::ProgressCounts {
                                     done: counts.done,
                                     total: counts.total,
+                                    cancelled: counts.cancelled,
+                                    open: counts.open(),
                                     has_done: counts.has_done,
                                 },
                             )

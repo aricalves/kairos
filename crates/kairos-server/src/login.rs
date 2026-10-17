@@ -371,13 +371,16 @@ pub async fn logout(State(state): State<AppState>, req: Request) -> Result<Respo
 
     if parse_session_token(&token).is_some() {
         let hash = hash_session_token(&token);
+        let revoked = hash.clone();
         state
             .blocking
             .run_public(move |conn| {
-                kairos_db::local_auth::revoke_session_by_hash(conn, &hash)
+                kairos_db::local_auth::revoke_session_by_hash(conn, &revoked)
                     .map_err(ApiError::internal)
             })
             .await?;
+        // KAIROS-T-0609: the next request with this session is refused.
+        state.auth_cache.drop_session(&hash);
     }
     // Clear the cookie in each case: a logout leaves no session behind.
     Ok((
@@ -402,8 +405,14 @@ pub async fn authenticate_session(state: &AppState, token: &str) -> Result<AuthC
         return Err(bad_session());
     }
     let hash = hash_session_token(token);
+    // KAIROS-T-0609: a session accepted in the last minute. A logout and a
+    // revoke drop it (`crate::auth_cache`).
+    if let Some(cached) = state.auth_cache.session(&hash) {
+        return Ok(cached.auth);
+    }
 
-    state
+    let cache_key = hash.clone();
+    let (auth, expires_at) = state
         .blocking
         .run_public(move |conn| {
             let session = kairos_db::local_auth::find_session_by_hash(conn, &hash)
@@ -434,16 +443,25 @@ pub async fn authenticate_session(state: &AppState, token: &str) -> Result<AuthC
                 Utc::now() - crate::service_accounts::auth::LAST_USED_WINDOW,
             );
 
-            Ok(AuthContext {
+            let auth = AuthContext {
                 user_id: user.id,
                 external_id: user.external_id,
                 email: user.email,
                 display_name: user.display_name,
                 email_verified: false,
                 agent_key: None,
-            })
+            };
+            Ok((auth, session.expires_at))
         })
-        .await
+        .await?;
+    state.auth_cache.put_session(
+        cache_key,
+        crate::auth_cache::CachedSession {
+            auth: auth.clone(),
+            expires_at,
+        },
+    );
+    Ok(auth)
 }
 
 /// When a session minted now would expire — exposed for tests and for the CLI's

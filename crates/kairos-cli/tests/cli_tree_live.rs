@@ -256,6 +256,7 @@ async fn cli_command_tree_golden_path_live() {
         database_url: scratch_url.clone(),
         pool_size: 16,
         pool_min_idle: 0,
+        job_pool_size: 6,
         bind_addr: "127.0.0.1:0".parse().expect("addr"),
         oidc_issuer_url: Some(ISSUER.to_string()),
         oidc_audience: Some(AUDIENCE.to_string()),
@@ -292,10 +293,12 @@ async fn cli_command_tree_golden_path_live() {
         auth_max_failures: 5,
         auth_failure_window_secs: 300,
         auth_lockout_secs: 60,
+        auth_cache_secs: 60,
         trusted_proxy: false,
         local_auth: false,
         session_ttl_secs: 14 * 24 * 60 * 60,
         api_key_ttl_days: 90,
+        stale_claim_days: 14,
         api_key_rotation_grace_secs: 24 * 60 * 60,
         jobs: Default::default(),
         webhooks: Default::default(),
@@ -385,6 +388,33 @@ async fn cli_command_tree_golden_path_live() {
     for fragment in ["SLUG", "initiatives", "strategy", "platform-delivery"] {
         assert!(stdout.contains(fragment), "boards list: {stdout}");
     }
+    // KAIROS-T-0593: one page holds all; no next offset.
+    assert!(!stdout.contains("Next:"), "boards list: {stdout}");
+
+    // A page with more rows after it names the next offset; --json keeps
+    // the envelope of the server.
+    let (code, stdout, stderr) =
+        run_cli(config_dir.path(), &["boards", "list", "--limit", "1"]).await;
+    assert_eq!(code, 0, "boards list --limit 1 failed: {stderr}");
+    assert!(
+        stdout.contains("(limit 1, offset 0)\nNext: --offset 1\n"),
+        "{stdout}"
+    );
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["boards", "list", "--limit", "1", "--json"],
+    )
+    .await;
+    assert_eq!(code, 0, "boards list --json failed: {stderr}");
+    let envelope: serde_json::Value = serde_json::from_str(&stdout).expect("envelope JSON");
+    let mut keys: Vec<&str> = envelope
+        .as_object()
+        .expect("an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["items", "limit", "offset", "total"], "{stdout}");
 
     let (code, stdout, stderr) =
         run_cli(config_dir.path(), &["boards", "show", &delivery_board_id]).await;
@@ -526,6 +556,49 @@ async fn cli_command_tree_golden_path_live() {
     assert_eq!(code, 0, "--query-json search failed: {stderr}");
     assert!(stdout.contains(&task_code), "{stdout}");
 
+    // KAIROS-T-0593: two hits, a page of one: the next offset.
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["search", "--query", "golden", "--limit", "1"],
+    )
+    .await;
+    assert_eq!(code, 0, "search --limit 1 failed: {stderr}");
+    assert!(stdout.contains("Next: --offset 1"), "{stdout}");
+
+    // A search flag beside --query-json is refused, and named; before,
+    // --updated-after was dropped without a word.
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &[
+            "search",
+            "--query-json",
+            r#"{"q": "golden"}"#,
+            "--updated-after",
+            "2026-01-01T00:00:00Z",
+        ],
+    )
+    .await;
+    assert_eq!(code, 1, "a flag beside --query-json is refused: {stdout}");
+    assert!(
+        stderr.contains("Do not use it with --updated-after."),
+        "{stderr}"
+    );
+    assert!(stdout.is_empty(), "{stdout}");
+
+    // The body goes to the server as it is: the server judges a field
+    // that it does not know, and names it.
+    let (code, _, stderr) = run_cli(
+        config_dir.path(),
+        &[
+            "search",
+            "--query-json",
+            r#"{"q": "golden", "no_such_field": 1}"#,
+        ],
+    )
+    .await;
+    assert_eq!(code, 1, "the server refuses an unknown field: {stderr}");
+    assert!(stderr.contains("no_such_field"), "{stderr}");
+
     // --- edit: clean bump to version 2, then a stale --version → 409 -----------
     let (code, stdout, stderr) = run_cli(
         config_dir.path(),
@@ -628,6 +701,57 @@ async fn cli_command_tree_golden_path_live() {
     let (code, stdout, stderr) = run_cli(config_dir.path(), &["teams", "list"]).await;
     assert_eq!(code, 0, "teams list failed: {stderr}");
     assert!(stdout.contains("Platform"), "{stdout}");
+
+    // --- metadata and templates page (KAIROS-T-0593) ---------------------------
+    for slug in ["paging-one", "paging-two"] {
+        let (code, _, stderr) = run_cli(
+            config_dir.path(),
+            &[
+                "metadata", "create", "--name", slug, "--slug", slug, "--type", "string",
+            ],
+        )
+        .await;
+        assert_eq!(code, 0, "metadata create failed: {stderr}");
+        let (code, _, stderr) = run_cli(
+            config_dir.path(),
+            &["templates", "create", "--name", slug, "--slug", slug],
+        )
+        .await;
+        assert_eq!(code, 0, "templates create failed: {stderr}");
+    }
+    for noun in ["metadata", "templates"] {
+        let (code, stdout, stderr) = run_cli(config_dir.path(), &[noun, "list", "--json"]).await;
+        assert_eq!(code, 0, "{noun} list --json failed: {stderr}");
+        let envelope: serde_json::Value = serde_json::from_str(&stdout).expect("envelope JSON");
+        let total = envelope["total"].as_i64().expect("total");
+        assert!(total >= 2, "{stdout}");
+
+        let (code, stdout, stderr) =
+            run_cli(config_dir.path(), &[noun, "list", "--limit", "1"]).await;
+        assert_eq!(code, 0, "{noun} list --limit 1 failed: {stderr}");
+        assert!(
+            stdout.contains(&format!(
+                "total: {total} (limit 1, offset 0)\nNext: --offset 1\n"
+            )),
+            "{noun}: {stdout}"
+        );
+        let last = (total - 1).to_string();
+        let (code, stdout, stderr) = run_cli(
+            config_dir.path(),
+            &[noun, "list", "--limit", "1", "--offset", &last],
+        )
+        .await;
+        assert_eq!(code, 0, "{noun} list of the last page failed: {stderr}");
+        assert!(!stdout.contains("Next:"), "{noun}: {stdout}");
+    }
+    // The lookup by slug still finds a definition.
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["metadata", "update", "paging-two", "--name", "Paging two"],
+    )
+    .await;
+    assert_eq!(code, 0, "metadata update by slug failed: {stderr}");
+    assert!(stdout.contains("paging-two"), "{stdout}");
 
     // --- repos create / list / get / bind / unbind (KAIROS-T-0107) ---------------
     let (code, stdout, stderr) = run_cli(
@@ -740,9 +864,24 @@ async fn cli_command_tree_golden_path_live() {
     let detail: serde_json::Value = serde_json::from_str(&stdout).expect("detail JSON");
     assert_eq!(detail["credential"]["set"], true, "{detail}");
     assert!(!stdout.contains(TOKEN), "{stdout}");
-    let (code, stdout, stderr) = run_cli(
+    // KAIROS-T-0590: refused without --confirm; the token stays.
+    let (code, _, stderr) = run_cli(
         config_dir.path(),
         &["repos", "credential", "remove", "payments-api"],
+    )
+    .await;
+    assert_eq!(code, 1, "credential remove without --confirm must exit 1");
+    assert!(stderr.contains("--confirm"), "{stderr}");
+    let (_, stdout, _) = run_cli(
+        config_dir.path(),
+        &["repos", "get", "payments-api", "--json"],
+    )
+    .await;
+    let detail: serde_json::Value = serde_json::from_str(&stdout).expect("detail JSON");
+    assert_eq!(detail["credential"]["set"], true, "{detail}");
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["repos", "credential", "remove", "payments-api", "--confirm"],
     )
     .await;
     assert_eq!(code, 0, "repos credential remove failed: {stderr}");

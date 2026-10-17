@@ -389,6 +389,21 @@ pub fn unlink_items(
             &source_label,
             &target_label,
         )?;
+        // KAIROS-T-0568: the target lost a blocker that blocked it. A
+        // blocker that is done or archived blocked nothing.
+        if relationship == RelationshipType::Blocks
+            && crate::notifications::blocks_now(conn, source_id)?
+        {
+            crate::notifications::on_blocks_removed(
+                conn,
+                &[crate::dispatch::Freed {
+                    dependant: target_id,
+                    blocker_code: source_label.clone(),
+                }],
+                crate::notifications::Cleared::Unlinked,
+                actor,
+            )?;
+        }
         // KAIROS-T-0022: one thin event per still-live endpoint (a
         // soft-deleted endpoint has no view to refresh), delivered on
         // commit.
@@ -437,6 +452,11 @@ pub struct Neighbor {
     /// takes a resolved blocker for an open one. `false` for a neighbour
     /// with no column (a document, an off-board ADR).
     pub done: bool,
+    /// Whether this neighbour is a cancelled task (KAIROS-T-0567). A
+    /// cancelled task sits in a done column, so `done` is true too, but a
+    /// cancelled blocker is unresolved: it still blocks. A caller that
+    /// renders a `blocks` neighbour renders `[cancelled]`, not `[done]`.
+    pub cancelled: bool,
 }
 
 /// Both directions of an item's relationships, each grouped by
@@ -469,6 +489,8 @@ struct NeighborRow {
     deleted_at: Option<DateTime<Utc>>,
     #[diesel(sql_type = diesel::sql_types::Bool)]
     done: bool,
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    cancelled: bool,
 }
 
 impl NeighborRow {
@@ -481,6 +503,7 @@ impl NeighborRow {
             title: self.title,
             archived_at: self.deleted_at,
             done: self.done,
+            cancelled: self.cancelled,
         })
     }
 }
@@ -530,7 +553,8 @@ fn neighbors_of(
 ) -> Result<Vec<Neighbor>, GraphError> {
     let rows: Vec<NeighborRow> = sql_query(format!(
         "SELECT r.relationship, d.id, d.short_code, d.entity_type, d.title, d.deleted_at, \
-                COALESCE(bc.is_done, false) AS done \
+                COALESCE(bc.is_done, false) AS done, \
+                EXISTS (SELECT 1 FROM task_cancellations k WHERE k.task_id = d.id) AS cancelled \
          FROM item_relationships r \
          JOIN entity_directory d ON d.id = r.{other_column} \
          LEFT JOIN ({ITEM_COLUMNS_SQL}) p ON p.id = d.id \
@@ -588,6 +612,9 @@ pub struct ChildColumnCount {
     pub board_has_done: bool,
     #[diesel(sql_type = diesel::sql_types::BigInt)]
     pub count: i64,
+    /// The cancelled tasks among `count` (KAIROS-T-0567).
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    pub cancelled: i64,
 }
 
 /// The live workflow-item id → column_id union the progress queries join
@@ -625,7 +652,9 @@ pub fn children_progress(
                 EXISTS(SELECT 1 FROM board_columns d \
                        WHERE d.board_id = bc.board_id AND d.is_done \
                          AND d.deleted_at IS NULL) AS board_has_done, \
-                COUNT(*) AS count \
+                COUNT(*) AS count, \
+                COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM task_cancellations k \
+                                                WHERE k.task_id = c.id)) AS cancelled \
          FROM item_relationships r \
          JOIN ({CHILD_COLUMNS_SQL}) c ON c.id = r.target_id \
          JOIN board_columns bc ON bc.id = c.column_id \
@@ -647,16 +676,28 @@ struct BoardProgressRow {
     board_has_done: bool,
     #[diesel(sql_type = diesel::sql_types::BigInt)]
     count: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    cancelled: i64,
 }
 
-/// A parent's `(done, total, has_done_semantics)` children rollup.
-/// `has_done` is false when NO board hosting the children has a
+/// A parent's `(done, cancelled, total, has_done_semantics)` children
+/// rollup. `has_done` is false when NO board hosting the children has a
 /// done-flagged column — clients then show composition only.
+/// KAIROS-T-0567: `done` does not count a cancelled task; `cancelled`
+/// does, and `total - done - cancelled` is open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ProgressCounts {
     pub done: i64,
+    pub cancelled: i64,
     pub total: i64,
     pub has_done: bool,
+}
+
+impl ProgressCounts {
+    /// The children that are not done and not cancelled.
+    pub fn open(&self) -> i64 {
+        self.total - self.done - self.cancelled
+    }
 }
 
 /// Children rollups for EVERY item on `board_id` that has direct
@@ -677,7 +718,9 @@ pub fn board_children_progress(
                 EXISTS(SELECT 1 FROM board_columns d \
                        WHERE d.board_id = bc.board_id AND d.is_done \
                          AND d.deleted_at IS NULL) AS board_has_done, \
-                COUNT(*) AS count \
+                COUNT(*) AS count, \
+                COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM task_cancellations k \
+                                                WHERE k.task_id = c.id)) AS cancelled \
          FROM item_relationships r \
          JOIN ({CHILD_COLUMNS_SQL}) c ON c.id = r.target_id \
          JOIN board_columns bc ON bc.id = c.column_id \
@@ -697,8 +740,9 @@ pub fn board_children_progress(
         let entry = progress.entry(row.parent_id).or_default();
         entry.total += row.count;
         entry.has_done |= row.board_has_done;
+        entry.cancelled += row.cancelled;
         if row.is_done {
-            entry.done += row.count;
+            entry.done += row.count - row.cancelled;
         }
     }
     Ok(progress)
@@ -895,14 +939,22 @@ pub fn item_subgraph(
     depth: u32,
 ) -> Result<(Vec<SubgraphNode>, Vec<SubgraphEdge>), GraphError> {
     // 1. The walk: visited ids with their MINIMUM discovery depth.
+    // KAIROS-T-0628: one UNION ALL arm per direction, so each arm probes its
+    // relationship index (source or target); the CHECK source_id != target_id
+    // keeps the arms disjoint, so no edge is counted twice.
     let visited: Vec<DepthRow> = sql_query(
         "WITH RECURSIVE walk(id, depth) AS (
              SELECT $1::uuid, 0
              UNION
-             SELECT CASE WHEN r.source_id = w.id THEN r.target_id ELSE r.source_id END,
-                    w.depth + 1
+             SELECT n.other_id, w.depth + 1
              FROM walk w
-             JOIN item_relationships r ON (r.source_id = w.id OR r.target_id = w.id)
+             CROSS JOIN LATERAL (
+                 SELECT r.target_id AS other_id FROM item_relationships r
+                     WHERE r.source_id = w.id
+                 UNION ALL
+                 SELECT r.source_id FROM item_relationships r
+                     WHERE r.target_id = w.id
+             ) n
              WHERE w.depth < $2
          )
          SELECT id, MIN(depth)::int4 AS depth FROM walk GROUP BY id",
@@ -940,11 +992,14 @@ pub fn item_subgraph(
          )
          SELECT d.id, d.short_code, d.entity_type, d.title, s.status, d.deleted_at,
                 COALESCE(bc.is_done, false) AS done,
-                (SELECT COUNT(*) FROM item_relationships r
-                    JOIN entity_directory other
-                      ON other.id = CASE WHEN r.source_id = d.id
-                                         THEN r.target_id ELSE r.source_id END
-                    WHERE r.source_id = d.id OR r.target_id = d.id) AS degree
+                (SELECT COUNT(*) FROM (
+                     SELECT r.target_id AS other_id FROM item_relationships r
+                         WHERE r.source_id = d.id
+                     UNION ALL
+                     SELECT r.source_id FROM item_relationships r
+                         WHERE r.target_id = d.id
+                 ) e
+                 JOIN entity_directory other ON other.id = e.other_id) AS degree
          FROM entity_directory d
          JOIN status_of s ON s.id = d.id
          LEFT JOIN ({ITEM_COLUMNS_SQL}) p ON p.id = d.id
@@ -1064,24 +1119,36 @@ pub fn blocks_summary(
     conn: &mut PgConnection,
     ids: &[Uuid],
 ) -> Result<std::collections::HashMap<Uuid, BlocksCounts>, DieselError> {
+    // KAIROS-T-0628: one UNION ALL arm per direction, so each arm probes its
+    // relationship index (source or target); the CHECK source_id != target_id
+    // keeps the arms disjoint, so no edge is counted twice.
     let rows: Vec<BlocksRow> = sql_query(format!(
         "SELECT n.id,
-                COUNT(*) FILTER (WHERE r.target_id = n.id) AS blocked_by,
-                COUNT(*) FILTER (WHERE r.source_id = n.id) AS blocks
-         FROM unnest($1::uuid[]) AS n(id)
-         JOIN item_relationships r
-           ON (r.source_id = n.id OR r.target_id = n.id)
-          AND r.relationship = 'blocks'
+                COUNT(*) FILTER (WHERE n.blocked) AS blocked_by,
+                COUNT(*) FILTER (WHERE NOT n.blocked) AS blocks
+         FROM (
+             SELECT i.id, r.source_id AS other_id, true AS blocked
+             FROM unnest($1::uuid[]) AS i(id)
+             JOIN item_relationships r
+               ON r.target_id = i.id AND r.relationship = 'blocks'
+             UNION ALL
+             SELECT i.id, r.target_id, false
+             FROM unnest($1::uuid[]) AS i(id)
+             JOIN item_relationships r
+               ON r.source_id = i.id AND r.relationship = 'blocks'
+         ) n
          JOIN entity_directory other
-           ON other.id = CASE WHEN r.source_id = n.id
-                              THEN r.target_id ELSE r.source_id END
+           ON other.id = n.other_id
           AND other.deleted_at IS NULL
          LEFT JOIN ({ITEM_COLUMNS_SQL}) own_place ON own_place.id = n.id
          LEFT JOIN board_columns own_column ON own_column.id = own_place.column_id
          LEFT JOIN ({ITEM_COLUMNS_SQL}) other_place ON other_place.id = other.id
          LEFT JOIN board_columns other_column ON other_column.id = other_place.column_id
          WHERE NOT COALESCE(own_column.is_done, false)
-           AND NOT COALESCE(other_column.is_done, false)
+           AND (NOT COALESCE(other_column.is_done, false)
+                OR (n.blocked
+                    AND EXISTS (SELECT 1 FROM task_cancellations k
+                                 WHERE k.task_id = other.id)))
          GROUP BY n.id"
     ))
     .bind::<Array<SqlUuid>, _>(ids)
