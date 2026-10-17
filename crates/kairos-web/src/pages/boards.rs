@@ -943,7 +943,8 @@ pub fn BoardsPage() -> impl IntoView {
 /// The `version` of the item changes with each write of its fields, and
 /// `column_id` with each move. `extras` is a hash of the fields that
 /// change with no new version: the claim, the state, the cancel mark, the
-/// repository, the owner, the teams, the progress and the blocks counts.
+/// repository, the owner, the teams, the progress and the blocks counts,
+/// and the priority.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct CardKey {
     short_code: String,
@@ -964,6 +965,9 @@ struct CardExtras<'a> {
     teams: &'a [String],
     progress: Option<data::ProgressCounts>,
     blocks: Option<data::BlocksCounts>,
+    /// The priority metadata (KAIROS-T-0582): a change of metadata gives
+    /// no new version of the item.
+    priority: Option<&'a str>,
 }
 
 impl CardExtras<'_> {
@@ -1044,6 +1048,9 @@ struct ColumnModel {
     /// The WIP chip and whether the column is over its limit
     /// (KAIROS-T-0371); `None` for a column with no limit.
     wip: Option<(String, bool)>,
+    /// The column holds finished work (KAIROS-T-0582): it shows the last
+    /// [`DONE_COLUMN_CARDS`] cards, and "Hide done" hides it.
+    is_done: bool,
     targets: Vec<(String, String)>,
     cards: Vec<CardModel>,
     key: String,
@@ -1081,6 +1088,10 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
             let progress = progress_of(short_code);
             let blocks = blocks_of(short_code);
             let teams = teams_of(short_code);
+            // KAIROS-T-0582: the priority metadata, as a pill.
+            let priority = view.items.metadata_value(short_code, data::PRIORITY_SLUG);
+            let mut meta = meta;
+            meta.extend(priority.map(priority_pill));
             let extras = CardExtras {
                 work_class: work_class.as_deref(),
                 repository: repository.as_deref(),
@@ -1091,6 +1102,7 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                 teams: &teams,
                 progress,
                 blocks,
+                priority,
             }
             .hash_value();
             CardModel {
@@ -1222,8 +1234,12 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                 // changes with every card that enters or leaves the column,
                 // and a changed key rebuilds the column and all its cards in
                 // every lane; the chip reads the live model instead.
-                key: format!("{}|{}|{:?}", group.column.id, group.column.name, targets),
+                key: format!(
+                    "{}|{}|{}|{:?}",
+                    group.column.id, group.column.name, group.column.is_done, targets
+                ),
                 wip,
+                is_done: group.column.is_done,
                 targets,
                 cards,
             }
@@ -1905,16 +1921,35 @@ fn BoardBody(
             }
         }
     };
+    // KAIROS-T-0582: the card filters "Mine" (`?mine=1`) and "Hide done"
+    // (`?hide_done=1`), in the URL as the other filters.
+    let (mine_query, set_mine_query) = query_signal_with_options::<String>("mine", lens_nav());
+    let (hide_done_query, set_hide_done_query) =
+        query_signal_with_options::<String>("hide_done", lens_nav());
+    let mine_offered = owner_grouping_offered(&board.board_level);
+    let mine_on = Memo::new(move |_| {
+        mine_offered && mine_query.get().as_deref() == Some("1") && me.with(Option::is_some)
+    });
+    let hide_done_on = Memo::new(move |_| hide_done_query.get().as_deref() == Some("1"));
+    let done_offered =
+        Memo::new(move |_| summary.with(|s| s.columns.iter().any(|column| column.is_done)));
     let columns = Memo::new(move |_| {
         let selected = selected_repos.get();
         let team = team_selection.get();
+        let mine = mine_on.get().then(|| me.get()).flatten();
+        let hide_done = hide_done_on.get();
         summary.with(|s| {
             let mut columns = s.columns.clone();
-            if !selected.is_empty() || team != TeamSelection::All {
+            if hide_done {
+                columns.retain(|column| !column.is_done);
+            }
+            if !selected.is_empty() || team != TeamSelection::All || mine.is_some() {
                 for column in columns.iter_mut() {
-                    column
-                        .cards
-                        .retain(|card| lens_admits(card, &selected) && team_admits(card, &team));
+                    column.cards.retain(|card| {
+                        lens_admits(card, &selected)
+                            && team_admits(card, &team)
+                            && mine_admits(card, mine.as_deref())
+                    });
                 }
             }
             columns
@@ -1927,6 +1962,39 @@ fn BoardBody(
         let me = me.get();
         columns.with(|columns| owner_lanes(columns, me.as_deref()))
     });
+
+    // KAIROS-T-0491: the ids of the lanes on screen, for "Collapse all"
+    // and "Expand all".
+    let shown_lanes = Memo::new(move |_| -> Vec<String> {
+        match grouping.get() {
+            Grouping::Owner => owner_lane_list.with(|list| {
+                list.iter()
+                    .map(|l| lane_id(None, &GroupLane::Owner(l.user_id.clone())))
+                    .collect()
+            }),
+            Grouping::Repository if is_delivery => lanes.with(|keys| {
+                keys.iter()
+                    .map(|key| {
+                        let group = match key {
+                            Some(slug) => GroupLane::Slug(slug.clone()),
+                            None => GroupLane::Unbound,
+                        };
+                        lane_id(None, &group)
+                    })
+                    .collect()
+            }),
+            _ if is_delivery => [LANE_SUPPORT, LANE_PLANNED]
+                .iter()
+                .map(|lane| lane_id(Some(lane), &GroupLane::Any))
+                .collect(),
+            _ => Vec::new(),
+        }
+    });
+    // KAIROS-T-0582: one WIP chip for each column. The first open lane
+    // shows the chips; the other lanes do not repeat them.
+    provide_context(WipLane(Memo::new(move |_| {
+        shown_lanes.with(|ids| wip_lane(ids, |id| lane_collapse.is_collapsed(id)))
+    })));
 
     let create_label = StoredValue::new(
         create_kind
@@ -2185,6 +2253,37 @@ fn BoardBody(
                 </Group>
             </div>
         })}
+        // KAIROS-T-0582: the card filters.
+        {move || ((mine_offered && me.with(Option::is_some)) || done_offered.get()
+            || hide_done_on.get()).then(|| view! {
+            <div class="kairos-board__lens" data-testid="card-filters">
+                <Group gap="xs" wrap=true>
+                    <Text dimmed=true size="xs">"Cards"</Text>
+                    {move || (mine_offered && me.with(Option::is_some)).then(|| view! {
+                        <Chip
+                            label="Mine"
+                            active=mine_on
+                            on_click=Callback::new(move |_| {
+                                let on = !mine_on.get_untracked();
+                                set_mine_query.set(on.then(|| "1".to_string()))
+                            })
+                            attr:data-testid="filter-mine"
+                        />
+                    })}
+                    {move || (done_offered.get() || hide_done_on.get()).then(|| view! {
+                        <Chip
+                            label="Hide done"
+                            active=hide_done_on
+                            on_click=Callback::new(move |_| {
+                                let on = !hide_done_on.get_untracked();
+                                set_hide_done_query.set(on.then(|| "1".to_string()))
+                            })
+                            attr:data-testid="filter-hide-done"
+                        />
+                    })}
+                </Group>
+            </div>
+        })}
         {
             // KAIROS-T-0077: delivery boards split into Support (on top,
             // the expedite convention) and Planned lanes — the lane is a
@@ -2254,33 +2353,7 @@ fn BoardBody(
                 }
                 .into_any()
             };
-            // KAIROS-T-0491: the ids of the lanes on screen, for "Collapse
-            // all" and "Expand all".
-            let shown_lane_ids = move || -> Vec<String> {
-                match grouping.get() {
-                    Grouping::Owner => owner_lane_list.with(|list| {
-                        list.iter()
-                            .map(|l| lane_id(None, &GroupLane::Owner(l.user_id.clone())))
-                            .collect()
-                    }),
-                    Grouping::Repository if is_delivery => lanes.with(|keys| {
-                        keys.iter()
-                            .map(|key| {
-                                let group = match key {
-                                    Some(slug) => GroupLane::Slug(slug.clone()),
-                                    None => GroupLane::Unbound,
-                                };
-                                lane_id(None, &group)
-                            })
-                            .collect()
-                    }),
-                    _ if is_delivery => [LANE_SUPPORT, LANE_PLANNED]
-                        .iter()
-                        .map(|lane| lane_id(Some(lane), &GroupLane::Any))
-                        .collect(),
-                    _ => Vec::new(),
-                }
-            };
+            let shown_lane_ids = move || shown_lanes.get();
             let lane_actions = move || (!shown_lane_ids().is_empty()).then(|| view! {
                 <div class="kairos-board__lane-actions">
                     <Group gap="xs">
@@ -2636,6 +2709,77 @@ impl LaneCollapse {
         });
         self.save();
     }
+}
+
+// ---------------------------------------------------------------------------
+// Done columns, WIP chips, refused drops, priority (KAIROS-T-0582) — pure,
+// host-tested
+// ---------------------------------------------------------------------------
+
+/// The number of cards that a done column shows until "Show all".
+const DONE_COLUMN_CARDS: usize = 20;
+
+/// The cards that a column of a lane shows: each card, or in a done
+/// column the last [`DONE_COLUMN_CARDS`] cards (the highest short codes:
+/// the server and the patches keep the order of the short codes), until
+/// `show_all`.
+fn visible_cards<T: Clone>(cards: &[T], is_done: bool, show_all: bool) -> Vec<T> {
+    let from = if is_done && !show_all {
+        cards.len().saturating_sub(DONE_COLUMN_CARDS)
+    } else {
+        0
+    };
+    cards[from..].to_vec()
+}
+
+/// The words of the button of a done column, or `None` when the column
+/// needs no button. `hidden` is the number of cards that the column does
+/// not show, of `total`.
+fn show_all_label(is_done: bool, show_all: bool, hidden: usize, total: usize) -> Option<String> {
+    if !is_done {
+        None
+    } else if show_all && total > DONE_COLUMN_CARDS {
+        Some(format!("Show the last {DONE_COLUMN_CARDS} cards"))
+    } else if hidden > 0 {
+        Some(format!("Show all {total} cards"))
+    } else {
+        None
+    }
+}
+
+/// Does the "Mine" filter admit this card? `me` is the reader (a user
+/// id) while the filter is on, `None` while it is off. The card of the
+/// reader: the reader has the claim of the task, or owns the strategy or
+/// the initiative.
+fn mine_admits(card: &CardModel, me: Option<&str>) -> bool {
+    me.is_none_or(|me| owner_key(card) == Some(me))
+}
+
+/// The lane that shows the WIP chips of the columns: the first lane on
+/// screen that is not collapsed. `None`: no lanes (one row), or each lane
+/// is collapsed.
+fn wip_lane(shown: &[String], collapsed: impl Fn(&str) -> bool) -> Option<String> {
+    shown.iter().find(|id| !collapsed(id)).cloned()
+}
+
+/// The lane of the WIP chips, in the context of the board body.
+#[derive(Clone, Copy)]
+struct WipLane(Memo<Option<String>>);
+
+/// The note of a column that refuses the drag: the board has no
+/// transition from the column of the card (`source_name`) to this column.
+/// `None` for the column of the card and for an allowed target.
+fn refusal_note(drag: &DragData, column_id: &str, source_name: &str) -> Option<String> {
+    (drag.source_column != column_id && !drag.targets.iter().any(|t| t == column_id))
+        .then(|| format!("No transition from {source_name}."))
+}
+
+/// The pill of the priority metadata of a card. A high priority has the
+/// colour of a warning; red stays for faults.
+fn priority_pill(value: &str) -> (String, &'static str) {
+    let high = matches!(value.to_ascii_lowercase().as_str(), "critical" | "high");
+    let color = if high { token::GOLD } else { token::MUTED };
+    (format!("priority {value}"), color)
 }
 
 // ---------------------------------------------------------------------------
@@ -3018,18 +3162,30 @@ fn LaneColumns(
     on_drop: Callback<CardDrop>,
 ) -> impl IntoView {
     let group = StoredValue::new(group);
+    // KAIROS-T-0582: this lane shows the WIP chips when it is the lane of
+    // [`WipLane`], or when there is no such lane.
+    let wip_lane = use_context::<WipLane>();
+    let this_lane = group.with_value(|g| lane_id(lane, g));
+    let show_wip = Memo::new(move |_| {
+        wip_lane.is_none_or(|w| {
+            w.0.with(|id| id.as_deref().is_none_or(|id| id == this_lane))
+        })
+    });
     view! {
         <div class="kairos-board">
             <For
                 each=move || columns.get()
                 key=|column| column.key.clone()
                 children=move |column: ColumnModel| {
-                    let ColumnModel { id, name, wip: _, targets, key: _, cards: _ } = column;
+                    let ColumnModel { id, name, is_done, targets, .. } = column;
                     // KAIROS-T-0616: the live WIP chip of this column, read
                     // from the model so the column node persists when only
-                    // the count changes.
+                    // the count changes. KAIROS-T-0582: one lane only.
                     let wip_column_id = id.clone();
                     let wip = Memo::new(move |_| {
+                        if !show_wip.get() {
+                            return None;
+                        }
                         columns.with(|columns| {
                             columns
                                 .iter()
@@ -3054,6 +3210,29 @@ fn LaneColumns(
                                         .collect::<Vec<CardModel>>()
                                 })
                                 .unwrap_or_default()
+                        })
+                    });
+                    // KAIROS-T-0582: a done column shows its last cards,
+                    // until "Show all".
+                    let show_all = RwSignal::new(false);
+                    let shown = Memo::new(move |_| {
+                        let all = show_all.get();
+                        cards.with(|cards| visible_cards(cards, is_done, all))
+                    });
+                    // KAIROS-T-0582: during a drag, a column that the board
+                    // does not allow says why.
+                    let note_column_id = id.clone();
+                    let refusal = Memo::new(move |_| {
+                        drag.with(|d| {
+                            d.as_ref().and_then(|d| {
+                                let source = columns.with(|columns| {
+                                    columns
+                                        .iter()
+                                        .find(|c| c.id == d.source_column)
+                                        .map(|c| c.name.clone())
+                                })?;
+                                refusal_note(d, &note_column_id, &source)
+                            })
                         })
                     });
                     // Per-handler copies of this column's id (drop target).
@@ -3122,6 +3301,11 @@ fn LaneColumns(
                                         }
                                     })}
                                 </Group>
+                                {move || refusal.get().map(|note| view! {
+                                    <span class="kairos-board__refusal" data-testid="no-transition">
+                                        <Text dimmed=true size="xs">{note}</Text>
+                                    </span>
+                                })}
                             </header>
                             // KAIROS-T-0328: the cards of a column scroll on
                             // their own; the column head stays in view.
@@ -3130,8 +3314,22 @@ fn LaneColumns(
                                 {move || ((lane != Some(LANE_SUPPORT)) && cards.with(Vec::is_empty)).then(|| view! {
                                     <Text dimmed=true size="xs">"No items in this column."</Text>
                                 })}
+                                {move || {
+                                    let total = cards.with(Vec::len);
+                                    let hidden = shown.with(|s| total - s.len());
+                                    show_all_label(is_done, show_all.get(), hidden, total).map(|label| view! {
+                                        <Button
+                                            variant="subtle"
+                                            size="xs"
+                                            on_click=Callback::new(move |_| show_all.update(|on| *on = !*on))
+                                            attr:data-testid="show-all-done"
+                                        >
+                                            {label}
+                                        </Button>
+                                    })
+                                }}
                                 <For
-                                    each=move || cards.get()
+                                    each=move || shown.get()
                                     key=|card| card.key.clone()
                                     children=move |card: CardModel| {
                                         let CardModel {
@@ -4891,6 +5089,7 @@ mod tests {
             id: "c".into(),
             name: "c".into(),
             wip: None,
+            is_done: false,
             targets: Vec::new(),
             cards,
             key: String::new(),
@@ -5331,5 +5530,152 @@ mod tests {
             );
             assert_eq!(counted[0].1, shown);
         }
+    }
+
+    /// KAIROS-T-0582: a done column shows its last 20 cards, until "Show
+    /// all". The other columns show each card.
+    #[test]
+    fn a_done_column_shows_its_last_cards() {
+        let cards: Vec<usize> = (1..=25).collect();
+        assert_eq!(
+            visible_cards(&cards, true, false),
+            (6..=25).collect::<Vec<_>>()
+        );
+        assert_eq!(visible_cards(&cards, true, true), cards);
+        assert_eq!(visible_cards(&cards, false, false), cards);
+        let few: Vec<usize> = (1..=5).collect();
+        assert_eq!(visible_cards(&few, true, false), few);
+        assert_eq!(
+            visible_cards::<usize>(&[], true, false),
+            Vec::<usize>::new()
+        );
+    }
+
+    /// KAIROS-T-0582: the button of a done column.
+    #[test]
+    fn the_button_of_a_done_column() {
+        assert_eq!(
+            show_all_label(true, false, 5, 25).as_deref(),
+            Some("Show all 25 cards")
+        );
+        assert_eq!(
+            show_all_label(true, true, 0, 25).as_deref(),
+            Some("Show the last 20 cards")
+        );
+        assert_eq!(show_all_label(true, false, 0, 20), None, "nothing hidden");
+        assert_eq!(show_all_label(true, true, 0, 20), None, "nothing to hide");
+        assert_eq!(
+            show_all_label(false, false, 5, 25),
+            None,
+            "not a done column"
+        );
+    }
+
+    /// KAIROS-T-0582: the first open lane shows the WIP chips.
+    #[test]
+    fn the_first_open_lane_shows_the_wip_chips() {
+        let lanes = vec![LANE_SUPPORT.to_string(), LANE_PLANNED.to_string()];
+        assert_eq!(wip_lane(&lanes, |_| false).as_deref(), Some(LANE_SUPPORT));
+        assert_eq!(
+            wip_lane(&lanes, |id| id == LANE_SUPPORT).as_deref(),
+            Some(LANE_PLANNED)
+        );
+        assert_eq!(wip_lane(&lanes, |_| true), None);
+        assert_eq!(wip_lane(&[], |_| false), None, "one row: no lane");
+    }
+
+    /// KAIROS-T-0582: a column that the board does not allow names the
+    /// column of the card.
+    #[test]
+    fn a_refused_column_names_the_column_of_the_card() {
+        let drag = DragData {
+            kind: EntityKind::Task,
+            short_code: "T-1".into(),
+            targets: vec!["c-active".into()],
+            source_column: "c-todo".into(),
+            work_class: Some(LANE_PLANNED.into()),
+            owner: None,
+        };
+        assert_eq!(
+            refusal_note(&drag, "c-done", "Todo").as_deref(),
+            Some("No transition from Todo.")
+        );
+        assert_eq!(refusal_note(&drag, "c-active", "Todo"), None, "allowed");
+        assert_eq!(
+            refusal_note(&drag, "c-todo", "Todo"),
+            None,
+            "its own column"
+        );
+    }
+
+    /// KAIROS-T-0582: the "Mine" filter keeps the cards of the reader.
+    #[test]
+    fn mine_keeps_the_cards_of_the_reader() {
+        let robin = owned(EntityKind::Task, Some(("u-robin", "Robin")));
+        let sam = owned(EntityKind::Initiative, Some(("u-sam", "Sam")));
+        let nobody = owned(EntityKind::Task, None);
+        assert!(mine_admits(&robin, Some("u-robin")));
+        assert!(!mine_admits(&sam, Some("u-robin")));
+        assert!(!mine_admits(&nobody, Some("u-robin")));
+        for card in [&robin, &sam, &nobody] {
+            assert!(mine_admits(card, None), "the filter is off");
+        }
+    }
+
+    /// KAIROS-T-0582: the priority pill.
+    #[test]
+    fn the_priority_pill() {
+        assert_eq!(
+            priority_pill("high"),
+            ("priority high".to_string(), token::GOLD)
+        );
+        assert_eq!(priority_pill("Critical").1, token::GOLD);
+        assert_eq!(
+            priority_pill("low"),
+            ("priority low".to_string(), token::MUTED)
+        );
+    }
+
+    /// KAIROS-T-0582: the card shows its priority, and a new priority
+    /// changes the key of the card (a metadata write makes no new
+    /// version). The model marks the done column.
+    #[test]
+    fn the_card_shows_its_priority_and_the_column_is_done() {
+        let base_view = view_of(serde_json::json!({}), "todo");
+        let base = key_of(&base_view);
+        let mut view = view_of(serde_json::json!({}), "todo");
+        view.items.item_metadata = Some(
+            [(
+                "DEMO-T-0001".to_string(),
+                [(data::PRIORITY_SLUG.to_string(), "high".to_string())].into(),
+            )]
+            .into(),
+        );
+        let summary = board_summary(&view);
+        let card = &summary.columns[0].cards[0];
+        assert!(
+            card.meta
+                .contains(&("priority high".to_string(), token::GOLD)),
+            "{:?}",
+            card.meta
+        );
+        assert_eq!(key_of(&view).version, base.version);
+        assert_ne!(key_of(&view), base);
+        assert!(
+            board_summary(&base_view).columns[0].cards[0]
+                .meta
+                .is_empty()
+        );
+
+        let mut view = view_of(serde_json::json!({}), "todo");
+        view.items.columns[1].column.is_done = true;
+        let columns = board_summary(&view).columns;
+        assert!(!columns[0].is_done);
+        assert!(columns[1].is_done);
+        assert_ne!(
+            columns[1].key,
+            board_summary(&base_view).columns[1].key,
+            "a change of the done mark rebuilds the column"
+        );
     }
 }
