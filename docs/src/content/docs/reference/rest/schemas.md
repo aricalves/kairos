@@ -1973,7 +1973,9 @@ A relationship edge, as returned by `POST /api/relationships`.
 | `id` | `string` | yes | Edge id (UUID). |
 | `relationship` | `string` | yes | `parent|supports|informs|supersedes|blocks`. |
 | `source_id` | `string` | yes | Source entity id (UUID). |
+| `source_short_code` | `string` | yes | The current short code of the source. A retired code in the request follows to its item (KAIROS-T-0560), so this code can differ from the request. |
 | `target_id` | `string` | yes | Target entity id (UUID). |
+| `target_short_code` | `string` | yes | The current short code of the target (see `source_short_code`). |
 
 ## RelationshipGroup
 

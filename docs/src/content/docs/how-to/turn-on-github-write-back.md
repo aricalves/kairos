@@ -82,7 +82,7 @@ and set it again.
 ## 4. Turn it off
 
 ```sh
-kairos repos write-token remove site
+kairos repos write-token remove site --confirm
 ```
 
 Kairos writes nothing more. The comments and the statuses stay on GitHub.

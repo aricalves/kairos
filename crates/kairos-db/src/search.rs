@@ -387,11 +387,19 @@ fn traverse_ids(
              WHERE r.relationship = ANY($2) AND w.depth < $3"
         }
         Direction::Both => {
-            "SELECT CASE WHEN r.source_id = w.id THEN r.target_id ELSE r.source_id END,
-                    w.depth + 1
+            // KAIROS-T-0628: one UNION ALL arm per direction, so each arm probes its
+            // relationship index (source or target); the CHECK source_id != target_id
+            // keeps the arms disjoint, so no edge is counted twice.
+            "SELECT n.other_id, w.depth + 1
              FROM walk w
-             JOIN item_relationships r ON (r.source_id = w.id OR r.target_id = w.id)
-             WHERE r.relationship = ANY($2) AND w.depth < $3"
+             CROSS JOIN LATERAL (
+                 SELECT r.target_id AS other_id FROM item_relationships r
+                     WHERE r.source_id = w.id AND r.relationship = ANY($2)
+                 UNION ALL
+                 SELECT r.source_id FROM item_relationships r
+                     WHERE r.target_id = w.id AND r.relationship = ANY($2)
+             ) n
+             WHERE w.depth < $3"
         }
     };
     let sql = format!(

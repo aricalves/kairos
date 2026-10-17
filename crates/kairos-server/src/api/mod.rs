@@ -689,6 +689,9 @@ pub enum Liveness {
 /// in its own body and so could not be asked about the rows it had already
 /// dropped. T-0156 moved that predicate out here, where it is a mode rather
 /// than a fact, and the duplicate UNION went with it.
+///
+/// The code is upper-cased first (KAIROS-T-0560): each code is in capitals,
+/// so `acme-t-0012` finds `ACME-T-0012`.
 pub fn resolve_short_code(
     conn: &mut PgConnection,
     short_code: &str,
@@ -704,7 +707,7 @@ pub fn resolve_short_code(
         }
     };
     let row: Option<DirectoryRow> = sql_query(sql)
-        .bind::<Text, _>(short_code)
+        .bind::<Text, _>(short_code.to_ascii_uppercase())
         .get_result(conn)
         .optional()
         .map_err(ApiError::internal)?;
@@ -731,9 +734,11 @@ pub fn retired_to_current(
     conn: &mut PgConnection,
     short_code: &str,
 ) -> Result<Option<String>, ApiError> {
-    Ok(kairos_db::retired_codes::current_code(conn, short_code)
-        .map_err(ApiError::internal)?
-        .and_then(|retired| retired.current.map(|(code, _)| code)))
+    Ok(
+        kairos_db::retired_codes::current_code(conn, &short_code.to_ascii_uppercase())
+            .map_err(ApiError::internal)?
+            .and_then(|retired| retired.current.map(|(code, _)| code)),
+    )
 }
 
 /// What a lookup does with a retired code (COLLIERY-T-3100), from its
@@ -784,10 +789,105 @@ pub fn found_or_follow_retired<T>(
     if let Some(row) = found {
         return Ok(row);
     }
+    // KAIROS-T-0560: a code in input ignores case. The upper-cased code
+    // loads one more time at most.
+    let upper = short_code.to_ascii_uppercase();
+    if upper != short_code {
+        return load(conn, &upper, liveness);
+    }
     match follow_retired(conn, short_code, liveness)? {
         Some(current) => load(conn, &current, liveness),
+        None if liveness == Liveness::LiveOnly
+            && resolve_short_code(conn, short_code, Liveness::IncludeArchived)?
+                .is_some_and(|(_, t)| t.entity_type() == entity_type) =>
+        {
+            Err(archived_write_refused(short_code))
+        }
         None => Err(short_code_not_found(entity_type, short_code)),
     }
+}
+
+/// The 404 for a write to an archived item (KAIROS-T-0560). A write needs a
+/// live item, so the text names `restore_item`.
+pub fn archived_write_refused(short_code: &str) -> ApiError {
+    ApiError::not_found(format!(
+        "The item {short_code} is archived. A write needs a live item. Restore the item first \
+         with restore_item."
+    ))
+}
+
+/// A live item that a write names as a reference (KAIROS-T-0560): an end
+/// of an edge, or the parent of a new item.
+#[derive(Debug, Clone)]
+pub struct LiveRef {
+    /// The id of the item.
+    pub id: Uuid,
+    /// The type of the item.
+    pub item_type: ItemType,
+    /// The current short code of the item.
+    pub code: String,
+    /// The retired code in the input, when the input had one.
+    pub retired: Option<String>,
+}
+
+impl LiveRef {
+    /// The id and the type, as the edge rules take them.
+    pub fn typed(&self) -> (Uuid, ItemType) {
+        (self.id, self.item_type)
+    }
+
+    /// The sentence that names the current code of a retired code, e.g.
+    /// `ACME-T-0100 is now ACME-T-0200.`, or `None`.
+    pub fn renamed(&self) -> Option<String> {
+        self.retired
+            .as_ref()
+            .map(|old| format!("{old} is now {}.", self.code))
+    }
+}
+
+/// Resolve a reference of a write (KAIROS-T-0560): the `field` names the
+/// argument in a refusal. The code is upper-cased. A retired code follows
+/// to its item, as a read does, because Kairos never gives a retired code
+/// again. An archived item is a 422 `VALIDATION` that names `restore_item`;
+/// an unknown code is a 422 `VALIDATION`, as before.
+///
+/// The subject of a write (the item that the write changes) does not come
+/// here: a retired code there is refused ([`follow_retired`]).
+pub fn resolve_live_ref(
+    conn: &mut PgConnection,
+    short_code: &str,
+    field: &str,
+) -> Result<LiveRef, ApiError> {
+    let code = short_code.to_ascii_uppercase();
+    if let Some((id, item_type)) = resolve_short_code(conn, &code, Liveness::LiveOnly)? {
+        return Ok(LiveRef {
+            id,
+            item_type,
+            code,
+            retired: None,
+        });
+    }
+    let (current, retired) = match retired_to_current(conn, &code)? {
+        Some(current) => (current, Some(code)),
+        None => (code, None),
+    };
+    if let Some((id, item_type)) = resolve_short_code(conn, &current, Liveness::LiveOnly)? {
+        return Ok(LiveRef {
+            id,
+            item_type,
+            code: current,
+            retired,
+        });
+    }
+    if resolve_short_code(conn, &current, Liveness::IncludeArchived)?.is_some() {
+        return Err(ApiError::validation(format!(
+            "The {field} {current} is archived. A write needs a live item. Restore the item \
+             first with restore_item."
+        )));
+    }
+    Err(ApiError::validation(format!(
+        "The {field} {short_code:?} is not the short code of a live item."
+    )))
 }
 
 /// The type of a live item by id (documents included), via the same
