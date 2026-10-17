@@ -2387,7 +2387,7 @@ The server refuses a body with a field that is not in this table ([Errors](../..
 
 ## SetTaskStateRequest
 
-Body of `PUT /api/tasks/{short_code}/state` (KAIROS-T-0506). Each field is optional. The write replaces the whole state: Kairos clears a field that you do not send. At least one field must have a value.
+Body of `PUT /api/tasks/{short_code}/state` (KAIROS-T-0506). Each field is optional. The write is a patch (KAIROS-T-0533): a field that you do not send keeps its value, `null` clears it. Send at least one field. `expected_updated_at` refuses a stale write with CONFLICT.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -2534,7 +2534,7 @@ The claim of a task (KAIROS-T-0359, KAIROS-A-0024): the person who has the task 
 
 ## TaskState
 
-The live state of a task (KAIROS-T-0506): one current state, separate from the append-only notes. An agent writes it after each push and before each stop. A write replaces the whole state.
+The live state of a task (KAIROS-T-0506): one current state, separate from the append-only notes. An agent writes it after each push and before each stop. A write is a patch (KAIROS-T-0533).
 
 | Field | Type | Required | Description |
 |---|---|---|---|

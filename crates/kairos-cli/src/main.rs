@@ -149,7 +149,7 @@ enum Command {
     /// block (Todo, Active, Blocked)
     Me(Box<commands::me::MeArgs>),
     /// Write the live state of a task: branch, commit, pushed, PR, next
-    /// step (the write replaces the whole state)
+    /// step (the write is a patch: an option you do not give is kept)
     State(Box<commands::state::StateArgs>),
     /// Organization info for your credentials
     #[command(subcommand)]

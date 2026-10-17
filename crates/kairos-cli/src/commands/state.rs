@@ -1,6 +1,7 @@
 //! `kairos state` — the live state of a task (KAIROS-T-0506,
 //! `PUT /api/tasks/{short_code}/state`): branch, last commit, pushed, PR,
-//! next step. The write replaces the whole state.
+//! next step. The write is a patch (KAIROS-T-0533): an option that is not
+//! given keeps its value, `--clear` empties a field.
 
 use clap::Args;
 

@@ -1927,7 +1927,7 @@ async fn mcp_endpoint_against_live_stack() {
         "the first line of the note: {text}"
     );
     // KAIROS-T-0506: the live state of a task. The creator writes it; the
-    // write replaces the whole state; get_item and board_items show it.
+    // write is a patch (KAIROS-T-0533); get_item and board_items show it.
     let text = bob_session
         .call_ok(
             "set_state",
