@@ -66,6 +66,33 @@ impl ApiError {
         .with_details(json!({ "retry_after_secs": retry_after_secs }))
     }
 
+    /// 429 `KEY_LOCKED_OUT` — one API key failed too often (KAIROS-T-0539).
+    /// The other keys from the same address still work. The text is the same
+    /// for each key, so it says nothing about the key or its organization.
+    pub fn key_locked_out(retry_after_secs: u64) -> Self {
+        Self::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "KEY_LOCKED_OUT",
+            "This API key failed too many times. The server refuses this key for a short \
+             time. Other keys continue to work. Wait, and then try again. If the key \
+             expired or someone revoked it, use a new key.",
+        )
+        .with_details(json!({ "retry_after_secs": retry_after_secs, "limit": "key" }))
+    }
+
+    /// 429 `ADDRESS_LOCKED_OUT` — too many API keys failed from one address
+    /// (KAIROS-T-0539): the second, higher limit. The server refuses each key
+    /// from the address that it does not have in its auth cache.
+    pub fn address_locked_out(retry_after_secs: u64) -> Self {
+        Self::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "ADDRESS_LOCKED_OUT",
+            "Too many API keys from this address failed. The server refuses the keys from \
+             this address for a short time. Wait, and then try again.",
+        )
+        .with_details(json!({ "retry_after_secs": retry_after_secs, "limit": "address" }))
+    }
+
     /// 403 `MEMBERSHIP_REQUIRED` — authenticated but not a member of the
     /// resolved organization; per KAIROS-A-0010 the message tells the user
     /// to request access from an org admin.
