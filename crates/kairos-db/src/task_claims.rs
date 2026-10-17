@@ -470,14 +470,30 @@ pub fn drop_claims_of_user(
         .select(dsl::task_id)
         .load(conn)?;
     task_ids.sort();
-    for task_id in &task_ids {
+    let mut ended = Vec::with_capacity(task_ids.len());
+    for task_id in task_ids {
+        // KAIROS-T-0640: lock the task row, as a claim, a hand-off and a
+        // release do. Then end the claim only when the person still has it.
+        use crate::schema::tasks;
+        tasks::table
+            .filter(tasks::id.eq(task_id))
+            .select(tasks::id)
+            .for_update()
+            .first::<Uuid>(conn)
+            .optional()?;
+        if claim_of(conn, task_id)?.is_none_or(|claim| claim.user_id != user_id) {
+            continue;
+        }
+        ended.push(task_id);
+    }
+    for task_id in &ended {
         end_claim(conn, *task_id, actor_id, "left")?;
         crate::notifications::on_claim_dropped(conn, *task_id, user_id, actor_id)?;
         // KAIROS-T-0386: the comment shows the claim.
         crate::writeback::on_item_changed(conn, *task_id)?;
         events::emit_item_event_by_id(conn, EventKind::ItemUpdated, "task", *task_id, actor_id)?;
     }
-    Ok(task_ids)
+    Ok(ended)
 }
 
 /// One claim that [`notify_stale_claims`] reports.

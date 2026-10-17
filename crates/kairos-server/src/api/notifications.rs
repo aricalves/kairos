@@ -273,9 +273,9 @@ pub(crate) async fn update_notification_settings(
     .collect();
     if changes.is_empty() {
         return Err(ApiError::validation(
-            "The body names no kind. Send one or more of: hand_off, blocker_cleared, \
-             blocked_again, cancelled, blocker_cancelled, mention, p0_bug, delivery_failing, \
-             agent_key_revoked, claim_dropped, claim_stale, each with true or false.",
+            "The body names no kind. Send one or more kinds, each with true or false. The \
+             kinds: hand_off, blocker_cleared, blocked_again, cancelled, blocker_cancelled, \
+             mention, p0_bug, delivery_failing, agent_key_revoked, claim_dropped, claim_stale.",
         ));
     }
     let user = auth.user_id;

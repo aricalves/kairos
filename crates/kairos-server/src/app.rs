@@ -944,8 +944,9 @@ async fn start_background(state: &AppState, retention: kairos_core::retention::R
     // KAIROS-T-0531: the report of the stale claims is a periodic job too.
     // `KAIROS_STALE_CLAIM_DAYS=0` turns it off.
     let stale_days = state.config.stale_claim_days;
-    if stale_days > 0 && role.runs_pass(crate::periodic::STALE_CLAIMS) {
-        if let Err(e) = state
+    if stale_days > 0
+        && role.runs_pass(crate::periodic::STALE_CLAIMS)
+        && let Err(e) = state
             .jobs
             .add_periodic(
                 crate::periodic::STALE_CLAIMS,
@@ -953,9 +954,8 @@ async fn start_background(state: &AppState, retention: kairos_core::retention::R
                 crate::periodic::stale_claims_pass(state.config.database_url.clone(), stale_days),
             )
             .await
-        {
-            tracing::error!(error = ?e, "stale claims: the first run of the pass was not added");
-        }
+    {
+        tracing::error!(error = ?e, "stale claims: the first run of the pass was not added");
     }
     // KAIROS-T-0366, KAIROS-T-0376: retention is a periodic job. The queue
     // gives each run to one server, and each run adds the next.

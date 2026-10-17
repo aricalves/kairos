@@ -300,18 +300,14 @@ fn stale_claims_run(database_url: &str, days: u32, handle: &JobHandle) -> Result
             "The stale-claims pass cannot connect to the database: {e}"
         ))
     })?;
-    let reported = kairos_db::task_claims::stale_claims_pass(
-        &mut conn,
-        days,
-        chrono::Utc::now(),
-        &mut || {
+    let reported =
+        kairos_db::task_claims::stale_claims_pass(&mut conn, days, chrono::Utc::now(), &mut || {
             handle.progress();
-        },
-    )
-    .map_err(|e| {
-        tracing::error!(error = %e, "stale claims: the pass failed");
-        JobError::retry(format!("The stale-claims pass failed: {e}"))
-    })?;
+        })
+        .map_err(|e| {
+            tracing::error!(error = %e, "stale claims: the pass failed");
+            JobError::retry(format!("The stale-claims pass failed: {e}"))
+        })?;
     tracing::info!(days, reported, "stale claims: pass done");
     Ok(())
 }

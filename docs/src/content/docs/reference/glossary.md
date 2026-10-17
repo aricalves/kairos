@@ -239,9 +239,11 @@ the person, and the GUI shows "Alice (agent)". A service account gets no claim.
 The claim ends when the task leaves Active. It also ends at a hand-off, at a
 release, and at an archive. It ends when its person leaves the organization
 (KAIROS-T-0531). Then the task stays in its column, free, and the team of the
-board gets a notification. A claim does not end by age. A claim with no write
-for some days is **stale**: Kairos tells the holder and the owner of the
-initiative. A different person can change the task. Kairos records the change
+board gets a notification.
+
+A claim does not end by age. A claim with no write for some days is **stale**:
+Kairos tells the holder and the owner of the initiative. A different person can
+change the task. Kairos records the change
 and gives a warning. See
 [Teams and boards](../../explanation/teams-and-boards/#who-works-on-a-task-the-claim).
 

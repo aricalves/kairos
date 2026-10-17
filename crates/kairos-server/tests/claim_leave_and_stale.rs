@@ -31,10 +31,9 @@ use uuid::Uuid;
 use common::{
     AUDIENCE, ISSUER, base_config, recreate_scratch_db, spawn_server, user_token, with_database,
 };
-use kairos_client::types::{
-    CreateInitiativeRequest, CreateTaskRequest, SetTaskStateRequest, UpdateNotificationSettingsRequest,
-};
+use kairos_client::types::{CreateInitiativeRequest, CreateTaskRequest, SetTaskStateRequest};
 use kairos_client::types_meta::CreateRelationshipRequest;
+use kairos_client::types_notifications::UpdateNotificationSettingsRequest;
 use kairos_client::types_org::{AddTeamMemberRequest, CreateTeamRequest};
 use kairos_client::{EntityKind, KairosClient};
 use kairos_db::models::{NewOrganizationMember, OrgRole};
@@ -272,7 +271,10 @@ async fn a_claim_ends_when_its_person_leaves_and_a_stale_claim_is_reported() {
         .expect("remove alice");
     let after = bob.get_task(&a1).await.expect("a1 after");
     assert!(after.claim.is_none(), "the claim ended: {after:?}");
-    assert_eq!(after.column_id, columns["Active"], "the task stays in Active");
+    assert_eq!(
+        after.column_id, columns["Active"],
+        "the task stays in Active"
+    );
     assert_eq!(
         count(
             &mut conn,
@@ -291,7 +293,10 @@ async fn a_claim_ends_when_its_person_leaves_and_a_stale_claim_is_reported() {
     assert_eq!(people, want, "the team is told, not the admin: {told:?}");
     for (_, kind, text) in &told {
         assert_eq!(kind, "claim_dropped");
-        assert!(text.contains(&a1) && text.contains("left the organization"), "{text}");
+        assert!(
+            text.contains(&a1) && text.contains("left the organization"),
+            "{text}"
+        );
         assert!(text.contains("free in Active"), "{text}");
     }
     // The task is free: bob takes it with a claim.
@@ -404,7 +409,9 @@ async fn a_claim_ends_when_its_person_leaves_and_a_stale_claim_is_reported() {
     let holder = told.iter().find(|n| n.0 == carol_id).expect("carol told");
     assert_eq!(holder.1, "claim_stale");
     assert!(
-        holder.2.starts_with(&format!("Your claim on {c1} has no write")),
+        holder
+            .2
+            .starts_with(&format!("Your claim on {c1} has no write")),
         "{}",
         holder.2
     );
@@ -415,7 +422,10 @@ async fn a_claim_ends_when_its_person_leaves_and_a_stale_claim_is_reported() {
         "{}",
         owner.2
     );
-    assert!(!told.iter().any(|n| n.2.contains(&c2)), "c2 has a new state");
+    assert!(
+        !told.iter().any(|n| n.2.contains(&c2)),
+        "c2 has a new state"
+    );
     let still = carol.get_task(&c1).await.expect("c1");
     assert_eq!(
         still.claim.map(|c| c.user_id),
@@ -439,7 +449,11 @@ async fn a_claim_ends_when_its_person_leaves_and_a_stale_claim_is_reported() {
     .bind::<Text, _>(&c1)
     .execute(&mut conn)
     .expect("an old report");
-    assert_eq!(pass_now(&mut conn, 14), 1, "a write after the report re-arms it");
+    assert_eq!(
+        pass_now(&mut conn, 14),
+        1,
+        "a write after the report re-arms it"
+    );
     let told = new_notes(&mut conn, &mut notes);
     assert_eq!(told.len(), 2, "{told:?}");
     carol
