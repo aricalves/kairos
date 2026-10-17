@@ -294,6 +294,7 @@ async fn cli_command_tree_golden_path_live() {
         auth_failure_window_secs: 300,
         auth_lockout_secs: 60,
         auth_cache_secs: 60,
+        request_timeout_secs: 30,
         trusted_proxy: false,
         local_auth: false,
         session_ttl_secs: 14 * 24 * 60 * 60,

@@ -521,6 +521,11 @@ fn ResultGroup(entity: &'static str, title: &'static str, hits: Vec<data::Hit>) 
                     }
                 });
                 let is_put_away = hit.archived_at.is_some();
+                // KAIROS-T-0602: the hit has a snippet, not the content.
+                let snippet = hit
+                    .snippet
+                    .clone()
+                    .map(|text| view! { <Text dimmed=true size="xs">{text}</Text> });
                 view! {
                     <tr class:kairos-search__hit--put-away=is_put_away>
                         <td>
@@ -535,6 +540,7 @@ fn ResultGroup(entity: &'static str, title: &'static str, hits: Vec<data::Hit>) 
                                 {task_pill}
                                 {bucket_pill}
                             </Group>
+                            {snippet}
                         </td>
                         <td><Text dimmed=true size="sm"><RelativeTime iso=created/></Text></td>
                         <td><Anchor href=explore>"relationships"</Anchor></td>

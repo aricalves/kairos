@@ -12,7 +12,9 @@ use chrono::{DateTime, Utc};
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use kairos_client::types as dto;
+use kairos_client::types_cards as cards;
 use kairos_client::types_repositories::RepositoryRef;
+use kairos_db::board_items::{AdrCardRow, InitiativeCardRow, StrategyCardRow, TaskCardRow};
 use kairos_db::models::items::{Adr, Document, Initiative, Strategy, Task};
 use kairos_db::models::repositories::Repository;
 use uuid::Uuid;
@@ -152,6 +154,276 @@ impl IntoDto<dto::Adr> for Adr {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Cards (KAIROS-T-0602)
+// ---------------------------------------------------------------------------
+
+/// Local conversion into a card (`row.into_card()`). Apart from
+/// [`IntoDto`], so that `into_dto()` of a full row stays the item DTO.
+pub trait IntoCard<T> {
+    fn into_card(self) -> T;
+}
+
+/// A card of a full row: each field, `content` too. The board route with
+/// `fields=full` and the search route (which then takes the content off)
+/// use it.
+impl IntoCard<cards::StrategyCard> for Strategy {
+    fn into_card(self) -> cards::StrategyCard {
+        cards::StrategyCard {
+            id: self.id.to_string(),
+            short_code: self.short_code,
+            title: self.title,
+            content: Some(self.content),
+            board_id: self.board_id.to_string(),
+            column_id: self.column_id.to_string(),
+            hypothesis: self.hypothesis,
+            version: self.version,
+            created_by: Some(self.created_by.to_string()),
+            updated_by: Some(self.updated_by.to_string()),
+            created_at: timestamp(self.created_at),
+            updated_at: timestamp(self.updated_at),
+            archived_at: self.deleted_at.map(timestamp),
+            owner: None,
+            snippet: None,
+        }
+    }
+}
+
+impl IntoCard<cards::StrategyCard> for StrategyCardRow {
+    fn into_card(self) -> cards::StrategyCard {
+        cards::StrategyCard {
+            id: self.id.to_string(),
+            short_code: self.short_code,
+            title: self.title,
+            content: None,
+            board_id: self.board_id.to_string(),
+            column_id: self.column_id.to_string(),
+            hypothesis: self.hypothesis,
+            version: self.version,
+            created_by: None,
+            updated_by: None,
+            created_at: timestamp(self.created_at),
+            updated_at: timestamp(self.updated_at),
+            archived_at: self.deleted_at.map(timestamp),
+            owner: None,
+            snippet: None,
+        }
+    }
+}
+
+impl IntoCard<cards::InitiativeCard> for Initiative {
+    fn into_card(self) -> cards::InitiativeCard {
+        cards::InitiativeCard {
+            id: self.id.to_string(),
+            short_code: self.short_code,
+            title: self.title,
+            content: Some(self.content),
+            board_id: self.board_id.to_string(),
+            column_id: self.column_id.to_string(),
+            complexity: self.complexity.map(|c| c.to_string()),
+            is_bucket: self.is_bucket,
+            bucket_type: self.bucket_type.map(|b| b.to_string()),
+            version: self.version,
+            created_by: Some(self.created_by.to_string()),
+            updated_by: Some(self.updated_by.to_string()),
+            created_at: timestamp(self.created_at),
+            updated_at: timestamp(self.updated_at),
+            archived_at: self.deleted_at.map(timestamp),
+            owner: None,
+            snippet: None,
+        }
+    }
+}
+
+impl IntoCard<cards::InitiativeCard> for InitiativeCardRow {
+    fn into_card(self) -> cards::InitiativeCard {
+        cards::InitiativeCard {
+            id: self.id.to_string(),
+            short_code: self.short_code,
+            title: self.title,
+            content: None,
+            board_id: self.board_id.to_string(),
+            column_id: self.column_id.to_string(),
+            complexity: self.complexity.map(|c| c.to_string()),
+            is_bucket: self.is_bucket,
+            bucket_type: self.bucket_type.map(|b| b.to_string()),
+            version: self.version,
+            created_by: None,
+            updated_by: None,
+            created_at: timestamp(self.created_at),
+            updated_at: timestamp(self.updated_at),
+            archived_at: self.deleted_at.map(timestamp),
+            owner: None,
+            snippet: None,
+        }
+    }
+}
+
+impl IntoCard<cards::TaskCard> for Task {
+    fn into_card(self) -> cards::TaskCard {
+        cards::TaskCard {
+            id: self.id.to_string(),
+            short_code: self.short_code,
+            title: self.title,
+            content: Some(self.content),
+            board_id: self.board_id.to_string(),
+            column_id: self.column_id.to_string(),
+            task_type: self.task_type.to_string(),
+            work_class: self.work_class.to_string(),
+            team_id: self.team_id.map(|id| id.to_string()),
+            repository_id: self.repository_id.map(|id| id.to_string()),
+            repository: None,
+            version: self.version,
+            created_by: Some(self.created_by.to_string()),
+            updated_by: Some(self.updated_by.to_string()),
+            created_at: timestamp(self.created_at),
+            updated_at: timestamp(self.updated_at),
+            archived_at: self.deleted_at.map(timestamp),
+            claim: None,
+            cancellation: None,
+            state: None,
+            snippet: None,
+        }
+    }
+}
+
+impl IntoCard<cards::TaskCard> for TaskCardRow {
+    fn into_card(self) -> cards::TaskCard {
+        cards::TaskCard {
+            id: self.id.to_string(),
+            short_code: self.short_code,
+            title: self.title,
+            content: None,
+            board_id: self.board_id.to_string(),
+            column_id: self.column_id.to_string(),
+            task_type: self.task_type.to_string(),
+            work_class: self.work_class.to_string(),
+            team_id: self.team_id.map(|id| id.to_string()),
+            repository_id: self.repository_id.map(|id| id.to_string()),
+            repository: None,
+            version: self.version,
+            created_by: None,
+            updated_by: None,
+            created_at: timestamp(self.created_at),
+            updated_at: timestamp(self.updated_at),
+            archived_at: self.deleted_at.map(timestamp),
+            claim: None,
+            cancellation: None,
+            state: None,
+            snippet: None,
+        }
+    }
+}
+
+impl IntoCard<cards::AdrCard> for Adr {
+    fn into_card(self) -> cards::AdrCard {
+        cards::AdrCard {
+            id: self.id.to_string(),
+            short_code: self.short_code,
+            title: self.title,
+            content: Some(self.content),
+            board_id: self.board_id.map(|id| id.to_string()),
+            column_id: self.column_id.map(|id| id.to_string()),
+            impacts: Vec::new(),
+            decision_maker: self.decision_maker,
+            decision_date: self.decision_date.map(|d| d.to_string()),
+            version: self.version,
+            created_by: Some(self.created_by.to_string()),
+            updated_by: Some(self.updated_by.to_string()),
+            created_at: timestamp(self.created_at),
+            updated_at: timestamp(self.updated_at),
+            archived_at: self.deleted_at.map(timestamp),
+            snippet: None,
+        }
+    }
+}
+
+impl IntoCard<cards::AdrCard> for AdrCardRow {
+    fn into_card(self) -> cards::AdrCard {
+        cards::AdrCard {
+            id: self.id.to_string(),
+            short_code: self.short_code,
+            title: self.title,
+            content: None,
+            board_id: self.board_id.map(|id| id.to_string()),
+            column_id: self.column_id.map(|id| id.to_string()),
+            impacts: Vec::new(),
+            decision_maker: self.decision_maker,
+            decision_date: self.decision_date.map(|d| d.to_string()),
+            version: self.version,
+            created_by: None,
+            updated_by: None,
+            created_at: timestamp(self.created_at),
+            updated_at: timestamp(self.updated_at),
+            archived_at: self.deleted_at.map(timestamp),
+            snippet: None,
+        }
+    }
+}
+
+/// A document card has no `content`, `created_by` or `updated_by`: only
+/// search gives document cards, and a hit has a snippet in their place.
+impl IntoCard<cards::DocumentCard> for Document {
+    fn into_card(self) -> cards::DocumentCard {
+        cards::DocumentCard {
+            id: self.id.to_string(),
+            short_code: self.short_code,
+            title: self.title,
+            board_id: self.board_id.to_string(),
+            impacts: Vec::new(),
+            template_id: self.template_id.map(|id| id.to_string()),
+            lifecycle: self.lifecycle.to_string(),
+            version: self.version,
+            created_at: timestamp(self.created_at),
+            updated_at: timestamp(self.updated_at),
+            archived_at: self.deleted_at.map(timestamp),
+            snippet: None,
+        }
+    }
+}
+
+/// A task as a wire type: the item ([`dto::Task`]) or the card
+/// ([`cards::TaskCard`]). The attach helpers of the repository, the
+/// claim, the cancel mark and the state take either (KAIROS-T-0602).
+pub trait TaskDto {
+    /// The id of the task (UUID).
+    fn task_id(&self) -> &str;
+    /// The id of the bound repository (UUID), if any.
+    fn repository_id(&self) -> Option<&str>;
+    fn set_repository(&mut self, repository: Option<RepositoryRef>);
+    fn set_claim(&mut self, claim: Option<dto::TaskClaim>);
+    fn set_cancellation(&mut self, cancellation: Option<dto::TaskCancellation>);
+    fn set_state(&mut self, state: Option<dto::TaskState>);
+}
+
+macro_rules! task_dto {
+    ($type:ty) => {
+        impl TaskDto for $type {
+            fn task_id(&self) -> &str {
+                &self.id
+            }
+            fn repository_id(&self) -> Option<&str> {
+                self.repository_id.as_deref()
+            }
+            fn set_repository(&mut self, repository: Option<RepositoryRef>) {
+                self.repository = repository;
+            }
+            fn set_claim(&mut self, claim: Option<dto::TaskClaim>) {
+                self.claim = claim;
+            }
+            fn set_cancellation(&mut self, cancellation: Option<dto::TaskCancellation>) {
+                self.cancellation = cancellation;
+            }
+            fn set_state(&mut self, state: Option<dto::TaskState>) {
+                self.state = state;
+            }
+        }
+    };
+}
+
+task_dto!(dto::Task);
+task_dto!(cards::TaskCard);
+
 /// The embedded repository ref (KAIROS-T-0104).
 pub fn repository_ref(repo: &Repository) -> RepositoryRef {
     RepositoryRef {
@@ -168,14 +440,14 @@ pub fn repository_ref(repo: &Repository) -> RepositoryRef {
 /// soft-deleted repository keep `repository_id` and get no ref — the id
 /// is a fact, the ref is a live lookup. Call at every endpoint that
 /// renders tasks; the pure [`IntoDto`] conversion never touches the DB.
-pub fn attach_repositories(
+pub fn attach_repositories<T: TaskDto>(
     conn: &mut PgConnection,
-    tasks: &mut [dto::Task],
+    tasks: &mut [T],
 ) -> Result<(), diesel::result::Error> {
     let ids: Vec<Uuid> = {
         let mut ids: Vec<Uuid> = tasks
             .iter()
-            .filter_map(|t| t.repository_id.as_deref())
+            .filter_map(|t| t.repository_id())
             .filter_map(|id| id.parse().ok())
             .collect();
         ids.sort_unstable();
@@ -196,10 +468,8 @@ pub fn attach_repositories(
         .map(|r| (r.id.to_string(), repository_ref(r)))
         .collect();
     for task in tasks.iter_mut() {
-        task.repository = task
-            .repository_id
-            .as_deref()
-            .and_then(|id| by_id.get(id).cloned());
+        let repository = task.repository_id().and_then(|id| by_id.get(id).cloned());
+        task.set_repository(repository);
     }
     Ok(())
 }
@@ -266,6 +536,24 @@ impl HasImpacts for dto::Document {
 }
 
 impl HasImpacts for dto::Adr {
+    fn item_id(&self) -> &str {
+        &self.id
+    }
+    fn impacts_mut(&mut self) -> &mut Vec<kairos_client::types_repositories::Impact> {
+        &mut self.impacts
+    }
+}
+
+impl HasImpacts for cards::AdrCard {
+    fn item_id(&self) -> &str {
+        &self.id
+    }
+    fn impacts_mut(&mut self) -> &mut Vec<kairos_client::types_repositories::Impact> {
+        &mut self.impacts
+    }
+}
+
+impl HasImpacts for cards::DocumentCard {
     fn item_id(&self) -> &str {
         &self.id
     }

@@ -337,6 +337,11 @@ pub struct AppConfig {
     /// the write; another server keeps it for at most this time. `0`
     /// turns the cache off.
     pub auth_cache_secs: u64,
+    /// `KAIROS_REQUEST_TIMEOUT_SECS` (KAIROS-T-0613): the most time that a
+    /// request under `/api` or `/mcp` gets before a 503 `REQUEST_TIMEOUT`,
+    /// default **30**. The uploads of a code index and a site are not in it
+    /// (see [`crate::request_timeout`]). `0` turns the timeout off.
+    pub request_timeout_secs: u64,
     /// `KAIROS_TRUSTED_PROXY` (KAIROS-T-0202): trust `X-Forwarded-For` for the
     /// client address, default **false**.
     ///
@@ -601,6 +606,7 @@ impl AppConfig {
             parse_num::<u64>(&get, "KAIROS_AUTH_FAILURE_WINDOW_SECS", 300)?;
         let auth_lockout_secs = parse_num::<u64>(&get, "KAIROS_AUTH_LOCKOUT_SECS", 60)?;
         let auth_cache_secs = parse_num::<u64>(&get, "KAIROS_AUTH_CACHE_SECS", 60)?;
+        let request_timeout_secs = parse_num::<u64>(&get, "KAIROS_REQUEST_TIMEOUT_SECS", 30)?;
         let trusted_proxy = match get("KAIROS_TRUSTED_PROXY").as_deref() {
             None | Some("") | Some("false") | Some("0") => false,
             Some("true") | Some("1") => true,
@@ -792,6 +798,7 @@ impl AppConfig {
             auth_failure_window_secs,
             auth_lockout_secs,
             auth_cache_secs,
+            request_timeout_secs,
             trusted_proxy,
             local_auth,
             session_ttl_secs,
@@ -1071,6 +1078,26 @@ mod tests {
         assert!(
             err.to_string().contains("KAIROS_JOB_POOL_SIZE"),
             "the error names the setting: {err}"
+        );
+    }
+
+    #[test]
+    fn the_request_timeout_setting() {
+        // KAIROS-T-0613: 30 s by default, 0 turns it off, a typo is refused.
+        let config = AppConfig::from_lookup(lookup(MINIMAL)).expect("valid config");
+        assert_eq!(config.request_timeout_secs, 30);
+        for (value, secs) in [("0", 0), ("120", 120)] {
+            let mut vars = MINIMAL.to_vec();
+            vars.push(("KAIROS_REQUEST_TIMEOUT_SECS", value));
+            let config = AppConfig::from_lookup(lookup(&vars)).expect("valid config");
+            assert_eq!(config.request_timeout_secs, secs, "{value}");
+        }
+        let mut vars = MINIMAL.to_vec();
+        vars.push(("KAIROS_REQUEST_TIMEOUT_SECS", "30s"));
+        let err = AppConfig::from_lookup(lookup(&vars)).expect_err("not a number");
+        assert!(
+            err.to_string().contains("KAIROS_REQUEST_TIMEOUT_SECS"),
+            "{err}"
         );
     }
 

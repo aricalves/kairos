@@ -11,7 +11,6 @@ use kairos_client::types_search::{
     SearchFilter, SearchRequest, SearchResponse, SearchSort, SearchTraverse, SearchTraverseFrom,
 };
 
-use crate::commands::entities::EntityView;
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
 use crate::table::{Table, print_page_footer};
@@ -36,7 +35,8 @@ pub struct SearchArgs {
     /// Restrict to tasks assigned to this team (slug or UUID)
     #[arg(long, value_name = "TEAM")]
     pub team: Option<String>,
-    /// Restrict to tasks that link to this repository (slug or UUID)
+    /// Restrict to the items of this repository (slug or UUID): the tasks
+    /// that link to it, and the documents and the ADRs that impact it
     #[arg(long, value_name = "REPOSITORY")]
     pub repo: Option<String>,
     /// Task type filter, repeatable: task|bug|tech_debt|support
@@ -93,18 +93,19 @@ pub struct SearchArgs {
     #[arg(long, value_name = "UUID")]
     pub from_id: Option<String>,
     /// Traverse: relationship types to follow, repeatable:
-    /// parent|supports|informs|supersedes|blocks
+    /// parent|supports|informs|supersedes|blocks (required with --from)
     #[arg(long, value_name = "REL")]
     pub relationships: Vec<String>,
     /// Traverse: edge direction: outbound|inbound|both (defaults to
     /// outbound)
     #[arg(long, value_name = "DIRECTION")]
     pub direction: Option<String>,
-    /// Traverse: maximum depth (1-10)
+    /// Traverse: maximum depth, 1-10 (required with --from)
     #[arg(long, value_name = "N")]
     pub depth: Option<u32>,
     /// Sort field: created_at|updated_at|title|relevance (defaults to
-    /// relevance when --q is given, created_at otherwise; relevance needs --q)
+    /// relevance when --query is given, created_at otherwise; relevance
+    /// needs --query)
     #[arg(long, value_name = "FIELD")]
     pub sort: Option<String>,
     /// Sort order: asc|desc (defaults to desc)
@@ -360,13 +361,49 @@ fn non_empty(values: &[String]) -> Option<Vec<String>> {
     (!values.is_empty()).then(|| values.to_vec())
 }
 
+/// The fields of a hit that the table shows (KAIROS-T-0602): a hit is a
+/// card, not the item.
+trait HitRow {
+    fn short_code(&self) -> &str;
+    fn title(&self) -> &str;
+    fn version(&self) -> i32;
+    fn archived_at(&self) -> Option<&str>;
+}
+
+macro_rules! hit_row {
+    ($($type:ty),*) => {$(
+        impl HitRow for $type {
+            fn short_code(&self) -> &str {
+                &self.short_code
+            }
+            fn title(&self) -> &str {
+                &self.title
+            }
+            fn version(&self) -> i32 {
+                self.version
+            }
+            fn archived_at(&self) -> Option<&str> {
+                self.archived_at.as_deref()
+            }
+        }
+    )*};
+}
+
+hit_row!(
+    kairos_client::types_cards::StrategyCard,
+    kairos_client::types_cards::InitiativeCard,
+    kairos_client::types_cards::TaskCard,
+    kairos_client::types_cards::DocumentCard,
+    kairos_client::types_cards::AdrCard
+);
+
 /// The human rendering: one CODE/TITLE/VER section per non-empty group.
 /// An archived hit carries an `[archived]` marker on its title
 /// (KAIROS-A-0020, KAIROS-T-0157): `--include-deleted` mixes put-away work
 /// in with live work, and a reader who cannot tell them apart will act on
 /// the wrong one.
 fn print_results(response: &SearchResponse) {
-    fn section<T: EntityView>(label: &str, items: &[T]) {
+    fn section<T: HitRow>(label: &str, items: &[T]) {
         if items.is_empty() {
             return;
         }
