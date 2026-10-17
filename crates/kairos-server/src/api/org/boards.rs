@@ -1126,6 +1126,11 @@ macro_rules! cards_by_id {
 /// response has the shape that the route had before cards. The item route
 /// of a card gives its content.
 ///
+/// `?code=<short_code>` gives the card of one item (KAIROS-T-0615). The
+/// page then has that card, or no card when no card of the board has the
+/// code. The columns, their counts and the maps are as for a page. A live
+/// board reads one card in this way after an event of that item.
+///
 /// The path takes the slug or the id of the board (COLLIERY-T-0265). An
 /// unknown slug and an unknown id are a 404.
 #[utoipa::path(
@@ -1151,7 +1156,7 @@ pub(crate) async fn board_items(
             use kairos_client::types_cards::{self as cards, CardFields};
             use kairos_db::board_items::{
                 AdrCardRow, BoardItemFilter, CardKind, InitiativeCardRow, StrategyCardRow,
-                TaskCardRow, board_item_page,
+                TaskCardRow, board_item_page_of_code,
             };
             use kairos_db::schema::{adrs, initiatives, strategies, tasks};
 
@@ -1184,7 +1189,7 @@ pub(crate) async fn board_items(
             // COLLIERY-T-0261: the ids of the page, in the order of the
             // page, and the count after the filters. 2 queries.
             let column_ids: Vec<Uuid> = columns.iter().map(|column| column.id).collect();
-            let page = board_item_page(
+            let page = board_item_page_of_code(
                 conn,
                 &BoardItemFilter {
                     board_id,
@@ -1193,6 +1198,7 @@ pub(crate) async fn board_items(
                     repository_id: repository_filter,
                     team: team_filter,
                 },
+                query.code.as_deref(),
                 limit,
                 offset,
             )

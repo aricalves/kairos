@@ -36,8 +36,8 @@ struct FieldRow {
     original: String,
 }
 
-/// The metadata panel: definitions + values fetched together, typed
-/// editors, one save for all changed fields.
+/// The metadata panel: definitions + values fetched together (one `join!`,
+/// KAIROS-T-0618), typed editors, one save for all changed fields.
 #[component]
 pub fn MetadataPanel(
     family: Family,
@@ -69,10 +69,14 @@ pub fn MetadataPanel(
     let data = LocalResource::new(move || {
         auth.track_session();
         let _ = reload.get();
+        // KAIROS-T-0618: the two reads go at the same time.
+        let code = code.get_value();
         async move {
-            let definitions = api::fetch_definitions(auth, family).await?;
-            let values = api::fetch_metadata(auth, family, code.get_value()).await?;
-            Ok::<_, aurora_dark::tokens::ApiError>((definitions, values))
+            let (definitions, values) = futures_util::join!(
+                api::fetch_definitions(auth, family),
+                api::fetch_metadata(auth, family, code),
+            );
+            Ok::<_, aurora_dark::tokens::ApiError>((definitions?, values?))
         }
     });
     let retry = Callback::new(move |_| reload.update(|n| *n += 1));

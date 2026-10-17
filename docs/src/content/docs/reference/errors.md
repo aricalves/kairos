@@ -51,6 +51,20 @@ conversion produce — a blank `q`, an inverted date range, a bad `limit` or
 timestamp, an out-of-vocabulary enum value, an unknown field. The code is the
 same; the status is not. Branch on the code.
 
+### Failed authentication
+
+The throttle of failed logins answers 429 with a `Retry-After` header. See
+[Failed-authentication throttling](../configuration/#failed-authentication-throttling).
+
+| Code | Status | Meaning | `details` |
+|---|---|---|---|
+| `TOO_MANY_REQUESTS` | 429 | Too many password logins failed for the account or from the address | `retry_after_secs` |
+| `KEY_LOCKED_OUT` | 429 | This API key failed too many times. The other keys from the same address continue to work | `retry_after_secs`, `limit` (`key`) |
+| `ADDRESS_LOCKED_OUT` | 429 | Too many API keys from this address failed. The server refuses each key from the address that is not in its auth cache | `retry_after_secs`, `limit` (`address`) |
+
+The text of each code is the same for each key and each account. Thus a 429
+does not tell which keys or accounts exist.
+
 ### An input that a route does not accept
 
 **The server refuses each input that a route does not know.** The server does

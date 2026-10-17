@@ -12,6 +12,7 @@
 //!   code,
 //! - a filter (`repository`, `include_deleted`) applies before the page,
 //! - `children_progress` and `blocks_summary` have the items of the page,
+//! - `code` gives the card of one item, or no card (KAIROS-T-0615),
 //! - the server changes a `limit` that is out of the limits, as the other
 //!   list routes do.
 //!
@@ -370,6 +371,78 @@ async fn the_items_of_a_board_come_in_pages_against_live_stack() {
     let archived = pages(&stack, &format!("{items_uri}?include_deleted=true"), 4, 12).await;
     let archived: Vec<String> = archived.into_iter().flatten().collect();
     assert_eq!(archived, order, "the archived cards are in their places");
+
+    // --- one card: `?code=` (KAIROS-T-0615) ------------------------------------
+    // A live board reads the card of one event, and not the board.
+    let one = stack
+        .ok(Method::GET, &format!("{items_uri}?code={}", code(2)), None)
+        .await;
+    assert_eq!(codes(&one), [code(2)], "{one}");
+    assert_eq!(one["total"], 1, "{one}");
+    assert_eq!(
+        keys(&one, "blocks_summary"),
+        BTreeSet::from([code(2)]),
+        "the map has the entry of the card: {one}"
+    );
+    // Each column is there, with the count of the board: the patch of a
+    // card keeps the WIP counts right.
+    let counts = |response: &Value| -> Vec<(String, i64)> {
+        response["columns"]
+            .as_array()
+            .expect("columns")
+            .iter()
+            .map(|group| {
+                (
+                    group["column"]["id"].as_str().expect("id").to_string(),
+                    group["item_count"].as_i64().expect("item count"),
+                )
+            })
+            .collect()
+    };
+    let board_now = stack.ok(Method::GET, &items_uri, None).await;
+    assert_eq!(counts(&one), counts(&board_now), "{one}");
+    // An archived card is not on the live board, and is with
+    // `include_deleted`.
+    let gone = stack
+        .ok(Method::GET, &format!("{items_uri}?code={}", code(1)), None)
+        .await;
+    assert!(codes(&gone).is_empty(), "{gone}");
+    assert_eq!(gone["total"], 0, "{gone}");
+    let audit = stack
+        .ok(
+            Method::GET,
+            &format!("{items_uri}?code={}&include_deleted=true", code(1)),
+            None,
+        )
+        .await;
+    assert_eq!(codes(&audit), [code(1)], "{audit}");
+    // A code that no card of the board has: no card, and no error. The
+    // card left the board.
+    let none = stack
+        .ok(Method::GET, &format!("{items_uri}?code=NOPE-T-9999"), None)
+        .await;
+    assert!(codes(&none).is_empty(), "{none}");
+    assert_eq!(none["total"], 0, "{none}");
+    // The other filters apply too.
+    let filtered = stack
+        .ok(
+            Method::GET,
+            &format!("{items_uri}?code={}&repository=payments-api", code(2)),
+            None,
+        )
+        .await;
+    assert!(
+        codes(&filtered).is_empty(),
+        "task 2 has no repository: {filtered}"
+    );
+    let bound = stack
+        .ok(
+            Method::GET,
+            &format!("{items_uri}?code={}&repository=payments-api", code(4)),
+            None,
+        )
+        .await;
+    assert_eq!(codes(&bound), [code(4)], "{bound}");
 
     // --- a value that is out of the limits ---------------------------------------
     // The rule of the other list routes: the server changes the value.
