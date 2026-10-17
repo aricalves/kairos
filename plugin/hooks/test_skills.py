@@ -415,7 +415,7 @@ class TheWorkIsInAWorktree(unittest.TestCase):
     def test_the_commit_is_in_the_worktree_not_on_the_current_branch(self):
         self.assertNotIn("commit to the current branch", self.text)
         self.assertIn("Commit in the worktree, on the branch of the task", self.text)
-        self.assertIn('Do "Close the work", then `transition_item` to **Completed**', self.text)
+        self.assertIn('then "Close the work", then `transition_item` to **Completed**', self.text)
 
     def test_close_the_work_removes_a_pushed_worktree_and_keeps_the_branch(self):
         text = self.section("Close the work")
@@ -666,6 +666,84 @@ class SeamsAndLoopExits(unittest.TestCase):
     def test_the_readme_and_the_router_name_the_new_exit(self):
         self.assertIn("<promise>NEED INPUT</promise>", read(os.path.join(PLUGIN, "README.md")))
         self.assertIn("NEED INPUT", self.text("meta/kairos/SKILL.md"))
+
+
+def load_channel():
+    """The module of `plugin/bin/kairos-channel` (a script with no `.py`)."""
+    import importlib.machinery
+    import importlib.util
+
+    loader = importlib.machinery.SourceFileLoader("kairos_channel", os.path.join(PLUGIN, "bin", "kairos-channel"))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader("kairos_channel", loader))
+    loader.exec_module(module)
+    return module
+
+
+class OnePushPolicy(unittest.TestCase):
+    """KAIROS-T-0542, KAIROS-A-0046: `implement` states the push policy once
+    (push the feature branch, open a draft PR, `set_state`, stop); Ralph,
+    the router and the dispatch channel name the same policy."""
+
+    def implement_section(self):
+        body = read(os.path.join(SKILLS, "workflow", "implement", "SKILL.md"))
+        match = re.search(r"## Push and open the PR\n(.*?)\n## ", body, re.S)
+        self.assertIsNotNone(match)
+        return body, match.group(1)
+
+    def test_implement_states_the_policy_once(self):
+        body, section = self.implement_section()
+        self.assertEqual(body.count("## Push and open the PR"), 1)
+        for text in (
+            "`git -C <worktree> push -u origin <code>`",
+            "`gh pr create --draft",
+            "`set_state` with each field",
+            "`pushed: true`",
+            "`pr_url`",
+            "Stop at the PR",
+            "Do not merge, release, tag or deploy",
+            "Do not push the default branch",
+            "`--force`",
+            "KAIROS-A-0046",
+        ):
+            with self.subTest(text=text):
+                self.assertIn(text, section)
+        # The gate points at the section; it does not restate it.
+        self.assertIn('Do "Push and open the PR", then "Close the work"', body)
+
+    def test_the_section_has_short_sentences(self):
+        _, section = self.implement_section()
+        for sentence in sentences(section):
+            with self.subTest(sentence=sentence[:60]):
+                self.assertLessEqual(len(sentence.split()), 20)
+
+    def test_ralph_pushes_and_does_not_stop_at_a_feature_push(self):
+        ralph = read(os.path.join(HERE, "ralph.py"))
+        texts = {
+            "ralph.py": ralph.split("PROCEDURE = ", 1)[1].split('"""', 2)[1],
+            "ralph": read(os.path.join(SKILLS, "workflow", "ralph", "SKILL.md")),
+            "ralph-initiative": read(os.path.join(SKILLS, "workflow", "ralph-initiative", "SKILL.md")),
+        }
+        for name, text in texts.items():
+            with self.subTest(text=name):
+                self.assertNotIn("a design decision, a push,", text)
+                self.assertIn("a push that the git guard asks for", text)
+                self.assertIn("draft PR", text)
+                self.assertIn("KAIROS-A-0046", text)
+        self.assertIn("`git -C <worktree> push -u origin <code>`", texts["ralph.py"])
+        self.assertIn("`gh pr create --draft`", texts["ralph.py"])
+        self.assertNotIn("a push, a deploy", read(os.path.join(SKILLS, "meta", "kairos", "SKILL.md")))
+
+    def test_the_channel_names_the_same_policy(self):
+        flat = load_channel().INSTRUCTIONS
+        for phrase in (
+            "Push and open the PR section of kairos:implement",
+            "git push -u origin <branch>",
+            "draft pull request",
+            "set_state",
+            "no merge, no release, no tag",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, flat)
 
 
 class SkillsWriteNoRepoFileForWiringOrNotes(unittest.TestCase):
