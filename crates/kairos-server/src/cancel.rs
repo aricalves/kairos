@@ -72,11 +72,16 @@ pub fn cancel_text(conn: &mut PgConnection, task_id: Uuid) -> Result<String, Api
         .map_err(ApiError::internal)?
         .remove(&mark.cancelled_by)
         .unwrap_or_else(|| mark.cancelled_by.to_string());
-    Ok(format!(
-        "- cancelled: {} by {name}. Reason: {}\n",
-        mark.cancelled_at.format("%Y-%m-%dT%H:%M:%SZ"),
-        mark.reason
-    ))
+    Ok(cancel_line(mark.cancelled_at, &name, &mark.reason))
+}
+
+/// [`cancel_text`] from a mark that was read already (KAIROS-T-0626): when,
+/// the name of who cancelled, and the reason.
+pub fn cancel_line(cancelled_at: chrono::DateTime<chrono::Utc>, by: &str, reason: &str) -> String {
+    format!(
+        "- cancelled: {} by {by}. Reason: {reason}\n",
+        cancelled_at.format("%Y-%m-%dT%H:%M:%SZ"),
+    )
 }
 
 /// Cancel the task: the capability check ([`CAPABILITY`] on the board of
