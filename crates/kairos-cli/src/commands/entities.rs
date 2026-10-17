@@ -259,7 +259,7 @@ pub struct HandOffArgs {
     /// The task's short code (e.g. ACME-T-0001). The task must be in Active
     pub short_code: String,
     /// The person who gets the claim: a user id, an email or a user name
-    /// of a person of the organization
+    /// of a person of the organization, or `me`
     #[arg(long = "to", value_name = "PERSON")]
     pub to: String,
     #[command(flatten)]
@@ -819,8 +819,8 @@ pub fn emit_transitioned<T: EntityView>(common: &Common, item: &T) -> Result<(),
     Ok(())
 }
 
-/// Render the claim of a task after a hand-off or a release
-/// (KAIROS-T-0359).
+/// Render the claim of a task after a claim, a hand-off or a release
+/// (KAIROS-T-0359, KAIROS-T-0528).
 pub fn emit_claim(common: &Common, task: &Task) -> Result<(), CliError> {
     if common.json {
         return print_json(task);
@@ -839,7 +839,7 @@ fn claim_line(task: &Task) -> String {
             claim.claimed_at
         ),
         None => format!(
-            "The task {} has no claim. The next person who moves it to Active gets the claim.",
+            "The task {} has no claim. `kairos tasks claim` takes it; a move to Active gives it.",
             task.short_code
         ),
     }
@@ -1248,9 +1248,10 @@ impl AdrCreateArgs {
 /// `board_move(Move) = method` adds the board move (tasks only — they are
 /// the one family on per-team boards, KAIROS-I-0012). The optional
 /// `owner_move(Move) = method` adds the move of a document to a different
-/// owner board (COLLIERY-T-0269). The optional `claims(HandOff = method,
-/// Release = method)` adds the hand-off and the release of the claim of a
-/// task in Active (tasks only, KAIROS-T-0359). `list_args` is the type of the flags of
+/// owner board (COLLIERY-T-0269). The optional `claims(Claim = method,
+/// HandOff = method, Release = method)` adds the claim, the hand-off and
+/// the release of the claim of a task in Active (tasks only,
+/// KAIROS-T-0359, KAIROS-T-0528). `list_args` is the type of the flags of
 /// `list`: [`ImpactListArgs`] for documents and ADRs, which have the
 /// filter `--repo`.
 macro_rules! entity_family_cli {
@@ -1262,7 +1263,7 @@ macro_rules! entity_family_cli {
         $(, transition($transition_variant:ident) = $transition_fn:ident)?
         $(, board_move($move_variant:ident) = $move_fn:ident)?
         $(, owner_move($owner_variant:ident) = $owner_fn:ident)?
-        $(, claims($hand_variant:ident = $hand_fn:ident, $release_variant:ident = $release_fn:ident))?
+        $(, claims($claim_variant:ident = $claim_fn:ident, $hand_variant:ident = $hand_fn:ident, $release_variant:ident = $release_fn:ident))?
         $(, task_end($cancel_variant:ident = $cancel_fn:ident, $purge_variant:ident = $purge_fn:ident))?
         $(, lane($lane_variant:ident = $lane_fn:ident))?
     ) => {
@@ -1306,6 +1307,9 @@ macro_rules! entity_family_cli {
             $owner_variant(DocumentMoveArgs),
             )?
             $(
+            #[command(about = concat!("Take the claim of a ", $noun,
+                                      " in Active that has no claim"))]
+            $claim_variant(GetArgs),
             #[command(about = concat!("Give the claim of a ", $noun,
                                       " in Active to a different person"))]
             $hand_variant(HandOffArgs),
@@ -1428,6 +1432,11 @@ macro_rules! entity_family_cli {
                     }
                     )?
                     $(
+                    Self::$claim_variant(args) => {
+                        let client = client(&args.common)?;
+                        let task = client.$claim_fn(&args.short_code).await?;
+                        emit_claim(&args.common, &task)
+                    }
                     Self::$hand_variant(args) => {
                         let client = client(&args.common)?;
                         let task = client.$hand_fn(&args.short_code, &args.to).await?;
@@ -1521,7 +1530,11 @@ entity_family_cli!(
     kind = EntityKind::Task,
     transition(Transition) = transition_task,
     board_move(Move) = move_task_with,
-    claims(HandOff = hand_off_task, Release = release_task),
+    claims(
+        Claim = claim_task,
+        HandOff = hand_off_task,
+        Release = release_task
+    ),
     task_end(Cancel = cancel_task, Purge = purge_task),
     lane(Lane = set_task_work_class)
 );

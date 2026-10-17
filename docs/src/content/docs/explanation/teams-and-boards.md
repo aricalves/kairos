@@ -246,9 +246,10 @@ claim.
 
 The claim ends when the work does: the task leaves Active, to Completed, to
 Blocked, or back to Todo. It also ends at a **hand-off** to a named person, and
-at a **release**, which leaves the task in Active and free for anyone. The next
-person who moves a free task into Active gets the claim. An archive of the task
-ends its claim too.
+at a **release**, which leaves the task in Active and free for anyone. A person
+takes a free task with a **claim** (`claim_item`, `kairos tasks claim`). The
+next person who moves a free task into Active gets the claim too. An archive of
+the task ends its claim.
 
 A claim does not lock the task. A different person can still change it, and the
 change is recorded as usual. The response of the change carries a warning that

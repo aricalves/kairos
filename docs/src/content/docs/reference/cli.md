@@ -202,6 +202,7 @@ differ.
 | `edit` | yes | yes | yes | yes | yes |
 | `transition` | yes | yes | yes | no | yes |
 | `move` | no | no | yes | yes | no |
+| `claim` | no | no | yes | no | no |
 | `hand-off` | no | no | yes | no | no |
 | `release` | no | no | yes | no | no |
 | `cancel` | no | no | yes | no | no |
@@ -419,6 +420,22 @@ team. The command needs `manage_tasks` on both boards. The task keeps its
 repository.
 See [Move work between boards](../../how-to/move-work-between-boards/).
 
+### `tasks claim`
+
+```
+kairos tasks claim <SHORT_CODE> [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<SHORT_CODE>` | string | required | The task's short code. The task must be in Active, with no claim. |
+
+Gives you the [claim](../glossary/#claim) of a free task in Active
+(KAIROS-T-0528). You need `transition_items` on the board of the task, or the
+right to edit the task. Kairos refuses a task that a different person holds
+with `CLAIMED` and the name of the holder. A move of a task to Active gives
+you the claim too.
+
 ### `tasks hand-off`
 
 ```
@@ -428,7 +445,7 @@ kairos tasks hand-off <SHORT_CODE> --to <PERSON> [OPTIONS]
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
 | `<SHORT_CODE>` | string | required | The task's short code. The task must be in Active. |
-| `--to <PERSON>` | string | required | The person who gets the claim: a user id, an email or a user name of a person of the organization. |
+| `--to <PERSON>` | string | required | The person who gets the claim: a user id, an email or a user name of a person of the organization, or `me`. |
 
 Gives the [claim](../glossary/#claim) of a task in Active to a different person.
 The task stays in Active. You can hand off a claim that you have. To hand off
@@ -445,8 +462,8 @@ kairos tasks release <SHORT_CODE> [OPTIONS]
 |---|---|---|---|
 | `<SHORT_CODE>` | string | required | The task's short code. The task must be in Active. |
 
-Ends the claim of a task in Active. The task stays in Active with no claim. The
-next person who moves the task to Active gets the claim. You can release a
+Ends the claim of a task in Active. The task stays in Active with no claim.
+`tasks claim` takes it, and a move to Active gives it. You can release a
 claim that you have. To release the claim of a different person, you need
 `transition_items` on the board of the task.
 

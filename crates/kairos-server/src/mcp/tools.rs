@@ -794,8 +794,8 @@ pub struct HandOffItemParams {
     pub short_code: String,
     /// The person who gets the claim (a task) or who becomes the owner (a
     /// strategy or an initiative): a user id, an email or a user name of a
-    /// person of the organization. A new owner must be a member of the
-    /// board of the item.
+    /// person of the organization, or `me`. A new owner must be a member
+    /// of the board of the item.
     pub to: String,
 }
 
@@ -812,7 +812,8 @@ pub struct ReleaseItemParams {
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 pub struct ClaimItemParams {
-    /// The short code of a strategy or an initiative with no owner.
+    /// The short code of a task in Active with no claim, or of a strategy
+    /// or an initiative with no owner.
     pub short_code: String,
 }
 
@@ -3782,7 +3783,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Become the owner of a STRATEGY or INITIATIVE that has none: the one person who answers for it. You must be a person and a member of its board (a grant), or an org admin. An item with an owner is refused with the owner's name. The owner gives no extra right. A task has no owner: moving it to Active gives a claim."
+        description = "Take a free TASK in Active (no claim): the claim names you, so the board shows who works it. Or become the owner of a STRATEGY or INITIATIVE that has none: the one person who answers for it. A task: you need `transition_items` on its board or the right to edit the task; a task that a different person holds is refused with CLAIMED and the holder's name (ask for `hand_off_item`). A strategy or initiative: you must be a person and a member of its board (a grant), or an org admin; an item with an owner is refused with the owner's name. The owner gives no extra right. Moving a task to Active gives you the claim too."
     )]
     pub async fn claim_item(
         &self,
@@ -3794,24 +3795,37 @@ impl KairosMcp {
         let slug = tenant.slug.clone();
         self.run_tool(&tenant, move |conn| {
             let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
-            crate::owners::claim(
-                conn,
-                &slug,
-                user,
-                (item.id, item.item_type),
-                &item.short_code,
-            )?;
+            if kairos_db::item_owners::is_subject(item.item_type) {
+                crate::owners::claim(
+                    conn,
+                    &slug,
+                    user,
+                    (item.id, item.item_type),
+                    &item.short_code,
+                )?;
+                return Ok(format!(
+                    "Claimed {}.\n{}",
+                    item.short_code,
+                    crate::owners::owner_text(conn, item.id, item.item_type)?.trim_end()
+                ));
+            }
+            // KAIROS-T-0528: a task in Active with no claim.
+            let item = task_for_claim(item)?;
+            let board_id = item.board_id.unwrap_or_default();
+            crate::claims::require_claim_take(conn, &slug, item.id, board_id, user)?;
+            kairos_db::task_claims::claim(conn, item.id, user)
+                .map_err(crate::claims::map_claim_error)?;
             Ok(format!(
                 "Claimed {}.\n{}",
                 item.short_code,
-                crate::owners::owner_text(conn, item.id, item.item_type)?.trim_end()
+                crate::claims::claim_text(conn, item.id, item.column_id)?.trim_end()
             ))
         })
         .await
     }
 
     #[tool(
-        description = "Give the claim of a TASK in Active, or the owner of a STRATEGY or INITIATIVE, to another person (`to`: user id, email or user name; not a service account). A task stays in Active; you can hand off your own claim, or any claim with `transition_items` on its board. A strategy or initiative: the owner hands it off, or an org admin sets it; the new owner must be a member of its board (else NOT_BOARD_MEMBER). The person gets a notification."
+        description = "Give the claim of a TASK in Active, or the owner of a STRATEGY or INITIATIVE, to another person (`to`: user id, email, user name or `me`; not a service account). A task stays in Active; you can hand off your own claim, or any claim with `transition_items` on its board. A strategy or initiative: the owner hands it off, or an org admin sets it; the new owner must be a member of its board (else NOT_BOARD_MEMBER). The person gets a notification."
     )]
     pub async fn hand_off_item(
         &self,
@@ -3841,7 +3855,7 @@ impl KairosMcp {
             let item = task_for_claim(item)?;
             let board_id = item.board_id.unwrap_or_default();
             crate::claims::require_claim_change(conn, &slug, item.id, board_id, user)?;
-            let to = crate::claims::resolve_person(conn, &slug, &params.to)?;
+            let to = crate::claims::resolve_person(conn, &slug, &params.to, user)?;
             kairos_db::task_claims::hand_off(conn, item.id, to, user)
                 .map_err(crate::claims::map_claim_error)?;
             Ok(format!(
@@ -3854,7 +3868,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "End the claim on a TASK in Active (it stays in Active, free for the next person who moves it there), or remove the owner of a STRATEGY or INITIATIVE. A task: your own claim, or any with `transition_items` on its board. A strategy or initiative: the owner, or an org admin."
+        description = "End the claim on a TASK in Active (it stays in Active, free for anyone: `claim_item` takes it), or remove the owner of a STRATEGY or INITIATIVE. A task: your own claim, or any with `transition_items` on its board. A strategy or initiative: the owner, or an org admin."
     )]
     pub async fn release_item(
         &self,
@@ -6649,8 +6663,8 @@ fn rename_history(conn: &mut PgConnection, item_id: Uuid) -> Result<String, ApiE
     Ok(out)
 }
 
-/// The live TASK of `hand_off_item` and `release_item`, or a refusal for an
-/// item that is not a task (KAIROS-T-0359). A strategy and an initiative
+/// The live TASK of `claim_item`, `hand_off_item` and `release_item`, or a
+/// refusal for an item that is not a task (KAIROS-T-0359). A strategy and an initiative
 /// have an owner instead (KAIROS-T-0411), and the tools take that path
 /// before.
 fn task_for_claim(item: ItemView) -> Result<ItemView, ApiError> {

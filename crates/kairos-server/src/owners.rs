@@ -179,7 +179,8 @@ pub fn require_subject(item_type: ItemType, short_code: &str) -> Result<(), ApiE
         return Ok(());
     }
     let task = if item_type == ItemType::Task {
-        " A task has a claim: the person who moves it to Active gets it."
+        " A task has a claim: claim_item on a task in Active takes it, and a move to Active \
+         gives it."
     } else {
         ""
     };
@@ -281,7 +282,7 @@ pub fn hand_off(
         )));
     }
     let to_name = to;
-    let to = crate::claims::resolve_person(conn, slug, to)?;
+    let to = crate::claims::resolve_person(conn, slug, to, user)?;
     let (board, member) = board_membership(conn, item_id, to)?;
     if !member {
         return Err(ApiError::unprocessable(

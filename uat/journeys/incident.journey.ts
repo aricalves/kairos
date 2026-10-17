@@ -168,6 +168,15 @@ journey(
       return { request, claim: 'none', column: 'Active' };
     });
 
+    await step(alice, 'takes the free request with a claim, so the board shows who works it now (MCP, KAIROS-T-0528)', async () => {
+      const mcp = await alice.mcp();
+      const claimed = await mcp.call('claim_item', { short_code: request });
+      expect(claimed).toContain(`Claimed ${request}`);
+      const claim = claimed.match(/- claim: ([^\n]+)/)?.[1] ?? '';
+      expect(claim).not.toMatch(/^none/);
+      return { request, claim };
+    });
+
     await step(agent, 'finds the bug in its repository queue, flagged as unplanned, and may only propose its triage', async () => {
       const mcp = await agent.mcp();
       const queue = await mcp.call('board_items', { board: team.boardSlug, repository: team.repoSlug });
