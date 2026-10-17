@@ -197,6 +197,7 @@ Secret loaded via `valueFrom`.
 | `config.auth.maxFailures` | `KAIROS_AUTH_MAX_FAILURES` | `""` | Failed authentications before a lockout; server default `5`. Emitted when set, **including `0`**, which turns throttling off. |
 | `config.auth.failureWindowSecs` | `KAIROS_AUTH_FAILURE_WINDOW_SECS` | `""` | How long failures accumulate; server default `300`. Emitted only when set. |
 | `config.auth.lockoutSecs` | `KAIROS_AUTH_LOCKOUT_SECS` | `""` | How long a lockout lasts; server default `60`. Emitted only when set. |
+| `config.auth.cacheSecs` | `KAIROS_AUTH_CACHE_SECS` | `""` | How long the auth cache keeps an entry; server default `60`. Emitted when set, **including `0`**, which turns the cache off. |
 | `config.localAuth.enabled` | `KAIROS_LOCAL_AUTH` | `false` | Accept local password accounts in addition to the issuer. Off means `/api/login` is not routed at all. Accounts are admin-created; there is no self-service sign-up and no reset email. |
 | `config.localAuth.sessionTtlSecs` | `KAIROS_SESSION_TTL_SECS` | `""` | Session bearer lifetime in seconds; server default `1209600` (14 days). Emitted only when set. |
 | `config.localAuth.bootstrapAdmin` | `KAIROS_BOOTSTRAP_ADMIN` | `""` | A first-boot admin, created only on a boot that finds no users at all and inert afterwards. Also becomes a deployment admin, since a fresh deployment has no organization either. Remove it once the account exists. |

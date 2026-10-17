@@ -5,9 +5,10 @@ Before you write a plan, read the record (COLLIERY-I-0627). A plan on a guess ab
 ## The calls
 
 1. `get_item` on the task. Follow the parent chain: the initiative, then its strategy. `get_item` each one. Their relationships list the documents that support them (a PRD, a spec, a research document): `get_item` each.
-2. `search` with `filter: {repository: <slug>, entity_type: [adr, document]}`. These are the ADRs and the documents that impact the repository of this checkout (`repository` in the SessionStart context). `get_repository <slug>` lists the same set.
-3. `related_work` on the task (and on the initiative when you plan the initiative). It gives proposals, not facts: `get_item` each one that looks related.
-4. `get_item` on each hit that the first three calls gave. In an ADR, read the decision and its consequences. In a document, read the sections that the task touches.
+2. `get_repository <slug>` for the repository of this checkout (`repository` in the SessionStart context). It lists the documents and the ADRs that impact the repository. It also lists the ADRs of the owner team that no `impacts` link names. Most older ADRs have no link, so read that section too. `search` with `filter: {repository: <slug>, entity_type: [adr, document]}` finds the linked items only.
+3. `team_pages <team>` for the owner team. It gives the tree of the documents and the ADRs of the team. Use it when `get_repository` says that it does not list each ADR ("N more"), and to find the documents of the team.
+4. `related_work` on the task (and on the initiative when you plan the initiative). It gives proposals, not facts: `get_item` each one that looks related.
+5. `get_item` on each hit that the first four calls gave. In an ADR, read the decision and its consequences. In a document, read the sections that the task touches.
 
 ## What to write
 

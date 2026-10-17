@@ -5,7 +5,9 @@
 //! - the claim on the task DTO ([`attach_claim`], [`attach_claims`]) and
 //!   in the MCP text ([`claim_text`]);
 //! - who may hand off or release a claim ([`require_claim_change`]);
-//! - the person of a hand-off ([`resolve_person`]);
+//! - the person of a hand-off ([`resolve_person`]), who must hold
+//!   `transition_items` on the board of the task ([`require_claim_target`],
+//!   [`hand_off_targets`], KAIROS-T-0530);
 //! - the WARNING for a write to a task that a different person has the
 //!   claim on ([`note`]).
 //!
@@ -52,7 +54,6 @@
 //! and the MCP tool call writes the line, only for a response that is a
 //! success.
 
-use kairos_core::short_code::ItemType;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -420,27 +421,17 @@ pub fn require_claim_change(
     crate::api::require_capability(conn, slug, Some(board_id), user, "transition_items")
 }
 
-/// The right to take the claim of a free task (KAIROS-T-0528):
-/// `transition_items` on the board of the task, or the edit rule of the
-/// task (its creator, or `manage_tasks`).
+/// The right to take the claim of a free task (KAIROS-T-0528,
+/// KAIROS-T-0642): `transition_items` on the board of the task. The edit
+/// rule gives no claim: a claimant who cannot move the task to done is a
+/// dead end (KAIROS-A-0030 as amended, KAIROS-A-0037).
 pub fn require_claim_take(
     conn: &mut PgConnection,
     slug: &str,
-    task_id: Uuid,
     board_id: Uuid,
     user: Uuid,
 ) -> Result<(), ApiError> {
-    if crate::api::require_capability(conn, slug, Some(board_id), user, "transition_items").is_ok()
-    {
-        return Ok(());
-    }
-    crate::api::require_item_edit(conn, slug, user, task_id, ItemType::Task).map_err(|_| {
-        ApiError::forbidden(
-            "To claim a task, you need transition_items on its board, or the right to edit the \
-             task: its creator has it, and so does manage_tasks.",
-        )
-        .with_details(serde_json::json!({ "board_id": board_id, "capability": "transition_items" }))
-    })
+    crate::api::require_capability(conn, slug, Some(board_id), user, "transition_items")
 }
 
 /// The person that `reference` names, for a hand-off: a user id, an email
@@ -502,6 +493,123 @@ pub fn resolve_person(
         .with_details(serde_json::json!({ "argument": "to" })));
     }
     Ok(id)
+}
+
+/// THE TARGET OF A HAND-OFF (KAIROS-T-0530): the person `to` must hold
+/// `transition_items` on the board of the task, by the team of the board,
+/// by a grant, or as an organization admin. This is the check of
+/// [`crate::api::require_capability`], made for the target.
+///
+/// Why: a claim says who works the task. A person who cannot move the
+/// task cannot finish it, so the claim would be a dead end.
+///
+/// The refusal is 422 VALIDATION with `details.argument = "to"`, not 403:
+/// the caller may hand off, and the input `to` is the problem. `me` passes
+/// only when the caller holds the capability.
+pub fn require_claim_target(
+    conn: &mut PgConnection,
+    slug: &str,
+    board_id: Uuid,
+    to: Uuid,
+    reference: &str,
+    short_code: &str,
+) -> Result<(), ApiError> {
+    if kairos_db::abac::authorize(conn, slug, board_id, to, TRANSITION_ITEMS)
+        .map_err(ApiError::internal)?
+    {
+        return Ok(());
+    }
+    use kairos_db::schema::boards;
+    let board_slug: String = boards::table
+        .find(board_id)
+        .select(boards::slug)
+        .first(conn)
+        .map_err(ApiError::internal)?;
+    Err(ApiError::validation(format!(
+        "{reference:?} cannot get the claim of {short_code}. The person needs \
+         {TRANSITION_ITEMS} on the board {board_slug}. Send a person of the team of the \
+         board, or give the person a grant first."
+    ))
+    .with_details(serde_json::json!({
+        "argument": "to",
+        "board_id": board_id,
+        "board": board_slug,
+        "required_capability": TRANSITION_ITEMS,
+    })))
+}
+
+/// The capability that a hand-off target must hold (KAIROS-T-0530).
+const TRANSITION_ITEMS: &str = "transition_items";
+
+/// The persons who can get the claim of a task on the board `board_id`
+/// (KAIROS-T-0530): each person of the organization `slug` who holds
+/// `transition_items` on the board. Sorted by email.
+///
+/// The candidates are the organization admins, the persons with a grant
+/// on the board, and the members of the team of the board. Each other
+/// person fails [`kairos_db::abac::authorize`] for `transition_items`.
+/// Each candidate is then checked with `authorize`, so the list and
+/// [`require_claim_target`] agree. A service account is left out.
+pub fn hand_off_targets(
+    conn: &mut PgConnection,
+    slug: &str,
+    board_id: Uuid,
+) -> Result<Vec<dto::HandOffTarget>, ApiError> {
+    use kairos_db::schema::{
+        board_member_capabilities, boards, organization_members, organizations, team_members, users,
+    };
+    let mut candidates: Vec<Uuid> = organization_members::table
+        .inner_join(organizations::table)
+        .filter(organizations::slug.eq(slug))
+        .filter(organization_members::role.eq(kairos_db::models::OrgRole::Admin))
+        .select(organization_members::user_id)
+        .load(conn)
+        .map_err(ApiError::internal)?;
+    candidates.extend(
+        board_member_capabilities::table
+            .filter(board_member_capabilities::board_id.eq(board_id))
+            .select(board_member_capabilities::user_id)
+            .load::<Uuid>(conn)
+            .map_err(ApiError::internal)?,
+    );
+    let team: Option<Uuid> = boards::table
+        .find(board_id)
+        .select(boards::team_id)
+        .first(conn)
+        .map_err(ApiError::internal)?;
+    if let Some(team) = team {
+        candidates.extend(
+            team_members::table
+                .filter(team_members::team_id.eq(team))
+                .select(team_members::user_id)
+                .load::<Uuid>(conn)
+                .map_err(ApiError::internal)?,
+        );
+    }
+    candidates.sort_unstable();
+    candidates.dedup();
+    let people: Vec<(Uuid, String, String)> = users::table
+        .filter(users::id.eq_any(&candidates))
+        .filter(users::kind.eq(kairos_db::models::public::USER_KIND_HUMAN))
+        .order(users::email.asc())
+        .select((users::id, users::email, users::display_name))
+        .load(conn)
+        .map_err(ApiError::internal)?;
+    let mut targets = Vec::new();
+    for (id, email, display_name) in people {
+        let member = kairos_db::abac::is_org_member(conn, slug, id).map_err(ApiError::internal)?;
+        if member
+            && kairos_db::abac::authorize(conn, slug, board_id, id, TRANSITION_ITEMS)
+                .map_err(ApiError::internal)?
+        {
+            targets.push(dto::HandOffTarget {
+                user_id: id.to_string(),
+                email,
+                display_name,
+            });
+        }
+    }
+    Ok(targets)
 }
 
 /// [`ClaimError`] → HTTP.

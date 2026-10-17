@@ -15,6 +15,11 @@
 //! 5. The claim ends when the task goes out of Active.
 //! 7. The holder of the claim may edit the task: notes, state, metadata;
 //!    not an archive (KAIROS-T-0532).
+//! 8. A hand-off goes only to a person who holds `transition_items` on the
+//!    board of the task (KAIROS-T-0530): to carol (an org member with no
+//!    right on the board) it is refused over REST and MCP; to bob (the
+//!    team) it passes. `GET /api/tasks/{code}/hand-off-targets` lists the
+//!    persons who can get the claim.
 //!
 //! And: a move to Active by a service account makes no claim; an archive
 //! of a claimed task ends the claim; a person with no claim and no
@@ -41,7 +46,9 @@ use kairos_client::EntityKind;
 use kairos_client::Error;
 use kairos_client::types::{CreateTaskRequest, SetTaskStateRequest, Task};
 use kairos_client::types_meta::{ActivityQuery, UpdateMetadataRequest};
-use kairos_client::types_org::{AddTeamMemberRequest, BoardItemsQuery, CreateTeamRequest};
+use kairos_client::types_org::{
+    AddBoardMemberRequest, AddTeamMemberRequest, BoardItemsQuery, CreateTeamRequest,
+};
 use kairos_client::types_service_accounts::{CreateApiKeyRequest, CreateServiceAccountRequest};
 use kairos_db::models::{NewOrganizationMember, OrgRole};
 use kairos_db::schema::{organization_members, organizations, users};
@@ -443,6 +450,53 @@ async fn a_task_in_active_has_a_claim() {
         .expect_err("no such person");
     assert!(matches!(err, Error::Validation { .. }), "{err}");
 
+    // --- 8. the target must hold transition_items (KAIROS-T-0530) ----------
+    // carol is a person of the organization with no right on the board.
+    let err = alice
+        .hand_off_task(&task.short_code, "carol@kairos.test")
+        .await
+        .expect_err("carol cannot move the task");
+    assert!(
+        matches!(&err, Error::Validation { status: 422, message, .. }
+            if message.contains("transition_items")
+                && message.contains(&detail.board.slug)
+                && message.contains("carol@kairos.test")),
+        "{err}"
+    );
+    let (text, error) = bob_mcp
+        .call(
+            "hand_off_item",
+            json!({"short_code": task.short_code, "to": "carol@kairos.test"}),
+        )
+        .await;
+    assert!(
+        error
+            && text.starts_with("VALIDATION:")
+            && text.contains("transition_items")
+            && text.contains(&detail.board.slug)
+            && text.contains("\"argument\":\"to\""),
+        "{text}"
+    );
+    let unchanged = alice.get_task(&task.short_code).await.expect("task");
+    assert_eq!(
+        unchanged.claim.map(|c| c.user_id),
+        Some(alice_id.to_string()),
+        "the refused hand-off changes nothing"
+    );
+    // The list of the persons who can get the claim: the team and the
+    // organization admin, not carol.
+    let targets: Vec<String> = carol
+        .hand_off_targets(&task.short_code)
+        .await
+        .expect("targets")
+        .into_iter()
+        .map(|t| t.email)
+        .collect();
+    assert_eq!(
+        targets,
+        vec!["alice@kairos.test", "bob@kairos.test", "svc@kairos.test"]
+    );
+
     // --- 3. alice hands the task off to bob ---------------------------------
     let handed = alice
         .hand_off_task(&task.short_code, "bob@kairos.test")
@@ -528,6 +582,34 @@ async fn a_task_in_active_has_a_claim() {
         .await
         .expect_err("carol has no right");
     assert!(matches!(err, Error::Forbidden { .. }), "{err}");
+    // KAIROS-T-0642: the creator gets no claim from the edit rule. carol
+    // files a request (file_backlog), alice moves it to Active and frees it;
+    // carol, its creator with no transition_items, is refused.
+    let request = carol
+        .create_task(&CreateTaskRequest {
+            work_class: Some("support".into()),
+            ..new_task("A request from carol")
+        })
+        .await
+        .expect("carol files a request");
+    for column in ["Todo", "Active"] {
+        alice
+            .transition_task(&request.short_code, &to(column))
+            .await
+            .expect(column);
+    }
+    alice
+        .release_task(&request.short_code)
+        .await
+        .expect("free the request");
+    let err = carol
+        .claim_task(&request.short_code)
+        .await
+        .expect_err("the creator has no transition_items");
+    assert!(
+        matches!(&err, Error::Forbidden { .. }) && err.to_string().contains("transition_items"),
+        "{err}"
+    );
     let claimed = bob
         .claim_task(&task.short_code)
         .await
@@ -681,9 +763,20 @@ async fn a_task_in_active_has_a_claim() {
     assert_eq!(claims, 0, "the archive ended the claim");
 
     // --- 7. the holder of the claim may edit the task (KAIROS-T-0532) ------
-    // carol is an org member with no team and no grant. A hand-off gives
-    // her the claim; the claim gives her the edit rule: notes, state,
-    // metadata. Not an archive.
+    // carol is an org member with no team. A grant of transition_items
+    // makes her a hand-off target (KAIROS-T-0530), and gives no edit right.
+    // A hand-off gives her the claim; the claim gives her the edit rule:
+    // notes, state, metadata. Not an archive.
+    admin
+        .add_board_member(
+            &board,
+            &AddBoardMemberRequest {
+                user_id: user(&mut conn, "carol@kairos.test").0.to_string(),
+                capabilities: vec!["transition_items".into()],
+            },
+        )
+        .await
+        .expect("carol gets transition_items");
     let fifth = alice.create_task(&new_task("Helped")).await.expect("task");
     for column in ["Todo", "Active"] {
         alice
@@ -696,10 +789,18 @@ async fn a_task_in_active_has_a_claim() {
         .await
         .expect_err("carol has no right before the claim");
     assert!(matches!(err, Error::Forbidden { .. }), "{err}");
+    let targets = alice
+        .hand_off_targets(&fifth.short_code)
+        .await
+        .expect("targets");
+    assert!(
+        targets.iter().any(|t| t.email == "carol@kairos.test"),
+        "the grant makes carol a target: {targets:?}"
+    );
     alice
         .hand_off_task(&fifth.short_code, "carol@kairos.test")
         .await
-        .expect("hand-off to carol");
+        .expect("hand-off to carol, a person with a grant");
     carol
         .append_note(EntityKind::Task, &fifth.short_code, "Mine now.")
         .await

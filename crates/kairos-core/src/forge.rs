@@ -359,7 +359,8 @@ fn parse_time(raw: Option<&str>) -> Option<DateTime<Utc>> {
 /// Every Kairos short code in `text`, deduplicated, in order of first
 /// appearance.
 ///
-/// The shape is `PREFIX-<letter>-NNNN` where the letter set is derived
+/// The shape is `PREFIX-<letter>-NNNN` (4 to 18 digits, as
+/// [`crate::short_code::parse_short_code`]) where the letter set is derived
 /// from [`ItemType`] — a sixth entity type cannot silently fail to match.
 /// Case-sensitive: short codes are uppercase, and matching lowercase
 /// would turn ordinary prose into false links.
@@ -377,13 +378,22 @@ pub fn extract_short_codes(text: &str) -> Vec<String> {
     // non-ASCII bytes match none of these classes, and every slice
     // boundary below lands on a verified ASCII byte.
     while i < bytes.len() {
-        let tail_matches = bytes[i] == b'-'
-            && i + 6 < bytes.len()
+        // The digit run after `-L-`: the rule of `parse_short_code`, 4 to 18
+        // digits (KAIROS-T-0573). A code past 9999 has five or more.
+        let digits = if bytes[i] == b'-'
+            && i + 3 < bytes.len()
             && letters.contains(&bytes[i + 1])
             && bytes[i + 2] == b'-'
-            && bytes[i + 3..i + 7].iter().all(u8::is_ascii_digit)
-            // Exactly four digits: a fifth means it is not a short code.
-            && !matches!(bytes.get(i + 7), Some(b) if b.is_ascii_digit());
+        {
+            bytes[i + 3..]
+                .iter()
+                .take_while(|b| b.is_ascii_digit())
+                .count()
+        } else {
+            0
+        };
+        let end = i + 3 + digits;
+        let tail_matches = crate::short_code::NUMBER_DIGITS.contains(&digits);
         if tail_matches {
             // The prefix is the maximal [A-Z0-9] run ending at `i`, and it
             // must START with a letter (`0EMO-T-0001` is not a code).
@@ -394,11 +404,11 @@ pub fn extract_short_codes(text: &str) -> Vec<String> {
                 start -= 1;
             }
             if start < i && bytes[start].is_ascii_uppercase() {
-                let code = &text[start..i + 7];
+                let code = &text[start..end];
                 if !found.iter().any(|f| f == code) {
                     found.push(code.to_string());
                 }
-                i += 7;
+                i = end;
                 continue;
             }
         }
@@ -438,6 +448,27 @@ mod tests {
         );
     }
 
+    /// KAIROS-T-0573: a code past 9999 links, in a branch and in a title,
+    /// and the scan uses the digit rule of `parse_short_code`.
+    #[test]
+    fn matches_codes_of_five_digits_and_more() {
+        assert_eq!(
+            extract_short_codes("dylan/DEMO-T-10000-fix-auth"),
+            vec!["DEMO-T-10000"]
+        );
+        assert_eq!(
+            extract_short_codes("Fix refunds (DEMO-T-123456)"),
+            vec!["DEMO-T-123456"]
+        );
+        for text in ["DEMO-T-0002", "DEMO-T-10000", "DEMO-T-123456789012345678"] {
+            assert_eq!(extract_short_codes(text), vec![text]);
+            assert!(
+                crate::short_code::parse_short_code(text).is_some(),
+                "{text}"
+            );
+        }
+    }
+
     #[test]
     fn deduplicates_preserving_first_appearance() {
         assert_eq!(
@@ -453,7 +484,7 @@ mod tests {
         for text in [
             "demo-t-0002",
             "DEMO-T-002",
-            "DEMO-T-00021",
+            "DEMO-T-0000000000000000021",
             "DEMO-X-0002",
             "DEMO--0002",
             "0EMO-T-0002",

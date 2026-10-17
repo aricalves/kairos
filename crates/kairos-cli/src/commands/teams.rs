@@ -5,7 +5,6 @@ use kairos_client::types_org::{
     AddTeamMemberRequest, CreateTeamRequest, ItemTeam, Team, TeamMember, UpdateTeamRequest,
 };
 
-use super::team_pages::looks_like_uuid;
 use crate::commands::entities::{ListArgs, require_confirm};
 use crate::commands::repos::family_of;
 use crate::context::{Common, client, print_json};
@@ -202,7 +201,7 @@ impl TeamsCommand {
             }
             Self::Get { team, common } => {
                 let client = client(&common)?;
-                let team_id = team_id(&client, &team).await?;
+                let team_id = team_id(&team);
                 let team = client.get_team(&team_id).await?;
                 if common.json {
                     return print_json(&team);
@@ -248,7 +247,7 @@ impl TeamsCommand {
                     ));
                 }
                 let client = client(&common)?;
-                let team_id = team_id(&client, &team).await?;
+                let team_id = team_id(&team);
                 let team = client
                     .update_team(
                         &team_id,
@@ -277,7 +276,7 @@ impl TeamsCommand {
             } => {
                 require_confirm(confirm, &format!("the team {team}"))?;
                 let client = client(&common)?;
-                let team_id = team_id(&client, &team).await?;
+                let team_id = team_id(&team);
                 let response = client.delete_team(&team_id).await?;
                 if common.json {
                     return print_json(&response);
@@ -352,7 +351,7 @@ impl TeamMembersCommand {
         match self {
             Self::List { team, common } => {
                 let client = client(&common)?;
-                let team_id = team_id(&client, &team).await?;
+                let team_id = team_id(&team);
                 let members = client.list_team_members(&team_id).await?;
                 if common.json {
                     return print_json(&members);
@@ -366,7 +365,7 @@ impl TeamMembersCommand {
             }
             Self::Add { team, user, common } => {
                 let client = client(&common)?;
-                let team_id = team_id(&client, &team).await?;
+                let team_id = team_id(&team);
                 let member = client
                     .add_team_member(&team_id, &AddTeamMemberRequest { user_id: user })
                     .await?;
@@ -381,7 +380,7 @@ impl TeamMembersCommand {
             }
             Self::Remove { team, user, common } => {
                 let client = client(&common)?;
-                let team_id = team_id(&client, &team).await?;
+                let team_id = team_id(&team);
                 let response = client.remove_team_member(&team_id, &user).await?;
                 if common.json {
                     return print_json(&response);
@@ -393,13 +392,9 @@ impl TeamMembersCommand {
     }
 }
 
-/// The UUID of a team from its slug or its UUID.
-pub(crate) async fn team_id(
-    client: &kairos_client::KairosClient,
-    team: &str,
-) -> Result<String, CliError> {
-    if looks_like_uuid(team) {
-        return Ok(team.to_string());
-    }
-    Ok(client.get_team_by_slug(team).await?.id)
+/// The reference of a team for a path: its slug or its UUID, as given.
+/// Each team route takes both (KAIROS-T-0607), so the CLI makes no call to
+/// resolve a slug.
+pub(crate) fn team_id(team: &str) -> String {
+    team.trim().to_string()
 }

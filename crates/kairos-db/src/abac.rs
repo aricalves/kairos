@@ -100,7 +100,8 @@ struct BoolRow {
 }
 
 /// The KAIROS-A-0006 access check as ONE indexed query (no N+1): EXISTS over
-/// `board_member_capabilities` (`idx_board_member_cap_board_user`) with the
+/// `board_member_capabilities` (its primary key, `(board_id, user_id,
+/// capability)`) with the
 /// `*`→`%` LIKE translation plus the explicit `capability = '*'` arm.
 ///
 /// LIKE metacharacters (`\`, `%`, `_`) in STORED capability values are

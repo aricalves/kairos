@@ -73,10 +73,14 @@ decisions about it. It has the live items only.
 `?include_deleted=true` adds the archived items, each marked with
 `archived_at`.
 
+`owner_team_adrs` has the other ADRs of the owner team (KAIROS-T-0599).
+No `impacts` link names them. The newest come first, 50 at most.
+A superseded ADR is not there. `owner_team_adrs_total` counts them all.
+
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
 | `slug` | path | yes | `string` | Repository slug (or UUID) |
-| `include_deleted` | query | no | `boolean` | Include the archived documents and ADRs in `impacted_by`, each marked with `archived_at`. Default false. |
+| `include_deleted` | query | no | `boolean` | Include the archived documents and ADRs in `impacted_by` and `owner_team_adrs`, each marked with `archived_at`. Default false. |
 
 | Response | Body | Meaning |
 |---|---|---|

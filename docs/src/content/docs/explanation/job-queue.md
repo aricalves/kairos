@@ -148,6 +148,26 @@ The limits are for each server: with 2 servers, 2 embedded builds can run.
 The limit of the embedded builds keeps the CPU of a server for one model at
 a time. A limit of 0 keeps the kind off that server.
 
+## The connections of the jobs
+
+The worker and the jobs use a database pool of their own, with
+`KAIROS_JOB_POOL_SIZE` connections (6). The handlers of the requests keep
+their pool, with `KAIROS_POOL_SIZE` connections. So a burst of webhook
+deliveries, builds and embedding batches fills the job pool, and no request
+waits for a connection. When the limits of the kinds add up to more than
+the job pool, a job waits for a connection, 5 seconds at most. A job that
+gets none fails its try and runs again.
+
+Each connection of both pools has a `statement_timeout` of 30 seconds, a
+`lock_timeout` of 5 seconds and an `idle_in_transaction_session_timeout` of
+60 seconds. A job whose statement passes one of them fails its try, with
+the reason in `last_error`.
+
+An embedding batch holds no connection while the model runs. It reads its
+page on one connection and gives the connection back. Then it calls the
+provider, and writes the vectors on a second connection. A remote provider
+that takes seconds holds no connection of the pool.
+
 ## Which work runs as jobs
 
 | Work | Kind | Who adds the job | One open job for each |

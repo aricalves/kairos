@@ -212,5 +212,7 @@ pub(crate) async fn revoke_org_agent_key(
             })
         })
         .await?;
+    // KAIROS-T-0609: the next request with the key is refused.
+    state.auth_cache.drop_key(key_id);
     Ok(Json(outcome))
 }

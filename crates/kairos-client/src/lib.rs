@@ -32,7 +32,10 @@ pub mod types_events;
 
 pub mod types_work;
 
-pub use client::{EntityKind, KairosClient, StaticToken, TokenProvider};
+pub use client::{
+    DEFAULT_CONNECT_TIMEOUT, DEFAULT_TIMEOUT, EntityKind, KairosClient, StaticToken, TIMEOUT_VAR,
+    TokenProvider, parse_timeout, timeout_from_env,
+};
 pub use error::Error;
 pub use ws::EventStream;
 

@@ -259,7 +259,9 @@ pub struct HandOffArgs {
     /// The task's short code (e.g. ACME-T-0001). The task must be in Active
     pub short_code: String,
     /// The person who gets the claim: a user id, an email or a user name
-    /// of a person of the organization, or `me`
+    /// of a person of the organization, or `me`. The person must hold
+    /// `transition_items` on the board of the task: by its team, by a
+    /// grant, or as an organization admin
     #[arg(long = "to", value_name = "PERSON")]
     pub to: String,
     #[command(flatten)]
@@ -379,22 +381,19 @@ pub fn emit_cancelled(common: &Common, task: &Task) -> Result<(), CliError> {
 
 /// `tasks lane` output (KAIROS-T-0433). `before` is the lane before the
 /// call: a call that changes nothing is a normal 200.
-pub fn emit_lane(common: &Common, before: &str, task: &Task) -> Result<(), CliError> {
+pub fn emit_lane(common: &Common, task: &Task) -> Result<(), CliError> {
     if common.json {
         return print_json(task);
     }
-    if before == task.work_class {
-        println!(
-            "{} is already in the {} lane: nothing changed.",
-            task.short_code, task.work_class
-        );
-    } else {
-        println!(
-            "Moved {} to the {} lane (was {}).",
-            task.short_code, task.work_class, before
-        );
-    }
+    println!("{}", lane_line(&task.short_code, &task.work_class));
     Ok(())
+}
+
+/// The line of [`emit_lane`]: the lane of the task after the call, from
+/// the answer of the server (KAIROS-T-0607). The CLI does not read the task
+/// first, so it does not say whether the lane changed.
+fn lane_line(short_code: &str, work_class: &str) -> String {
+    format!("{short_code} is in the {work_class} lane.")
 }
 
 /// `tasks purge` output (KAIROS-T-0362).
@@ -897,31 +896,23 @@ fn renamed_line(before: &str, after: &str) -> Option<String> {
 
 /// Render the change of the owner board of a document (COLLIERY-T-0269).
 /// `before` is the owner board that the document named before the call.
-pub fn emit_document_moved(
-    common: &Common,
-    before: &str,
-    document: &Document,
-) -> Result<(), CliError> {
+pub fn emit_document_moved(common: &Common, document: &Document) -> Result<(), CliError> {
     if common.json {
         return print_json(document);
     }
     println!(
         "{}",
-        document_moved_line(&document.short_code, before, &document.board_id)
+        document_moved_line(&document.short_code, &document.board_id)
     );
     Ok(())
 }
 
-/// The line of [`emit_document_moved`].
-fn document_moved_line(short_code: &str, before: &str, after: &str) -> String {
-    if before == after {
-        format!(
-            "Kairos did not change the document {short_code}. Its owner board is {after} \
-             already."
-        )
-    } else {
-        format!("Kairos moved the document {short_code} to the owner board {after}.")
-    }
+/// The line of [`emit_document_moved`]: the owner board of the document
+/// after the call, from the answer of the server (KAIROS-T-0607). The CLI
+/// does not read the document first, so it does not say whether the board
+/// changed.
+fn document_moved_line(short_code: &str, board_id: &str) -> String {
+    format!("The owner board of the document {short_code} is {board_id}.")
 }
 
 /// `promote-note` output (KAIROS-T-0505): the new item and its edge.
@@ -1415,14 +1406,10 @@ macro_rules! entity_family_cli {
                     $(
                     Self::$owner_variant(args) => {
                         let client = client(&args.common)?;
-                        // The board before the call, to say what changed:
-                        // the response of a call that changes nothing is a
-                        // normal 200.
-                        let before = client.$get(&args.short_code).await?.board_id;
                         let item = client
                             .$owner_fn(&args.short_code, &args.to_board, args.rename)
                             .await?;
-                        emit_document_moved(&args.common, &before, &item)?;
+                        emit_document_moved(&args.common, &item)?;
                         if !args.common.json {
                             if let Some(line) = renamed_line(&args.short_code, &item.short_code) {
                                 println!("{line}");
@@ -1464,9 +1451,8 @@ macro_rules! entity_family_cli {
                     $(
                     Self::$lane_variant(args) => {
                         let client = client(&args.common)?;
-                        let before = client.$get(&args.short_code).await?.work_class;
                         let task = client.$lane_fn(&args.short_code, &args.work_class).await?;
-                        emit_lane(&args.common, &before, &task)
+                        emit_lane(&args.common, &task)
                     }
                     )?
                     Self::Archive(args) => {
@@ -1666,16 +1652,17 @@ mod tests {
         assert_eq!(request.version, 1);
     }
 
-    /// COLLIERY-T-0269: the line of `documents move` says what changed.
+    /// KAIROS-T-0607: the lines of `documents move` and `tasks lane` come
+    /// from the answer of the server, with no read before the call.
     #[test]
-    fn the_move_of_a_document_says_what_changed() {
+    fn the_move_of_a_document_and_the_lane_name_the_result() {
         assert_eq!(
-            document_moved_line("ACME-D-0001", "b-1", "b-2"),
-            "Kairos moved the document ACME-D-0001 to the owner board b-2."
+            document_moved_line("ACME-D-0001", "b-2"),
+            "The owner board of the document ACME-D-0001 is b-2."
         );
         assert_eq!(
-            document_moved_line("ACME-D-0001", "b-1", "b-1"),
-            "Kairos did not change the document ACME-D-0001. Its owner board is b-1 already."
+            lane_line("ACME-T-0001", "planned"),
+            "ACME-T-0001 is in the planned lane."
         );
     }
 

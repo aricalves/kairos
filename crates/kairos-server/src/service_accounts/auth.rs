@@ -28,6 +28,7 @@ use kairos_db::schema::{api_keys, organizations, users};
 use kairos_db::tenant::is_valid_tenant_slug;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::error::ApiError;
@@ -99,39 +100,52 @@ fn bad_key() -> ApiError {
 
 /// The tenant an API key resolves to, inserted by [`require_auth`] so
 /// `require_tenant` pins this tenant instead of resolving one from the `Host`
-/// (KAIROS-A-0017: the key carries its own tenant).
+/// (KAIROS-A-0017: the key carries its own tenant). The org id goes with it
+/// (KAIROS-T-0609), so the tenant layer does not read the org again.
 #[derive(Debug, Clone)]
-pub struct ApiKeyTenant(pub String);
+pub struct ApiKeyTenant {
+    pub slug: String,
+    pub org_id: Uuid,
+}
 
-/// Authenticate an API-key bearer: parse it, resolve its embedded tenant, hash
-/// it, look it up in that tenant's `api_keys`, check validity, and load the
-/// owning service-account user. Returns the [`AuthContext`] for that principal
-/// and the key's tenant slug. The key of a person (an agent key, KAIROS-T-0359)
-/// sets [`AuthContext::agent_key`]. Every failure is the uniform [`bad_key`] 401.
 /// How fresh a `last_used_at` stamp can be before a request writes it
 /// again (KAIROS-T-0610): one minute. The stamp says "this key was in use
 /// around then"; a request inside the window adds nothing to that.
 pub const LAST_USED_WINDOW: chrono::Duration = chrono::Duration::minutes(1);
 
+/// Authenticate an API-key bearer: parse it, resolve its embedded tenant, hash
+/// it, look it up in that tenant's `api_keys`, check validity, and load the
+/// owning service-account user. Returns the [`AuthContext`] for that principal
+/// and the key's tenant. The key of a person (an agent key, KAIROS-T-0359)
+/// sets [`AuthContext::agent_key`]. Every failure is the uniform [`bad_key`] 401.
+///
+/// A key that verifies goes into the auth cache (KAIROS-T-0609) under its
+/// hash. The caller checks the cache first: a hit needs none of this.
 pub async fn authenticate_api_key(
     state: &AppState,
     token: &str,
-) -> Result<(AuthContext, String), ApiError> {
+) -> Result<(AuthContext, ApiKeyTenant), ApiError> {
     let (slug, _secret) = parse_key(token).ok_or_else(bad_key)?;
     let slug = slug.to_string();
 
     // The tenant must exist before a schema-pinned connection can be checked
     // out. Unknown slug → the same 401 as a bad secret.
-    let mut conn = state.pool.public_conn().await.map_err(ApiError::internal)?;
-    let org: Option<Organization> = organizations::table
-        .filter(organizations::slug.eq(&slug))
-        .select(Organization::as_select())
-        .first(&mut conn)
-        .await
-        .optional()
-        .map_err(ApiError::internal)?;
-    drop(conn);
-    org.ok_or_else(bad_key)?;
+    let org_id = match state.auth_cache.org(&slug) {
+        Some(id) => id,
+        None => {
+            let mut conn = state.pool.public_conn().await.map_err(ApiError::internal)?;
+            let org: Option<Organization> = organizations::table
+                .filter(organizations::slug.eq(&slug))
+                .select(Organization::as_select())
+                .first(&mut conn)
+                .await
+                .optional()
+                .map_err(ApiError::internal)?;
+            let org = org.ok_or_else(bad_key)?;
+            state.auth_cache.put_org(slug.clone(), org.id);
+            org.id
+        }
+    };
 
     // Hash lookup inside the tenant's own api_keys table.
     let hash = hash_key(token);
@@ -189,7 +203,18 @@ pub async fn authenticate_api_key(
         email_verified: false,
         agent_key,
     };
-    Ok((auth, slug))
+    let tenant = ApiKeyTenant { slug, org_id };
+    state.auth_cache.put_key(
+        hash,
+        crate::auth_cache::CachedKey {
+            auth: auth.clone(),
+            slug: tenant.slug.clone(),
+            org_id,
+            key_id: row.id,
+            expires_at: row.expires_at,
+        },
+    );
+    Ok((auth, tenant))
 }
 
 #[cfg(test)]

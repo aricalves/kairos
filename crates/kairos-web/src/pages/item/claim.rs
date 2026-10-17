@@ -4,7 +4,9 @@
 //! task to Active gets it. [`ClaimPanel`] shows the claim and gives two
 //! controls:
 //!
-//! - Hand off: give the claim to a different member of the organization.
+//! - Hand off: give the claim to a different person who holds
+//!   `transition_items` on the board (KAIROS-T-0530). The list comes from
+//!   `GET /api/tasks/{short_code}/hand-off-targets`.
 //! - Release: end the claim. The task stays in Active with no claim.
 //!
 //! The holder of the claim and a person who can move the task
@@ -20,7 +22,7 @@ use super::api::{self, BoardInfo, Claim};
 use crate::auth::use_auth;
 use crate::pages::boards;
 
-/// mirror of: `kairos_client::types_org::OrgMember` (partial).
+/// mirror of: `kairos_client::types::HandOffTarget`.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct Member {
     user_id: String,
@@ -53,8 +55,8 @@ pub(crate) fn may_change_claim(me: &str, holder: &str, can_move: bool) -> bool {
     can_move || (!me.is_empty() && me == holder)
 }
 
-/// The members a claim can go to: each member that does not have the
-/// claim, as `(user id, label)`. Pure, host-tested.
+/// The persons a claim can go to: each hand-off target that does not
+/// have the claim, as `(user id, label)`. Pure, host-tested.
 fn hand_off_options(members: &[Member], holder: &str) -> Vec<(String, String)> {
     members
         .iter()
@@ -156,9 +158,12 @@ fn ClaimControls(code: String, holder: String, on_moved: Callback<String>) -> im
     let to = RwSignal::new(String::new());
     let busy = RwSignal::new(false);
     let error = RwSignal::new(None::<ApiError>);
+    // KAIROS-T-0530: only a person who holds transition_items on the
+    // board can get the claim; the server lists them.
     let members = LocalResource::new(move || {
         auth.track_session();
-        async move { crate::api::get_all::<Member>(auth, "/api/members").await }
+        let path = format!("/api/tasks/{}/hand-off-targets", code.get_value());
+        async move { crate::api::get_json::<Vec<Member>>(auth, &path).await }
     });
     let hand_off: Callback<()> = Callback::new(move |()| {
         let person = to.get_untracked();
@@ -202,9 +207,9 @@ fn ClaimControls(code: String, holder: String, on_moved: Callback<String>) -> im
     view! {
         <Stack gap="xs">
             {move || match members.get() {
-                None => view! { <Text size="xs" dimmed=true>"Loading members…"</Text> }.into_any(),
+                None => view! { <Text size="xs" dimmed=true>"Loading the members of the board…"</Text> }.into_any(),
                 Some(Err(_)) => view! {
-                    <Text size="xs" dimmed=true>"The members are not available."</Text>
+                    <Text size="xs" dimmed=true>"The members of the board are not available."</Text>
                 }.into_any(),
                 Some(Ok(list)) => {
                     let options = holder.with_value(|holder| hand_off_options(&list, holder));

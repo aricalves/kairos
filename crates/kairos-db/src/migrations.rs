@@ -23,6 +23,7 @@
 //! pool (per KAIROS-A-0009) remains the runtime data path.
 
 use diesel::Connection;
+use diesel::connection::SimpleConnection;
 use diesel::pg::PgConnection;
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 
@@ -127,8 +128,17 @@ pub fn check_extensions(
 /// Establish the dedicated synchronous connection used for running
 /// migrations (see module docs for why this is sync while the runtime
 /// pool is async).
+///
+/// KAIROS-T-0614: the connection gets a `lock_timeout`
+/// ([`crate::pool::LOCK_TIMEOUT`]), so a migration behind a long
+/// transaction fails with the reason instead of a wait with no end. No
+/// `statement_timeout`: a migration can run long. The wait for the
+/// migration lock is not under the timeout ([`crate::with_migration_lock`]).
 pub fn establish_migration_connection(database_url: &str) -> Result<PgConnection, MigrationError> {
-    Ok(PgConnection::establish(database_url)?)
+    let mut conn = PgConnection::establish(database_url)?;
+    conn.batch_execute(&crate::pool::lock_timeout_sql())
+        .map_err(|e| MigrationError::Migration(e.to_string()))?;
+    Ok(conn)
 }
 
 /// Run all pending public-schema migrations on `conn`.

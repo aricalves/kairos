@@ -277,7 +277,9 @@ Who may hand off or release a claim follows from who may move the task. The
 person who has the claim may give it to someone else or release it. Anyone with
 `transition_items` on the board may do the same, because that person may move
 the task out of Active anyway, and that ends the claim. A hand-off goes only to
-a person of the organization.
+a person who holds `transition_items` on the board. The team of the board gives
+it, and so do a grant and the organization admin role. A claim tells who works
+the task, so it goes only to a person who can move the task to its end.
 
 Which column holds claims is a flag of the column, `claims`, next to the flag
 `is_done`. A new delivery board has it on its Active column, and an admin with

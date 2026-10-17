@@ -32,6 +32,10 @@ pub struct AppState {
     /// The sync pool bridging handlers to the sync kairos-db services
     /// (KAIROS-T-0018, see [`crate::blocking`]).
     pub blocking: BlockingTenantPool,
+    /// The sync pool of the job worker and the jobs (KAIROS-T-0614,
+    /// `KAIROS_JOB_POOL_SIZE`). Separate from [`Self::blocking`], so a
+    /// burst of jobs leaves the handlers their connections.
+    pub job_pool: BlockingTenantPool,
     /// The OIDC validator (JWKS cache).
     pub auth: Arc<Authenticator>,
     /// The embedding service, when this deployment has one (KAIROS-T-0190).
@@ -51,6 +55,9 @@ pub struct AppState {
     /// process-global would let one in-process test router's lockouts refuse
     /// another's requests.
     pub throttle: Option<Arc<crate::rate_limit::AuthThrottle>>,
+    /// The cache of the auth and tenant lookups (KAIROS-T-0609). Per
+    /// `AppState`, as the throttle is.
+    pub auth_cache: Arc<crate::auth_cache::AuthCache>,
     /// The clones of the indexed repositories (COLLIERY-T-1853), when
     /// `KAIROS_CODE_INDEX_DIR` is set. `None`: no nearest-commit answer and no
     /// builder; the upload and the download of an index still work.
@@ -91,6 +98,9 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
         config.pool_size,
         config.pool_min_idle,
     );
+    // KAIROS-T-0614: the jobs on a pool of their own. One idle connection:
+    // the worker polls every 2 s, so one is in use at all times.
+    let job_pool = BlockingTenantPool::with_min_idle(&config.database_url, config.job_pool_size, 1);
     // KAIROS-T-0208: discover only what is there. With no issuer there is no
     // discovery document to fetch, and a `disabled()` authenticator refuses every
     // JWT with a message that names the misconfiguration. An issuer that IS named
@@ -114,14 +124,17 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
     let instance = uuid::Uuid::new_v4();
     let code_index = code_index_service(&config, instance);
     let throttle = crate::rate_limit::from_config(&config, &blocking).map(Arc::new);
+    let auth_cache = Arc::new(crate::auth_cache::AuthCache::new(
+        std::time::Duration::from_secs(config.auth_cache_secs),
+    ));
     // KAIROS-T-0394: the worker registers only the kinds of its role.
     let jobs = Arc::new(
-        crate::jobs::Worker::new(blocking.clone(), instance, config.jobs.clone())
+        crate::jobs::Worker::new(job_pool.clone(), instance, config.jobs.clone())
             .with_role(config.role),
     );
     // KAIROS-T-0384: the signed webhook deliveries are jobs of the queue.
     crate::webhooks::WebhookService::new(
-        blocking.clone(),
+        job_pool.clone(),
         config.secrets_key.clone(),
         config.webhooks.clone(),
     )
@@ -129,7 +142,7 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
     .register(&jobs);
     // KAIROS-T-0386: the GitHub write-back is a job of the queue too.
     crate::forge::writeback::WriteBackService::new(
-        blocking.clone(),
+        job_pool.clone(),
         config.secrets_key.clone(),
         config.writeback.clone(),
         config.public_url.clone(),
@@ -137,7 +150,7 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
     .register(&jobs);
     // KAIROS-T-0487: the import of the open issues is a job of the queue.
     crate::forge::import::IssueImportService::new(
-        blocking.clone(),
+        job_pool.clone(),
         config.secrets_key.clone(),
         config.writeback.api_url.clone(),
     )
@@ -152,10 +165,12 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
         config: Arc::new(config),
         pool,
         blocking,
+        job_pool,
         auth: Arc::new(auth),
         embedding: build_embedding_service(),
         metrics: Arc::new(crate::metrics::Metrics::new()),
         throttle,
+        auth_cache,
         code_index,
         tenant_readiness: Arc::new(crate::tenant_readiness::TenantReadiness::default()),
         jobs,
@@ -233,7 +248,8 @@ fn start_code_index_builder(state: &AppState) {
     // The tools are checked, and downloaded on the first start
     // (COLLIERY-T-2525), off the start of the server: a download of about
     // 2.7 GB must not keep the server from serving.
-    let blocking = state.blocking.clone();
+    // KAIROS-T-0614: the builds are jobs, so they run on the pool of the jobs.
+    let blocking = state.job_pool.clone();
     let worker = Arc::clone(&state.jobs);
     let threads = state.config.code_index_threads;
     tokio::spawn(async move {
@@ -316,25 +332,30 @@ fn build_embedding_service() -> Option<Arc<crate::embedding::EmbeddingService>> 
 pub fn state_with(config: AppConfig, pool: TenantPool, auth: Arc<Authenticator>) -> AppState {
     // No idle minimum here: a test run builds hundreds of states.
     let blocking = BlockingTenantPool::new(&config.database_url, config.pool_size);
+    // KAIROS-T-0614: the jobs on a pool of their own, as in `build_state`.
+    let job_pool = BlockingTenantPool::new(&config.database_url, config.job_pool_size);
     // KAIROS-T-0202: built from the passed config like everything else here, so a
     // test that wants a throttle sets the variables and a test that does not set
     // `KAIROS_AUTH_MAX_FAILURES` to 0.
     let throttle = crate::rate_limit::from_config(&config, &blocking).map(Arc::new);
+    let auth_cache = Arc::new(crate::auth_cache::AuthCache::new(
+        std::time::Duration::from_secs(config.auth_cache_secs),
+    ));
     // The worker of a test state runs no job until a test starts it.
     let jobs = Arc::new(
-        crate::jobs::Worker::new(blocking.clone(), uuid::Uuid::new_v4(), config.jobs.clone())
+        crate::jobs::Worker::new(job_pool.clone(), uuid::Uuid::new_v4(), config.jobs.clone())
             .with_role(config.role),
     );
     // KAIROS-T-0384: a test that drains the worker sends the deliveries.
     crate::webhooks::WebhookService::new(
-        blocking.clone(),
+        job_pool.clone(),
         config.secrets_key.clone(),
         config.webhooks.clone(),
     )
     .with_public_url(config.public_url.clone())
     .register(&jobs);
     crate::forge::writeback::WriteBackService::new(
-        blocking.clone(),
+        job_pool.clone(),
         config.secrets_key.clone(),
         config.writeback.clone(),
         config.public_url.clone(),
@@ -342,7 +363,7 @@ pub fn state_with(config: AppConfig, pool: TenantPool, auth: Arc<Authenticator>)
     .register(&jobs);
     // KAIROS-T-0487: the import of the open issues is a job of the queue.
     crate::forge::import::IssueImportService::new(
-        blocking.clone(),
+        job_pool.clone(),
         config.secrets_key.clone(),
         config.writeback.api_url.clone(),
     )
@@ -352,12 +373,14 @@ pub fn state_with(config: AppConfig, pool: TenantPool, auth: Arc<Authenticator>)
         config: Arc::new(config),
         pool,
         blocking,
+        job_pool,
         auth,
         // Tests drive embedding explicitly; a provider built here would load a
         // 65 MB model into every in-process router.
         embedding: None,
         metrics: Arc::new(crate::metrics::Metrics::new()),
         throttle,
+        auth_cache,
         code_index: None,
         tenant_readiness: Arc::new(crate::tenant_readiness::TenantReadiness::default()),
         jobs,
@@ -738,7 +761,7 @@ async fn whoami(
 
     // The caller's explicit board-scoped capability grants (KAIROS-A-0006),
     // one indexed load over `board_member_capabilities` joined to `boards`
-    // (idx_board_member_cap_board_user), ordered so grouping is a linear
+    // (its primary key, board_id first), ordered so grouping is a linear
     // fold and both boards and grants come out sorted. Org admins get only
     // their explicit rows here (usually none — their real access is the
     // org-admin bypass, reported via `organization.role`).
@@ -920,7 +943,7 @@ async fn start_background(state: &AppState, retention: kairos_core::retention::R
     {
         tokio::spawn(crate::embedding::run_refresher(
             Arc::clone(&state.jobs),
-            state.blocking.clone(),
+            state.job_pool.clone(),
             service,
             std::time::Duration::from_secs(refresh_secs),
             crate::embedding::REFRESH_BATCH,

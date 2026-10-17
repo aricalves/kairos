@@ -1026,6 +1026,40 @@ fn validate_transition(
     ))
 }
 
+/// The refusal for an item that is not in the column of the read any more
+/// (KAIROS-T-0534): the move from the column it is in now, with the
+/// targets from there.
+fn moved_meanwhile(
+    conn: &mut PgConnection,
+    board_id: Uuid,
+    now_column_id: Uuid,
+    to_column_id: Uuid,
+) -> BoardError {
+    let (columns, transitions) = match load_board_rules(conn, board_id) {
+        Ok(rules) => rules,
+        Err(e) => return e,
+    };
+    let column = |id: Uuid| {
+        columns
+            .iter()
+            .find(|c| c.id == id)
+            .map(|c| rules::ColumnRef {
+                id: c.id,
+                name: c.name.clone(),
+            })
+    };
+    match (column(now_column_id), column(to_column_id)) {
+        (Some(from), Some(to)) => rules::TransitionError::NotAllowed {
+            from,
+            to,
+            allowed_targets: rules::allowed_targets(&columns, &transitions, now_column_id),
+        }
+        .into(),
+        (None, _) => rules::TransitionError::UnknownFromColumn(now_column_id).into(),
+        (_, None) => rules::TransitionError::UnknownToColumn(to_column_id).into(),
+    }
+}
+
 /// Generate `transition_<entity>` for an item table with NOT NULL
 /// `board_id`/`column_id` (strategies, initiatives, tasks): load the item's
 /// board/column, validate via [`kairos_core::board::can_transition`], update
@@ -1043,10 +1077,14 @@ macro_rules! transition_item_fn {
             conn.transaction::<_, BoardError, _>(|conn| {
                 use crate::schema::$table::dsl;
 
+                // KAIROS-T-0534: the lock holds a second move of the item
+                // until this one commits. The second then reads the new
+                // column.
                 let placement: Option<(Uuid, Uuid)> = dsl::$table
                     .filter(dsl::id.eq(item_id))
                     .filter(dsl::deleted_at.is_null())
                     .select((dsl::board_id, dsl::column_id))
+                    .for_update()
                     .first(conn)
                     .optional()?;
                 let (board_id, from_column_id) = placement.ok_or(BoardError::ItemNotFound {
@@ -1057,13 +1095,24 @@ macro_rules! transition_item_fn {
                 let (from_name, to_name) =
                     validate_transition(conn, board_id, from_column_id, to_column_id)?;
 
-                diesel::update(dsl::$table.filter(dsl::id.eq(item_id)))
-                    .set((
-                        dsl::column_id.eq(to_column_id),
-                        dsl::updated_by.eq(actor_id),
-                        dsl::updated_at.eq(diesel::dsl::now),
-                    ))
-                    .execute(conn)?;
+                let updated = diesel::update(
+                    dsl::$table
+                        .filter(dsl::id.eq(item_id))
+                        .filter(dsl::column_id.eq(from_column_id)),
+                )
+                .set((
+                    dsl::column_id.eq(to_column_id),
+                    dsl::updated_by.eq(actor_id),
+                    dsl::updated_at.eq(diesel::dsl::now),
+                ))
+                .execute(conn)?;
+                if updated == 0 {
+                    let now: Uuid = dsl::$table
+                        .filter(dsl::id.eq(item_id))
+                        .select(dsl::column_id)
+                        .first(conn)?;
+                    return Err(moved_meanwhile(conn, board_id, now, to_column_id));
+                }
 
                 log_activity(
                     conn,
@@ -1324,10 +1373,12 @@ pub fn transition_adr(
     conn.transaction::<_, BoardError, _>(|conn| {
         use crate::schema::adrs::dsl;
 
+        // KAIROS-T-0534: the lock of the transition macro.
         let placement: Option<(Option<Uuid>, Option<Uuid>)> = dsl::adrs
             .filter(dsl::id.eq(item_id))
             .filter(dsl::deleted_at.is_null())
             .select((dsl::board_id, dsl::column_id))
+            .for_update()
             .first(conn)
             .optional()?;
         let (board_id, from_column_id) = match placement.ok_or(BoardError::ItemNotFound {
@@ -1346,13 +1397,30 @@ pub fn transition_adr(
         let (from_name, to_name) =
             validate_transition(conn, board_id, from_column_id, to_column_id)?;
 
-        diesel::update(dsl::adrs.filter(dsl::id.eq(item_id)))
-            .set((
-                dsl::column_id.eq(to_column_id),
-                dsl::updated_by.eq(actor_id),
-                dsl::updated_at.eq(diesel::dsl::now),
-            ))
-            .execute(conn)?;
+        let updated = diesel::update(
+            dsl::adrs
+                .filter(dsl::id.eq(item_id))
+                .filter(dsl::column_id.eq(from_column_id)),
+        )
+        .set((
+            dsl::column_id.eq(to_column_id),
+            dsl::updated_by.eq(actor_id),
+            dsl::updated_at.eq(diesel::dsl::now),
+        ))
+        .execute(conn)?;
+        if updated == 0 {
+            let now: Option<Uuid> = dsl::adrs
+                .filter(dsl::id.eq(item_id))
+                .select(dsl::column_id)
+                .first(conn)?;
+            return Err(match now {
+                Some(now) => moved_meanwhile(conn, board_id, now, to_column_id),
+                None => BoardError::ItemNotOnBoard {
+                    entity_type: "adr",
+                    id: item_id,
+                },
+            });
+        }
 
         log_activity(
             conn,

@@ -441,7 +441,25 @@ fn bearer_token(req: &Request) -> Result<&str, VerifyError> {
     skip_all,
     fields(otel.kind = "client", db.system = "postgresql")
 )]
-async fn jit_upsert_user(pool: &TenantPool, claims: &TokenClaims) -> Result<User, ApiError> {
+async fn jit_upsert_user(state: &AppState, claims: &TokenClaims) -> Result<User, ApiError> {
+    // KAIROS-T-0609: the row of this subject, read in the last minute. Used
+    // only when it matches the claims; the upsert below would write the same
+    // row. A changed claim takes the database path, which updates the row.
+    if let Some(user) = state.auth_cache.subject(&claims.sub)
+        && claims.email.as_deref() == Some(user.email.as_str())
+        && claims.name.as_deref().unwrap_or(user.email.as_str()) == user.display_name
+    {
+        return Ok(user);
+    }
+    let user = jit_upsert_user_in_db(&state.pool, claims).await?;
+    state
+        .auth_cache
+        .put_subject(claims.sub.clone(), user.clone());
+    Ok(user)
+}
+
+/// The database part of [`jit_upsert_user`].
+async fn jit_upsert_user_in_db(pool: &TenantPool, claims: &TokenClaims) -> Result<User, ApiError> {
     let email = claims
         .email
         .clone()
@@ -656,6 +674,19 @@ pub async fn require_auth(
     // Service-account API key (KAIROS-T-0058): resolves to a user principal +
     // its tenant, with the same AuthContext shape as the OIDC path.
     if crate::service_accounts::auth::is_api_key(&token) {
+        // KAIROS-T-0609: a key accepted in the last minute is in the cache.
+        // A hit skips the throttle read too: the throttle stops guessing,
+        // and a cached key was not guessed (`crate::auth_cache`).
+        let hash = crate::service_accounts::auth::hash_key(&token);
+        if let Some(cached) = state.auth_cache.key(&hash) {
+            req.extensions_mut().insert(cached.auth);
+            req.extensions_mut()
+                .insert(crate::service_accounts::auth::ApiKeyTenant {
+                    slug: cached.slug,
+                    org_id: cached.org_id,
+                });
+            return Ok(next.run(req).await);
+        }
         // KAIROS-T-0202. Counted by SOURCE only, never by the key's tenant slug.
         // The slug is not a secret and every legitimate client of an org shares
         // it, so an identity bucket here would let one CI job with a stale key
@@ -667,7 +698,7 @@ pub async fn require_auth(
         if let Some(refused) = attempt.refuse_if_locked_out().await {
             return Ok(refused);
         }
-        let (auth, slug) =
+        let (auth, tenant) =
             match crate::service_accounts::auth::authenticate_api_key(&state, &token).await {
                 Ok(resolved) => {
                     attempt.succeeded().await;
@@ -679,8 +710,7 @@ pub async fn require_auth(
                 }
             };
         req.extensions_mut().insert(auth);
-        req.extensions_mut()
-            .insert(crate::service_accounts::auth::ApiKeyTenant(slug));
+        req.extensions_mut().insert(tenant);
         return Ok(next.run(req).await);
     }
 
@@ -697,7 +727,7 @@ pub async fn require_auth(
     }
 
     let claims = state.auth.verify(&token).await?;
-    let user = jit_upsert_user(&state.pool, &claims).await?;
+    let user = jit_upsert_user(&state, &claims).await?;
 
     req.extensions_mut().insert(AuthContext {
         user_id: user.id,

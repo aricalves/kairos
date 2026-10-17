@@ -236,6 +236,10 @@ in the column with a claim (`claim_item`, `kairos tasks claim`).
 An agent can move the task with the agent key of a person. Then the claim names
 the person, and the GUI shows "Alice (agent)". A service account gets no claim.
 
+A hand-off gives the claim to a person who holds `transition_items` on the
+board of the task (KAIROS-T-0530). A person who cannot move the task cannot
+finish it.
+
 The claim ends when the task leaves Active. It also ends at a hand-off, at a
 release, and at an archive. It ends when its person leaves the organization
 (KAIROS-T-0531). Then the task stays in its column, free, and the team of the

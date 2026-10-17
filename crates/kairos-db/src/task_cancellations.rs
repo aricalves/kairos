@@ -119,19 +119,28 @@ pub fn cancel_task(
     }
     conn.transaction::<_, CancelError, _>(|conn| {
         use crate::schema::{board_columns, tasks};
-        let row: Option<(String, Uuid, String, bool)> = tasks::table
+        // KAIROS-T-0534: the lock of the task row (not of its column) holds
+        // a second cancel or move of the task until this one commits.
+        tasks::table
+            .filter(tasks::id.eq(task_id))
+            .select(tasks::id)
+            .for_update()
+            .first::<Uuid>(conn)
+            .optional()?;
+        let row: Option<(String, Uuid, Uuid, String, bool)> = tasks::table
             .inner_join(board_columns::table)
             .filter(tasks::id.eq(task_id))
             .filter(tasks::deleted_at.is_null())
             .select((
                 tasks::short_code,
                 tasks::board_id,
+                tasks::column_id,
                 board_columns::name,
                 board_columns::is_done,
             ))
             .first(conn)
             .optional()?;
-        let (short_code, board_id, from_column, done) =
+        let (short_code, board_id, from_column_id, from_column, done) =
             row.ok_or(CancelError::TaskNotFound(task_id))?;
         if done {
             return Err(CancelError::AlreadyDone {
@@ -151,13 +160,30 @@ pub fn cancel_task(
             short_code: short_code.clone(),
         })?;
 
-        diesel::update(tasks::table.filter(tasks::id.eq(task_id)))
-            .set((
-                tasks::column_id.eq(to_column_id),
-                tasks::updated_by.eq(actor_id),
-                tasks::updated_at.eq(diesel::dsl::now),
-            ))
-            .execute(conn)?;
+        let updated = diesel::update(
+            tasks::table
+                .filter(tasks::id.eq(task_id))
+                .filter(tasks::column_id.eq(from_column_id)),
+        )
+        .set((
+            tasks::column_id.eq(to_column_id),
+            tasks::updated_by.eq(actor_id),
+            tasks::updated_at.eq(diesel::dsl::now),
+        ))
+        .execute(conn)?;
+        if updated == 0 {
+            // The task left the column of the read. Not reached while the
+            // row lock holds; a done column is refused as above.
+            let now: (String, bool) = tasks::table
+                .inner_join(board_columns::table)
+                .filter(tasks::id.eq(task_id))
+                .select((board_columns::name, board_columns::is_done))
+                .first(conn)?;
+            return Err(match now {
+                (column, true) => CancelError::AlreadyDone { short_code, column },
+                _ => CancelError::Database(DieselError::NotFound),
+            });
+        }
 
         let mark = {
             use crate::schema::task_cancellations::dsl;

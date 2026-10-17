@@ -49,7 +49,11 @@ async fn concurrent_first_logins_create_one_user_and_all_succeed() {
             .await
             .expect("OIDC discovery against live Dex"),
     );
-    let router = app::router(app::state_with(base_config(&scratch_url), pool, auth));
+    // Each round deletes the row behind the server, so the auth cache
+    // (KAIROS-T-0609) is off: a cached subject would skip the insert.
+    let mut config = base_config(&scratch_url);
+    config.auth_cache_secs = 0;
+    let router = app::router(app::state_with(config, pool, auth));
 
     for round in 0..ROUNDS {
         // alice has no membership, so removing her row makes the next request

@@ -568,6 +568,8 @@ pub(crate) async fn patch_user(
         })
     })
     .await?;
+    // KAIROS-T-0609: a change of the membership is seen at the next request.
+    state.auth_cache.drop_user(user_id);
     Ok(scim_response(StatusCode::OK, resource))
 }
 
@@ -655,6 +657,8 @@ pub(crate) async fn replace_user(
         })
     })
     .await?;
+    // KAIROS-T-0609: a change of the membership is seen at the next request.
+    state.auth_cache.drop_user(user_id);
     Ok(scim_response(StatusCode::OK, resource))
 }
 
@@ -673,5 +677,7 @@ pub(crate) async fn delete_user(
         })
     })
     .await?;
+    // KAIROS-T-0609: a change of the membership is seen at the next request.
+    state.auth_cache.drop_user(user_id);
     Ok(no_content())
 }

@@ -536,6 +536,11 @@ pub const MIGRATION_LOCK_KEY: i64 = 0x6b61_6972_6f73;
 /// advisory lock, [`MIGRATION_LOCK_KEY`]). The call waits for a holder on a
 /// different connection to finish. The lock is released after `f`, also
 /// when `f` fails.
+///
+/// KAIROS-T-0614: the wait for the holder has no `lock_timeout`, however
+/// long the holder migrates. `f` runs with the `lock_timeout` of
+/// [`crate::pool::LOCK_TIMEOUT`], so a migration that waits for a table
+/// lock fails with the reason.
 pub fn with_migration_lock<T, E>(
     conn: &mut PgConnection,
     f: impl FnOnce(&mut PgConnection) -> Result<T, E>,
@@ -543,9 +548,11 @@ pub fn with_migration_lock<T, E>(
 where
     E: From<DieselError>,
 {
+    sql_query("SET lock_timeout = 0").execute(conn)?;
     sql_query("SELECT pg_advisory_lock($1)")
         .bind::<diesel::sql_types::BigInt, _>(MIGRATION_LOCK_KEY)
         .execute(conn)?;
+    sql_query(crate::pool::lock_timeout_sql()).execute(conn)?;
     let result = f(conn);
     let unlocked = sql_query("SELECT pg_advisory_unlock($1)")
         .bind::<diesel::sql_types::BigInt, _>(MIGRATION_LOCK_KEY)

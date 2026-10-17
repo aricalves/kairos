@@ -1498,4 +1498,36 @@ mod tests {
         }
         assert!(Cli::try_parse_from(["kairos", "admin", "agent-keys", "revoke"]).is_err());
     }
+
+    /// KAIROS-T-0590: each verb that deletes a stored object refuses to run
+    /// without --confirm. The refusal comes before the client, so the test
+    /// needs no deployment: exit 1 (CLI_ERROR), and the text names the flag.
+    #[tokio::test]
+    async fn destructive_verbs_refuse_without_confirm() {
+        let verbs: &[&[&str]] = &[
+            &["boards", "columns", "remove", "web", "Todo"],
+            &["boards", "transitions", "remove", "web", "Todo", "Active"],
+            &["boards", "dispatch", "remove-target", "web", "t1"],
+            &["boards", "dispatch", "remove-rule", "web", "r1"],
+            &["metadata", "delete", "priority"],
+            &["templates", "delete", "bug-report"],
+            &["repos", "credential", "remove", "payments"],
+            &["repos", "write-token", "remove", "payments"],
+            &["pages", "unpublish", "--repo", "payments"],
+        ];
+        for verb in verbs {
+            let args: Vec<&str> = std::iter::once("kairos")
+                .chain(verb.iter().copied())
+                .collect();
+            let cli = Cli::try_parse_from(&args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
+            let err = dispatch(cli.command)
+                .await
+                .expect_err(&format!("{args:?} must refuse without --confirm"));
+            assert_eq!(err.exit_code(), crate::error::EXIT_FAILURE, "{args:?}");
+            assert_eq!(err.code(), crate::error::CODE_CLI_ERROR, "{args:?}");
+            assert!(err.to_string().contains("--confirm"), "{args:?}: {err}");
+            let confirmed: Vec<&str> = args.iter().copied().chain(["--confirm"]).collect();
+            Cli::try_parse_from(&confirmed).unwrap_or_else(|e| panic!("{confirmed:?}: {e}"));
+        }
+    }
 }

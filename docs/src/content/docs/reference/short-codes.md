@@ -16,6 +16,9 @@ A short code has the form `{PREFIX}-{LETTER}-{NUMBER}`, for example
 | `LETTER` | The type of the item: `S` strategy, `I` initiative, `T` task, `D` document, `A` ADR. |
 | `NUMBER` | 4 digits at least, for example `0001`. A number above 9999 has more digits. |
 
+Kairos changes a short code in input to capital letters before the lookup. So
+`skadi-t-0577` finds `SKADI-T-0577`. The answer has the code in capitals.
+
 ## The prefix of a board
 
 Each board has a code prefix, `code_prefix`.
@@ -93,9 +96,29 @@ A retired code is a code that an item had before a rename.
 - Kairos does not give a retired code again.
 - A read with a retired code finds the item. The answer names the current
   code. `get_item`, search and the item page in the GUI do this.
-- A write with a retired code gets 404. The refusal names the current code.
+- A write to the item of a retired code gets 404. The refusal names the
+  current code.
+- A write that refers to another item follows a retired code, as a read
+  does. The answer names the current code. These references follow:
+  - the two ends of an edge: `link_items`, `unlink_items` and
+    `POST /api/relationships`;
+  - the parent of a new item: `create_item` with `parent`, and
+    `POST /api/documents` with `parent_short_code`.
+
+The MCP answer has a line that names the current code, for example
+`COLLIERY-T-2430 is now SKADI-T-0577.`
+
+The REST answer of `POST /api/relationships` has the current codes in
+`source_short_code` and `target_short_code`.
 
 See [Errors](../errors/#a-retired-short-code).
+
+## Archived items
+
+A write to an archived item gets a refusal. The refusal says that the item is
+archived. It tells you to restore the item with `restore_item`. The item of
+the write gets 404 `NOT_FOUND`. A reference to an archived item, for example
+the target of an edge, gets 422 `VALIDATION`.
 
 ## Keep the numbers of an import
 

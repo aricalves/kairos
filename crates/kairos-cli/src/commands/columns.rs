@@ -7,6 +7,7 @@ use kairos_client::types_org::{
     BoardColumn, BoardDetail, CreateColumnRequest, CreateTransitionRequest, UpdateColumnRequest,
 };
 
+use crate::commands::entities::require_confirm;
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
 use crate::table::Table;
@@ -61,7 +62,8 @@ pub enum ColumnsCommand {
         #[command(flatten)]
         common: Common,
     },
-    /// Remove a column (needs configure_boards). It must hold no live item
+    /// Remove a column (needs configure_boards and --confirm). It must
+    /// hold no live item
     Remove {
         /// Board slug or id (UUID)
         #[arg(value_name = "BOARD")]
@@ -69,6 +71,9 @@ pub enum ColumnsCommand {
         /// Column name or id (UUID)
         #[arg(value_name = "COLUMN")]
         column: String,
+        /// Required: without it, the command deletes nothing
+        #[arg(long)]
+        confirm: bool,
         #[command(flatten)]
         common: Common,
     },
@@ -99,7 +104,7 @@ pub enum TransitionsCommand {
         #[command(flatten)]
         common: Common,
     },
-    /// Stop the move FROM -> TO (needs configure_boards)
+    /// Stop the move FROM -> TO (needs configure_boards and --confirm)
     Remove {
         /// Board slug or id (UUID)
         #[arg(value_name = "BOARD")]
@@ -110,6 +115,9 @@ pub enum TransitionsCommand {
         /// The column where the move ends: name or id (UUID)
         #[arg(value_name = "TO")]
         to: String,
+        /// Required: without it, the command deletes nothing
+        #[arg(long)]
+        confirm: bool,
         #[command(flatten)]
         common: Common,
     },
@@ -248,8 +256,10 @@ impl ColumnsCommand {
             Self::Remove {
                 board: b,
                 column,
+                confirm,
                 common,
             } => {
+                require_confirm(confirm, &format!("the column {column} of the board {b}"))?;
                 let client = client(&common)?;
                 let detail = board(&client, &b).await?;
                 let target = find_column(&detail, &column)?;
@@ -319,8 +329,13 @@ impl TransitionsCommand {
                 board: b,
                 from,
                 to,
+                confirm,
                 common,
             } => {
+                require_confirm(
+                    confirm,
+                    &format!("the move {from} -> {to} of the board {b}"),
+                )?;
                 let client = client(&common)?;
                 let detail = board(&client, &b).await?;
                 let from_column = find_column(&detail, &from)?;

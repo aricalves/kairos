@@ -61,8 +61,8 @@ These hold for every tool.
 |---|---|
 | Tenant | There is no tenant argument. The tenant is the one resolved from the connection's host or the `X-Tenant` header. |
 | Identity | Every tool runs as the authenticated principal — a human user or a service account — under the same attribute-based access control as the REST handlers. Archiving is not a permission boundary: whoever could read an item before it was archived can read it after. |
-| Item identity | Items are named by short code, e.g. `ACME-T-0012`, in every input and every output. |
-| Retired codes | When an item gets a new short code, its old code is retired. Kairos does not issue a retired code again. A read tool (`get_item`, `get_history`, `search`) finds the item from a retired code and shows the current code. A write tool refuses a retired code with `NOT_FOUND`, and the refusal gives the current code. |
+| Item identity | Items are named by short code, e.g. `ACME-T-0012`, in every input and every output. Kairos changes a code in input to capital letters, so `acme-t-0012` finds `ACME-T-0012`. |
+| Retired codes | When an item gets a new short code, its old code is retired. Kairos does not issue a retired code again. A read tool (`get_item`, `get_history`, `search`) finds the item from a retired code and shows the current code. A write tool refuses a retired code for the item that it changes. The refusal is `NOT_FOUND`, and it gives the current code. A reference in a write follows a retired code: the `source` and the `target` of `link_items` and `unlink_items`, and the `parent` of `create_item`. The answer then has a line such as `COLLIERY-T-2430 is now SKADI-T-0577.` |
 | Board and team references | A `board`, `to_board`, `team` or `repository` argument accepts either a slug or a UUID. A `column` or `to_column` argument accepts either a column name, case-insensitively, or a UUID. |
 | Listing weight | Listings are compact: short code, title and key fields. Full markdown content arrives only from `get_item` and from `get_history` with a `version`. |
 | Errors | A refusal comes back as an MCP tool error whose text is `CODE: message`, the code being the same stable one as the REST API's error envelope. Where that code has structured `details`, a second line follows: `details: ` and the JSON object. See [Errors](../errors/) for what each code's `details` carries. |
@@ -76,7 +76,7 @@ Codes an agent can receive, and what each means.
 
 | Code | Meaning |
 |---|---|
-| `NOT_FOUND` | A short code, board or repository named as the subject of the call does not exist; an `unlink_items` edge does not exist; or a `search` `traverse.from` does not resolve. On a write tool it also means the item exists but is archived: writes resolve live items only, and the message reads `no live item with short code …`. |
+| `NOT_FOUND` | A short code, board or repository named as the subject of the call does not exist; an `unlink_items` edge does not exist; or a `search` `traverse.from` does not resolve. On a write tool it also means the item exists but is archived. Writes resolve live items only. The message says that the item is archived, and it names `restore_item`. A reference to an archived item, for example the `target` of `link_items`, is `VALIDATION` with the same text. |
 | `VALIDATION` | An argument is malformed, an enum value is outside its vocabulary, an argument does not apply to the item type, or something named as a *filter or reference* — a team, a repository filter, a parent, a metadata definition, a column — does not exist. A reference that does not resolve is `VALIDATION`; the call's own subject not existing is `NOT_FOUND`. **One exception:** `search`'s `traverse.from` is a reference and still answers `NOT_FOUND`, because a traversal's root is the subject of that traversal. |
 | `FORBIDDEN` | The rule for the write refuses the principal. For an edit, the [edit rule](../capabilities/#the-edit-rule): the principal did not create the item and lacks `manage_<type>` on its board. For an edge, the [link rule](../capabilities/#who-can-write-relationships): the principal can edit neither end. For a move or a create: the principal lacks the board capability. The message names the capability. For `add_repository` and `update_repository`: the principal is not a member of the owner team and is not an organization admin. The message names the team. For `create_team`, `create_board` and `add_team_member`: the principal is not an organization admin and has no `manage_structure` on the organization. The message names the capability and the scope. One case has a longer message: a move (`transition_item`, `move_item`) of a request that the caller created, while the request is in the entry column. That message says that the item is a request, that the team of the board moves it, that the caller can edit, link and archive it, and which capability the move needs. A `create_item` that sends `work_class: planned` to a board that the caller does not manage is also `FORBIDDEN`. |
 | `CONFLICT` | An optimistic-concurrency version mismatch. The refusal carries the current version and content. From `add_repository`: the directory has the slug already, or it has the repository already. |
@@ -269,6 +269,7 @@ One repository in full. The output has these parts:
   [Connect a git forge](../../how-to/connect-a-git-forge/).
 - the team's description of how to work in the repository
 - the documents and the ADRs that impact the repository
+- `## ADRs of the owner team`: the other ADRs of the owner team
 - the in-flight branches and pull requests, each with its work item
 - `## Not linked to an item`: the in-flight branches and pull requests that
   the forge filter admits, with no item that links to them
@@ -280,7 +281,7 @@ tasks that link to the repository.
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `repository` | string | yes | — | Slug or UUID. |
-| `include_deleted` | boolean | no | `false` | Add the archived documents and ADRs that impact the repository, each with the mark `[archived]`. |
+| `include_deleted` | boolean | no | `false` | Add the archived documents and ADRs of the two sections, each with the mark `[archived]`. |
 
 The section `## Documents and ADRs that impact this repository` has one line
 for each item. The documents come first, in the order of the short code. A
@@ -293,6 +294,26 @@ shows its column, if it is on a board. An empty section shows `(none)`.
 - ACME-D-0009 — An old plan · document · lifecycle: draft [archived]
 - ACME-A-0002 — Plugins are dynamic libraries · adr · column: Decided
 ```
+
+The section `## ADRs of the owner team` lists the ADRs on the boards of the
+owner team that have no `impacts` link. Most older ADRs have no link. An ADR
+with a link is in the first section of the repository that it names. Thus
+each ADR shows one time only. The section does not show a superseded ADR.
+
+Each line shows the column of the ADR. The newest ADR comes first. The
+section shows 50 ADRs at most. When there are more, the last line gives the
+count and names `team_pages`. An empty section shows `(none)`.
+
+```text
+## ADRs of the owner team
+The ADRs on the boards of the team platform that no `impacts` link names, newest first. A superseded ADR is not listed.
+- ACME-A-0007 — Retries use a fixed backoff · adr · column: Decided
+- ACME-A-0005 — One database per tenant · adr · column: Draft
+- 3 more: `team_pages platform` lists each ADR of the team.
+```
+
+`GET /api/repositories/{slug}` gives the same rows in `owner_team_adrs`.
+`owner_team_adrs_total` gives the count of all of them.
 
 Read these items with `get_item` before you plan work in the repository. See
 [impacts](../glossary/#impacts).
@@ -1378,9 +1399,8 @@ strategy or an initiative that has no owner.
 |---|---|---|---|---|
 | `short_code` | string | yes | — | The short code of a task in Active with no claim, or of a strategy or an initiative with no owner. |
 
-A task: you need `transition_items` on the board of the task, or the right
-to edit the task. The creator of the task has that right, and so does
-`manage_tasks`. The claim names you. With your agent key, it names you and
+A task: you need `transition_items` on the board of the task (KAIROS-T-0642).
+The creator of the task gets no claim from the edit rule. The claim names you. With your agent key, it names you and
 marks the agent. The answer has the line `claim`.
 
 A task that a different person holds gets `CLAIMED` and the name of the
@@ -1397,8 +1417,7 @@ Refuses:
 - `NOT_FOUND` for an unknown short code or an archived item.
 - `VALIDATION` for an item that is not a task, a strategy or an initiative.
 - `VALIDATION` for a task, when the caller is a service account.
-- `FORBIDDEN` for a task, without `transition_items` and without the right to
-  edit the task.
+- `FORBIDDEN` for a task, without `transition_items` on its board.
 - `FORBIDDEN` for a strategy or an initiative, for a service account, and for
   a person who is not a member of the board and not an organization admin.
 - `NOT_CLAIMABLE` for a task that is not in Active.
@@ -1415,12 +1434,18 @@ Changes the [claim](../glossary/#claim) of a task in Active, or the
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `short_code` | string | yes | — | The short code of a task in Active, or of a strategy or an initiative. |
-| `to` | string | yes | — | The person who gets the claim or who becomes the owner: a user id, an email or a user name of a person of the organization, or `me`. A new owner must be a member of the board of the item. |
+| `to` | string | yes | — | The person who gets the claim or who becomes the owner: a user id, an email or a user name of a person of the organization, or `me`. A new owner must be a member of the board of the item. A new claim holder must hold `transition_items` on the board of the task. |
 
 A task: the person who has the claim can hand it off. Any other principal needs
 `transition_items` on the board of the task. A task in Active with no claim can
 get a claim by a hand-off. The task stays in Active. The answer has the line
 `claim` with the new claim.
+
+The person who gets the claim must hold `transition_items` on the board of the
+task. The team of the board gives it, and so do a grant and the organization
+admin role. Else the tool refuses with `VALIDATION` on `to`. The text names the
+board and the capability. A person who cannot move the task cannot finish it.
+A hand-off to `me` passes only when you hold the capability.
 
 A strategy or an initiative: the owner can hand it off. An organization admin
 can set the owner of each item, also of an item with no owner. Nobody else can.

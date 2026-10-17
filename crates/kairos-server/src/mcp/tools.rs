@@ -809,7 +809,8 @@ pub struct HandOffItemParams {
     /// The person who gets the claim (a task) or who becomes the owner (a
     /// strategy or an initiative): a user id, an email or a user name of a
     /// person of the organization, or `me`. A new owner must be a member
-    /// of the board of the item.
+    /// of the board of the item. A new claim holder must hold
+    /// `transition_items` on the board of the task.
     pub to: String,
 }
 
@@ -1520,7 +1521,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "One repository: owner team and its delivery board, open task count, default branch and where it comes from, the team's `description` of how to work in it (read it before working in an unfamiliar repository), the documents and ADRs that impact it (read them with `get_item` before planning), its open branches and pull requests with their items and those not linked to an item, the forge filters, and the lines read token, write-back, code index build and code index breaker (a tripped breaker stops builds until `rebuild_code_index` (admin profile)). `repository` is a slug or UUID; `include_deleted: true` adds archived documents and ADRs."
+        description = "One repository: owner team and its delivery board, open task count, default branch and where it comes from, the team's `description` of how to work in it (read it before working in an unfamiliar repository), the documents and ADRs that impact it, the other ADRs of the owner team (newest first, 50 at most, none superseded; read each with `get_item` before planning), its open branches and pull requests with their items and those not linked to an item, the forge filters, and the lines read token, write-back, code index build and code index breaker (a tripped breaker stops builds until `rebuild_code_index` (admin profile)). `repository` is a slug or UUID; `include_deleted: true` adds archived documents and ADRs."
     )]
     pub async fn get_repository(
         &self,
@@ -1532,13 +1533,17 @@ impl KairosMcp {
             let repo = repositories::resolve(conn, &params.repository)
                 .map_err(crate::api::org::repositories::map_error)?;
             let repo_id = repo.id;
+            let team_id = repo.team_id;
             let rendered = crate::api::org::repositories::render(conn, vec![repo])?.remove(0);
             // COLLIERY-T-0269: the same read as `GET /api/repositories/{slug}`.
-            let impacted_by = crate::api::org::repositories::impacted_by(
-                conn,
-                repo_id,
-                params.include_deleted.unwrap_or(false),
-            )?;
+            let include_deleted = params.include_deleted.unwrap_or(false);
+            let impacted_by =
+                crate::api::org::repositories::impacted_by(conn, repo_id, include_deleted)?;
+            // KAIROS-T-0599: the ADRs of the owner team that no `impacts`
+            // link names. Most ADRs have no link, and the grounding rule
+            // reads this tool, so it must find them here.
+            let (team_adrs, team_adrs_total) =
+                crate::api::org::repositories::owner_team_adrs(conn, team_id, include_deleted)?;
             // Slugs everywhere (KAIROS-T-0123): the delivery board is what
             // the skills pass to `board_items`, so print it the way they
             // will use it. It is the board of the OWNER, and the line says
@@ -1612,25 +1617,24 @@ impl KairosMcp {
             if impacted_by.is_empty() {
                 out.push_str("(none)\n");
             }
-            for item in impacted_by {
-                let kind = match (item.entity_type.as_str(), item.document_type) {
-                    ("document", Some(document_type)) => format!("document ({document_type})"),
-                    (entity_type, _) => entity_type.to_string(),
-                };
-                let state = match (item.lifecycle, item.column) {
-                    (Some(lifecycle), _) => format!(" · lifecycle: {lifecycle}"),
-                    (None, Some(column)) => format!(" · column: {column}"),
-                    (None, None) => String::new(),
-                };
+            for item in &impacted_by {
+                out.push_str(&impacting_item_line(item));
+            }
+            out.push_str(&format!(
+                "\n## ADRs of the owner team\nThe ADRs on the boards of the team {} that no `impacts` link names, newest first. A superseded ADR is not listed.\n",
+                rendered.team.slug
+            ));
+            if team_adrs.is_empty() {
+                out.push_str("(none)\n");
+            }
+            for item in &team_adrs {
+                out.push_str(&impacting_item_line(item));
+            }
+            let not_listed = team_adrs_total - team_adrs.len() as i64;
+            if not_listed > 0 {
                 out.push_str(&format!(
-                    "- {} — {} · {kind}{state}{}\n",
-                    item.short_code,
-                    item.title,
-                    if item.archived_at.is_some() {
-                        " [archived]"
-                    } else {
-                        ""
-                    }
+                    "- {not_listed} more: `team_pages {}` lists each ADR of the team.\n",
+                    rendered.team.slug
                 ));
             }
             out.push_str("\n## In flight\n");
@@ -3798,7 +3802,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Take a free TASK in Active (no claim): the claim names you, so the board shows who works it. Or become the owner of a STRATEGY or INITIATIVE that has none: the one person who answers for it. A task: you need `transition_items` on its board or the right to edit the task; a task that a different person holds is refused with CLAIMED and the holder's name (ask for `hand_off_item`). A strategy or initiative: you must be a person and a member of its board (a grant), or an org admin; an item with an owner is refused with the owner's name. The owner gives no extra right. Moving a task to Active gives you the claim too."
+        description = "Take a free TASK in Active (no claim): the claim names you, so the board shows who works it. Or become the owner of a STRATEGY or INITIATIVE that has none: the one person who answers for it. A task: you need `transition_items` on its board; a task that a different person holds is refused with CLAIMED and the holder's name (ask for `hand_off_item`). A strategy or initiative: you must be a person and a member of its board (a grant), or an org admin; an item with an owner is refused with the owner's name. The owner gives no extra right. Moving a task to Active gives you the claim too."
     )]
     pub async fn claim_item(
         &self,
@@ -3827,7 +3831,7 @@ impl KairosMcp {
             // KAIROS-T-0528: a task in Active with no claim.
             let item = task_for_claim(item)?;
             let board_id = item.board_id.unwrap_or_default();
-            crate::claims::require_claim_take(conn, &slug, item.id, board_id, user)?;
+            crate::claims::require_claim_take(conn, &slug, board_id, user)?;
             kairos_db::task_claims::claim(conn, item.id, user)
                 .map_err(crate::claims::map_claim_error)?;
             Ok(format!(
@@ -3840,7 +3844,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Give the claim of a TASK in Active, or the owner of a STRATEGY or INITIATIVE, to another person (`to`: user id, email, user name or `me`; not a service account). A task stays in Active; you can hand off your own claim, or any claim with `transition_items` on its board. A strategy or initiative: the owner hands it off, or an org admin sets it; the new owner must be a member of its board (else NOT_BOARD_MEMBER). The person gets a notification."
+        description = "Give the claim of a TASK in Active, or the owner of a STRATEGY or INITIATIVE, to another person (`to`: user id, email, user name or `me`; not a service account). A task stays in Active; you can hand off your own claim, or any claim with `transition_items` on its board; the person must hold `transition_items` on that board too (team, grant or org admin), else VALIDATION names the board. A strategy or initiative: the owner hands it off, or an org admin sets it; the new owner must be a member of its board (else NOT_BOARD_MEMBER). The person gets a notification."
     )]
     pub async fn hand_off_item(
         &self,
@@ -3871,6 +3875,14 @@ impl KairosMcp {
             let board_id = item.board_id.unwrap_or_default();
             crate::claims::require_claim_change(conn, &slug, item.id, board_id, user)?;
             let to = crate::claims::resolve_person(conn, &slug, &params.to, user)?;
+            crate::claims::require_claim_target(
+                conn,
+                &slug,
+                board_id,
+                to,
+                &params.to,
+                &item.short_code,
+            )?;
             kairos_db::task_claims::hand_off(conn, item.id, to, user)
                 .map_err(crate::claims::map_claim_error)?;
             Ok(format!(
@@ -3950,14 +3962,15 @@ impl KairosMcp {
                     conn,
                     &tenant_ctx.slug,
                     user,
-                    source,
+                    source.typed(),
                     &params.target,
                     params.label.as_deref(),
                 )?;
                 return Ok(format!(
-                    "Linked {} -[external]-> {}.",
-                    params.source,
-                    external_ref_text(&made)
+                    "Linked {} -[external]-> {}.{}",
+                    source.code,
+                    external_ref_text(&made),
+                    renamed_lines(&[&source])
                 ));
             }
             if params.label.is_some() {
@@ -3973,31 +3986,35 @@ impl KairosMcp {
                     conn,
                     &tenant_ctx.slug,
                     user,
-                    source,
+                    source.typed(),
                     &params.target,
                     crate::api::meta::impacts::Surface::Mcp,
                 )?;
                 return Ok(format!(
-                    "Linked {} -[impacts]-> repository {}.",
-                    params.source, linked.slug
+                    "Linked {} -[impacts]-> repository {}.{}",
+                    source.code,
+                    linked.slug,
+                    renamed_lines(&[&source])
                 ));
             }
             let relationship = parse_relationship(&params.relationship)?;
-            let (source_id, source_type) = require_live_typed(conn, &params.source, "source")?;
-            let (target_id, target_type) = require_live_typed(conn, &params.target, "target")?;
+            let source = require_live_typed(conn, &params.source, "source")?;
+            let target = require_live_typed(conn, &params.target, "target")?;
             require_edge_write(
                 conn,
                 &tenant_ctx.slug,
                 user,
                 relationship.as_str(),
-                (source_id, source_type),
-                (target_id, target_type),
+                source.typed(),
+                target.typed(),
             )?;
-            graph::link_items(conn, source_id, target_id, relationship, user)
+            graph::link_items(conn, source.id, target.id, relationship, user)
                 .map_err(map_link_error)?;
             Ok(format!(
-                "Linked {} -[{relationship}]-> {}.",
-                params.source, params.target
+                "Linked {} -[{relationship}]-> {}.{}",
+                source.code,
+                target.code,
+                renamed_lines(&[&source, &target])
             ))
         })
         .await
@@ -4022,13 +4039,14 @@ impl KairosMcp {
                     conn,
                     &tenant_ctx.slug,
                     user,
-                    source,
+                    source.typed(),
                     &params.target,
                 )?;
                 return Ok(format!(
-                    "Unlinked {} -[external]-> {}.",
-                    params.source,
-                    external_ref_text(&removed)
+                    "Unlinked {} -[external]-> {}.{}",
+                    source.code,
+                    external_ref_text(&removed),
+                    renamed_lines(&[&source])
                 ));
             }
             // COLLIERY-T-0269: the target of `impacts` is a repository.
@@ -4038,18 +4056,20 @@ impl KairosMcp {
                     conn,
                     &tenant_ctx.slug,
                     user,
-                    source,
+                    source.typed(),
                     &params.target,
                     crate::api::meta::impacts::Surface::Mcp,
                 )?;
                 return Ok(format!(
-                    "Unlinked {} -[impacts]-> repository {}.",
-                    params.source, removed.slug
+                    "Unlinked {} -[impacts]-> repository {}.{}",
+                    source.code,
+                    removed.slug,
+                    renamed_lines(&[&source])
                 ));
             }
             let relationship = parse_relationship(&params.relationship)?;
-            let (source_id, source_type) = require_live_typed(conn, &params.source, "source")?;
-            let (target_id, target_type) = require_live_typed(conn, &params.target, "target")?;
+            let source = require_live_typed(conn, &params.source, "source")?;
+            let target = require_live_typed(conn, &params.target, "target")?;
             // COLLIERY-T-0235: the rule of the remove and the delete, in
             // one transaction, by the ONE function that REST
             // `DELETE /api/relationships/{id}` calls.
@@ -4058,12 +4078,14 @@ impl KairosMcp {
                 &tenant_ctx.slug,
                 user,
                 relationship,
-                (source_id, source_type),
-                (target_id, target_type),
+                source.typed(),
+                target.typed(),
             )?;
             Ok(format!(
-                "Unlinked {} -[{relationship}]-> {}.",
-                params.source, params.target
+                "Unlinked {} -[{relationship}]-> {}.{}",
+                source.code,
+                target.code,
+                renamed_lines(&[&source, &target])
             ))
         })
         .await
@@ -5534,6 +5556,14 @@ fn load_item(
         Some(found) => found,
         None => match crate::api::follow_retired(conn, short_code, liveness)? {
             Some(current) => resolve_short_code(conn, &current, liveness)?.ok_or_else(missing)?,
+            // KAIROS-T-0560: a write to an archived item says so.
+            None if liveness == Liveness::LiveOnly
+                && resolve_short_code(conn, short_code, Liveness::IncludeArchived)?.is_some() =>
+            {
+                return Err(crate::api::archived_write_refused(
+                    &short_code.to_ascii_uppercase(),
+                ));
+            }
             None => return Err(missing()),
         },
     };
@@ -6510,6 +6540,31 @@ fn owner_board_line(conn: &mut PgConnection, item: &ItemView) -> Result<String, 
     })
 }
 
+/// One line of a document or an ADR in a section of `get_repository`
+/// (COLLIERY-T-0269, KAIROS-T-0599): the short code, the title, the kind,
+/// the lifecycle or the column, and `[archived]`.
+fn impacting_item_line(item: &kairos_client::types_repositories::ImpactingItem) -> String {
+    let kind = match (item.entity_type.as_str(), item.document_type.as_deref()) {
+        ("document", Some(document_type)) => format!("document ({document_type})"),
+        (entity_type, _) => entity_type.to_string(),
+    };
+    let state = match (item.lifecycle.as_deref(), item.column.as_deref()) {
+        (Some(lifecycle), _) => format!(" · lifecycle: {lifecycle}"),
+        (None, Some(column)) => format!(" · column: {column}"),
+        (None, None) => String::new(),
+    };
+    format!(
+        "- {} — {} · {kind}{state}{}\n",
+        item.short_code,
+        item.title,
+        if item.archived_at.is_some() {
+            " [archived]"
+        } else {
+            ""
+        }
+    )
+}
+
 /// The line `- impacts: ...` of a document or of an ADR for `get_item`
 /// (COLLIERY-T-0269), or an empty string. A link to an archived
 /// repository is in the line, marked.
@@ -6723,17 +6778,24 @@ fn rename_lines(rename: &kairos_db::code_rename::CodeRename) -> String {
 }
 
 /// A live item by short code WITH its type (the edge-permission check needs
-/// it); 422 `VALIDATION` naming the field otherwise, mirroring REST.
+/// it); 422 `VALIDATION` naming the field otherwise, mirroring REST. A
+/// retired code follows to its item (KAIROS-T-0560): see
+/// [`crate::api::resolve_live_ref`].
 fn require_live_typed(
     conn: &mut PgConnection,
     short_code: &str,
     field: &str,
-) -> Result<(Uuid, ItemType), ApiError> {
-    resolve_short_code(conn, short_code, Liveness::LiveOnly)?.ok_or_else(|| {
-        ApiError::validation(format!(
-            "The {field} {short_code:?} is not the short code of a live item."
-        ))
-    })
+) -> Result<crate::api::LiveRef, ApiError> {
+    crate::api::resolve_live_ref(conn, short_code, field)
+}
+
+/// One line for each reference that came in with a retired code, e.g.
+/// `\nACME-T-0100 is now ACME-T-0200.` (KAIROS-T-0560). Empty otherwise.
+fn renamed_lines(refs: &[&crate::api::LiveRef]) -> String {
+    refs.iter()
+        .filter_map(|r| r.renamed())
+        .map(|line| format!("\n{line}"))
+        .collect()
 }
 
 /// An item's metadata values as compact `- slug: value` lines (ordered by
@@ -7210,6 +7272,9 @@ fn create_item_impl(
             out.push_str(&format!(", supports {parent_code}"));
         }
         out.push('.');
+        if let Some(renamed) = &created.parent_renamed {
+            out.push_str(&format!("\n{renamed}"));
+        }
         return Ok(out);
     }
 
@@ -7321,12 +7386,8 @@ fn create_item_impl(
         .parent
         .as_deref()
         .map(|parent_code| {
-            let (parent_id, parent_type) =
-                resolve_short_code(conn, parent_code, Liveness::LiveOnly)?.ok_or_else(|| {
-                    ApiError::validation(format!(
-                        "The parent {parent_code:?} is not the short code of a live item."
-                    ))
-                })?;
+            let parent = require_live_typed(conn, parent_code, "parent")?;
+            let parent_type = parent.item_type;
             let relationship = if item_type == ItemType::Adr {
                 RelationshipType::Supports
             } else {
@@ -7338,7 +7399,7 @@ fn create_item_impl(
                 item_type,
             )
             .map_err(|e| ApiError::validation(e.to_string()))?;
-            Ok::<_, ApiError>((parent_code, parent_id, parent_type, relationship))
+            Ok::<_, ApiError>((parent, relationship))
         })
         .transpose()?;
 
@@ -7450,7 +7511,7 @@ fn create_item_impl(
     if let Some(lane) = lane {
         out.push_str(&format!(" Lane: {lane}."));
     }
-    if let Some((parent_code, parent_id, parent_type, relationship)) = parent {
+    if let Some((parent, relationship)) = parent {
         // The link rule (COLLIERY-T-0228), by the ONE function that
         // `link_items` calls. The item and the edge are in one transaction
         // (COLLIERY-T-0227), so a refusal here leaves no item.
@@ -7459,13 +7520,15 @@ fn create_item_impl(
             slug,
             user,
             relationship.as_str(),
-            (parent_id, parent_type),
+            parent.typed(),
             (created_id, item_type),
         )?;
-        graph::link_items(conn, parent_id, created_id, relationship, user)
+        graph::link_items(conn, parent.id, created_id, relationship, user)
             .map_err(map_graph_error)?;
         out.push_str(&format!(
-            "\nparent: {parent_code} ({relationship} edge created)."
+            "\nparent: {} ({relationship} edge created).{}",
+            parent.code,
+            renamed_lines(&[&parent])
         ));
     }
     Ok(out)

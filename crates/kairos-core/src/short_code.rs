@@ -100,6 +100,11 @@ pub fn format_short_code(prefix: &str, item_type: ItemType, number: i64) -> Stri
     format!("{prefix}-{}-{number:04}", item_type.letter())
 }
 
+/// The number of digits of the number of a short code: 4 at least (the
+/// padding of [`format_short_code`]), 18 at most (an `i64`). One rule for
+/// [`parse_short_code`] and for the forge scan (KAIROS-T-0573).
+pub const NUMBER_DIGITS: std::ops::RangeInclusive<usize> = 4..=18;
+
 /// The parts of a short code: `SKADI-T-0577` gives `("SKADI", Task, 577)`.
 /// `None` when `code` does not have the form `{PREFIX}-{TYPE_LETTER}-{NNNN}`
 /// (COLLIERY-T-3100). The prefix is a capital letter, then capital letters
@@ -126,7 +131,8 @@ pub fn parse_short_code(code: &str) -> Option<(&str, ItemType, i64)> {
         "A" => ItemType::Adr,
         _ => return None,
     };
-    let number_ok = (4..=18).contains(&number.len()) && number.bytes().all(|b| b.is_ascii_digit());
+    let number_ok =
+        NUMBER_DIGITS.contains(&number.len()) && number.bytes().all(|b| b.is_ascii_digit());
     if !prefix_ok || !number_ok {
         return None;
     }

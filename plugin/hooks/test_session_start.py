@@ -89,6 +89,7 @@ class LiveStateHint(unittest.TestCase):
         self.assertIn(
             "the documents and the ADRs that impact this repository", hint
         )
+        self.assertIn("the other ADRs of the owner team", hint)  # KAIROS-T-0599
         self.assertIn("Read them with `get_item` before you plan work.", hint)
         self.assertIn("Then call `board_items`", hint)
 
@@ -166,6 +167,12 @@ class CliNote(unittest.TestCase):
         self.assertIn("0.8.0", note)
         self.assertIn("0.12.0", note)
         self.assertIn("kairos self-update", note)
+
+    def test_the_line_says_kairos_code_needs_a_restart(self):
+        # KAIROS-T-0526: the code tools run the old binary until a restart.
+        note = session_start.cli_note("0.8.0", "0.12.0")
+        self.assertIn("kairos-code", note)
+        self.assertIn("restart the session", note)
 
     def test_versions_compare_by_number(self):
         self.assertIsNotNone(session_start.cli_note("0.9.0", "0.12.0"))

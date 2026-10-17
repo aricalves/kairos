@@ -256,6 +256,7 @@ async fn cli_command_tree_golden_path_live() {
         database_url: scratch_url.clone(),
         pool_size: 16,
         pool_min_idle: 0,
+        job_pool_size: 6,
         bind_addr: "127.0.0.1:0".parse().expect("addr"),
         oidc_issuer_url: Some(ISSUER.to_string()),
         oidc_audience: Some(AUDIENCE.to_string()),
@@ -292,6 +293,7 @@ async fn cli_command_tree_golden_path_live() {
         auth_max_failures: 5,
         auth_failure_window_secs: 300,
         auth_lockout_secs: 60,
+        auth_cache_secs: 60,
         trusted_proxy: false,
         local_auth: false,
         session_ttl_secs: 14 * 24 * 60 * 60,
@@ -741,9 +743,24 @@ async fn cli_command_tree_golden_path_live() {
     let detail: serde_json::Value = serde_json::from_str(&stdout).expect("detail JSON");
     assert_eq!(detail["credential"]["set"], true, "{detail}");
     assert!(!stdout.contains(TOKEN), "{stdout}");
-    let (code, stdout, stderr) = run_cli(
+    // KAIROS-T-0590: refused without --confirm; the token stays.
+    let (code, _, stderr) = run_cli(
         config_dir.path(),
         &["repos", "credential", "remove", "payments-api"],
+    )
+    .await;
+    assert_eq!(code, 1, "credential remove without --confirm must exit 1");
+    assert!(stderr.contains("--confirm"), "{stderr}");
+    let (_, stdout, _) = run_cli(
+        config_dir.path(),
+        &["repos", "get", "payments-api", "--json"],
+    )
+    .await;
+    let detail: serde_json::Value = serde_json::from_str(&stdout).expect("detail JSON");
+    assert_eq!(detail["credential"]["set"], true, "{detail}");
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["repos", "credential", "remove", "payments-api", "--confirm"],
     )
     .await;
     assert_eq!(code, 0, "repos credential remove failed: {stderr}");
