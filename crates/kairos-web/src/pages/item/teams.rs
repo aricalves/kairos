@@ -60,7 +60,8 @@ pub fn TeamsPanel(
     #[prop(into)]
     created_by: String,
     /// The item is archived: each write resolves live items only.
-    archived: bool,
+    #[prop(into)]
+    archived: Signal<bool>,
 ) -> impl IntoView {
     let auth = use_auth();
     let code = StoredValue::new(code);
@@ -170,7 +171,7 @@ pub fn TeamsPanel(
                                     <Text size="sm">{team.name.clone()}</Text>
                                     <Text size="xs" dimmed=true>{source}</Text>
                                 </Group>
-                                {move || (by_hand && !archived && can_edit.get()).then(|| {
+                                {move || (by_hand && !archived.get() && can_edit.get()).then(|| {
                                     let slug = slug.clone();
                                     view! {
                                         <Button variant="default" size="xs" disabled=busy.get()
@@ -183,7 +184,7 @@ pub fn TeamsPanel(
                         }
                     }).collect_view().into_any(),
                 }}
-                {move || (!archived && can_edit.get() && !options.with(Vec::is_empty)).then(|| view! {
+                {move || (!archived.get() && can_edit.get() && !options.with(Vec::is_empty)).then(|| view! {
                     <Group align="end" gap="sm" attr:data-testid="item-teams-add">
                         <Select
                             label="Team"

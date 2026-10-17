@@ -512,8 +512,8 @@ fn unified_search_pipeline() {
     let (results, stats) = run(&mut conn, json!({"filter": {"board_id": delivery_board}}));
     assert_eq!(all_ids(&results), HashSet::from([t1.id, t2.id, t3.id]));
     assert_eq!(
-        stats.hydration_queries, 4,
-        "board filter hydrates the four board-bearing types only"
+        stats.hydration_queries, 1,
+        "KAIROS-T-0623: only the type on the page (tasks) is hydrated"
     );
 
     // column_id (tasks land in the delivery board's first column)

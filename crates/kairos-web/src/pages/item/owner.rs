@@ -31,6 +31,7 @@ use aurora_dark::tokens::{ApiError, token};
 use leptos::prelude::*;
 
 use super::api::{self, Family, Impact};
+use super::picker::{Picker, load_on_open, picker_state};
 use crate::auth::use_auth;
 use crate::pages::boards;
 use crate::pages::repositories;
@@ -92,7 +93,8 @@ pub fn OwnerBoardPanel(
     /// board.
     board: LocalResource<Result<Option<api::BoardInfo>, ApiError>>,
     /// The document is archived: each write resolves live items only.
-    archived: bool,
+    #[prop(into)]
+    archived: Signal<bool>,
     on_moved: Callback<String>,
 ) -> impl IntoView {
     let auth = use_auth();
@@ -106,7 +108,9 @@ pub fn OwnerBoardPanel(
     let toaster = use_toaster();
     let navigate = leptos_router::hooks::use_navigate();
     let whoami = use_context::<LocalResource<Result<crate::api::Whoami, ApiError>>>();
-    let all_boards = LocalResource::new(move || {
+    // KAIROS-T-0618: the boards load when the control opens.
+    let open = RwSignal::new(false);
+    let all_boards = load_on_open(open, move || {
         auth.track_session();
         boards::data::list_boards(auth)
     });
@@ -139,10 +143,15 @@ pub fn OwnerBoardPanel(
         let me = whoami
             .and_then(|resource| resource.get())
             .and_then(Result::ok);
-        let (Some(me), Some(Ok(list)), Some(here)) = (me, all_boards.get(), here.get()) else {
+        let (Some(me), Some(Ok(list)), Some(here)) = (me, all_boards.get().flatten(), here.get())
+        else {
             return Vec::new();
         };
         owner_board_targets(&me, &list, here.as_ref().map(|(slug, _)| slug.as_str()))
+    });
+    let picker = Memo::new(move |_| {
+        let read = all_boards.get().flatten();
+        picker_state(open.get(), read.as_ref(), targets.with(Vec::len))
     });
 
     // COLLIERY-T-3109: each document has an owner board, so the panel only
@@ -165,9 +174,13 @@ pub fn OwnerBoardPanel(
                     ));
                     navigate(&format!("/items/{}", moved.short_code), Default::default());
                 }
-                // Success reads the item again, and the new page has the
-                // new board: no busy reset, this view is gone.
-                Ok(_) => on_moved.run(format!("The owner board is {target}.")),
+                // Success reads the item again, and the panel shows the
+                // new board. The panel stays mounted (KAIROS-T-0618).
+                Ok(_) => {
+                    busy.set(false);
+                    value.set(NO_CHOICE.to_string());
+                    on_moved.run(format!("The owner board is {target}."));
+                }
                 Err(e) => {
                     error.set(Some(e));
                     busy.set(false);
@@ -205,32 +218,50 @@ pub fn OwnerBoardPanel(
                         </Stack>
                     }.into_any(),
                 }}
-                {move || (!archived && can_move.get()).then(|| {
+                {move || (!archived.get() && can_move.get()).then(|| {
                     view! {
                         <Group align="end" gap="sm" attr:data-testid="owner-board-control">
-                            // A closure: the list of boards can come after
-                            // the check of the right, and the selector must
-                            // then show.
-                            {move || (!targets.with(Vec::is_empty)).then(|| view! {
-                                <Select
-                                    label="New owner board"
-                                    option_pairs={std::iter::once((
-                                        NO_CHOICE.to_string(),
-                                        "(select a board)".to_string(),
-                                    ))
-                                    .chain(targets.get())
-                                    .collect::<Vec<_>>()}
-                                    value=value
-                                />
-                                <Switch checked=rename label="Give it a code of the new board"/>
-                                <Button
-                                    size="xs"
-                                    disabled=move || busy.get() || value.get() == NO_CHOICE
-                                    on_click=submit
-                                >
-                                    "Set owner board"
-                                </Button>
-                            })}
+                            // A closure: the list of boards loads when the
+                            // control opens, and the selector must then show.
+                            {move || match picker.get() {
+                                Picker::Closed => view! {
+                                    <Button variant="default" size="xs"
+                                        on_click=Callback::new(move |_| open.set(true))>
+                                        "Change owner board"
+                                    </Button>
+                                }.into_any(),
+                                Picker::Loading => view! {
+                                    <Text size="xs" dimmed=true>"Loading boards…"</Text>
+                                }.into_any(),
+                                Picker::Failed => view! {
+                                    <Text size="xs" dimmed=true>"The boards are not available."</Text>
+                                }.into_any(),
+                                Picker::Empty => view! {
+                                    <Text size="xs" dimmed=true>
+                                        "No other board can own this document."
+                                    </Text>
+                                }.into_any(),
+                                Picker::Ready => view! {
+                                    <Select
+                                        label="New owner board"
+                                        option_pairs={std::iter::once((
+                                            NO_CHOICE.to_string(),
+                                            "(select a board)".to_string(),
+                                        ))
+                                        .chain(targets.get())
+                                        .collect::<Vec<_>>()}
+                                        value=value
+                                    />
+                                    <Switch checked=rename label="Give it a code of the new board"/>
+                                    <Button
+                                        size="xs"
+                                        disabled=move || busy.get() || value.get() == NO_CHOICE
+                                        on_click=submit
+                                    >
+                                        "Set owner board"
+                                    </Button>
+                                }.into_any(),
+                            }}
                         </Group>
                     }
                 })}
@@ -250,20 +281,24 @@ pub fn OwnerBoardPanel(
 pub fn ImpactsPanel(
     family: Family,
     #[prop(into)] code: String,
-    impacts: Vec<Impact>,
+    /// The links of the item. A signal (KAIROS-T-0618): the page stays
+    /// mounted when a link changes.
+    #[prop(into)]
+    impacts: Signal<Vec<Impact>>,
     /// The page's shared board read: the board of the edit rule.
     board: LocalResource<Result<Option<api::BoardInfo>, ApiError>>,
     /// The user id of the creator of the item.
     #[prop(into)]
     created_by: String,
     /// The item is archived: each write resolves live items only.
-    archived: bool,
+    #[prop(into)]
+    archived: Signal<bool>,
     on_moved: Callback<String>,
 ) -> impl IntoView {
     let auth = use_auth();
     let code = StoredValue::new(code);
     let created_by = StoredValue::new(created_by);
-    let links = StoredValue::new(impacts);
+    let links = impacts;
     let value = RwSignal::new(NO_CHOICE.to_string());
     let busy = RwSignal::new(false);
     let error: RwSignal<Option<ApiError>> = RwSignal::new(None);
@@ -292,15 +327,21 @@ pub fn ImpactsPanel(
             )
         })
     });
-    let directory = LocalResource::new(move || {
+    // KAIROS-T-0618: the repositories load when the control opens.
+    let open = RwSignal::new(false);
+    let directory = load_on_open(open, move || {
         auth.track_session();
         async move { repositories::api::list_repositories(auth, None).await }
     });
     let options: Memo<Vec<(String, String)>> = Memo::new(move |_| {
-        let Some(Ok(directory)) = directory.get() else {
+        let Some(Ok(directory)) = directory.get().flatten() else {
             return Vec::new();
         };
-        links.with_value(|links| impact_options(&directory, links))
+        links.with(|links| impact_options(&directory, links))
+    });
+    let picker = Memo::new(move |_| {
+        let read = directory.get().flatten();
+        picker_state(open.get(), read.as_ref(), options.with(Vec::len))
     });
 
     let add: Callback<()> = Callback::new(move |()| {
@@ -312,7 +353,13 @@ pub fn ImpactsPanel(
         error.set(None);
         leptos::task::spawn_local(async move {
             match api::add_impact(auth, family, &code.get_value(), &chosen).await {
-                Ok(_) => on_moved.run(format!("This item impacts the repository {chosen}.")),
+                // The panel stays mounted (KAIROS-T-0618): free it for the
+                // next link.
+                Ok(_) => {
+                    busy.set(false);
+                    value.set(NO_CHOICE.to_string());
+                    on_moved.run(format!("This item impacts the repository {chosen}."));
+                }
                 Err(e) => {
                     error.set(Some(e));
                     busy.set(false);
@@ -325,7 +372,10 @@ pub fn ImpactsPanel(
         error.set(None);
         leptos::task::spawn_local(async move {
             match api::remove_impact(auth, family, &code.get_value(), &slug).await {
-                Ok(()) => on_moved.run(format!("This item does not impact the repository {slug}.")),
+                Ok(()) => {
+                    busy.set(false);
+                    on_moved.run(format!("This item does not impact the repository {slug}."));
+                }
                 Err(e) => {
                     error.set(Some(e));
                     busy.set(false);
@@ -337,10 +387,10 @@ pub fn ImpactsPanel(
     view! {
         <Panel title="Impacts" caption="the repositories that this item is about">
             <Stack gap="sm" attr:data-testid="impacts">
-                {links.with_value(|links| links.is_empty()).then(|| view! {
+                {move || links.with(Vec::is_empty).then(|| view! {
                     <Text size="sm" dimmed=true>"This item impacts no repository."</Text>
                 })}
-                {links.get_value().into_iter().map(|impact| {
+                {move || links.get().into_iter().map(|impact| {
                     let slug = impact.repository.slug.clone();
                     let row = slug.clone();
                     let label = if impact.repository.repo_full_name.is_empty() {
@@ -357,7 +407,7 @@ pub fn ImpactsPanel(
                                     <Pill color=token::GOLD>"repository deleted"</Pill>
                                 })}
                             </Group>
-                            {move || (!archived && can_edit.get()).then(|| {
+                            {move || (!archived.get() && can_edit.get()).then(|| {
                                 let slug = slug.clone();
                                 let disabled = busy.get();
                                 view! {
@@ -370,25 +420,44 @@ pub fn ImpactsPanel(
                         </Group>
                     }
                 }).collect_view()}
-                {move || (!archived && can_edit.get() && !options.with(Vec::is_empty)).then(|| view! {
+                {move || (!archived.get() && can_edit.get()).then(|| view! {
                     <Group align="end" gap="sm" attr:data-testid="impacts-add">
-                        <Select
-                            label="Repository"
-                            option_pairs={std::iter::once((
-                                NO_CHOICE.to_string(),
-                                "(select a repository)".to_string(),
-                            ))
-                            .chain(options.get())
-                            .collect::<Vec<_>>()}
-                            value=value
-                        />
-                        <Button
-                            size="xs"
-                            disabled=move || busy.get() || value.get() == NO_CHOICE
-                            on_click=add
-                        >
-                            "Add impacts link"
-                        </Button>
+                        {move || match picker.get() {
+                            Picker::Closed => view! {
+                                <Button variant="default" size="xs"
+                                    on_click=Callback::new(move |_| open.set(true))>
+                                    "Add a repository"
+                                </Button>
+                            }.into_any(),
+                            Picker::Loading => view! {
+                                <Text size="xs" dimmed=true>"Loading repositories…"</Text>
+                            }.into_any(),
+                            Picker::Failed => view! {
+                                <Text size="xs" dimmed=true>"The repositories are not available."</Text>
+                            }.into_any(),
+                            Picker::Empty => view! {
+                                <Text size="xs" dimmed=true>"No other repository is available."</Text>
+                            }.into_any(),
+                            Picker::Ready => view! {
+                                <Select
+                                    label="Repository"
+                                    option_pairs={std::iter::once((
+                                        NO_CHOICE.to_string(),
+                                        "(select a repository)".to_string(),
+                                    ))
+                                    .chain(options.get())
+                                    .collect::<Vec<_>>()}
+                                    value=value
+                                />
+                                <Button
+                                    size="xs"
+                                    disabled=move || busy.get() || value.get() == NO_CHOICE
+                                    on_click=add
+                                >
+                                    "Add impacts link"
+                                </Button>
+                            }.into_any(),
+                        }}
                     </Group>
                 })}
                 <Text size="xs" dimmed=true>

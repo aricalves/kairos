@@ -4,9 +4,10 @@
 //!
 //! The pure request model and validation live in [`kairos_core::search`];
 //! this module is the SQL side of the contract. Per KAIROS-A-0009 the
-//! recursive-CTE traversal, the `searchable_items` query, and the metadata
-//! pre-pass are sanctioned `diesel::sql_query` raw SQL; per-type hydration
-//! is typed diesel.
+//! recursive-CTE traversal, the ranking query (the text match, the filters,
+//! the sort and the page), and the metadata pre-pass are sanctioned
+//! `diesel::sql_query` raw SQL; per-type hydration of the page is typed
+//! diesel.
 //!
 //! # Pipeline (A-0007 execution order)
 //!
@@ -24,19 +25,16 @@
 //!    runs over the raw edge graph — edges through soft-deleted items are
 //!    followed (their live descendants stay reachable); visibility is
 //!    enforced at type resolution and hydration.
-//! 2. **Full-text `q`** (if present): match ids via the `searchable_items`
-//!    view using `websearch_to_tsquery('english', $q)` — chosen over
+//! 2. **Full-text `q`** (if present): a condition of the ranking query
+//!    (step 5), `tsv @@ websearch_to_tsquery('english', $q)` on the tsv
+//!    expression of the `idx_*_tsv` GIN indexes — chosen over
 //!    `plainto_tsquery` because it accepts arbitrary end-user input without
-//!    ever erroring and supports quoted phrases, `OR`, and `-negation`.
-//!    The view is the search surface (S-0004). Since KAIROS-T-0156 it
-//!    reports `deleted_at` rather than filtering on it, and since
-//!    KAIROS-T-0157 this query spells `deleted_at IS NULL` only when
-//!    `filter.include_deleted` is absent — which is what finally makes
-//!    `--include-deleted` mean something alongside a text query
-//!    (KAIROS-A-0020 rule 2). The archived mode is index-served too: the
-//!    `idx_*_tsv` GIN indexes stopped being partial in the same change,
-//!    because a partial index cannot serve a query that declines its
-//!    predicate.
+//!    ever erroring and supports quoted phrases, `OR`, and `-negation`. The
+//!    expression is the one of the `searchable_items` view (S-0004),
+//!    character for character, so the index serves it. Since KAIROS-T-0157
+//!    the query spells `deleted_at IS NULL` only when
+//!    `filter.include_deleted` is absent (KAIROS-A-0020 rule 2); the
+//!    indexes are not partial, so both modes are index-served.
 //!
 //!    A `q` that is a short code (any case) also matches the item with that
 //!    code, and the item of that code when it is retired (COLLIERY-T-3100):
@@ -46,39 +44,36 @@
 //!    `item_metadata`/`metadata_definitions` (pairs unnested server-side)
 //!    returning ids that satisfy EVERY entry; values use the T-0011 LIKE
 //!    translation ([`kairos_core::search::metadata_like_pattern`]).
-//! 4. **Candidate set**: the intersection of the sets above (whichever are
-//!    present). No set ⇒ pure structural filtering.
-//! 5. **Type resolution + partition**: candidates resolve to `(id,
-//!    entity_type)` via `entity_directory`, with `deleted_at IS NULL`
-//!    appended unless `include_deleted` asks for the wider set. One query
-//!    either way since KAIROS-T-0156 — the hand-rolled base-table UNION
-//!    that used to stand in for the wide mode is gone, because the view
-//!    can now answer it.
-//! 6. **Hydrate**: at most one typed `SELECT … WHERE id = ANY(…)` per
-//!    entity type — **bounded at 5 queries regardless of result size**
-//!    ([`SearchStats::hydration_queries`] proves it) — carrying the
-//!    structural filter predicates (`board_id`, `column_id`, `team_id`, `repository_id`,
-//!    `task_type`, `is_bucket`, `created_after`/`before`, `created_by`, and
-//!    the subqueries of `claimed_by` and `owned_by`) and the
-//!    `deleted_at IS NULL` default. Filters on attributes a type does not
-//!    have exclude the type outright (e.g. `task_type` ⇒ tasks only,
-//!    `board_id` ⇒ no documents), so those types cost no query at all.
-//!    `repository_id` keeps three types (COLLIERY-T-0269): the tasks that
-//!    link to the repository, and the documents and the ADRs that impact
-//!    it. `board_id` is the board that an item is a card of. A document
-//!    is a card of no board, the board that it names as its owner too, so
-//!    `board_id` excludes each document.
-//! 7. **Sort, count, paginate**: the combined cross-type rows are sorted
-//!    in memory (`created_at`/`updated_at`/`title`/`relevance`, tie-broken by
-//!    `short_code` for determinism), `total` is counted **before**
-//!    `limit`/`offset` are applied, and the page is regrouped by type.
-//!    `relevance` is the `ts_rank_cd` carried out of step 4 and is the
-//!    **default when `q` is present** (KAIROS-T-0186); it requires `q`, and
-//!    asking for it without one is a validation error rather than a silent
-//!    fallback.
-//!    Pagination over a mixed-type result set is applied in memory over the
-//!    hydrated rows (A-0007's combined-result-set semantics); the ≤5-query
-//!    bound holds regardless.
+//! 4. **Candidate set**: the intersection of the traverse and metadata
+//!    sets (whichever are present). No set ⇒ pure structural filtering.
+//! 5. **Rank, count, page in SQL** (KAIROS-T-0623): ONE query, a `UNION
+//!    ALL` arm per type that can match, over its base table. Each arm
+//!    carries the candidate ids (`= ANY`), the text match, the structural
+//!    filter predicates (`board_id`, `column_id`, `team_id`,
+//!    `repository_id`, `task_type`, `is_bucket`, `created_after`/`before`,
+//!    `created_by`, and the subqueries of `claimed_by` and `owned_by`),
+//!    `metadata_missing` as `NOT EXISTS`, and the `deleted_at IS NULL`
+//!    default. It projects the id, the type, the short code and the sort
+//!    key. Filters on attributes a type does not have exclude the type
+//!    outright (e.g. `task_type` ⇒ tasks only, `board_id` ⇒ no documents),
+//!    so those types get no arm. `repository_id` keeps three types
+//!    (COLLIERY-T-0269): the tasks that link to the repository, and the
+//!    documents and the ADRs that impact it. `board_id` is the board that
+//!    an item is a card of. A document is a card of no board, the board
+//!    that it names as its owner too, so `board_id` excludes each document.
+//!    `ORDER BY` the field (`created_at`/`updated_at`/`title`/`relevance`),
+//!    then `short_code` for determinism, both text keys `COLLATE "C"` (the
+//!    byte order of a Rust `str`); `count(*) OVER ()` is the `total` before
+//!    `LIMIT`/`OFFSET`. `relevance` is `ts_rank_cd` and is the **default
+//!    when `q` is present** (KAIROS-T-0186); it requires `q`, and asking for
+//!    it without one is a validation error rather than a silent fallback.
+//!    Only the relevance sort computes a rank. A page past the end has no
+//!    row to carry the total: the query runs once more for its first row.
+//! 6. **Hydrate the page only**: at most one typed `SELECT … WHERE id =
+//!    ANY(…)` per entity type on the page — **bounded at 5 queries and at
+//!    `limit` rows regardless of result size**
+//!    ([`SearchStats::hydration_queries`] proves it) — regrouped by type in
+//!    the page's order.
 //!
 //! Every public function operates in the CURRENT `search_path` tenant
 //! schema (same conventions as [`crate::items`]); the pipeline is
@@ -91,7 +86,7 @@ use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::result::Error as DieselError;
 use diesel::sql_query;
-use diesel::sql_types::{Array, BigInt, Integer, Text, Uuid as SqlUuid};
+use diesel::sql_types::{Array, BigInt, Bool, Integer, Text, Timestamptz, Uuid as SqlUuid};
 use uuid::Uuid;
 
 use kairos_core::search::{
@@ -155,7 +150,8 @@ pub struct SearchResults {
 /// size".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SearchStats {
-    /// Per-type hydration queries executed (step 6) — always `<= 5`.
+    /// Per-type hydration queries executed (step 6): one per type on the
+    /// page, so always `<= 5`.
     pub hydration_queries: usize,
     /// Every query executed by the pipeline, hydration included.
     pub total_queries: usize,
@@ -183,8 +179,13 @@ pub fn execute_search_with_stats(
     let include_deleted = filter.is_some_and(|f| f.include_deleted);
     let limit = request.effective_limit();
     let offset = request.effective_offset();
+    let mut results = SearchResults {
+        limit,
+        offset,
+        ..Default::default()
+    };
 
-    // -- steps 1-4: candidate id sets ---------------------------------------
+    // -- steps 1 and 3: candidate id sets ------------------------------------
     let mut candidates: Option<HashSet<Uuid>> = None;
     let intersect = |candidates: &mut Option<HashSet<Uuid>>, ids: HashSet<Uuid>| {
         *candidates = Some(match candidates.take() {
@@ -198,16 +199,15 @@ pub fn execute_search_with_stats(
         let ids = traverse_ids(conn, root, traverse, &mut stats)?;
         intersect(&mut candidates, ids);
     }
-    // Relevance scores survive the intersection: `q` is the only source of
-    // them, and step 7 looks them up by id after hydration.
-    let mut relevance: HashMap<Uuid, f32> = HashMap::new();
-    if let Some(q) = &request.q {
-        relevance = text_match_ids(conn, q, include_deleted, &mut stats)?;
-        for id in code_match_ids(conn, q, include_deleted, &mut stats)? {
-            relevance.insert(id, CODE_MATCH_SCORE);
-        }
-        intersect(&mut candidates, relevance.keys().copied().collect());
-    }
+    // Step 2: the text match is part of the ranking query; only the code
+    // match is a query of its own (at most one row).
+    let text = match &request.q {
+        Some(q) => Some(TextMatch {
+            q: q.clone(),
+            codes: code_match_ids(conn, q, include_deleted, &mut stats)?,
+        }),
+        None => None,
+    };
     if let Some(metadata) = filter
         .and_then(|f| f.metadata.as_ref())
         .filter(|m| !m.is_empty())
@@ -217,86 +217,125 @@ pub fn execute_search_with_stats(
     }
 
     // KAIROS-T-0368: the items that HAVE a value for one of the slugs of
-    // `metadata_missing` leave the result after hydration.
-    let excluded: HashSet<Uuid> = match filter.and_then(|f| f.metadata_missing.as_ref()) {
-        Some(slugs) => metadata_present_ids(conn, slugs, &mut stats)?,
-        None => HashSet::new(),
+    // `metadata_missing` leave the result, in the ranking query.
+    let missing = match filter.and_then(|f| f.metadata_missing.as_ref()) {
+        Some(slugs) => Some(known_metadata_slugs(conn, slugs, &mut stats)?),
+        None => None,
     };
 
-    // -- step 5: type resolution + partition ---------------------------------
     let types = applicable_types(filter);
-    let per_type: HashMap<ItemType, Option<Vec<Uuid>>> = match candidates {
-        Some(ids) => {
-            let mut partitioned = partition_by_type(conn, &ids, include_deleted, &mut stats)?;
-            types
-                .iter()
-                .filter_map(|t| partitioned.remove(t).map(|ids| (*t, Some(ids))))
-                .collect()
-        }
-        // No candidate restriction: every applicable type, unrestricted.
-        None => types.iter().map(|t| (*t, None)).collect(),
+    if types.is_empty() || candidates.as_ref().is_some_and(HashSet::is_empty) {
+        return Ok((results, stats));
+    }
+
+    // -- steps 4 and 5: rank, count and page in SQL --------------------------
+    let ranking = Ranking {
+        types: &types,
+        filter,
+        include_deleted,
+        candidates: candidates.map(|ids| ids.into_iter().collect()),
+        text,
+        missing,
+        sort: request.effective_sort(),
+    };
+    let mut page = ranking.page(conn, limit, offset, &mut stats)?;
+    results.total = match page.first() {
+        Some(row) => row.total,
+        // A page past the end has no row to carry the total: ask for the
+        // first row instead.
+        None if offset > 0 => ranking
+            .page(conn, 1, 0, &mut stats)?
+            .first()
+            .map_or(0, |row| row.total),
+        None => 0,
     };
 
-    // -- step 6: bounded per-type hydration ----------------------------------
-    let mut combined: Vec<AnyItem> = Vec::new();
-    for (item_type, ids) in per_type {
+    // -- step 6: hydrate the page only ----------------------------------------
+    let mut by_type: HashMap<ItemType, Vec<Uuid>> = HashMap::new();
+    let mut order: Vec<(ItemType, Uuid)> = Vec::with_capacity(page.len());
+    for row in page.drain(..) {
+        let item_type = parse_entity_type(&row.entity_type)?;
+        by_type.entry(item_type).or_default().push(row.id);
+        order.push((item_type, row.id));
+    }
+    let mut strategies = HashMap::new();
+    let mut initiatives = HashMap::new();
+    let mut tasks = HashMap::new();
+    let mut documents = HashMap::new();
+    let mut adrs = HashMap::new();
+    for (item_type, ids) in by_type {
+        stats.hydration_queries += 1;
+        stats.total_queries += 1;
         match item_type {
-            ItemType::Strategy => combined.extend(
-                hydrate_strategies(conn, ids, filter, &mut stats)?
-                    .into_iter()
-                    .map(AnyItem::Strategy),
-            ),
-            ItemType::Initiative => combined.extend(
-                hydrate_initiatives(conn, ids, filter, &mut stats)?
-                    .into_iter()
-                    .map(AnyItem::Initiative),
-            ),
-            ItemType::Task => combined.extend(
-                hydrate_tasks(conn, ids, filter, &mut stats)?
-                    .into_iter()
-                    .map(AnyItem::Task),
-            ),
-            ItemType::Document => combined.extend(
-                hydrate_documents(conn, ids, filter, &mut stats)?
-                    .into_iter()
-                    .map(AnyItem::Document),
-            ),
-            ItemType::Adr => combined.extend(
-                hydrate_adrs(conn, ids, filter, &mut stats)?
-                    .into_iter()
-                    .map(AnyItem::Adr),
-            ),
+            ItemType::Strategy => {
+                use crate::schema::strategies::dsl;
+                strategies = keyed(
+                    dsl::strategies
+                        .filter(dsl::id.eq_any(ids))
+                        .select(Strategy::as_select())
+                        .load(conn)?,
+                    |row: &Strategy| row.id,
+                );
+            }
+            ItemType::Initiative => {
+                use crate::schema::initiatives::dsl;
+                initiatives = keyed(
+                    dsl::initiatives
+                        .filter(dsl::id.eq_any(ids))
+                        .select(Initiative::as_select())
+                        .load(conn)?,
+                    |row: &Initiative| row.id,
+                );
+            }
+            ItemType::Task => {
+                use crate::schema::tasks::dsl;
+                tasks = keyed(
+                    dsl::tasks
+                        .filter(dsl::id.eq_any(ids))
+                        .select(Task::as_select())
+                        .load(conn)?,
+                    |row: &Task| row.id,
+                );
+            }
+            ItemType::Document => {
+                use crate::schema::documents::dsl;
+                documents = keyed(
+                    dsl::documents
+                        .filter(dsl::id.eq_any(ids))
+                        .select(Document::as_select())
+                        .load(conn)?,
+                    |row: &Document| row.id,
+                );
+            }
+            ItemType::Adr => {
+                use crate::schema::adrs::dsl;
+                adrs = keyed(
+                    dsl::adrs
+                        .filter(dsl::id.eq_any(ids))
+                        .select(Adr::as_select())
+                        .load(conn)?,
+                    |row: &Adr| row.id,
+                );
+            }
         }
     }
-
-    if !excluded.is_empty() {
-        combined.retain(|item| !excluded.contains(&item.id()));
-    }
-
-    // -- step 7: sort, count, paginate, regroup by type -----------------------
-    sort_items(&mut combined, request.effective_sort(), &relevance);
-    let total = combined.len() as i64;
-
-    let mut results = SearchResults {
-        total,
-        limit,
-        offset,
-        ..Default::default()
-    };
-    for item in combined
-        .into_iter()
-        .skip(offset as usize)
-        .take(limit as usize)
-    {
-        match item {
-            AnyItem::Strategy(row) => results.strategies.push(row),
-            AnyItem::Initiative(row) => results.initiatives.push(row),
-            AnyItem::Task(row) => results.tasks.push(row),
-            AnyItem::Document(row) => results.documents.push(row),
-            AnyItem::Adr(row) => results.adrs.push(row),
+    // The page's order, regrouped by type. A row that went away between the
+    // two queries is left out.
+    for (item_type, id) in order {
+        match item_type {
+            ItemType::Strategy => results.strategies.extend(strategies.remove(&id)),
+            ItemType::Initiative => results.initiatives.extend(initiatives.remove(&id)),
+            ItemType::Task => results.tasks.extend(tasks.remove(&id)),
+            ItemType::Document => results.documents.extend(documents.remove(&id)),
+            ItemType::Adr => results.adrs.extend(adrs.remove(&id)),
         }
     }
     Ok((results, stats))
+}
+
+/// The rows by id.
+fn keyed<T>(rows: Vec<T>, id: impl Fn(&T) -> Uuid) -> HashMap<Uuid, T> {
+    rows.into_iter().map(|row| (id(&row), row)).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -307,15 +346,6 @@ pub fn execute_search_with_stats(
 struct IdRow {
     #[diesel(sql_type = SqlUuid)]
     id: Uuid,
-}
-
-/// An id plus its `ts_rank_cd` relevance against `q` (KAIROS-T-0186).
-#[derive(QueryableByName)]
-struct ScoredIdRow {
-    #[diesel(sql_type = SqlUuid)]
-    id: Uuid,
-    #[diesel(sql_type = diesel::sql_types::Float)]
-    score: f32,
 }
 
 /// Resolve `traverse.from` to an entity id via `entity_directory`.
@@ -426,41 +456,6 @@ fn traverse_ids(
     Ok(rows.into_iter().map(|r| r.id).collect())
 }
 
-/// Full-text match via the `searchable_items` view (module docs, step 2).
-/// Live-only by default; `include_deleted` widens it (KAIROS-T-0157). This
-/// is the predicate that made `--include-deleted` a silent no-op next to a
-/// text query: the archived ids were dropped here, so the intersection at
-/// step 4 had already lost them by the time the flag was read.
-///
-/// Both modes are index-served: `idx_*_tsv` were partial
-/// `WHERE deleted_at IS NULL` until KAIROS-T-0157 made them whole, because
-/// a partial index cannot answer a query that declines its predicate.
-/// Also returns a relevance score per match (KAIROS-T-0186), so step 7 can rank
-/// by it. `ts_rank_cd` is computed only over rows the index already matched, so
-/// the predicate stays index-served and ranking costs nothing on the rows it
-/// rejected.
-fn text_match_ids(
-    conn: &mut PgConnection,
-    q: &str,
-    include_deleted: bool,
-    stats: &mut SearchStats,
-) -> Result<HashMap<Uuid, f32>, SearchError> {
-    let live_only = if include_deleted {
-        ""
-    } else {
-        " AND deleted_at IS NULL"
-    };
-    stats.total_queries += 1;
-    let rows: Vec<ScoredIdRow> = sql_query(format!(
-        "SELECT id, ts_rank_cd(tsv, websearch_to_tsquery('english', $1)) AS score \
-         FROM searchable_items \
-         WHERE tsv @@ websearch_to_tsquery('english', $1){live_only}"
-    ))
-    .bind::<Text, _>(q)
-    .load(conn)?;
-    Ok(rows.into_iter().map(|r| (r.id, r.score)).collect())
-}
-
 /// The relevance of the item whose code (current or retired) is the query.
 /// `ts_rank_cd` gives much less than this, so that item ranks first.
 const CODE_MATCH_SCORE: f32 = 1.0e6;
@@ -526,15 +521,15 @@ fn metadata_match_ids(
     Ok(rows.into_iter().map(|r| r.id).collect())
 }
 
-/// The ids of the items that have a value (not empty) for one or more of
-/// `slugs` (KAIROS-T-0368, `filter.metadata_missing`). Each slug must name a
-/// metadata definition: an unknown slug is
-/// [`SearchError::UnknownMetadataDefinition`].
-fn metadata_present_ids(
+/// The slugs of `filter.metadata_missing`, trimmed (KAIROS-T-0368). Each
+/// slug must name a metadata definition: an unknown slug is
+/// [`SearchError::UnknownMetadataDefinition`]. The ranking query leaves
+/// out each item that has a value (not empty) for one of them.
+fn known_metadata_slugs(
     conn: &mut PgConnection,
     slugs: &[String],
     stats: &mut SearchStats,
-) -> Result<HashSet<Uuid>, SearchError> {
+) -> Result<Vec<String>, SearchError> {
     use crate::schema::metadata_definitions::dsl as md;
     let wanted: Vec<String> = slugs.iter().map(|s| s.trim().to_string()).collect();
     stats.total_queries += 1;
@@ -547,29 +542,12 @@ fn metadata_present_ids(
     if let Some(unknown) = wanted.iter().find(|s| !known.contains(*s)) {
         return Err(SearchError::UnknownMetadataDefinition(unknown.clone()));
     }
-    stats.total_queries += 1;
-    let rows: Vec<IdRow> = sql_query(
-        "SELECT DISTINCT im.item_id AS id
-         FROM item_metadata im
-         JOIN metadata_definitions md ON md.id = im.metadata_definition_id
-         WHERE md.slug = ANY($1) AND btrim(im.value) <> ''",
-    )
-    .bind::<Array<Text>, _>(wanted)
-    .load(conn)?;
-    Ok(rows.into_iter().map(|r| r.id).collect())
+    Ok(wanted)
 }
 
 // ---------------------------------------------------------------------------
-// Step 5: type resolution + partition
+// Type of a ranked row
 // ---------------------------------------------------------------------------
-
-#[derive(QueryableByName)]
-struct TypedIdRow {
-    #[diesel(sql_type = SqlUuid)]
-    id: Uuid,
-    #[diesel(sql_type = Text)]
-    entity_type: String,
-}
 
 /// Parse an `entity_type` literal from type resolution. Only the five
 /// S-0004 values exist; anything else is schema drift and fails loudly
@@ -589,47 +567,10 @@ fn parse_entity_type(value: &str) -> Result<ItemType, SearchError> {
         })
 }
 
-/// Resolve candidate ids to `(id, entity_type)` and partition by type
-/// (module docs, step 5). Both modes are now the same query against
-/// `entity_directory`, differing only in whether it says `deleted_at IS
-/// NULL` — before KAIROS-T-0156 the wide mode had to re-derive the
-/// directory from the five base tables, because the view had already
-/// dropped the rows it was asking about.
-fn partition_by_type(
-    conn: &mut PgConnection,
-    ids: &HashSet<Uuid>,
-    include_deleted: bool,
-    stats: &mut SearchStats,
-) -> Result<HashMap<ItemType, Vec<Uuid>>, SearchError> {
-    let mut partitioned: HashMap<ItemType, Vec<Uuid>> = HashMap::new();
-    if ids.is_empty() {
-        return Ok(partitioned);
-    }
-
-    let sql = if include_deleted {
-        "SELECT id, entity_type FROM entity_directory WHERE id = ANY($1)"
-    } else {
-        "SELECT id, entity_type FROM entity_directory \
-         WHERE id = ANY($1) AND deleted_at IS NULL"
-    };
-
-    stats.total_queries += 1;
-    let rows: Vec<TypedIdRow> = sql_query(sql)
-        .bind::<Array<SqlUuid>, _>(ids.iter().copied().collect::<Vec<_>>())
-        .load(conn)?;
-    for row in rows {
-        partitioned
-            .entry(parse_entity_type(&row.entity_type)?)
-            .or_default()
-            .push(row.id);
-    }
-    Ok(partitioned)
-}
-
 /// Which entity types can match the structural filter at all (module docs,
-/// step 6): the `entity_type` restriction intersected with the types that
-/// carry every filtered attribute. Types ruled out here cost no hydration
-/// query.
+/// step 5): the `entity_type` restriction intersected with the types that
+/// carry every filtered attribute. Types ruled out here get no arm in the
+/// ranking query.
 fn applicable_types(filter: Option<&SearchFilter>) -> Vec<ItemType> {
     let mut types: Vec<ItemType> = match filter.and_then(|f| f.entity_type.as_ref()) {
         Some(requested) => {
@@ -676,9 +617,7 @@ fn applicable_types(filter: Option<&SearchFilter>) -> Vec<ItemType> {
 }
 
 // ---------------------------------------------------------------------------
-// Step 6: typed per-type hydration (≤5 queries by construction — these five
-// functions are the only query sites that increment `hydration_queries`,
-// and each runs at most once per execute_search)
+// Step 5: the ranking query (sanctioned raw SQL, A-0009)
 // ---------------------------------------------------------------------------
 
 /// The stored counterpart of a [`SearchTaskType`].
@@ -699,395 +638,321 @@ fn model_work_class(work_class: SearchWorkClass) -> WorkClass {
     }
 }
 
-/// The ids of the items that impact a repository (COLLIERY-T-0269), as a
-/// subquery: the filter `repository_id` of a document and of an ADR. It
-/// is part of the hydration query of the type, so it adds no query.
-fn impacting(
-    repository_id: Uuid,
-) -> crate::schema::item_impacts::BoxedQuery<'static, diesel::pg::Pg, SqlUuid> {
-    use crate::schema::item_impacts::dsl;
-    dsl::item_impacts
-        .filter(dsl::target_kind.eq(crate::impacts::TARGET_REPOSITORY))
-        .filter(dsl::target_id.eq(repository_id))
-        .select(dsl::item_id)
-        .into_boxed()
+/// The weighted tsvector of an item: the expression of the `idx_*_tsv`
+/// GIN indexes and of `searchable_items` (migration 2026-09-23-000004),
+/// character for character, so that the planner serves `@@` from the
+/// index.
+const TSV: &str = "(setweight(to_tsvector('english', coalesce(title, '')), 'A') \
+                   || setweight(to_tsvector('english', coalesce(content, '')), 'B'))";
+
+/// The text part of a search: `q` and the ids of the item whose code is
+/// `q` ([`code_match_ids`]).
+struct TextMatch {
+    q: String,
+    codes: Vec<Uuid>,
 }
 
-/// The ids of the tasks that `user` has the claim on (KAIROS-T-0488), as a
-/// subquery of the hydration query of the tasks: no query more. A claim of
-/// an agent key of the user names the user, so it counts.
-fn claimed_by(
-    user: Uuid,
-) -> crate::schema::task_claims::BoxedQuery<'static, diesel::pg::Pg, SqlUuid> {
-    use crate::schema::task_claims::dsl;
-    dsl::task_claims
-        .filter(dsl::user_id.eq(user))
-        .select(dsl::task_id)
-        .into_boxed()
+/// One bind of the ranking query, in the order of its placeholders.
+#[derive(Clone)]
+enum Bind {
+    Uuid(Uuid),
+    Uuids(Vec<Uuid>),
+    Text(String),
+    Texts(Vec<String>),
+    Time(DateTime<Utc>),
+    Bool(bool),
+    Int(i64),
 }
 
-/// The ids of the strategies and the initiatives that `user` owns
-/// (KAIROS-T-0488), as a subquery: no query more.
-fn owned_by(
-    user: Uuid,
-) -> crate::schema::item_owners::BoxedQuery<'static, diesel::pg::Pg, SqlUuid> {
-    use crate::schema::item_owners::dsl;
-    dsl::item_owners
-        .filter(dsl::user_id.eq(user))
-        .select(dsl::item_id)
-        .into_boxed()
-}
+/// The binds of a query being written; [`Binds::push`] gives the
+/// placeholder of the bind.
+#[derive(Default)]
+struct Binds(Vec<Bind>);
 
-fn hydrate_strategies(
-    conn: &mut PgConnection,
-    ids: Option<Vec<Uuid>>,
-    filter: Option<&SearchFilter>,
-    stats: &mut SearchStats,
-) -> Result<Vec<Strategy>, SearchError> {
-    use crate::schema::strategies::dsl;
-
-    let mut query = dsl::strategies.select(Strategy::as_select()).into_boxed();
-    if let Some(ids) = ids {
-        query = query.filter(dsl::id.eq_any(ids));
-    }
-    if let Some(filter) = filter {
-        if !filter.include_deleted {
-            query = query.filter(dsl::deleted_at.is_null());
-        }
-        if let Some(board_id) = filter.board_id {
-            query = query.filter(dsl::board_id.eq(board_id));
-        }
-        if let Some(column_id) = filter.column_id {
-            query = query.filter(dsl::column_id.eq(column_id));
-        }
-        if let Some(after) = filter.created_after {
-            query = query.filter(dsl::created_at.gt(after));
-        }
-        if let Some(before) = filter.created_before {
-            query = query.filter(dsl::created_at.lt(before));
-        }
-        if let Some(after) = filter.updated_after {
-            query = query.filter(dsl::updated_at.gt(after));
-        }
-        if let Some(before) = filter.updated_before {
-            query = query.filter(dsl::updated_at.lt(before));
-        }
-        if let Some(creator) = filter.created_by {
-            query = query.filter(dsl::created_by.eq(creator));
-        }
-        if let Some(owner) = filter.owned_by {
-            query = query.filter(dsl::id.eq_any(owned_by(owner)));
-        }
-    } else {
-        query = query.filter(dsl::deleted_at.is_null());
-    }
-    stats.hydration_queries += 1;
-    stats.total_queries += 1;
-    Ok(query.load(conn)?)
-}
-
-fn hydrate_initiatives(
-    conn: &mut PgConnection,
-    ids: Option<Vec<Uuid>>,
-    filter: Option<&SearchFilter>,
-    stats: &mut SearchStats,
-) -> Result<Vec<Initiative>, SearchError> {
-    use crate::schema::initiatives::dsl;
-
-    let mut query = dsl::initiatives
-        .select(Initiative::as_select())
-        .into_boxed();
-    if let Some(ids) = ids {
-        query = query.filter(dsl::id.eq_any(ids));
-    }
-    if let Some(filter) = filter {
-        if !filter.include_deleted {
-            query = query.filter(dsl::deleted_at.is_null());
-        }
-        if let Some(board_id) = filter.board_id {
-            query = query.filter(dsl::board_id.eq(board_id));
-        }
-        if let Some(column_id) = filter.column_id {
-            query = query.filter(dsl::column_id.eq(column_id));
-        }
-        if let Some(is_bucket) = filter.is_bucket {
-            query = query.filter(dsl::is_bucket.eq(is_bucket));
-        }
-        if let Some(after) = filter.created_after {
-            query = query.filter(dsl::created_at.gt(after));
-        }
-        if let Some(before) = filter.created_before {
-            query = query.filter(dsl::created_at.lt(before));
-        }
-        if let Some(after) = filter.updated_after {
-            query = query.filter(dsl::updated_at.gt(after));
-        }
-        if let Some(before) = filter.updated_before {
-            query = query.filter(dsl::updated_at.lt(before));
-        }
-        if let Some(creator) = filter.created_by {
-            query = query.filter(dsl::created_by.eq(creator));
-        }
-        if let Some(owner) = filter.owned_by {
-            query = query.filter(dsl::id.eq_any(owned_by(owner)));
-        }
-    } else {
-        query = query.filter(dsl::deleted_at.is_null());
-    }
-    stats.hydration_queries += 1;
-    stats.total_queries += 1;
-    Ok(query.load(conn)?)
-}
-
-fn hydrate_tasks(
-    conn: &mut PgConnection,
-    ids: Option<Vec<Uuid>>,
-    filter: Option<&SearchFilter>,
-    stats: &mut SearchStats,
-) -> Result<Vec<Task>, SearchError> {
-    use crate::schema::tasks::dsl;
-
-    let mut query = dsl::tasks.select(Task::as_select()).into_boxed();
-    if let Some(ids) = ids {
-        query = query.filter(dsl::id.eq_any(ids));
-    }
-    if let Some(filter) = filter {
-        if !filter.include_deleted {
-            query = query.filter(dsl::deleted_at.is_null());
-        }
-        if let Some(board_id) = filter.board_id {
-            query = query.filter(dsl::board_id.eq(board_id));
-        }
-        if let Some(column_id) = filter.column_id {
-            query = query.filter(dsl::column_id.eq(column_id));
-        }
-        if let Some(team_id) = filter.team_id {
-            query = query.filter(dsl::team_id.eq(team_id));
-        }
-        if let Some(repository_id) = filter.repository_id {
-            query = query.filter(dsl::repository_id.eq(repository_id));
-        }
-        if let Some(task_types) = &filter.task_type {
-            let stored: Vec<TaskType> = task_types.iter().copied().map(model_task_type).collect();
-            query = query.filter(dsl::task_type.eq_any(stored));
-        }
-        if let Some(work_classes) = &filter.work_class {
-            let stored: Vec<WorkClass> =
-                work_classes.iter().copied().map(model_work_class).collect();
-            query = query.filter(dsl::work_class.eq_any(stored));
-        }
-        if let Some(after) = filter.created_after {
-            query = query.filter(dsl::created_at.gt(after));
-        }
-        if let Some(before) = filter.created_before {
-            query = query.filter(dsl::created_at.lt(before));
-        }
-        if let Some(after) = filter.updated_after {
-            query = query.filter(dsl::updated_at.gt(after));
-        }
-        if let Some(before) = filter.updated_before {
-            query = query.filter(dsl::updated_at.lt(before));
-        }
-        if let Some(creator) = filter.created_by {
-            query = query.filter(dsl::created_by.eq(creator));
-        }
-        if let Some(holder) = filter.claimed_by {
-            query = query.filter(dsl::id.eq_any(claimed_by(holder)));
-        }
-    } else {
-        query = query.filter(dsl::deleted_at.is_null());
-    }
-    stats.hydration_queries += 1;
-    stats.total_queries += 1;
-    Ok(query.load(conn)?)
-}
-
-fn hydrate_documents(
-    conn: &mut PgConnection,
-    ids: Option<Vec<Uuid>>,
-    filter: Option<&SearchFilter>,
-    stats: &mut SearchStats,
-) -> Result<Vec<Document>, SearchError> {
-    use crate::schema::documents::dsl;
-
-    let mut query = dsl::documents.select(Document::as_select()).into_boxed();
-    if let Some(ids) = ids {
-        query = query.filter(dsl::id.eq_any(ids));
-    }
-    if let Some(filter) = filter {
-        if !filter.include_deleted {
-            query = query.filter(dsl::deleted_at.is_null());
-        }
-        if let Some(repository_id) = filter.repository_id {
-            // COLLIERY-T-0269: the documents that impact the repository.
-            query = query.filter(dsl::id.eq_any(impacting(repository_id)));
-        }
-        if let Some(after) = filter.created_after {
-            query = query.filter(dsl::created_at.gt(after));
-        }
-        if let Some(before) = filter.created_before {
-            query = query.filter(dsl::created_at.lt(before));
-        }
-        if let Some(after) = filter.updated_after {
-            query = query.filter(dsl::updated_at.gt(after));
-        }
-        if let Some(before) = filter.updated_before {
-            query = query.filter(dsl::updated_at.lt(before));
-        }
-        if let Some(creator) = filter.created_by {
-            query = query.filter(dsl::created_by.eq(creator));
-        }
-    } else {
-        query = query.filter(dsl::deleted_at.is_null());
-    }
-    stats.hydration_queries += 1;
-    stats.total_queries += 1;
-    Ok(query.load(conn)?)
-}
-
-fn hydrate_adrs(
-    conn: &mut PgConnection,
-    ids: Option<Vec<Uuid>>,
-    filter: Option<&SearchFilter>,
-    stats: &mut SearchStats,
-) -> Result<Vec<Adr>, SearchError> {
-    use crate::schema::adrs::dsl;
-
-    let mut query = dsl::adrs.select(Adr::as_select()).into_boxed();
-    if let Some(ids) = ids {
-        query = query.filter(dsl::id.eq_any(ids));
-    }
-    if let Some(filter) = filter {
-        if !filter.include_deleted {
-            query = query.filter(dsl::deleted_at.is_null());
-        }
-        if let Some(repository_id) = filter.repository_id {
-            // COLLIERY-T-0269: the ADRs that impact the repository.
-            query = query.filter(dsl::id.eq_any(impacting(repository_id)));
-        }
-        if let Some(board_id) = filter.board_id {
-            query = query.filter(dsl::board_id.eq(board_id));
-        }
-        if let Some(column_id) = filter.column_id {
-            query = query.filter(dsl::column_id.eq(column_id));
-        }
-        if let Some(after) = filter.created_after {
-            query = query.filter(dsl::created_at.gt(after));
-        }
-        if let Some(before) = filter.created_before {
-            query = query.filter(dsl::created_at.lt(before));
-        }
-        if let Some(after) = filter.updated_after {
-            query = query.filter(dsl::updated_at.gt(after));
-        }
-        if let Some(before) = filter.updated_before {
-            query = query.filter(dsl::updated_at.lt(before));
-        }
-        if let Some(creator) = filter.created_by {
-            query = query.filter(dsl::created_by.eq(creator));
-        }
-    } else {
-        query = query.filter(dsl::deleted_at.is_null());
-    }
-    stats.hydration_queries += 1;
-    stats.total_queries += 1;
-    Ok(query.load(conn)?)
-}
-
-// ---------------------------------------------------------------------------
-// Step 7: combined sort + pagination
-// ---------------------------------------------------------------------------
-
-/// One hydrated row of any entity type, for the combined sort.
-enum AnyItem {
-    Strategy(Strategy),
-    Initiative(Initiative),
-    Task(Task),
-    Document(Document),
-    Adr(Adr),
-}
-
-impl AnyItem {
-    fn created_at(&self) -> DateTime<Utc> {
-        match self {
-            AnyItem::Strategy(row) => row.created_at,
-            AnyItem::Initiative(row) => row.created_at,
-            AnyItem::Task(row) => row.created_at,
-            AnyItem::Document(row) => row.created_at,
-            AnyItem::Adr(row) => row.created_at,
-        }
-    }
-
-    fn updated_at(&self) -> DateTime<Utc> {
-        match self {
-            AnyItem::Strategy(row) => row.updated_at,
-            AnyItem::Initiative(row) => row.updated_at,
-            AnyItem::Task(row) => row.updated_at,
-            AnyItem::Document(row) => row.updated_at,
-            AnyItem::Adr(row) => row.updated_at,
-        }
-    }
-
-    fn title(&self) -> &str {
-        match self {
-            AnyItem::Strategy(row) => &row.title,
-            AnyItem::Initiative(row) => &row.title,
-            AnyItem::Task(row) => &row.title,
-            AnyItem::Document(row) => &row.title,
-            AnyItem::Adr(row) => &row.title,
-        }
-    }
-
-    fn short_code(&self) -> &str {
-        match self {
-            AnyItem::Strategy(row) => &row.short_code,
-            AnyItem::Initiative(row) => &row.short_code,
-            AnyItem::Task(row) => &row.short_code,
-            AnyItem::Document(row) => &row.short_code,
-            AnyItem::Adr(row) => &row.short_code,
-        }
-    }
-
-    fn id(&self) -> Uuid {
-        match self {
-            AnyItem::Strategy(row) => row.id,
-            AnyItem::Initiative(row) => row.id,
-            AnyItem::Task(row) => row.id,
-            AnyItem::Document(row) => row.id,
-            AnyItem::Adr(row) => row.id,
-        }
+impl Binds {
+    fn push(&mut self, bind: Bind) -> String {
+        self.0.push(bind);
+        format!("${}", self.0.len())
     }
 }
 
-/// Sort the combined rows by the requested field/order, tie-broken by
-/// `short_code` ascending for a deterministic total order.
-///
-/// `relevance` is the per-id `ts_rank_cd` from [`text_match_ids`], empty unless
-/// `q` was given. Because `SortField::Relevance` is rejected without `q`
-/// (KAIROS-T-0186), every row reaching here under that sort passed through the
-/// text-match intersection and so has a score; the `unwrap_or` is belt and
-/// braces rather than a real case.
-///
-/// Equal scores are common — `ts_rank_cd` quantises hard, and two documents
-/// matching the same single term routinely tie — so the `short_code` tie-break
-/// is what keeps pagination from tearing, not a nicety.
-fn sort_items(items: &mut [AnyItem], sort: Sort, relevance: &HashMap<Uuid, f32>) {
-    items.sort_by(|a, b| {
-        let primary = match sort.field {
-            SortField::CreatedAt => a.created_at().cmp(&b.created_at()),
-            SortField::UpdatedAt => a.updated_at().cmp(&b.updated_at()),
-            SortField::Title => a.title().cmp(b.title()),
-            SortField::Relevance => {
-                let score = |i: &AnyItem| relevance.get(&i.id()).copied().unwrap_or(0.0);
-                // total_cmp: ts_rank_cd never returns NaN, but an ordering that
-                // is only almost total would silently corrupt pagination.
-                score(a).total_cmp(&score(b))
-            }
+/// The columns and filters that a type has. A filter that a type does not
+/// have has already ruled the type out ([`applicable_types`]).
+struct Arm {
+    item_type: ItemType,
+    table: &'static str,
+    on_board: bool,
+    task: bool,
+    initiative: bool,
+    owned: bool,
+    impacts: bool,
+}
+
+impl Arm {
+    fn of(item_type: ItemType) -> Self {
+        let arm = |table, on_board, owned, impacts| Arm {
+            item_type,
+            table,
+            on_board,
+            task: item_type == ItemType::Task,
+            initiative: item_type == ItemType::Initiative,
+            owned,
+            impacts,
         };
-        let primary = match sort.order {
-            SortOrder::Asc => primary,
-            SortOrder::Desc => primary.reverse(),
+        match item_type {
+            ItemType::Strategy => arm("strategies", true, true, false),
+            ItemType::Initiative => arm("initiatives", true, true, false),
+            ItemType::Task => arm("tasks", true, false, false),
+            ItemType::Document => arm("documents", false, false, true),
+            ItemType::Adr => arm("adrs", true, false, true),
+        }
+    }
+}
+
+/// One row of the page: the id, the type, and the count of every row.
+#[derive(QueryableByName)]
+struct PageRow {
+    #[diesel(sql_type = SqlUuid)]
+    id: Uuid,
+    #[diesel(sql_type = Text)]
+    entity_type: String,
+    #[diesel(sql_type = BigInt)]
+    total: i64,
+}
+
+/// The ranking query of a search: one `UNION ALL` arm for each type that
+/// can match, each arm with every filter of its type, projecting the id,
+/// the type, the short code and the sort key; then `ORDER BY`, `LIMIT`,
+/// `OFFSET` and `count(*) OVER ()` (module docs, step 5).
+struct Ranking<'a> {
+    types: &'a [ItemType],
+    filter: Option<&'a SearchFilter>,
+    include_deleted: bool,
+    /// The traverse and metadata ids, intersected; `None` when neither
+    /// was asked.
+    candidates: Option<Vec<Uuid>>,
+    text: Option<TextMatch>,
+    /// The slugs of `metadata_missing`, each a known definition.
+    missing: Option<Vec<String>>,
+    sort: Sort,
+}
+
+impl Ranking<'_> {
+    /// The SQL and its binds, without `LIMIT` and `OFFSET`.
+    fn sql(&self) -> (String, Binds) {
+        let mut binds = Binds::default();
+        // Each value is bound once; every arm uses the placeholder.
+        let candidates = self
+            .candidates
+            .as_ref()
+            .map(|ids| binds.push(Bind::Uuids(ids.clone())));
+        let text = self.text.as_ref().map(|text| {
+            let q = binds.push(Bind::Text(text.q.clone()));
+            let codes =
+                (!text.codes.is_empty()).then(|| binds.push(Bind::Uuids(text.codes.clone())));
+            (q, codes)
+        });
+        let missing = self
+            .missing
+            .as_ref()
+            .map(|slugs| binds.push(Bind::Texts(slugs.clone())));
+        let filter = self.filter;
+        let mut push_opt = |bind: Option<Bind>| bind.map(|b| binds.push(b));
+        let board = push_opt(filter.and_then(|f| f.board_id).map(Bind::Uuid));
+        let column = push_opt(filter.and_then(|f| f.column_id).map(Bind::Uuid));
+        let team = push_opt(filter.and_then(|f| f.team_id).map(Bind::Uuid));
+        let repository = push_opt(filter.and_then(|f| f.repository_id).map(Bind::Uuid));
+        let impact_kind = repository
+            .as_ref()
+            .and_then(|_| push_opt(Some(Bind::Text(crate::impacts::TARGET_REPOSITORY.into()))));
+        let task_types = push_opt(filter.and_then(|f| f.task_type.as_ref()).map(|types| {
+            Bind::Texts(
+                types
+                    .iter()
+                    .map(|t| model_task_type(*t).as_str().to_string())
+                    .collect(),
+            )
+        }));
+        let work_classes = push_opt(filter.and_then(|f| f.work_class.as_ref()).map(|classes| {
+            Bind::Texts(
+                classes
+                    .iter()
+                    .map(|c| model_work_class(*c).as_str().to_string())
+                    .collect(),
+            )
+        }));
+        let is_bucket = push_opt(filter.and_then(|f| f.is_bucket).map(Bind::Bool));
+        let created_after = push_opt(filter.and_then(|f| f.created_after).map(Bind::Time));
+        let created_before = push_opt(filter.and_then(|f| f.created_before).map(Bind::Time));
+        let updated_after = push_opt(filter.and_then(|f| f.updated_after).map(Bind::Time));
+        let updated_before = push_opt(filter.and_then(|f| f.updated_before).map(Bind::Time));
+        let created_by = push_opt(filter.and_then(|f| f.created_by).map(Bind::Uuid));
+        let claimed_by = push_opt(filter.and_then(|f| f.claimed_by).map(Bind::Uuid));
+        let owned_by = push_opt(filter.and_then(|f| f.owned_by).map(Bind::Uuid));
+
+        let arms: Vec<String> = self
+            .types
+            .iter()
+            .map(|item_type| {
+                let arm = Arm::of(*item_type);
+                let mut wheres: Vec<String> = Vec::new();
+                if !self.include_deleted {
+                    wheres.push("deleted_at IS NULL".into());
+                }
+                if let Some(ids) = &candidates {
+                    wheres.push(format!("id = ANY({ids})"));
+                }
+                if let Some((q, codes)) = &text {
+                    let matches = format!("{TSV} @@ websearch_to_tsquery('english', {q})");
+                    wheres.push(match codes {
+                        Some(codes) => format!("({matches} OR id = ANY({codes}))"),
+                        None => matches,
+                    });
+                }
+                if let Some(slugs) = &missing {
+                    wheres.push(format!(
+                        "NOT EXISTS (SELECT 1 FROM item_metadata im \
+                         JOIN metadata_definitions md ON md.id = im.metadata_definition_id \
+                         WHERE im.item_id = x.id AND md.slug = ANY({slugs}) \
+                         AND btrim(im.value) <> '')"
+                    ));
+                }
+                if arm.on_board {
+                    if let Some(p) = &board {
+                        wheres.push(format!("board_id = {p}"));
+                    }
+                    if let Some(p) = &column {
+                        wheres.push(format!("column_id = {p}"));
+                    }
+                }
+                if arm.task {
+                    if let Some(p) = &team {
+                        wheres.push(format!("team_id = {p}"));
+                    }
+                    if let Some(p) = &repository {
+                        wheres.push(format!("repository_id = {p}"));
+                    }
+                    if let Some(p) = &task_types {
+                        wheres.push(format!("task_type = ANY({p})"));
+                    }
+                    if let Some(p) = &work_classes {
+                        wheres.push(format!("work_class = ANY({p})"));
+                    }
+                    if let Some(p) = &claimed_by {
+                        wheres.push(format!(
+                            "id IN (SELECT task_id FROM task_claims WHERE user_id = {p})"
+                        ));
+                    }
+                }
+                if arm.impacts
+                    && let (Some(p), Some(kind)) = (&repository, &impact_kind)
+                {
+                    // COLLIERY-T-0269: the documents and the ADRs that
+                    // impact the repository.
+                    wheres.push(format!(
+                        "id IN (SELECT item_id FROM item_impacts \
+                         WHERE target_kind = {kind} AND target_id = {p})"
+                    ));
+                }
+                if arm.initiative
+                    && let Some(p) = &is_bucket
+                {
+                    wheres.push(format!("is_bucket = {p}"));
+                }
+                if arm.owned
+                    && let Some(p) = &owned_by
+                {
+                    wheres.push(format!(
+                        "id IN (SELECT item_id FROM item_owners WHERE user_id = {p})"
+                    ));
+                }
+                for (bound, sql) in [
+                    (&created_after, "created_at >"),
+                    (&created_before, "created_at <"),
+                    (&updated_after, "updated_at >"),
+                    (&updated_before, "updated_at <"),
+                    (&created_by, "created_by ="),
+                ] {
+                    if let Some(p) = bound {
+                        wheres.push(format!("{sql} {p}"));
+                    }
+                }
+                let key = match self.sort.field {
+                    SortField::CreatedAt => "created_at".to_string(),
+                    SortField::UpdatedAt => "updated_at".to_string(),
+                    SortField::Title => "title".to_string(),
+                    // Validation refuses relevance without `q`.
+                    SortField::Relevance => match &text {
+                        Some((q, codes)) => {
+                            let rank =
+                                format!("ts_rank_cd({TSV}, websearch_to_tsquery('english', {q}))");
+                            match codes {
+                                Some(codes) => format!(
+                                    "CASE WHEN id = ANY({codes}) \
+                                     THEN CAST({CODE_MATCH_SCORE} AS real) ELSE {rank} END"
+                                ),
+                                None => rank,
+                            }
+                        }
+                        None => "CAST(0 AS real)".to_string(),
+                    },
+                };
+                let wheres = if wheres.is_empty() {
+                    String::new()
+                } else {
+                    format!(" WHERE {}", wheres.join(" AND "))
+                };
+                format!(
+                    "SELECT id, '{}'::text AS entity_type, short_code, {key} AS sort_key \
+                     FROM {} x{wheres}",
+                    arm.item_type.entity_type(),
+                    arm.table,
+                )
+            })
+            .collect();
+
+        // The order of a Rust `str` is the byte order: `COLLATE "C"`.
+        let key = match self.sort.field {
+            SortField::Title => "sort_key COLLATE \"C\"",
+            _ => "sort_key",
         };
-        primary.then_with(|| a.short_code().cmp(b.short_code()))
-    });
+        let direction = match self.sort.order {
+            SortOrder::Asc => "ASC",
+            SortOrder::Desc => "DESC",
+        };
+        let sql = format!(
+            "WITH hits AS ({}) \
+             SELECT id, entity_type, count(*) OVER () AS total FROM hits \
+             ORDER BY {key} {direction}, short_code COLLATE \"C\" ASC, id ASC",
+            arms.join(" UNION ALL ")
+        );
+        (sql, binds)
+    }
+
+    /// The rows of one page, in order.
+    fn page(
+        &self,
+        conn: &mut PgConnection,
+        limit: i64,
+        offset: i64,
+        stats: &mut SearchStats,
+    ) -> Result<Vec<PageRow>, SearchError> {
+        let (sql, mut binds) = self.sql();
+        let limit = binds.push(Bind::Int(limit));
+        let offset = binds.push(Bind::Int(offset));
+        let mut query = sql_query(format!("{sql} LIMIT {limit} OFFSET {offset}")).into_boxed();
+        for bind in binds.0 {
+            query = match bind {
+                Bind::Uuid(v) => query.bind::<SqlUuid, _>(v),
+                Bind::Uuids(v) => query.bind::<Array<SqlUuid>, _>(v),
+                Bind::Text(v) => query.bind::<Text, _>(v),
+                Bind::Texts(v) => query.bind::<Array<Text>, _>(v),
+                Bind::Time(v) => query.bind::<Timestamptz, _>(v),
+                Bind::Bool(v) => query.bind::<Bool, _>(v),
+                Bind::Int(v) => query.bind::<BigInt, _>(v),
+            };
+        }
+        stats.total_queries += 1;
+        Ok(query.load(conn)?)
+    }
 }
