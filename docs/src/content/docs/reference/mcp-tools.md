@@ -121,9 +121,9 @@ must have that argument. …`. An argument with the wrong JSON type is
 [An input that a route does not accept](../errors/#an-input-that-a-route-does-not-accept)
 for the rule of the REST API.
 
-`DEFINITION_IN_USE`, the refusal that protects a metadata definition carrying
-values, belongs to the REST surface — `DELETE /api/metadata-definitions/{id}`.
-No MCP tool deletes a definition, so no MCP tool returns it. See
+`DEFINITION_IN_USE` protects a metadata definition that carries values.
+[`delete_metadata_definition`](#delete_metadata_definition) returns it, as
+`DELETE /api/metadata-definitions/{id}` does. See
 [Tenant configuration](../rest/tenant-configuration/).
 
 ## Orientation
@@ -735,6 +735,13 @@ The list of an item that a move renamed has the section **Renames**. Each
 line has the old code, the new code, the time and who did the move:
 
 ```text
+## Renames
+- COLLIERY-T-0100 -> SKADI-T-0001 — 2026-10-03T18:20:00Z by Dylan
+```
+
+Refuses: `NOT_FOUND` for an unknown short code, or for a `version` with no
+snapshot.
+
 ### `list_metadata_definitions`
 
 The metadata definitions of the organization, by slug. For each one: the
@@ -769,13 +776,6 @@ REST: `GET /api/templates` and `GET /api/templates/{id}`.
 
 Refuses: `NOT_FOUND` for a `slug` that names no template.
 
-## Renames
-- COLLIERY-T-0100 -> SKADI-T-0001 — 2026-10-03T18:20:00Z by Dylan
-```
-
-Refuses: `NOT_FOUND` for an unknown short code, or for a `version` with no
-snapshot.
-
 ## Searching
 
 ### `search`
@@ -789,7 +789,7 @@ are compact and grouped by type.
 | `q` | string | no | — | Full-text query. Websearch syntax: quoted phrases, `OR`, `-negation`. Must not be blank. When `q` is a short code, the result also has the item with that code, first. When `q` is a retired code, the result has the item with its current code, and a notice gives the current code. |
 | `filter` | object | no | — | See below. Fields AND together. |
 | `traverse` | object | no | — | See below. |
-| `sort` | object | no | `created_at` descending | See below. |
+| `sort` | object | no | `relevance` descending with `q`, else `created_at` descending | See below. |
 | `limit` | integer | no | `25` | Page size, 1–100. |
 | `offset` | integer | no | `0` | Offset into the combined result set. Must not be negative. |
 
@@ -1298,8 +1298,8 @@ person triaged out of the entry column moves as any other.
 Moves a task to another delivery board. It lands in that board's entry column
 and follows that board's team.
 
-The tool also moves a document to a different owner board, or removes the
-owner board of a document.
+The tool also moves a document to a different owner board. It cannot remove
+the owner board of a document.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
@@ -1744,10 +1744,10 @@ no item. The confirm takes the
 confirms must be able to edit the item at one end. A refused confirm leaves the
 proposal pending.
 
-Refuses: `VALIDATION` for a relationship outside `parent`/`blocks` or a short
-code naming no live item; `CONFLICT` when an identical proposal is already
-waiting, or when the item already holds ten undecided ones — decide some rather
-than adding more.
+Refuses: `VALIDATION` for a relationship outside `parent`/`blocks`;
+`NOT_FOUND` for a short code that names no live item; `CONFLICT` when an
+identical proposal is already waiting, or when the item already holds ten
+undecided ones — decide some rather than adding more.
 
 Only `parent` and `blocks` are proposable. `supports`, `informs` and `supersedes`
 are editorial, cheap to undo, and remain a person's to draw with
@@ -1803,9 +1803,8 @@ The output has no such lines when the archive reached each descendant.
 Refuses: `VALIDATION` when `confirm` is `false` — checked before the short code
 is looked up, so such a call never reports an unknown item; `NOT_FOUND` for an
 unknown short code or an already-archived item; `FORBIDDEN` when the
-[edit rule](../capabilities/#the-edit-rule) refuses the caller. An *absent* `confirm` is a schema violation
-rather than a refusal — it is a required field, so the call is rejected before
-the tool body runs and carries no Kairos error code.
+[edit rule](../capabilities/#the-edit-rule) refuses the caller. A call with no `confirm` gets `VALIDATION`.
+The text names the argument, and `details.argument` is `confirm`.
 
 ### `restore_item`
 
