@@ -1398,8 +1398,8 @@ Request body (required): `application/json`, [`AddOrgMemberRequest`](../schemas/
 Remove a member. Removing the LAST admin is rejected (422 `LAST_ADMIN`).
 Kairos revokes the agent keys of the member in the same transaction
 (KAIROS-T-0388). Then the strategies and the initiatives of the member
-have no owner (KAIROS-T-0411), and the tasks that the member has the
-claim on are free (KAIROS-T-0531). Org-admin-only.
+have no owner (KAIROS-T-0411). The tasks that the member has the claim
+on are free (KAIROS-T-0531). Org-admin-only.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
