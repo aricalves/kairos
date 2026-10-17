@@ -145,10 +145,10 @@ Refuses: nothing beyond transport-level authentication.
 
 Boards in the organization, grouped by level, with column names and per-column
 item counts for the caller's delivery boards. Each of those boards also has a
-`moves:` line with its rules (KAIROS-T-0554): each live column in its order,
-its flags in brackets (`entry`, `done`, `claims`, `WIP <limit>`), then an arrow
-to the columns a card can move to from it. An agent reads the allowed moves
-here instead of learning them from a refused `transition_item`.
+`moves:` line (KAIROS-T-0554). The line shows each live column in its order.
+The flags of a column are in brackets: `entry`, `done`, `claims`, `WIP <limit>`.
+An arrow gives the columns a card can move to from it. Read the allowed moves
+here, not from a refused `transition_item`.
 
 ```text
   moves: Backlog [entry] → Todo | Todo → Active, Blocked | Active [claims, WIP 3] → Completed, Blocked | Blocked → Todo, Active | Completed [done]
@@ -584,9 +584,9 @@ supporting documents.
 |---|---|---|---|---|
 | `short_code` | string | yes | — | The item's short code. |
 
-The line `board` of a live item on a board ends with `next:` and the columns
-a card can move to from its column, in board order (KAIROS-T-0554), or
-`next: none` when no transition starts there:
+The line `board` of a live item ends with `next:` (KAIROS-T-0554). It names
+the columns a card can move to from its column, in board order. With no
+transition from the column, it says `next: none`:
 
 ```text
 - board: platform-delivery / column: Todo · next: Active, Blocked
