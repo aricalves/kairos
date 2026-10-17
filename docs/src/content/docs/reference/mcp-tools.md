@@ -155,8 +155,8 @@ here, not from a refused `transition_item`.
   moves: Backlog [entry] → Todo | Todo → Active, Blocked | Active [claims, WIP 3] → Completed, Blocked | Blocked → Todo, Active | Completed [done]
 ```
 
-Each delivery board has a `policy:` line with its [board
-policies](#set_board_policy), for example
+Each delivery board and each initiative board has a `policy:` line with its
+[board policies](#set_board_policy), for example
 `policy: parent_gate on (a task moves to a claims column only while its
 initiative is active)`.
 
@@ -920,6 +920,9 @@ it.
 The same applies to each `parent`: the caller who creates an item can link it
 to that parent.
 
+An initiative goes to the entry column of its board (Discovery). It reaches
+each other column by a move (KAIROS-T-0643).
+
 A task goes to the entry column of its board. When that column holds claims,
 the create is a move into a claims column. Then the policy `parent_gate` of
 the board applies to the `parent`. An initiative that is not active gives
@@ -1307,6 +1310,9 @@ Kairos also refuses `PARENT_NOT_ACTIVE` for a task that goes into a claims
 column under an inactive initiative. The board policy `parent_gate` sets this
 rule. See [`set_board_policy`](#set_board_policy).
 
+Kairos refuses `OWNER_REQUIRED` for an initiative that goes into Active with
+no owner. The board policy `owner_gate` sets this rule.
+
 ### `move_item`
 
 Moves a task to another delivery board. It lands in that board's entry column
@@ -1514,6 +1520,8 @@ Refuses:
 - `NOT_CLAIMABLE` for a task that is not in Active.
 - `NO_CLAIM` for a task that has no claim.
 - `NO_OWNER` for a strategy or an initiative that has no owner.
+- `OWNER_REQUIRED` for an initiative in Active or Monitoring, on a board with
+  the policy `owner_gate` on. Hand it off with `hand_off_item`.
 
 ### `cancel_item`
 
@@ -2436,13 +2444,14 @@ Requires `configure_boards` on the board. REST:
 
 ### `set_board_policy`
 
-Sets the policies of a board (KAIROS-T-0641). Each policy is on or off per
-board.
+Sets the policies of a board (KAIROS-T-0641, KAIROS-T-0643). Each policy is
+on or off per board.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `board` | string | yes | — | Slug or UUID. |
 | `parent_gate` | boolean | no | — | A delivery board only. `true`: a task moves into a claims column only while its parent initiative is active. `false`: no check. |
+| `owner_gate` | boolean | no | — | An initiative board only. `true`: an initiative moves into Active only with an owner, and the owner of an initiative in Active or Monitoring cannot release it. `false`: no check. |
 
 `parent_gate` is on by default. With it on, a task moves into a claims column
 only while its parent initiative is in Active or Monitoring. A bucket
@@ -2450,6 +2459,15 @@ initiative is always active. A task with no parent initiative moves freely.
 
 The check runs on a transition, a move to the board and a create. A refused
 move is `PARENT_NOT_ACTIVE`. A task that is in Active already stays there.
+
+`owner_gate` is on by default. With it on, an initiative moves into its Active
+column only with an owner. A move from Active to Monitoring needs no check:
+the initiative has an owner already.
+
+In Active and in Monitoring, Kairos refuses a release of the owner, also for
+an organization admin. A hand-off to a member
+of the board changes the owner. The refusal is `OWNER_REQUIRED`. An
+initiative in Active with no owner stays there.
 
 Send at least one policy. A policy of a different level of board is
 `VALIDATION`. `my_boards` shows the policies of each board.

@@ -167,16 +167,24 @@ warning: the header `Kairos-Warning` on REST, a line on MCP.
 ## Set a board policy
 
 A board policy is a rule that you turn on or off for one board. A delivery
-board has the policy `parent_gate`. It is on by default.
+board has the policy `parent_gate`. An initiative board has the policy
+`owner_gate`. Each is on by default.
 
 With `parent_gate` on, a task moves to Active only while its parent initiative
 is in Active or Monitoring. A bucket initiative is always active. A task with
 no parent initiative moves freely. Kairos refuses a different move with
 `PARENT_NOT_ACTIVE`.
 
+With `owner_gate` on, an initiative moves to Active only with an owner. In
+Active and in Monitoring, the owner cannot release it. A hand-off to a member
+of the board changes the owner. Kairos refuses a different move or release
+with `OWNER_REQUIRED`.
+
 - The CLI: `kairos boards policy <board>` shows the policies.
   `kairos boards policy <board> --parent-gate off` turns the policy off.
-- MCP: `set_board_policy` with `board` and `parent_gate`. `my_boards` shows
+  `--owner-gate off` does the same for `owner_gate`.
+- MCP: `set_board_policy` with `board`, and `parent_gate` or `owner_gate`.
+  `my_boards` shows
   the policies of each board.
 - The API: `PATCH /api/boards/{id}` with `{"parent_gate": false}`.
 

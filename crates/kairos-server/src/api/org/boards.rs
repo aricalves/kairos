@@ -571,14 +571,19 @@ pub(crate) fn create(
 /// update writes nothing (COLLIERY-T-0255). The refusal names the slug and
 /// the board that has it. A board can keep its slug in an update.
 ///
-/// The body has the fields `name`, `slug`, `team_id` and `parent_gate`
-/// only. A different field of the board (`id`, `board_level`) is a 422
+/// The body has the fields `name`, `slug`, `team_id`, `parent_gate` and
+/// `owner_gate` only. A different field of the board (`id`, `board_level`) is a 422
 /// `VALIDATION` that names the field (COLLIERY-T-0249).
 ///
 /// `parent_gate` sets a board policy of a delivery board (KAIROS-T-0641).
 /// With the policy on, a task moves into a claims column only while its
 /// parent initiative is active. On a board of a different level, the field
 /// is a 422 `VALIDATION`.
+///
+/// `owner_gate` sets a board policy of an initiative board (KAIROS-T-0643).
+/// With the policy on, an initiative moves into its Active column only with
+/// an owner. On a board of a different level, the field is a 422
+/// `VALIDATION`.
 ///
 /// The short-code prefix of a board does not change (COLLIERY-T-3099). A
 /// body with `code_prefix` is a 422 `CODE_PREFIX_IS_FIXED` that says so
@@ -617,14 +622,15 @@ pub(crate) async fn update_board(
         .transpose()?;
     let nothing_to_update = || {
         ApiError::validation(
-            "The request has no field to change. Send one or more of name, slug, team_id and \
-             parent_gate.",
+            "The request has no field to change. Send one or more of name, slug, team_id, \
+             parent_gate and owner_gate.",
         )
     };
     if body.name.is_none()
         && body.slug.is_none()
         && sent_team.is_none()
         && body.parent_gate.is_none()
+        && body.owner_gate.is_none()
     {
         return Err(nothing_to_update());
     }
@@ -640,11 +646,16 @@ pub(crate) async fn update_board(
             // a body with only a different team gets the refusal that
             // tells the caller what to do.
             boards::check_board_team(&board, sent_team).map_err(map_config_error)?;
-            if body.name.is_none() && body.slug.is_none() && body.parent_gate.is_none() {
+            if body.name.is_none()
+                && body.slug.is_none()
+                && body.parent_gate.is_none()
+                && body.owner_gate.is_none()
+            {
                 return Err(nothing_to_update());
             }
             let policies = PolicyChange {
                 parent_gate: body.parent_gate,
+                owner_gate: body.owner_gate,
             };
             check_policies(&board, policies)?;
             // COLLIERY-T-0258: the form of a slug that the caller sent. A
@@ -704,12 +715,14 @@ pub(crate) async fn update_board(
 pub(crate) struct PolicyChange {
     /// `parent_gate`, a policy of a delivery board.
     pub parent_gate: Option<bool>,
+    /// `owner_gate`, a policy of an initiative board (KAIROS-T-0643).
+    pub owner_gate: Option<bool>,
 }
 
 impl PolicyChange {
     /// True when the request sends no policy.
     pub(crate) fn is_empty(self) -> bool {
-        self.parent_gate.is_none()
+        self.parent_gate.is_none() && self.owner_gate.is_none()
     }
 }
 
@@ -723,6 +736,14 @@ pub(crate) fn check_policies(board: &Board, change: PolicyChange) -> Result<(), 
             board.slug, board.board_level
         ))
         .with_details(json!({ "field": "parent_gate" })));
+    }
+    if change.owner_gate.is_some() && board.board_level != BoardLevel::Initiative {
+        return Err(ApiError::validation(format!(
+            "The board {} is a {} board. owner_gate is a policy of an initiative board only. \
+             Leave out owner_gate.",
+            board.slug, board.board_level
+        ))
+        .with_details(json!({ "field": "owner_gate" })));
     }
     Ok(())
 }
@@ -751,6 +772,20 @@ pub(crate) fn apply_policies(
         )?;
         changed = true;
     }
+    if let Some(on) = change.owner_gate
+        && kairos_db::board_policy::set_owner_gate(conn, board.id, on)
+            .map_err(ApiError::internal)?
+    {
+        log_activity(
+            conn,
+            user,
+            ActivityAction::BoardConfig,
+            board.id,
+            "board",
+            format!("owner_gate:{on}"),
+        )?;
+        changed = true;
+    }
     Ok(changed)
 }
 
@@ -767,7 +802,7 @@ pub(crate) fn set_board_policy_as(
     require_capability(conn, slug, Some(board.id), user, CONFIGURE)?;
     if change.is_empty() {
         return Err(ApiError::validation(
-            "The request has no policy to set. Send parent_gate.",
+            "The request has no policy to set. Send parent_gate or owner_gate.",
         ));
     }
     check_policies(&board, change)?;

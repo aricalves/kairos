@@ -203,6 +203,18 @@ pub enum BoardError {
         initiative_column: String,
         board_id: Uuid,
     },
+    /// The board policy `owner_gate` (KAIROS-T-0643,
+    /// [`crate::board_policy`]): the initiative goes into its Active column,
+    /// and it has no owner.
+    #[error(
+        "{initiative} has no owner. An initiative moves to {to_column} only with an owner. \
+         Claim it first: claim_item. Or hand it to a member of the board: hand_off_item."
+    )]
+    OwnerRequired {
+        initiative: String,
+        to_column: String,
+        board_id: Uuid,
+    },
     /// Any other database error.
     #[error("The database gave an error: {0}.")]
     Database(#[from] DieselError),
@@ -1113,6 +1125,10 @@ macro_rules! transition_item_fn {
                 // KAIROS-T-0641: the board policy parent_gate.
                 if $entity_type == "task" {
                     crate::board_policy::check_active_parent(conn, item_id, to_column_id)?;
+                }
+                // KAIROS-T-0643: the board policy owner_gate.
+                if $entity_type == "initiative" {
+                    crate::board_policy::check_owner(conn, item_id, to_column_id)?;
                 }
 
                 let updated = diesel::update(

@@ -47,6 +47,14 @@ pub struct Board {
     #[serde(default)]
     #[schema(required = true)]
     pub parent_gate: Option<bool>,
+    /// The board policy `owner_gate` of an initiative board (KAIROS-T-0643):
+    /// when true, an initiative moves into its Active column only with an
+    /// owner, and the owner of an initiative in Active or Monitoring cannot
+    /// release it (a hand-off can change it). A refused move or release is a
+    /// 422 `OWNER_REQUIRED`. True by default. `null` on each other level.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub owner_gate: Option<bool>,
     /// RFC 3339.
     pub created_at: String,
     /// RFC 3339.
@@ -189,6 +197,11 @@ pub struct UpdateBoardRequest {
     /// field is a 422 `VALIDATION`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_gate: Option<bool>,
+    /// The board policy `owner_gate` (KAIROS-T-0643), for an initiative
+    /// board only: true turns it on, false turns it off. On each other level
+    /// the field is a 422 `VALIDATION`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_gate: Option<bool>,
 }
 
 /// Body of `PUT /api/boards/{id}/code-sequences/{item_type}`

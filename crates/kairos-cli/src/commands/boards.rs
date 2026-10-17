@@ -104,9 +104,11 @@ pub enum BoardsCommand {
         #[command(flatten)]
         common: Common,
     },
-    /// Show or set the policies of a board (KAIROS-T-0641). Setting needs
-    /// configure_boards. parent_gate (a delivery board): a task moves to a
-    /// claims column only while its parent initiative is active
+    /// Show or set the policies of a board (KAIROS-T-0641, KAIROS-T-0643).
+    /// Setting needs configure_boards. parent_gate (a delivery board): a task
+    /// moves to a claims column only while its parent initiative is active.
+    /// owner_gate (an initiative board): an initiative moves to Active only
+    /// with an owner
     Policy {
         /// Board slug or id (UUID)
         #[arg(value_name = "BOARD")]
@@ -114,6 +116,9 @@ pub enum BoardsCommand {
         /// on or off
         #[arg(long, value_name = "on|off", value_parser = ["on", "off"])]
         parent_gate: Option<String>,
+        /// on or off
+        #[arg(long, value_name = "on|off", value_parser = ["on", "off"])]
+        owner_gate: Option<String>,
         #[command(flatten)]
         common: Common,
     },
@@ -333,17 +338,20 @@ impl BoardsCommand {
             Self::Policy {
                 board,
                 parent_gate,
+                owner_gate,
                 common,
             } => {
                 let client = client(&common)?;
                 let mut current = client.get_board(&board).await?.board;
                 let parent_gate = parent_gate.map(|v| v == "on");
-                if parent_gate.is_some() {
+                let owner_gate = owner_gate.map(|v| v == "on");
+                if parent_gate.is_some() || owner_gate.is_some() {
                     current = client
                         .update_board(
                             &current.id,
                             &UpdateBoardRequest {
                                 parent_gate,
+                                owner_gate,
                                 ..UpdateBoardRequest::default()
                             },
                         )
@@ -386,6 +394,12 @@ fn policy_text(board: &kairos_client::types_org::Board) -> String {
         lines.push(format!(
             "parent_gate: {} (a task moves to a claims column only while its initiative is \
              active)",
+            on_off(on)
+        ));
+    }
+    if let Some(on) = board.owner_gate {
+        lines.push(format!(
+            "owner_gate: {} (an initiative moves to Active only with an owner)",
             on_off(on)
         ));
     }

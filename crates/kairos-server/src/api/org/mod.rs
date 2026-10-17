@@ -469,6 +469,7 @@ pub fn map_config_error(e: BoardError) -> ApiError {
         | BoardError::NotDeliveryBoard(_)
         | BoardError::NoEntryColumn(_)
         | BoardError::ParentNotActive { .. }
+        | BoardError::OwnerRequired { .. }
         | BoardError::Rename(_)) => ApiError::internal(e),
         BoardError::Database(e) => ApiError::internal(e),
     }

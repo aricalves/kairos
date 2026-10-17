@@ -37,6 +37,10 @@ pub struct Board {
     /// delivery board, a task moves into a claims column only when its
     /// parent initiative is active. True by default.
     pub parent_gate: bool,
+    /// A board policy (KAIROS-T-0643, [`crate::board_policy`]): on an
+    /// initiative board, an initiative moves into its Active column only
+    /// with an owner. True by default.
+    pub owner_gate: bool,
 }
 
 /// Insert for [`Board`].

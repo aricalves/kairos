@@ -9,8 +9,15 @@
 //! leaves Active. `my_boards` shows the policy; `PATCH /api/boards/{id}`
 //! and `set_board_policy` set it.
 //!
+//! `owner_gate` (KAIROS-T-0643): on an initiative board with the policy
+//! on, an initiative moves into Active only with an owner, and the owner of
+//! an initiative in Active or Monitoring cannot release it; a hand-off to a
+//! member of the board can change it. The refusal is 422 `OWNER_REQUIRED`.
+//! With the policy off, both pass.
+//!
 //! Runs against the LIVE compose stack (`angreal services up`). Owns the
-//! scratch database `kairos_board_policy_t0641_test`.
+//! scratch databases `kairos_board_policy_t0641_test` and
+//! `kairos_board_policy_t0643_test`.
 
 mod common;
 
@@ -33,6 +40,7 @@ use kairos_server::app;
 use kairos_server::middleware::auth::Authenticator;
 
 const SCRATCH_DB: &str = "kairos_board_policy_t0641_test";
+const OWNER_SCRATCH_DB: &str = "kairos_board_policy_t0643_test";
 
 fn user_id(conn: &mut PgConnection, email: &str) -> Uuid {
     users::table
@@ -285,6 +293,9 @@ async fn a_task_moves_to_active_only_under_an_active_initiative() {
     mcp.walk(&intake, &["Todo", "Active"]).await;
 
     // --- An Active initiative and a Monitoring initiative let it pass.
+    // KAIROS-T-0643: an initiative moves to Active only with an owner.
+    mcp.ok("claim_item", json!({"short_code": initiative}))
+        .await;
     mcp.walk(&initiative, &["Design", "Ready", "Decompose", "Active"])
         .await;
     mcp.walk(&first, &["Active"]).await;
@@ -427,6 +438,230 @@ async fn a_task_moves_to_active_only_under_an_active_initiative() {
     // The activity log names each change of the policy.
     let lines = diesel::sql_query(
         "SELECT COUNT(*) AS n FROM org_acme.activity_log WHERE details LIKE 'parent_gate:%'",
+    )
+    .get_result::<Count>(&mut conn)
+    .expect("count")
+    .n;
+    assert_eq!(lines, 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_initiative_moves_to_active_only_with_an_owner() {
+    let _admin_conn = recreate_scratch_db(OWNER_SCRATCH_DB);
+    let scratch_url = with_database(&common::admin_database_url(), OWNER_SCRATCH_DB);
+    let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
+    run_public_migrations(&mut conn).expect("running public migrations");
+    provision_tenant(&mut conn, "acme", "Acme Inc").expect("provisioning acme");
+    let org_id: Uuid = organizations::table
+        .filter(organizations::slug.eq("acme"))
+        .select(organizations::id)
+        .first(&mut conn)
+        .expect("acme org row");
+
+    let http = reqwest::Client::new();
+    let svc_token = user_token(&http, "svc").await;
+    let alice_token = user_token(&http, "alice").await;
+    let pool = TenantPool::new(&scratch_url, 4).await.expect("pool");
+    let auth = Arc::new(
+        Authenticator::discover(ISSUER, AUDIENCE)
+            .await
+            .expect("OIDC discovery against live Dex"),
+    );
+    let state = app::state_with(base_config(&scratch_url), pool, auth);
+    let server = spawn_server(app::router(state)).await;
+    let admin = server.client(&svc_token, "acme");
+    let alice = server.client(&alice_token, "acme");
+    let _ = admin.whoami().await;
+    let _ = alice.whoami().await;
+    for (email, role) in [
+        ("svc@kairos.test", OrgRole::Admin),
+        ("alice@kairos.test", OrgRole::Member),
+    ] {
+        diesel::insert_into(organization_members::table)
+            .values(NewOrganizationMember {
+                organization_id: org_id,
+                user_id: user_id(&mut conn, email),
+                role,
+            })
+            .execute(&mut conn)
+            .expect("membership");
+    }
+    let initiatives = admin.get_board("initiatives").await.expect("board");
+    // The policy is on for an initiative board, and null elsewhere.
+    assert_eq!(initiatives.board.owner_gate, Some(true));
+    let strategies = admin.get_board("strategy").await.expect("board");
+    assert_eq!(strategies.board.owner_gate, None);
+    // alice and svc are members of the initiative board: each can be its
+    // owner.
+    for email in ["alice@kairos.test", "svc@kairos.test"] {
+        let id = user_id(&mut conn, email);
+        admin
+            .add_board_member(
+                &initiatives.board.id,
+                &kairos_client::types_org::AddBoardMemberRequest {
+                    user_id: id.to_string(),
+                    capabilities: vec!["transition_items".into()],
+                },
+            )
+            .await
+            .expect("a member of the board");
+    }
+    let active = initiatives
+        .columns
+        .iter()
+        .find(|c| c.name == "Active")
+        .unwrap()
+        .id
+        .clone();
+
+    // --- An initiative starts in the entry column (Dylan, 2026-10-17).
+    let create_in = |column: &str| kairos_client::types::CreateInitiativeRequest {
+        board_id: "initiatives".into(),
+        column_id: Some(column.into()),
+        title: "Straight to Active".into(),
+        content: String::new(),
+        complexity: None,
+        bucket_type: None,
+    };
+    let err = admin
+        .create_initiative(&create_in(&active))
+        .await
+        .expect_err("not the entry column");
+    assert_eq!(err.code(), Some("VALIDATION"), "{err:?}");
+    assert!(err.to_string().contains("Discovery"), "{err}");
+    let discovery = initiatives.columns[0].id.clone();
+    admin
+        .create_initiative(&create_in(&discovery))
+        .await
+        .expect("the entry column");
+
+    let mut mcp = Mcp::connect(&server.base_url, &svc_token).await;
+    let mut alice_mcp = Mcp::connect(&server.base_url, &alice_token).await;
+    let initiative = mcp
+        .create(json!({"item_type": "initiative", "board": "initiatives", "title": "Owned work"}))
+        .await;
+    mcp.walk(&initiative, &["Design", "Ready", "Decompose"])
+        .await;
+
+    // --- No owner: the move to Active is refused, over MCP and REST alike.
+    let text = mcp
+        .refused(
+            "transition_item",
+            json!({"short_code": initiative, "to_column": "Active"}),
+            "OWNER_REQUIRED",
+        )
+        .await;
+    assert!(
+        text.contains(&initiative) && text.contains("claim_item"),
+        "{text}"
+    );
+    let err = admin
+        .transition_initiative(&initiative, &active)
+        .await
+        .expect_err("refused");
+    assert_eq!(err.code(), Some("OWNER_REQUIRED"), "{err:?}");
+    assert_eq!(err.status(), Some(422), "{err:?}");
+
+    // --- With an owner, the move passes, and on to Monitoring.
+    alice_mcp
+        .ok("claim_item", json!({"short_code": initiative}))
+        .await;
+    mcp.walk(&initiative, &["Active"]).await;
+
+    // --- The owner cannot release an active initiative: a hand-off can
+    // change the owner. An org admin cannot clear it either.
+    let text = alice_mcp
+        .refused(
+            "release_item",
+            json!({"short_code": initiative}),
+            "OWNER_REQUIRED",
+        )
+        .await;
+    assert!(text.contains("hand_off_item"), "{text}");
+    mcp.refused(
+        "release_item",
+        json!({"short_code": initiative}),
+        "OWNER_REQUIRED",
+    )
+    .await;
+    alice_mcp
+        .ok(
+            "hand_off_item",
+            json!({"short_code": initiative, "to": "svc@kairos.test"}),
+        )
+        .await;
+    mcp.walk(&initiative, &["Monitoring"]).await;
+    mcp.refused(
+        "release_item",
+        json!({"short_code": initiative}),
+        "OWNER_REQUIRED",
+    )
+    .await;
+    // In Completed the release passes.
+    mcp.walk(&initiative, &["Completed"]).await;
+    mcp.ok("release_item", json!({"short_code": initiative}))
+        .await;
+
+    // --- my_boards shows the policy.
+    let boards = mcp.ok("my_boards", json!({})).await;
+    assert!(boards.contains("policy: owner_gate on"), "{boards}");
+
+    // --- The policy off (MCP): the move and the release pass.
+    let text = mcp
+        .ok(
+            "set_board_policy",
+            json!({"board": "initiatives", "owner_gate": false}),
+        )
+        .await;
+    assert!(text.contains("owner_gate off"), "{text}");
+    let free = mcp
+        .create(json!({"item_type": "initiative", "board": "initiatives", "title": "Free work"}))
+        .await;
+    mcp.walk(&free, &["Design", "Ready", "Decompose", "Active"])
+        .await;
+    alice_mcp
+        .ok("claim_item", json!({"short_code": free}))
+        .await;
+    alice_mcp
+        .ok("release_item", json!({"short_code": free}))
+        .await;
+
+    // --- REST sets it on again; a policy of a different level is refused.
+    let on = admin
+        .update_board(
+            &initiatives.board.id,
+            &UpdateBoardRequest {
+                owner_gate: Some(true),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("policy on");
+    assert_eq!(on.owner_gate, Some(true));
+    let err = admin
+        .update_board(
+            &strategies.board.id,
+            &UpdateBoardRequest {
+                owner_gate: Some(false),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("not an initiative board");
+    assert_eq!(err.code(), Some("VALIDATION"), "{err:?}");
+
+    // The initiative in Active with no owner stays there: moves only.
+    let still = admin.get_initiative(&free).await.expect("free");
+    assert_eq!(still.column_id, active);
+    assert!(still.owner.is_none());
+
+    #[derive(diesel::QueryableByName)]
+    struct Count {
+        #[diesel(sql_type = diesel::sql_types::BigInt)]
+        n: i64,
+    }
+    let lines = diesel::sql_query(
+        "SELECT COUNT(*) AS n FROM org_acme.activity_log WHERE details LIKE 'owner_gate:%'",
     )
     .get_result::<Count>(&mut conn)
     .expect("count")

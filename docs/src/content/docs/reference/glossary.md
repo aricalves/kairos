@@ -183,6 +183,11 @@ shows it.
   initiative is active in Active or Monitoring. A [bucket](#bucket) is always
   active. A task with no parent initiative moves freely. The refusal is
   `PARENT_NOT_ACTIVE`. The policy is on by default.
+- **`owner_gate`**, a policy of an initiative board (KAIROS-T-0643). With it
+  on, an initiative moves into Active only with an [owner](#owner). The owner
+  of an initiative in Active or Monitoring cannot release it. A hand-off to a
+  member of the board can change the owner. The refusal is `OWNER_REQUIRED`.
+  The policy is on by default.
 
 ## bucket
 
@@ -542,7 +547,16 @@ release it. An organization admin can set or clear it. A new owner is always a
 member of the board. Nobody else can change it.
 
 The owner stays in each column, Completed too. The owner gets no right: the
-owner can do what a member of the board can do. When the owner leaves the
+owner can do what a member of the board can do.
+
+An active initiative has an owner (KAIROS-T-0643). With the board policy
+`owner_gate` on, an initiative moves into Active only with an owner. In Active
+and in Monitoring, the owner cannot release it, and an organization admin
+cannot clear it. A hand-off changes the owner. An initiative that is in Active
+with no owner stays there.
+
+An initiative starts in the entry column of its board (Discovery). Kairos
+refuses a create into a different column with `VALIDATION`. When the owner leaves the
 organization, the item has no owner. Do not confuse it with the
 [owner board](#owner-board) of a document, or with the [claim](#claim) of a
 task.

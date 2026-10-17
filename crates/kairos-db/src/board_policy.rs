@@ -25,6 +25,24 @@
 //! 7. A task in Active under an inactive initiative stays there: the rule
 //!    checks moves only.
 //!
+//! # `owner_gate` (KAIROS-T-0643)
+//!
+//! On an initiative board with the policy on, an initiative that someone
+//! answers for is the only one that runs:
+//!
+//! 1. The trigger is a move of an initiative into its column named Active.
+//!    A move from Active to Monitoring is no trigger: the initiative has an
+//!    owner already.
+//! 2. Initiatives only. A strategy can get the rule later.
+//! 3. A release of the owner of an initiative in Active or Monitoring is
+//!    refused ([`release_blocked`]). A hand-off to a member of the board
+//!    stays allowed.
+//! 4. The refusal is [`BoardError::OwnerRequired`].
+//! 5. The policy is on by default. Only an initiative board reads it.
+//! 6. An initiative in Active with no owner stays there: the rule checks
+//!    moves only. A create of an initiative straight into Active is not a
+//!    move, and it is not checked.
+//!
 //! Each function operates in the CURRENT `search_path` tenant schema.
 
 use diesel::pg::PgConnection;
@@ -73,6 +91,116 @@ pub fn set_parent_gate(
     ))
     .execute(conn)?;
     Ok(changed > 0)
+}
+
+/// The `owner_gate` policy of the board. A board that does not exist reads
+/// as off.
+pub fn owner_gate(conn: &mut PgConnection, board_id: Uuid) -> Result<bool, DieselError> {
+    use crate::schema::boards;
+    Ok(boards::table
+        .filter(boards::id.eq(board_id))
+        .select(boards::owner_gate)
+        .first::<bool>(conn)
+        .optional()?
+        .unwrap_or(false))
+}
+
+/// Set the `owner_gate` policy of the board. The caller checked
+/// `configure_boards`. Returns true when the value changed.
+pub fn set_owner_gate(
+    conn: &mut PgConnection,
+    board_id: Uuid,
+    on: bool,
+) -> Result<bool, DieselError> {
+    use crate::schema::boards;
+    let changed = diesel::update(
+        boards::table
+            .filter(boards::id.eq(board_id))
+            .filter(boards::owner_gate.ne(on)),
+    )
+    .set((
+        boards::owner_gate.eq(on),
+        boards::updated_at.eq(diesel::dsl::now),
+    ))
+    .execute(conn)?;
+    Ok(changed > 0)
+}
+
+/// Check that the initiative `initiative_id` may go into the column
+/// `to_column_id` (module docs, `owner_gate`). Call it in the transaction
+/// of the move, before the write. A column that is not named Active
+/// passes.
+pub fn check_owner(
+    conn: &mut PgConnection,
+    initiative_id: Uuid,
+    to_column_id: Uuid,
+) -> Result<(), BoardError> {
+    use crate::schema::{board_columns, boards, initiatives, item_owners};
+
+    let target: Option<(Uuid, String, bool, crate::models::enums::BoardLevel)> =
+        board_columns::table
+            .inner_join(boards::table.on(boards::id.eq(board_columns::board_id)))
+            .filter(board_columns::id.eq(to_column_id))
+            .select((
+                boards::id,
+                board_columns::name,
+                boards::owner_gate,
+                boards::board_level,
+            ))
+            .first(conn)
+            .optional()?;
+    let Some((board_id, to_column, gate, level)) = target else {
+        return Ok(());
+    };
+    if !gate
+        || level != crate::models::enums::BoardLevel::Initiative
+        || !to_column.trim().eq_ignore_ascii_case("Active")
+    {
+        return Ok(());
+    }
+    let owned: Option<Uuid> = item_owners::table
+        .filter(item_owners::item_id.eq(initiative_id))
+        .select(item_owners::item_id)
+        .first(conn)
+        .optional()?;
+    if owned.is_some() {
+        return Ok(());
+    }
+    let initiative: String = initiatives::table
+        .filter(initiatives::id.eq(initiative_id))
+        .select(initiatives::short_code)
+        .first(conn)?;
+    Err(BoardError::OwnerRequired {
+        initiative,
+        to_column,
+        board_id,
+    })
+}
+
+/// The column of the initiative when a release of its owner is refused
+/// (module docs, `owner_gate`, decision 3): the initiative is live, in a
+/// column named Active or Monitoring, on an initiative board with the
+/// policy on. `None`: the release may go on. Any other item is `None`.
+pub fn release_blocked(
+    conn: &mut PgConnection,
+    item_id: Uuid,
+) -> Result<Option<String>, DieselError> {
+    use crate::schema::{board_columns, boards, initiatives};
+
+    let place: Option<(String, bool, crate::models::enums::BoardLevel)> = initiatives::table
+        .inner_join(board_columns::table.on(board_columns::id.eq(initiatives::column_id)))
+        .inner_join(boards::table.on(boards::id.eq(initiatives::board_id)))
+        .filter(initiatives::id.eq(item_id))
+        .filter(initiatives::deleted_at.is_null())
+        .select((board_columns::name, boards::owner_gate, boards::board_level))
+        .first(conn)
+        .optional()?;
+    Ok(place.and_then(|(column, gate, level)| {
+        (gate
+            && level == crate::models::enums::BoardLevel::Initiative
+            && is_active_initiative_column(&column))
+        .then_some(column)
+    }))
 }
 
 /// Check that the task `task_id` may go into the column `to_column_id`

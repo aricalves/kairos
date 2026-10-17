@@ -3,7 +3,7 @@
 //! (KAIROS-I-0012), `restore_item` (KAIROS-A-0020), `related_work`
 //! (KAIROS-T-0191), `propose_edge` (KAIROS-T-0192), `set_repository`
 //! (COLLIERY-T-0220), and `add_repository` and `update_repository`
-//! (COLLIERY-T-0266); later tasks added more (67 in all, in the profiles
+//! (COLLIERY-T-0266); later tasks added more (71 in all, in the profiles
 //! of `profiles.rs`, KAIROS-T-0454) — each a
 //! thin wrapper over the same `kairos-core`/`kairos-db` services the REST
 //! handlers call — through [`crate::blocking::BlockingTenantPool`], never
@@ -207,6 +207,10 @@ pub struct SetBoardPolicyParams {
     /// A delivery board only. True: a task moves into a claims column
     /// (Active) only while its parent initiative is active. False: no check.
     pub parent_gate: Option<bool>,
+    /// An initiative board only. True: an initiative moves into its Active
+    /// column only with an owner, and its owner cannot release it in Active
+    /// or Monitoring. False: no check.
+    pub owner_gate: Option<bool>,
 }
 
 /// `delete_dispatch_rule` (KAIROS-T-0385).
@@ -1285,7 +1289,7 @@ pub struct SaveTemplateParams {
 }
 
 // ---------------------------------------------------------------------------
-// The tools (67; the list of each profile is asserted in tests/mcp.rs)
+// The tools (71; the list of each profile is asserted in tests/mcp.rs)
 // ---------------------------------------------------------------------------
 
 #[tool_router(vis = "pub(super)")]
@@ -2248,7 +2252,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Set the policies of a board. `parent_gate` (a delivery board): when true (the default), a task moves into a claims column (Active) by a transition, a board move or a create only while its parent initiative is in Active or Monitoring, or is a bucket; else PARENT_NOT_ACTIVE. A task with no parent initiative moves freely. Send at least one policy; a policy of a different level is VALIDATION. Needs configure_boards; `my_boards` shows the policies."
+        description = "Set the policies of a board. `parent_gate` (a delivery board): when true (the default), a task moves into a claims column (Active) by a transition, a board move or a create only while its parent initiative is in Active or Monitoring, or is a bucket; else PARENT_NOT_ACTIVE. A task with no parent initiative moves freely. `owner_gate` (an initiative board): when true (the default), an initiative moves into Active only with an owner, and the owner of an initiative in Active or Monitoring cannot release it (hand_off_item changes it); else OWNER_REQUIRED. Send at least one policy; a policy of a different level is VALIDATION. Needs configure_boards; `my_boards` shows the policies."
     )]
     pub async fn set_board_policy(
         &self,
@@ -2265,6 +2269,7 @@ impl KairosMcp {
                 &params.board,
                 crate::api::org::boards::PolicyChange {
                     parent_gate: params.parent_gate,
+                    owner_gate: params.owner_gate,
                 },
             )?;
             Ok(format!(
@@ -7099,6 +7104,10 @@ fn policy_text(board: &Board) -> Option<String> {
             "parent_gate {} (a task moves to a claims column only while its initiative is \
              active)",
             if board.parent_gate { "on" } else { "off" }
+        )),
+        BoardLevel::Initiative => Some(format!(
+            "owner_gate {} (an initiative moves to Active only with an owner)",
+            if board.owner_gate { "on" } else { "off" }
         )),
         _ => None,
     }
