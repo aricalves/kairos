@@ -462,7 +462,9 @@ pub struct CreateItemParams {
     /// support task, else planned; a request is always support.
     pub work_class: Option<String>,
     /// Tasks only: the team that sends the task (slug or UUID). Not the
-    /// board's team: the task is a request, whoever sends it.
+    /// board's team: the task is a request, whoever sends it. It chooses
+    /// the lane and is not kept on the task: name the sending team in the
+    /// content.
     pub from_team: Option<String>,
     /// Strategies only: the strategy's hypothesis.
     pub hypothesis: Option<String>,
@@ -1814,6 +1816,19 @@ impl KairosMcp {
                         .map_err(crate::api::tasks::map_repository_error)
                 })
                 .transpose()?;
+            // KAIROS-T-0553: a delivery board has one team; a team filter
+            // there would be read and dropped, so it is refused.
+            if board.board_level == BoardLevel::Delivery
+                && (params.team.is_some() || params.no_team.unwrap_or(false))
+            {
+                return Err(ApiError::validation(format!(
+                    "The board {} is a delivery board: its tasks are all of its team, so \
+                     `team` and `no_team` do not apply. Send them for a strategy or an \
+                     initiative board.",
+                    board.slug
+                ))
+                .with_details(json!({ "argument": "team" })));
+            }
             // KAIROS-T-0321: the team filter, the rule of the REST route.
             let team_filter = crate::api::meta::item_teams::team_filter(
                 conn,
@@ -2602,6 +2617,15 @@ impl KairosMcp {
         self.run_tool(&tenant, move |conn| {
             use kairos_db::schema::{item_history, users};
             let item = load_item(conn, &params.short_code, Liveness::IncludeArchived)?;
+
+            // KAIROS-T-0553: `limit` is for the list; with `version` it would
+            // be read and dropped.
+            if params.version.is_some() && params.limit.is_some() {
+                return Err(ApiError::validation(
+                    "Send version for one snapshot, or limit for the list, not both.",
+                )
+                .with_details(json!({ "argument": "limit" })));
+            }
 
             if let Some(version) = params.version {
                 let snapshot: Option<(String, String)> = item_history::table
@@ -7025,6 +7049,8 @@ fn create_item_impl(
     }
     if item_type != ItemType::Task {
         reject_field("task_type", params.task_type.as_ref(), item_type, "tasks")?;
+        // KAIROS-T-0553: refused like the others, not read and dropped.
+        reject_field("work_class", params.work_class.as_ref(), item_type, "tasks")?;
     }
     if item_type != ItemType::Strategy {
         reject_field(

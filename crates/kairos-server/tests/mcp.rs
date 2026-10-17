@@ -1208,6 +1208,35 @@ async fn mcp_endpoint_against_live_stack() {
         "{text}"
     );
 
+    // KAIROS-T-0553: no quiet no-op. `limit` with `version`, a team filter
+    // on a delivery board, and `work_class` on an initiative are refused.
+    let text = session
+        .call_err(
+            "get_history",
+            json!({"short_code": task_code, "version": 1, "limit": 5}),
+        )
+        .await;
+    assert!(text.contains("not both"), "{text}");
+    let text = session
+        .call_err(
+            "board_items",
+            json!({"board": "platform-delivery", "team": "platform"}),
+        )
+        .await;
+    assert!(text.contains("delivery board"), "{text}");
+    let text = session
+        .call_err(
+            "create_item",
+            json!({
+                "item_type": "initiative",
+                "title": "A lane on an initiative",
+                "board": "initiatives",
+                "work_class": "planned"
+            }),
+        )
+        .await;
+    assert!(text.contains("work_class"), "{text}");
+
     // --- update_item: stale version → CONFLICT with current state (REQ-1.5) -
     let text = session
         .call_err(
