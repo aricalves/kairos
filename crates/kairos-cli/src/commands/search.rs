@@ -30,7 +30,7 @@ pub struct SearchArgs {
     /// Restrict to items on this board (slug or UUID)
     #[arg(long, value_name = "BOARD")]
     pub board: Option<String>,
-    /// Restrict to items in this column (UUID)
+    /// Restrict to items in this column: a name (with --board) or a UUID
     #[arg(long, value_name = "COLUMN_ID")]
     pub column: Option<String>,
     /// Restrict to tasks assigned to this team (slug or UUID)
@@ -209,7 +209,8 @@ impl SearchArgs {
             entity_type: non_empty(&self.entity_type),
             board_id: None,
             board: self.board.clone(),
-            column_id: self.column.clone(),
+            column_id: None,
+            column: self.column.clone(),
             team_id: None,
             team: self.team.clone(),
             repository: self.repo.clone(),

@@ -130,10 +130,12 @@ async fn search_and_board_items_answer_a_triage_pass_against_live_stack() {
     }
     let cutoff = (chrono::Utc::now() - chrono::Duration::days(90)).to_rfc3339();
 
-    // The triage question, with the board and the team by slug.
+    // The triage question, with the board and the team by slug, and the
+    // column by name within the board (KAIROS-T-0552).
     for scope in [
         json!({"board": "payments-delivery"}),
         json!({"team": "payments"}),
+        json!({"board": "payments-delivery", "column": "Backlog"}),
     ] {
         let mut filter = json!({
             "task_type": ["bug"],
@@ -171,6 +173,17 @@ async fn search_and_board_items_answer_a_triage_pass_against_live_stack() {
         (json!({"metadata_missing": []}), "filter.metadata_missing"),
         (json!({"board": "nope"}), "filter.board"),
         (json!({"team": "nope"}), "filter.team"),
+        // KAIROS-T-0552: a column by name needs the board; an unknown name
+        // is refused with the columns of the board; not with column_id.
+        (json!({"column": "Backlog"}), "filter.column"),
+        (
+            json!({"board": "payments-delivery", "column": "Nope"}),
+            "filter.column",
+        ),
+        (
+            json!({"board": "payments-delivery", "column": "Backlog", "column_id": Uuid::nil().to_string()}),
+            "filter.column",
+        ),
         (
             json!({"board": "payments-delivery", "board_id": Uuid::nil().to_string()}),
             "filter.board",

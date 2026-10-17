@@ -363,8 +363,11 @@ pub struct SearchFilterParams {
     pub board_id: Option<String>,
     /// Restrict to items on this board, by slug or UUID. Not with `board_id`.
     pub board: Option<String>,
-    /// Restrict to items in this column (UUID).
+    /// Restrict to items in this column (UUID). Not with `column`.
     pub column_id: Option<String>,
+    /// Restrict to items in this column, by name (with `board`) or UUID
+    /// (KAIROS-T-0552). Not with `column_id`.
+    pub column: Option<String>,
     /// Restrict to tasks of this team (UUID). Not with `team`.
     pub team_id: Option<String>,
     /// Restrict to tasks of this team, by slug or UUID. Not with `team_id`.
@@ -2748,7 +2751,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Search items: full-text `q`, a structured `filter` (types, board, column, team, repository, task_type, metadata, metadata_missing, updated_before, updated_after, claimed_by, owned_by, created_by) and a graph `traverse`, in any mix; at least one. Board and team take a slug or UUID. claimed_by, owned_by and created_by take `me`, a user id, an email or a user name; a claim by an agent key counts for its person. \"Untouched for 90 days\" is `updated_before` = now minus 90 days; \"bugs without a priority\" is `{entity_type: [task], task_type: [bug], metadata_missing: [priority]}`. `filter.repository` gives the tasks linked to it and the documents and ADRs that impact it. Compact results by type; `get_item` gives the content."
+        description = "Search items: full-text `q`, a structured `filter` (types, board, column, team, repository, task_type, metadata, metadata_missing, updated_before, updated_after, claimed_by, owned_by, created_by) and a graph `traverse`, in any mix; at least one. Board and team take a slug or UUID; `column` takes a name with `board`, or a UUID. claimed_by, owned_by and created_by take `me`, a user id, an email or a user name; a claim by an agent key counts for its person. \"Untouched for 90 days\" is `updated_before` = now minus 90 days; \"bugs without a priority\" is `{entity_type: [task], task_type: [bug], metadata_missing: [priority]}`. `filter.repository` gives the tasks linked to it and the documents and ADRs that impact it. Compact results by type; `get_item` gives the content."
     )]
     pub async fn search(
         &self,
@@ -2767,6 +2770,7 @@ impl KairosMcp {
                 (f.board.clone(), f.board_id.is_some()),
                 (f.team.clone(), f.team_id.is_some()),
             )
+            .and_then(|refs| refs.with_column(f.column.clone(), f.column_id.is_some()))
             .map(|refs| {
                 refs.with_people(
                     f.claimed_by.clone(),

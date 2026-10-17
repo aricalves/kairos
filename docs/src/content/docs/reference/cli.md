@@ -682,7 +682,7 @@ Filters:
 | `-q`, `--query <QUERY>` | string | none | Full-text query. Websearch semantics: quoted phrases, `OR`, `-negation`. |
 | `--type <ENTITY_TYPE>` | `strategy` \| `initiative` \| `task` \| `document` \| `adr` | all | Entity type filter. Repeatable. |
 | `--board <BOARD>` | slug or UUID | none | Restrict to items on this board. A document is not a card, so this filter gives no document. |
-| `--column <COLUMN_ID>` | UUID | none | Restrict to items in this column. |
+| `--column <COLUMN>` | name or UUID | none | Restrict to items in this column. A name needs `--board`; an unknown name is refused with the columns of the board (KAIROS-T-0552). |
 | `--team <TEAM>` | slug or UUID | none | Restrict to tasks assigned to this team. |
 | `--repo <REPOSITORY>` | slug or UUID | none | Restrict to the items of this repository: the tasks that link to it, and the documents and the ADRs that impact it. |
 | `--task-type <TASK_TYPE>` | `task` \| `bug` \| `tech_debt` \| `support` | all | Task type filter. Repeatable. |

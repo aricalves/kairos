@@ -758,7 +758,8 @@ are compact and grouped by type.
 | `entity_type` | array of string | no | all | `strategy`, `initiative`, `task`, `document`, `adr`. Must not be an empty array. |
 | `board_id` | UUID string | no | — | Items on this board. A document is not a card, so this filter gives no document. Do not send with `board`. |
 | `board` | string | no | — | Items on this board, by slug or UUID. Do not send with `board_id`. |
-| `column_id` | UUID string | no | — | Items in this column. |
+| `column_id` | UUID string | no | — | Items in this column. Do not send with `column`. |
+| `column` | string | no | — | Items in this column, by name (with `board`) or UUID. A name with no `board`, or a name the board does not have, is refused and the refusal lists the columns. Do not send with `column_id`. |
 | `team_id` | UUID string | no | — | Tasks of this team. Do not send with `team`. |
 | `team` | string | no | — | Tasks of this team, by slug or UUID. Do not send with `team_id`. |
 | `repository` | string | no | — | The items of this repository: see below. Slug or UUID of a live repository. |
