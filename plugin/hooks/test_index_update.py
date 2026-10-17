@@ -15,6 +15,7 @@ live session (the start time of a real session, the tools of the MCP server)
 are the manual check on the task."""
 
 import fcntl
+import hashlib
 import json
 import select
 import os
@@ -27,14 +28,16 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(HERE, "index_update.py")
+ACTIVE_WORK = os.path.join(HERE, "active_work.py")
 ROOT = os.path.dirname(os.path.dirname(HERE))
 WRAPPER = os.path.join(ROOT, "plugin", "bin", "kairos-code")
 
 WIRING = "---\ndeployment_url: http://127.0.0.1:1\nrepository: kairos\n---\n"
 
 # A fake `kairos`: it writes its arguments, its folder and the list of
-# changed files (as the worker left it) to calls.txt, then sleeps and exits
-# with the code in FAKE_KAIROS_EXIT.
+# changed files (as the worker left it) to calls.txt, then sleeps, writes
+# FAKE_KAIROS_ERROR as an `error: ` line to stderr (as the CLI does), and
+# exits with the code in FAKE_KAIROS_EXIT.
 FAKE_KAIROS = """#!/bin/sh
 {
   echo "args: $*"
@@ -51,6 +54,9 @@ if [ -n "$FAKE_KAIROS_EDIT" ]; then
 fi
 sleep "${FAKE_KAIROS_SLEEP:-0}"
 echo "Structure: 3 files (fake)"
+if [ -n "$FAKE_KAIROS_ERROR" ]; then
+  echo "error: $FAKE_KAIROS_ERROR" >&2
+fi
 exit "${FAKE_KAIROS_EXIT:-0}"
 """
 
@@ -406,6 +412,212 @@ class ChangedFiles(Harness):
             self.run_hook("worker", args=(self.project,))
         self.assertEqual(self.calls_text(), "")
         self.assertEqual(self.changed(), ["src/lib.rs"])
+
+
+REFUSAL = (
+    "503 files changed since abc1234, the nearest indexed commit in Kairos. "
+    "The limit is 200, so the CLI built nothing."
+)
+FAILED = "The last background update of the index failed"
+
+
+class PreviousResult(Harness):
+    """Scenario: The session hears that the last background update failed
+    (KAIROS-T-0519)."""
+
+    def folder(self):
+        digest = hashlib.sha256(self.project.encode("utf-8")).hexdigest()[:12]
+        return os.path.join(self.state, f"checkout-{digest}")
+
+    def result_path(self):
+        return os.path.join(self.folder(), "last-update.json")
+
+    def result(self):
+        with open(self.result_path(), encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def write_result(self, text):
+        os.makedirs(self.folder(), exist_ok=True)
+        with open(self.result_path(), "w", encoding="utf-8") as handle:
+            handle.write(text)
+
+    def a_result(self, **fields):
+        result = {
+            "format": 1,
+            "exit_code": 1,
+            "finished": "2026-10-17T10:00:00+00:00",
+            "finished_epoch": time.time() - 60,
+            "command": "kairos index update --link-only",
+            "refusal": REFUSAL,
+        }
+        result.update(fields)
+        return json.dumps(result)
+
+    def start_text(self):
+        result = self.run_hook("start", {"session_id": "s1", "source": "startup"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+
+    def failure_lines(self, text):
+        return [line for line in text.splitlines() if line.startswith(FAILED)]
+
+    def compact_text(self):
+        result = subprocess.run(
+            [sys.executable, ACTIVE_WORK, "compact"],
+            input=json.dumps(
+                {"session_id": "s1", "hook_event_name": "SessionStart", "source": "compact"}
+            ),
+            capture_output=True,
+            text=True,
+            env=self.env(),
+            cwd=self.project,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+
+    # -- the worker records the result
+
+    def test_a_successful_update_records_exit_code_0_and_no_refusal(self):
+        self.run_hook("worker", args=(self.project,))
+        result = self.result()
+        self.assertEqual(result["exit_code"], 0)
+        self.assertIsNone(result["refusal"])
+        self.assertEqual(result["command"], "kairos index update --link-only")
+        self.assertLess(time.time() - result["finished_epoch"], 60)
+        self.assertFalse(os.path.exists(self.result_path() + ".tmp"))
+
+    def test_a_refused_update_records_the_exit_code_and_the_refusal(self):
+        self.run_hook(
+            "worker",
+            env=self.env(FAKE_KAIROS_EXIT="1", FAKE_KAIROS_ERROR=REFUSAL),
+            args=(self.project,),
+        )
+        result = self.result()
+        self.assertEqual(result["exit_code"], 1)
+        self.assertEqual(result["refusal"], REFUSAL)
+
+    def test_a_refusal_with_no_error_line_records_the_last_line(self):
+        self.run_hook("worker", env=self.env(FAKE_KAIROS_EXIT="1"), args=(self.project,))
+        self.assertEqual(self.result()["refusal"], "Structure: 3 files (fake)")
+
+    def test_a_kairos_that_does_not_start_records_no_exit_code(self):
+        os.remove(os.path.join(self.bin, "kairos"))
+        self.run_hook("worker", args=(self.project,))
+        result = self.result()
+        self.assertIsNone(result["exit_code"])
+        self.assertTrue(result["refusal"].startswith("Could not start kairos"))
+
+    def test_the_result_of_the_plain_update_after_the_usage_code_is_recorded(self):
+        self.run_hook("worker", env=self.env(FAKE_KAIROS_OLD="1"), args=(self.project,))
+        result = self.result()
+        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(result["command"], "kairos index update")
+        self.assertIsNone(result["refusal"])
+
+    def test_the_refusal_comes_from_the_last_run_only(self):
+        self.run_hook(
+            "worker",
+            env=self.env(FAKE_KAIROS_EXIT="1", FAKE_KAIROS_ERROR="the first refusal"),
+            args=(self.project,),
+        )
+        self.run_hook(
+            "worker", env=self.env(FAKE_KAIROS_EXIT="2"), args=(self.project,)
+        )
+        result = self.result()
+        self.assertEqual(result["exit_code"], 2)
+        self.assertEqual(result["refusal"], "Structure: 3 files (fake)")
+
+    # -- the start hook reads it
+
+    def test_a_previous_success_gives_no_line(self):
+        self.write_result(self.a_result(exit_code=0, refusal=None))
+        self.assertEqual(self.failure_lines(self.start_text()), [])
+
+    def test_a_previous_refusal_gives_one_line_with_the_text_and_the_command(self):
+        self.write_result(self.a_result())
+        lines = self.failure_lines(self.start_text())
+        self.assertEqual(len(lines), 1, lines)
+        line = lines[0]
+        self.assertIn("exit code 1", line)
+        self.assertIn(f'"{REFUSAL}"', line)
+        self.assertIn("run `kairos index update --link-only` in this checkout", line)
+        self.assertIn(os.path.join(self.folder(), "update.log"), line)
+
+    def test_a_refusal_of_the_worker_is_in_the_next_start(self):
+        self.run_hook(
+            "worker",
+            env=self.env(FAKE_KAIROS_EXIT="1", FAKE_KAIROS_ERROR=REFUSAL),
+            args=(self.project,),
+        )
+        lines = self.failure_lines(self.start_text())
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn(REFUSAL, lines[0])
+
+    def test_no_previous_run_gives_no_line(self):
+        self.assertEqual(self.failure_lines(self.start_text()), [])
+
+    def test_a_kairos_that_did_not_start_gives_a_line_with_no_exit_code(self):
+        self.write_result(
+            self.a_result(exit_code=None, refusal="Could not start kairos: not found")
+        )
+        lines = self.failure_lines(self.start_text())
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("with no exit code", lines[0])
+        self.assertIn("Could not start kairos", lines[0])
+
+    def test_a_stale_result_gives_no_line(self):
+        self.write_result(self.a_result(finished_epoch=time.time() - 8 * 24 * 3600))
+        self.assertEqual(self.failure_lines(self.start_text()), [])
+
+    def test_an_unreadable_result_gives_no_line(self):
+        for text in (
+            "not json",
+            "[1, 2]",
+            "",
+            self.a_result(format=2),
+            self.a_result(finished_epoch="yesterday"),
+            self.a_result(exit_code="1"),
+        ):
+            with self.subTest(text=text):
+                self.write_result(text)
+                self.assertEqual(self.failure_lines(self.start_text()), [])
+
+    def test_a_result_with_no_read_permission_gives_no_line(self):
+        self.write_result(self.a_result())
+        os.chmod(self.result_path(), 0)
+        try:
+            if os.access(self.result_path(), os.R_OK):
+                self.skipTest("this user reads a file with mode 000")
+            self.assertEqual(self.failure_lines(self.start_text()), [])
+        finally:
+            os.chmod(self.result_path(), 0o600)
+
+    def test_a_long_refusal_is_clipped(self):
+        self.write_result(self.a_result(refusal="word " * 500))
+        line = self.failure_lines(self.start_text())[0]
+        self.assertLess(len(line), 1200)
+        self.assertIn("...", line)
+
+    # -- the compaction hook reads it
+
+    def test_the_compaction_gives_the_line_of_a_previous_refusal(self):
+        self.write_result(self.a_result())
+        lines = self.failure_lines(self.compact_text())
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn(REFUSAL, lines[0])
+        self.assertIn("`kairos index update --link-only`", lines[0])
+
+    def test_the_compaction_gives_no_line_after_a_success_or_no_run(self):
+        self.assertEqual(self.failure_lines(self.compact_text()), [])
+        self.write_result(self.a_result(exit_code=0, refusal=None))
+        self.assertEqual(self.failure_lines(self.compact_text()), [])
+
+    def test_the_compaction_gives_no_line_for_an_unreadable_result(self):
+        self.write_result("not json")
+        text = self.compact_text()
+        self.assertIn("Kairos: Claude Code compacted the context.", text)
+        self.assertEqual(self.failure_lines(text), [])
 
 
 class KairosCodeWrapper(Harness):

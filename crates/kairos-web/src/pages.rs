@@ -286,7 +286,7 @@ pub use item::ItemPage;
 // Unified search + relationships explorer (KAIROS-T-0042): the A-0007
 // composable query page and the graph view at /search/relationships/:code.
 mod search;
-pub use search::{RelationshipsPage, SearchPage};
+pub use search::{RelationshipsPage, SearchPage, ShellSearchBox};
 
 // Team pages (KAIROS-T-0067, KAIROS-I-0006): the /teams directory and the
 // /teams/:slug detail (roster, delivery board, streams) — the user-facing
