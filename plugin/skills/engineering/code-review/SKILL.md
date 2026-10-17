@@ -8,7 +8,7 @@ Two-axis review of the diff between `HEAD` and a fixed point the user supplies:
 - **Standards** — does the code conform to this repo's documented coding standards?
 - **Spec** — does the code faithfully implement the originating Kairos item's acceptance criteria?
 
-Both axes run as **parallel sub-agents** so they don't pollute each other's context; this skill aggregates their findings and posts a review record back to the Kairos item. Kairos is reached only through its MCP tools (`get_item`, `append_note`) — the sub-agents have no Kairos access, so paste content into their prompts, never short codes alone.
+Both axes run as **parallel sub-agents** so they don't pollute each other's context; this skill aggregates their findings and posts a review record back to the Kairos item. The sub-agents inherit the MCP tools of the session, the Kairos tools too. Paste the content into their prompts anyway, not short codes alone: then both axes read the same spec. Only this skill writes to the item (`append_note`).
 
 ## Process
 
