@@ -1184,6 +1184,16 @@ Body of `POST /api/tasks/{short_code}/hand-off` (KAIROS-T-0359): the person who 
 
 The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
 
+## HandOffTarget
+
+A person who can get the claim of a task (KAIROS-T-0530). The person holds `transition_items` on the board of the task. `GET /api/tasks/{short_code}/hand-off-targets` gives a list of them.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `display_name` | `string` | yes |  |
+| `email` | `string` | yes |  |
+| `user_id` | `string` | yes | `public.users.id` (UUID). |
+
 ## HistoryVersion
 
 One row of `GET /api/{entity_type}/{short_code}/history`.

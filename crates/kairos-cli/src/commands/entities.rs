@@ -259,7 +259,9 @@ pub struct HandOffArgs {
     /// The task's short code (e.g. ACME-T-0001). The task must be in Active
     pub short_code: String,
     /// The person who gets the claim: a user id, an email or a user name
-    /// of a person of the organization, or `me`
+    /// of a person of the organization, or `me`. The person must hold
+    /// `transition_items` on the board of the task: by its team, by a
+    /// grant, or as an organization admin
     #[arg(long = "to", value_name = "PERSON")]
     pub to: String,
     #[command(flatten)]

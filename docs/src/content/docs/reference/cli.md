@@ -476,12 +476,18 @@ kairos tasks hand-off <SHORT_CODE> --to <PERSON> [OPTIONS]
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
 | `<SHORT_CODE>` | string | required | The task's short code. The task must be in Active. |
-| `--to <PERSON>` | string | required | The person who gets the claim: a user id, an email or a user name of a person of the organization, or `me`. |
+| `--to <PERSON>` | string | required | The person who gets the claim: a user id, an email or a user name of a person of the organization, or `me`. The person must hold `transition_items` on the board of the task. |
 
 Gives the [claim](../glossary/#claim) of a task in Active to a different person.
 The task stays in Active. You can hand off a claim that you have. To hand off
 the claim of a different person, you need `transition_items` on the board of
 the task. A service account cannot have a claim.
+
+The person who gets the claim must hold `transition_items` on the board of the
+task. The team of the board gives it, and so do a grant and the organization
+admin role. Else Kairos refuses the hand-off with `VALIDATION`. The text names
+the board and the capability. `GET /api/tasks/{short_code}/hand-off-targets`
+lists the persons who can get the claim.
 
 ### `tasks release`
 

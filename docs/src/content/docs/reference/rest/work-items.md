@@ -373,8 +373,12 @@ of the task (its creator, or `manage_tasks`). No body.
 
 Give the claim of a task in Active to a person (KAIROS-T-0359,
 KAIROS-A-0024). `to` is a user id, an email or a user name of a person
-of the organization. The task stays in Active, and the person gets the
-claim. A service account cannot have a claim.
+of the organization, or `me`. The task stays in Active, and the person
+gets the claim. A service account cannot have a claim.
+
+The person must hold `transition_items` on the board of the task
+(KAIROS-T-0530). The team of the board gives it, and so do a grant and
+the organization admin role. Else the answer is 422 VALIDATION on `to`.
 
 The person who has the claim may hand it off. Any other caller needs
 `transition_items` on the board of the task. That capability moves the
@@ -393,7 +397,26 @@ Request body (required): `application/json`, [`HandOffRequest`](../schemas/#hand
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The caller does not have the claim and does not have transition_items |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown short code |
 | `409` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The person has the claim already |
-| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | NOT_CLAIMABLE (the task is not in Active), or VALIDATION (`to` is not a person of the organization) |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | NOT_CLAIMABLE (the task is not in Active), or VALIDATION (`to` is not a person of the organization, or does not hold transition_items on the board of the task) |
+
+### `GET /api/tasks/{short_code}/hand-off-targets`
+
+The persons who can get the claim of a task (KAIROS-T-0530). Each
+person holds `transition_items` on the board of the task. The team of
+the board gives it, and so do a grant and the organization admin role.
+The list is in the order of the email. It has no service account.
+
+Each member of the organization can read the list, as with the
+members of a board (KAIROS-A-0006).
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `short_code` | path | yes | `string` | Task short code |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | array of [`HandOffTarget`](../schemas/#handofftarget) | The persons who can get the claim |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown short code |
 
 ### `POST /api/tasks/{short_code}/move`
 

@@ -1434,12 +1434,18 @@ Changes the [claim](../glossary/#claim) of a task in Active, or the
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `short_code` | string | yes | — | The short code of a task in Active, or of a strategy or an initiative. |
-| `to` | string | yes | — | The person who gets the claim or who becomes the owner: a user id, an email or a user name of a person of the organization, or `me`. A new owner must be a member of the board of the item. |
+| `to` | string | yes | — | The person who gets the claim or who becomes the owner: a user id, an email or a user name of a person of the organization, or `me`. A new owner must be a member of the board of the item. A new claim holder must hold `transition_items` on the board of the task. |
 
 A task: the person who has the claim can hand it off. Any other principal needs
 `transition_items` on the board of the task. A task in Active with no claim can
 get a claim by a hand-off. The task stays in Active. The answer has the line
 `claim` with the new claim.
+
+The person who gets the claim must hold `transition_items` on the board of the
+task. The team of the board gives it, and so do a grant and the organization
+admin role. Else the tool refuses with `VALIDATION` on `to`. The text names the
+board and the capability. A person who cannot move the task cannot finish it.
+A hand-off to `me` passes only when you hold the capability.
 
 A strategy or an initiative: the owner can hand it off. An organization admin
 can set the owner of each item, also of an item with no owner. Nobody else can.

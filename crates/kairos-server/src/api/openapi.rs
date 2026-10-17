@@ -84,6 +84,7 @@ use crate::app::AppState;
         crate::api::tasks::move_task,
         crate::api::tasks::claim_task,
         crate::api::tasks::hand_off_task,
+        crate::api::tasks::hand_off_targets,
         crate::api::tasks::release_task,
         crate::api::tasks::cancel_task,
         crate::api::tasks::purge_task,
