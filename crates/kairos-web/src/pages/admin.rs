@@ -49,6 +49,7 @@ pub(crate) mod gating;
 
 mod agent_keys;
 mod api;
+mod board_policy;
 mod boards;
 mod capabilities;
 mod code_index;
@@ -57,6 +58,7 @@ mod member_grants;
 mod members;
 mod metadata;
 mod repositories;
+mod service_accounts;
 mod streams;
 mod teams;
 mod templates;

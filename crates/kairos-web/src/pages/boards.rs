@@ -502,6 +502,13 @@ pub(crate) fn create_mode(
     }
 }
 
+/// The bucket value of an initiative that is not a bucket (KAIROS-T-0587).
+const NO_BUCKET: &str = "none";
+
+/// The options of the Bucket select: none, then the kinds of the server
+/// (`BucketType::ALL`).
+const BUCKET_OPTIONS: [&str; 4] = [NO_BUCKET, "tech_debt", "bug", "ad_hoc"];
+
 /// The values of the create dialog, as the person left them. It is a plain
 /// copy of the signals of the form, so that [`create_body`] can be a pure
 /// function (COLLIERY-T-0232).
@@ -512,6 +519,8 @@ struct CreateForm {
     hypothesis: String,
     /// `none` | `xs` | `s` | `m` | `l` | `xl`.
     complexity: String,
+    /// [`NO_BUCKET`] | `tech_debt` | `bug` | `ad_hoc` (KAIROS-T-0587).
+    bucket_type: String,
     /// `task` | `bug` | `tech_debt` | `support`.
     task_type: String,
     /// `auto` | `planned` | `support`. The request dialog has no control
@@ -570,6 +579,8 @@ fn create_body(
         CreateMode::Manager => data::NewItem {
             hypothesis: filled(&form.hypothesis),
             complexity: Some(form.complexity.clone()).filter(|c| c != "none"),
+            // KAIROS-T-0587: "none" is an initiative that is not a bucket.
+            bucket_type: Some(form.bucket_type.clone()).filter(|b| !b.is_empty() && b != NO_BUCKET),
             // KAIROS-T-0077: "auto" leaves the field out, and the server
             // selects the lane from the task type.
             work_class: Some(form.work_class.clone()).filter(|c| c != "auto"),
@@ -3363,6 +3374,7 @@ fn CreateItemModal(
     let content = RwSignal::new(String::new());
     let hypothesis = RwSignal::new(String::new());
     let complexity = RwSignal::new("none".to_string());
+    let bucket_type = RwSignal::new(NO_BUCKET.to_string());
     let task_type = RwSignal::new("task".to_string());
     // KAIROS-T-0077: "auto" omits the field — the server defaults the
     // lane (support type → Support lane, else Planned).
@@ -3413,6 +3425,7 @@ fn CreateItemModal(
             content.set(String::new());
             hypothesis.set(String::new());
             complexity.set("none".to_string());
+            bucket_type.set(NO_BUCKET.to_string());
             task_type.set("task".to_string());
             work_class.set("auto".to_string());
             decision_maker.set(String::new());
@@ -3434,6 +3447,7 @@ fn CreateItemModal(
             content: content.get_untracked(),
             hypothesis: hypothesis.get_untracked(),
             complexity: complexity.get_untracked(),
+            bucket_type: bucket_type.get_untracked(),
             task_type: task_type.get_untracked(),
             work_class: work_class.get_untracked(),
             repository: repository.get_untracked(),
@@ -3499,6 +3513,13 @@ fn CreateItemModal(
                     <Select label="Complexity" value=complexity
                         options=vec!["none".into(), "xs".into(), "s".into(),
                                      "m".into(), "l".into(), "xl".into()]/>
+                    // KAIROS-T-0587: a bucket initiative holds work of one
+                    // kind, and it is always active.
+                    <Select label="Bucket" value=bucket_type
+                        options={BUCKET_OPTIONS.map(String::from).to_vec()}
+                        description="A bucket holds small work of one kind. It is always \
+                                     active. Select none for a normal initiative."
+                        attr:data-testid="create-bucket"/>
                 })}
                 {matches!(kind, EntityKind::Task).then(|| view! {
                     <Select label="Task type" value=task_type
@@ -4373,6 +4394,7 @@ mod tests {
             content: "The portal needs it.".to_string(),
             hypothesis: "If we ship it".to_string(),
             complexity: "m".to_string(),
+            bucket_type: "bug".to_string(),
             task_type: task_type.to_string(),
             work_class: work_class.to_string(),
             repository: repository.to_string(),
@@ -4421,6 +4443,7 @@ mod tests {
                 content: "The portal needs it.".to_string(),
                 hypothesis: None,
                 complexity: None,
+                bucket_type: None,
                 task_type: Some("bug".to_string()),
                 work_class: Some("support".to_string()),
                 team_id: Some("t-platform".to_string()),
@@ -4462,6 +4485,7 @@ mod tests {
                 content: "The portal needs it.".to_string(),
                 hypothesis: Some("If we ship it".to_string()),
                 complexity: Some("m".to_string()),
+                bucket_type: Some("bug".to_string()),
                 task_type: Some("task".to_string()),
                 work_class: None,
                 team_id: Some("t-platform".to_string()),
@@ -4483,9 +4507,29 @@ mod tests {
         let (_, item) = create_body(CreateMode::Manager, &blank, "c-backlog", None);
         assert_eq!(item.hypothesis, None);
         assert_eq!(item.complexity, None);
+        assert_eq!(item.bucket_type, None);
         assert_eq!(item.decision_maker, None);
         assert_eq!(item.decision_date, None);
         assert_eq!(item.team_id, None);
+    }
+
+    /// KAIROS-T-0587: the Bucket select sends its kind, and `none` sends no
+    /// bucket. A request never makes a bucket.
+    #[test]
+    fn the_bucket_select_sends_its_kind_or_nothing() {
+        for kind in ["tech_debt", "bug", "ad_hoc"] {
+            let mut bucket = form("task", "auto", NO_REPOSITORY);
+            bucket.bucket_type = kind.to_string();
+            let (_, item) = create_body(CreateMode::Manager, &bucket, "c-discovery", None);
+            assert_eq!(item.bucket_type.as_deref(), Some(kind));
+            let (_, request) = create_body(CreateMode::Request, &bucket, "c-discovery", None);
+            assert_eq!(request.bucket_type, None);
+        }
+        let mut plain = form("task", "auto", NO_REPOSITORY);
+        plain.bucket_type = NO_BUCKET.to_string();
+        let (_, item) = create_body(CreateMode::Manager, &plain, "c-discovery", None);
+        assert_eq!(item.bucket_type, None);
+        assert_eq!(&BUCKET_OPTIONS[1..], &["tech_debt", "bug", "ad_hoc"]);
     }
 
     // ---- COLLIERY-T-0232: the text of a request ---------------------------
