@@ -101,6 +101,9 @@ services:
       # API keys and agent keys: the default life of a new key, and how long
       # the old secret of a rotated key works.
       KAIROS_API_KEY_TTL_DAYS: ${KAIROS_API_KEY_TTL_DAYS:-}
+      # KAIROS-T-0608: the two database pools of the server.
+      KAIROS_POOL_SIZE: ${KAIROS_POOL_SIZE:-}
+      KAIROS_POOL_MIN_IDLE: ${KAIROS_POOL_MIN_IDLE:-}
       KAIROS_API_KEY_ROTATION_GRACE_SECS: ${KAIROS_API_KEY_ROTATION_GRACE_SECS:-}
       KAIROS_BIND_ADDR: 0.0.0.0:8080
       # KAIROS-T-0394: `all` (the default) serves the API and runs the code
