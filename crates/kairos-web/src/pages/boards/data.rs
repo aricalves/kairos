@@ -63,6 +63,9 @@ pub struct BoardDetail {
 pub struct Strategy {
     pub short_code: String,
     pub title: String,
+    /// The version of the item (KAIROS-A-0004): the key of the card
+    /// (KAIROS-T-0615).
+    pub version: i32,
     /// The owner (KAIROS-T-0411); `None` for no owner, and from an older
     /// server.
     #[serde(default)]
@@ -70,7 +73,7 @@ pub struct Strategy {
 }
 
 /// mirror of: `kairos_client::types::ItemOwner` (partial).
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize)]
 pub struct ItemOwner {
     /// The person (UUID). The board groups the cards by it (KAIROS-T-0416).
     #[serde(default)]
@@ -89,6 +92,9 @@ pub(crate) fn owner_pill(owner: Option<&ItemOwner>) -> Option<String> {
 pub struct Initiative {
     pub short_code: String,
     pub title: String,
+    /// The version of the item (KAIROS-A-0004): the key of the card
+    /// (KAIROS-T-0615).
+    pub version: i32,
     #[serde(default)]
     pub complexity: Option<String>,
     #[serde(default)]
@@ -106,6 +112,9 @@ pub struct Initiative {
 pub struct Task {
     pub short_code: String,
     pub title: String,
+    /// The version of the item (KAIROS-A-0004): the key of the card
+    /// (KAIROS-T-0615).
+    pub version: i32,
     /// `task` | `bug` | `tech_debt` | `support`.
     pub task_type: String,
     /// `planned` | `support` — the lane axis (KAIROS-T-0077).
@@ -129,7 +138,7 @@ pub struct Task {
 }
 
 /// mirror of: `kairos_client::types::TaskState` (partial — card fields).
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize)]
 pub struct TaskState {
     #[serde(default)]
     pub branch: Option<String>,
@@ -146,13 +155,13 @@ pub struct TaskState {
 
 /// mirror of: `kairos_client::types::TaskCancellation` (partial — card
 /// fields).
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize)]
 pub struct TaskCancellation {
     pub reason: String,
 }
 
 /// mirror of: `kairos_client::types::TaskClaim` (partial — card fields).
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize)]
 pub struct TaskClaim {
     /// The person (UUID). The board groups the cards by it (KAIROS-T-0416).
     #[serde(default)]
@@ -171,6 +180,9 @@ pub struct TaskClaim {
 pub struct Adr {
     pub short_code: String,
     pub title: String,
+    /// The version of the item (KAIROS-A-0004): the key of the card
+    /// (KAIROS-T-0615).
+    pub version: i32,
     #[serde(default)]
     pub decision_date: Option<String>,
 }
@@ -221,7 +233,7 @@ pub struct BoardItemsResponse {
 
 /// mirror of: `kairos_client::types_org::ItemTeam` (KAIROS-T-0321): one
 /// team of an initiative or a strategy, from its tasks or set by hand.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize)]
 pub struct ItemTeam {
     pub slug: String,
     pub name: String,
@@ -230,14 +242,14 @@ pub struct ItemTeam {
 }
 
 /// mirror of: `kairos_client::types_org::BlocksCounts` (KAIROS-T-0091).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
 pub struct BlocksCounts {
     pub blocked_by: i64,
     pub blocks: i64,
 }
 
 /// mirror of: `kairos_client::types_org::ProgressCounts` (KAIROS-T-0080).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
 pub struct ProgressCounts {
     pub done: i64,
     pub total: i64,
@@ -277,20 +289,25 @@ pub struct Template {
     pub name: String,
 }
 
-/// mirror of: `kairos_client::types_events::ThinEvent` (partial — the view
-/// only needs to know "something on this board changed" and re-fetches
-/// through REST per A-0005 §5; events carry no payloads).
+/// mirror of: `kairos_client::types_events::ThinEvent` (partial — events
+/// carry no payloads; the view reads through REST per A-0005 §5).
 ///
-/// The KIND is deliberately not inspected: the server filters the socket
-/// to one board, so every event that arrives concerns this board and the
-/// refetch is the same reconcile for all of them. That is what makes
-/// `item_moved` (KAIROS-I-0012) work without a special case — the server
-/// emits it once per side of the move, with `board_id` = the board the
-/// card left (no column) and once with `board_id` = the board it joined
-/// (its entry column), so each board hears its own half and refetches.
+/// The KIND is not inspected. An event of an item of this board reads the
+/// card of the item again (KAIROS-T-0615, [`refresh_of`]). That is what
+/// makes `item_moved` (KAIROS-I-0012) work without a special case: the
+/// server emits it once per side of the move, with `board_id` = the board
+/// the card left (no column) and once with `board_id` = the board it
+/// joined. The card read on the old board finds no card, and the card
+/// goes; the read on the new board finds it.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct ThinEvent {
     pub event: String,
+    /// The item of the event; empty when the event names none.
+    #[serde(default)]
+    pub short_code: String,
+    /// The board of the item; `None` for an item on no board.
+    #[serde(default)]
+    pub board_id: Option<String>,
 }
 
 // ---- the pages of the items of a board (COLLIERY-T-0261) --------------------
@@ -429,6 +446,256 @@ impl RefetchGate {
     }
 }
 
+// ---- one card at a time (KAIROS-T-0615) --------------------------------------
+
+/// The short code of a card of the four kinds.
+trait CardCode {
+    fn code(&self) -> &str;
+}
+
+macro_rules! card_code {
+    ($($ty:ty),*) => {$(
+        impl CardCode for $ty {
+            fn code(&self) -> &str {
+                &self.short_code
+            }
+        }
+    )*};
+}
+card_code!(Strategy, Initiative, Task, Adr);
+
+/// Take the card `code` out of `cards`: its index, or `None`.
+fn take_card<T: CardCode>(cards: &mut Vec<T>, code: &str) -> Option<usize> {
+    let index = cards.iter().position(|card| card.code() == code)?;
+    cards.remove(index);
+    Some(index)
+}
+
+/// Put the cards of `fresh` into `cards`: at `at` when the card was there
+/// before, else in the order of the short codes (the order of the server).
+fn put_cards<T: CardCode>(cards: &mut Vec<T>, fresh: Vec<T>, at: Option<usize>) {
+    for card in fresh {
+        let index = at
+            .filter(|&at| at <= cards.len())
+            .unwrap_or_else(|| cards.partition_point(|other| other.code() < card.code()));
+        cards.insert(index, card);
+    }
+}
+
+impl BoardColumnItems {
+    /// Take the card `code` out of this column: its index in its list.
+    fn take_card(&mut self, code: &str) -> Option<usize> {
+        take_card(&mut self.strategies, code)
+            .or_else(|| take_card(&mut self.initiatives, code))
+            .or_else(|| take_card(&mut self.tasks, code))
+            .or_else(|| take_card(&mut self.adrs, code))
+    }
+
+    /// Whether this column has a card.
+    fn has_cards(&self) -> bool {
+        !(self.strategies.is_empty()
+            && self.initiatives.is_empty()
+            && self.tasks.is_empty()
+            && self.adrs.is_empty())
+    }
+
+    /// Put the cards of `fresh` (the same column) into this column.
+    fn put_cards(&mut self, fresh: BoardColumnItems, at: Option<usize>) {
+        put_cards(&mut self.strategies, fresh.strategies, at);
+        put_cards(&mut self.initiatives, fresh.initiatives, at);
+        put_cards(&mut self.tasks, fresh.tasks, at);
+        put_cards(&mut self.adrs, fresh.adrs, at);
+    }
+}
+
+/// What [`BoardItemsResponse::patch_card`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Patched {
+    /// The view has the card as the server has it now.
+    Card,
+    /// The patch of one card is not enough: read the whole board.
+    Board,
+}
+
+impl BoardItemsResponse {
+    /// Replace the card `code` with the card of `page`, the response of
+    /// [`load_board_card`] (KAIROS-T-0615). A `page` with no card takes
+    /// the card out: it left the board, or it was put away. The counts of
+    /// the columns and the map entries of the card come from `page`.
+    ///
+    /// [`Patched::Board`] when one card is not enough:
+    /// - the columns of `page` are not the columns of the view (the
+    ///   configuration of the board changed);
+    /// - the card moved, or came, or went, and it has a "blocks" count
+    ///   before or after. The counts of the other end change too, and the
+    ///   other end gets no event.
+    ///
+    /// A view without each card ([`BOARD_CARD_CAP`]) does not take a new
+    /// card: a full read would not show it either. Pure, host-tested.
+    pub fn patch_card(&mut self, code: &str, page: BoardItemsResponse) -> Patched {
+        let same_columns = self.columns.len() == page.columns.len()
+            && self
+                .columns
+                .iter()
+                .zip(&page.columns)
+                .all(|(mine, fresh)| mine.column == fresh.column);
+        if !same_columns {
+            return Patched::Board;
+        }
+        let capped = usize::try_from(self.total).is_ok_and(|total| self.card_count() < total);
+        let before: Option<(usize, usize)> = self
+            .columns
+            .iter_mut()
+            .enumerate()
+            .find_map(|(column, group)| group.take_card(code).map(|index| (column, index)));
+        let after = page.columns.iter().position(BoardColumnItems::has_cards);
+        let had_blocks = self.blocks_summary.remove(code).is_some();
+        self.children_progress.remove(code);
+        self.item_teams.remove(code);
+        let has_blocks = page.blocks_summary.contains_key(code);
+        for (column, (mine, fresh)) in self.columns.iter_mut().zip(page.columns).enumerate() {
+            mine.item_count = fresh.item_count;
+            mine.over_wip_limit = fresh.over_wip_limit;
+            if Some(column) == after && !(capped && before.is_none()) {
+                let at = before
+                    .filter(|(old, _)| *old == column)
+                    .map(|(_, index)| index);
+                mine.put_cards(fresh, at);
+            }
+        }
+        if !(capped && before.is_none()) {
+            self.children_progress.extend(page.children_progress);
+            self.blocks_summary.extend(page.blocks_summary);
+            self.item_teams.extend(page.item_teams);
+        }
+        self.total += i64::from(after.is_some()) - i64::from(before.is_some());
+        let moved = before.map(|(column, _)| column) != after;
+        if moved && (had_blocks || has_blocks) {
+            Patched::Board
+        } else {
+            Patched::Card
+        }
+    }
+}
+
+/// What one event of the board asks the view to read (KAIROS-T-0615).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refresh {
+    /// The card of this short code.
+    Card(String),
+    /// The detail and each card of the board.
+    Board,
+}
+
+/// The read of an event. `None` is a reconnect: the view reads the board,
+/// for the events that it did not get. An event of an item of a different
+/// board changes the "blocks" counts of cards that the event does not
+/// name, so the view reads the board. Pure, host-tested.
+pub fn refresh_of(event: Option<&ThinEvent>, board_id: &str) -> Refresh {
+    match event {
+        Some(event)
+            if !event.short_code.is_empty() && event.board_id.as_deref() == Some(board_id) =>
+        {
+            Refresh::Card(event.short_code.clone())
+        }
+        _ => Refresh::Board,
+    }
+}
+
+/// The time that the view waits after the first event, for more events
+/// of a burst (milliseconds).
+pub const LIVE_WINDOW_MS: u64 = 250;
+
+/// Above this number of cards in one window, the view reads the board
+/// and not each card.
+pub const MAX_CARD_READS: usize = 20;
+
+/// The reads of one window (KAIROS-T-0615).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Batch {
+    /// Read the detail and each card of the board.
+    Board,
+    /// Read these cards, one request each.
+    Cards(Vec<String>),
+}
+
+/// The live reads of a board view (KAIROS-T-0615). The events of a
+/// [`LIVE_WINDOW_MS`] window make one [`Batch`], and one batch runs at a
+/// time. The events that come while a batch runs go to the next batch.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LiveQueue {
+    /// The board must be read.
+    board: bool,
+    /// The cards to read.
+    cards: std::collections::BTreeSet<String>,
+    /// A window is open: its timer calls [`LiveQueue::fire`].
+    armed: bool,
+    /// The number of reads that run.
+    running: u32,
+    /// [`LiveQueue::take`] gave a [`Batch::Board`], and the read of the
+    /// board did not start yet: its start does not count again.
+    board_given: bool,
+}
+
+impl LiveQueue {
+    /// An event asks for a read. `true`: open a window now (start the
+    /// timer).
+    pub fn request(&mut self, refresh: Refresh) -> bool {
+        self.ask(refresh);
+        !std::mem::replace(&mut self.armed, true)
+    }
+
+    /// Ask for a read, with no window: the next batch has it.
+    pub fn ask(&mut self, refresh: Refresh) {
+        match refresh {
+            Refresh::Board => self.board = true,
+            Refresh::Card(code) => {
+                self.cards.insert(code);
+            }
+        }
+    }
+
+    /// The timer of the window fired: the batch to run now, or `None`.
+    pub fn fire(&mut self) -> Option<Batch> {
+        self.armed = false;
+        self.take()
+    }
+
+    /// The batch to run now: `None` when a read runs or nothing waits.
+    fn take(&mut self) -> Option<Batch> {
+        if self.running > 0 {
+            return None;
+        }
+        let batch = if self.board || self.cards.len() > MAX_CARD_READS {
+            self.board_given = true;
+            Batch::Board
+        } else if self.cards.is_empty() {
+            return None;
+        } else {
+            Batch::Cards(self.cards.iter().cloned().collect())
+        };
+        self.board = false;
+        self.cards.clear();
+        self.running = self.running.saturating_add(1);
+        Some(batch)
+    }
+
+    /// A read of the board starts: the first load, a change of the route,
+    /// or a [`Batch::Board`].
+    pub fn board_read_started(&mut self) {
+        if !std::mem::take(&mut self.board_given) {
+            self.running = self.running.saturating_add(1);
+        }
+    }
+
+    /// A read ends. The batch to run now, or `None` (an open window gives
+    /// the next batch when its timer fires).
+    pub fn finished(&mut self) -> Option<Batch> {
+        self.running = self.running.saturating_sub(1);
+        if self.armed { None } else { self.take() }
+    }
+}
+
 // ---- the whole board view in one fetch -------------------------------------
 
 /// Everything the board view renders: configuration (columns +
@@ -461,11 +728,40 @@ pub fn board_path(param: &str) -> String {
 /// each read of the view (and each live re-fetch) read the full list of the
 /// boards to get the id of the board. The server gives the 404 for a param
 /// that no live board has.
+///
+/// KAIROS-T-0615: the detail and the cards load together. The two
+/// requests run at the same time, and the view waits for the two.
 pub async fn load_board_view(auth: Auth, param: &str) -> Result<BoardView, ApiError> {
-    let detail: BoardDetail = get_json(auth, &board_path(param)).await?;
+    let path = board_path(param);
     // COLLIERY-T-0261: the items come in pages.
-    let items = load_board_items(auth, param).await?;
+    let (detail, items) = futures_util::future::try_join(
+        get_json::<BoardDetail>(auth, &path),
+        load_board_items(auth, param),
+    )
+    .await?;
     Ok(BoardView { detail, items })
+}
+
+/// The card of one item of a board (KAIROS-T-0615):
+/// `GET /api/boards/{id}/items?code=`. The response has each column with
+/// its counts, and the card in its column, or no card when the item is not
+/// on the board now. [`BoardItemsResponse::patch_card`] puts it in the
+/// view.
+pub async fn load_board_card(
+    auth: Auth,
+    board: &str,
+    code: &str,
+) -> Result<BoardItemsResponse, ApiError> {
+    get_json(auth, &board_card_path(board, code)).await
+}
+
+/// The path of [`load_board_card`]. Pure, host-tested.
+pub fn board_card_path(board: &str, code: &str) -> String {
+    format!(
+        "{}/items?code={}",
+        board_path(board),
+        crate::api::encode_component(code)
+    )
 }
 
 /// Templates for the document create flow: each template, page after
@@ -831,7 +1127,7 @@ mod tests {
             .iter()
             .map(|code| {
                 serde_json::json!({
-                    "short_code": code, "title": code,
+                    "short_code": code, "title": code, "version": 1,
                     "task_type": "task", "work_class": "planned"
                 })
             })
@@ -1003,6 +1299,309 @@ mod tests {
         assert!(!gate.finished(), "a read that ends 2 times does no harm");
     }
 
+    /// A board of 2 columns, `todo` and `doing`, with the tasks of `cards`
+    /// `(code, column, version)` and the counts of each column. `blocks`
+    /// are the codes with a "blocks" count.
+    fn board_of(cards: &[(&str, &str, i32)], blocks: &[&str], total: i64) -> BoardItemsResponse {
+        let column = |id: &str, position: i32| {
+            let tasks: Vec<serde_json::Value> = cards
+                .iter()
+                .filter(|(_, column, _)| *column == id)
+                .map(|(code, _, version)| {
+                    serde_json::json!({
+                        "short_code": code, "title": format!("{code} v{version}"),
+                        "version": version, "task_type": "task", "work_class": "planned"
+                    })
+                })
+                .collect();
+            let count = tasks.len();
+            serde_json::json!({
+                "column": {"id": id, "name": id, "position": position},
+                "item_count": count,
+                "strategies": [], "initiatives": [], "tasks": tasks, "adrs": []
+            })
+        };
+        let blocks: serde_json::Map<String, serde_json::Value> = blocks
+            .iter()
+            .map(|code| {
+                (
+                    code.to_string(),
+                    serde_json::json!({"blocked_by": 1, "blocks": 0}),
+                )
+            })
+            .collect();
+        serde_json::from_value(serde_json::json!({
+            "board": {"id": "b", "name": "Demo", "slug": "demo-delivery",
+                      "board_level": "delivery"},
+            "columns": [column("todo", 0), column("doing", 1)],
+            "total": total,
+            "blocks_summary": blocks
+        }))
+        .expect("mirror decodes")
+    }
+
+    /// The response of `?code=`: the card `card` (or none) and the counts
+    /// of the board `counts` `(todo, doing)`.
+    fn card_page(
+        card: Option<(&str, &str, i32)>,
+        blocks: bool,
+        counts: (i64, i64),
+    ) -> BoardItemsResponse {
+        let cards: Vec<(&str, &str, i32)> = card.into_iter().collect();
+        let codes: Vec<&str> = cards
+            .iter()
+            .filter(|_| blocks)
+            .map(|(code, _, _)| *code)
+            .collect();
+        let mut page = board_of(&cards, &codes, i64::from(card.is_some()));
+        page.columns[0].item_count = counts.0;
+        page.columns[1].item_count = counts.1;
+        page
+    }
+
+    /// The titles of the cards of a column.
+    fn column_cards(view: &BoardItemsResponse, index: usize) -> Vec<String> {
+        view.columns[index]
+            .tasks
+            .iter()
+            .map(|task| task.title.clone())
+            .collect()
+    }
+
+    /// KAIROS-T-0615: a note on a card replaces that card in its place.
+    /// The other cards and the counts stay.
+    #[test]
+    fn a_patch_replaces_the_card_in_its_place() {
+        let mut view = board_of(
+            &[
+                ("D-T-1", "todo", 1),
+                ("D-T-2", "todo", 1),
+                ("D-T-3", "doing", 1),
+            ],
+            &[],
+            3,
+        );
+        let patched = view.patch_card(
+            "D-T-2",
+            card_page(Some(("D-T-2", "todo", 2)), false, (2, 1)),
+        );
+        assert_eq!(patched, Patched::Card);
+        assert_eq!(column_cards(&view, 0), ["D-T-1 v1", "D-T-2 v2"]);
+        assert_eq!(column_cards(&view, 1), ["D-T-3 v1"]);
+        assert_eq!(view.total, 3);
+        assert_eq!(view.columns[0].tasks[1].version, 2);
+    }
+
+    /// KAIROS-T-0615: a move takes the card to its new column, in the order
+    /// of the codes, and the counts of the columns follow.
+    #[test]
+    fn a_patch_moves_the_card_and_the_counts() {
+        let mut view = board_of(
+            &[
+                ("D-T-1", "todo", 1),
+                ("D-T-4", "todo", 1),
+                ("D-T-3", "doing", 1),
+                ("D-T-5", "doing", 1),
+            ],
+            &[],
+            4,
+        );
+        let patched = view.patch_card(
+            "D-T-4",
+            card_page(Some(("D-T-4", "doing", 2)), false, (1, 3)),
+        );
+        assert_eq!(patched, Patched::Card);
+        assert_eq!(column_cards(&view, 0), ["D-T-1 v1"]);
+        assert_eq!(column_cards(&view, 1), ["D-T-3 v1", "D-T-4 v2", "D-T-5 v1"]);
+        assert_eq!(
+            (view.columns[0].item_count, view.columns[1].item_count),
+            (1, 3)
+        );
+        assert_eq!(view.total, 4);
+    }
+
+    /// KAIROS-T-0615: a card that left the board goes; a new card comes.
+    #[test]
+    fn a_patch_takes_out_and_puts_in_a_card() {
+        let mut view = board_of(&[("D-T-1", "todo", 1), ("D-T-3", "todo", 1)], &[], 2);
+        assert_eq!(
+            view.patch_card("D-T-1", card_page(None, false, (1, 0))),
+            Patched::Card
+        );
+        assert_eq!(column_cards(&view, 0), ["D-T-3 v1"]);
+        assert_eq!(view.total, 1);
+        assert_eq!(view.columns[0].item_count, 1);
+        assert_eq!(
+            view.patch_card(
+                "D-T-2",
+                card_page(Some(("D-T-2", "todo", 1)), false, (2, 0))
+            ),
+            Patched::Card
+        );
+        assert_eq!(column_cards(&view, 0), ["D-T-2 v1", "D-T-3 v1"]);
+        assert_eq!(view.total, 2);
+        // A code that is not on the board, before or after: no change.
+        let before = view.clone();
+        assert_eq!(
+            view.patch_card("D-T-9", card_page(None, false, (2, 0))),
+            Patched::Card
+        );
+        assert_eq!(view, before);
+    }
+
+    /// KAIROS-T-0615: a card with a "blocks" count that moves changes the
+    /// counts of the other end, so the view reads the board. A note on it
+    /// does not.
+    #[test]
+    fn a_move_of_a_blocked_card_reads_the_board() {
+        let start = board_of(
+            &[("D-T-1", "todo", 1), ("D-T-2", "todo", 1)],
+            &["D-T-1", "D-T-2"],
+            2,
+        );
+        let mut view = start.clone();
+        assert_eq!(
+            view.patch_card("D-T-1", card_page(Some(("D-T-1", "todo", 2)), true, (2, 0))),
+            Patched::Card,
+            "a note"
+        );
+        assert!(view.blocks_summary.contains_key("D-T-1"));
+        let mut view = start.clone();
+        // Into a done column: the count of the card goes.
+        assert_eq!(
+            view.patch_card(
+                "D-T-1",
+                card_page(Some(("D-T-1", "doing", 2)), false, (1, 1))
+            ),
+            Patched::Board
+        );
+        assert!(!view.blocks_summary.contains_key("D-T-1"));
+        // Out of a done column: the count comes.
+        let mut view = board_of(&[("D-T-1", "doing", 1)], &[], 1);
+        assert_eq!(
+            view.patch_card("D-T-1", card_page(Some(("D-T-1", "todo", 2)), true, (1, 0))),
+            Patched::Board
+        );
+        // A card with no count moves: one card is enough.
+        let mut view = board_of(&[("D-T-1", "todo", 1)], &[], 1);
+        assert_eq!(
+            view.patch_card(
+                "D-T-1",
+                card_page(Some(("D-T-1", "doing", 2)), false, (0, 1))
+            ),
+            Patched::Card
+        );
+    }
+
+    /// KAIROS-T-0615: columns that are not the columns of the view (the
+    /// configuration changed) read the board.
+    #[test]
+    fn other_columns_read_the_board() {
+        let mut view = board_of(&[("D-T-1", "todo", 1)], &[], 1);
+        let mut page = card_page(Some(("D-T-1", "todo", 2)), false, (1, 0));
+        page.columns[1].column.name = "Doing now".to_string();
+        assert_eq!(view.patch_card("D-T-1", page), Patched::Board);
+        let mut page = card_page(Some(("D-T-1", "todo", 2)), false, (1, 0));
+        page.columns.pop();
+        assert_eq!(view.patch_card("D-T-1", page), Patched::Board);
+    }
+
+    /// KAIROS-T-0615: a view without each card does not take a new card,
+    /// as a full read would not show it. The total counts it.
+    #[test]
+    fn a_capped_view_does_not_take_a_new_card() {
+        let mut view = board_of(&[("D-T-1", "todo", 1)], &[], 2500);
+        assert_eq!(
+            view.patch_card(
+                "D-T-9",
+                card_page(Some(("D-T-9", "todo", 1)), false, (2, 0))
+            ),
+            Patched::Card
+        );
+        assert_eq!(column_cards(&view, 0), ["D-T-1 v1"]);
+        assert_eq!(view.total, 2501);
+        assert_eq!(view.columns[0].item_count, 2);
+        // A card that the view has is patched.
+        view.patch_card(
+            "D-T-1",
+            card_page(Some(("D-T-1", "todo", 2)), false, (2, 0)),
+        );
+        assert_eq!(column_cards(&view, 0), ["D-T-1 v2"]);
+    }
+
+    /// KAIROS-T-0615: an event of an item of this board reads its card. A
+    /// reconnect, an event with no item and an event of a different board
+    /// read the board.
+    #[test]
+    fn an_event_reads_its_card_or_the_board() {
+        let event = |code: &str, board: Option<&str>| ThinEvent {
+            event: "item_updated".to_string(),
+            short_code: code.to_string(),
+            board_id: board.map(str::to_string),
+        };
+        assert_eq!(
+            refresh_of(Some(&event("D-T-1", Some("b"))), "b"),
+            Refresh::Card("D-T-1".to_string())
+        );
+        assert_eq!(
+            refresh_of(Some(&event("D-T-1", Some("other"))), "b"),
+            Refresh::Board
+        );
+        assert_eq!(refresh_of(Some(&event("", Some("b"))), "b"), Refresh::Board);
+        assert_eq!(refresh_of(Some(&event("D-D-1", None)), "b"), Refresh::Board);
+        assert_eq!(refresh_of(None, "b"), Refresh::Board);
+        assert_eq!(
+            board_card_path("demo", "D-T-1"),
+            "/api/boards/demo/items?code=D-T-1"
+        );
+    }
+
+    /// KAIROS-T-0615: the events of a window make one batch, and one batch
+    /// runs at a time.
+    #[test]
+    fn the_queue_makes_one_batch_of_a_window() {
+        let card = |code: &str| Refresh::Card(code.to_string());
+        let mut queue = LiveQueue::default();
+        // The first load runs.
+        queue.board_read_started();
+        // An event opens a window; the next ones join it.
+        assert!(queue.request(card("D-T-2")));
+        assert!(!queue.request(card("D-T-1")));
+        assert!(!queue.request(card("D-T-2")));
+        // The window ends while the first load runs: no batch yet.
+        assert_eq!(queue.fire(), None);
+        // The load ends: the batch of the window runs, each card once.
+        assert_eq!(
+            queue.finished(),
+            Some(Batch::Cards(vec!["D-T-1".to_string(), "D-T-2".to_string()]))
+        );
+        // An event during the batch opens a new window.
+        assert!(queue.request(card("D-T-3")));
+        // The batch ends while the window is open: the timer runs it.
+        assert_eq!(queue.finished(), None);
+        assert_eq!(queue.fire(), Some(Batch::Cards(vec!["D-T-3".to_string()])));
+        assert_eq!(queue.finished(), None, "nothing waits");
+        // A reconnect in a window of cards: the board.
+        assert!(queue.request(card("D-T-4")));
+        assert!(!queue.request(Refresh::Board));
+        assert_eq!(queue.fire(), Some(Batch::Board));
+        // The read of the board starts and ends: it counts once.
+        queue.board_read_started();
+        assert!(queue.request(card("D-T-5")));
+        assert_eq!(queue.fire(), None, "the read of the board runs");
+        assert_eq!(
+            queue.finished(),
+            Some(Batch::Cards(vec!["D-T-5".to_string()]))
+        );
+        assert_eq!(queue.finished(), None);
+        // A burst of more than MAX_CARD_READS cards: the board.
+        for number in 0..=MAX_CARD_READS {
+            queue.request(card(&format!("D-T-{number:04}")));
+        }
+        assert_eq!(queue.fire(), Some(Batch::Board));
+    }
+
+    /// The board-view mirrors decode a realistic
     /// The board-view mirrors decode a realistic
     /// `GET /api/boards/{id}` + `GET /api/boards/{id}/items` pair
     /// (field-name lock against the S-0005 wire shape).
@@ -1220,7 +1819,7 @@ mod tests {
     #[test]
     fn the_owner_decodes_and_makes_a_pill() {
         let initiative: Initiative = serde_json::from_value(serde_json::json!({
-            "short_code": "DEMO-I-0001", "title": "I",
+            "short_code": "DEMO-I-0001", "title": "I", "version": 1,
             "owner": {"user_id": "u", "display_name": "Robin",
                       "claimed_at": "2026-10-12T10:00:00Z"}
         }))
@@ -1230,7 +1829,7 @@ mod tests {
             Some("owner: Robin")
         );
         let strategy: Strategy = serde_json::from_value(serde_json::json!({
-            "short_code": "DEMO-S-0001", "title": "S"
+            "short_code": "DEMO-S-0001", "title": "S", "version": 1
         }))
         .expect("mirror decodes");
         assert_eq!(owner_pill(strategy.owner.as_ref()), None);
@@ -1240,7 +1839,7 @@ mod tests {
     #[test]
     fn task_mirror_decodes_the_claim() {
         let task: Task = serde_json::from_value(serde_json::json!({
-            "short_code": "DEMO-T-0001", "title": "T", "task_type": "task",
+            "short_code": "DEMO-T-0001", "title": "T", "task_type": "task", "version": 1,
             "work_class": "planned",
             "claim": {"user_id": "u", "display_name": "Alice", "agent": true,
                       "claimed_at": "2026-10-09T10:00:00Z"}
@@ -1250,7 +1849,7 @@ mod tests {
         assert_eq!(claim.display_name, "Alice");
         assert!(claim.agent);
         let old: Task = serde_json::from_value(serde_json::json!({
-            "short_code": "DEMO-T-0002", "title": "T", "task_type": "task",
+            "short_code": "DEMO-T-0002", "title": "T", "task_type": "task", "version": 1,
             "work_class": "planned"
         }))
         .expect("mirror decodes");
@@ -1268,7 +1867,7 @@ mod tests {
                 "column": {"id": name, "name": name, "position": 1, "is_done": done},
                 "strategies": [], "initiatives": [], "adrs": [],
                 "tasks": tasks.iter().map(|code| serde_json::json!({
-                    "short_code": code, "title": "T", "task_type": "task",
+                    "short_code": code, "title": "T", "task_type": "task", "version": 1,
                     "work_class": "planned"
                 })).collect::<Vec<_>>(),
             })
@@ -1293,7 +1892,7 @@ mod tests {
     #[test]
     fn task_mirror_decodes_the_cancel_mark() {
         let task: Task = serde_json::from_value(serde_json::json!({
-            "short_code": "DEMO-T-0001", "title": "T", "task_type": "task",
+            "short_code": "DEMO-T-0001", "title": "T", "task_type": "task", "version": 1,
             "work_class": "planned",
             "cancellation": {"reason": "No need", "cancelled_by": "u",
                              "cancelled_by_name": "Robin",

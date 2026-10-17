@@ -216,7 +216,9 @@ talks HTTP itself:
   globally (session cleared → login redirect).
 - Live updates (T-0040+): subscribe to `/ws/events` (browser token
   handling documented in `kairos-server::ws`), re-fetch changed items on
-  event — don't patch local state from event payloads.
+  event — don't patch local state from event payloads. The board view
+  reads the one card that an event names, and replaces that card in its
+  model (KAIROS-T-0615, `BoardItemsResponse::patch_card`).
 
 ## 5. Async view states
 

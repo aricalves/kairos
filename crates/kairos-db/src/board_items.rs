@@ -22,7 +22,7 @@ use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::result::Error as DieselError;
 use diesel::sql_query;
-use diesel::sql_types::{Array, BigInt, Bool, Nullable, SmallInt, Uuid as SqlUuid};
+use diesel::sql_types::{Array, BigInt, Bool, Nullable, SmallInt, Text, Uuid as SqlUuid};
 use uuid::Uuid;
 
 /// The type of a card, in the order of the page.
@@ -132,6 +132,20 @@ pub fn board_item_page(
     limit: i64,
     offset: i64,
 ) -> Result<BoardItemPage, DieselError> {
+    board_item_page_of_code(conn, filter, None, limit, offset)
+}
+
+/// [`board_item_page`], narrowed to the card with the short code `code`
+/// when it is `Some` (KAIROS-T-0615). The page then has that one card, or
+/// no card when no card of the board has the code and passes the filters.
+/// A live board patches one card with it after an event of that item.
+pub fn board_item_page_of_code(
+    conn: &mut PgConnection,
+    filter: &BoardItemFilter<'_>,
+    code: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> Result<BoardItemPage, DieselError> {
     // The team filter: the items of the board that have the team (or any
     // team), then keep them or the others. One query for the board.
     let (team_items, keep): (Option<Vec<Uuid>>, bool) = match filter.team {
@@ -151,19 +165,10 @@ pub fn board_item_page(
             }
         }
     };
-    let total = sql_query(format!("SELECT COUNT(*) AS count FROM ({CARDS_SQL}) cards"))
-        .bind::<SqlUuid, _>(filter.board_id)
-        .bind::<Bool, _>(filter.include_archived)
-        .bind::<Nullable<SqlUuid>, _>(filter.repository_id)
-        .bind::<Array<SqlUuid>, _>(filter.column_ids)
-        .bind::<Nullable<Array<SqlUuid>>, _>(team_items.as_deref())
-        .bind::<Bool, _>(keep)
-        .get_result::<CountRow>(conn)?
-        .count;
-    let rows: Vec<CardRow> = sql_query(format!(
-        "SELECT kind, id FROM ({CARDS_SQL}) cards \
-         ORDER BY position, column_id, kind, short_code, id \
-         LIMIT $7 OFFSET $8"
+    // `$7` is the short code of one card, or NULL for each card.
+    let total = sql_query(format!(
+        "SELECT COUNT(*) AS count FROM ({CARDS_SQL}) cards \
+         WHERE ($7::text IS NULL OR short_code = $7)"
     ))
     .bind::<SqlUuid, _>(filter.board_id)
     .bind::<Bool, _>(filter.include_archived)
@@ -171,6 +176,22 @@ pub fn board_item_page(
     .bind::<Array<SqlUuid>, _>(filter.column_ids)
     .bind::<Nullable<Array<SqlUuid>>, _>(team_items.as_deref())
     .bind::<Bool, _>(keep)
+    .bind::<Nullable<Text>, _>(code)
+    .get_result::<CountRow>(conn)?
+    .count;
+    let rows: Vec<CardRow> = sql_query(format!(
+        "SELECT kind, id FROM ({CARDS_SQL}) cards \
+         WHERE ($7::text IS NULL OR short_code = $7) \
+         ORDER BY position, column_id, kind, short_code, id \
+         LIMIT $8 OFFSET $9"
+    ))
+    .bind::<SqlUuid, _>(filter.board_id)
+    .bind::<Bool, _>(filter.include_archived)
+    .bind::<Nullable<SqlUuid>, _>(filter.repository_id)
+    .bind::<Array<SqlUuid>, _>(filter.column_ids)
+    .bind::<Nullable<Array<SqlUuid>>, _>(team_items.as_deref())
+    .bind::<Bool, _>(keep)
+    .bind::<Nullable<Text>, _>(code)
     .bind::<BigInt, _>(limit)
     .bind::<BigInt, _>(offset)
     .load(conn)?;

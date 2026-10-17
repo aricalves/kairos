@@ -471,6 +471,11 @@ Each item is a card (KAIROS-T-0602). A card has no `content`,
 response has the shape that the route had before cards. The item route
 of a card gives its content.
 
+`?code=<short_code>` gives the card of one item (KAIROS-T-0615). The
+page then has that card, or no card when no card of the board has the
+code. The columns, their counts and the maps are as for a page. A live
+board reads one card in this way after an event of that item.
+
 The path takes the slug or the id of the board (COLLIERY-T-0265). An
 unknown slug and an unknown id are a 404.
 
@@ -485,6 +490,7 @@ unknown slug and an unknown id are a 404.
 | `no_team` | query | no | `boolean` | Narrow the STRATEGIES and the INITIATIVES to those with no team (KAIROS-T-0321). Tasks and ADRs are unaffected. Not with `team`. |
 | `with_metadata` | query | no | `boolean` | Add `item_metadata` to the response: the metadata values of each item of the page (KAIROS-T-0368). Default false. |
 | `fields` | query | no | `string` (`card`, `full`) | `card` (the default): the cards have no `content`, `created_by` or `updated_by`. `full`: the cards have them, as before cards (KAIROS-T-0602). An other value is refused. |
+| `code` | query | no | `string` | Only the card with this short code (KAIROS-T-0615). The page then has one card, or no card when the board has no such card. A live board reads one card with it after an event of that item. |
 
 | Response | Body | Meaning |
 |---|---|---|

@@ -283,6 +283,11 @@ pub struct BoardItemsQuery {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[param(inline)]
     pub fields: Option<crate::types_cards::CardFields>,
+    /// Only the card with this short code (KAIROS-T-0615). The page then
+    /// has one card, or no card when the board has no such card. A live
+    /// board reads one card with it after an event of that item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
 }
 
 /// One team of an initiative or a strategy (KAIROS-T-0321). The item gets
