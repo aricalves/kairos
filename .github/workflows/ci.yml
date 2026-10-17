@@ -13,14 +13,16 @@
 #   web          Gate 7: the GUI wasm build (release on main, debug on a PR)
 #   ci           the one required check: it fails when a gate failed
 #
-# A change to the docs only runs lint. On main each commit gets a full run:
-# a new push does not cancel the run of the commit before it. On a pull
-# request a new push cancels the old run.
+# A change to the docs only runs lint. On a pull request a new push cancels
+# the old run.
 #
 # Merges to main go through the GitHub merge queue (KAIROS-T-0650). The
 # queue runs this workflow on its merge commit (`merge_group`), and `ci` is
 # the check that the ruleset of main requires. A queue run checks the parts
-# that the group changes against main, as a pull request does.
+# that the group changes against main, as a pull request does. The queue
+# moves main to the commit that it tested, so a push to main runs no tests:
+# it runs lint, build-tests and web only, to save the caches that pull
+# requests read. A push to main does not cancel the run before it.
 #
 # Run one shard locally: `cargo nextest run --profile ci --partition hash:2/4`
 # with the compose stack up (`angreal services up`).
@@ -63,6 +65,7 @@ jobs:
       helm: ${{ steps.filter.outputs.helm }}
       python: ${{ steps.filter.outputs.python }}
       image: ${{ steps.filter.outputs.image }}
+      tests: ${{ steps.filter.outputs.tests }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -78,12 +81,15 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${EVENT}" = "push" ]; then
-            # main: every gate, each commit.
+            # main: build each part, to save the caches.
             for part in rust web helm python; do echo "${part}=true" >> "$GITHUB_OUTPUT"; done
             # The release workflow builds the images of a tag.
             echo "image=false" >> "$GITHUB_OUTPUT"
+            # The merge queue tested this commit (KAIROS-T-0650).
+            echo "tests=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          echo "tests=true" >> "$GITHUB_OUTPUT"
           files="$(git diff --name-only "${BASE}...HEAD")"
           echo "${files}"
           has() { echo "${files}" | grep -Eq "$1" && echo true || echo false; }
@@ -324,7 +330,7 @@ jobs:
   unit:
     name: unit
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.tests == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -373,7 +379,8 @@ jobs:
 
   integration:
     name: integration (${{ matrix.shard }}/4)
-    needs: build-tests
+    needs: [changes, build-tests]
+    if: needs.changes.outputs.tests == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
@@ -408,7 +415,8 @@ jobs:
 
   bdd:
     name: bdd (${{ matrix.suite.name }})
-    needs: build-tests
+    needs: [changes, build-tests]
+    if: needs.changes.outputs.tests == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
