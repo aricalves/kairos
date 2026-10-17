@@ -7,11 +7,17 @@
 //!
 //! - `hand_off`: a hand-off of the claim of a task ([`crate::task_claims::hand_off`])
 //!   tells the person who gets the claim.
-//! - `blocker_cleared`: an item that blocks a task (a `blocks` edge from
-//!   the item to the task) goes into a done column, or is archived. The
-//!   person who has the claim on the task is told, when the task is not
-//!   done. An item that was done already when it was archived blocked
-//!   nothing, so its archive tells nobody.
+//! - `blocker_cleared`: an item that blocks an item (a `blocks` edge from
+//!   the blocker to the dependant) goes into a done column, or is archived
+//!   or purged, or the edge is removed (KAIROS-T-0568). The person who has
+//!   the claim on the dependant task, or the owner of the dependant
+//!   strategy or initiative, is told, when the dependant is not done. An
+//!   item that was done already blocked nothing, so its archive, its purge
+//!   or the removal of its edge tells nobody.
+//! - `blocked_again`: a blocker leaves a done column, so it blocks again
+//!   (KAIROS-T-0568). The person with the claim on each dependant that is
+//!   not done is told, or the owner, or the person who created the
+//!   dependant when it has neither.
 //! - `cancelled`: a cancel of a task ([`crate::task_cancellations::cancel_task`])
 //!   tells the person who created the task, with the reason.
 //! - `mention`: `@user_name` in the content of a new item, or a NEW mention
@@ -282,18 +288,17 @@ pub fn on_cancel(
 }
 
 #[derive(QueryableByName)]
-struct ClearedRow {
+struct ClaimantRow {
     #[diesel(sql_type = SqlUuid)]
     user_id: Uuid,
     #[diesel(sql_type = SqlUuid)]
-    task_id: Uuid,
+    item_id: Uuid,
     #[diesel(sql_type = Text)]
-    task_code: String,
-    #[diesel(sql_type = Text)]
-    blocker_code: String,
+    item_code: String,
 }
 
-/// Why a blocker no longer blocks: [`on_blockers_cleared`].
+/// Why a blocker no longer blocks: [`on_blockers_cleared`] and
+/// [`on_blocks_removed`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cleared {
     /// The blocker went into a done column.
@@ -301,11 +306,27 @@ pub enum Cleared {
     /// The blocker was archived. A blocker in a done column blocked nothing
     /// before the archive, so it tells nobody.
     Archived,
+    /// The `blocks` edge was removed (KAIROS-T-0568).
+    Unlinked,
+    /// The blocker was purged (KAIROS-T-0568).
+    Purged,
 }
 
-/// `blocker_cleared`: the items in `blockers` no longer block. For each
-/// live task that one of them blocks, that is not done and that is not in
-/// `blockers`, the person with the claim on the task is told.
+impl Cleared {
+    fn why(self) -> &'static str {
+        match self {
+            Cleared::Done => "it is done",
+            Cleared::Archived => "it is archived",
+            Cleared::Unlinked => "the blocks link is removed",
+            Cleared::Purged => "it is purged",
+        }
+    }
+}
+
+/// `blocker_cleared`: the items in `blockers` no longer block (`how` is
+/// [`Cleared::Done`] or [`Cleared::Archived`]). Each item that one of them
+/// blocks, and that is not in `blockers`, lost a blocker:
+/// [`on_blocks_removed`].
 pub fn on_blockers_cleared(
     conn: &mut PgConnection,
     blockers: &[Uuid],
@@ -315,50 +336,47 @@ pub fn on_blockers_cleared(
     if blockers.is_empty() {
         return Ok(());
     }
-    // KAIROS-T-0427: the dispatch rules that fire on `unblocked`. A blocker
-    // that was done before its archive closed nothing now.
+    // A blocker that was done before its archive closed nothing now.
     let closed: Vec<Uuid> = match how {
-        Cleared::Done => blockers.to_vec(),
-        Cleared::Archived => blockers_not_done(conn, blockers)?,
+        Cleared::Archived => blockers_open(conn, blockers)?,
+        _ => blockers.to_vec(),
     };
-    crate::dispatch::on_blockers_closed(conn, &closed, actor)?;
-    let rows: Vec<ClearedRow> = sql_query(
-        "SELECT c.user_id, t.id AS task_id, t.short_code AS task_code, \
-                b.short_code AS blocker_code \
-           FROM item_relationships r \
-           JOIN entity_directory b ON b.id = r.source_id \
-           JOIN tasks t ON t.id = r.target_id AND t.deleted_at IS NULL \
-           JOIN board_columns tc ON tc.id = t.column_id AND NOT tc.is_done \
-           JOIN task_claims c ON c.task_id = t.id \
-          WHERE r.relationship = 'blocks' \
-            AND r.source_id = ANY($1) \
-            AND NOT (r.target_id = ANY($1)) \
-            AND (NOT $2 OR NOT EXISTS ( \
-                 SELECT 1 FROM (SELECT id, column_id FROM strategies \
-                                UNION ALL SELECT id, column_id FROM initiatives \
-                                UNION ALL SELECT id, column_id FROM tasks \
-                                UNION ALL SELECT id, column_id FROM adrs) p \
-                   JOIN board_columns bc ON bc.id = p.column_id \
-                  WHERE p.id = r.source_id AND bc.is_done)) \
-          ORDER BY t.short_code, b.short_code",
-    )
-    .bind::<Array<SqlUuid>, _>(blockers)
-    .bind::<Bool, _>(how == Cleared::Archived)
-    .load(conn)?;
-    for row in rows {
-        let why = match how {
-            Cleared::Done => "it is done",
-            Cleared::Archived => "it is archived",
+    let freed = crate::dispatch::dependants_of(conn, &closed, blockers)?;
+    on_blocks_removed(conn, &freed, how, actor)
+}
+
+/// The `blocks` edges of `freed` block nothing now: the blocker closed, or
+/// the edge is gone (KAIROS-T-0568). KAIROS-T-0427: the dispatch rules that
+/// fire on `unblocked`. `blocker_cleared`: for each live item of `freed`
+/// that is not done, the person with the claim on the task, or the owner
+/// of the strategy or the initiative, is told.
+pub fn on_blocks_removed(
+    conn: &mut PgConnection,
+    freed: &[crate::dispatch::Freed],
+    how: Cleared,
+    actor: Uuid,
+) -> Result<(), DieselError> {
+    if freed.is_empty() {
+        return Ok(());
+    }
+    crate::dispatch::on_dependants_freed(conn, freed, actor)?;
+    let ids: Vec<Uuid> = freed.iter().map(|f| f.dependant).collect();
+    let rows = claimants(conn, &ids, false)?;
+    for f in freed {
+        let Some(row) = rows.iter().find(|r| r.item_id == f.dependant) else {
+            continue;
         };
         let text = format!(
-            "{} does not block {} now: {why}.",
-            row.blocker_code, row.task_code
+            "{} does not block {} now: {}.",
+            f.blocker_code,
+            row.item_code,
+            how.why()
         );
         notify(
             conn,
             &[row.user_id],
             NotificationKind::BlockerCleared,
-            Some((row.task_id, &row.task_code)),
+            Some((row.item_id, &row.item_code)),
             &text,
             actor,
         )?;
@@ -366,21 +384,99 @@ pub fn on_blockers_cleared(
     Ok(())
 }
 
-/// The items of `ids` that are not in a done column.
-fn blockers_not_done(conn: &mut PgConnection, ids: &[Uuid]) -> Result<Vec<Uuid>, DieselError> {
+/// The person who answers for each live item of `ids` that is not done:
+/// the claim of a task, or the owner of a strategy or an initiative. With
+/// `or_creator`, the person who created the item when nobody has the claim
+/// or owns it. An item with nobody has no row.
+fn claimants(
+    conn: &mut PgConnection,
+    ids: &[Uuid],
+    or_creator: bool,
+) -> Result<Vec<ClaimantRow>, DieselError> {
+    sql_query(format!(
+        "SELECT d.id AS item_id, d.short_code AS item_code, \
+                COALESCE(c.user_id, o.user_id, CASE WHEN $2 THEN d.created_by END) AS user_id \
+           FROM {items} d \
+           JOIN board_columns dc ON dc.id = d.column_id AND NOT dc.is_done \
+           LEFT JOIN task_claims c ON c.task_id = d.id \
+           LEFT JOIN item_owners o ON o.item_id = d.id \
+          WHERE d.id = ANY($1) AND d.deleted_at IS NULL \
+            AND COALESCE(c.user_id, o.user_id, CASE WHEN $2 THEN d.created_by END) IS NOT NULL \
+          ORDER BY d.short_code",
+        items = crate::dispatch::WORKFLOW_ITEMS,
+    ))
+    .bind::<Array<SqlUuid>, _>(ids)
+    .bind::<Bool, _>(or_creator)
+    .load(conn)
+}
+
+/// Whether the item blocks the targets of its `blocks` edges now: a live
+/// strategy, initiative or task that is not in a done column.
+pub(crate) fn blocks_now(conn: &mut PgConnection, item_id: Uuid) -> Result<bool, DieselError> {
+    #[derive(QueryableByName)]
+    struct Row {
+        #[diesel(sql_type = Bool)]
+        blocks: bool,
+    }
+    let row: Option<Row> = sql_query(format!(
+        "SELECT {blocks} AS blocks FROM {items} p WHERE p.id = $1",
+        blocks = crate::dispatch::blocks_now_sql("p"),
+        items = crate::dispatch::WORKFLOW_ITEMS,
+    ))
+    .bind::<SqlUuid, _>(item_id)
+    .get_result(conn)
+    .optional()?;
+    Ok(row.is_some_and(|r| r.blocks))
+}
+
+/// `blocked_again` (KAIROS-T-0568): the blocker left a done column, so it
+/// blocks again. For each live item that it blocks and that is not done,
+/// the person with the claim on the task (or the owner of the strategy or
+/// the initiative) is told; the person who created the item when nobody
+/// has the claim.
+pub fn on_blocker_reopened(
+    conn: &mut PgConnection,
+    blocker: Uuid,
+    actor: Uuid,
+) -> Result<(), DieselError> {
+    let edges = crate::dispatch::dependants_of(conn, &[blocker], &[blocker])?;
+    if edges.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<Uuid> = edges.iter().map(|f| f.dependant).collect();
+    for row in claimants(conn, &ids, true)? {
+        let Some(edge) = edges.iter().find(|f| f.dependant == row.item_id) else {
+            continue;
+        };
+        let text = format!(
+            "{} blocks {} again: it is not done now.",
+            edge.blocker_code, row.item_code
+        );
+        notify(
+            conn,
+            &[row.user_id],
+            NotificationKind::BlockedAgain,
+            Some((row.item_id, &row.item_code)),
+            &text,
+            actor,
+        )?;
+    }
+    Ok(())
+}
+
+/// The items of `ids` that are open, live or archived: not in a done
+/// column.
+fn blockers_open(conn: &mut PgConnection, ids: &[Uuid]) -> Result<Vec<Uuid>, DieselError> {
     #[derive(QueryableByName)]
     struct Row {
         #[diesel(sql_type = SqlUuid)]
         id: Uuid,
     }
-    let rows: Vec<Row> = sql_query(
-        "SELECT p.id FROM (SELECT id, column_id FROM strategies \
-                           UNION ALL SELECT id, column_id FROM initiatives \
-                           UNION ALL SELECT id, column_id FROM tasks \
-                           UNION ALL SELECT id, column_id FROM adrs) p \
-           JOIN board_columns c ON c.id = p.column_id \
-          WHERE p.id = ANY($1) AND NOT c.is_done",
-    )
+    let rows: Vec<Row> = sql_query(format!(
+        "SELECT p.id FROM {items} p WHERE p.id = ANY($1) AND {open}",
+        items = crate::dispatch::WORKFLOW_ITEMS,
+        open = crate::dispatch::open_sql("p"),
+    ))
     .bind::<Array<SqlUuid>, _>(ids)
     .load(conn)?;
     Ok(rows.into_iter().map(|row| row.id).collect())

@@ -198,6 +198,7 @@ fn settings_view(settings: &BTreeMap<NotificationKind, bool>) -> NotificationSet
     NotificationSettings {
         hand_off: on(NotificationKind::HandOff),
         blocker_cleared: on(NotificationKind::BlockerCleared),
+        blocked_again: on(NotificationKind::BlockedAgain),
         cancelled: on(NotificationKind::Cancelled),
         mention: on(NotificationKind::Mention),
         p0_bug: on(NotificationKind::P0Bug),
@@ -254,6 +255,7 @@ pub(crate) async fn update_notification_settings(
     let changes: Vec<(NotificationKind, bool)> = [
         (NotificationKind::HandOff, body.hand_off),
         (NotificationKind::BlockerCleared, body.blocker_cleared),
+        (NotificationKind::BlockedAgain, body.blocked_again),
         (NotificationKind::Cancelled, body.cancelled),
         (NotificationKind::Mention, body.mention),
         (NotificationKind::P0Bug, body.p0_bug),
@@ -266,8 +268,8 @@ pub(crate) async fn update_notification_settings(
     if changes.is_empty() {
         return Err(ApiError::validation(
             "The body names no kind. Send one or more of: hand_off, blocker_cleared, \
-             cancelled, mention, p0_bug, delivery_failing, agent_key_revoked, each with \
-             true or false.",
+             blocked_again, cancelled, mention, p0_bug, delivery_failing, agent_key_revoked, \
+             each with true or false.",
         ));
     }
     let user = auth.user_id;

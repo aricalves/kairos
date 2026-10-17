@@ -10,8 +10,12 @@ use std::collections::BTreeMap;
 pub enum NotificationKind {
     /// A person handed off the claim of a task to you.
     HandOff,
-    /// A blocker of a task that you have the claim on is done or archived.
+    /// A blocker of an item that you have the claim on (or own) is done,
+    /// archived or purged, or its `blocks` link is removed.
     BlockerCleared,
+    /// A blocker of an item that you have the claim on (or own, or made)
+    /// left a done column, so it blocks again (KAIROS-T-0568).
+    BlockedAgain,
     /// A person cancelled a task that you created.
     Cancelled,
     /// A person wrote `@your_user_name` in a note or in the content of an item.
@@ -27,9 +31,10 @@ pub enum NotificationKind {
 
 impl NotificationKind {
     /// Each kind, in the order of the settings.
-    pub const ALL: [NotificationKind; 7] = [
+    pub const ALL: [NotificationKind; 8] = [
         NotificationKind::HandOff,
         NotificationKind::BlockerCleared,
+        NotificationKind::BlockedAgain,
         NotificationKind::Cancelled,
         NotificationKind::Mention,
         NotificationKind::P0Bug,
@@ -42,6 +47,7 @@ impl NotificationKind {
         match self {
             NotificationKind::HandOff => "hand_off",
             NotificationKind::BlockerCleared => "blocker_cleared",
+            NotificationKind::BlockedAgain => "blocked_again",
             NotificationKind::Cancelled => "cancelled",
             NotificationKind::Mention => "mention",
             NotificationKind::P0Bug => "p0_bug",

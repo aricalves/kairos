@@ -389,6 +389,21 @@ pub fn unlink_items(
             &source_label,
             &target_label,
         )?;
+        // KAIROS-T-0568: the target lost a blocker that blocked it. A
+        // blocker that is done or archived blocked nothing.
+        if relationship == RelationshipType::Blocks
+            && crate::notifications::blocks_now(conn, source_id)?
+        {
+            crate::notifications::on_blocks_removed(
+                conn,
+                &[crate::dispatch::Freed {
+                    dependant: target_id,
+                    blocker_code: source_label.clone(),
+                }],
+                crate::notifications::Cleared::Unlinked,
+                actor,
+            )?;
+        }
         // KAIROS-T-0022: one thin event per still-live endpoint (a
         // soft-deleted endpoint has no view to refresh), delivered on
         // commit.

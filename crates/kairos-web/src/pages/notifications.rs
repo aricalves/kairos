@@ -48,6 +48,7 @@ pub struct NotificationList {
 struct NotificationSettings {
     hand_off: bool,
     blocker_cleared: bool,
+    blocked_again: bool,
     cancelled: bool,
     mention: bool,
     p0_bug: bool,
@@ -87,6 +88,7 @@ fn kind_label(kind: &str) -> &'static str {
     match kind {
         "hand_off" => "Hand-off",
         "blocker_cleared" => "Blocker cleared",
+        "blocked_again" => "Blocked again",
         "cancelled" => "Cancelled",
         "mention" => "Mention",
         "p0_bug" => "P0 bug",
@@ -312,6 +314,7 @@ pub fn NotificationsPage() -> impl IntoView {
     // The switches of the settings, filled when the settings arrive.
     let hand_off = RwSignal::new(true);
     let blocker_cleared = RwSignal::new(true);
+    let blocked_again = RwSignal::new(true);
     let cancelled = RwSignal::new(true);
     let mention = RwSignal::new(true);
     let p0_bug = RwSignal::new(true);
@@ -327,6 +330,7 @@ pub fn NotificationsPage() -> impl IntoView {
         if let Some(Ok(s)) = settings.get() {
             hand_off.set(s.hand_off);
             blocker_cleared.set(s.blocker_cleared);
+            blocked_again.set(s.blocked_again);
             cancelled.set(s.cancelled);
             mention.set(s.mention);
             p0_bug.set(s.p0_bug);
@@ -338,6 +342,7 @@ pub fn NotificationsPage() -> impl IntoView {
         let body = json!({
             "hand_off": hand_off.get_untracked(),
             "blocker_cleared": blocker_cleared.get_untracked(),
+            "blocked_again": blocked_again.get_untracked(),
             "cancelled": cancelled.get_untracked(),
             "mention": mention.get_untracked(),
             "p0_bug": p0_bug.get_untracked(),
@@ -410,7 +415,9 @@ pub fn NotificationsPage() -> impl IntoView {
                             <Stack gap="sm">
                                 <Switch checked=hand_off label="A person hands off a task to you"/>
                                 <Switch checked=blocker_cleared
-                                    label="A blocker of your claimed task is done or archived"/>
+                                    label="A blocker of your claimed task is done, archived or unlinked"/>
+                                <Switch checked=blocked_again
+                                    label="A done blocker of your task is open again"/>
                                 <Switch checked=cancelled
                                     label="A person cancels a task that you created"/>
                                 <Switch checked=mention label="A person writes your user name"/>
@@ -446,6 +453,7 @@ mod tests {
         for kind in [
             "hand_off",
             "blocker_cleared",
+            "blocked_again",
             "cancelled",
             "mention",
             "p0_bug",

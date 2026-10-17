@@ -1711,7 +1711,7 @@ One notification of the caller (KAIROS-T-0382).
 | `created_at` | `string` | yes | When Kairos made the notification (RFC 3339). |
 | `entity_type` | `string`, nullable | no | `strategy|initiative|task|document|adr`; `null` when the item is gone. |
 | `id` | `string` | yes | The id (UUID). `POST /api/me/notifications/read` takes it. |
-| `kind` | `string` | yes | `hand_off|blocker_cleared|cancelled|mention|p0_bug|delivery_failing|agent_key_revoked`. |
+| `kind` | `string` | yes | `hand_off|blocker_cleared|blocked_again|cancelled|mention|p0_bug|delivery_failing|agent_key_revoked`. |
 | `read_at` | `string`, nullable | no | When the person read it (RFC 3339); `null` while unread. |
 | `short_code` | `string`, nullable | no | The code of the item now; `null` when the item is gone. |
 | `text` | `string` | yes | What happened, in one sentence or two. |
@@ -1733,7 +1733,8 @@ One notification of the caller (KAIROS-T-0382).
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `agent_key_revoked` | `boolean` | yes | An organization admin revoked an agent key of yours (KAIROS-T-0388). |
-| `blocker_cleared` | `boolean` | yes | A blocker of a task that you have the claim on is done or archived. |
+| `blocked_again` | `boolean` | yes | A blocker of an item that you have the claim on (or own, or made) left a done column, so it blocks again (KAIROS-T-0568). |
+| `blocker_cleared` | `boolean` | yes | A blocker of an item that you have the claim on (or own) is done, archived or purged, or its `blocks` link is removed. |
 | `cancelled` | `boolean` | yes | A person cancelled a task that you created. |
 | `delivery_failing` | `boolean` | yes | A webhook target that you own was turned off after failed deliveries (KAIROS-T-0384). |
 | `hand_off` | `boolean` | yes | A person handed off the claim of a task to you. |
@@ -2843,6 +2844,7 @@ The server refuses a body with a field that is not in this table ([Errors](../..
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `agent_key_revoked` | `boolean`, nullable | no |  |
+| `blocked_again` | `boolean`, nullable | no |  |
 | `blocker_cleared` | `boolean`, nullable | no |  |
 | `cancelled` | `boolean`, nullable | no |  |
 | `delivery_failing` | `boolean`, nullable | no |  |

@@ -107,6 +107,18 @@ Thus a connection with a board filter does not get them. The text of the
 notification is not in the event: read your notifications through the REST
 API.
 
+The `kind` of a notification says what happened. The blocker kinds:
+
+| `kind` | Kairos makes it when |
+|---|---|
+| `blocker_cleared` | An open blocker of your item stops blocking it. The blocker is done, archived or purged, or a person removes the `blocks` link |
+| `blocked_again` | A done blocker of your item leaves the done column (KAIROS-T-0568) |
+
+"Your item" is a task that you have the claim on, or a strategy or initiative
+that you own. For `blocked_again`, the person who created the item gets it
+when nobody has the claim or owns it. The
+[MCP tools reference](../mcp-tools/#your-notifications) lists each kind.
+
 ## Client → server: board filter
 
 Optionally filter the stream to one board

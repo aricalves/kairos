@@ -12,8 +12,12 @@ use utoipa::ToSchema;
 pub struct NotificationSettings {
     /// A person handed off the claim of a task to you.
     pub hand_off: bool,
-    /// A blocker of a task that you have the claim on is done or archived.
+    /// A blocker of an item that you have the claim on (or own) is done,
+    /// archived or purged, or its `blocks` link is removed.
     pub blocker_cleared: bool,
+    /// A blocker of an item that you have the claim on (or own, or made)
+    /// left a done column, so it blocks again (KAIROS-T-0568).
+    pub blocked_again: bool,
     /// A person cancelled a task that you created.
     pub cancelled: bool,
     /// A person wrote `@your_user_name` in a note or in the content of an
@@ -39,6 +43,8 @@ pub struct UpdateNotificationSettingsRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocker_cleared: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_again: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancelled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mention: Option<bool>,
@@ -55,7 +61,7 @@ pub struct UpdateNotificationSettingsRequest {
 pub struct Notification {
     /// The id (UUID). `POST /api/me/notifications/read` takes it.
     pub id: String,
-    /// `hand_off|blocker_cleared|cancelled|mention|p0_bug|delivery_failing|agent_key_revoked`.
+    /// `hand_off|blocker_cleared|blocked_again|cancelled|mention|p0_bug|delivery_failing|agent_key_revoked`.
     pub kind: String,
     /// The code of the item now; `null` when the item is gone.
     pub short_code: Option<String>,

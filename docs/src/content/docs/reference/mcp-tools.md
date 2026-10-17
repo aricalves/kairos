@@ -2259,7 +2259,8 @@ A notification tells a person about an event of their work (KAIROS-T-0381):
 | Kind | You get it when |
 |---|---|
 | `hand_off` | A person or a service account gives you the claim of a task. |
-| `blocker_cleared` | An item that blocks a task that you have the claim on goes into a done column, or is archived. |
+| `blocker_cleared` | An open blocker of your item stops blocking it. The blocker goes into a done column, or a person archives or purges it, or removes the `blocks` link. Your item is a task that you have the claim on, or a strategy or initiative that you own. |
+| `blocked_again` | A done blocker of your item leaves the done column, so it blocks again. Your item is a task that you have the claim on, or a strategy or initiative that you own. With no claim and no owner, the person who created the item gets it. |
 | `cancelled` | A person cancels a task that you created. The text has the reason. |
 | `mention` | A person writes `@your_user_name` in a note or in the content of an item. A mention in code does not count. An update tells only the new mentions. |
 | `p0_bug` | A bug with the priority `critical` (or `p0`) lands on the board of your team: its priority changes to P0, or it moves to the board. |
@@ -2321,8 +2322,9 @@ The event is `task.entered_column`. Its `data` has these fields:
 
 | Field | Description |
 |---|---|
-| `code`, `title`, `task_type` | The task. |
-| `work_class` | The lane of the task: `planned` or `support`. |
+| `entity_type` | `task`. For `task.unblocked`, also `strategy` or `initiative`. |
+| `code`, `title`, `task_type` | The item. `task_type` is `null` for a strategy or an initiative. |
+| `work_class` | The lane of the task: `planned` or `support`. `null` for a strategy or an initiative. |
 | `link` | The URL of the task in the GUI. |
 | `board` | `id`, `slug` and `name` of the board. |
 | `column` | `id` and `name` of the column. |
@@ -2336,14 +2338,17 @@ A task enters a column in 3 ways:
 - a move to the board, into its entry column;
 - a cancel, into the done column.
 
-A rule with the trigger `unblocked` (KAIROS-T-0427) fires when the last open
-blocker of a task closes. The blocker closes when it goes into a done column,
-or when a person cancels or archives it. The event is `task.unblocked`. Its
-`data` has the fields above and `blocker`, the code of the blocker that
-closed. The column in `data` is the column of the task.
+A rule with the trigger `unblocked` (KAIROS-T-0427) fires when an item loses
+its last open blocker. The blocker goes into a done column, or a person
+cancels, archives or purges it. A person can also remove the `blocks` link
+with `unlink_items` (KAIROS-T-0568). The item can be a task, an initiative or
+a strategy.
 
-Removing the edge with `unlink_items` does not fire the rule. The rule names
-no done column: a task in a done column waits for nothing.
+The event is `task.unblocked` for each type. Its `data` has the
+fields above and `blocker`, the code of the blocker. The column in `data` is
+the column of the item.
+
+The rule names no done column: an item in a done column waits for nothing.
 
 The rule can name a column: the task must be in it. With no column, a task
 in each column that is not done matches. A task with two blockers fires once,

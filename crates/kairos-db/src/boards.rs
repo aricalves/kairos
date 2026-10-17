@@ -1074,16 +1074,19 @@ macro_rules! transition_item_fn {
                     format!("column:{from_name}->{to_name}"),
                 )?;
                 // KAIROS-T-0381: an item that goes into a done column no
-                // longer blocks.
-                if !crate::notifications::column_is_done(conn, from_column_id)?
-                    && crate::notifications::column_is_done(conn, to_column_id)?
-                {
+                // longer blocks. KAIROS-T-0568: an item that leaves a done
+                // column blocks again.
+                let was_done = crate::notifications::column_is_done(conn, from_column_id)?;
+                let is_done = crate::notifications::column_is_done(conn, to_column_id)?;
+                if !was_done && is_done {
                     crate::notifications::on_blockers_cleared(
                         conn,
                         &[item_id],
                         crate::notifications::Cleared::Done,
                         actor_id,
                     )?;
+                } else if was_done && !is_done {
+                    crate::notifications::on_blocker_reopened(conn, item_id, actor_id)?;
                 }
                 // KAIROS-T-0359: a task in a claims column has a claim.
                 if $entity_type == "task" {
