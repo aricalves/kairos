@@ -13,6 +13,11 @@ If you do not hold it on both sides, go straight to
 
 Only tasks move, and only between **delivery** boards.
 
+A task in a done column does not move. A move would put a completed or
+cancelled task live on the other board. Kairos refuses it with `TASK_DONE`.
+Reopen the task first: `kairos tasks reopen <CODE>`, `reopen_item`, or
+`POST /api/tasks/{short_code}/reopen`. Then move it.
+
 ## Move it
 
 | Surface | How |
