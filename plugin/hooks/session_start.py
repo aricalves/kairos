@@ -20,7 +20,8 @@ agent to call `my_boards` / `board_items` over the already-authenticated
 kairos MCP connection for live items. Offline degrades to a note, never a
 failure.
 
-Not configured (no kairos.local.md) -> silent exit 0. Python stdlib only.
+In a worktree the wiring is the file of its clone (KAIROS-T-0520,
+`wiring_path`). Not configured (no kairos.local.md) -> silent exit 0. Python stdlib only.
 """
 
 import json
@@ -40,6 +41,38 @@ FRONTMATTER_KEYS = (
     "initiative_board",
     "adr_board",
 )
+
+
+WIRING_FILE = os.path.join(".claude", "kairos.local.md")
+
+
+def wiring_path(project_dir=None):
+    """The path of the wiring of a session, or None (KAIROS-T-0520).
+
+    First `<project>/.claude/kairos.local.md`. The file is git-excluded, so
+    a worktree has none: then the file of the main clone, the folder above
+    `git rev-parse --git-common-dir`. Each hook reads the wiring with this."""
+    project = project_dir or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    path = os.path.join(project, WIRING_FILE)
+    if os.path.isfile(path):
+        return path
+    if not os.path.exists(os.path.join(project, ".git")):
+        return None  # not a checkout: no git call, no clone to look in
+    try:
+        out = subprocess.run(
+            ["git", "-C", project, "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    common = out.stdout.strip()
+    if out.returncode != 0 or not common:
+        return None
+    clone = os.path.dirname(os.path.realpath(os.path.join(project, common)))
+    path = os.path.join(clone, WIRING_FILE)
+    return path if os.path.isfile(path) else None
 
 
 def read_frontmatter(path):
@@ -238,9 +271,8 @@ def main():
     except ValueError:
         payload = None
     session = payload.get("session_id") if isinstance(payload, dict) else None
-    project_dir = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
-    config_path = os.path.join(project_dir, ".claude", "kairos.local.md")
-    if not os.path.isfile(config_path):
+    config_path = wiring_path()
+    if not config_path:
         return  # not a Kairos-bootstrapped repo: stay silent
 
     values = read_frontmatter(config_path)

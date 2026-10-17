@@ -65,7 +65,15 @@ def project_dir():
 
 
 def is_wired(project):
-    return os.path.isfile(os.path.join(project, ".claude", "kairos.local.md"))
+    """The checkout has the wiring, or its clone has (KAIROS-T-0520)."""
+    # Imported here, not at the top: the detached worker imports nothing,
+    # so it writes no bytecode cache while a test removes its folder.
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import session_start
+
+    return session_start.wiring_path(project) is not None
 
 
 def is_checkout(project):

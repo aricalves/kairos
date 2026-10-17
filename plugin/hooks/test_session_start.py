@@ -302,3 +302,140 @@ class RulesAtTheStart(unittest.TestCase):
         self.assertTrue(any("index_update.py" in command for command in by_matcher["startup|clear"]))
         self.assertTrue(any("active_work.py" in command for command in by_matcher["compact"]))
         self.assertNotIn("*", by_matcher)
+
+
+def git(*args, cwd):
+    import subprocess
+
+    subprocess.run(
+        ["git", "-c", "user.name=Robin", "-c", "user.email=robin@example.com", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        env=dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1"),
+    )
+
+
+def make_clone(parent, name="kairos", origin=None):
+    """A git checkout `parent/name` with one commit; with `origin`, that URL
+    as its remote `origin`."""
+    clone = os.path.join(parent, name)
+    os.makedirs(clone)
+    git("init", "-q", "-b", "main", cwd=clone)
+    git("commit", "-q", "--allow-empty", "-m", "first", cwd=clone)
+    if origin:
+        git("remote", "add", "origin", origin, cwd=clone)
+    return clone
+
+
+class WorktreeWiring(unittest.TestCase):
+    """KAIROS-T-0520: `.claude/kairos.local.md` is git-excluded, so a
+    worktree has none. Each hook reads the wiring of the clone through
+    `git rev-parse --git-common-dir`."""
+
+    WIRING = (
+        "---\ndeployment_url: http://127.0.0.1:9\ntenant: acme\n"
+        "repository: payments-api\nteam_board: platform\nadr_board: platform-adrs\n---\n"
+    )
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        board = os.path.realpath(self.tmp.name)
+        self.clone = make_clone(board)
+        os.makedirs(os.path.join(self.clone, ".claude"))
+        self.wiring = os.path.join(self.clone, ".claude", "kairos.local.md")
+        with open(self.wiring, "w") as handle:
+            handle.write(self.WIRING)
+        self.worktree = os.path.join(board, "wt-acme-t-0001")
+        git("worktree", "add", "-q", "-b", "acme-t-0001", self.worktree, cwd=self.clone)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_the_worktree_has_no_wiring_of_its_own(self):
+        self.assertFalse(
+            os.path.exists(os.path.join(self.worktree, ".claude", "kairos.local.md"))
+        )
+
+    def test_the_clone_reads_its_own_file(self):
+        self.assertEqual(session_start.wiring_path(self.clone), self.wiring)
+
+    def test_a_worktree_reads_the_file_of_its_clone(self):
+        self.assertEqual(session_start.wiring_path(self.worktree), self.wiring)
+
+    def test_a_subfolder_of_a_worktree_is_not_a_checkout_root(self):
+        # The hooks run with CLAUDE_PROJECT_DIR, the root of the session.
+        os.makedirs(os.path.join(self.worktree, "src"))
+        self.assertIsNone(session_start.wiring_path(os.path.join(self.worktree, "src")))
+
+    def test_a_file_in_the_worktree_comes_first(self):
+        os.makedirs(os.path.join(self.worktree, ".claude"))
+        own = os.path.join(self.worktree, ".claude", "kairos.local.md")
+        with open(own, "w") as handle:
+            handle.write("---\nrepository: other\n---\n")
+        self.assertEqual(session_start.wiring_path(self.worktree), own)
+
+    def test_no_wiring_anywhere_is_none(self):
+        os.remove(self.wiring)
+        self.assertIsNone(session_start.wiring_path(self.worktree))
+        self.assertIsNone(session_start.wiring_path(self.tmp.name))
+
+    def test_the_project_dir_comes_from_the_environment(self):
+        with unittest.mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": self.worktree}):
+            self.assertEqual(session_start.wiring_path(), self.wiring)
+
+    def run_script(self, script, *args, payload=None):
+        import json
+        import subprocess
+        import sys
+
+        env = dict(
+            os.environ,
+            CLAUDE_PROJECT_DIR=self.worktree,
+            KAIROS_RULES_STATE_DIR=os.path.join(self.tmp.name, "rules"),
+            KAIROS_WORK_STATE_DIR=os.path.join(self.tmp.name, "work"),
+            KAIROS_RALPH_STATE_DIR=os.path.join(self.tmp.name, "ralph"),
+            PATH="/usr/bin:/bin",
+        )
+        result = subprocess.run(
+            [sys.executable, os.path.join(HERE, script), *args],
+            input=json.dumps(payload or {"session_id": "session-0520", "source": "startup"}),
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=self.worktree,
+            check=False,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_the_session_hook_in_a_worktree_gives_the_wiring_of_the_clone(self):
+        import json
+
+        out = self.run_script("session_start.py")
+        context = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("- repository: payments-api", context)
+        self.assertIn("- adr_board: platform-adrs", context)
+
+    def test_the_compaction_hook_in_a_worktree_gives_the_wiring_of_the_clone(self):
+        import json
+
+        out = self.run_script(
+            "active_work.py", "compact",
+            payload={"session_id": "session-0520", "source": "compact"},
+        )
+        context = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("- repository: payments-api", context)
+
+    def test_the_rules_and_the_reminder_in_a_worktree_read_the_clone(self):
+        def load(name):
+            spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, name + ".py"))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+
+        with unittest.mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": self.worktree}):
+            self.assertEqual(load("kairos_rules").deployment_url(), "http://127.0.0.1:9")
+            self.assertEqual(load("memory_reminder").adr_board(), "platform-adrs")
+            self.assertTrue(load("index_update").is_wired(self.worktree))
