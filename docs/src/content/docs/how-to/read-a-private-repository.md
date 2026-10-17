@@ -101,7 +101,7 @@ token, when, and the result of the last check. It never gives the token.
 ## Remove the token
 
 ```sh
-kairos repos credential remove skadi
+kairos repos credential remove skadi --confirm
 ```
 
 The next fetch has no credential. A delete of the repository also removes its
