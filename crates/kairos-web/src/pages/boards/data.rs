@@ -13,7 +13,7 @@ use crate::pages::repositories::api::RepositoryRef;
 // ---- mirrors: boards ------------------------------------------------------
 
 /// mirror of: `kairos_client::types_org::Board` (partial).
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub struct Board {
     pub id: String,
     pub name: String,

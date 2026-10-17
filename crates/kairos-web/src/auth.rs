@@ -342,6 +342,8 @@ impl Auth {
         }
         self.generation.update_value(|g| *g += 1);
         clear_stored_refresh();
+        // KAIROS-T-0581: the next person in this tab sees no draft.
+        crate::pages::editor::clear_drafts();
         self.signed_out.set(true);
         self.session.set(None);
         self.bump_session_generation();

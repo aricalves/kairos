@@ -120,7 +120,10 @@ async fn fetch_flow(auth: Auth, board: String, days: u32) -> Result<BoardFlow, A
     let to = day_of(now);
     crate::api::get_json(
         auth,
-        &format!("/api/boards/{board}/flow?from={from}&to={to}"),
+        &format!(
+            "/api/boards/{}/flow?from={from}&to={to}",
+            crate::api::encode_component(&board)
+        ),
     )
     .await
 }

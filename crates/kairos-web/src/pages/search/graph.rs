@@ -146,11 +146,9 @@ pub fn GraphView(#[prop(into)] short_code: String) -> impl IntoView {
     on_cleanup(move || live_guard.set_value(None));
 
     // Whoami drives the org-admin manage panel (roles from whoami, §6).
-    let whoami = LocalResource::new(move || {
-        auth.track_session();
-        api::whoami(auth)
-    });
-    let is_admin = move || matches!(whoami.get(), Some(Ok(me)) if me.organization.role == "admin");
+    // The shell fetches it once and shares it as a context.
+    let whoami = use_context::<LocalResource<Result<api::Whoami, ApiError>>>();
+    let is_admin = move || matches!(whoami.and_then(|w| w.get()), Some(Ok(me)) if me.organization.role == "admin");
 
     // The visited-focus trail rides `?trail=` so back returns cleanly.
     let query = use_query_map();

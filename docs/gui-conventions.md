@@ -164,17 +164,17 @@ crates/kairos-web/
     pages.rs        one *Page component per route
 ```
 
-Routes (in `app.rs`): `/login`, `/callback` (auth, public);
-`/boards`, `/boards/:board` (T-0040), `/items/:code` (T-0041),
-`/search` (T-0042), `/admin` (T-0043), `/activity` (T-0044) — all under
-the protected `Shell` `ParentRoute`; `/` redirects to `/boards`.
+Routes (in `app.rs`): `/login` and `/callback` are public (auth). All
+other routes are under the protected `Shell` `ParentRoute`. `/` is the
+For me page: the work of the person (T-0490). The module doc of
+`app.rs` has the full route map.
 
 Fan-out rules:
 
-- Replace your stub in `pages.rs`; when a page outgrows a screenful,
-  move it to `src/pages/<name>.rs` (`pages` becomes a directory module)
-  but **keep the `pages::XxxPage` export stable** so `app.rs` only ever
-  changes to add new routes.
+- Put a new page in `pages.rs`. When a page outgrows a screenful,
+  move it to `src/pages/<name>.rs` (`pages` becomes a directory module).
+  **Keep the `pages::XxxPage` export stable**, so that `app.rs` changes
+  only to add a route.
 - Add sub-routes under your own path segment only (`/boards/…` belongs
   to T-0040, etc.); register them in `app.rs`'s route table and keep its
   module-doc route map current.

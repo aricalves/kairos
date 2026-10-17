@@ -10,7 +10,7 @@ use leptos::prelude::*;
 
 use super::api::{self, Family};
 use crate::auth::use_auth;
-use crate::pages::editor::{MarkdownEditor, Saver};
+use crate::pages::editor::{MarkdownEditor, Saver, draft_key};
 
 /// The editable content panel. Recreated (with fresh server state) when
 /// the page refetches after a successful save — the parent owns that
@@ -22,16 +22,22 @@ pub fn ContentEditor(
     #[prop(into)] initial_title: String,
     #[prop(into)] initial_content: String,
     initial_version: i32,
-    /// The item is archived (KAIROS-T-0164, ADR-20): the content PATCH
-    /// resolves live-only, so the editor renders the content instead of
-    /// offering an edit that would 404.
-    #[prop(optional)]
-    read_only: bool,
+    /// The editor renders the content instead of offering an edit that
+    /// the server refuses: the item is archived (KAIROS-T-0164, ADR-20),
+    /// or the person may not edit it (KAIROS-T-0581, [`super::access`]).
+    #[prop(into)]
+    read_only: Signal<bool>,
+    /// Why the content is read-only; empty while the page does not know.
+    #[prop(into)]
+    read_only_reason: Signal<String>,
     /// Fired after a successful save; the parent refetches (server state
     /// is the source of truth) and posts the page-level notice.
     on_saved: Callback<i32>,
 ) -> impl IntoView {
     let auth = use_auth();
+    // KAIROS-T-0581: the draft is kept outside this subtree, so a reload
+    // of the page (a panel action, a save elsewhere) does not lose it.
+    let key = draft_key(&code);
     let saver: Saver = Rc::new(move |title, content, version| {
         let code = code.clone();
         Box::pin(async move {
@@ -46,9 +52,8 @@ pub fn ContentEditor(
             initial_content
             initial_version
             read_only
-            read_only_reason="This item is put away (archived): its content is read-only \
-                              until it is restored. Nothing here is lost — this is what it \
-                              said when it was archived."
+            read_only_reason
+            draft_key=key
             on_saved
             saver
             // KAIROS-T-0323: a ticket is read more than it is changed.

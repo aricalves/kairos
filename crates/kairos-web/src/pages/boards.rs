@@ -1430,10 +1430,8 @@ fn BoardBody(
     // change recreates the whole component).
     let board = model.with_untracked(|m| {
         m.as_ref()
-            .expect("BoardBody mounted without a model")
-            .items
-            .board
-            .clone()
+            .map(|m| m.items.board.clone())
+            .unwrap_or_default()
     });
     let create_kind = EntityKind::for_board_level(&board.board_level);
     let is_adr = board.board_level == "adr";
@@ -3074,8 +3072,8 @@ fn ItemCard(
                 </Group>
             </Group>
             <span class="kairos-card__title">{title}</span>
-            {state.as_ref().and_then(state_label).map(|label| {
-                let tip = state_title(state.as_ref().expect("a state"));
+            {state.as_ref().and_then(|s| state_label(s).map(|label| (label, s))).map(|(label, s)| {
+                let tip = state_title(s);
                 view! {
                     <span class="kairos-card__state" data-testid="card-state" title=tip>
                         <Text size="xs" dimmed=true>{label}</Text>

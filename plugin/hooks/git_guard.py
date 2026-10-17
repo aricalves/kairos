@@ -9,7 +9,7 @@ line, a subshell, `$(...)` and backticks), each simple command into words,
 and the leading `VAR=value` words and wrappers (`env`, `nohup`, `sudo`,
 `time`, `command`) are dropped. Then:
 
-    git push ...                         any push, also --delete
+    git push ...                         a push, but for a feature branch (below)
     git pull ...                         a merge or a rebase (KAIROS-T-0548)
     git merge ...                        into any branch; the user decides
     git rebase ...
@@ -28,15 +28,34 @@ and the leading `VAR=value` words and wrappers (`env`, `nohup`, `sudo`,
 A command inside `sh -c`, `bash -c`, `zsh -c` or `eval` is scanned the same
 way (KAIROS-T-0548): the string is split into its simple commands too.
 
+The push policy (KAIROS-T-0542): an agent pushes the branch of its task and
+opens a draft PR; a merge, a release and a tag need the user's go. So one
+push form is silent:
+
+    git [-C <path>] push [-u | --set-upstream] origin <branch>
+
+with exactly one `<branch>`, which is a local branch (`refs/heads/<branch>`),
+not a tag of the same name, and not the default branch (`origin/HEAD`; `main`
+and `master` always count as default). Any other option, a force flag, a
+`+` or `:` refspec, `HEAD`, `--delete`, `--tags`, `--all`, `--mirror`, a
+`git -c` or `--git-dir`, a `VAR=value` or wrapper before `git`, a
+`remote.origin.push` refspec in the config, or a `cd` in the line asks.
+When the guard cannot read the refs (no repository, no `origin/HEAD`, a git
+error), it asks.
+
 A match gives `permissionDecision: "ask"` with a one-line reason that names
 the command. Anything else gives no output. Each error gives no output and
 exit 0: the hook never blocks a tool call by accident. The hook holds no
-credentials and reads no file. Python stdlib only.
+credentials and reads no file; for a push it runs read-only git commands
+(`symbolic-ref`, `show-ref`, `config --get-all`) in the folder of the
+command. Python stdlib only.
 """
 
 import json
+import os
 import re
 import shlex
+import subprocess
 import sys
 
 SEPARATORS = re.compile(r"&&|\|\||[;|\n()`]|\$\(")
@@ -46,11 +65,77 @@ SHELLS = ("sh", "bash", "zsh")
 GIT_OPTIONS_WITH_VALUE = ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path")
 GH_RELEASE_WRITES = ("create", "edit", "delete", "upload", "delete-asset")
 FORCE_FLAGS = ("--force", "--force-with-lease", "--force-if-includes")
+PUSH_REMOTE = "origin"
+UPSTREAM_FLAGS = ("-u", "--set-upstream")
+ALWAYS_DEFAULT = ("main", "master")
+CHANGES_FOLDER = re.compile(r"(?:^|[\s;&|(`'\"])(?:cd|pushd|popd)(?:\s|$|[;&|)`'\"])")
+PUSH_ASK = "`git push`: a push needs the user's go, each time."
+
+
+class GitRefs:
+    """Read-only lookups of the refs of a repository, with git. The tests
+    give a fake with the same three methods."""
+
+    def __init__(self, timeout=2):
+        # Four calls at most: 8 seconds, under the hook timeout of 10.
+        self.timeout = timeout
+
+    def git(self, folder, *args):
+        try:
+            result = subprocess.run(
+                ["git", "-C", folder, *args],
+                capture_output=True,
+                text=True,
+                timeout=self.timeout,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return result
+
+    def default_branch(self, folder, remote):
+        """The default branch of `remote` (`origin/HEAD`), or None."""
+        result = self.git(folder, "symbolic-ref", "--quiet", "--short", f"refs/remotes/{remote}/HEAD")
+        if result is None or result.returncode != 0:
+            return None
+        name = result.stdout.strip()
+        prefix = f"{remote}/"
+        return name[len(prefix):] if name.startswith(prefix) else None
+
+    def push_refspecs(self, folder, remote):
+        """The `remote.<remote>.push` refspecs (a list), or None when git
+        cannot tell. A refspec there can map a branch to the default."""
+        result = self.git(folder, "config", "--get-all", f"remote.{remote}.push")
+        if result is None or result.returncode not in (0, 1):
+            return None
+        return result.stdout.split()
+
+    def has_ref(self, folder, ref):
+        """True when `ref` exists; None when git cannot tell."""
+        result = self.git(folder, "show-ref", "--verify", "--quiet", ref)
+        if result is None:
+            return None
+        if result.returncode == 0:
+            return True
+        if result.returncode == 1:
+            return False
+        return None
 
 
 def simple_commands(command):
     """The simple commands of a shell command line."""
     return [part.strip() for part in SEPARATORS.split(command) if part and part.strip()]
+
+
+def plain_git(simple):
+    """True when the simple command is `git ...` with balanced quotes and no
+    `VAR=value` word or wrapper before it: `GIT_DIR=...` can point git at
+    another repository, and a cut quote hides the real command."""
+    try:
+        words = shlex.split(simple, comments=False)
+    except ValueError:
+        return False
+    return bool(words) and words[0] == "git"
 
 
 def words_of(simple):
@@ -71,16 +156,64 @@ def words_of(simple):
 def git_subcommand(words):
     """(subcommand, its arguments) of a `git` word list, after the global
     options of git; (None, []) when there is none."""
+    subcommand, args, _ = git_parts(words)
+    return subcommand, args
+
+
+def git_parts(words):
+    """(subcommand, its arguments, the global options) of a `git` word list."""
     rest = words[1:]
+    options = []
     while rest:
         word = rest[0]
         if word in GIT_OPTIONS_WITH_VALUE:
+            options.append(tuple(rest[:2]))
             rest = rest[2:]
         elif word.startswith("-"):
+            options.append((word,))
             rest = rest[1:]
         else:
-            return word, rest[1:]
-    return None, []
+            return word, rest[1:], options
+    return None, [], options
+
+
+def push_folder(options, cwd):
+    """The folder of a `git push`: the `-C` paths on `cwd`. None when a
+    global option other than `-C` is there (`-c`, `--git-dir`, ...)."""
+    folder = cwd or os.getcwd()
+    for option in options:
+        if len(option) != 2 or option[0] != "-C":
+            return None
+        folder = os.path.join(folder, option[1])
+    return folder
+
+
+def feature_push(words, cwd, refs):
+    """True when one `git push` is the push of a feature branch that the
+    policy lets through (KAIROS-T-0542); False for each other push."""
+    if refs is None:
+        return False
+    _, args, options = git_parts(words)
+    folder = push_folder(options, cwd)
+    if folder is None:
+        return False
+    flags = [arg for arg in args if arg.startswith("-")]
+    names = [arg for arg in args if not arg.startswith("-")]
+    if any(flag not in UPSTREAM_FLAGS for flag in flags) or len(names) != 2:
+        return False
+    remote, branch = names
+    if remote != PUSH_REMOTE or branch == "HEAD" or branch in ALWAYS_DEFAULT:
+        return False
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", branch) or branch.endswith((".lock", "/", ".")) or ".." in branch:
+        return False
+    if refs.push_refspecs(folder, remote) != []:
+        return False
+    default = refs.default_branch(folder, remote)
+    if not default or branch == default:
+        return False
+    if refs.has_ref(folder, f"refs/heads/{branch}") is not True:
+        return False
+    return refs.has_ref(folder, f"refs/tags/{branch}") is False
 
 
 def has_short_flag(args, letter):
@@ -91,15 +224,18 @@ def has_short_flag(args, letter):
     return False
 
 
-def guarded_git(words):
-    """The reason to ask for one `git` command, or None."""
+def guarded_git(words, cwd=None, refs=None):
+    """The reason to ask for one `git` command, or None. `refs` reads the
+    refs for a push (None: each push asks)."""
     subcommand, args = git_subcommand(words)
     if subcommand is None:
         return None
     if any(arg in FORCE_FLAGS or arg.startswith("--force-with-lease=") for arg in args):
         return f"`git {subcommand} --force`: a history rewrite needs the user's go, each time."
     if subcommand == "push":
-        return "`git push`: a push needs the user's go, each time."
+        if feature_push(words, cwd, refs):
+            return None
+        return PUSH_ASK
     if subcommand == "pull":
         return "`git pull`: a pull merges or rebases; it needs the user's go, each time."
     if subcommand == "merge":
@@ -156,24 +292,27 @@ def inner_command(words):
     return None
 
 
-def guarded(command):
+def guarded(command, cwd=None, refs=None):
     """The reason to ask for a Bash command, or None when nothing in it is
-    guarded (pure; testable)."""
+    guarded. `cwd` is the folder of the command; `refs` reads the refs for
+    a push (None: each push asks, so the function is pure)."""
     if not isinstance(command, str):
         return None
+    if CHANGES_FOLDER.search(command):
+        refs = None  # a `cd` in the line: the folder of the push is unknown
     for simple in simple_commands(command):
         words = words_of(simple)
         if not words:
             continue
         reason = None
         if words[0] == "git":
-            reason = guarded_git(words)
+            reason = guarded_git(words, cwd, refs if plain_git(simple) else None)
         elif words[0] == "gh":
             reason = guarded_gh(words)
         else:
             inner = inner_command(words)
             if inner is not None and inner != command:
-                reason = guarded(inner)
+                reason = guarded(inner, cwd, refs)
         if reason:
             return reason
     return None
@@ -187,7 +326,9 @@ def main():
         tool_input = payload.get("tool_input")
         if not isinstance(tool_input, dict):
             return
-        reason = guarded(tool_input.get("command"))
+        cwd = payload.get("cwd")
+        cwd = cwd if isinstance(cwd, str) and cwd else None
+        reason = guarded(tool_input.get("command"), cwd, GitRefs())
         if not reason:
             return
         json.dump(

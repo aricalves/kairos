@@ -62,7 +62,6 @@ use kairos_db::models::enums::{
     BoardLevel, BucketType, Complexity, DocumentLifecycle, OrgRole, RelationshipType, TaskType,
     TeamType, WorkClass,
 };
-use kairos_db::models::items::{Adr, Document, Initiative, Strategy, Task};
 use kairos_db::models::templates::Template;
 use kairos_db::search::{SearchError, SearchResults};
 use kairos_db::{GraphError, abac, boards, graph, items, repositories, search};
@@ -2531,196 +2530,8 @@ impl KairosMcp {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let (_, tenant) = Self::caller(&context)?;
-        self.run_tool(&tenant, move |conn| {
-            let item = load_item(conn, &params.short_code, Liveness::IncludeArchived)?;
-
-            let mut out = format!("# {} — {}\n", item.short_code, item.title);
-            // COLLIERY-T-3100: the code that was asked for is retired. Say
-            // so first, so that the agent uses the current code from now on.
-            if item.short_code != params.short_code {
-                out.push_str(&format!(
-                    "\n> **RETIRED CODE** The code {} is retired. The current code of \
-                     this item is {}. Use the current code.\n",
-                    params.short_code, item.short_code
-                ));
-            }
-            // Before anything else: an agent that cannot tell retired work
-            // from live work will try to act on it and be refused by every
-            // write path, with no idea why (KAIROS-A-0020).
-            if let Some(archived_at) = item.archived_at {
-                out.push_str(&format!(
-                    "\n> **ARCHIVED** {}. This item is in the archive. You can read \
-                     it. It is not on a board, and Kairos refuses each write to \
-                     it. To change it, restore it first.\n\n",
-                    archived_at.format("%Y-%m-%dT%H:%M:%SZ")
-                ));
-            }
-            out.push_str(&format!("- type: {}", item.item_type));
-            if let Some(task_type) = item.task_type {
-                out.push_str(&format!(" ({task_type})"));
-            }
-            if let Some(work_class) = item.work_class {
-                out.push_str(&format!(" · lane: {work_class}"));
-            }
-            if item.item_type == ItemType::Task {
-                out.push_str(&format!(
-                    " · repository: {}",
-                    repo_label(conn, item.repository_id)?
-                ));
-            }
-            if let Some(lifecycle) = item.lifecycle {
-                out.push_str(&format!(" · lifecycle: {lifecycle}"));
-            }
-            out.push('\n');
-            if let (Some(board_id), Some(column_id)) = (item.board_id, item.column_id) {
-                let board = board_by_id(conn, board_id)?;
-                // `column_label`, not `board_columns`: an archived card may
-                // sit in a column that has since been removed, and the
-                // column it was put away in is exactly what this line is
-                // for (KAIROS-T-0161).
-                let column = column_label(conn, column_id)?;
-                out.push_str(&format!("- board: {} / column: {column}", board.slug));
-                // KAIROS-T-0554: where it can move to from here, for a live
-                // item on a live board.
-                if item.archived_at.is_none() {
-                    let next = next_columns(conn, column_id)?;
-                    if next.is_empty() {
-                        out.push_str(" · next: none (no transition starts here)");
-                    } else {
-                        out.push_str(&format!(" · next: {}", next.join(", ")));
-                    }
-                }
-                out.push('\n');
-            }
-            // KAIROS-T-0359: who has the task in Active.
-            if item.item_type == ItemType::Task && item.archived_at.is_none() {
-                out.push_str(&crate::claims::claim_text(conn, item.id, item.column_id)?);
-            }
-            // KAIROS-T-0362: the cancel mark and its reason.
-            if item.item_type == ItemType::Task {
-                out.push_str(&crate::cancel::cancel_text(conn, item.id)?);
-                // KAIROS-T-0506: the live state of the task.
-                out.push_str(&crate::task_state::state_line(conn, item.id)?);
-            }
-            // KAIROS-T-0411: the owner of a strategy or an initiative, in
-            // each column and in the archive.
-            out.push_str(&crate::owners::owner_text(conn, item.id, item.item_type)?);
-            // COLLIERY-T-0269: the owner of a document. It is a board and
-            // not a position, so the line has no column.
-            if item.item_type == ItemType::Document {
-                out.push_str(&owner_board_line(conn, &item)?);
-            }
-            out.push_str(&format!("- version: {}\n", item.version));
-            out.push_str(&format!(
-                "- updated: {}\n",
-                item.updated_at.format("%Y-%m-%dT%H:%M:%SZ")
-            ));
-            // COLLIERY-T-3100: the codes that the item had before.
-            let earlier = kairos_db::retired_codes::codes_of_item(conn, item.id)
-                .map_err(ApiError::internal)?;
-            if !earlier.is_empty() {
-                out.push_str(&format!("- retired codes: {}\n", earlier.join(", ")));
-            }
-            if let Some(hypothesis) = &item.hypothesis {
-                out.push_str(&format!("- hypothesis: {hypothesis}\n"));
-            }
-            if let Some(complexity) = item.complexity {
-                out.push_str(&format!("- complexity: {complexity}\n"));
-            }
-            if let Some(bucket_type) = item.bucket_type {
-                out.push_str(&format!("- bucket: {bucket_type}\n"));
-            }
-            if let Some(decision_maker) = &item.decision_maker {
-                out.push_str(&format!("- decision_maker: {decision_maker}\n"));
-            }
-            if let Some(decision_date) = item.decision_date {
-                out.push_str(&format!("- decision_date: {decision_date}\n"));
-            }
-            if let Some(template_id) = item.template_id {
-                use kairos_db::schema::templates;
-                let name: Option<String> = templates::table
-                    .filter(templates::id.eq(template_id))
-                    .select(templates::name)
-                    .first(conn)
-                    .optional()
-                    .map_err(ApiError::internal)?;
-                if let Some(name) = name {
-                    out.push_str(&format!("- template: {name}\n"));
-                }
-            }
-
-            // Metadata values.
-            let metadata = metadata_lines(conn, item.id)?;
-            if !metadata.is_empty() {
-                out.push_str("\n## Metadata\n");
-                out.push_str(&metadata);
-            }
-
-            // Relationships (both directions, agent-oriented labels).
-            let item_done = column_is_done(conn, item.column_id)?;
-            let relationships = relationship_lines(conn, item.id, item_done)?;
-            // COLLIERY-T-0269: the repositories that the item impacts are
-            // in the same section as its edges.
-            let impacts = impacts_line(conn, &item)?;
-            // KAIROS-T-0321: the teams of an initiative or a strategy.
-            let teams = teams_line(conn, &item)?;
-            // KAIROS-T-0508: the external references of the item.
-            let external = external_lines(conn, item.id)?;
-            if !relationships.is_empty()
-                || !impacts.is_empty()
-                || !teams.is_empty()
-                || !external.is_empty()
-            {
-                out.push_str("\n## Relationships\n");
-                out.push_str(&teams);
-                out.push_str(&relationships);
-                out.push_str(&impacts);
-                out.push_str(&external);
-            }
-
-            // KAIROS-T-0504: the notes of the item, each one with its id, so
-            // that an agent cites `note n-3 on ACME-T-0012`.
-            let notes = kairos_core::items::notes(&item.content);
-            if !notes.is_empty() {
-                out.push_str("\n## Notes\n");
-                for note in notes {
-                    out.push_str(&format!("- {} ({}, {})", note.id, note.date, note.author));
-                    if !note.first_line.is_empty() {
-                        out.push_str(&format!(": {}", clip_line(&note.first_line, 120)));
-                    }
-                    out.push('\n');
-                }
-            }
-
-            // Forge links (KAIROS-T-0123, UAT finding #3): an agent must see
-            // PR state here, not only as a PR leaving `get_repository`'s
-            // in-flight list. Same query and order as the links API.
-            if item.item_type != ItemType::Document {
-                let links = kairos_db::forge::links_for_item(conn, item.id)
-                    .map_err(crate::api::org::forge::map_error)?;
-                if !links.is_empty() {
-                    out.push_str("\n## Development\n");
-                    for link in links {
-                        out.push_str(&format!(
-                            "- {} {} [{}] {} — {} ({}/{})\n",
-                            link.link.kind,
-                            link.link.external_id,
-                            link.link.state,
-                            link.link.title,
-                            link.link.url,
-                            link.forge,
-                            link.repo_full_name
-                        ));
-                    }
-                }
-            }
-
-            out.push_str("\n## Content\n");
-            out.push_str(&item.content);
-            out.push('\n');
-            Ok(out)
-        })
-        .await
+        self.run_tool(&tenant, move |conn| get_item_text(conn, &params.short_code))
+            .await
     }
 
     #[tool(
@@ -5553,11 +5364,405 @@ fn slug_from_title(title: &str) -> String {
 // Shared item projection + lookups (sync, on the blocking connection)
 // ---------------------------------------------------------------------------
 
+/// The answer text of `get_item` for `short_code` (KAIROS-T-0626: a
+/// function of its own, so that a test can count its statements).
+///
+/// The statements: [`load_item`] (one), [`item_facts`] (one),
+/// [`relationship_lines`] (two), the teams of a strategy or an initiative
+/// (one), the impacts of a document or an ADR (one), and the forge links
+/// of each item that is not a document (one).
+pub fn get_item_text(conn: &mut PgConnection, short_code: &str) -> Result<String, ApiError> {
+    let item = load_item(conn, short_code, Liveness::IncludeArchived)?;
+    let facts = item_facts(conn, &item)?;
+
+    let mut out = format!("# {} — {}\n", item.short_code, item.title);
+    // COLLIERY-T-3100: the code that was asked for is retired. Say
+    // so first, so that the agent uses the current code from now on.
+    // KAIROS-T-0626: only a retired code says so; a code in lower case
+    // is the current code (KAIROS-T-0560).
+    if item.retired.is_some() {
+        out.push_str(&format!(
+            "\n> **RETIRED CODE** The code {} is retired. The current code of \
+             this item is {}. Use the current code.\n",
+            short_code, item.short_code
+        ));
+    }
+    // Before anything else: an agent that cannot tell retired work
+    // from live work will try to act on it and be refused by every
+    // write path, with no idea why (KAIROS-A-0020).
+    if let Some(archived_at) = item.archived_at {
+        out.push_str(&format!(
+            "\n> **ARCHIVED** {}. This item is in the archive. You can read \
+             it. It is not on a board, and Kairos refuses each write to \
+             it. To change it, restore it first.\n\n",
+            archived_at.format("%Y-%m-%dT%H:%M:%SZ")
+        ));
+    }
+    out.push_str(&format!("- type: {}", item.item_type));
+    if let Some(task_type) = item.task_type {
+        out.push_str(&format!(" ({task_type})"));
+    }
+    if let Some(work_class) = item.work_class {
+        out.push_str(&format!(" · lane: {work_class}"));
+    }
+    if item.item_type == ItemType::Task {
+        out.push_str(&format!(" · repository: {}", facts.repository_label()));
+    }
+    if let Some(lifecycle) = item.lifecycle {
+        out.push_str(&format!(" · lifecycle: {lifecycle}"));
+    }
+    out.push('\n');
+    if let (Some(_), Some(_)) = (item.board_id, item.column_id) {
+        // The column by its id, removed or not: an archived card may sit
+        // in a column that has since been removed, and the column it was
+        // put away in is exactly what this line is for (KAIROS-T-0161).
+        let column = facts.column_name.as_deref().unwrap_or_default();
+        out.push_str(&format!(
+            "- board: {} / column: {column}",
+            facts.board_slug()?
+        ));
+        // KAIROS-T-0554: where it can move to from here, for a live
+        // item on a live board.
+        if item.archived_at.is_none() {
+            let next = &facts.next_columns;
+            if next.is_empty() {
+                out.push_str(" · next: none (no transition starts here)");
+            } else {
+                out.push_str(&format!(" · next: {}", next.join(", ")));
+            }
+        }
+        out.push('\n');
+    }
+    // KAIROS-T-0359: who has the task in Active.
+    if item.item_type == ItemType::Task && item.archived_at.is_none() {
+        out.push_str(&crate::claims::claim_line(
+            facts.claim(),
+            facts.column_claims,
+        ));
+    }
+    // KAIROS-T-0362: the cancel mark and its reason.
+    if item.item_type == ItemType::Task {
+        if let (Some(at), Some(by), Some(reason)) = (
+            facts.cancelled_at,
+            &facts.cancelled_by_name,
+            &facts.cancel_reason,
+        ) {
+            out.push_str(&crate::cancel::cancel_line(at, by, reason));
+        }
+        // KAIROS-T-0506: the live state of the task.
+        if let Some((state, name)) = facts.state(item.id) {
+            out.push_str(&crate::task_state::state_line_of(&state, name, Utc::now()));
+        }
+    }
+    // KAIROS-T-0411: the owner of a strategy or an initiative, in
+    // each column and in the archive.
+    if kairos_db::item_owners::is_subject(item.item_type) {
+        out.push_str(&crate::owners::owner_line(facts.owner()));
+    }
+    // COLLIERY-T-0269: the owner of a document. It is a board and
+    // not a position, so the line has no column.
+    if item.item_type == ItemType::Document && item.board_id.is_some() {
+        out.push_str(&format!("- owner board: {}\n", facts.board_slug()?));
+    }
+    out.push_str(&format!("- version: {}\n", item.version));
+    out.push_str(&format!(
+        "- updated: {}\n",
+        item.updated_at.format("%Y-%m-%dT%H:%M:%SZ")
+    ));
+    // COLLIERY-T-3100: the codes that the item had before.
+    if !facts.retired_codes.is_empty() {
+        out.push_str(&format!(
+            "- retired codes: {}\n",
+            facts.retired_codes.join(", ")
+        ));
+    }
+    if let Some(hypothesis) = &item.hypothesis {
+        out.push_str(&format!("- hypothesis: {hypothesis}\n"));
+    }
+    if let Some(complexity) = item.complexity {
+        out.push_str(&format!("- complexity: {complexity}\n"));
+    }
+    if let Some(bucket_type) = item.bucket_type {
+        out.push_str(&format!("- bucket: {bucket_type}\n"));
+    }
+    if let Some(decision_maker) = &item.decision_maker {
+        out.push_str(&format!("- decision_maker: {decision_maker}\n"));
+    }
+    if let Some(decision_date) = item.decision_date {
+        out.push_str(&format!("- decision_date: {decision_date}\n"));
+    }
+    if let Some(name) = &facts.template_name {
+        out.push_str(&format!("- template: {name}\n"));
+    }
+
+    // Metadata values, ordered by definition slug.
+    if !facts.metadata_slugs.is_empty() {
+        out.push_str("\n## Metadata\n");
+        for (slug, value) in facts.metadata_slugs.iter().zip(&facts.metadata_values) {
+            out.push_str(&format!("- {slug}: {value}\n"));
+        }
+    }
+
+    // Relationships (both directions, agent-oriented labels). The
+    // `is_done` flag of the item's column, removed columns too: an item
+    // with no column is not done (COLLIERY-T-0214).
+    let relationships = relationship_lines(conn, item.id, facts.column_done)?;
+    // COLLIERY-T-0269: the repositories that the item impacts are
+    // in the same section as its edges.
+    let impacts = impacts_line(conn, &item)?;
+    // KAIROS-T-0321: the teams of an initiative or a strategy.
+    let teams = teams_line(conn, &item)?;
+    // KAIROS-T-0508: the external references of the item, oldest first.
+    let external: String = facts
+        .external_uris
+        .iter()
+        .zip(&facts.external_labels)
+        .map(|(uri, label)| format!("- external: {}\n", external_text(uri, label.as_deref())))
+        .collect();
+    if !relationships.is_empty() || !impacts.is_empty() || !teams.is_empty() || !external.is_empty()
+    {
+        out.push_str("\n## Relationships\n");
+        out.push_str(&teams);
+        out.push_str(&relationships);
+        out.push_str(&impacts);
+        out.push_str(&external);
+    }
+
+    // KAIROS-T-0504: the notes of the item, each one with its id, so
+    // that an agent cites `note n-3 on ACME-T-0012`.
+    let notes = kairos_core::items::notes(&item.content);
+    if !notes.is_empty() {
+        out.push_str("\n## Notes\n");
+        for note in notes {
+            out.push_str(&format!("- {} ({}, {})", note.id, note.date, note.author));
+            if !note.first_line.is_empty() {
+                out.push_str(&format!(": {}", clip_line(&note.first_line, 120)));
+            }
+            out.push('\n');
+        }
+    }
+
+    // Forge links (KAIROS-T-0123, UAT finding #3): an agent must see
+    // PR state here, not only as a PR leaving `get_repository`'s
+    // in-flight list. Same query and order as the links API.
+    if item.item_type != ItemType::Document {
+        let links = kairos_db::forge::links_for_item(conn, item.id)
+            .map_err(crate::api::org::forge::map_error)?;
+        if !links.is_empty() {
+            out.push_str("\n## Development\n");
+            for link in links {
+                out.push_str(&format!(
+                    "- {} {} [{}] {} — {} ({}/{})\n",
+                    link.link.kind,
+                    link.link.external_id,
+                    link.link.state,
+                    link.link.title,
+                    link.link.url,
+                    link.forge,
+                    link.repo_full_name
+                ));
+            }
+        }
+    }
+
+    out.push_str("\n## Content\n");
+    out.push_str(&item.content);
+    out.push('\n');
+    Ok(out)
+}
+
+/// What `get_item` shows besides the row of the item and its edges, in one
+/// statement (KAIROS-T-0626): the board and the column (removed columns
+/// too, KAIROS-T-0161), the moves from the column (live targets only,
+/// KAIROS-T-0554), the repository of a task, the template of a document,
+/// the retired codes (COLLIERY-T-3100), the metadata, the claim
+/// (KAIROS-T-0359), the cancel mark (KAIROS-T-0362), the state
+/// (KAIROS-T-0506), the owner (KAIROS-T-0411) and the external references
+/// (KAIROS-T-0508). A name that `public.users` does not have is the id, as
+/// `task_claims::display_names` gives it.
+const ITEM_FACTS_SQL: &str = "\
+    SELECT b.slug AS board_slug, \
+           c.name AS column_name, \
+           COALESCE(c.is_done, false) AS column_done, \
+           COALESCE(c.claims, false) AS column_claims, \
+           ARRAY(SELECT n.name FROM board_transitions bt \
+                   JOIN board_columns n ON n.id = bt.to_column_id \
+                  WHERE bt.from_column_id = $3 AND n.deleted_at IS NULL \
+                  ORDER BY n.position) AS next_columns, \
+           rp.slug AS repository_slug, rt.slug AS repository_team, \
+           tp.name AS template_name, \
+           ARRAY(SELECT rc.code FROM retired_codes rc WHERE rc.item_id = $1 \
+                  ORDER BY rc.retired_at, rc.code) AS retired_codes, \
+           ARRAY(SELECT md.slug FROM item_metadata im \
+                   JOIN metadata_definitions md ON md.id = im.metadata_definition_id \
+                  WHERE im.item_id = $1 ORDER BY md.slug, im.id) AS metadata_slugs, \
+           ARRAY(SELECT im.value FROM item_metadata im \
+                   JOIN metadata_definitions md ON md.id = im.metadata_definition_id \
+                  WHERE im.item_id = $1 ORDER BY md.slug, im.id) AS metadata_values, \
+           COALESCE(cu.display_name, cl.user_id::text) AS claim_holder, \
+           (cl.agent_key_id IS NOT NULL) AS claim_agent, \
+           cl.claimed_at, \
+           k.cancelled_at, k.reason AS cancel_reason, \
+           COALESCE(ku.display_name, k.cancelled_by::text) AS cancelled_by_name, \
+           st.branch AS state_branch, st.commit AS state_commit, \
+           st.pushed AS state_pushed, st.pr_url AS state_pr_url, \
+           st.next_step AS state_next_step, st.updated_at AS state_updated_at, \
+           st.updated_by AS state_updated_by, \
+           COALESCE(su.display_name, st.updated_by::text) AS state_updated_by_name, \
+           COALESCE(ou.display_name, io.user_id::text) AS owner_name, \
+           io.claimed_at AS owner_since, \
+           ARRAY(SELECT x.uri FROM item_external_refs x WHERE x.item_id = $1 \
+                  ORDER BY x.created_at, x.uri, x.id) AS external_uris, \
+           ARRAY(SELECT x.label FROM item_external_refs x WHERE x.item_id = $1 \
+                  ORDER BY x.created_at, x.uri, x.id) AS external_labels \
+      FROM (SELECT 1) AS one \
+      LEFT JOIN boards b ON b.id = $2 \
+      LEFT JOIN board_columns c ON c.id = $3 \
+      LEFT JOIN repositories rp ON rp.id = $4 AND rp.deleted_at IS NULL \
+      LEFT JOIN teams rt ON rt.id = rp.team_id \
+      LEFT JOIN templates tp ON tp.id = $5 \
+      LEFT JOIN task_claims cl ON cl.task_id = $1 \
+      LEFT JOIN public.users cu ON cu.id = cl.user_id \
+      LEFT JOIN task_cancellations k ON k.task_id = $1 \
+      LEFT JOIN public.users ku ON ku.id = k.cancelled_by \
+      LEFT JOIN task_state st ON st.task_id = $1 \
+      LEFT JOIN public.users su ON su.id = st.updated_by \
+      LEFT JOIN item_owners io ON io.item_id = $1 \
+      LEFT JOIN public.users ou ON ou.id = io.user_id";
+
+/// The row of [`ITEM_FACTS_SQL`].
+#[derive(QueryableByName)]
+struct ItemFacts {
+    #[diesel(sql_type = SqlNullable<SqlText>)]
+    board_slug: Option<String>,
+    #[diesel(sql_type = SqlNullable<SqlText>)]
+    column_name: Option<String>,
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    column_done: bool,
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    column_claims: bool,
+    #[diesel(sql_type = diesel::sql_types::Array<SqlText>)]
+    next_columns: Vec<String>,
+    #[diesel(sql_type = SqlNullable<SqlText>)]
+    repository_slug: Option<String>,
+    #[diesel(sql_type = SqlNullable<SqlText>)]
+    repository_team: Option<String>,
+    #[diesel(sql_type = SqlNullable<SqlText>)]
+    template_name: Option<String>,
+    #[diesel(sql_type = diesel::sql_types::Array<SqlText>)]
+    retired_codes: Vec<String>,
+    #[diesel(sql_type = diesel::sql_types::Array<SqlText>)]
+    metadata_slugs: Vec<String>,
+    #[diesel(sql_type = diesel::sql_types::Array<SqlText>)]
+    metadata_values: Vec<String>,
+    #[diesel(sql_type = SqlNullable<SqlText>)]
+    claim_holder: Option<String>,
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    claim_agent: bool,
+    #[diesel(sql_type = SqlNullable<SqlTimestamptz>)]
+    claimed_at: Option<DateTime<Utc>>,
+    #[diesel(sql_type = SqlNullable<SqlTimestamptz>)]
+    cancelled_at: Option<DateTime<Utc>>,
+    #[diesel(sql_type = SqlNullable<SqlText>)]
+    cancel_reason: Option<String>,
+    #[diesel(sql_type = SqlNullable<SqlText>)]
+    cancelled_by_name: Option<String>,
+    #[diesel(sql_type = SqlNullable<SqlText>)]
+    state_branch: Option<String>,
+    #[diesel(sql_type = SqlNullable<SqlText>)]
+    state_commit: Option<String>,
+    #[diesel(sql_type = SqlNullable<diesel::sql_types::Bool>)]
+    state_pushed: Option<bool>,
+    #[diesel(sql_type = SqlNullable<SqlText>)]
+    state_pr_url: Option<String>,
+    #[diesel(sql_type = SqlNullable<SqlText>)]
+    state_next_step: Option<String>,
+    #[diesel(sql_type = SqlNullable<SqlTimestamptz>)]
+    state_updated_at: Option<DateTime<Utc>>,
+    #[diesel(sql_type = SqlNullable<SqlUuid>)]
+    state_updated_by: Option<Uuid>,
+    #[diesel(sql_type = SqlNullable<SqlText>)]
+    state_updated_by_name: Option<String>,
+    #[diesel(sql_type = SqlNullable<SqlText>)]
+    owner_name: Option<String>,
+    #[diesel(sql_type = SqlNullable<SqlTimestamptz>)]
+    owner_since: Option<DateTime<Utc>>,
+    #[diesel(sql_type = diesel::sql_types::Array<SqlText>)]
+    external_uris: Vec<String>,
+    #[diesel(sql_type = diesel::sql_types::Array<SqlNullable<SqlText>>)]
+    external_labels: Vec<Option<String>>,
+}
+
+impl ItemFacts {
+    /// `slug (owner: team)` for the repository of a task, or `(none)`
+    /// (as [`repo_label`] says it).
+    fn repository_label(&self) -> String {
+        match (&self.repository_slug, &self.repository_team) {
+            (Some(slug), Some(team)) => format!("{slug} (owner: {team})"),
+            _ => "(none)".to_string(),
+        }
+    }
+
+    /// The slug of the board of the item: it must be there, the item holds
+    /// a FK to it.
+    fn board_slug(&self) -> Result<&str, ApiError> {
+        self.board_slug
+            .as_deref()
+            .ok_or_else(|| ApiError::internal("the board of the item is not there"))
+    }
+
+    /// The claim as (holder, made with an agent key, since).
+    fn claim(&self) -> Option<(&str, bool, DateTime<Utc>)> {
+        Some((
+            self.claim_holder.as_deref()?,
+            self.claim_agent,
+            self.claimed_at?,
+        ))
+    }
+
+    /// The owner as (name, since).
+    fn owner(&self) -> Option<(&str, DateTime<Utc>)> {
+        Some((self.owner_name.as_deref()?, self.owner_since?))
+    }
+
+    /// The state of the task and the name of who wrote it.
+    fn state(&self, task_id: Uuid) -> Option<(kairos_db::models::TaskState, &str)> {
+        Some((
+            kairos_db::models::TaskState {
+                task_id,
+                branch: self.state_branch.clone(),
+                commit: self.state_commit.clone(),
+                pushed: self.state_pushed?,
+                pr_url: self.state_pr_url.clone(),
+                next_step: self.state_next_step.clone(),
+                updated_at: self.state_updated_at?,
+                updated_by: self.state_updated_by?,
+            },
+            self.state_updated_by_name.as_deref()?,
+        ))
+    }
+}
+
+/// [`ITEM_FACTS_SQL`] for `item`.
+fn item_facts(conn: &mut PgConnection, item: &ItemView) -> Result<ItemFacts, ApiError> {
+    sql_query(ITEM_FACTS_SQL)
+        .bind::<SqlUuid, _>(item.id)
+        .bind::<SqlNullable<SqlUuid>, _>(item.board_id)
+        .bind::<SqlNullable<SqlUuid>, _>(item.column_id)
+        .bind::<SqlNullable<SqlUuid>, _>(item.repository_id)
+        .bind::<SqlNullable<SqlUuid>, _>(item.template_id)
+        .get_result(conn)
+        .map_err(ApiError::internal)
+}
+
 /// A uniform projection of any live item, whatever its table.
 struct ItemView {
     id: Uuid,
     item_type: ItemType,
+    /// The current code of the item.
     short_code: String,
+    /// The retired code that found the item (COLLIERY-T-3100), or `None`.
+    retired: Option<String>,
     title: String,
     content: String,
     version: i32,
@@ -5588,209 +5793,170 @@ struct ItemView {
 /// Resolve a short code and load its [`ItemView`]; 404 `NOT_FOUND`
 /// otherwise (mirrors the REST 404 contract).
 ///
-/// `liveness` is enforced by the resolution step alone — it is authoritative,
-/// so the per-table loads below carry no `deleted_at` filter of their own. A
-/// `LiveOnly` caller never reaches them for an archived row, and a second
-/// filter would only be a place for the two to disagree.
+/// One statement (KAIROS-T-0626): [`LOAD_ITEM_SQL`] finds the code in
+/// `entity_directory`, or else the item of the retired code, and reads the
+/// row of the item's table in the same query. The code is upper-cased
+/// first (KAIROS-T-0560).
+///
+/// `liveness` is decided here, on the row that was found: a read
+/// ([`Liveness::IncludeArchived`]) follows a retired code to the item and
+/// serves archived work; a write ([`Liveness::LiveOnly`]) is refused for a
+/// retired code, and the refusal names the current code (COLLIERY-T-3100),
+/// and for an archived item (KAIROS-T-0560).
 fn load_item(
     conn: &mut PgConnection,
     short_code: &str,
     liveness: Liveness,
 ) -> Result<ItemView, ApiError> {
-    use kairos_db::schema::{adrs, documents, initiatives, strategies, tasks};
+    let upper = short_code.to_ascii_uppercase();
+    let row: Option<LoadedItem> = sql_query(LOAD_ITEM_SQL)
+        .bind::<SqlText, _>(&upper)
+        .get_result(conn)
+        .optional()
+        .map_err(ApiError::internal)?;
+    let Some(row) = row else {
+        return Err(match liveness {
+            Liveness::LiveOnly => {
+                ApiError::not_found(format!("No live item has the short code {short_code:?}."))
+            }
+            Liveness::IncludeArchived => {
+                ApiError::not_found(format!("No item has the short code {short_code:?}."))
+            }
+        });
+    };
+    if liveness == Liveness::LiveOnly {
+        if row.retired.is_some() {
+            return Err(crate::api::retired_code_refused(
+                short_code,
+                &row.short_code,
+            ));
+        }
+        if row.deleted_at.is_some() {
+            return Err(crate::api::archived_write_refused(&upper));
+        }
+    }
+    let item_type = ItemType::ALL
+        .iter()
+        .copied()
+        .find(|t| t.entity_type() == row.entity_type)
+        .ok_or_else(|| {
+            ApiError::internal(format!(
+                "entity_directory returned unknown entity_type {:?}",
+                row.entity_type
+            ))
+        })?;
+    Ok(ItemView {
+        id: row.id,
+        item_type,
+        short_code: row.short_code,
+        retired: row.retired,
+        title: row.title,
+        content: row.content,
+        version: row.version,
+        board_id: row.board_id,
+        column_id: row.column_id,
+        task_type: row.task_type,
+        work_class: row.work_class,
+        repository_id: row.repository_id,
+        lifecycle: row.lifecycle,
+        complexity: row.complexity,
+        hypothesis: row.hypothesis,
+        bucket_type: row.bucket_type,
+        template_id: row.template_id,
+        decision_maker: row.decision_maker,
+        decision_date: row.decision_date,
+        updated_at: row.updated_at,
+        archived_at: row.deleted_at,
+        created_by: row.created_by,
+    })
+}
 
-    let missing = || match liveness {
-        Liveness::LiveOnly => {
-            ApiError::not_found(format!("No live item has the short code {short_code:?}."))
-        }
-        Liveness::IncludeArchived => {
-            ApiError::not_found(format!("No item has the short code {short_code:?}."))
-        }
-    };
-    // COLLIERY-T-3100: a read follows a retired code to the item (the view
-    // has the current code); a write is refused, and the refusal names the
-    // current code.
-    let (id, item_type) = match resolve_short_code(conn, short_code, liveness)? {
-        Some(found) => found,
-        None => match crate::api::follow_retired(conn, short_code, liveness)? {
-            Some(current) => resolve_short_code(conn, &current, liveness)?.ok_or_else(missing)?,
-            // KAIROS-T-0560: a write to an archived item says so.
-            None if liveness == Liveness::LiveOnly
-                && resolve_short_code(conn, short_code, Liveness::IncludeArchived)?.is_some() =>
-            {
-                return Err(crate::api::archived_write_refused(
-                    &short_code.to_ascii_uppercase(),
-                ));
-            }
-            None => return Err(missing()),
-        },
-    };
+/// The statement of [`load_item`] (KAIROS-T-0626). `hit` is the code in
+/// `entity_directory`, or else the item of the retired code `$1` (a code
+/// is held or retired, never the two). Then the row of the item's own
+/// table: each LEFT JOIN matches for one type only. A document has an
+/// owner board and no column (COLLIERY-T-0269), so no reader takes it for
+/// a card.
+const LOAD_ITEM_SQL: &str = "\
+    WITH hit AS ( \
+        (SELECT d.id, d.entity_type, NULL::text AS retired, 0 AS pick \
+           FROM entity_directory d WHERE d.short_code = $1 \
+         UNION ALL \
+         SELECT d.id, d.entity_type, r.code, 1 \
+           FROM retired_codes r JOIN entity_directory d ON d.id = r.item_id \
+          WHERE r.code = $1) \
+        ORDER BY pick LIMIT 1) \
+    SELECT h.entity_type, h.retired, h.id, \
+           COALESCE(s.short_code, i.short_code, t.short_code, o.short_code, a.short_code) \
+               AS short_code, \
+           COALESCE(s.title, i.title, t.title, o.title, a.title) AS title, \
+           COALESCE(s.content, i.content, t.content, o.content, a.content) AS content, \
+           COALESCE(s.version, i.version, t.version, o.version, a.version) AS version, \
+           COALESCE(s.board_id, i.board_id, t.board_id, o.board_id, a.board_id) AS board_id, \
+           COALESCE(s.column_id, i.column_id, t.column_id, a.column_id) AS column_id, \
+           t.task_type, t.work_class, t.repository_id, o.lifecycle, i.complexity, \
+           s.hypothesis, i.bucket_type, o.template_id, a.decision_maker, a.decision_date, \
+           COALESCE(s.updated_at, i.updated_at, t.updated_at, o.updated_at, a.updated_at) \
+               AS updated_at, \
+           COALESCE(s.deleted_at, i.deleted_at, t.deleted_at, o.deleted_at, a.deleted_at) \
+               AS deleted_at, \
+           COALESCE(s.created_by, i.created_by, t.created_by, o.created_by, a.created_by) \
+               AS created_by \
+      FROM hit h \
+      LEFT JOIN strategies s ON h.entity_type = 'strategy' AND s.id = h.id \
+      LEFT JOIN initiatives i ON h.entity_type = 'initiative' AND i.id = h.id \
+      LEFT JOIN tasks t ON h.entity_type = 'task' AND t.id = h.id \
+      LEFT JOIN documents o ON h.entity_type = 'document' AND o.id = h.id \
+      LEFT JOIN adrs a ON h.entity_type = 'adr' AND a.id = h.id";
 
-    let view = match item_type {
-        ItemType::Strategy => {
-            let row: Strategy = strategies::table
-                .filter(strategies::id.eq(id))
-                .select(Strategy::as_select())
-                .first(conn)
-                .optional()
-                .map_err(ApiError::internal)?
-                .ok_or_else(missing)?;
-            ItemView {
-                id: row.id,
-                item_type,
-                short_code: row.short_code,
-                title: row.title,
-                content: row.content,
-                version: row.version,
-                board_id: Some(row.board_id),
-                column_id: Some(row.column_id),
-                task_type: None,
-                work_class: None,
-                repository_id: None,
-                lifecycle: None,
-                complexity: None,
-                hypothesis: row.hypothesis,
-                bucket_type: None,
-                template_id: None,
-                decision_maker: None,
-                decision_date: None,
-                updated_at: row.updated_at,
-                archived_at: row.deleted_at,
-                created_by: row.created_by,
-            }
-        }
-        ItemType::Initiative => {
-            let row: Initiative = initiatives::table
-                .filter(initiatives::id.eq(id))
-                .select(Initiative::as_select())
-                .first(conn)
-                .optional()
-                .map_err(ApiError::internal)?
-                .ok_or_else(missing)?;
-            ItemView {
-                id: row.id,
-                item_type,
-                short_code: row.short_code,
-                title: row.title,
-                content: row.content,
-                version: row.version,
-                board_id: Some(row.board_id),
-                column_id: Some(row.column_id),
-                task_type: None,
-                work_class: None,
-                repository_id: None,
-                lifecycle: None,
-                complexity: row.complexity,
-                hypothesis: None,
-                bucket_type: row.bucket_type,
-                template_id: None,
-                decision_maker: None,
-                decision_date: None,
-                updated_at: row.updated_at,
-                archived_at: row.deleted_at,
-                created_by: row.created_by,
-            }
-        }
-        ItemType::Task => {
-            let row: Task = tasks::table
-                .filter(tasks::id.eq(id))
-                .select(Task::as_select())
-                .first(conn)
-                .optional()
-                .map_err(ApiError::internal)?
-                .ok_or_else(missing)?;
-            ItemView {
-                id: row.id,
-                item_type,
-                short_code: row.short_code,
-                title: row.title,
-                content: row.content,
-                version: row.version,
-                board_id: Some(row.board_id),
-                column_id: Some(row.column_id),
-                task_type: Some(row.task_type),
-                work_class: Some(row.work_class),
-                repository_id: row.repository_id,
-                lifecycle: None,
-                complexity: None,
-                hypothesis: None,
-                bucket_type: None,
-                template_id: None,
-                decision_maker: None,
-                decision_date: None,
-                updated_at: row.updated_at,
-                archived_at: row.deleted_at,
-                created_by: row.created_by,
-            }
-        }
-        ItemType::Document => {
-            let row: Document = documents::table
-                .filter(documents::id.eq(id))
-                .select(Document::as_select())
-                .first(conn)
-                .optional()
-                .map_err(ApiError::internal)?
-                .ok_or_else(missing)?;
-            ItemView {
-                id: row.id,
-                item_type,
-                short_code: row.short_code,
-                title: row.title,
-                content: row.content,
-                version: row.version,
-                // The OWNER board (COLLIERY-T-0269). A document has no
-                // column, so no reader takes it for a card.
-                board_id: Some(row.board_id),
-                column_id: None,
-                task_type: None,
-                work_class: None,
-                repository_id: None,
-                lifecycle: Some(row.lifecycle),
-                complexity: None,
-                hypothesis: None,
-                bucket_type: None,
-                template_id: row.template_id,
-                decision_maker: None,
-                decision_date: None,
-                updated_at: row.updated_at,
-                archived_at: row.deleted_at,
-                created_by: row.created_by,
-            }
-        }
-        ItemType::Adr => {
-            let row: Adr = adrs::table
-                .filter(adrs::id.eq(id))
-                .select(Adr::as_select())
-                .first(conn)
-                .optional()
-                .map_err(ApiError::internal)?
-                .ok_or_else(missing)?;
-            ItemView {
-                id: row.id,
-                item_type,
-                short_code: row.short_code,
-                title: row.title,
-                content: row.content,
-                version: row.version,
-                board_id: row.board_id,
-                column_id: row.column_id,
-                task_type: None,
-                work_class: None,
-                repository_id: None,
-                lifecycle: None,
-                complexity: None,
-                hypothesis: None,
-                bucket_type: None,
-                template_id: None,
-                decision_maker: row.decision_maker,
-                decision_date: row.decision_date,
-                updated_at: row.updated_at,
-                archived_at: row.deleted_at,
-                created_by: row.created_by,
-            }
-        }
-    };
-    Ok(view)
+/// The row of [`LOAD_ITEM_SQL`].
+#[derive(QueryableByName)]
+struct LoadedItem {
+    #[diesel(sql_type = SqlText)]
+    entity_type: String,
+    /// The retired code that found the item, or `None`.
+    #[diesel(sql_type = SqlNullable<SqlText>)]
+    retired: Option<String>,
+    #[diesel(sql_type = SqlUuid)]
+    id: Uuid,
+    #[diesel(sql_type = SqlText)]
+    short_code: String,
+    #[diesel(sql_type = SqlText)]
+    title: String,
+    #[diesel(sql_type = SqlText)]
+    content: String,
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    version: i32,
+    #[diesel(sql_type = SqlNullable<SqlUuid>)]
+    board_id: Option<Uuid>,
+    #[diesel(sql_type = SqlNullable<SqlUuid>)]
+    column_id: Option<Uuid>,
+    #[diesel(sql_type = SqlNullable<SqlText>)]
+    task_type: Option<TaskType>,
+    #[diesel(sql_type = SqlNullable<SqlText>)]
+    work_class: Option<WorkClass>,
+    #[diesel(sql_type = SqlNullable<SqlUuid>)]
+    repository_id: Option<Uuid>,
+    #[diesel(sql_type = SqlNullable<SqlText>)]
+    lifecycle: Option<DocumentLifecycle>,
+    #[diesel(sql_type = SqlNullable<SqlText>)]
+    complexity: Option<Complexity>,
+    #[diesel(sql_type = SqlNullable<SqlText>)]
+    hypothesis: Option<String>,
+    #[diesel(sql_type = SqlNullable<SqlText>)]
+    bucket_type: Option<BucketType>,
+    #[diesel(sql_type = SqlNullable<SqlUuid>)]
+    template_id: Option<Uuid>,
+    #[diesel(sql_type = SqlNullable<SqlText>)]
+    decision_maker: Option<String>,
+    #[diesel(sql_type = SqlNullable<diesel::sql_types::Date>)]
+    decision_date: Option<NaiveDate>,
+    #[diesel(sql_type = SqlTimestamptz)]
+    updated_at: DateTime<Utc>,
+    #[diesel(sql_type = SqlNullable<SqlTimestamptz>)]
+    deleted_at: Option<DateTime<Utc>>,
+    #[diesel(sql_type = SqlUuid)]
+    created_by: Uuid,
 }
 
 /// `require_capability` for a MOVE (`transition_item`, `move_item`), with
@@ -5955,16 +6121,6 @@ fn team_by_ref(
         })
 }
 
-/// A board row by id (must exist — callers hold a FK to it).
-fn board_by_id(conn: &mut PgConnection, board_id: Uuid) -> Result<Board, ApiError> {
-    use kairos_db::schema::boards;
-    boards::table
-        .filter(boards::id.eq(board_id))
-        .select(Board::as_select())
-        .first(conn)
-        .map_err(ApiError::internal)
-}
-
 /// A board's LIVE columns in position order — what the board is now, so
 /// a removed column (KAIROS-T-0161) is neither listed nor resolvable as a
 /// transition target.
@@ -5996,42 +6152,6 @@ fn board_columns_including_removed(
         .select(BoardColumn::as_select())
         .load(conn)
         .map_err(ApiError::internal)
-}
-
-/// The name of ANY column, removed ones included — the audit answer, not
-/// the board view. An archived card keeps a `NOT NULL` FK to the column it
-/// was put away in (KAIROS-T-0161), and "which column was this in?" has to
-/// stay answerable for it, so this deliberately does not filter on
-/// `deleted_at`. Use [`board_columns`] for anything that renders or
-/// validates a live board.
-fn column_label(conn: &mut PgConnection, column_id: Uuid) -> Result<String, ApiError> {
-    use kairos_db::schema::board_columns;
-    board_columns::table
-        .filter(board_columns::id.eq(column_id))
-        .select(board_columns::name)
-        .first(conn)
-        .optional()
-        .map_err(ApiError::internal)
-        .map(Option::unwrap_or_default)
-}
-
-/// Whether an item's column is terminal: the `is_done` FLAG of the column
-/// row, never its name, because which columns are terminal is the board's
-/// decision (COLLIERY-T-0214). An item with no column (a document, an
-/// off-board ADR) or with no column row is not done. Removed columns are
-/// read too, for the reason [`column_label`] gives.
-fn column_is_done(conn: &mut PgConnection, column_id: Option<Uuid>) -> Result<bool, ApiError> {
-    use kairos_db::schema::board_columns;
-    let Some(column_id) = column_id else {
-        return Ok(false);
-    };
-    board_columns::table
-        .filter(board_columns::id.eq(column_id))
-        .select(board_columns::is_done)
-        .first(conn)
-        .optional()
-        .map_err(ApiError::internal)
-        .map(Option::unwrap_or_default)
 }
 
 /// Resolve a column reference (UUID or case-insensitive name) against a
@@ -6589,15 +6709,6 @@ fn parse_relationship(value: &str) -> Result<RelationshipType, ApiError> {
     })
 }
 
-/// The line `- owner board: ...` of a document for `get_item`
-/// (COLLIERY-T-0269). Each document has an owner board (COLLIERY-T-3109).
-fn owner_board_line(conn: &mut PgConnection, item: &ItemView) -> Result<String, ApiError> {
-    Ok(match item.board_id {
-        Some(board_id) => format!("- owner board: {}\n", board_by_id(conn, board_id)?.slug),
-        None => String::new(),
-    })
-}
-
 /// One line of a document or an ADR in a section of `get_repository`
 /// (COLLIERY-T-0269, KAIROS-T-0599): the short code, the title, the kind,
 /// the lifecycle or the column, and `[archived]`.
@@ -6678,20 +6789,15 @@ fn impacts_line(conn: &mut PgConnection, item: &ItemView) -> Result<String, ApiE
 /// One external reference as the tools print it (KAIROS-T-0508):
 /// `label <uri>`, or `<uri>` when the reference has no label.
 fn external_ref_text(reference: &kairos_db::external_refs::ExternalRef) -> String {
-    match reference.label.as_deref().filter(|label| !label.is_empty()) {
-        Some(label) => format!("{label} <{}>", reference.uri),
-        None => format!("<{}>", reference.uri),
-    }
+    external_text(&reference.uri, reference.label.as_deref())
 }
 
-/// The lines `- external: ...` of an item for `get_item` (KAIROS-T-0508):
-/// one per reference, oldest first, or an empty string.
-fn external_lines(conn: &mut PgConnection, item_id: Uuid) -> Result<String, ApiError> {
-    let refs = kairos_db::external_refs::refs_of(conn, item_id).map_err(ApiError::internal)?;
-    Ok(refs
-        .iter()
-        .map(|reference| format!("- external: {}\n", external_ref_text(reference)))
-        .collect())
+/// [`external_ref_text`] from the URI and the label.
+fn external_text(uri: &str, label: Option<&str>) -> String {
+    match label.filter(|label| !label.is_empty()) {
+        Some(label) => format!("{label} <{uri}>"),
+        None => format!("<{uri}>"),
+    }
 }
 
 /// The external references of the item of `related_work` and of each
@@ -6875,8 +6981,6 @@ fn metadata_lines(conn: &mut PgConnection, item_id: Uuid) -> Result<String, ApiE
 
 #[derive(QueryableByName)]
 struct ChainRow {
-    #[diesel(sql_type = SqlUuid)]
-    id: Uuid,
     #[diesel(sql_type = SqlText)]
     short_code: String,
     #[diesel(sql_type = SqlText)]
@@ -6896,30 +7000,30 @@ struct ChainRow {
 /// back behind a filter for exactly one relationship type, and the
 /// nearest archived ancestor would have truncated the chain above it
 /// too, hiding live grandparents along with it.
+///
+/// One statement (KAIROS-T-0626): a recursive CTE that takes, at each
+/// step, the oldest incoming `parent` edge whose source is in
+/// `entity_directory`, as the loop before it did, to a depth of 10.
 fn parent_chain(conn: &mut PgConnection, item_id: Uuid) -> Result<Vec<ChainRow>, ApiError> {
-    let mut chain = Vec::new();
-    let mut current = item_id;
-    for _ in 0..10 {
-        let parent: Option<ChainRow> = sql_query(
-            "SELECT d.id, d.short_code, d.title, d.deleted_at \
-             FROM item_relationships r \
-             JOIN entity_directory d ON d.id = r.source_id \
-             WHERE r.target_id = $1 AND r.relationship = 'parent' \
-             ORDER BY r.created_at ASC LIMIT 1",
-        )
-        .bind::<SqlUuid, _>(current)
-        .get_result(conn)
-        .optional()
-        .map_err(ApiError::internal)?;
-        match parent {
-            Some(row) => {
-                current = row.id;
-                chain.push(row);
-            }
-            None => break,
-        }
-    }
-    Ok(chain)
+    sql_query(
+        "WITH RECURSIVE chain (depth, id, short_code, title, deleted_at) AS ( \
+             SELECT 0, $1::uuid, NULL::text, NULL::text, NULL::timestamptz \
+           UNION ALL \
+             SELECT chain.depth + 1, p.id, p.short_code, p.title, p.deleted_at \
+               FROM chain \
+               CROSS JOIN LATERAL ( \
+                   SELECT d.id, d.short_code, d.title, d.deleted_at \
+                     FROM item_relationships r \
+                     JOIN entity_directory d ON d.id = r.source_id \
+                    WHERE r.target_id = chain.id AND r.relationship = 'parent' \
+                    ORDER BY r.created_at ASC LIMIT 1) p \
+              WHERE chain.depth < 10) \
+         SELECT short_code, title, deleted_at FROM chain \
+          WHERE depth > 0 ORDER BY depth",
+    )
+    .bind::<SqlUuid, _>(item_id)
+    .load(conn)
+    .map_err(ApiError::internal)
 }
 
 /// Agent-oriented relationship lines for `get_item`: parent chain,
@@ -8230,20 +8334,6 @@ mod create_item_parity_tests {
             "the create_item description must mention bucket_type"
         );
     }
-}
-
-/// The columns a card can move to from `column_id`, by board position
-/// (KAIROS-T-0554): the live targets of the transitions that start there.
-fn next_columns(conn: &mut PgConnection, column_id: Uuid) -> Result<Vec<String>, ApiError> {
-    use kairos_db::schema::{board_columns, board_transitions};
-    board_transitions::table
-        .inner_join(board_columns::table.on(board_columns::id.eq(board_transitions::to_column_id)))
-        .filter(board_transitions::from_column_id.eq(column_id))
-        .filter(board_columns::deleted_at.is_null())
-        .order(board_columns::position.asc())
-        .select(board_columns::name)
-        .load::<String>(conn)
-        .map_err(ApiError::internal)
 }
 
 /// The rules of a board on one line (KAIROS-T-0554): each live column in

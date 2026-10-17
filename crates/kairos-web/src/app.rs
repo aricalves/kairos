@@ -1,13 +1,13 @@
 //! Root component (KAIROS-T-0039): router, the protected app shell
 //! (nav + whoami + logout), and the login-redirect guard.
 //!
-//! Route map (the T-0040..T-0044 fan-out fills the stubs in [`crate::pages`]):
+//! Route map:
 //!
 //! | path            | page                 | lands with |
 //! |-----------------|----------------------|------------|
 //! | `/login`        | explicit sign-in     | here       |
 //! | `/callback`     | PKCE redirect target | here       |
-//! | `/`             | redirect → `/boards` | here       |
+//! | `/`             | For me: the work of the person | T-0490 |
 //! | `/boards`       | board list           | T-0040     |
 //! | `/boards/:board`| board view           | T-0040     |
 //! | `/items/:code`  | item detail          | T-0041     |
@@ -15,19 +15,22 @@
 //! | `/search/relationships/:code` | relationships explorer | T-0042 |
 //! | `/teams`        | team directory       | T-0067     |
 //! | `/teams/:slug`  | team detail (roster, board, streams) | T-0067 |
+//! | `/teams/:slug/pages/*path` | one page of the team | T-0086 |
 //! | `/admin`        | admin overview       | T-0043     |
 //! | `/admin/boards` | board list + create/delete | T-0043 |
 //! | `/admin/boards/:board` | board config (columns, transitions, members) | T-0043 |
 //! | `/admin/teams`  | teams CRUD + members | T-0043     |
 //! | `/admin/streams`| delivery streams CRUD + teams | T-0043 |
+//! | `/admin/repositories` | the repositories and their webhooks | T-0109 |
+//! | `/admin/code-index` | the providers of the code index | T-0339 |
 //! | `/admin/members`| org members + roles  | T-0043     |
 //! | `/admin/members/:user` | the grants of one person on many boards, and the teams | T-0413 |
-//! | `/admin/code-index` | the providers of the code index | T-0339 |
 //! | `/admin/templates` | templates CRUD    | T-0043     |
 //! | `/admin/metadata`  | metadata definitions CRUD | T-0043 |
 //! | `/activity`     | activity feed        | T-0044     |
 //! | `/activity/history/:code` | item content history | T-0044 |
 //! | `/agent-keys`   | the agent keys of the person | T-0359 |
+//! | `/notifications` | the notifications of the person, and the settings | T-0383 |
 //!
 //! Everything under the shell is auth-guarded: no session → the guard
 //! *redirects to the issuer* (A-0015 "unauthenticated hits show the login
