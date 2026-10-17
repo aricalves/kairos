@@ -109,6 +109,9 @@ pub(crate) fn set_agents_decide(
         "board",
         format!("agents_decide_triage:{decide}"),
     )?;
+    // KAIROS-T-0574.
+    kairos_db::events::emit_board_configured(conn, board_id, user, "agents_decide_triage")
+        .map_err(ApiError::internal)?;
     Ok(decide)
 }
 

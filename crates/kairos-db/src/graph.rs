@@ -46,7 +46,7 @@
 //! - [`resolve_entity`] types the endpoints of a WRITE. Linking or
 //!   unlinking archived work is a mutation of frozen material, so it stays
 //!   [`GraphError::ItemNotFound`].
-//! - [`children_progress`] / [`board_children_progress`] (through
+//! - [`children_progress`] / [`page_children_progress`] (through
 //!   [`CHILD_COLUMNS_SQL`]) and [`blocks_summary`] are *rollups*: ADR-20
 //!   rule 5 says archived work is not live work, so counting it would
 //!   report progress that nobody is making.
@@ -721,19 +721,27 @@ impl ProgressCounts {
     }
 }
 
-/// Children rollups for EVERY item on `board_id` that has direct
-/// children — one grouped query for the whole board, never per-item
-/// (the N+1 the KAIROS-T-0080 design forbids).
+/// Children rollups for the items `parent_ids` of the board `board_id`
+/// (the items of one page) that have direct children: one grouped query
+/// for the page, never per item (the N+1 the KAIROS-T-0080 design
+/// forbids). KAIROS-T-0627: the query reads the edges of the page's items
+/// only, not of the whole board.
 ///
 /// Live-only on BOTH ends and says so in the SQL: the parents come from a
 /// per-family union filtered `deleted_at IS NULL`, the children from
 /// [`CHILD_COLUMNS_SQL`]. Neither predicate is inherited from a view
 /// (KAIROS-T-0156 moved them here), and neither is widened: ADR-20 rule 5,
-/// archived work is not live work.
-pub fn board_children_progress(
+/// archived work is not live work. An archived item of the page has no
+/// rollup.
+pub fn page_children_progress(
     conn: &mut PgConnection,
     board_id: Uuid,
+    parent_ids: &[Uuid],
 ) -> Result<std::collections::HashMap<Uuid, ProgressCounts>, DieselError> {
+    if parent_ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let parents = "WHERE board_id = $1 AND deleted_at IS NULL AND id = ANY($2)";
     let rows: Vec<BoardProgressRow> = sql_query(format!(
         "SELECT r.source_id AS parent_id, bc.is_done, \
                 EXISTS(SELECT 1 FROM board_columns d \
@@ -742,18 +750,18 @@ pub fn board_children_progress(
                 COUNT(*) AS count, \
                 COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM task_cancellations k \
                                                 WHERE k.task_id = c.id)) AS cancelled \
-         FROM item_relationships r \
+         FROM (SELECT id FROM strategies {parents} \
+               UNION ALL SELECT id FROM initiatives {parents} \
+               UNION ALL SELECT id FROM tasks {parents} \
+               UNION ALL SELECT id FROM adrs {parents}) p \
+         JOIN item_relationships r \
+           ON r.source_id = p.id AND r.relationship = 'parent' \
          JOIN ({CHILD_COLUMNS_SQL}) c ON c.id = r.target_id \
          JOIN board_columns bc ON bc.id = c.column_id \
-         JOIN (SELECT id FROM strategies WHERE board_id = $1 AND deleted_at IS NULL \
-               UNION ALL SELECT id FROM initiatives WHERE board_id = $1 AND deleted_at IS NULL \
-               UNION ALL SELECT id FROM tasks WHERE board_id = $1 AND deleted_at IS NULL \
-               UNION ALL SELECT id FROM adrs WHERE board_id = $1 AND deleted_at IS NULL) p \
-           ON p.id = r.source_id \
-         WHERE r.relationship = 'parent' \
          GROUP BY r.source_id, bc.is_done, bc.board_id"
     ))
     .bind::<SqlUuid, _>(board_id)
+    .bind::<diesel::sql_types::Array<SqlUuid>, _>(parent_ids)
     .load(conn)?;
     let mut progress: std::collections::HashMap<Uuid, ProgressCounts> =
         std::collections::HashMap::new();

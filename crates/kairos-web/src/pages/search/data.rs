@@ -50,9 +50,8 @@ fn family_or_err(short_code: &str) -> Result<&'static str, ApiError> {
 // Unified search (POST /api/search, KAIROS-A-0007 / S-0005)
 // ---------------------------------------------------------------------------
 
-/// mirror of: `kairos_client::types_search::SearchRequest` (partial —
-/// `sort` omitted, the server default `created_at desc` is what the view
-/// wants; the server accepts any subset).
+/// mirror of: `kairos_client::types_search::SearchRequest` (each field;
+/// the server accepts any subset).
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct SearchRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -61,10 +60,23 @@ pub struct SearchRequest {
     pub filter: Option<SearchFilter>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub traverse: Option<SearchTraverse>,
+    /// `None` is the default of the server: `relevance desc` with `q`,
+    /// `created_at desc` without (KAIROS-T-0186).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort: Option<SearchSort>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub offset: Option<i64>,
+}
+
+/// mirror of: `kairos_client::types_search::SearchSort`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SearchSort {
+    /// `created_at|updated_at|title|relevance`.
+    pub field: String,
+    /// `asc|desc`.
+    pub order: String,
 }
 
 /// `skip_serializing_if` for a `bool` that is only interesting when set.
@@ -72,25 +84,51 @@ fn is_false(flag: &bool) -> bool {
     !*flag
 }
 
-/// mirror of: `kairos_client::types_search::SearchFilter` (partial — only
-/// the filter-builder fields; `team_id`/`is_bucket` aren't in the T-0042
-/// builder).
+/// mirror of: `kairos_client::types_search::SearchFilter` (partial: the
+/// board, the column and the team go by slug or name, so `board_id`,
+/// `column_id` and `team_id` are not here; KAIROS-T-0583).
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct SearchFilter {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entity_type: Option<Vec<String>>,
+    /// A board slug (KAIROS-T-0368).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub board_id: Option<String>,
+    pub board: Option<String>,
+    /// A column name, with `board` (KAIROS-T-0552).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub column_id: Option<String>,
+    pub column: Option<String>,
+    /// A team slug.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team: Option<String>,
+    /// A repository slug.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_type: Option<Vec<String>>,
+    /// `planned|support`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_class: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_bucket: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<BTreeMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_after: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_before: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_after: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_before: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata_missing: Option<Vec<String>>,
+    /// A person: `me`, an email, a user name or a user id (KAIROS-T-0488).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claimed_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owned_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
     /// Ask for archived — "put away" in this GUI's words (ADR-20,
     /// KAIROS-T-0163) — work as well as live work. **Nothing to do with
     /// a document's editorial `lifecycle: archived`** (KAIROS-T-0078),
@@ -186,6 +224,28 @@ pub struct Hit {
     /// older server.
     #[serde(default)]
     pub snippet: Option<String>,
+    /// The board (UUID). A document has its owner board; an ADR can have
+    /// none.
+    #[serde(default)]
+    pub board_id: Option<String>,
+    /// The column (UUID). A document has none.
+    #[serde(default)]
+    pub column_id: Option<String>,
+    /// Tasks only: the claim, while the task is in Active.
+    #[serde(default)]
+    pub claim: Option<HitPerson>,
+    /// Strategies and initiatives only: the owner.
+    #[serde(default)]
+    pub owner: Option<HitPerson>,
+}
+
+/// mirror of: `kairos_client::types::{TaskClaim, ItemOwner}` (partial).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct HitPerson {
+    pub display_name: String,
+    /// True when an agent key of the person made the claim.
+    #[serde(default)]
+    pub agent: bool,
 }
 
 /// `POST /api/search`.
@@ -230,6 +290,41 @@ pub async fn board_columns(auth: Auth, board_id: &str) -> Result<Vec<BoardColumn
     api::get_json::<BoardColumns>(auth, &format!("/api/boards/{board_id}"))
         .await
         .map(|detail| detail.columns)
+}
+
+/// mirror of: `kairos_client::types_org::Team` (partial).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct Team {
+    pub slug: String,
+    pub name: String,
+}
+
+/// `GET /api/teams`: each team, for the team filter.
+pub async fn teams(auth: Auth) -> Result<Vec<Team>, ApiError> {
+    api::get_all(auth, "/api/teams").await
+}
+
+/// mirror of: `kairos_client::types_org::OrgMember` (partial).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct Member {
+    pub email: String,
+    pub display_name: String,
+}
+
+/// `GET /api/members`: each member, for the person filters.
+pub async fn members(auth: Auth) -> Result<Vec<Member>, ApiError> {
+    api::get_all(auth, "/api/members").await
+}
+
+/// mirror of: `kairos_client::types_repositories::Repository` (partial).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct Repository {
+    pub slug: String,
+}
+
+/// `GET /api/repositories`: each repository, for the repository filter.
+pub async fn repositories(auth: Auth) -> Result<Vec<Repository>, ApiError> {
+    api::get_all(auth, "/api/repositories").await
 }
 
 // ---------------------------------------------------------------------------
@@ -365,13 +460,14 @@ mod tests {
             q: Some("authentication".into()),
             filter: Some(SearchFilter {
                 entity_type: Some(vec!["task".into()]),
-                board_id: Some("b-uuid".into()),
-                column_id: Some("c-uuid".into()),
+                board: Some("kairos".into()),
+                column: Some("Todo".into()),
                 task_type: Some(vec!["bug".into(), "tech_debt".into()]),
                 metadata: Some(BTreeMap::from([("priority".into(), "critical".into())])),
                 created_after: Some("2026-01-01T00:00:00Z".into()),
                 created_before: Some("2026-03-01T00:00:00Z".into()),
                 include_deleted: true,
+                ..SearchFilter::default()
             }),
             traverse: Some(SearchTraverse {
                 from: SearchTraverseFrom {
@@ -380,6 +476,10 @@ mod tests {
                 relationships: vec!["parent".into()],
                 direction: "outbound".into(),
                 depth: 3,
+            }),
+            sort: Some(SearchSort {
+                field: "title".into(),
+                order: "asc".into(),
             }),
             limit: Some(25),
             offset: Some(0),
@@ -391,8 +491,8 @@ mod tests {
                 "q": "authentication",
                 "filter": {
                     "entity_type": ["task"],
-                    "board_id": "b-uuid",
-                    "column_id": "c-uuid",
+                    "board": "kairos",
+                    "column": "Todo",
                     "task_type": ["bug", "tech_debt"],
                     "metadata": {"priority": "critical"},
                     "created_after": "2026-01-01T00:00:00Z",
@@ -405,6 +505,7 @@ mod tests {
                     "direction": "outbound",
                     "depth": 3
                 },
+                "sort": {"field": "title", "order": "asc"},
                 "limit": 25,
                 "offset": 0
             })
@@ -535,6 +636,59 @@ mod tests {
             response.results.documents[0].snippet.as_deref(),
             Some("…the login form posts to the token route…")
         );
+    }
+
+    /// KAIROS-T-0583: a hit says where it is and who has it: the board,
+    /// the column, the claim of a task and the owner of an initiative.
+    #[test]
+    fn a_hit_has_its_place_and_its_person() {
+        let body = serde_json::json!({
+            "results": {
+                "tasks": [{
+                    "id": "t", "short_code": "DEMO-T-0001", "title": "Fix it",
+                    "board_id": "b1", "column_id": "c1", "task_type": "bug",
+                    "work_class": "planned", "version": 1,
+                    "created_at": "2026-07-01T10:00:00Z",
+                    "updated_at": "2026-07-01T10:00:00Z",
+                    "claim": {"user_id": "u", "display_name": "Robin", "agent": true,
+                              "claimed_at": "2026-07-02T10:00:00Z"}
+                }],
+                "initiatives": [{
+                    "id": "i", "short_code": "DEMO-I-0001", "title": "Plan",
+                    "board_id": "b2", "column_id": "c2", "is_bucket": false,
+                    "version": 1,
+                    "created_at": "2026-07-01T10:00:00Z",
+                    "updated_at": "2026-07-01T10:00:00Z",
+                    "owner": {"user_id": "u", "display_name": "Sam",
+                              "claimed_at": "2026-07-02T10:00:00Z"}
+                }],
+                "documents": [{
+                    "id": "d", "short_code": "DEMO-D-0001", "title": "Doc",
+                    "board_id": "b3", "impacts": [], "lifecycle": "draft",
+                    "version": 1,
+                    "created_at": "2026-07-01T10:00:00Z",
+                    "updated_at": "2026-07-01T10:00:00Z"
+                }]
+            },
+            "total": 3, "limit": 25, "offset": 0
+        });
+        let response: SearchResponse = serde_json::from_value(body).expect("mirror decodes");
+        let task = &response.results.tasks[0];
+        assert_eq!(task.board_id.as_deref(), Some("b1"));
+        assert_eq!(task.column_id.as_deref(), Some("c1"));
+        let claim = task.claim.as_ref().expect("claim");
+        assert_eq!(claim.display_name, "Robin");
+        assert!(claim.agent);
+        let owner = response.results.initiatives[0]
+            .owner
+            .as_ref()
+            .expect("owner");
+        assert_eq!(owner.display_name, "Sam");
+        assert!(!owner.agent);
+        let doc = &response.results.documents[0];
+        assert_eq!(doc.board_id.as_deref(), Some("b3"));
+        assert_eq!(doc.column_id, None);
+        assert_eq!(doc.claim, None);
     }
 
     /// The relationships mirror decodes the T-0020 grouped shape, and
