@@ -416,6 +416,7 @@ fn a_board_gives_the_teams_of_each_item_in_one_query() {
         "an item with no team has no entry"
     );
     assert_eq!(by_item.len(), 2);
+    let board_teams_of_i1 = by_item.get(&i1).cloned();
 
     // The strategy board reads its own items, two levels down.
     let s = strategy(conn, user);
@@ -426,6 +427,18 @@ fn a_board_gives_the_teams_of_each_item_in_one_query() {
     assert_eq!(
         summary(&by_item[&s]),
         vec![("skadi", true, false), ("weir", true, false)]
+    );
+
+    // KAIROS-T-0627: `page_teams` gives the answer of `board_teams` for
+    // the items of a page, and nothing for the others.
+    let page = item_teams::page_teams(conn, initiatives, &[i1, none]).expect("the page teams");
+    assert_eq!(page.len(), 1);
+    assert_eq!(page.get(&i1), board_teams_of_i1.as_ref());
+    assert!(
+        item_teams::page_teams(conn, strategies, &[i1])
+            .expect("another board")
+            .is_empty(),
+        "an item of a different board has no entry"
     );
 
     // `teams_of_items` gives the same answer for a list.

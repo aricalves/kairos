@@ -123,6 +123,31 @@ pub fn page_range_text(range: &aurora_dark::data::PageRange) -> String {
     )
 }
 
+/// The most entries that the activity feed counts before the page reaches
+/// past it (mirror of `kairos_server::api::meta::activity::COUNT_CAP`).
+pub const FEED_COUNT_CAP: i64 = 1000;
+
+/// The bound of the count of a page of the activity feed, when the count
+/// stopped there (KAIROS-T-0627): a `total` above the larger of
+/// [`FEED_COUNT_CAP`] and `offset + limit` means "more than that". `None`:
+/// the count is exact. Pure, host-tested.
+pub fn feed_count_bound(offset: i64, limit: i64, total: i64) -> Option<i64> {
+    let bound = FEED_COUNT_CAP.max(offset.saturating_add(limit));
+    (total > bound).then_some(bound)
+}
+
+/// The range text of a pager whose count stopped at `bound`
+/// (KAIROS-T-0627): the sentence of [`page_range_note`] with "more than".
+pub fn capped_range_text(range: &aurora_dark::data::PageRange, bound: i64) -> String {
+    if range.first == 0 {
+        return format!("The list shows 0 of more than {bound} items.");
+    }
+    format!(
+        "The list shows items {} to {} of more than {bound}.",
+        range.first, range.last
+    )
+}
+
 pub fn page_range_note(offset: i64, shown: usize, total: i64) -> String {
     let shown = i64::try_from(shown).unwrap_or(i64::MAX);
     if shown == 0 {
@@ -681,6 +706,20 @@ mod tests {
         assert_eq!(
             page_range_text(&page_range(0, 25, 0)),
             "The list shows 0 of 0 items."
+        );
+    }
+
+    /// KAIROS-T-0627: past the bound the feed says "more than".
+    #[test]
+    fn a_capped_feed_says_more_than_the_bound() {
+        use aurora_dark::data::page_range;
+        assert_eq!(feed_count_bound(0, 25, 1001), Some(1000));
+        assert_eq!(feed_count_bound(0, 25, 1000), None);
+        assert_eq!(feed_count_bound(990, 25, 1016), Some(1015));
+        assert_eq!(feed_count_bound(990, 25, 1010), None);
+        assert_eq!(
+            capped_range_text(&page_range(0, 25, 1001), 1000),
+            "The list shows items 1 to 25 of more than 1000."
         );
     }
 

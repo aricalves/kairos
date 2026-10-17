@@ -692,7 +692,10 @@ pub struct ListEnvelope<T: ToSchema> {
     pub items: Vec<T>,
     /// Rows matching the request, ignoring pagination. Live rows only
     /// unless the request asked for archived work as well â `total` and
-    /// `items` always answer the same question (KAIROS-T-0159).
+    /// `items` always answer the same question (KAIROS-T-0159). The
+    /// activity feed counts at most past the larger of 1000 and
+    /// `offset + limit` (KAIROS-T-0627): a `total` above that bound means
+    /// "more than the bound".
     pub total: i64,
     /// The applied limit.
     pub limit: i64,

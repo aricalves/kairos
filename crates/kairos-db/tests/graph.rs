@@ -998,12 +998,38 @@ fn children_progress_rollups() {
             .is_empty()
     );
 
-    // ---- whole-board batch: every parent from ONE call -----------------------
-    let batch = graph::board_children_progress(&mut conn, initiative_board).expect("board rollup");
+    // ---- page batch: every parent of the page from ONE call ------------------
+    let page = [i1.id, i2.id, t1.id];
+    let batch =
+        graph::page_children_progress(&mut conn, initiative_board, &page).expect("page rollup");
     let p1 = batch.get(&i1.id).expect("i1 present");
     assert_eq!((p1.done, p1.total, p1.has_done), (1, 3, true));
     let p2 = batch.get(&i2.id).expect("i2 present");
     assert_eq!((p2.done, p2.total, p2.has_done), (0, 1, true));
+    assert_eq!(
+        batch.len(),
+        2,
+        "a leaf and a task of another board have no rollup"
+    );
+
+    // KAIROS-T-0627: a page with one parent gives the same numbers for it,
+    // and nothing for the parents that are not on the page.
+    let one =
+        graph::page_children_progress(&mut conn, initiative_board, &[i1.id]).expect("page rollup");
+    assert_eq!(one.len(), 1);
+    assert_eq!(one.get(&i1.id), batch.get(&i1.id));
+    assert!(
+        graph::page_children_progress(&mut conn, initiative_board, &[])
+            .expect("empty page")
+            .is_empty()
+    );
+    // The board of the page bounds it: the parents of a different board
+    // have no rollup.
+    assert!(
+        graph::page_children_progress(&mut conn, board_a, &[i1.id])
+            .expect("other board")
+            .is_empty()
+    );
 
     // ---- zero-done-columns: composition only, never a fraction ---------------
     sql_query("UPDATE board_columns SET is_done = false")
@@ -1014,7 +1040,8 @@ fn children_progress_rollups() {
         rows.iter().all(|row| !row.is_done && !row.board_has_done),
         "no done semantics anywhere"
     );
-    let batch = graph::board_children_progress(&mut conn, initiative_board).expect("board rollup");
+    let batch =
+        graph::page_children_progress(&mut conn, initiative_board, &[i1.id]).expect("page rollup");
     let p1 = batch.get(&i1.id).expect("i1 present");
     assert_eq!((p1.done, p1.total, p1.has_done), (0, 3, false));
 }

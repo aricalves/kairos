@@ -162,14 +162,15 @@ pub(crate) fn team_filter(
     }
 }
 
-/// The teams of the items of a board, keyed by short code: what the board
-/// read sends. One query for the board.
+/// The teams of the items of a page of a board, keyed by short code: what
+/// the board read sends. One query for the items of the page.
 pub(crate) fn board_item_teams(
     conn: &mut PgConnection,
     board_id: Uuid,
     item_codes: &[(Uuid, String)],
 ) -> Result<BTreeMap<String, Vec<dto::ItemTeam>>, ApiError> {
-    let mut teams = item_teams::board_teams(conn, board_id).map_err(ApiError::internal)?;
+    let ids: Vec<Uuid> = item_codes.iter().map(|(id, _)| *id).collect();
+    let mut teams = item_teams::page_teams(conn, board_id, &ids).map_err(ApiError::internal)?;
     Ok(item_codes
         .iter()
         .filter_map(|(id, code)| {
