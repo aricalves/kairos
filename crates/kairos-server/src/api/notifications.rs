@@ -151,8 +151,8 @@ pub(crate) fn mark_for(
         }
         (None, false, _) => {
             return Err(ApiError::validation(
-                "Send `ids` (one or more ids of your notifications), or `all: true` with \
-                 `up_to` (the id of the newest notification that you read).",
+                "Send `ids`, the ids of your notifications. Or send `all: true` with `up_to`, \
+                 the id of the newest notification that you read.",
             ));
         }
     }
