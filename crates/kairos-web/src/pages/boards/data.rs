@@ -229,6 +229,28 @@ pub struct BoardItemsResponse {
     /// (KAIROS-T-0321); absent for an item with no team.
     #[serde(default)]
     pub item_teams: std::collections::BTreeMap<String, Vec<ItemTeam>>,
+    /// The metadata values of each item, by short code and then by the
+    /// slug of the definition (KAIROS-T-0368). The view asks for it with
+    /// `with_metadata=true` (KAIROS-T-0582); an item with no value has no
+    /// entry.
+    #[serde(default)]
+    pub item_metadata:
+        Option<std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>>,
+}
+
+/// The slug of the metadata definition of the priority (seeded, on each
+/// item type).
+pub const PRIORITY_SLUG: &str = "priority";
+
+impl BoardItemsResponse {
+    /// The value of the metadata `slug` of the item `code`, or `None`.
+    pub fn metadata_value(&self, code: &str, slug: &str) -> Option<&str> {
+        self.item_metadata
+            .as_ref()?
+            .get(code)?
+            .get(slug)
+            .map(String::as_str)
+    }
 }
 
 /// mirror of: `kairos_client::types_org::ItemTeam` (KAIROS-T-0321): one
@@ -354,6 +376,11 @@ impl BoardItemsResponse {
         self.children_progress.extend(page.children_progress);
         self.blocks_summary.extend(page.blocks_summary);
         self.item_teams.extend(page.item_teams);
+        if let Some(metadata) = page.item_metadata {
+            self.item_metadata
+                .get_or_insert_with(Default::default)
+                .extend(metadata);
+        }
         self.total = page.total;
     }
 }
@@ -393,11 +420,11 @@ pub fn board_cap_note(shown: usize, total: i64) -> Option<String> {
 }
 
 /// Each card of a board, page after page, up to [`BOARD_CARD_CAP`] cards:
-/// `GET /api/boards/{id}/items?limit=&offset=`. `total` of the result is
-/// the number of cards of the board. `board` is the slug or the id of the
-/// board (COLLIERY-T-0265).
+/// `GET /api/boards/{id}/items?with_metadata=true&limit=&offset=`. `total`
+/// of the result is the number of cards of the board. `board` is the slug
+/// or the id of the board (COLLIERY-T-0265).
 pub async fn load_board_items(auth: Auth, board: &str) -> Result<BoardItemsResponse, ApiError> {
-    let path = format!("{}/items", board_path(board));
+    let path = board_items_path(board);
     let mut items: BoardItemsResponse =
         get_json(auth, &crate::api::page_url(&path, BOARD_PAGE_LIMIT, 0)).await?;
     let mut last_page = items.card_count();
@@ -552,6 +579,9 @@ impl BoardItemsResponse {
         let had_blocks = self.blocks_summary.remove(code).is_some();
         self.children_progress.remove(code);
         self.item_teams.remove(code);
+        if let Some(metadata) = self.item_metadata.as_mut() {
+            metadata.remove(code);
+        }
         let has_blocks = page.blocks_summary.contains_key(code);
         for (column, (mine, fresh)) in self.columns.iter_mut().zip(page.columns).enumerate() {
             mine.item_count = fresh.item_count;
@@ -567,6 +597,11 @@ impl BoardItemsResponse {
             self.children_progress.extend(page.children_progress);
             self.blocks_summary.extend(page.blocks_summary);
             self.item_teams.extend(page.item_teams);
+            if let Some(metadata) = page.item_metadata {
+                self.item_metadata
+                    .get_or_insert_with(Default::default)
+                    .extend(metadata);
+            }
         }
         self.total += i64::from(after.is_some()) - i64::from(before.is_some());
         let moved = before.map(|(column, _)| column) != after;
@@ -755,11 +790,18 @@ pub async fn load_board_card(
     get_json(auth, &board_card_path(board, code)).await
 }
 
+/// The path of the pages of [`load_board_items`], before `limit` and
+/// `offset`. The cards come with their metadata (KAIROS-T-0582: the
+/// priority on the card). Pure, host-tested.
+pub fn board_items_path(board: &str) -> String {
+    format!("{}/items?with_metadata=true", board_path(board))
+}
+
 /// The path of [`load_board_card`]. Pure, host-tested.
 pub fn board_card_path(board: &str, code: &str) -> String {
     format!(
-        "{}/items?code={}",
-        board_path(board),
+        "{}&code={}",
+        board_items_path(board),
         crate::api::encode_component(code)
     )
 }
@@ -1552,7 +1594,7 @@ mod tests {
         assert_eq!(refresh_of(None, "b"), Refresh::Board);
         assert_eq!(
             board_card_path("demo", "D-T-1"),
-            "/api/boards/demo/items?code=D-T-1"
+            "/api/boards/demo/items?with_metadata=true&code=D-T-1"
         );
     }
 
@@ -1920,5 +1962,76 @@ mod tests {
         assert_eq!(EntityKind::for_board_level("adr"), Some(EntityKind::Adr));
         assert_eq!(EntityKind::for_board_level("nope"), None);
         assert_eq!(EntityKind::Strategy.api_family(), "strategies");
+    }
+
+    /// `metadata` of a response: the priority of each code.
+    fn with_priority(mut page: BoardItemsResponse, values: &[(&str, &str)]) -> BoardItemsResponse {
+        page.item_metadata = Some(
+            values
+                .iter()
+                .map(|(code, value)| {
+                    (
+                        code.to_string(),
+                        [(PRIORITY_SLUG.to_string(), value.to_string())].into(),
+                    )
+                })
+                .collect(),
+        );
+        page
+    }
+
+    /// KAIROS-T-0582: the board reads the metadata of the cards.
+    #[test]
+    fn the_board_reads_the_metadata() {
+        assert_eq!(
+            board_items_path("demo"),
+            "/api/boards/demo/items?with_metadata=true"
+        );
+        assert_eq!(
+            crate::api::page_url(&board_items_path("demo"), 1000, 0),
+            "/api/boards/demo/items?with_metadata=true&limit=1000&offset=0"
+        );
+    }
+
+    /// KAIROS-T-0582: the metadata of a page joins the view, and a patch
+    /// replaces the metadata of its card only.
+    #[test]
+    fn the_metadata_follows_the_pages_and_the_patches() {
+        let mut view = with_priority(
+            board_of(&[("D-T-1", "todo", 1), ("D-T-2", "todo", 1)], &[], 3),
+            &[("D-T-1", "high"), ("D-T-2", "low")],
+        );
+        assert_eq!(view.metadata_value("D-T-1", PRIORITY_SLUG), Some("high"));
+        assert_eq!(view.metadata_value("D-T-9", PRIORITY_SLUG), None);
+        assert_eq!(view.metadata_value("D-T-1", "size"), None);
+
+        view.add_page(with_priority(
+            board_of(&[("D-T-3", "doing", 1)], &[], 3),
+            &[("D-T-3", "medium")],
+        ));
+        assert_eq!(view.metadata_value("D-T-3", PRIORITY_SLUG), Some("medium"));
+
+        // A new priority of D-T-1.
+        let page = with_priority(
+            card_page(Some(("D-T-1", "todo", 2)), false, (2, 1)),
+            &[("D-T-1", "low")],
+        );
+        assert_eq!(view.patch_card("D-T-1", page), Patched::Card);
+        assert_eq!(view.metadata_value("D-T-1", PRIORITY_SLUG), Some("low"));
+        assert_eq!(view.metadata_value("D-T-2", PRIORITY_SLUG), Some("low"));
+
+        // The priority of D-T-2 goes: the card read has no entry.
+        let page = with_priority(card_page(Some(("D-T-2", "todo", 2)), false, (2, 1)), &[]);
+        view.patch_card("D-T-2", page);
+        assert_eq!(view.metadata_value("D-T-2", PRIORITY_SLUG), None);
+        assert_eq!(view.metadata_value("D-T-3", PRIORITY_SLUG), Some("medium"));
+    }
+
+    /// An older server sends no metadata: the view has none.
+    #[test]
+    fn no_metadata_is_no_value() {
+        let view = board_of(&[("D-T-1", "todo", 1)], &[], 1);
+        assert_eq!(view.item_metadata, None);
+        assert_eq!(view.metadata_value("D-T-1", PRIORITY_SLUG), None);
     }
 }
