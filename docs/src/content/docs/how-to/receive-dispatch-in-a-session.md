@@ -96,8 +96,16 @@ Kairos dispatched PLAT-T-0042: it entered Todo on the board platform-delivery (l
 ```
 
 The event has facts only: no title and no content. The session reads the task
-with `get_item`. The session triages a task in the support lane; another task runs
-`kairos:implement`. At the end, the session pushes the branch of the task with
+with `get_item`.
+
+A task in the support lane in the entry column is intake. For
+intake, the session reads the task, calls `related_work`, and writes a proposal
+with `append_note`. It applies the outcome only when the board lets an agent
+decide (`agents_decide`). The instructions of the channel give these steps, so
+the session does not need `/kairos:triage`. Another task runs
+`kairos:implement`.
+
+At the end of a task, the session pushes the branch of the task with
 `git push -u origin <branch>`. It opens a draft pull request and writes it on
 the task. Then it stops. It does not merge, release or tag. The git guard of
 the plugin lets that push through, and asks for each other push.

@@ -9,6 +9,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -129,6 +130,48 @@ def free_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+SKILLS = os.path.join(HERE, "..", "skills")
+
+
+def skill_frontmatter(name):
+    """The frontmatter lines of the skill `name`, or None when no skill has
+    that name."""
+    for bucket in sorted(os.listdir(SKILLS)):
+        path = os.path.join(SKILLS, bucket, name, "SKILL.md")
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read()
+            return text.split("---", 2)[1]
+    return None
+
+
+class TheInstructionsCanBeFollowed(unittest.TestCase):
+    """KAIROS-T-0543: each skill that the channel names is one that the
+    model can invoke; the intake steps are in the text itself."""
+
+    def test_each_skill_that_the_channel_names_is_model_invocable(self):
+        names = sorted(set(re.findall(r"kairos:([a-z][a-z0-9-]*)", channel.INSTRUCTIONS)))
+        self.assertIn("implement", names)
+        for name in names:
+            with self.subTest(skill=name):
+                fields = skill_frontmatter(name)
+                self.assertIsNotNone(fields, f"no skill {name}")
+                self.assertNotRegex(fields, r"(?m)^disable-model-invocation:\s*true")
+
+    def test_the_intake_steps_are_inline(self):
+        text = channel.INSTRUCTIONS
+        self.assertNotIn("kairos:triage", text)
+        for step in ("get_item", "related_work", "append_note", "agents_decide is true",
+                     "set_work_class", "AGENT_TRIAGE_OFF", "stop at the proposal",
+                     "Do not implement intake"):
+            with self.subTest(step=step):
+                self.assertIn(step, text)
+        # The order: read, look for related work, propose, then apply.
+        order = [text.index(word) for word in ("1. Read the task", "2. Call related_work",
+                                               "3. Write a proposal", "4. Apply the outcome")]
+        self.assertEqual(order, sorted(order))
 
 
 class EndToEnd(unittest.TestCase):
