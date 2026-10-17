@@ -33,6 +33,10 @@ pub struct Board {
     /// The short-code prefix of the board (COLLIERY-T-3099). It is set when
     /// the board is created and never changes.
     pub code_prefix: String,
+    /// A board policy (KAIROS-T-0641, [`crate::board_policy`]): on a
+    /// delivery board, a task moves into a claims column only when its
+    /// parent initiative is active. True by default.
+    pub parent_gate: bool,
 }
 
 /// Insert for [`Board`].

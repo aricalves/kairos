@@ -197,6 +197,18 @@ pub struct SetAgentTriageParams {
     pub agents_decide: bool,
 }
 
+/// `set_board_policy` (KAIROS-T-0641).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct SetBoardPolicyParams {
+    /// The board, by slug (e.g. "platform-delivery") or UUID.
+    pub board: String,
+    /// A delivery board only. True: a task moves into a claims column
+    /// (Active) only while its parent initiative is active. False: no check.
+    pub parent_gate: Option<bool>,
+}
+
 /// `delete_dispatch_rule` (KAIROS-T-0385).
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -1807,6 +1819,10 @@ impl KairosMcp {
                 } else {
                     out.push('\n');
                 }
+                // KAIROS-T-0641: the policies of the board.
+                if let Some(policy) = policy_text(&board) {
+                    out.push_str(&format!("  policy: {policy}\n"));
+                }
                 // COLLIERY-T-3108: what the team rule gives me on a board of
                 // my team, with no grant.
                 if board.team_id.is_some_and(|t| my_teams.contains(&t)) {
@@ -2226,6 +2242,35 @@ impl KairosMcp {
                 } else {
                     "an agent proposes with a note, a person decides"
                 }
+            ))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Set the policies of a board. `parent_gate` (a delivery board): when true (the default), a task moves into a claims column (Active) by a transition, a board move or a create only while its parent initiative is in Active or Monitoring, or is a bucket; else PARENT_NOT_ACTIVE. A task with no parent initiative moves freely. Send at least one policy; a policy of a different level is VALIDATION. Needs configure_boards; `my_boards` shows the policies."
+    )]
+    pub async fn set_board_policy(
+        &self,
+        Parameters(params): Parameters<SetBoardPolicyParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let (user, slug) = (auth.user_id, tenant.slug.clone());
+        self.run_tool(&tenant, move |conn| {
+            let board = crate::api::org::boards::set_board_policy_as(
+                conn,
+                &slug,
+                user,
+                &params.board,
+                crate::api::org::boards::PolicyChange {
+                    parent_gate: params.parent_gate,
+                },
+            )?;
+            Ok(format!(
+                "Policies of {}: {}.",
+                board.slug,
+                policy_text(&board).unwrap_or_else(|| "none".to_string())
             ))
         })
         .await
@@ -7021,6 +7066,19 @@ fn map_link_error(e: GraphError) -> ApiError {
 /// of `level` (KAIROS-T-0072; the ADR board of a team adds `manage_adrs`,
 /// COLLIERY-T-3108; a strategy or initiative board adds its `manage_<type>`,
 /// KAIROS-T-0440). The vocabulary is `kairos_core::abac`.
+/// The policies of a board for `my_boards` and `set_board_policy`
+/// (KAIROS-T-0641), or `None` when its level has none.
+fn policy_text(board: &Board) -> Option<String> {
+    match board.board_level {
+        BoardLevel::Delivery => Some(format!(
+            "parent_gate {} (a task moves to a claims column only while its initiative is \
+             active)",
+            if board.parent_gate { "on" } else { "off" }
+        )),
+        _ => None,
+    }
+}
+
 fn team_capabilities(level: BoardLevel) -> &'static [&'static str] {
     kairos_core::abac::team_capabilities(level.as_str())
 }
@@ -7501,6 +7559,18 @@ fn create_item_impl(
         )?;
         graph::link_items(conn, parent_id, created_id, relationship, user)
             .map_err(map_graph_error)?;
+        // KAIROS-T-0641: a create into a claims column is a move into it.
+        // The entry column can have the flag; the parent edge exists now.
+        if item_type == ItemType::Task {
+            use kairos_db::schema::tasks;
+            let column: Uuid = tasks::table
+                .filter(tasks::id.eq(created_id))
+                .select(tasks::column_id)
+                .first(conn)
+                .map_err(ApiError::internal)?;
+            kairos_db::board_policy::check_active_parent(conn, created_id, column)
+                .map_err(map_board_error)?;
+        }
         out.push_str(&format!(
             "\nparent: {parent_code} ({relationship} edge created)."
         ));

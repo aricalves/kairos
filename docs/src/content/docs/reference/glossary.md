@@ -171,6 +171,19 @@ Every board has a team. The rule has two forms.
 Documents sit on no board at all. A document has an owner, and the owner is a
 board: see [owner board](#owner-board).
 
+## board policy
+
+A rule of a board that an admin with `configure_boards` turns on or off
+(KAIROS-T-0641). Each policy is a field of the board. `PATCH /api/boards/{id}`,
+the MCP tool `set_board_policy` and `kairos boards policy` set it. `my_boards`
+shows it.
+
+- **`parent_gate`**, a policy of a delivery board. With it on, a task moves
+  into a claims column only while its parent initiative is active. An
+  initiative is active in Active or Monitoring. A [bucket](#bucket) is always
+  active. A task with no parent initiative moves freely. The refusal is
+  `PARENT_NOT_ACTIVE`. The policy is on by default.
+
 ## bucket
 
 An initiative marked as a standing container for work that arrives without a

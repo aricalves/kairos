@@ -39,6 +39,14 @@ pub struct Board {
     #[serde(default)]
     #[schema(required = true)]
     pub code_prefix: String,
+    /// The board policy `parent_gate` of a delivery board (KAIROS-T-0641):
+    /// when true, a task moves into a claims column (Active) only while its
+    /// parent initiative is active (in Active or Monitoring, or a bucket).
+    /// A move under an initiative that is not active is a 422
+    /// `PARENT_NOT_ACTIVE`. True by default. `null` on each other level.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub parent_gate: Option<bool>,
     /// RFC 3339.
     pub created_at: String,
     /// RFC 3339.
@@ -157,7 +165,7 @@ pub struct CreateBoardRequest {
 }
 
 /// Body of `PATCH /api/boards/{id}` (board settings).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateBoardRequest {
     #[serde(default)]
@@ -176,6 +184,11 @@ pub struct UpdateBoardRequest {
     )]
     #[schema(value_type = Option<String>)]
     pub team_id: Option<Option<String>>,
+    /// The board policy `parent_gate` (KAIROS-T-0641), for a delivery board
+    /// only: true turns it on, false turns it off. On each other level the
+    /// field is a 422 `VALIDATION`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_gate: Option<bool>,
 }
 
 /// Body of `PUT /api/boards/{id}/code-sequences/{item_type}`

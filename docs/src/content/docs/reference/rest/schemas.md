@@ -206,6 +206,7 @@ A board (`/api/boards` list element).
 | `created_at` | `string` | yes | RFC 3339. |
 | `id` | `string` | yes | Board id (UUID). |
 | `name` | `string` | yes |  |
+| `parent_gate` | `boolean`, nullable | yes | The board policy `parent_gate` of a delivery board (KAIROS-T-0641): when true, a task moves into a claims column (Active) only while its parent initiative is active (in Active or Monitoring, or a bucket). A move under an initiative that is not active is a 422 `PARENT_NOT_ACTIVE`. True by default. `null` on each other level. |
 | `slug` | `string` | yes |  |
 | `team_id` | `string`, nullable | no | Owning team (UUID). A delivery board has one (COLLIERY-T-0230). An ADR board can have one: the ADR board of the team (COLLIERY-T-3102). A strategy or initiative board has one too (KAIROS-T-0440): the one in the create, or its own team. The ADR board of the organization has none. |
 | `updated_at` | `string` | yes | RFC 3339. |
@@ -2800,6 +2801,7 @@ Body of `PATCH /api/boards/{id}` (board settings).
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `name` | `string`, nullable | no |  |
+| `parent_gate` | `boolean`, nullable | no | The board policy `parent_gate` (KAIROS-T-0641), for a delivery board only: true turns it on, false turns it off. On each other level the field is a 422 `VALIDATION`. |
 | `slug` | `string`, nullable | no |  |
 | `team_id` | `string`, nullable | no | The team of the board (UUID, or null for a board of the organization). The team of a board does not change (COLLIERY-T-0243): a value that is not the team of the board is refused with 422 `BOARD_TEAM_IS_FIXED`. Leave it out, or send the value that the board has. |
 

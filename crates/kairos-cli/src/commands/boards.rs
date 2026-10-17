@@ -8,7 +8,8 @@ use crate::error::CliError;
 use crate::table::Table;
 
 use kairos_client::types_org::{
-    BoardItemsQuery, BoardItemsResponse, CreateBoardRequest, UpdateColumnRequest,
+    BoardItemsQuery, BoardItemsResponse, CreateBoardRequest, UpdateBoardRequest,
+    UpdateColumnRequest,
 };
 
 /// Operations on boards.
@@ -100,6 +101,19 @@ pub enum BoardsCommand {
         /// Remove the limit
         #[arg(long)]
         none: bool,
+        #[command(flatten)]
+        common: Common,
+    },
+    /// Show or set the policies of a board (KAIROS-T-0641). Setting needs
+    /// configure_boards. parent_gate (a delivery board): a task moves to a
+    /// claims column only while its parent initiative is active
+    Policy {
+        /// Board slug or id (UUID)
+        #[arg(value_name = "BOARD")]
+        board: String,
+        /// on or off
+        #[arg(long, value_name = "on|off", value_parser = ["on", "off"])]
+        parent_gate: Option<String>,
         #[command(flatten)]
         common: Common,
     },
@@ -314,6 +328,31 @@ impl BoardsCommand {
                 }
                 Ok(())
             }
+            Self::Policy {
+                board,
+                parent_gate,
+                common,
+            } => {
+                let client = client(&common)?;
+                let mut current = client.get_board(&board).await?.board;
+                let parent_gate = parent_gate.map(|v| v == "on");
+                if parent_gate.is_some() {
+                    current = client
+                        .update_board(
+                            &current.id,
+                            &UpdateBoardRequest {
+                                parent_gate,
+                                ..UpdateBoardRequest::default()
+                            },
+                        )
+                        .await?;
+                }
+                if common.json {
+                    return print_json(&current);
+                }
+                println!("{}", policy_text(&current));
+                Ok(())
+            }
             Self::ArchiveCompleted {
                 board,
                 confirm,
@@ -335,6 +374,23 @@ impl BoardsCommand {
             }
         }
     }
+}
+
+/// The text of `boards policy` (KAIROS-T-0641). Pure.
+fn policy_text(board: &kairos_client::types_org::Board) -> String {
+    let on_off = |on: bool| if on { "on" } else { "off" };
+    let mut lines = Vec::new();
+    if let Some(on) = board.parent_gate {
+        lines.push(format!(
+            "parent_gate: {} (a task moves to a claims column only while its initiative is \
+             active)",
+            on_off(on)
+        ));
+    }
+    if lines.is_empty() {
+        return format!("The board {} has no policy.", board.slug);
+    }
+    format!("Policies of {}:\n  {}", board.slug, lines.join("\n  "))
 }
 
 /// The human board rendering: one section per column (in position order),

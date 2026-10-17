@@ -850,6 +850,23 @@ Shows the flow metrics of the board for the range:
 A cancelled task counts apart from the done items. A range has 366 days at
 most. The definitions are in [`board_flow`](../mcp-tools/#board_flow).
 
+### `kairos boards policy`
+
+```
+kairos boards policy <BOARD> [--parent-gate on|off] [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<BOARD>` | slug or UUID | required | The board. |
+| `--parent-gate` | `on` or `off` | unchanged | The policy `parent_gate` of a delivery board. |
+
+Shows the policies of a board, and sets them. To set a policy, you need
+`configure_boards` on the board. With `parent_gate` on, a task moves to a
+claims column only while its parent initiative is active. Kairos refuses a
+different move with `PARENT_NOT_ACTIVE`. See
+[`set_board_policy`](../mcp-tools/#set_board_policy).
+
 ### `kairos boards wip-limit`
 
 ```

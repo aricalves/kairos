@@ -3,8 +3,8 @@ title: "MCP tools"
 ---
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-seventy tools. A drift gate in the test suite
-asserts that `tools/list` returns these seventy and no others. The same
+seventy-one tools. A drift gate in the test suite
+asserts that `tools/list` returns these seventy-one and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -23,7 +23,7 @@ organization.
 | URL | Profile | Tools |
 |---|---|---|
 | `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory, claims, notifications, the scales and templates, team pages to read: 40 tools. |
-| `/mcp?profile=admin` | admin | Teams, boards, columns and transitions, grants, metadata definitions and templates, dispatch rules and agent triage, the writes of team pages, org read tokens, delete and rebuild of repositories, board flow, purge: the other 30 tools. |
+| `/mcp?profile=admin` | admin | Teams, boards, columns and transitions, grants, metadata definitions and templates, dispatch rules and agent triage, the writes of team pages, org read tokens, delete and rebuild of repositories, board flow, purge: the other 31 tools. |
 | `/mcp?profile=all` | all | Each tool. |
 
 You can call each tool under each profile: the profile changes the list,
@@ -154,6 +154,11 @@ here, not from a refused `transition_item`.
 ```text
   moves: Backlog [entry] → Todo | Todo → Active, Blocked | Active [claims, WIP 3] → Completed, Blocked | Blocked → Todo, Active | Completed [done]
 ```
+
+Each delivery board has a `policy:` line with its [board
+policies](#set_board_policy), for example
+`policy: parent_gate on (a task moves to a claims column only while its
+initiative is active)`.
 
 Each ADR board names its team
 (`ADR board of the team <slug>`), or the organization. A team ADR board holds
@@ -915,6 +920,11 @@ it.
 The same applies to each `parent`: the caller who creates an item can link it
 to that parent.
 
+A task goes to the entry column of its board. When that column holds claims,
+the create is a move into a claims column. Then the policy `parent_gate` of
+the board applies to the `parent`. An initiative that is not active gives
+`PARENT_NOT_ACTIVE`, and Kairos creates nothing.
+
 A document must have an owner board. The call must have `board`, with
 `parent` or with no `parent`. The owner board can be a live board of each
 level. The caller needs `manage_documents` on that board.
@@ -1293,6 +1303,10 @@ target outside the board's transition graph, enumerating the allowed targets;
 entry column) while the board lets a person decide the triage. A task a
 person triaged out of the entry column moves as any other.
 
+Kairos also refuses `PARENT_NOT_ACTIVE` for a task that goes into a claims
+column under an inactive initiative. The board policy `parent_gate` sets this
+rule. See [`set_board_policy`](#set_board_policy).
+
 ### `move_item`
 
 Moves a task to another delivery board. It lands in that board's entry column
@@ -1311,6 +1325,9 @@ Requires `manage_tasks` on both the task's current board and the target. A
 move is not an edit. The creator of the task gets no right to move it.
 
 The task keeps its repository. The move does not look at the repository.
+
+The entry column of the target board can hold claims. Then the policy
+`parent_gate` of the target board applies, as for `transition_item`.
 
 Column-to-column moves on an item's own board are `transition_item`, not this
 tool.
@@ -2414,6 +2431,28 @@ With the setting on, the agent's move works, and the activity log gets a line
 
 Requires `configure_boards` on the board. REST:
 `GET` and `PUT /api/boards/{id}/agent-triage`.
+
+### `set_board_policy`
+
+Sets the policies of a board (KAIROS-T-0641). Each policy is on or off per
+board.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `board` | string | yes | — | Slug or UUID. |
+| `parent_gate` | boolean | no | — | A delivery board only. `true`: a task moves into a claims column only while its parent initiative is active. `false`: no check. |
+
+`parent_gate` is on by default. With it on, a task moves into a claims column
+only while its parent initiative is in Active or Monitoring. A bucket
+initiative is always active. A task with no parent initiative moves freely.
+
+The check runs on a transition, a move to the board and a create. A refused
+move is `PARENT_NOT_ACTIVE`. A task that is in Active already stays there.
+
+Send at least one policy. A policy of a different level of board is
+`VALIDATION`. `my_boards` shows the policies of each board.
+
+Requires `configure_boards` on the board. REST: `PATCH /api/boards/{id}`.
 
 ### `list_dispatch_rules`
 
