@@ -2,6 +2,8 @@
 //! resolution and the S-0006 error contract; the tool implementations live
 //! in [`super::tools`].
 
+use std::sync::OnceLock;
+
 use axum::http::request::Parts;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
@@ -29,13 +31,27 @@ pub struct KairosMcp {
     pub(super) tool_router: ToolRouter<Self>,
 }
 
+/// The router of the 70 tools, built once per process (KAIROS-T-0611): the
+/// stateless `/mcp` makes a service per request, and building the router
+/// each time was 70 boxed handlers and a map per call.
+static TOOL_ROUTER: OnceLock<ToolRouter<KairosMcp>> = OnceLock::new();
+
+/// The full tool list, built once per process from the router; each
+/// `list_tools` filters it by the profile of the request (KAIROS-T-0611).
+static ALL_TOOLS: OnceLock<Vec<rmcp::model::Tool>> = OnceLock::new();
+
 impl KairosMcp {
     /// Build a service instance over the shared state.
     pub fn new(state: AppState) -> Self {
         Self {
             state,
-            tool_router: Self::tool_router(),
+            tool_router: TOOL_ROUTER.get_or_init(Self::tool_router).clone(),
         }
+    }
+
+    /// Every tool, in the order of `list_all`, once per process.
+    fn all_tools(&self) -> &'static [rmcp::model::Tool] {
+        ALL_TOOLS.get_or_init(|| self.tool_router.list_all())
     }
 
     /// The authenticated caller of the CURRENT tool call: the
@@ -80,7 +96,7 @@ impl ServerHandler for KairosMcp {
         let profile = super::profiles::Profile::of(context.extensions.get::<Parts>())
             .map_err(|message| ErrorData::invalid_params(message, None))?;
         Ok(ListToolsResult {
-            tools: profile.filter(self.tool_router.list_all()),
+            tools: profile.filter(self.all_tools().to_vec()),
             meta: None,
             next_cursor: None,
         })

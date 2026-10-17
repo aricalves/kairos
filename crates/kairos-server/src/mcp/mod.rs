@@ -80,7 +80,10 @@ pub fn router(state: AppState) -> Router<AppState> {
         Arc::new(LocalSessionManager::default()),
         StreamableHttpServerConfig::default()
             .disable_allowed_hosts()
-            .with_stateful_mode(false),
+            .with_stateful_mode(false)
+            // KAIROS-T-0611: one JSON answer per call, not an SSE stream with
+            // a keep-alive and a spawned task; the clients accept both.
+            .with_json_response(true),
     );
 
     Router::new()
