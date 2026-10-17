@@ -20,8 +20,12 @@
 //! - for a task: Cancel with a reason, and Delete for good ([`end`],
 //!   KAIROS-T-0362);
 //! - for a task: the claim, with Hand off and Release ([`claim`],
-//!   KAIROS-T-0369).
+//!   KAIROS-T-0369);
+//! - who may edit ([`access`], KAIROS-T-0581): the editor and the metadata
+//!   panel are read-only, with the reason, for a person who may not edit;
+//!   Archive shows only to a person who may archive.
 
+mod access;
 pub(crate) mod api;
 mod claim;
 mod create_doc;
@@ -286,6 +290,8 @@ fn ItemLoaded(
     let banner_code = item.short_code.clone();
     let item_id = item.id.clone();
     let created_by = item.created_by.clone();
+    let edit_creator = item.created_by.clone();
+    let edit_claim = item.claim.clone();
     let editorial_archived = item.lifecycle.as_deref() == Some("archived");
     let impacts_creator = item.created_by.clone();
     let external_creator = item.created_by.clone();
@@ -318,7 +324,23 @@ fn ItemLoaded(
         }
     });
     let can_restore = restore_power(family, board, created_by.clone());
+    // KAIROS-T-0581, KAIROS-A-0032: the archive takes the rule of the
+    // restore (no claim); Archive shows only to a person who passes it,
+    // as Cancel does.
+    let can_archive = can_restore;
     let task_powers = task_end_powers(family, board, task_column);
+    // KAIROS-T-0581: the edit rule with the claim, for the editor and the
+    // metadata panel. The reason names the board when the page knows it.
+    let may_edit = edit_power(family, board, edit_creator, edit_claim);
+    let edit = Memo::new(move |_| {
+        let slug = match board.get() {
+            Some(Ok(Some(board))) => Some(board.slug),
+            _ => None,
+        };
+        access::edit_access(archived, may_edit.get(), family, slug.as_deref())
+    });
+    let edit_read_only = Signal::derive(move || edit.with(access::EditAccess::is_read_only));
+    let edit_reason = Signal::derive(move || edit.with(access::EditAccess::reason));
 
     view! {
         <PageHeader title=header_title sub=family.label()/>
@@ -385,10 +407,12 @@ fn ItemLoaded(
                         "Cancel task"
                     </Button>
                 })}
-                <Button variant="default" size="xs" disabled=archived
-                    on_click=Callback::new(move |_| delete_open.set(true))>
-                    "Archive"
-                </Button>
+                {move || can_archive.get().then(|| view! {
+                    <Button variant="default" size="xs" disabled=archived
+                        on_click=Callback::new(move |_| delete_open.set(true))>
+                        "Archive"
+                    </Button>
+                })}
                 {move || task_powers.get().purge.then(|| view! {
                     <Button variant="default" size="xs" bad=true
                         on_click=Callback::new(move |_| purge_open.set(true))>
@@ -405,7 +429,8 @@ fn ItemLoaded(
                 initial_title=title
                 initial_content=content
                 initial_version=version
-                read_only=archived
+                read_only=edit_read_only
+                read_only_reason=edit_reason
                 on_saved
             />
             <Stack gap="sm">
@@ -450,7 +475,8 @@ fn ItemLoaded(
                 {lifecycle.map(|current| view! {
                     <LifecyclePanel code=short_code.clone() current archived on_moved/>
                 })}
-                <MetadataPanel family code=short_code.clone() read_only=archived/>
+                <MetadataPanel family code=short_code.clone() read_only=edit_read_only
+                    read_only_reason=edit_reason/>
                 // KAIROS-T-0508: the URIs that the item names, with a label.
                 <ExternalRefsPanel family code=short_code.clone() board
                     created_by=external_creator archived/>
@@ -526,6 +552,44 @@ fn restore_power(
                 boards::may_edit_item(&me, created_by, None, None, required)
             }
         })
+    })
+}
+
+/// May the signed-in user EDIT this item (KAIROS-T-0581)? The edit rule
+/// of the server with its four facts: [`boards::may_edit_item`] (the
+/// creator, `manage_<family>`, an org admin), the `manage_<family>` that
+/// membership of the board implies ([`access::membership_implies`],
+/// KAIROS-T-0410: an edit, not an archive), or the claim of the task
+/// ([`access::holds_claim`], KAIROS-A-0032). `None` until whoami and the
+/// board read have both resolved. An off-board item or an unreadable
+/// board falls back to the board-less mirror, as [`restore_power`] does.
+fn edit_power(
+    family: Family,
+    board: LocalResource<Result<Option<api::BoardInfo>, ApiError>>,
+    created_by: String,
+    claim: Option<api::Claim>,
+) -> Memo<Option<bool>> {
+    let whoami = use_context::<LocalResource<Result<crate::api::Whoami, ApiError>>>();
+    let created_by = StoredValue::new(created_by);
+    let claim = StoredValue::new(claim);
+    Memo::new(move |_| {
+        let me = whoami
+            .and_then(|resource| resource.get())
+            .and_then(Result::ok)?;
+        let required = manage_capability(family);
+        let by_rule = created_by.with_value(|created_by| match board.get()? {
+            Ok(Some(board)) => Some(
+                boards::may_edit_item(
+                    &me,
+                    created_by,
+                    Some(&board.slug),
+                    board.team_id.as_deref(),
+                    required,
+                ) || access::membership_implies(&me, &board.slug, required),
+            ),
+            Ok(None) | Err(_) => Some(boards::may_edit_item(&me, created_by, None, None, required)),
+        })?;
+        Some(by_rule || claim.with_value(|claim| access::holds_claim(&me, claim.as_ref())))
     })
 }
 
