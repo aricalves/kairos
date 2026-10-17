@@ -240,21 +240,39 @@ pub(crate) fn require_task_create_capability(
 /// when the caller asks for it (KAIROS-A-0020) — every write path passes
 /// [`Liveness::LiveOnly`], which is what keeps archived work read-only
 /// without a second guard.
+///
+/// KAIROS-T-0626: one statement finds the task by its code, upper-cased
+/// (KAIROS-T-0560), or by a retired code (a code is held or retired, never
+/// the two). Liveness is decided on the row. Only a miss takes the longer
+/// path of [`super::found_or_follow_retired`], for its 404.
 fn load(conn: &mut PgConnection, short_code: &str, liveness: Liveness) -> Result<Task, ApiError> {
-    use kairos_db::schema::tasks::dsl;
-    let mut query = dsl::tasks
-        .filter(dsl::short_code.eq(short_code))
-        .into_boxed();
-    if liveness == Liveness::LiveOnly {
-        query = query.filter(dsl::deleted_at.is_null());
-    }
-    let found = query
+    use kairos_db::schema::{retired_codes, tasks::dsl};
+    let upper = short_code.to_ascii_uppercase();
+    let found = dsl::tasks
+        .filter(
+            dsl::short_code.eq(&upper).or(dsl::id.eq_any(
+                retired_codes::table
+                    .filter(retired_codes::code.eq(&upper))
+                    .select(retired_codes::item_id),
+            )),
+        )
         .select(Task::as_select())
         .first(conn)
         .optional()
         .map_err(ApiError::internal)?;
-    // COLLIERY-T-3100: a read follows a retired code; a write is refused.
-    super::found_or_follow_retired(conn, found, "task", short_code, liveness, load)
+    match found {
+        // COLLIERY-T-3100: a read follows a retired code; a write is refused.
+        Some(task) if task.short_code != upper => match liveness {
+            Liveness::IncludeArchived => Ok(task),
+            Liveness::LiveOnly => Err(super::retired_code_refused(&upper, &task.short_code)),
+        },
+        // KAIROS-T-0560: a write to an archived task says so.
+        Some(task) if liveness == Liveness::LiveOnly && task.deleted_at.is_some() => {
+            Err(super::archived_write_refused(&upper))
+        }
+        Some(task) => Ok(task),
+        None => super::found_or_follow_retired(conn, None, "task", short_code, liveness, load),
+    }
 }
 
 /// The task DTO of a response, with the repository, the claim

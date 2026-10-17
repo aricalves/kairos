@@ -14,7 +14,7 @@ The arguments are: `$ARGUMENTS`
 Find the task short codes in the arguments (the form is `PREFIX-T-NNNN`). For each code, call `get_item`.
 
 - If `get_item` does not find a code, add `--missing <code>` to the command in step 2. The script then refuses to start and names the code. Tell the user which code is missing. Do not start the loop.
-- A task can have a different repository from this checkout, or be in the Blocked column. Then tell the user, and do not start the loop. The user removes the task from the list or makes it workable first.
+- A task can have a repository that has no clone here, or be in the Blocked column. Then tell the user, and do not start the loop. The user removes the task from the list or makes it workable first.
 
 ## 2. Start the loop
 
@@ -34,9 +34,10 @@ The output of the script gives the tasks in sequence and the procedure. Do the t
 
 - the repository check;
 - Todo, then Active;
+- open the work in a worktree (`../wt-<code>`, on the branch `<code>`);
 - progress notes on the item;
 - the completion gate, with evidence for each acceptance criterion;
-- the review, the commit, then Completed.
+- the review, the commit in the worktree, close the work, then Completed.
 
 Follow the commit rules of the repository and of the user.
 
@@ -50,7 +51,7 @@ The loop ends in one of four ways:
   - a task has no acceptance criteria that you can check;
   - the work needs a design decision, a push, a deploy, or a change in a different repository.
 
-  Write the reason on the task and on its parent initiative. Give the reason in your reply. End the reply with `<promise>LOOP STOPPED</promise>`.
+  Write the reason on the task and on its parent initiative. Do the "Abort" section of `/kairos:implement` for the task. Give the reason in your reply. End the reply with `<promise>LOOP STOPPED</promise>`.
 - **The loop needs an answer from the user.** Do not guess. Write the question on the task with `append_note`. Give the question in your reply. End the reply with `<promise>NEED INPUT</promise>`. The user answers, then starts the loop again.
 - **The loop gets to the iteration limit** (25 by default). Each stop of the session is one iteration. `--max-iterations N` changes the limit, and `--max-iterations 0` removes it. The hook then lets the session stop. A task can be in an intermediate state.
 
