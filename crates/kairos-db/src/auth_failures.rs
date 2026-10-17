@@ -40,10 +40,13 @@ pub struct Rules {
 }
 
 /// What the table holds for some subjects.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Status {
     /// The end of the longest live lockout of the subjects.
     pub locked_until: Option<DateTime<Utc>>,
+    /// The subject of that lockout (KAIROS-T-0539): the caller says which
+    /// limit refused the attempt.
+    pub locked: Option<SubjectKey>,
     /// True when one of the subjects has a row.
     pub known: bool,
 }
@@ -65,6 +68,10 @@ pub fn status(
     struct Row {
         #[diesel(sql_type = Nullable<Timestamptz>)]
         locked_until: Option<DateTime<Utc>>,
+        #[diesel(sql_type = Nullable<Text>)]
+        locked_kind: Option<String>,
+        #[diesel(sql_type = Nullable<Text>)]
+        locked_subject: Option<String>,
         #[diesel(sql_type = Bool)]
         known: bool,
     }
@@ -72,8 +79,14 @@ pub fn status(
         return Ok(Status::default());
     }
     let (kinds, keys) = split(subjects);
+    // The kind and the subject of the longest live lockout. The two
+    // aggregates have the same order, so they name the same row.
     let row: Row = sql_query(
         "SELECT max(f.locked_until) FILTER (WHERE f.locked_until > $3) AS locked_until, \
+                (array_agg(f.kind ORDER BY f.locked_until DESC, f.kind, f.subject) \
+                    FILTER (WHERE f.locked_until > $3))[1] AS locked_kind, \
+                (array_agg(f.subject ORDER BY f.locked_until DESC, f.kind, f.subject) \
+                    FILTER (WHERE f.locked_until > $3))[1] AS locked_subject, \
                 count(*) > 0 AS known \
          FROM public.auth_failures f \
          JOIN unnest($1::text[], $2::text[]) AS t(kind, subject) \
@@ -85,6 +98,10 @@ pub fn status(
     .get_result(conn)?;
     Ok(Status {
         locked_until: row.locked_until,
+        locked: row
+            .locked_kind
+            .zip(row.locked_subject)
+            .map(|(kind, subject)| SubjectKey { kind, subject }),
         known: row.known,
     })
 }

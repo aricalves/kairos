@@ -10,8 +10,12 @@
 //! like this has been a mechanism that worked and was never called.
 //!
 //! KAIROS-T-0377: the counts are in `public.auth_failures`, shared by every
-//! server. Two app states on one database share a lockout, by source (API
-//! keys) and by account (`/api/login`). The rules of KAIROS-T-0202 (the decay,
+//! server. Two app states on one database share a lockout, by key (API
+//! keys) and by account (`/api/login`).
+//!
+//! KAIROS-T-0539: an API key is counted by the key, and by its address at a
+//! second, higher limit. `tests/api_key_lockout.rs` has the two keys from one
+//! address. The rules of KAIROS-T-0202 (the decay,
 //! the identity/source split, a success during a lockout, `Retry-After`
 //! rounding) were unit tests of the in-memory throttle; they run here against
 //! the table, with the time as a parameter.
@@ -46,7 +50,7 @@ use uuid::Uuid;
 
 const SCRATCH_DB: &str = "kairos_rate_limit_t0202_test";
 
-/// After this many failures the throttle locks the source out. Deliberately
+/// After this many failures the throttle locks the key out. Deliberately
 /// smaller than the production default so the test is short; the default itself
 /// is asserted in the config unit tests.
 const MAX_FAILURES: u32 = 3;
@@ -192,14 +196,15 @@ async fn a_burst_of_failed_authentications_is_refused() {
         assert!(retry_after.is_none(), "no Retry-After before a lockout");
     }
 
-    // 2. The next one is refused, with Retry-After.
+    // 2. The next one is refused, with Retry-After. The 429 says that the
+    //    key is locked out (KAIROS-T-0539).
     let (status, retry_after, body) = whoami_from(&router, &bad_key, attacker, &[]).await;
     assert_eq!(
         status,
         StatusCode::TOO_MANY_REQUESTS,
         "burst refused: {body}"
     );
-    assert_eq!(error_code(&body), "TOO_MANY_REQUESTS");
+    assert_eq!(error_code(&body), "KEY_LOCKED_OUT");
     assert_eq!(
         retry_after.as_deref(),
         Some("60"),
@@ -207,28 +212,30 @@ async fn a_burst_of_failed_authentications_is_refused() {
     );
     assert_eq!(body["error"]["details"]["retry_after_secs"], 60);
 
-    // 3. The refusal reveals nothing about the credential. A key for a tenant
-    //    that does not exist, and a well-formed key for one that does, must
+    // 3. The refusal reveals nothing about the credential. A locked key for a
+    //    tenant that does not exist, and one for a tenant that does, must
     //    produce byte-identical refusals — otherwise the 429 is an enumeration
     //    oracle that says "keep guessing, this org is real".
-    let (_, _, unknown_tenant) =
-        whoami_from(&router, &generate_key("nosuchorg"), attacker, &[]).await;
+    let unknown = generate_key("nosuchorg");
+    for _ in 0..MAX_FAILURES {
+        whoami_from(&router, &unknown, attacker, &[]).await;
+    }
+    let (_, _, unknown_tenant) = whoami_from(&router, &unknown, attacker, &[]).await;
     assert_eq!(
         unknown_tenant, body,
         "the 429 must not vary by what was tried"
     );
 
-    // 4. ...including for the VALID key. Being locked out is about the source,
-    //    not about which credential is presented.
-    let (status, _, _) = whoami_from(&router, &good_key, attacker, &[]).await;
+    // 4. The VALID key from the same source works (KAIROS-T-0539): a stale
+    //    key locks itself out, not the other keys behind its address.
+    let (status, _, body) = whoami_from(&router, &good_key, attacker, &[]).await;
     assert_eq!(
         status,
-        StatusCode::TOO_MANY_REQUESTS,
-        "a locked-out source is refused even with a good key"
+        StatusCode::OK,
+        "a locked-out key does not lock the good key: {body}"
     );
 
-    // 5. A different source is untouched. Source keying is the whole point: one
-    //    attacker must not be able to lock everyone else out.
+    // 5. A different source is untouched.
     let (status, _, body) = whoami_from(&router, &good_key, bystander, &[]).await;
     assert_eq!(
         status,
@@ -237,28 +244,15 @@ async fn a_burst_of_failed_authentications_is_refused() {
     );
     assert_eq!(body["user"]["email"], "ci@svc.acme.kairos");
 
-    // 6. X-Forwarded-For is ignored unless KAIROS_TRUSTED_PROXY is on. If it
-    //    were trusted here, a spoofed header would be a free identity per
-    //    request and step 2 would never have happened. The bad key: step 5
-    //    put the good key in the auth cache, and a cached key skips the
-    //    throttle (KAIROS-T-0609).
-    let (status, _, _) = whoami_from(
-        &router,
-        &bad_key,
-        attacker,
-        &[("x-forwarded-for", bystander)],
-    )
-    .await;
-    assert_eq!(
-        status,
-        StatusCode::TOO_MANY_REQUESTS,
-        "an untrusted X-Forwarded-For must not launder a locked-out source"
-    );
+    // 6. The locked key stays locked from another source too. The address
+    //    limit and X-Forwarded-For are in `tests/api_key_lockout.rs`.
+    let (status, _, _) = whoami_from(&router, &bad_key, bystander, &[]).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
 
     // 7. The lockout is visible to an operator.
     let metrics = metrics_text(&router).await;
     assert!(
-        metrics.contains("kairos_auth_lockouts_total{subject=\"source\"} 1"),
+        metrics.contains("kairos_auth_lockouts_total{subject=\"key\"} 2"),
         "the lockout counter should be exposed:\n{metrics}"
     );
 
@@ -342,7 +336,7 @@ async fn failed_attempts_on_one_server_count_on_another() {
     };
     let (one, two) = (server().await, server().await);
 
-    // By source (an API key): the failures alternate between the servers,
+    // By key (an API key): the failures alternate between the servers,
     // and the lockout holds on both.
     let bad_key = generate_key("acme");
     for attempt in 1..=MAX_FAILURES {
@@ -355,11 +349,11 @@ async fn failed_attempts_on_one_server_count_on_another() {
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
         assert!(retry_after.is_some());
     }
-    let (status, _, _) = whoami_from(&two, &bad_key, "198.51.100.4", &[]).await;
+    let (status, _, _) = whoami_from(&two, &generate_key("acme"), "203.0.113.9", &[]).await;
     assert_eq!(
         status,
         StatusCode::UNAUTHORIZED,
-        "another source is not locked"
+        "another key from the same source is not locked"
     );
 
     // By account (/api/login, no source): the same.
