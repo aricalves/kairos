@@ -464,11 +464,10 @@ macro_rules! card_code {
 }
 card_code!(Strategy, Initiative, Task, Adr);
 
-/// Take the card `code` out of `cards`: its index, or `None`.
-fn take_card<T: CardCode>(cards: &mut Vec<T>, code: &str) -> Option<usize> {
+/// Take the card `code` out of `cards`: its index and the card, or `None`.
+fn take_card<T: CardCode>(cards: &mut Vec<T>, code: &str) -> Option<(usize, T)> {
     let index = cards.iter().position(|card| card.code() == code)?;
-    cards.remove(index);
-    Some(index)
+    Some((index, cards.remove(index)))
 }
 
 /// Put the cards of `fresh` into `cards`: at `at` when the card was there
@@ -483,12 +482,43 @@ fn put_cards<T: CardCode>(cards: &mut Vec<T>, fresh: Vec<T>, at: Option<usize>) 
 }
 
 impl BoardColumnItems {
-    /// Take the card `code` out of this column: its index in its list.
-    fn take_card(&mut self, code: &str) -> Option<usize> {
-        take_card(&mut self.strategies, code)
-            .or_else(|| take_card(&mut self.initiatives, code))
-            .or_else(|| take_card(&mut self.tasks, code))
-            .or_else(|| take_card(&mut self.adrs, code))
+    /// Take the card `code` out of this column: its index in its list, and
+    /// a column with that card only.
+    fn take_card(&mut self, code: &str) -> Option<(usize, BoardColumnItems)> {
+        let mut one = BoardColumnItems {
+            column: self.column.clone(),
+            item_count: 0,
+            over_wip_limit: false,
+            strategies: Vec::new(),
+            initiatives: Vec::new(),
+            tasks: Vec::new(),
+            adrs: Vec::new(),
+        };
+        let index = if let Some((index, card)) = take_card(&mut self.strategies, code) {
+            one.strategies.push(card);
+            index
+        } else if let Some((index, card)) = take_card(&mut self.initiatives, code) {
+            one.initiatives.push(card);
+            index
+        } else if let Some((index, card)) = take_card(&mut self.tasks, code) {
+            one.tasks.push(card);
+            index
+        } else {
+            let (index, card) = take_card(&mut self.adrs, code)?;
+            one.adrs.push(card);
+            index
+        };
+        Some((index, one))
+    }
+
+    /// Add `delta` to the live count of the column, and mark the WIP limit
+    /// again (the rule of the server, `kairos_db::board_items`).
+    fn add_count(&mut self, delta: i64) {
+        self.item_count = (self.item_count + delta).max(0);
+        self.over_wip_limit = self
+            .column
+            .wip_limit
+            .is_some_and(|limit| self.item_count > i64::from(limit));
     }
 
     /// Whether this column has a card.
@@ -547,7 +577,7 @@ impl BoardItemsResponse {
             .columns
             .iter_mut()
             .enumerate()
-            .find_map(|(column, group)| group.take_card(code).map(|index| (column, index)));
+            .find_map(|(column, group)| group.take_card(code).map(|(index, _)| (column, index)));
         let after = page.columns.iter().position(BoardColumnItems::has_cards);
         let had_blocks = self.blocks_summary.remove(code).is_some();
         self.children_progress.remove(code);
@@ -575,6 +605,148 @@ impl BoardItemsResponse {
         } else {
             Patched::Card
         }
+    }
+}
+
+// ---- optimistic drops (KAIROS-T-0619) ----------------------------------------
+
+/// Where a card was before a drop moved it in the view, for
+/// [`BoardItemsResponse::undo_move`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CardMove {
+    code: String,
+    /// The column of the card before the move.
+    from_column: String,
+    /// The place of the card in its list before the move.
+    from_index: usize,
+    /// The lane of a task before the move; `None` for the other kinds.
+    from_work_class: Option<String>,
+}
+
+impl BoardItemsResponse {
+    /// The index of the column `id`.
+    fn column_index(&self, id: &str) -> Option<usize> {
+        self.columns.iter().position(|group| group.column.id == id)
+    }
+
+    /// Take the card `code` out of the view: its column, its index in its
+    /// list, and a column with that card only.
+    fn take_out(&mut self, code: &str) -> Option<(usize, usize, BoardColumnItems)> {
+        self.columns
+            .iter_mut()
+            .enumerate()
+            .find_map(|(column, group)| {
+                group
+                    .take_card(code)
+                    .map(|(index, one)| (column, index, one))
+            })
+    }
+
+    /// Put the card of `one` into the column `to`. It came from the column
+    /// `from`: the counts of both columns change when they differ.
+    fn put_in(&mut self, from: usize, to: usize, one: BoardColumnItems, at: Option<usize>) {
+        if from != to {
+            self.columns[from].add_count(-1);
+            self.columns[to].add_count(1);
+        }
+        self.columns[to].put_cards(one, at);
+    }
+
+    /// Move the card `code` in the view at once, before the server takes
+    /// the drop: to the column `to_column`, and a task to the lane
+    /// `work_class`. In a new column the card goes in the order of the
+    /// codes; in its own column it keeps its place. The counts of the
+    /// columns and the WIP marks follow.
+    ///
+    /// `None`: the view has no such card or no such column, and nothing
+    /// changes. Pure, host-tested.
+    pub fn move_card(
+        &mut self,
+        code: &str,
+        to_column: Option<&str>,
+        work_class: Option<&str>,
+    ) -> Option<CardMove> {
+        let to = match to_column {
+            Some(id) => Some(self.column_index(id)?),
+            None => None,
+        };
+        let (from, index, mut one) = self.take_out(code)?;
+        let from_work_class = one.tasks.first().map(|task| task.work_class.clone());
+        if let (Some(task), Some(work_class)) = (one.tasks.first_mut(), work_class) {
+            task.work_class = work_class.to_string();
+        }
+        let undo = CardMove {
+            code: code.to_string(),
+            from_column: self.columns[from].column.id.clone(),
+            from_index: index,
+            from_work_class,
+        };
+        let to = to.unwrap_or(from);
+        self.put_in(from, to, one, (to == from).then_some(index));
+        Some(undo)
+    }
+
+    /// Undo the parts of a move that the server refused: `column` puts the
+    /// card back in its column and its place, `lane` puts back the lane of
+    /// a task. The other fields of the card stay as the view has them now:
+    /// a read can land while the drop runs. A card that left the view
+    /// stays out. Pure, host-tested.
+    pub fn undo_move(&mut self, undo: &CardMove, column: bool, lane: bool) {
+        let Some((now, index, mut one)) = self.take_out(&undo.code) else {
+            return;
+        };
+        if lane
+            && let (Some(task), Some(work_class)) =
+                (one.tasks.first_mut(), undo.from_work_class.as_ref())
+        {
+            task.work_class = work_class.clone();
+        }
+        let (to, at) = match self.column_index(&undo.from_column).filter(|_| column) {
+            Some(to) => (to, undo.from_index),
+            None => (now, index),
+        };
+        self.put_in(now, to, one, Some(at));
+    }
+}
+
+/// The drops that run (KAIROS-T-0619), by the short code of the card. The
+/// view shows the card where the drop put it. A read of that card that
+/// lands while its drop runs could show the card where it was, so the
+/// read waits: the end of the drop asks for it again.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DropsInFlight {
+    /// The code of each card with a drop that runs: `true` when a read of
+    /// the card waits.
+    cards: std::collections::BTreeMap<String, bool>,
+}
+
+impl DropsInFlight {
+    /// A drop of the card `code` starts. `false`: a drop of this card runs
+    /// already, and the new drop does not start.
+    pub fn start(&mut self, code: &str) -> bool {
+        if self.cards.contains_key(code) {
+            return false;
+        }
+        self.cards.insert(code.to_string(), false);
+        true
+    }
+
+    /// A read of the card `code` lands. `true`: a drop of the card runs,
+    /// so the view keeps the card as it is and the read waits.
+    pub fn holds(&mut self, code: &str) -> bool {
+        match self.cards.get_mut(code) {
+            Some(waits) => {
+                *waits = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The drop of the card `code` ends. `true`: a read of the card waited,
+    /// so read the card now.
+    pub fn end(&mut self, code: &str) -> bool {
+        self.cards.remove(code).unwrap_or(false)
     }
 }
 
@@ -855,7 +1027,8 @@ struct TransitionRequest<'a> {
 }
 
 /// `POST /api/{family}/{short_code}/transition`. The response body (the
-/// updated entity) is discarded: server state is re-fetched wholesale.
+/// updated entity) is discarded: the echo of the move patches the card
+/// (KAIROS-T-0619).
 pub async fn transition(
     auth: Auth,
     kind: EntityKind,
@@ -1491,6 +1664,133 @@ mod tests {
             ),
             Patched::Card
         );
+    }
+
+    /// The `(todo, doing)` counts of a view.
+    fn counts(view: &BoardItemsResponse) -> (i64, i64) {
+        (view.columns[0].item_count, view.columns[1].item_count)
+    }
+
+    /// KAIROS-T-0619: a drop moves the card at once, in the order of the
+    /// codes, with the counts and the WIP mark. The undo puts it back in
+    /// its place.
+    #[test]
+    fn a_drop_moves_the_card_and_the_undo_puts_it_back() {
+        let mut view = board_of(
+            &[
+                ("D-T-1", "todo", 1),
+                ("D-T-4", "todo", 1),
+                ("D-T-6", "todo", 1),
+                ("D-T-3", "doing", 1),
+                ("D-T-5", "doing", 1),
+            ],
+            &[],
+            5,
+        );
+        view.columns[1].column.wip_limit = Some(2);
+        let start = view.clone();
+        let undo = view
+            .move_card("D-T-4", Some("doing"), None)
+            .expect("the card is on the board");
+        assert_eq!(column_cards(&view, 0), ["D-T-1 v1", "D-T-6 v1"]);
+        assert_eq!(column_cards(&view, 1), ["D-T-3 v1", "D-T-4 v1", "D-T-5 v1"]);
+        assert_eq!(counts(&view), (2, 3));
+        assert!(view.columns[1].over_wip_limit);
+        assert_eq!(view.total, 5);
+
+        view.undo_move(&undo, true, true);
+        assert_eq!(view, start);
+    }
+
+    /// KAIROS-T-0619: a lane drop keeps the place of the card in its
+    /// column and changes no count. The undo puts back the lane.
+    #[test]
+    fn a_lane_drop_keeps_the_place_and_the_undo_puts_back_the_lane() {
+        let mut view = board_of(&[("D-T-1", "todo", 1), ("D-T-2", "todo", 1)], &[], 2);
+        let start = view.clone();
+        let undo = view
+            .move_card("D-T-1", None, Some("support"))
+            .expect("the card is on the board");
+        assert_eq!(column_cards(&view, 0), ["D-T-1 v1", "D-T-2 v1"]);
+        assert_eq!(view.columns[0].tasks[0].work_class, "support");
+        assert_eq!(counts(&view), (2, 0));
+
+        view.undo_move(&undo, false, true);
+        assert_eq!(view, start);
+    }
+
+    /// KAIROS-T-0619: a diagonal drop moves the column and the lane at
+    /// once. The server took the move and refused the lane: the undo puts
+    /// back the lane only.
+    #[test]
+    fn the_undo_of_a_diagonal_drop_puts_back_what_the_server_refused() {
+        let mut view = board_of(&[("D-T-1", "todo", 1), ("D-T-3", "doing", 1)], &[], 2);
+        let start = view.clone();
+        let undo = view
+            .move_card("D-T-1", Some("doing"), Some("support"))
+            .expect("the card is on the board");
+        assert_eq!(column_cards(&view, 1), ["D-T-1 v1", "D-T-3 v1"]);
+        assert_eq!(view.columns[1].tasks[0].work_class, "support");
+
+        let mut lane_refused = view.clone();
+        lane_refused.undo_move(&undo, false, true);
+        assert_eq!(column_cards(&lane_refused, 1), ["D-T-1 v1", "D-T-3 v1"]);
+        assert_eq!(lane_refused.columns[1].tasks[0].work_class, "planned");
+        assert_eq!(counts(&lane_refused), (0, 2));
+
+        // The server refused the move: no lane write was sent.
+        view.undo_move(&undo, true, true);
+        assert_eq!(view, start);
+    }
+
+    /// KAIROS-T-0619: the undo reads the card where the view has it now. A
+    /// read of the board during the drop already put it back: the counts
+    /// do not change twice. A card that left the view stays out.
+    #[test]
+    fn the_undo_starts_from_the_view_as_it_is_now() {
+        let start = board_of(&[("D-T-1", "todo", 1), ("D-T-3", "doing", 1)], &[], 2);
+        let mut view = start.clone();
+        let undo = view
+            .move_card("D-T-1", Some("doing"), None)
+            .expect("the card is on the board");
+        // A read of the board landed during the drop.
+        let mut read = start.clone();
+        read.undo_move(&undo, true, true);
+        assert_eq!(read, start);
+
+        view.patch_card("D-T-1", card_page(None, false, (0, 1)));
+        let gone = view.clone();
+        view.undo_move(&undo, true, true);
+        assert_eq!(view, gone);
+    }
+
+    /// KAIROS-T-0619: a drop of a card or a column that the view does not
+    /// have changes nothing.
+    #[test]
+    fn a_drop_of_an_unknown_card_or_column_changes_nothing() {
+        let mut view = board_of(&[("D-T-1", "todo", 1)], &[], 1);
+        let start = view.clone();
+        assert_eq!(view.move_card("D-T-9", Some("doing"), None), None);
+        assert_eq!(view.move_card("D-T-1", Some("gone"), None), None);
+        assert_eq!(view, start);
+    }
+
+    /// KAIROS-T-0619: a read of a card that lands while its drop runs
+    /// waits, and the end of the drop asks for it. A second drop of the
+    /// card does not start.
+    #[test]
+    fn a_read_of_a_card_waits_for_the_end_of_its_drop() {
+        let mut drops = DropsInFlight::default();
+        assert!(drops.start("D-T-1"));
+        assert!(!drops.start("D-T-1"));
+        assert!(!drops.holds("D-T-2"));
+        assert!(!drops.end("D-T-1"), "no read waited");
+
+        assert!(drops.start("D-T-1"));
+        assert!(drops.holds("D-T-1"));
+        assert!(drops.end("D-T-1"), "a read waited");
+        assert!(!drops.holds("D-T-1"), "the drop ended");
+        assert_eq!(drops, DropsInFlight::default());
     }
 
     /// KAIROS-T-0615: columns that are not the columns of the view (the
