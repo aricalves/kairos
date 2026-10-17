@@ -84,10 +84,15 @@ does not read `KAIROS_MCP_KEY`.
 - The state is one JSON file for each Claude Code session, outside the repository:
   `~/.claude/kairos-ralph/<session_id>.json` (`KAIROS_RALPH_STATE_DIR` overrides the folder).
   The skill gives the session ID with `${CLAUDE_SESSION_ID}`; the Stop hook gets it in its input.
+  A start and a cancel remove state files older than 30 days. After `/clear` the session has a
+  new ID: `cancel` then finds the one loop of the folder by its `project_dir` (with several, it
+  names them and `--loop <session id>` picks one).
 - `hooks/ralph.py stop` is the `Stop` hook. With no state for its session it does nothing.
   Otherwise it blocks the stop and gives the next instruction, until the last reply ends with
-  `<promise>ALL TASKS COMPLETE</promise>` or `<promise>LOOP STOPPED</promise>` (the agent stopped
-  the loop and wrote the reason on the task and its initiative), or until the iteration limit.
+  `<promise>ALL TASKS COMPLETE</promise>`, `<promise>LOOP STOPPED</promise>` (the agent stopped
+  the loop and wrote the reason on the task and its initiative) or `<promise>NEED INPUT</promise>`
+  (the agent wrote a question for the user on the task), or until the iteration limit: 25 stops
+  by default, `--max-iterations 0` for no limit.
   Each error in the hook lets the session stop.
 - Tests: `hooks/test_ralph.py`, part of `angreal test unit`.
 

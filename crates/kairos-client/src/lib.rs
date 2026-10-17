@@ -12,6 +12,7 @@ pub mod client;
 pub mod error;
 pub mod types;
 pub mod types_auth;
+pub mod types_cards;
 pub mod types_code_index;
 pub mod types_dispatch;
 pub mod types_forge;

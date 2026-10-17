@@ -7,21 +7,24 @@
 //! # When a claim starts and ends
 //!
 //! A column with `board_columns.claims` (the Active column of a delivery
-//! board) holds claimed tasks. The ONE place where a task changes column
-//! ([`crate::boards::transition_task`] and [`crate::boards::move_task`])
-//! calls [`after_column_change`] in its transaction:
+//! board) holds claimed tasks, and a column with `keeps_claims` (the
+//! Blocked column, KAIROS-T-0529) keeps them. The ONE place where a task
+//! changes column ([`crate::boards::transition_task`] and
+//! [`crate::boards::move_task`]) calls [`after_column_change`] in its
+//! transaction:
 //!
-//! - A PERSON moves the task into a claims column: the task gets a claim
-//!   for the person (the actor of the move), with the agent key of the
-//!   request ([`crate::agent_mark::current`]). A claim of a different
-//!   person ends. A move by the person who has the claim keeps it.
-//! - A SERVICE ACCOUNT moves the task into a claims column: the task has
-//!   no claim after the move (decision 5: machine work has no person, and
-//!   a claim names a person). A claim that the task had ends too: the
-//!   person who had the task in the column before did not move it here,
-//!   and the claim must not name a person who is not responsible for
-//!   this move.
-//! - The task leaves a claims column, to any column: the claim ends.
+//! - The task moves into a column that keeps claims: nothing changes. A
+//!   claim stays, whoever moves the task, and a task with no claim gets
+//!   none. A block does not end the work (KAIROS-T-0529).
+//! - The task has a claim and moves into a claims column (back from
+//!   Blocked, or a board move): the claim stays.
+//! - A PERSON moves a task with no claim into a claims column: the task
+//!   gets a claim for the person (the actor of the move), with the agent
+//!   key of the request ([`crate::agent_mark::current`]).
+//! - A SERVICE ACCOUNT moves a task with no claim into a claims column:
+//!   the task has no claim after the move (decision 5: machine work has
+//!   no person, and a claim names a person).
+//! - The task moves into any other column: the claim ends.
 //!
 //! Also: an archive of the task ends its claim ([`drop_claims`]), and so
 //! does an admin who removes the flag from a column
@@ -169,13 +172,19 @@ pub fn is_person(conn: &mut PgConnection, user_id: Uuid) -> Result<bool, DieselE
 
 /// Whether the column holds claims. An unknown column does not.
 pub fn column_claims(conn: &mut PgConnection, column_id: Uuid) -> Result<bool, DieselError> {
+    Ok(column_flags(conn, column_id)?.0)
+}
+
+/// The two claim flags of a column, `(claims, keeps_claims)`
+/// (KAIROS-T-0529). An unknown column has neither.
+fn column_flags(conn: &mut PgConnection, column_id: Uuid) -> Result<(bool, bool), DieselError> {
     use crate::schema::board_columns::dsl;
     Ok(dsl::board_columns
         .filter(dsl::id.eq(column_id))
-        .select(dsl::claims)
-        .first::<bool>(conn)
+        .select((dsl::claims, dsl::keeps_claims))
+        .first::<(bool, bool)>(conn)
         .optional()?
-        .unwrap_or(false))
+        .unwrap_or((false, false)))
 }
 
 /// One `activity_log` row about the claim of a task.
@@ -267,32 +276,41 @@ pub(crate) fn after_column_change(
     reason: &str,
 ) -> Result<(), DieselError> {
     let existing = claim_of(conn, task_id)?;
-    if !column_claims(conn, to_column_id)? {
+    let (claims, keeps_claims) = column_flags(conn, to_column_id)?;
+    if keeps_claims {
+        // KAIROS-T-0529: the column keeps a claim (Blocked): the claim
+        // stays, whoever moves the task, and a task with no claim gets
+        // none. A block does not end the work.
+        return Ok(());
+    }
+    if !claims {
         end_claim(conn, task_id, actor_id, reason)?;
+        return Ok(());
+    }
+    if existing.is_some() {
+        // A move into a claims column of a task that has a claim (back
+        // from Blocked, or a board move): the claim stays (KAIROS-T-0529).
         return Ok(());
     }
     if !is_person(conn, actor_id)? {
         // KAIROS-A-0024 decision 5: a service account takes no claim, and
         // the task is free after the move (module docs).
-        end_claim(conn, task_id, actor_id, "service_account")?;
         return Ok(());
     }
-    match existing {
-        Some(claim) if claim.user_id == actor_id => Ok(()),
-        existing => {
-            let agent_key = crate::agent_mark::current(conn)?;
-            put_claim(conn, task_id, actor_id, agent_key)?;
-            let details = match existing {
-                Some(previous) => format!("claim:{actor_id} from:{}", previous.user_id),
-                None => format!("claim:{actor_id}"),
-            };
-            log(conn, actor_id, ActivityAction::Claim, task_id, details)
-        }
-    }
+    let agent_key = crate::agent_mark::current(conn)?;
+    put_claim(conn, task_id, actor_id, agent_key)?;
+    log(
+        conn,
+        actor_id,
+        ActivityAction::Claim,
+        task_id,
+        format!("claim:{actor_id}"),
+    )
 }
 
 /// The short code and the column of a live task, with the check that the
-/// column holds claims. Locks the task row (KAIROS-T-0640).
+/// column holds or keeps claims (KAIROS-T-0529). Locks the task row
+/// (KAIROS-T-0640).
 fn claimable_task(conn: &mut PgConnection, task_id: Uuid) -> Result<String, ClaimError> {
     use crate::schema::{board_columns, tasks};
     // KAIROS-T-0640: lock the task row first, in the transaction of the
@@ -305,7 +323,7 @@ fn claimable_task(conn: &mut PgConnection, task_id: Uuid) -> Result<String, Clai
         .for_update()
         .first::<Uuid>(conn)
         .optional()?;
-    let row: Option<(String, String, bool)> = tasks::table
+    let row: Option<(String, String, bool, bool)> = tasks::table
         .inner_join(board_columns::table)
         .filter(tasks::id.eq(task_id))
         .filter(tasks::deleted_at.is_null())
@@ -313,11 +331,12 @@ fn claimable_task(conn: &mut PgConnection, task_id: Uuid) -> Result<String, Clai
             tasks::short_code,
             board_columns::name,
             board_columns::claims,
+            board_columns::keeps_claims,
         ))
         .first(conn)
         .optional()?;
-    let (short_code, column, claims) = row.ok_or(ClaimError::TaskNotFound(task_id))?;
-    if !claims {
+    let (short_code, column, claims, keeps) = row.ok_or(ClaimError::TaskNotFound(task_id))?;
+    if !claims && !keeps {
         return Err(ClaimError::NotInClaimsColumn { short_code, column });
     }
     Ok(short_code)

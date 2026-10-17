@@ -3,7 +3,7 @@
 //! (KAIROS-I-0012), `restore_item` (KAIROS-A-0020), `related_work`
 //! (KAIROS-T-0191), `propose_edge` (KAIROS-T-0192), `set_repository`
 //! (COLLIERY-T-0220), and `add_repository` and `update_repository`
-//! (COLLIERY-T-0266); later tasks added more (67 in all, in the profiles
+//! (COLLIERY-T-0266); later tasks added more (70 in all, in the profiles
 //! of `profiles.rs`, KAIROS-T-0454) — each a
 //! thin wrapper over the same `kairos-core`/`kairos-db` services the REST
 //! handlers call — through [`crate::blocking::BlockingTenantPool`], never
@@ -521,11 +521,16 @@ pub struct EditItemParams {
     pub replace_all: bool,
 }
 
-/// `get_events` has no arguments (KAIROS-T-0382).
+/// Parameters for `get_events` (KAIROS-T-0382, KAIROS-T-0550).
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
-pub struct GetEventsParams {}
+pub struct GetEventsParams {
+    /// The next page: the id of the oldest unread notification of the last
+    /// page. The page has the unread ones older than it, and no read ones.
+    #[serde(default)]
+    pub before: Option<String>,
+}
 
 /// `my_work` has no arguments (KAIROS-T-0489).
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -533,15 +538,20 @@ pub struct GetEventsParams {}
 #[serde(deny_unknown_fields)]
 pub struct MyWorkParams {}
 
-/// Parameters for `mark_events_read` (KAIROS-T-0382): `ids`, or `all: true`.
+/// Parameters for `mark_events_read` (KAIROS-T-0382): `ids`, or `all: true`
+/// with `up_to` (KAIROS-T-0550).
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 pub struct MarkEventsReadParams {
     /// The ids of your notifications, as `get_events` gives them.
     pub ids: Option<Vec<String>>,
-    /// `true`: each of your unread notifications.
+    /// `true`: each of your unread notifications up to `up_to`.
     pub all: Option<bool>,
+    /// With `all: true`, required: the id of the newest notification that
+    /// you read (`get_events` gives it first). Kairos marks it and each
+    /// older unread one, and no newer one.
+    pub up_to: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -709,8 +719,8 @@ pub struct AddRepositoryParams {
     pub description: Option<String>,
 }
 
-/// Parameters for `update_repository` (COLLIERY-T-0266). There is no `slug`
-/// and no `team`: see the description of the tool.
+/// Parameters for `update_repository` (COLLIERY-T-0266). KAIROS-T-0443 added
+/// `slug` and `team`: see the description of the tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
@@ -1164,6 +1174,9 @@ pub struct UpdateColumnParams {
     pub is_done: Option<bool>,
     /// True: a task in the column has a claim.
     pub claims: Option<bool>,
+    /// True: a task with a claim keeps it in the column, and gets none
+    /// there (Blocked, KAIROS-T-0529).
+    pub keeps_claims: Option<bool>,
     /// The WIP limit, 1 or more.
     pub wip_limit: Option<i32>,
     /// True: remove the WIP limit. Not with `wip_limit`.
@@ -1273,7 +1286,7 @@ pub struct SaveTemplateParams {
 }
 
 // ---------------------------------------------------------------------------
-// The tools (67; the list of each profile is asserted in tests/mcp.rs)
+// The tools (70; the list of each profile is asserted in tests/mcp.rs)
 // ---------------------------------------------------------------------------
 
 #[tool_router(vis = "pub(super)")]
@@ -3064,41 +3077,29 @@ impl KairosMcp {
         .await
     }
 
-    // KAIROS-T-0382: the notifications of the person of the key.
+    // KAIROS-T-0382: the notifications of the person of the key. The read
+    // state is of the caller (KAIROS-T-0550): the agent key, or the person.
     #[tool(
-        description = "Your notifications: a claim handed to you, a blocker of your claimed task closed, a task you created cancelled, a mention (`@name`), a P0 bug on your team's board. Unread first (newest first, 100 at most), then the 20 newest read ones, each with its id. While some are unread, each other tool's answer ends with the 5 newest. Mark them read with `mark_events_read`."
+        description = "Your notifications: a claim handed to you, a blocker of your claimed task closed, a task you created cancelled, a mention (`@name`), a P0 bug on your team's board. Unread first (newest first, 100 at most), then the 20 newest read ones, each with its id. `before` (an id) gives the next page of unread ones. An agent key keeps its own read state: a read by the key does not clear the person's bell. While some are unread, each other tool's answer ends with the 5 newest. Mark them read with `mark_events_read`."
     )]
     pub async fn get_events(
         &self,
-        Parameters(GetEventsParams {}): Parameters<GetEventsParams>,
+        Parameters(params): Parameters<GetEventsParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let (auth, tenant) = Self::caller(&context)?;
-        let user = auth.user_id;
+        let (user, key) = (auth.user_id, auth.agent_key);
         self.run_tool(&tenant, move |conn| {
-            let (items, unread) = crate::api::notifications::list_for(conn, user)?;
-            if items.is_empty() {
-                return Ok("# Your notifications\n(none)\n".to_string());
-            }
-            let mut out = format!("# Your notifications ({unread} unread)\n");
-            let mut read_heading = false;
-            for n in &items {
-                if n.read_at.is_some() && !read_heading {
-                    out.push_str("\n## Read\n");
-                    read_heading = true;
-                }
-                out.push_str(&notification_line(n));
-            }
-            if unread > 0 {
-                out.push_str("\nMark them read with mark_events_read (`ids`, or `all: true`).\n");
-            }
-            Ok(out)
+            let reader = crate::api::notifications::reader_for(conn, user, key)?;
+            let before = params.before.as_deref();
+            let (items, unread) = crate::api::notifications::list_for(conn, &reader, before)?;
+            Ok(events_text(&items, unread, before.is_some()))
         })
         .await
     }
 
     #[tool(
-        description = "Mark your notifications read: `ids` (the ids that `get_events` gives) or `all: true`, not both. A read notification no longer comes at the end of each answer. An id that is not one of your notifications is refused and named, and nothing changes."
+        description = "Mark your notifications read: `ids` (the ids that `get_events` gives), or `all: true` with `up_to` (the id of the newest notification that you read). `all` marks that one and each older unread one, and no newer one; `all` without `up_to` is refused. A read with an agent key is the key's: the person's bell keeps its own state. A read notification no longer comes at the end of each answer. An id that is not one of your notifications is refused and named, and nothing changes."
     )]
     pub async fn mark_events_read(
         &self,
@@ -3106,10 +3107,16 @@ impl KairosMcp {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let (auth, tenant) = Self::caller(&context)?;
-        let user = auth.user_id;
+        let (user, key) = (auth.user_id, auth.agent_key);
         self.run_tool(&tenant, move |conn| {
-            let (changed, unread) =
-                crate::api::notifications::mark_for(conn, user, params.ids, params.all)?;
+            let reader = crate::api::notifications::reader_for(conn, user, key)?;
+            let (changed, unread) = crate::api::notifications::mark_for(
+                conn,
+                &reader,
+                params.ids,
+                params.all,
+                params.up_to,
+            )?;
             Ok(format!(
                 "Marked {} notification(s) read. You have {unread} unread.",
                 changed.len()
@@ -3532,10 +3539,10 @@ impl KairosMcp {
         .await
     }
 
-    // COLLIERY-T-0266. The tool has no `slug` and no `team`, and the REST
-    // route has the two. A checkout keeps the slug in
+    // COLLIERY-T-0266. KAIROS-T-0443 added `slug` and `team`, as the REST
+    // route has them. A checkout keeps the slug in
     // `.claude/kairos.local.md`, so a new slug breaks each checkout. A new
-    // owner team is a decision of the two teams. A person does these.
+    // owner team needs the right on the two teams.
     //
     // The gate and the write are those of `PATCH /api/repositories/{slug}`
     // (`crate::api::org::repositories::change`). That function compares the
@@ -4749,7 +4756,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Change a column of a board, as PATCH /api/boards/{id}/columns/{col_id} does: `name`, `position` (from 0), `is_done` (a done column), `claims` (a task in it has a claim), `wip_limit` (1 or more), or `no_wip_limit: true` to remove the limit. Send one or more. `board` is a slug or UUID; `column` is a name or UUID. Requires `configure_boards` on the board."
+        description = "Change a column of a board, as PATCH /api/boards/{id}/columns/{col_id} does: `name`, `position` (from 0), `is_done` (a done column), `claims` (a task in it has a claim), `keeps_claims` (a task keeps its claim in it, as in Blocked), `wip_limit` (1 or more), or `no_wip_limit: true` to remove the limit. Send one or more. `board` is a slug or UUID; `column` is a name or UUID. Requires `configure_boards` on the board."
     )]
     pub async fn update_column(
         &self,
@@ -4784,6 +4791,7 @@ impl KairosMcp {
                     position: params.position,
                     is_done: params.is_done,
                     claims: params.claims,
+                    keeps_claims: params.keeps_claims,
                     wip_limit,
                 },
             )?;
@@ -7925,15 +7933,63 @@ fn ride_along_line(n: &kairos_db::notifications::Notification) -> String {
     )
 }
 
+/// The text of `get_events`: the unread lines, then the read ones, then
+/// what to send next. The newest unread id is the `up_to` of
+/// `mark_events_read`; the oldest unread one is the `before` of the next
+/// page when there are more. `page` is true for a page after the first.
+fn events_text(
+    items: &[kairos_db::notifications::Notification],
+    unread: i64,
+    page: bool,
+) -> String {
+    let unread_items: Vec<_> = items.iter().filter(|n| n.read_at.is_none()).collect();
+    if items.is_empty() {
+        return if page {
+            format!("# Your notifications ({unread} unread)\nNo older unread ones.\n")
+        } else {
+            "# Your notifications\n(none)\n".to_string()
+        };
+    }
+    let mut out = format!("# Your notifications ({unread} unread)\n");
+    let mut read_heading = false;
+    for n in items {
+        if n.read_at.is_some() && !read_heading {
+            out.push_str("\n## Read\n");
+            read_heading = true;
+        }
+        out.push_str(&notification_line(n));
+    }
+    if unread_items.len() as i64 == crate::api::notifications::LIST_UNREAD
+        && let Some(oldest) = unread_items.last()
+    {
+        out.push_str(&format!(
+            "\nMore unread ones: call get_events with `before`: \"{}\".\n",
+            oldest.id
+        ));
+    }
+    if !page && let Some(newest) = unread_items.first() {
+        out.push_str(&format!(
+            "\nMark them read with mark_events_read: `ids`, or `all: true` with `up_to`: \"{}\".\n",
+            newest.id
+        ));
+    }
+    out
+}
+
 /// How many unread notifications come at the end of an answer.
 pub(super) const RIDE_ALONG: i64 = 5;
 
 /// The block at the end of an answer to a person with unread notifications
 /// (KAIROS-T-0382): the [`RIDE_ALONG`] newest, then "N more". `None` when
 /// the person has none (a service account never has one). One query.
-pub(super) fn ride_along(conn: &mut PgConnection, user: Uuid) -> Result<Option<String>, ApiError> {
+pub(super) fn ride_along(
+    conn: &mut PgConnection,
+    user: Uuid,
+    agent_key: Option<Uuid>,
+) -> Result<Option<String>, ApiError> {
+    let reader = crate::api::notifications::reader_for(conn, user, agent_key)?;
     let unread =
-        kairos_db::notifications::unread(conn, user, RIDE_ALONG).map_err(ApiError::internal)?;
+        kairos_db::notifications::unread(conn, &reader, RIDE_ALONG).map_err(ApiError::internal)?;
     if unread.total == 0 {
         return Ok(None);
     }

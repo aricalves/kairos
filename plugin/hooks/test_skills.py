@@ -588,6 +588,86 @@ class SkillsAgree(unittest.TestCase):
         self.assertIn("`update_repository` with `team`", text)
 
 
+def sentences(text):
+    """The sentences of a Markdown text: each line, list item or table
+    cell split at a full stop, a question mark or a colon at its end."""
+    found = []
+    for line in text.splitlines():
+        line = re.sub(r"^\s*(?:[-*]|\d+\.)\s+", "", line).strip()
+        if not line or line.startswith(("#", "```", "|")):
+            continue
+        for part in re.split(r"(?<=[.?!:;])\s+", line):
+            if part.strip():
+                found.append(part.strip())
+    return found
+
+
+class SeamsAndLoopExits(unittest.TestCase):
+    """KAIROS-T-0547: `tdd` takes the seams that the task names, with no
+    confirmation, so a loop can run it; Ralph has a default iteration
+    limit, a NEED INPUT exit and a cancel by folder."""
+
+    def text(self, rel):
+        return read(os.path.join(SKILLS, rel))
+
+    def seams_section(self):
+        body = self.text("engineering/tdd/SKILL.md")
+        match = re.search(r"## Seams.*?\n(.*?)\n## ", body, re.S)
+        self.assertIsNotNone(match)
+        return match.group(1)
+
+    def test_the_tdd_trigger_matches_the_body(self):
+        fields = frontmatter(os.path.join(SKILLS, "engineering", "tdd", "SKILL.md"))
+        self.assertIn('"red-green"', fields["description"])
+        self.assertNotIn("refactor", fields["description"])
+
+    def test_tdd_takes_the_seams_that_the_task_names(self):
+        seams = self.seams_section()
+        for text in (
+            "the task names",
+            "acceptance criteria",
+            "notes",
+            "`get_item`",
+            "do not ask the user to confirm",
+            "`append_note`",
+            "<promise>NEED INPUT</promise>",
+        ):
+            with self.subTest(text=text):
+                self.assertIn(text, seams)
+        self.assertNotIn("No test is written at an unconfirmed seam", seams)
+
+    def test_the_new_text_has_short_sentences(self):
+        texts = {
+            "tdd seams": self.seams_section(),
+            "cancel-ralph": self.text("workflow/cancel-ralph/SKILL.md").split("---", 2)[2],
+        }
+        for name, text in texts.items():
+            for sentence in sentences(text):
+                with self.subTest(skill=name, sentence=sentence[:60]):
+                    self.assertLessEqual(len(sentence.split()), 20)
+
+    def test_each_ralph_skill_names_the_limit_and_the_need_input_exit(self):
+        for rel in ("workflow/ralph/SKILL.md", "workflow/ralph-initiative/SKILL.md"):
+            with self.subTest(skill=rel):
+                text = self.text(rel)
+                self.assertIn("<promise>NEED INPUT</promise>", text)
+                self.assertIn("the question on the task with `append_note`", text)
+                self.assertIn("25 by default", text)
+                self.assertIn("`--max-iterations 0`", text)
+                self.assertNotIn("no limit by default", text)
+
+    def test_cancel_ralph_finds_a_loop_by_folder(self):
+        text = self.text("workflow/cancel-ralph/SKILL.md")
+        self.assertIn("`/clear`", text)
+        self.assertIn("folder", text)
+        self.assertIn("--loop", text)
+        self.assertIn("$ARGUMENTS", text)
+
+    def test_the_readme_and_the_router_name_the_new_exit(self):
+        self.assertIn("<promise>NEED INPUT</promise>", read(os.path.join(PLUGIN, "README.md")))
+        self.assertIn("NEED INPUT", self.text("meta/kairos/SKILL.md"))
+
+
 class SkillsWriteNoRepoFileForWiringOrNotes(unittest.TestCase):
     """KAIROS-T-0527: bootstrap keeps the wiring out of git through the
     local exclude of the clone, never the tracked .gitignore; prototype

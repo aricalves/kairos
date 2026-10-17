@@ -6,7 +6,8 @@ title: "CLI"
 and the MCP server.
 
 This page describes `kairos` 0.15.1. The command tree below mirrors
-`kairos --help`.
+`kairos --help`. A unit test of `kairos-cli` checks that each command has a
+section or a synopsis line here.
 
 ## Invocation
 
@@ -26,12 +27,18 @@ Command groups, each detailed below:
 | Group | Commands |
 |---|---|
 | Authentication | `login`, `logout`, `whoami` |
-| Work items | `strategies`, `initiatives`, `tasks`, `documents`, `adrs` |
-| Finding work | `search`, `boards` |
-| Organization | `orgs`, `members`, `teams`, `streams`, `repos`, `grants`, `boards create`, `boards columns`, `boards transitions`, `metadata`, `templates` |
-| Machine access | `service-accounts`, `keys` |
-| Deployment administration | `admin` |
+| Work items | `strategies`, `initiatives`, `tasks`, `documents`, `adrs`, `state`, `link`, `unlink` |
+| Finding work | `me`, `search`, `boards` |
+| Organization | `orgs`, `members`, `teams`, `streams`, `repos`, `grants`, `metadata`, `templates` |
+| Published sites | `pages` |
+| Machine access | `service-accounts`, `keys`, `admin agent-keys` |
+| Code index settings | `admin code-index-settings` |
+| Deployment administration | `admin tenants` |
+| The code index of a checkout | `index` |
 | The CLI itself | `self-update` |
+
+`boards` also has the verbs that change a board: `create`, `columns`,
+`transitions`, `wip-limit`, `dispatch` and `archive-completed`.
 
 ## Exit codes
 
@@ -232,12 +239,15 @@ differ.
 | `get` | yes | yes | yes | yes | yes |
 | `create` | yes | yes | yes | yes | yes |
 | `edit` | yes | yes | yes | yes | yes |
+| `note` | yes | yes | yes | yes | yes |
+| `promote-note` | yes | yes | yes | yes | yes |
 | `transition` | yes | yes | yes | no | yes |
 | `move` | no | no | yes | yes | no |
 | `claim` | no | no | yes | no | no |
 | `hand-off` | no | no | yes | no | no |
 | `release` | no | no | yes | no | no |
 | `cancel` | no | no | yes | no | no |
+| `lane` | no | no | yes | no | no |
 | `archive` (alias `delete`) | yes | yes | yes | yes | yes |
 | `purge` | no | no | yes | no | no |
 | `restore` | yes | yes | yes | yes | yes |
@@ -356,6 +366,9 @@ Options specific to one noun:
 | `tasks` | `--from-team <TEAM>` | slug or UUID | none | The team that sends the task. When it is not the team of the board, the task is a request: entry column, support lane, also for a manager of the board. With it, `planned` and a column other than the entry column are refused with 422. Kairos does not keep it on the task: name the sending team in the body. |
 | `tasks` | `--team <TEAM_ID>` | UUID | none | Team. Without `--board`, the task goes to the delivery board of this team. With `--board`, it must be the team of that board. |
 | `tasks` | `--repo <REPOSITORY>` | slug or UUID | none | Repository the task links to. It can be any repository, of any team. It does not choose the board. |
+| `documents` | `--template <TEMPLATE_ID>` | UUID | none | Template to stamp content and metadata defaults from. |
+| `adrs` | `--decision-maker <DECISION_MAKER>` | string | none | Decision maker. |
+| `adrs` | `--decision-date <DATE>` | `YYYY-MM-DD` | none | Decision date. |
 
 `tasks create` needs `--board` or `--team`. `--repo` does not replace them.
 
@@ -368,9 +381,6 @@ A caller without `manage_tasks` on the board creates a request. The request
 goes to the entry column. For that caller, a `--column` that names a different
 column gets a 403. See
 [Send a request to a different team](../../how-to/move-work-between-boards/#send-a-request-to-a-different-team).
-| `documents` | `--template <TEMPLATE_ID>` | UUID | none | Template to stamp content and metadata defaults from. |
-| `adrs` | `--decision-maker <DECISION_MAKER>` | string | none | Decision maker. |
-| `adrs` | `--decision-date <DATE>` | `YYYY-MM-DD` | none | Decision date. |
 
 ### `<noun> edit`
 
@@ -785,15 +795,20 @@ Traversal:
 |---|---|---|---|
 | `--from <SHORT_CODE>` | string | none | Starting entity, by short code. |
 | `--from-id <UUID>` | UUID | none | Starting entity, by id. |
-| `--relationships <REL>` | `parent` \| `supports` \| `informs` \| `supersedes` \| `blocks` | all | Relationship types to follow. Repeatable. |
+| `--relationships <REL>` | `parent` \| `supports` \| `informs` \| `supersedes` \| `blocks` | required with `--from` or `--from-id` | Relationship types to follow. Repeatable. |
 | `--direction <DIRECTION>` | `outbound` \| `inbound` \| `both` | `outbound` | Edge direction. |
-| `--depth <N>` | integer 1–10 | none | Maximum traversal depth. |
+| `--depth <N>` | integer 1–10 | required with `--from` or `--from-id` | Maximum traversal depth. |
+
+A traversal needs one `--relationships` or more, and `--depth`. Without
+them, the command exits 1, and the message names the missing option.
+`--relationships`, `--direction` and `--depth` with no `--from` or
+`--from-id` also exit 1.
 
 Ordering and paging:
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--sort <FIELD>` | `created_at` \| `updated_at` \| `title` \| `relevance` | `relevance` with `--q`, else `created_at` | Sort field. `relevance` needs `--q` — there is nothing to be relevant to otherwise, and the request is refused rather than quietly reordered. |
+| `--sort <FIELD>` | `created_at` \| `updated_at` \| `title` \| `relevance` | `relevance` with `--query`, else `created_at` | Sort field. `relevance` needs `--query`. Without a query, the server refuses `relevance`. |
 | `--order <ORDER>` | `asc` \| `desc` | `desc` | Sort order. |
 | `--limit <LIMIT>` | integer | server default 25, maximum 100 | Page size. |
 | `--offset <OFFSET>` | integer | 0 | Offset into the combined result set. |
@@ -852,7 +867,8 @@ total: 340 (limit 200, offset 0)
 The board has 340 items. This result shows 200 (limit 200, offset 0). To read the next part, use --offset 200.
 ```
 
-Board capability grants are not part of the CLI surface. See
+To give or revoke a capability on a board, use
+[`kairos grants`](#kairos-grants). See
 [Capabilities and access](../../explanation/capabilities-and-access/).
 
 A column with a WIP limit shows its live count against the limit after its
@@ -904,7 +920,7 @@ The board marks the column.
 ```
 kairos boards columns list   <BOARD> [OPTIONS]
 kairos boards columns add    <BOARD> <NAME> [--position <N>] [OPTIONS]
-kairos boards columns update <BOARD> <COLUMN> [--name <NAME>] [--position <N>] [--done <BOOL>] [--claims <BOOL>] [OPTIONS]   (one option at least)
+kairos boards columns update <BOARD> <COLUMN> [--name <NAME>] [--position <N>] [--done <BOOL>] [--claims <BOOL>] [--keeps-claims <BOOL>] [OPTIONS]   (one option at least)
 kairos boards columns remove <BOARD> <COLUMN> --confirm [OPTIONS]
 ```
 
@@ -917,6 +933,7 @@ kairos boards columns remove <BOARD> <COLUMN> --confirm [OPTIONS]
 | `--name <NAME>` | string | no change | The new name. |
 | `--done <BOOL>` | `true` or `false` | no change | A done column. |
 | `--claims <BOOL>` | `true` or `false` | no change | A task in the column has a claim. |
+| `--keeps-claims <BOOL>` | `true` or `false` | no change | A task with a claim keeps it in the column, and a task with no claim gets none there (Blocked, KAIROS-T-0529). |
 | `--confirm` | flag | off | Required on `remove` for the removal to happen. Without it, the command exits 1. |
 
 `list` shows the columns in their order. `add`, `update` and `remove` need
@@ -1064,7 +1081,7 @@ kairos members set-role <USER_ID> --role <ROLE> [OPTIONS]
 | `<USER_ID>` | UUID | required | User id, from `kairos members list`. |
 | `--role <ROLE>` | `admin` \| `member` | required | New role. |
 
-Demoting the last admin is rejected with `LAST_ADMIN`.
+Kairos refuses a demotion of the last admin with `LAST_ADMIN`.
 
 ### `kairos members remove`
 
@@ -1077,7 +1094,7 @@ kairos members remove <USER_ID> --confirm [OPTIONS]
 | `<USER_ID>` | UUID | required | User id. |
 | `--confirm` | flag | off | Required for the removal to happen. |
 
-Removing the last admin is rejected with `LAST_ADMIN`.
+Kairos refuses the removal of the last admin with `LAST_ADMIN`.
 
 `members` commands are org-admin operations.
 
@@ -1766,6 +1783,71 @@ slug on each page. Only an organization admin can create, update or delete a
 template. Items from a deleted template keep their content and their
 metadata.
 
+## Published sites
+
+Kairos serves the built static site of a repository. The CI of the
+repository builds the site and sends it. See
+[Publish the docs site of a repository](../../how-to/publish-a-docs-site/).
+
+Each `pages` command takes `--repo` and the common options.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--repo <REPOSITORY>` | slug or UUID | required | The repository of the site. |
+
+### `kairos pages on`
+
+```
+kairos pages on --repo <REPOSITORY> [OPTIONS]
+```
+
+Turns the site of the repository on. The site is off until you turn it on.
+A person who can change the repository can turn the site on.
+
+### `kairos pages off`
+
+```
+kairos pages off --repo <REPOSITORY> [OPTIONS]
+```
+
+Turns the site off. Kairos does not serve it, and Kairos refuses a publish.
+The files stay.
+
+### `kairos pages base-path`
+
+```
+kairos pages base-path --repo <REPOSITORY> [OPTIONS]
+```
+
+Prints the base path of the site, for example
+`/pages/acme/platform/repos/payments/`. Give it to the build as the path of
+the site.
+
+### `kairos pages publish`
+
+```
+kairos pages publish <PATH> --repo <REPOSITORY> [OPTIONS]
+```
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `<PATH>` | path | required | The build folder, or a `.tar.gz` of it. The archive has `index.html` at its root. |
+
+Publishes a built site. The site must be on. You need the capability `pages`
+on the delivery board of the owner team.
+
+### `kairos pages unpublish`
+
+```
+kairos pages unpublish --repo <REPOSITORY> --confirm [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--confirm` | flag | off | Required for the unpublish to happen. Without it, the command exits 1. |
+
+Kairos deletes the files of the site. The list of the publishes stays.
+
 ## Machine access
 
 Service accounts are machine principals authenticated by API keys. Agent keys
@@ -1907,6 +1989,52 @@ The key then gets `401`. Kairos writes an activity row and gives the owner a
 notification of the kind `agent_key_revoked` that names the key. An unknown id
 gets `404`. A revoked key gets `409`.
 
+## Code index settings
+
+The providers of the summaries and the vectors of the code index are a
+setting of the organization. Each member can read the setting. Only an
+organization admin can change it. See
+[the providers](../configuration/#the-providers-of-the-summaries-and-the-vectors)
+and [Use a hosted model for the code index](../../how-to/use-a-hosted-model-for-the-code-index/).
+
+### `kairos admin code-index-settings show`
+
+```
+kairos admin code-index-settings show [OPTIONS]
+```
+
+Shows the providers. For each secret, it shows if the secret is set, by whom
+and when. It never shows the secret.
+
+### `kairos admin code-index-settings set`
+
+```
+kairos admin code-index-settings set [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--summary-provider <SUMMARY_PROVIDER>` | `embedded`, `ollama-cloud` or `bedrock` | unchanged | The provider of the summaries. |
+| `--summary-url <SUMMARY_URL>` | URL | unchanged | The base URL of the OpenAI-compatible endpoint, for `ollama-cloud`. |
+| `--summary-model <SUMMARY_MODEL>` | string | unchanged | The model name (`ollama-cloud`) or the model id (`bedrock`). |
+| `--summary-region <SUMMARY_REGION>` | string | unchanged | The AWS region, for `bedrock`. |
+| `--summary-secret-stdin` | flag | off | Read the secret of the summaries from standard input: the API key, or `<access key id>:<secret access key>[:<session token>]` for `bedrock`. |
+| `--clear-summary-secret` | flag | off | Remove the stored secret of the summaries. |
+| `--vector-provider <VECTOR_PROVIDER>` | `embedded` or `remote` | unchanged | The provider of the vectors. |
+| `--vector-url <VECTOR_URL>` | URL | unchanged | The base URL of the OpenAI-compatible embeddings endpoint, for `remote`. |
+| `--vector-model <VECTOR_MODEL>` | string | unchanged | The model name of the embeddings, for `remote`. |
+| `--vector-secret-stdin` | flag | off | Read the API key of the embeddings endpoint from standard input. |
+| `--clear-vector-secret` | flag | off | Remove the stored secret of the vectors. |
+| `--concurrency <CONCURRENCY>` | integer 1 to 32 | unchanged | The requests that a hosted summarizer sends at a time. |
+| `--default-summaries <EMBEDDED\|HOSTED>` | `embedded` or `hosted` | unchanged | The summarizer of each repository that follows the organization. With `hosted`, the code of each changed symbol leaves the host. |
+
+An option that you do not give keeps its value. A secret comes from standard
+input, never from an argument:
+
+```sh
+printf '%s' "$OLLAMA_KEY" | kairos admin code-index-settings set --summary-provider ollama-cloud --summary-url https://ollama.com/v1 --summary-model gemma4:31b --summary-secret-stdin
+```
+
 ## Deployment administration
 
 `admin tenants` is cross-tenant tenant provisioning, restricted to deployment
@@ -1950,6 +2078,112 @@ kairos admin tenants delete <SLUG> --confirm [OPTIONS]
 | `--confirm` | flag | off | Required for the drop to happen. |
 
 Drops the tenant's organization and schema. Destructive and unrecoverable.
+
+## The code index of a checkout
+
+`kairos index` builds the code index of a git checkout, and serves its code
+tools to an agent. The index is the file `.kairos/index.db` in the checkout.
+A build adds it to `.git/info/exclude`, so git does not track it.
+
+Each `index` command takes `--root`. Only `index update` takes `--url` and
+`--tenant`. No `index` command takes `--json`.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--root <ROOT>` | path | the root of the git repository of the current folder | The root of the checkout. |
+
+### `kairos index`
+
+```
+kairos index --full [--root <ROOT>]
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--full` | flag | off | Build the whole index again, with no base index. It is the same as `kairos index build`. |
+
+With no subcommand and no `--full`, the command prints its help.
+
+### `kairos index build`
+
+```
+kairos index build [--root <ROOT>]
+```
+
+Builds the index of the checkout: the structure, the call edges and the
+summaries. A CLI with no summarizer makes the structure and the edges, and
+says why it made no summaries.
+
+### `kairos index update`
+
+```
+kairos index update [--root <ROOT>] [--rust-edges] [--link-only] [--max-changed <MAX_CHANGED>] [--repository <REPOSITORY>] [--url <URL>] [--tenant <TENANT>]
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--rust-edges` (alias `--scip`) | flag | off | Run the SCIP indexers again for the precise edges of the changed code: rust-analyzer, scip-go, scip-typescript and scip-python. |
+| `--link-only` | flag | off | Run no model. Link the summaries of the pool, and make no new summaries. |
+| `--max-changed <MAX_CHANGED>` | integer | 200 | The most files that can change since the base index. Above it, the CLI builds nothing. |
+| `--repository <REPOSITORY>` | slug or UUID | `repository` in `.claude/kairos.local.md`, else the repository of the `origin` remote | The repository in Kairos. |
+| `--url <URL>` | string | `KAIROS_URL`, else `deployment_url` in `.claude/kairos.local.md`, else the only deployment of `kairos login` | The deployment. |
+| `--tenant <TENANT>` | string | the tenant of the login | The tenant, for a token from `kairos login`. |
+
+Updates the index for the changes in the checkout, also the changes that are
+not committed. With no index, the command starts from the nearest base index
+in Kairos. See
+[`kairos index update` and the base index](../configuration/#kairos-index-update-and-the-base-index).
+
+### `kairos index status`
+
+```
+kairos index status [--root <ROOT>]
+```
+
+Shows the counts of the index: files, symbols, edges and summaries.
+
+### `kairos index duplicates`
+
+```
+kairos index duplicates [--root <ROOT>] [--kind <KIND>] [--min-lines <MIN_LINES>] [--tests] [--under <UNDER>] [--limit <LIMIT>]
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--kind <KIND>` | `exact`, `near` or `same-idea` | each kind | Only this kind of repeated code. |
+| `--min-lines <MIN_LINES>` | integer | 5 | The smallest function to compare, in lines. |
+| `--tests` | flag | off | Also compare test code. |
+| `--under <UNDER>` | path | the whole checkout | Only the functions in files under this path, from the root of the checkout. |
+| `--limit <LIMIT>` | integer 1 to 200 | 20 | The most groups to show. |
+
+Finds repeated code: exact copies, near copies and the same idea in other
+code. The text is that of the MCP tool `duplicates`.
+
+### `kairos index references`
+
+```
+kairos index references <SYMBOL> [--root <ROOT>] [--file <FILE>] [--line <LINE>] [--possible] [--limit <LIMIT>]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<SYMBOL>` | string | required | A name, `Type::name` or `Type.name`, or a candidate `name (file:line)`. |
+| `--file <FILE>` | path | none | The file of the symbol, when more than one symbol has the name. |
+| `--line <LINE>` | integer | none | A line of the symbol, when more than one symbol of one file has the name. |
+| `--possible` | flag | off | Also show the calls by a name that more than one function has. |
+| `--limit <LIMIT>` | integer 1 to 1000 | 100 | The most uses to show. |
+
+Shows each use of a symbol. In Rust, a use is a type, a field, an import or
+a call. In the other languages, a use is a call.
+
+### `kairos index mcp`
+
+```
+kairos index mcp [--root <ROOT>]
+```
+
+Serves the code tools of the index to an agent: MCP over standard input and
+output. The Claude Code plugin starts this command.
 
 ## The CLI itself
 

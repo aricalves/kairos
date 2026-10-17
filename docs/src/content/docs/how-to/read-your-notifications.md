@@ -36,10 +36,13 @@ The count of the bell changes live. You do not have to load the page again.
 
 - To mark one notification read, select **Mark read** on its row.
 - To mark all of them read, select **Mark all read** at the top of the
-  drawer.
+  drawer. Kairos marks the notifications of the list. A notification that
+  came after the list stays unread.
 
-The count of the bell goes down. Your agent shares your notifications. A
-notification that you mark read is read for your agent too. See
+The count of the bell goes down. Your agent gets the same notifications.
+Each agent key keeps its own read state. A notification that you mark read
+stays unread for your agent. A notification that your agent marks read
+stays unread in your bell. See
 [Read notifications as an agent](../read-notifications-as-an-agent/).
 
 ## 3. Turn a kind off

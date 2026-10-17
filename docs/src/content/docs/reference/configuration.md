@@ -76,6 +76,23 @@ No pool pings a connection on checkout: every checkout sets `search_path` first,
 
 Each pool sets three timeouts on each new connection: `statement_timeout` 30 seconds, `lock_timeout` 5 seconds and `idle_in_transaction_session_timeout` 60 seconds. A statement that passes its timeout fails with the error of PostgreSQL, and the request reports it. The migration connection gets the `lock_timeout` alone, because a migration can run long. A replica that waits for the migration lock waits with no timeout.
 
+### Request timeout
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `KAIROS_REQUEST_TIMEOUT_SECS` | integer | `30` | The most time, in seconds, that a request under `/api` or `/mcp` gets. After it, the answer is `503` with the code `REQUEST_TIMEOUT`, and the server stops the work of the request. `0` turns the timeout off. |
+
+The timeout ends when the head of the answer is ready. So the timeout does not cut a download that streams its body. These routes are not in the timeout:
+
+- `PUT` and `GET /api/repositories/{slug}/code-indexes/{commit}`: the upload and the download of a code index.
+- `PUT /api/repositories/{slug}/site`: the publish of a site.
+
+The paths outside `/api` and `/mcp` are not in the timeout: the WebSocket `/ws/events`, the probes, the GUI and `/pages`. A write that the timeout stops can be complete or not complete. Read the data again before you send the write again.
+
+Each call of the server to the issuer has a timeout of 5 seconds. These calls get the discovery document and the JWKS, and relay the tokens of the GUI. The server gets the JWKS at most once a minute. A token whose key is not in the JWKS gets a `401` until the server can get the JWKS again.
+
+The server accepts HTTP/1.1, and HTTP/2 from a client that sends it with prior knowledge (h2c).
+
 ### Local password accounts
 
 | Variable | Type | Default | Description |

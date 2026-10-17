@@ -2,7 +2,7 @@
 //! column (KAIROS-A-0015: "board views per level with column layout";
 //! `GET /api/boards` + `GET /api/boards/{id}/items`).
 
-use crate::commands::entities::{EntityView, ListArgs};
+use crate::commands::entities::ListArgs;
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
 use crate::table::{Table, print_page_footer};
@@ -297,6 +297,7 @@ impl BoardsCommand {
                             position: None,
                             is_done: None,
                             claims: None,
+                            keeps_claims: None,
                             wip_limit: Some(wip_limit),
                         },
                     )
@@ -391,19 +392,19 @@ fn print_board_items(items: &BoardItemsResponse, details: bool) {
         for item in &column.strategies {
             println!(
                 "   {}  [strategy] {}{}{}",
-                item.short_code(),
-                item.title(),
-                teams_suffix(items, item.short_code()),
-                more(item.short_code(), &item.updated_at, None)
+                item.short_code.as_str(),
+                item.title,
+                teams_suffix(items, item.short_code.as_str()),
+                more(item.short_code.as_str(), &item.updated_at, None)
             );
         }
         for item in &column.initiatives {
             println!(
                 "   {}  [initiative] {}{}{}",
-                item.short_code(),
-                item.title(),
-                teams_suffix(items, item.short_code()),
-                more(item.short_code(), &item.updated_at, None)
+                item.short_code.as_str(),
+                item.title,
+                teams_suffix(items, item.short_code.as_str()),
+                more(item.short_code.as_str(), &item.updated_at, None)
             );
         }
         for item in &column.tasks {
@@ -416,18 +417,22 @@ fn print_board_items(items: &BoardItemsResponse, details: bool) {
             };
             println!(
                 "   {}  [{}]{lane} {}{}",
-                item.short_code(),
+                item.short_code.as_str(),
                 item.task_type,
-                item.title(),
-                more(item.short_code(), &item.updated_at, item.claim.as_ref())
+                item.title,
+                more(
+                    item.short_code.as_str(),
+                    &item.updated_at,
+                    item.claim.as_ref()
+                )
             );
         }
         for item in &column.adrs {
             println!(
                 "   {}  [adr] {}{}",
-                item.short_code(),
-                item.title(),
-                more(item.short_code(), &item.updated_at, None)
+                item.short_code.as_str(),
+                item.title,
+                more(item.short_code.as_str(), &item.updated_at, None)
             );
         }
     }

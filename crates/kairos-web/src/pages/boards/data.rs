@@ -58,7 +58,7 @@ pub struct BoardDetail {
 
 // ---- mirrors: the grouped items view --------------------------------------
 
-/// mirror of: `kairos_client::types::Strategy` (partial — card fields).
+/// mirror of: `kairos_client::types_cards::StrategyCard` (partial).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Strategy {
     pub short_code: String,
@@ -84,7 +84,7 @@ pub(crate) fn owner_pill(owner: Option<&ItemOwner>) -> Option<String> {
     owner.map(|owner| format!("owner: {}", owner.display_name))
 }
 
-/// mirror of: `kairos_client::types::Initiative` (partial — card fields).
+/// mirror of: `kairos_client::types_cards::InitiativeCard` (partial).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Initiative {
     pub short_code: String,
@@ -101,7 +101,7 @@ pub struct Initiative {
     pub owner: Option<ItemOwner>,
 }
 
-/// mirror of: `kairos_client::types::Task` (partial — card fields).
+/// mirror of: `kairos_client::types_cards::TaskCard` (partial).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Task {
     pub short_code: String,
@@ -166,7 +166,7 @@ pub struct TaskClaim {
     pub claimed_at: String,
 }
 
-/// mirror of: `kairos_client::types::Adr` (partial — card fields).
+/// mirror of: `kairos_client::types_cards::AdrCard` (partial).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Adr {
     pub short_code: String,

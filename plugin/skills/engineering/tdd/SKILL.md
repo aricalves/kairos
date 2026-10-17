@@ -1,6 +1,6 @@
 ---
 name: tdd
-description: Test-driven development. Use when the user wants to build features or fix bugs test-first, mentions "red-green-refactor", or wants integration tests.
+description: Test-driven development. Use when the user wants to build features or fix bugs test-first, mentions "red-green", or wants integration tests.
 ---
 
 # Test-Driven Development
@@ -19,9 +19,21 @@ See [tests.md](tests.md) for examples and [mocking.md](mocking.md) for mocking g
 
 A **seam** is the public boundary you test at: the interface where you observe behavior without reaching inside. Tests live at seams, never against internals.
 
-**Test only at pre-agreed seams.** Before writing any test, write down the seams under test and confirm them with the user. No test is written at an unconfirmed seam. You can't test everything — agreeing the seams up front is how testing effort lands on the critical paths and complex logic instead of every edge case.
+**Test only at agreed seams.** Use a seam that the task names, or a seam that the user confirms. You cannot test everything. Agreed seams put the tests on the critical paths and the complex logic, not on each edge case.
 
-Ask: "What's the public interface, and which seams should we test?"
+Read the seams from the task:
+
+1. Read the task with `get_item`. Read its acceptance criteria, its content and its notes.
+2. Find each public interface that the task names. Examples: a function, a command, an endpoint, an MCP tool, a hook.
+3. Each interface that the task names is a seam. For these seams, do not ask the user to confirm.
+4. Before the first test, write the seams on the task with `append_note`. For each seam, give the criterion or the note that names it.
+
+If the task names no seam, or you need a seam that the task does not name, ask the user. Ask: "What is the public interface, and which seams do we test?"
+
+In a Ralph loop or a dispatch run, no user can answer. Then do not guess a seam:
+
+- Write the question on the task with `append_note`.
+- End the reply with `<promise>NEED INPUT</promise>`. A Ralph loop then stops.
 
 ## Anti-patterns
 

@@ -16,7 +16,10 @@ diesel-async = { workspace = true }
 chrono = { workspace = true }
 utoipa = { workspace = true }
 # `ws` feeds the /ws/events channel (KAIROS-T-0022, A-0005 §5).
-axum = { workspace = true, features = ["ws"] }
+# `http2` (KAIROS-T-0613): h2 is in the tree already, through hyper and
+# reqwest. A client that speaks HTTP/2 with prior knowledge gets it; HTTP/1.1
+# does not change.
+axum = { workspace = true, features = ["ws", "http2"] }
 tokio = { workspace = true }
 # The dedicated LISTEN connection behind /ws/events (KAIROS-T-0022);
 # version pinned in the workspace manifest.

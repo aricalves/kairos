@@ -100,7 +100,7 @@ a different person never gets them.
 | `event` | Emitted when |
 |---|---|
 | `notification_created` | Kairos made a notification for you. `short_code` is the code of the item of the notification |
-| `notifications_read` | You marked one or more of your notifications as read. `short_code` is empty |
+| `notifications_read` | You marked one or more of your notifications as read with your login. A read with an agent key sends no event, because your bell does not change. `short_code` is empty |
 
 For the two events, `entity_type` is `notification` and `board_id` is `null`.
 Thus a connection with a board filter does not get them. The text of the

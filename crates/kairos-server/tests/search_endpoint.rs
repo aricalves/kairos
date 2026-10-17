@@ -489,7 +489,9 @@ async fn search_endpoint_against_live_stack() {
         "empty groups are omitted from the wire JSON: {raw}"
     );
 
-    // Entities come back fully typed — the complete T-0018 task DTO.
+    // Entities come back as cards (KAIROS-T-0602): the fields of the
+    // T-0018 task DTO without `content`, `created_by` and `updated_by`,
+    // and with a snippet of the content.
     let task = &body.results.tasks[0];
     assert_eq!(task.id, t1.id.to_string());
     assert_eq!(task.short_code, t1.short_code);
@@ -502,14 +504,22 @@ async fn search_endpoint_against_live_stack() {
     // had no team and the value here was `None`.
     assert_eq!(task.team_id, Some(delivery_team.to_string()));
     assert_eq!(task.version, 1);
-    assert_eq!(task.created_by, seeder.to_string());
+    assert_eq!(task.created_by, None);
+    assert_eq!(task.content, None);
     assert!(!task.created_at.is_empty() && !task.updated_at.is_empty());
     let strategy = &body.results.strategies[0];
     assert_eq!(strategy.short_code, s1.short_code);
+    assert_eq!(strategy.content, None);
     assert_eq!(
-        strategy.content,
-        "Rework authentication and identity across the platform"
+        strategy.snippet.as_deref(),
+        Some("Rework authentication and identity across the platform")
     );
+    // The wire JSON of a hit has no `content`.
+    for group in raw["results"].as_object().expect("results object").values() {
+        for hit in group.as_array().expect("a group") {
+            assert!(hit.get("content").is_none(), "a hit has no content: {hit}");
+        }
+    }
 
     // ==========================================================================
     // S-0005 composition example 2: structured filter — all critical bugs

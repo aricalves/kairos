@@ -3,7 +3,9 @@
 //! - `/api/me/notification-settings` (KAIROS-T-0381): the kinds of
 //!   notification that a person turned off;
 //! - `GET /api/me/notifications` and `POST /api/me/notifications/read`
-//!   (KAIROS-T-0382): the list, and the mark as read. The MCP tools
+//!   (KAIROS-T-0382): the list, and the mark as read. The read state is
+//!   of the caller: the person, or the agent key of the request
+//!   (KAIROS-T-0550). The MCP tools
 //!   `get_events` and `mark_events_read` call the same functions
 //!   ([`list_for`], [`mark_for`]).
 //!
@@ -18,12 +20,14 @@ use kairos_client::types_notifications::{
     NotificationSettings, UpdateNotificationSettingsRequest,
 };
 use kairos_core::notifications::NotificationKind;
+use kairos_db::notifications::{Mark, Reader};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::body::ApiJson;
 use crate::error::ApiError;
+use crate::input::ApiQuery;
 use crate::middleware::auth::AuthContext;
 use crate::middleware::tenant::TenantContext;
 
@@ -37,69 +41,124 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/api/me/notifications/read", post(mark_notifications_read))
 }
 
-/// The most unread notifications in a list.
+/// The most unread notifications in a list, and in a page.
 pub(crate) const LIST_UNREAD: i64 = 100;
 /// The read notifications in a list.
 pub(crate) const LIST_READ: i64 = 20;
 
-/// The list of `user`: each unread notification (newest first,
-/// [`LIST_UNREAD`] at most), then the [`LIST_READ`] newest read ones, and
-/// the count of the unread ones.
-pub(crate) fn list_for(
+/// The reader of a request (KAIROS-T-0550): the person, or the agent key
+/// of the request. Each keeps its own read state.
+pub(crate) fn reader_for(
     conn: &mut diesel::pg::PgConnection,
     user: Uuid,
+    agent_key: Option<Uuid>,
+) -> Result<Reader, ApiError> {
+    Reader::of(conn, user, agent_key).map_err(ApiError::internal)
+}
+
+/// Parse `ids` as notifications of the person of `reader`. An id that is
+/// not a UUID, or not a notification of the person, is refused and named.
+fn notification_ids(
+    conn: &mut diesel::pg::PgConnection,
+    reader: &Reader,
+    ids: &[String],
+) -> Result<Vec<Uuid>, ApiError> {
+    let mut parsed = Vec::with_capacity(ids.len());
+    let mut bad = Vec::new();
+    for id in ids {
+        match Uuid::parse_str(id.trim()) {
+            Ok(uuid) => parsed.push(uuid),
+            Err(_) => bad.push(id.clone()),
+        }
+    }
+    let unknown =
+        kairos_db::notifications::not_of(conn, reader.user, &parsed).map_err(ApiError::internal)?;
+    bad.extend(unknown.iter().map(Uuid::to_string));
+    if !bad.is_empty() {
+        return Err(ApiError::not_found(format!(
+            "You have no notification with the id {}. Kairos changed nothing. \
+             get_events and GET /api/me/notifications give the ids.",
+            bad.join(", ")
+        )));
+    }
+    Ok(parsed)
+}
+
+/// The list of the reader: the unread notifications (newest first,
+/// [`LIST_UNREAD`] at most), then the [`LIST_READ`] newest read ones, and
+/// the count of the unread ones. With `before` (an id), the next page: the
+/// unread ones older than that one, and no read ones.
+pub(crate) fn list_for(
+    conn: &mut diesel::pg::PgConnection,
+    reader: &Reader,
+    before: Option<&str>,
 ) -> Result<(Vec<kairos_db::notifications::Notification>, i64), ApiError> {
-    let items = kairos_db::notifications::list(conn, user, LIST_UNREAD, LIST_READ)
+    let before = match before {
+        Some(id) => notification_ids(conn, reader, &[id.to_string()])?
+            .first()
+            .copied(),
+        None => None,
+    };
+    let items = kairos_db::notifications::list(conn, reader, before, LIST_UNREAD, LIST_READ)
         .map_err(ApiError::internal)?;
-    let unread = kairos_db::notifications::unread_count(conn, user).map_err(ApiError::internal)?;
+    let unread =
+        kairos_db::notifications::unread_count(conn, reader).map_err(ApiError::internal)?;
     Ok((items, unread))
 }
 
-/// Mark notifications of `user` read: `ids`, or each unread one with
-/// `all: true`. Exactly one of the two. An id that is not a UUID, or not a
-/// notification of `user`, is refused and named, and nothing changes.
-/// Returns the ids that changed, and the count of the unread ones after.
+/// Mark notifications read for the reader: `ids`, or `all: true` with
+/// `up_to` (KAIROS-T-0550). `up_to` is the id of the newest notification
+/// that the caller read: Kairos marks it and each older unread one, and no
+/// newer one. `all` without `up_to` is refused, so a notification that
+/// came after the caller's list stays unread. An id that is not a UUID, or
+/// not a notification of the person, is refused and named, and nothing
+/// changes. Returns the ids that changed, and the count of the unread ones
+/// after.
 pub(crate) fn mark_for(
     conn: &mut diesel::pg::PgConnection,
-    user: Uuid,
+    reader: &Reader,
     ids: Option<Vec<String>>,
     all: Option<bool>,
+    up_to: Option<String>,
 ) -> Result<(Vec<Uuid>, i64), ApiError> {
-    let ids = match (ids, all) {
-        (Some(ids), None | Some(false)) if !ids.is_empty() => Some(ids),
-        (None, Some(true)) => None,
-        _ => {
+    let ids = ids.filter(|ids| !ids.is_empty());
+    let all = all == Some(true);
+    let changed = match (ids, all, up_to) {
+        (Some(_), true, _) => {
             return Err(ApiError::validation(
-                "Send `ids` (one or more ids of your notifications) or `all: true`, not both.",
+                "Send `ids` or `all: true` with `up_to`, not both.",
             ));
         }
-    };
-    let changed = match ids {
-        Some(ids) => {
-            let mut parsed = Vec::with_capacity(ids.len());
-            let mut bad = Vec::new();
-            for id in &ids {
-                match Uuid::parse_str(id.trim()) {
-                    Ok(uuid) => parsed.push(uuid),
-                    Err(_) => bad.push(id.clone()),
-                }
-            }
-            let unknown = kairos_db::notifications::not_of(conn, user, &parsed)
-                .map_err(ApiError::internal)?;
-            bad.extend(unknown.iter().map(Uuid::to_string));
-            if !bad.is_empty() {
-                return Err(ApiError::not_found(format!(
-                    "You have no notification with the id {}. Kairos changed nothing. \
-                     get_events and GET /api/me/notifications give the ids.",
-                    bad.join(", ")
-                )));
-            }
-            kairos_db::notifications::mark_read(conn, user, Some(&parsed))
+        (Some(_), false, Some(_)) => {
+            return Err(ApiError::validation(
+                "`up_to` goes with `all: true`, not with `ids`.",
+            ));
         }
-        None => kairos_db::notifications::mark_read(conn, user, None),
+        (Some(ids), false, None) => {
+            let parsed = notification_ids(conn, reader, &ids)?;
+            kairos_db::notifications::mark_read(conn, reader, Mark::Ids(&parsed))
+        }
+        (None, true, Some(up_to)) => {
+            let parsed = notification_ids(conn, reader, &[up_to])?;
+            kairos_db::notifications::mark_read(conn, reader, Mark::UpTo(parsed[0]))
+        }
+        (None, true, None) => {
+            return Err(ApiError::validation(
+                "`all: true` needs `up_to`: the id of the newest notification that you read. \
+                 get_events gives it first. Kairos marks that one and each older one, and no \
+                 newer one.",
+            ));
+        }
+        (None, false, _) => {
+            return Err(ApiError::validation(
+                "Send `ids`, the ids of your notifications. Or send `all: true` with `up_to`, \
+                 the id of the newest notification that you read.",
+            ));
+        }
     }
     .map_err(ApiError::internal)?;
-    let unread = kairos_db::notifications::unread_count(conn, user).map_err(ApiError::internal)?;
+    let unread =
+        kairos_db::notifications::unread_count(conn, reader).map_err(ApiError::internal)?;
     Ok((changed, unread))
 }
 
@@ -121,25 +180,43 @@ fn notification_view(n: kairos_db::notifications::Notification) -> Notification 
     }
 }
 
+/// Query parameters of [`list_notifications`].
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ListQuery {
+    /// The id of a notification: the page has the unread ones older than it.
+    pub before: Option<String>,
+}
+
 /// The caller's notifications: each unread one (newest first, 100 at most),
-/// then the 20 newest read ones. A service account has none.
+/// then the 20 newest read ones. `before` gives the next page of unread
+/// ones. The read state is the caller's: the person, or the agent key of
+/// the request (KAIROS-T-0550). A service account has none.
 #[utoipa::path(
     get,
     path = "/api/me/notifications",
     tag = "me",
+    params(
+        ("before" = Option<String>, Query, description = "The id of a notification. The page has the unread notifications older than it, and no read ones"),
+    ),
     responses(
         (status = 200, description = "The unread notifications, then the newest read ones", body = NotificationList),
+        (status = 404, description = "`before` is not a notification of the caller", body = kairos_client::types::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn list_notifications(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Extension(tenant): Extension<TenantContext>,
+    ApiQuery(query): ApiQuery<ListQuery>,
 ) -> Result<Json<NotificationList>, ApiError> {
-    let user = auth.user_id;
+    let (user, key) = (auth.user_id, auth.agent_key);
     let (items, unread) = state
         .blocking
-        .run(&tenant.slug, move |conn| list_for(conn, user))
+        .run(&tenant.slug, move |conn| {
+            let reader = reader_for(conn, user, key)?;
+            list_for(conn, &reader, query.before.as_deref())
+        })
         .await?;
     Ok(Json(NotificationList {
         unread,
@@ -147,9 +224,11 @@ pub(crate) async fn list_notifications(
     }))
 }
 
-/// Mark notifications of the caller read: `ids`, or `all: true`. An id that
-/// is not a notification of the caller is a 404 that names it, and nothing
-/// changes. An id that is read already does not change.
+/// Mark notifications of the caller read: `ids`, or `all: true` with
+/// `up_to`. The read is the caller's: the person, or the agent key of the
+/// request (KAIROS-T-0550). An id that is not a notification of the caller
+/// is a 404 that names it, and nothing changes. An id that is read already
+/// does not change.
 #[utoipa::path(
     post,
     path = "/api/me/notifications/read",
@@ -158,7 +237,7 @@ pub(crate) async fn list_notifications(
     responses(
         (status = 200, description = "The ids that changed, and the unread count after", body = MarkNotificationsReadResponse),
         (status = 404, description = "An id is not a notification of the caller", body = kairos_client::types::ErrorEnvelope),
-        (status = 422, description = "Neither ids nor all, or both", body = kairos_client::types::ErrorEnvelope),
+        (status = 422, description = "Neither ids nor all, or both, or all without up_to", body = kairos_client::types::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn mark_notifications_read(
@@ -167,11 +246,12 @@ pub(crate) async fn mark_notifications_read(
     Extension(tenant): Extension<TenantContext>,
     ApiJson(body): ApiJson<MarkNotificationsReadRequest>,
 ) -> Result<Json<MarkNotificationsReadResponse>, ApiError> {
-    let user = auth.user_id;
+    let (user, key) = (auth.user_id, auth.agent_key);
     let (changed, unread) = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            mark_for(conn, user, body.ids, body.all)
+            let reader = reader_for(conn, user, key)?;
+            mark_for(conn, &reader, body.ids, body.all, body.up_to)
         })
         .await?;
     Ok(Json(MarkNotificationsReadResponse {

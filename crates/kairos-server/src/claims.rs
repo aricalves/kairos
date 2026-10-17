@@ -313,11 +313,14 @@ pub(crate) fn claim_dto(claim: &TaskClaim, names: &HashMap<Uuid, String>) -> dto
 }
 
 /// Put the claims of the tasks on their DTOs. Two queries for the list.
-pub fn attach_claims(
+pub fn attach_claims<T: crate::api::convert::TaskDto>(
     conn: &mut PgConnection,
-    tasks: &mut [dto::Task],
+    tasks: &mut [T],
 ) -> Result<(), diesel::result::Error> {
-    let ids: Vec<Uuid> = tasks.iter().filter_map(|t| t.id.parse().ok()).collect();
+    let ids: Vec<Uuid> = tasks
+        .iter()
+        .filter_map(|t| t.task_id().parse().ok())
+        .collect();
     let claims = task_claims::claims_of(conn, &ids)?;
     if claims.is_empty() {
         return Ok(());
@@ -325,10 +328,10 @@ pub fn attach_claims(
     let users: Vec<Uuid> = claims.values().map(|c| c.user_id).collect();
     let names = task_claims::display_names(conn, &users)?;
     for task in tasks {
-        let Ok(id) = task.id.parse::<Uuid>() else {
+        let Ok(id) = task.task_id().parse::<Uuid>() else {
             continue;
         };
-        task.claim = claims.get(&id).map(|claim| claim_dto(claim, &names));
+        task.set_claim(claims.get(&id).map(|claim| claim_dto(claim, &names)));
     }
     Ok(())
 }
