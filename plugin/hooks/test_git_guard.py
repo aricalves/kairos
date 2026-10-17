@@ -6,13 +6,15 @@ PR merge, a release and every history rewrite. Stdlib only; run with
 unit`, which includes it).
 
 The tests run `git_guard.py` as a subprocess, the way Claude Code runs it.
-No test calls git or a server."""
+The push policy (KAIROS-T-0542) is tested with a fake ref lookup, and once
+on a temporary repository with git. No test calls a server."""
 
 import importlib.util
 import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -24,7 +26,6 @@ SPEC.loader.exec_module(git_guard)
 ASKS = (
     "git push",
     "git push origin main",
-    "git push -u origin feature",
     "git push --force",
     "git push --force-with-lease origin main",
     "git push origin --delete old-branch",
@@ -129,10 +130,86 @@ SILENT = (
 )
 
 
-def payload(command, tool_name="Bash"):
-    return json.dumps(
-        {"session_id": "session-0001", "tool_name": tool_name, "tool_input": {"command": command}}
-    )
+def payload(command, tool_name="Bash", cwd=None):
+    data = {"session_id": "session-0001", "tool_name": tool_name, "tool_input": {"command": command}}
+    if cwd:
+        data["cwd"] = cwd
+    return json.dumps(data)
+
+
+class FakeRefs:
+    """The refs of a repository with the default branch `trunk`, the
+    branches `kairos-t-0542`, `feature/x` and `v1.0`, and the tag `v1.0`."""
+
+    def __init__(self, default="trunk", heads=("trunk", "main", "kairos-t-0542", "feature/x", "v1.0"),
+                 tags=("v1.0",), refspecs=()):
+        self.default = default
+        self.heads = set(heads)
+        self.tags = set(tags)
+        self.refspecs = list(refspecs)
+        self.folders = []
+
+    def default_branch(self, folder, remote):
+        self.folders.append(folder)
+        return self.default if remote == "origin" else None
+
+    def push_refspecs(self, folder, remote):
+        return self.refspecs
+
+    def has_ref(self, folder, ref):
+        kind, _, name = ref[len("refs/"):].partition("/")
+        return name in (self.heads if kind == "heads" else self.tags)
+
+
+# The push of a feature branch: silent (KAIROS-T-0542).
+FEATURE_PUSHES = (
+    "git push -u origin kairos-t-0542",
+    "git push origin kairos-t-0542",
+    "git push --set-upstream origin kairos-t-0542",
+    "git push origin -u kairos-t-0542",
+    "git -C /work/wt-kairos-t-0542 push -u origin kairos-t-0542",
+    "git -C /work/wt-kairos-t-0542 push origin kairos-t-0542",
+    "git push -u origin feature/x",
+    "git add -A && git commit -m x && git push -u origin kairos-t-0542",
+)
+
+# Each other push still asks, also with the ref lookup.
+REFUSED_PUSHES = (
+    "git push",
+    "git push origin",
+    "git push -u origin trunk",
+    "git push origin main",
+    "git push origin master",
+    "git push -u origin HEAD",
+    "git push --force origin kairos-t-0542",
+    "git push -f origin kairos-t-0542",
+    "git push -uf origin kairos-t-0542",
+    "git push --force-with-lease origin kairos-t-0542",
+    "git push --force-with-lease=kairos-t-0542 origin kairos-t-0542",
+    "git push origin +kairos-t-0542",
+    "git push origin kairos-t-0542:trunk",
+    "git push origin kairos-t-0542:kairos-t-0542",
+    "git push origin v1.0",
+    "git push origin refs/tags/v1.0",
+    "git push --tags origin kairos-t-0542",
+    "git push --follow-tags origin kairos-t-0542",
+    "git push origin --delete kairos-t-0542",
+    "git push -d origin kairos-t-0542",
+    "git push origin :kairos-t-0542",
+    "git push --all origin",
+    "git push --mirror origin",
+    "git push origin no-such-branch",
+    "git push origin kairos-t-0542 feature/x",
+    "git push upstream kairos-t-0542",
+    "git push origin $BRANCH",
+    "git push origin $(git branch --show-current)",
+    "git -c remote.origin.url=x push origin kairos-t-0542",
+    "git --git-dir=/x/.git push origin kairos-t-0542",
+    "GIT_DIR=/x/.git git push origin kairos-t-0542",
+    "cd /work/other && git push -u origin kairos-t-0542",
+    "bash -c 'cd /work/other && git push -u origin kairos-t-0542'",
+    "echo 'a && git push origin kairos-t-0542'",
+)
 
 
 class GitGuardPure(unittest.TestCase):
@@ -159,6 +236,58 @@ class GitGuardPure(unittest.TestCase):
         self.assertIsNone(git_guard.guarded("echo 'unterminated"))
 
 
+class PushPolicy(unittest.TestCase):
+    """KAIROS-T-0542: the push of a feature branch to origin goes through;
+    each other push asks."""
+
+    def test_each_feature_push_is_silent(self):
+        for command in FEATURE_PUSHES:
+            with self.subTest(command=command):
+                self.assertIsNone(git_guard.guarded(command, "/work/repo", FakeRefs()))
+
+    def test_each_other_push_asks(self):
+        for command in REFUSED_PUSHES:
+            with self.subTest(command=command):
+                reason = git_guard.guarded(command, "/work/repo", FakeRefs())
+                self.assertIsNotNone(reason)
+                self.assertIn("git push", reason)
+
+    def test_with_no_ref_lookup_each_push_asks(self):
+        for command in FEATURE_PUSHES:
+            with self.subTest(command=command):
+                self.assertIsNotNone(git_guard.guarded(command))
+
+    def test_an_unknown_default_branch_asks(self):
+        refs = FakeRefs(default=None)
+        self.assertIsNotNone(git_guard.guarded("git push -u origin kairos-t-0542", "/work/repo", refs))
+
+    def test_a_push_refspec_in_the_config_asks(self):
+        refs = FakeRefs(refspecs=["refs/heads/kairos-t-0542:refs/heads/trunk"])
+        self.assertIsNotNone(git_guard.guarded("git push origin kairos-t-0542", "/work/repo", refs))
+
+    def test_a_branch_with_a_tag_of_the_same_name_asks(self):
+        self.assertIsNotNone(git_guard.guarded("git push origin v1.0", "/work/repo", FakeRefs()))
+
+    def test_the_lookup_runs_in_the_folder_of_dash_c(self):
+        refs = FakeRefs()
+        git_guard.guarded("git -C ../wt-kairos-t-0542 push origin kairos-t-0542", "/work/repo", refs)
+        self.assertEqual(refs.folders, ["/work/repo/../wt-kairos-t-0542"])
+
+    def test_a_merge_or_a_tag_still_asks_with_the_lookup(self):
+        for command in ("git merge kairos-t-0542", "git tag v2.0", "gh pr merge 42",
+                        "git push origin kairos-t-0542 && git tag v2.0"):
+            with self.subTest(command=command):
+                self.assertIsNotNone(git_guard.guarded(command, "/work/repo", FakeRefs()))
+
+
+def git(folder, *args):
+    subprocess.run(
+        ["git", "-C", folder, "-c", "user.name=Robin", "-c", "user.email=robin@example.com", *args],
+        check=True,
+        capture_output=True,
+    )
+
+
 class GitGuardHook(unittest.TestCase):
     def run_hook(self, stdin):
         return subprocess.run(
@@ -177,6 +306,33 @@ class GitGuardHook(unittest.TestCase):
         self.assertEqual(output["permissionDecision"], "ask")
         self.assertIn("git push", output["permissionDecisionReason"])
         self.assertNotIn("\n", output["permissionDecisionReason"])
+
+    def test_a_feature_push_in_a_real_repository_gives_no_output(self):
+        with tempfile.TemporaryDirectory() as folder:
+            git(folder, "init", "-q", "-b", "main")
+            git(folder, "commit", "-q", "--allow-empty", "-m", "first")
+            git(folder, "update-ref", "refs/remotes/origin/main", "HEAD")
+            git(folder, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+            git(folder, "branch", "kairos-t-0542")
+            git(folder, "tag", "v1.0")
+            git(folder, "branch", "v1.0")
+            silent = self.run_hook(payload("git push -u origin kairos-t-0542", cwd=folder))
+            self.assertEqual(silent.returncode, 0, silent.stderr)
+            self.assertEqual(silent.stdout, "")
+            silent = self.run_hook(payload(f"git -C {folder} push origin kairos-t-0542", cwd="/"))
+            self.assertEqual(silent.stdout, "")
+            for command in ("git push origin main", "git push origin v1.0",
+                            "git push origin no-such-branch", "git push -f origin kairos-t-0542"):
+                with self.subTest(command=command):
+                    asked = self.run_hook(payload(command, cwd=folder))
+                    output = json.loads(asked.stdout)["hookSpecificOutput"]
+                    self.assertEqual(output["permissionDecision"], "ask")
+
+    def test_a_push_outside_a_repository_asks(self):
+        with tempfile.TemporaryDirectory() as folder:
+            result = self.run_hook(payload("git push -u origin kairos-t-0542", cwd=folder))
+            output = json.loads(result.stdout)["hookSpecificOutput"]
+            self.assertEqual(output["permissionDecision"], "ask")
 
     def test_a_non_match_gives_no_output(self):
         result = self.run_hook(payload("git status"))

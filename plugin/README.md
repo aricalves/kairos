@@ -209,7 +209,8 @@ rules are links too.
 `hooks/git_guard.py` is a `PreToolUse` hook on Bash (KAIROS-T-0497, COLLIERY-I-0631). It
 asks every time; it does not look for a "go" in the conversation. It splits the command line
 into its simple commands (`&&`, `;`, `|`, a subshell, `$(...)`), looks inside `sh -c`,
-`bash -c`, `zsh -c` and `eval` (KAIROS-T-0548), and asks for: `git push` (any form),
+`bash -c`, `zsh -c` and `eval` (KAIROS-T-0548), and asks for: `git push` (but the push of
+a feature branch, below),
 `git pull` (any form: a merge or a rebase), `git merge`, `git rebase`, `git tag <name>` (a
 list is silent), `git reset --hard`, `git commit --amend`, `git clean -f`, `git checkout --
 <path>`, `git restore` (not `--staged`), `git branch -D` of a remote-tracking branch, any `git`
@@ -218,6 +219,15 @@ create|edit|delete` and `gh api` with a path that ends in `/merge`. The answer i
 `permissionDecision: "ask"` with a one-line reason that names the command; anything else gives
 no output. `git status`, `git fetch`, `git clean -n`, a `grep` for "push" and an `echo` of the
 words are silent. The hook reads no file and holds no credentials.
+
+The push policy (KAIROS-T-0542): an agent pushes the branch of its task and opens a draft PR;
+a merge, a release and a tag need the user's go. So `git [-C <path>] push [-u|--set-upstream]
+origin <branch>` is silent when `<branch>` is one local branch, not a tag, and not the default
+branch (`origin/HEAD`; `main` and `master` always count). A force flag, a `+` or `:` refspec,
+`HEAD`, `--delete`, `--tags`, `--all`, any other option, a `git -c`, a `VAR=value` before
+`git`, a `remote.origin.push` refspec, or a `cd` in the line asks. For that check the hook
+runs read-only git commands (`symbolic-ref`, `show-ref`, `config --get-all`) in the folder of
+the command; when they fail, it asks.
 
 - Tests: `hooks/test_git_guard.py`, part of `angreal test unit`.
 

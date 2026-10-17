@@ -97,8 +97,10 @@ Kairos dispatched PLAT-T-0042: it entered Todo on the board platform-delivery (l
 
 The event has facts only: no title and no content. The session reads the task
 with `get_item`. The session triages a task in the support lane; another task runs
-`kairos:implement`. The session stops at a pushed branch, a pull request and
-the evidence on the task.
+`kairos:implement`. At the end, the session pushes the branch of the task with
+`git push -u origin <branch>`. It opens a draft pull request and writes it on
+the task. Then it stops. It does not merge, release or tag. The git guard of
+the plugin lets that push through, and asks for each other push.
 
 ## What the channel refuses
 

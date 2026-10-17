@@ -81,7 +81,18 @@ The closing note lists what stays "not checked" (a manual check, a live run, a c
 
 Before Completed, ask: did this work decide anything an ADR or the spec should hold? A behaviour change, a rule, a boundary. Yes: record it with the "Record this decision" path of the `domain-modeling` skill (an ADR with `parent` this task, `impacts` the repository), and write its short code in the closing note. No: say so in the closing note ("No decision to record."). A decision in a note or in local memory only is lost to the next session.
 
-Then review the diff (the `kairos:code-review` skill; the built-in `/code-review` posts nothing to the task). Commit in the worktree, on the branch of the task (`git -C <worktree> commit`). `set_state` with the final commit, pushed, the PR and the next step. Do "Close the work", then `transition_item` to **Completed**. When the work needs a change from a DIFFERENT team (an API to add, a client to update), send a request to that team. The recipe is [CROSS-TEAM-FILING.md](CROSS-TEAM-FILING.md): `create_item` (`board: <the delivery board of that team>`, `parent: <this task's initiative>`), then `link_items blocks` from the request to this task.
+Then review the diff (the `kairos:code-review` skill; the built-in `/code-review` posts nothing to the task). Commit in the worktree, on the branch of the task (`git -C <worktree> commit`). Do "Push and open the PR", then "Close the work", then `transition_item` to **Completed**. When the work needs a change from a DIFFERENT team (an API to add, a client to update), send a request to that team. The recipe is [CROSS-TEAM-FILING.md](CROSS-TEAM-FILING.md): `create_item` (`board: <the delivery board of that team>`, `parent: <this task's initiative>`), then `link_items blocks` from the request to this task.
+
+## Push and open the PR
+
+This is the push policy (KAIROS-A-0046). You push the branch of the task and open a draft PR. Then you stop. The user merges.
+
+1. Push the branch of the task: `git -C <worktree> push -u origin <code>`. The git guard lets this push through.
+2. Open a draft PR: `gh pr create --draft --base <default> --head <code>`. Run it in the worktree. The body links the task.
+3. Write the PR on the task: `set_state` with each field. Send `branch`, `commit`, `pushed: true`, `pr_url` and `next_step`.
+4. Stop at the PR. Do not merge, release, tag or deploy.
+
+Do not push the default branch. Do not use `--force`, `--delete` or a `+` refspec. The guard asks the user for each other push. When the guard asks, tell the user why you push.
 
 ## Close the work
 

@@ -49,7 +49,9 @@ Do the tasks in that sequence. Each task goes through each step of `/kairos:impl
 - Todo, then Active;
 - progress notes on the item;
 - the completion gate, with evidence for each acceptance criterion;
-- the review, the commit, then Completed.
+- the review, the commit, the push and the draft PR, then Completed.
+
+The loop pushes the branch of each task and opens a draft PR (KAIROS-A-0046). It does not merge, release or tag.
 
 Follow the commit rules of the repository and of the user. Every few tasks, write a short progress note on the initiative with `append_note`.
 
@@ -61,7 +63,8 @@ The loop ends in one of four ways:
 - **A task stops the loop.** Do not guess. Stop when one of these conditions occurs:
   - a task is in the Blocked column;
   - a task has no acceptance criteria that you can check;
-  - the work needs a design decision, a push, a deploy, or a change in a different repository.
+  - the work needs a design decision, a deploy, or a change in a different repository;
+  - the work needs a merge, a release, a tag, or a push that the git guard asks for.
 
   Write the reason on the task and on the initiative. Give the reason in your reply. End the reply with `<promise>LOOP STOPPED</promise>`.
 - **The loop needs an answer from the user.** Do not guess. Write the question on the task with `append_note`. Give the question in your reply. End the reply with `<promise>NEED INPUT</promise>`. The user answers, then starts the loop again.
