@@ -28,6 +28,11 @@
 //! document of a board of a different level) share the row, so their codes
 //! are unique.
 //!
+//! A create takes the number late (KAIROS-T-0633): it inserts the row under
+//! a pending code and writes the history row first, then takes the number
+//! and writes the code ([`finish_create`]), so the lock does not cover the
+//! insert and the history row. The numbers stay without gaps.
+//!
 //! # Versioning contract (KAIROS-A-0004)
 //!
 //! - Create inserts at `version = 1` AND writes the v1 baseline snapshot to
@@ -214,6 +219,17 @@ pub fn next_short_code(
     }
 }
 
+/// The table of the items of `item_type`.
+fn table_of(item_type: ItemType) -> &'static str {
+    match item_type {
+        ItemType::Strategy => "strategies",
+        ItemType::Initiative => "initiatives",
+        ItemType::Task => "tasks",
+        ItemType::Document => "documents",
+        ItemType::Adr => "adrs",
+    }
+}
+
 /// The highest number of the codes `{prefix}-{letter}-{N}`: the codes of
 /// the table of `item_type`, live or deleted, and the retired codes
 /// (COLLIERY-T-3100). 0 when there is none.
@@ -222,13 +238,7 @@ fn highest_code_number(
     prefix: &str,
     item_type: ItemType,
 ) -> Result<i64, DieselError> {
-    let table = match item_type {
-        ItemType::Strategy => "strategies",
-        ItemType::Initiative => "initiatives",
-        ItemType::Task => "tasks",
-        ItemType::Document => "documents",
-        ItemType::Adr => "adrs",
-    };
+    let table = table_of(item_type);
     let pattern = format!("{prefix}-{}-", item_type.letter());
     let row: SeqValue = sql_query(format!(
         "SELECT COALESCE(max(substring(short_code FROM length($1) + 1)::bigint), 0) AS value \
@@ -419,13 +429,7 @@ fn code_in_use(
     item_type: ItemType,
     code: &str,
 ) -> Result<bool, DieselError> {
-    let table = match item_type {
-        ItemType::Strategy => "strategies",
-        ItemType::Initiative => "initiatives",
-        ItemType::Task => "tasks",
-        ItemType::Document => "documents",
-        ItemType::Adr => "adrs",
-    };
+    let table = table_of(item_type);
     let row: SeqValue = sql_query(format!(
         "SELECT count(*) AS value FROM {table} WHERE short_code = $1"
     ))
@@ -480,20 +484,41 @@ fn insert_history(
     Ok(())
 }
 
-/// Create-time bookkeeping shared by all five create services: the v1
-/// baseline `item_history` snapshot (see module docs), the `activity_log`
-/// create row, and the `item_created` thin event (KAIROS-T-0022 — emitted
-/// inside the transaction, delivered by PostgreSQL on commit).
+/// The short code that a new row has until [`finish_create`] gives it its
+/// code (KAIROS-T-0633). Unique, and it matches no code of the rule, so no
+/// trigger and no reader takes it for a code. No other transaction sees it:
+/// the row is not committed until it has its code.
+fn pending_code() -> String {
+    format!("pending-{}", Uuid::new_v4())
+}
+
+/// Create-time bookkeeping shared by all five create services, after the
+/// insert of the row under [`pending_code`]: the v1 baseline `item_history`
+/// snapshot (see module docs), then the short code ([`next_short_code`],
+/// written to the row), then the mentions, the `activity_log` create row,
+/// and the `item_created` thin event (KAIROS-T-0022 — emitted inside the
+/// transaction, delivered by PostgreSQL on commit). Gives the code.
+///
+/// KAIROS-T-0633: the number comes after the insert and the history row,
+/// so the lock of the row (prefix, type) of `short_code_sequences` does
+/// not cover them. The update of the code fires the retired-code trigger
+/// with the final code, and each write after it reads the final code.
 fn finish_create(
     conn: &mut PgConnection,
     actor: Uuid,
     item_type: ItemType,
     item_id: Uuid,
-    code: &str,
+    board_id: Option<Uuid>,
     title: &str,
     content: &str,
-) -> Result<(), DieselError> {
+) -> Result<String, ItemError> {
     insert_history(conn, item_id, 1, title, content, actor)?;
+    let code = next_short_code(conn, item_type, board_id)?;
+    let table = table_of(item_type);
+    sql_query(format!("UPDATE {table} SET short_code = $1 WHERE id = $2"))
+        .bind::<Text, _>(&code)
+        .bind::<diesel::sql_types::Uuid, _>(item_id)
+        .execute(conn)?;
     // KAIROS-T-0381: each mention in the content of a new item.
     let names: Vec<String> = kairos_core::notifications::mentions(content)
         .into_keys()
@@ -513,7 +538,8 @@ fn finish_create(
         item_type.entity_type(),
         item_id,
         actor,
-    )
+    )?;
+    Ok(code)
 }
 
 /// Resolve an item's column placement on `board_id`: an explicit
@@ -770,10 +796,9 @@ pub fn create_strategy(
 ) -> Result<Strategy, ItemError> {
     conn.transaction::<_, ItemError, _>(|conn| {
         let column_id = resolve_column(conn, input.board_id, input.column_id)?;
-        let code = next_short_code(conn, ItemType::Strategy, Some(input.board_id))?;
-        let created: Strategy = diesel::insert_into(crate::schema::strategies::table)
+        let mut created: Strategy = diesel::insert_into(crate::schema::strategies::table)
             .values(NewStrategy {
-                short_code: code,
+                short_code: pending_code(),
                 title: input.title.to_string(),
                 content: input.content.to_string(),
                 board_id: input.board_id,
@@ -784,12 +809,12 @@ pub fn create_strategy(
             })
             .returning(Strategy::as_returning())
             .get_result(conn)?;
-        finish_create(
+        created.short_code = finish_create(
             conn,
             actor,
             ItemType::Strategy,
             created.id,
-            &created.short_code,
+            Some(input.board_id),
             &created.title,
             &created.content,
         )?;
@@ -819,10 +844,9 @@ pub fn create_initiative(
 ) -> Result<Initiative, ItemError> {
     conn.transaction::<_, ItemError, _>(|conn| {
         let column_id = resolve_column(conn, input.board_id, input.column_id)?;
-        let code = next_short_code(conn, ItemType::Initiative, Some(input.board_id))?;
-        let created: Initiative = diesel::insert_into(crate::schema::initiatives::table)
+        let mut created: Initiative = diesel::insert_into(crate::schema::initiatives::table)
             .values(NewInitiative {
-                short_code: code,
+                short_code: pending_code(),
                 title: input.title.to_string(),
                 content: input.content.to_string(),
                 board_id: input.board_id,
@@ -835,12 +859,12 @@ pub fn create_initiative(
             })
             .returning(Initiative::as_returning())
             .get_result(conn)?;
-        finish_create(
+        created.short_code = finish_create(
             conn,
             actor,
             ItemType::Initiative,
             created.id,
-            &created.short_code,
+            Some(input.board_id),
             &created.title,
             &created.content,
         )?;
@@ -904,10 +928,9 @@ pub fn create_task(
         // already refused a board that does not exist, so a missing row here
         // is a teamless board (`None`), which is a valid answer.
         let team_id = board_team(conn, input.board_id)?;
-        let code = next_short_code(conn, ItemType::Task, Some(input.board_id))?;
-        let created: Task = diesel::insert_into(crate::schema::tasks::table)
+        let mut created: Task = diesel::insert_into(crate::schema::tasks::table)
             .values(NewTask {
-                short_code: code,
+                short_code: pending_code(),
                 title: input.title.to_string(),
                 content: input.content.to_string(),
                 board_id: input.board_id,
@@ -921,12 +944,12 @@ pub fn create_task(
             })
             .returning(Task::as_returning())
             .get_result(conn)?;
-        finish_create(
+        created.short_code = finish_create(
             conn,
             actor,
             ItemType::Task,
             created.id,
-            &created.short_code,
+            Some(input.board_id),
             &created.title,
             &created.content,
         )?;
@@ -1317,10 +1340,9 @@ pub fn create_document(
             .content
             .unwrap_or_else(|| template.as_ref().map_or("", |t| t.content.as_str()));
 
-        let code = next_short_code(conn, ItemType::Document, Some(board_id))?;
-        let created: Document = diesel::insert_into(crate::schema::documents::table)
+        let mut created: Document = diesel::insert_into(crate::schema::documents::table)
             .values(NewDocument {
-                short_code: code,
+                short_code: pending_code(),
                 title: input.title.to_string(),
                 content: content.to_string(),
                 template_id: input.template_id,
@@ -1361,12 +1383,12 @@ pub fn create_document(
             }
         }
 
-        finish_create(
+        created.short_code = finish_create(
             conn,
             actor,
             ItemType::Document,
             created.id,
-            &created.short_code,
+            Some(board_id),
             &created.title,
             &created.content,
         )?;
@@ -1401,10 +1423,9 @@ pub fn create_adr(
             Some(board_id) => Some((board_id, resolve_column(conn, board_id, input.column_id)?)),
             None => None,
         };
-        let code = next_short_code(conn, ItemType::Adr, placement.map(|(board_id, _)| board_id))?;
-        let created: Adr = diesel::insert_into(crate::schema::adrs::table)
+        let mut created: Adr = diesel::insert_into(crate::schema::adrs::table)
             .values(NewAdr {
-                short_code: code,
+                short_code: pending_code(),
                 title: input.title.to_string(),
                 content: input.content.to_string(),
                 board_id: placement.map(|(board_id, _)| board_id),
@@ -1416,12 +1437,12 @@ pub fn create_adr(
             })
             .returning(Adr::as_returning())
             .get_result(conn)?;
-        finish_create(
+        created.short_code = finish_create(
             conn,
             actor,
             ItemType::Adr,
             created.id,
-            &created.short_code,
+            placement.map(|(board_id, _)| board_id),
             &created.title,
             &created.content,
         )?;

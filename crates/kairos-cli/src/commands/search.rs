@@ -35,7 +35,8 @@ pub struct SearchArgs {
     /// Restrict to tasks assigned to this team (slug or UUID)
     #[arg(long, value_name = "TEAM")]
     pub team: Option<String>,
-    /// Restrict to tasks that link to this repository (slug or UUID)
+    /// Restrict to the items of this repository (slug or UUID): the tasks
+    /// that link to it, and the documents and the ADRs that impact it
     #[arg(long, value_name = "REPOSITORY")]
     pub repo: Option<String>,
     /// Task type filter, repeatable: task|bug|tech_debt|support
@@ -92,18 +93,19 @@ pub struct SearchArgs {
     #[arg(long, value_name = "UUID")]
     pub from_id: Option<String>,
     /// Traverse: relationship types to follow, repeatable:
-    /// parent|supports|informs|supersedes|blocks
+    /// parent|supports|informs|supersedes|blocks (required with --from)
     #[arg(long, value_name = "REL")]
     pub relationships: Vec<String>,
     /// Traverse: edge direction: outbound|inbound|both (defaults to
     /// outbound)
     #[arg(long, value_name = "DIRECTION")]
     pub direction: Option<String>,
-    /// Traverse: maximum depth (1-10)
+    /// Traverse: maximum depth, 1-10 (required with --from)
     #[arg(long, value_name = "N")]
     pub depth: Option<u32>,
     /// Sort field: created_at|updated_at|title|relevance (defaults to
-    /// relevance when --q is given, created_at otherwise; relevance needs --q)
+    /// relevance when --query is given, created_at otherwise; relevance
+    /// needs --query)
     #[arg(long, value_name = "FIELD")]
     pub sort: Option<String>,
     /// Sort order: asc|desc (defaults to desc)

@@ -185,6 +185,13 @@ static ROUTES: LazyLock<HashMap<String, HashMap<Method, RouteInputs>>> = LazyLoc
     routes
 });
 
+/// Build [`ROUTES`] now (KAIROS-T-0613): `serve` calls it before `bind`, so
+/// the first request does not pay for the OpenAPI document. Returns the
+/// count of the paths.
+pub fn warm() -> usize {
+    ROUTES.len()
+}
+
 /// The inputs of the route that matched. `HEAD` is `GET` without the body
 /// of the answer.
 fn inputs_of(path: Option<&str>, method: &Method) -> RouteInputs {

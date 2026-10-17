@@ -244,8 +244,10 @@ why a service account takes no claim. A service account does machine work with
 no person, so a move to Active by a service account leaves the task with no
 claim.
 
-The claim ends when the work does: the task leaves Active, to Completed, to
-Blocked, or back to Todo. It also ends at a **hand-off** to a named person, and
+The claim ends when the work does: the task leaves Active, to Completed or
+back to Todo. A move to Blocked keeps the claim, and so does the move back
+(KAIROS-T-0529): a block does not end the work, and the blocked task stays in
+the work of the person. It also ends at a **hand-off** to a named person, and
 at a **release**, which leaves the task in Active and free for anyone. A person
 takes a free task with a **claim** (`claim_item`, `kairos tasks claim`). The
 next person who moves a free task into Active gets the claim too. An archive of
