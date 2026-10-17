@@ -11,7 +11,7 @@
 //! column; a hand-off or a release clears the next step
 //! ([`clear_next_step`]). The state is not content: a write makes no new
 //! version of the task; the server emits `item_updated` so the cards
-//! refresh.
+//! refresh, then `task_state_changed` (KAIROS-T-0574).
 
 use std::collections::HashMap;
 
@@ -152,9 +152,14 @@ pub fn patch(
 /// Clear the next step of a task (KAIROS-T-0533): a hand-off or a release
 /// ends the plan of the previous claimant; the branch, the commit and the
 /// PR stay, they are facts of the work. Nothing when the task has no state.
-pub fn clear_next_step(conn: &mut PgConnection, task_id: Uuid) -> Result<usize, DieselError> {
+/// A clear emits `task_state_changed` (KAIROS-T-0574) with `actor`.
+pub fn clear_next_step(
+    conn: &mut PgConnection,
+    task_id: Uuid,
+    actor: Uuid,
+) -> Result<usize, DieselError> {
     use crate::schema::task_state::dsl;
-    diesel::update(
+    let cleared = diesel::update(
         dsl::task_state
             .filter(dsl::task_id.eq(task_id))
             .filter(dsl::next_step.is_not_null()),
@@ -163,7 +168,17 @@ pub fn clear_next_step(conn: &mut PgConnection, task_id: Uuid) -> Result<usize, 
         dsl::next_step.eq(None::<String>),
         dsl::updated_at.eq(diesel::dsl::now),
     ))
-    .execute(conn)
+    .execute(conn)?;
+    if cleared > 0 {
+        crate::events::emit_item_event_by_id(
+            conn,
+            crate::events::EventKind::TaskStateChanged,
+            "task",
+            task_id,
+            actor,
+        )?;
+    }
+    Ok(cleared)
 }
 
 /// The state of a task, or `None`.

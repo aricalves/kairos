@@ -120,11 +120,26 @@ pub fn subscribe_board_events(
 /// Subscribe to the WHOLE tenant stream (no board filter): the graph
 /// view's mode (KAIROS-T-0090). `on_event` receives the event's
 /// short_code when present, `None` on reconnect reconciles.
+///
+/// `board_configured` (KAIROS-T-0574) does not reach `on_event`: its
+/// `short_code` is the slug of a board, which a view of the whole stream
+/// could take for the slug of a repository. Those views show no board
+/// configuration.
 pub fn subscribe_all_events(
     auth: Auth,
     on_event: impl Fn(Option<&str>) + 'static,
 ) -> LiveBoardGuard {
-    subscribe(auth, None, move |event| on_event(event_code(event)))
+    subscribe(auth, None, move |event| {
+        if !is_board_configuration(event) {
+            on_event(event_code(event));
+        }
+    })
+}
+
+/// Whether the event is a change of the configuration of a board. Pure,
+/// host-tested.
+pub(crate) fn is_board_configuration(event: Option<&ThinEvent>) -> bool {
+    event.is_some_and(|event| event.event == super::data::BOARD_CONFIGURED)
 }
 
 /// The short code of an event, or `None` for a reconnect and for an event
@@ -318,6 +333,14 @@ mod tests {
         let read = event(r#"{"event":"notifications_read","short_code":""}"#);
         assert_eq!(super::event_code(Some(&read)), None);
         assert_eq!(super::event_code(None), None);
+        // KAIROS-T-0574: the views of the whole stream skip a change of a
+        // board configuration, and get each other kind.
+        let configured =
+            event(r#"{"event":"board_configured","short_code":"demo","board_id":"b"}"#);
+        assert!(super::is_board_configuration(Some(&configured)));
+        let claim = event(r#"{"event":"claim_changed","short_code":"A-T-1","board_id":"b"}"#);
+        assert!(!super::is_board_configuration(Some(&claim)));
+        assert!(!super::is_board_configuration(None));
     }
 
     /// Backoff doubles from 1s and caps at 15s (host-testable math for

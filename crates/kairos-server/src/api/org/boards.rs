@@ -699,9 +699,14 @@ pub(crate) async fn update_board(
                     "board",
                     format!("board_settings:{}", updated.slug),
                 )?;
+                // KAIROS-T-0574: the board page reads the board again.
+                kairos_db::events::emit_board_configured(conn, board_id, user, "board_settings")
+                    .map_err(ApiError::internal)?;
             }
             if apply_policies(conn, user, &board, policies)? {
                 updated = load_board(conn, board_id)?;
+                kairos_db::events::emit_board_configured(conn, board_id, user, "board_policy")
+                    .map_err(ApiError::internal)?;
             }
             Ok(updated.into_dto())
         })

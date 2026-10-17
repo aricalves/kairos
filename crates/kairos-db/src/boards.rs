@@ -240,7 +240,9 @@ pub enum BoardError {
     Database(#[from] DieselError),
 }
 
-/// Insert one `activity_log` row (current tenant schema).
+/// Insert one `activity_log` row (current tenant schema). A
+/// `board_config` row of a board also emits `board_configured`
+/// (KAIROS-T-0574): each configuration write of a board logs here.
 fn log_activity(
     conn: &mut PgConnection,
     actor_id: Uuid,
@@ -249,6 +251,17 @@ fn log_activity(
     entity_type: &str,
     details: String,
 ) -> Result<(), DieselError> {
+    if action == ActivityAction::BoardConfig
+        && entity_type == "board"
+        && let Some(board_id) = entity_id
+    {
+        crate::events::emit_board_configured(
+            conn,
+            board_id,
+            actor_id,
+            crate::events::board_config_change(&details),
+        )?;
+    }
     diesel::insert_into(crate::schema::activity_log::table)
         .values(NewActivityLogEntry {
             actor_id,

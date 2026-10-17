@@ -23,8 +23,12 @@
 //! non-member, 404 unknown tenant), the `?access_token=` browser fallback,
 //! event shape for create/update/transition/delete/relationship/metadata,
 //! two-tenant isolation (acme socket never sees widgets events), the
-//! `board_id` subscribe filter (set and cleared), and clean
-//! disconnect/reconnect — every await timeout-bounded.
+//! `board_id` subscribe filter (set and cleared), the precise kinds
+//! `claim_changed`, `task_state_changed`, `task_cancelled` and
+//! `board_configured` next to their coarse kinds, one `item_deleted` for
+//! each item of an archive cascade and one `item_restored` for a restore
+//! (KAIROS-T-0574), and clean disconnect/reconnect — every await
+//! timeout-bounded.
 
 mod common;
 
@@ -197,6 +201,41 @@ fn assert_event_shape(event: &ThinEvent, raw: &Value, kind: &str, entity_type: &
         raw.get("tenant").is_none(),
         "the tenant tag must never reach a client: {raw}"
     );
+}
+
+/// The next `n` events of the items (the events of a person skipped),
+/// bounded by [`RECV_TIMEOUT`] each (KAIROS-T-0574). The order of the
+/// events of one write is not part of the contract, so the caller looks
+/// them up by kind ([`of_kind`]).
+async fn recv_item_events(stream: &mut EventStream, n: usize) -> Vec<(ThinEvent, Value)> {
+    let mut events = Vec::with_capacity(n);
+    while events.len() < n {
+        let (event, raw) = recv_event(stream).await;
+        if event.entity_type != "notification" {
+            events.push((event, raw));
+        }
+    }
+    events
+}
+
+/// The one event of `kind` in `events`; panics when there is none or more.
+fn of_kind<'a>(events: &'a [(ThinEvent, Value)], kind: &str) -> &'a (ThinEvent, Value) {
+    let found: Vec<&(ThinEvent, Value)> = events.iter().filter(|(e, _)| e.event == kind).collect();
+    let kinds: Vec<&str> = events.iter().map(|(e, _)| e.event.as_str()).collect();
+    assert_eq!(found.len(), 1, "one {kind} in {kinds:?}");
+    found[0]
+}
+
+/// The column of `board` with the name `name`.
+fn column_named(conn: &mut PgConnection, board: Uuid, name: &str) -> Uuid {
+    use kairos_db::schema::board_columns;
+    board_columns::table
+        .filter(board_columns::board_id.eq(board))
+        .filter(board_columns::name.eq(name))
+        .filter(board_columns::deleted_at.is_null())
+        .select(board_columns::id)
+        .first(conn)
+        .unwrap_or_else(|e| panic!("no column {name}: {e}"))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -713,6 +752,229 @@ async fn ws_events_against_live_stack() {
         .expect("the remove of the impacts link");
     let (event, raw) = recv_event(&mut stream).await;
     document_changed(&event, &raw, "the remove of an impacts link");
+
+    // =========================================================================
+    // KAIROS-T-0574: the precise kinds. Each comes in addition to the coarse
+    // kind of the same write, so a subscriber of the coarse kinds keeps
+    // working.
+    // =========================================================================
+    let todo = column_named(&mut acme, acme_delivery, "Todo");
+    let active = column_named(&mut acme, acme_delivery, "Active");
+    let task6 = items::create_task(
+        &mut acme,
+        CreateTask {
+            board_id: acme_delivery,
+            column_id: None,
+            title: "The precise kinds",
+            content: "…",
+            task_type: TaskType::Task,
+            work_class: kairos_db::models::enums::WorkClass::Planned,
+            repository_id: None,
+        },
+        alice_id,
+    )
+    .expect("creating the task of the precise kinds");
+    let code6 = task6.short_code.as_str();
+    let (event, _) = recv_event(&mut stream).await;
+    assert_eq!(event.event, "item_created");
+    kairos_db::transition_task(&mut acme, task6.id, todo, alice_id).expect("to Todo");
+    let (event, _) = recv_event(&mut stream).await;
+    assert_eq!(event.event, "item_transitioned");
+    assert!(event.change.is_none(), "no change on a coarse kind");
+
+    // A person moves the task into Active: the claim is taken.
+    kairos_db::transition_task(&mut acme, task6.id, active, alice_id).expect("to Active");
+    let events = recv_item_events(&mut stream, 2).await;
+    of_kind(&events, "item_transitioned");
+    let (event, raw) = of_kind(&events, "claim_changed");
+    assert_event_shape(event, raw, "claim_changed", "task");
+    assert_eq!(event.short_code, code6);
+    assert_eq!(event.change.as_deref(), Some("taken"), "{raw}");
+    assert_eq!(
+        event.board_id.as_deref(),
+        Some(acme_delivery.to_string().as_str())
+    );
+    assert_eq!(event.actor, alice_id.to_string());
+
+    // A write of the state: item_updated, then task_state_changed.
+    alice
+        .set_task_state(
+            code6,
+            &kairos_client::types::SetTaskStateRequest {
+                branch: Some(Some("t-0574".into())),
+                next_step: Some(Some("Write the tests".into())),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("writing the state");
+    let events = recv_item_events(&mut stream, 2).await;
+    of_kind(&events, "item_updated");
+    let (event, raw) = of_kind(&events, "task_state_changed");
+    assert_event_shape(event, raw, "task_state_changed", "task");
+    assert_eq!(event.short_code, code6);
+    assert!(raw.get("change").is_none(), "{raw}");
+
+    // A hand-off: the claim goes to svc, and the next step is cleared.
+    kairos_db::task_claims::hand_off(&mut acme, task6.id, svc_id, alice_id).expect("hand-off");
+    let events = recv_item_events(&mut stream, 3).await;
+    of_kind(&events, "item_updated");
+    of_kind(&events, "task_state_changed");
+    let (event, _) = of_kind(&events, "claim_changed");
+    assert_eq!(event.change.as_deref(), Some("handed_off"));
+
+    // A release: the next step is clear already, so no state event.
+    kairos_db::task_claims::release(&mut acme, task6.id, alice_id).expect("release");
+    let events = recv_item_events(&mut stream, 2).await;
+    of_kind(&events, "item_updated");
+    let (event, _) = of_kind(&events, "claim_changed");
+    assert_eq!(event.change.as_deref(), Some("released"));
+
+    // A claim of the free task.
+    kairos_db::task_claims::claim(&mut acme, task6.id, alice_id).expect("claim");
+    let events = recv_item_events(&mut stream, 2).await;
+    of_kind(&events, "item_updated");
+    let (event, _) = of_kind(&events, "claim_changed");
+    assert_eq!(event.change.as_deref(), Some("taken"));
+
+    // A cancel: item_transitioned, task_cancelled, and the claim ends.
+    let cancelled = kairos_db::task_cancellations::cancel_task(
+        &mut acme,
+        task6.id,
+        "The plan changed",
+        alice_id,
+    )
+    .expect("cancel");
+    let done = column_named(&mut acme, acme_delivery, &cancelled.to_column);
+    let events = recv_item_events(&mut stream, 3).await;
+    of_kind(&events, "item_transitioned");
+    let (event, raw) = of_kind(&events, "task_cancelled");
+    assert_event_shape(event, raw, "task_cancelled", "task");
+    assert_eq!(event.short_code, code6);
+    assert_eq!(
+        event.column_id.as_deref(),
+        Some(done.to_string().as_str()),
+        "the done column"
+    );
+    let (event, _) = of_kind(&events, "claim_changed");
+    assert_eq!(event.change.as_deref(), Some("ended"));
+
+    // A change of the configuration of a board.
+    kairos_db::boards::set_column_wip_limit(&mut acme, active, Some(3), svc_id)
+        .expect("a WIP limit");
+    let (event, raw) = recv_event(&mut stream).await;
+    assert_event_shape(&event, &raw, "board_configured", "board");
+    assert_eq!(event.short_code, "delivery", "the slug of the board");
+    assert_eq!(
+        event.board_id.as_deref(),
+        Some(acme_delivery.to_string().as_str())
+    );
+    assert_eq!(event.change.as_deref(), Some("column_wip_limit"));
+    assert!(event.column_id.is_none(), "{raw}");
+    assert_eq!(event.actor, svc_id.to_string());
+
+    // =========================================================================
+    // KAIROS-T-0574: an archive cascade emits item_deleted for each item,
+    // with its own board. A socket filtered to the delivery board hears that
+    // its task went with an initiative.
+    // =========================================================================
+    let acme_initiative_board = board_of_level(&mut acme, BoardLevel::Initiative);
+    stream
+        .subscribe_board(&acme_delivery.to_string())
+        .await
+        .expect("filter to the delivery board");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let initiative = items::create_initiative(
+        &mut acme,
+        kairos_db::items::CreateInitiative {
+            board_id: acme_initiative_board,
+            column_id: None,
+            title: "The initiative of the cascade",
+            content: "…",
+            complexity: None,
+            bucket_type: None,
+        },
+        alice_id,
+    )
+    .expect("creating the initiative");
+    let child = items::create_task(
+        &mut acme,
+        CreateTask {
+            board_id: acme_delivery,
+            column_id: None,
+            title: "A child of the initiative",
+            content: "…",
+            task_type: TaskType::Task,
+            work_class: kairos_db::models::enums::WorkClass::Planned,
+            repository_id: None,
+        },
+        alice_id,
+    )
+    .expect("creating the child task");
+    let (event, _) = recv_event(&mut stream).await;
+    assert_eq!(
+        event.event, "item_created",
+        "the initiative is filtered out"
+    );
+    assert_eq!(event.short_code, child.short_code.as_str());
+    graph::link_items(
+        &mut acme,
+        initiative.id,
+        child.id,
+        RelationshipType::Parent,
+        alice_id,
+    )
+    .expect("the parent edge");
+    let (event, _) = recv_event(&mut stream).await;
+    assert_eq!(event.event, "relationship_changed");
+    assert_eq!(event.short_code, child.short_code.as_str());
+
+    let outcome = items::soft_delete_item(&mut acme, ItemType::Initiative, initiative.id, alice_id)
+        .expect("archiving the initiative");
+    assert_eq!(outcome.cascaded_short_codes, [child.short_code.as_str()]);
+    let (event, raw) = recv_event(&mut stream).await;
+    assert_event_shape(&event, &raw, "item_deleted", "task");
+    assert_eq!(event.short_code, child.short_code.as_str(), "{raw}");
+    assert_eq!(
+        event.board_id.as_deref(),
+        Some(acme_delivery.to_string().as_str()),
+        "the board of the descendant"
+    );
+
+    // A restore puts back the initiative only: one item_restored, and none
+    // for the child that stays archived.
+    stream.subscribe_all().await.expect("clearing the filter");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let restored = items::restore_item(&mut acme, ItemType::Initiative, initiative.id, alice_id)
+        .expect("restoring the initiative")
+        .expect("nothing blocks the restore");
+    assert_eq!(
+        restored.still_archived_descendants,
+        [child.short_code.as_str()]
+    );
+    let (event, _) = recv_event(&mut stream).await;
+    assert_eq!(event.event, "item_restored");
+    assert_eq!(event.short_code, initiative.short_code.as_str());
+    let probe = items::create_task(
+        &mut acme,
+        CreateTask {
+            board_id: acme_delivery,
+            column_id: None,
+            title: "The probe after the restore",
+            content: "…",
+            task_type: TaskType::Task,
+            work_class: kairos_db::models::enums::WorkClass::Planned,
+            repository_id: None,
+        },
+        alice_id,
+    )
+    .expect("creating the probe");
+    let (event, _) = recv_event(&mut stream).await;
+    assert_eq!(
+        event.event, "item_created",
+        "no event for the archived child"
+    );
+    assert_eq!(event.short_code, probe.short_code.as_str());
 
     // =========================================================================
     // Clean disconnect / reconnect (timeout-bounded)
