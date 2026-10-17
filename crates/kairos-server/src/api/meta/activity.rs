@@ -13,6 +13,12 @@
 //! applied it to the one page that it read. The server applies it before
 //! the page, so `total` is the count after the filter.
 //!
+//! `total` stops at a bound (KAIROS-T-0627): the handler counts at most
+//! [`count_bound`] + 1 entries. A larger feed has `total` = bound + 1, so a
+//! client knows that more entries are there and that the count is not
+//! exact. The bound is [`COUNT_CAP`], or the end of the page when that is
+//! past it, so the pager always offers the next page.
+//!
 //! An entry about an item has the short code and the title of the item
 //! (COLLIERY-T-0262), so that a client can make a link to the item and
 //! does not read the lists of the items. The handler reads the items of
@@ -43,6 +49,17 @@ use crate::middleware::tenant::TenantContext;
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/api/activity", get(get_activity))
+}
+
+/// The most entries that `total` counts exactly, before the page reaches
+/// past it (module docs).
+pub const COUNT_CAP: i64 = 1000;
+
+/// The bound of the count of a page: [`COUNT_CAP`], or the end of the page
+/// when that is past it. A `total` above the bound means "more than the
+/// bound". Pure.
+pub fn count_bound(offset: i64, limit: i64) -> i64 {
+    COUNT_CAP.max(offset.saturating_add(limit))
 }
 
 /// The short code, the title and the time of the archive of an item.
@@ -107,6 +124,11 @@ fn item_heads(
 /// of the request. The entity of the entry does not change the result.
 /// The server applies each filter before the page, so `total` is the
 /// count after the filters. An unknown team is a 422 `VALIDATION`.
+///
+/// `total` is exact up to 1000 entries (KAIROS-T-0627). When the page
+/// ends after entry 1000, the bound is the end of the page. Past the bound
+/// the count stops: `total` is the bound + 1. That means "more than the
+/// bound".
 #[utoipa::path(
     get,
     path = "/api/activity",
@@ -205,9 +227,12 @@ pub(crate) async fn get_activity(
                 }};
             }
 
-            let total: i64 = filtered!(log::table.select(diesel::dsl::count_star()).into_boxed())
-                .get_result(conn)
+            // KAIROS-T-0627: the count stops at the bound + 1.
+            let counted: Vec<Uuid> = filtered!(log::table.select(log::id).into_boxed())
+                .limit(count_bound(offset, limit).saturating_add(1))
+                .load(conn)
                 .map_err(ApiError::internal)?;
+            let total = i64::try_from(counted.len()).unwrap_or(i64::MAX);
             let rows: Vec<ActivityLogEntry> = filtered!(
                 log::table
                     .select(ActivityLogEntry::as_select())
@@ -245,4 +270,17 @@ pub(crate) async fn get_activity(
         })
         .await?;
     Ok(Json(envelope))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_count_stops_at_1000_or_at_the_end_of_the_page() {
+        assert_eq!(count_bound(0, 25), 1000);
+        assert_eq!(count_bound(975, 25), 1000);
+        assert_eq!(count_bound(990, 25), 1015);
+        assert_eq!(count_bound(i64::MAX, 25), i64::MAX);
+    }
 }

@@ -29,6 +29,7 @@ use uuid::Uuid;
 use common::{
     AUDIENCE, ISSUER, base_config, recreate_scratch_db, spawn_server, user_token, with_database,
 };
+use kairos_client::KairosClient;
 use kairos_client::types::CreateTaskRequest;
 use kairos_client::types_org::{BoardFlowQuery, CreateTeamRequest};
 use kairos_db::models::{NewOrganizationMember, OrgRole};
@@ -412,4 +413,180 @@ async fn the_flow_of_a_board_from_transitions_at_known_times() {
         assert!(text.contains(needed), "{needed:?} not in {text}");
     }
     assert!(text.contains(&code("B")), "{text}");
+
+    // KAIROS-T-0627: the read is bounded by the range, the numbers stay.
+    bounded_read_and_cache(&admin, &bob, &mut conn).await;
+}
+
+/// KAIROS-T-0627 on a second board, with history long before the range:
+///
+/// - E: Active 2026-08-02, Blocked 08-03, Active 09-01, Completed 10-07;
+/// - F: Active 2026-08-06, Completed 08-10 (all before the range);
+/// - G: Active 2026-08-06, still in Active.
+///
+/// The bounded read gives the numbers of the read of every move, for
+/// ranges that start before, inside and after the history. A transition
+/// changes the next read: the cache does not keep the old result.
+async fn bounded_read_and_cache(admin: &KairosClient, bob: &KairosClient, conn: &mut PgConnection) {
+    use kairos_db::flow;
+
+    let team = admin
+        .create_team(&CreateTeamRequest {
+            name: "Ops".into(),
+            slug: "ops".into(),
+            code_prefix: "OPS".into(),
+            team_type: None,
+        })
+        .await
+        .expect("team");
+    let board = team.delivery_board_id.clone().expect("delivery board");
+    let detail = admin.get_board(&board).await.expect("board");
+    let column: HashMap<String, String> = detail
+        .columns
+        .iter()
+        .map(|c| (c.name.clone(), c.id.clone()))
+        .collect();
+    let slug = detail.board.slug.clone();
+    let board_id: Uuid = detail.board.id.parse().expect("board uuid");
+
+    let paths: [(&str, &[(&str, &str)]); 3] = [
+        (
+            "E",
+            &[
+                ("Todo", "2026-08-01T09:00:00Z"),
+                ("Active", "2026-08-02T09:00:00Z"),
+                ("Blocked", "2026-08-03T09:00:00Z"),
+                ("Active", "2026-09-01T09:00:00Z"),
+                ("Completed", "2026-10-07T09:00:00Z"),
+            ],
+        ),
+        (
+            "F",
+            &[
+                ("Todo", "2026-08-05T09:00:00Z"),
+                ("Active", "2026-08-06T09:00:00Z"),
+                ("Completed", "2026-08-10T09:00:00Z"),
+            ],
+        ),
+        (
+            "G",
+            &[
+                ("Todo", "2026-08-05T09:00:00Z"),
+                ("Active", "2026-08-06T09:00:00Z"),
+            ],
+        ),
+    ];
+    let mut codes = HashMap::new();
+    for (name, path) in paths {
+        let task = admin
+            .create_task(&CreateTaskRequest {
+                board_id: Some(board.clone()),
+                column_id: None,
+                title: format!("Task {name}"),
+                content: String::new(),
+                task_type: None,
+                work_class: None,
+                team_id: None,
+                repository: None,
+                from_team: None,
+            })
+            .await
+            .expect("task");
+        let id: Uuid = task.id.parse().expect("uuid");
+        diesel::sql_query(
+            "UPDATE org_acme.tasks SET created_at = '2026-07-01T08:00:00Z' WHERE id = $1",
+        )
+        .bind::<diesel::sql_types::Uuid, _>(id)
+        .execute(conn)
+        .expect("created_at");
+        let mut from = "Backlog";
+        for (to, at) in path {
+            admin
+                .transition_task(&task.short_code, &column[*to])
+                .await
+                .expect("transition");
+            set_time(conn, id, "transition", &format!("column:{from}->{to}"), at);
+            from = to;
+        }
+        codes.insert(name, task.short_code);
+    }
+
+    diesel::sql_query("SET search_path TO org_acme, public")
+        .execute(conn)
+        .expect("search_path");
+    let now: chrono::DateTime<chrono::Utc> = "2026-10-11T12:00:00Z".parse().expect("now");
+    let every_move =
+        flow::load_input(conn, board_id, flow::start_of(day("1970-01-01"))).expect("every move");
+    for (from, to) in [
+        ("2026-07-01", "2026-10-11"),
+        ("2026-08-03", "2026-08-09"),
+        ("2026-09-01", "2026-09-30"),
+        ("2026-10-05", "2026-10-11"),
+    ] {
+        let (from, to) = (day(from), day(to));
+        let bounded =
+            flow::load_input(conn, board_id, flow::start_of(from)).expect("bounded input");
+        assert!(bounded.moves.len() <= every_move.moves.len());
+        assert_eq!(
+            flow::compute(&bounded, from, to, now),
+            flow::compute(&every_move, from, to, now),
+            "the range {from}..{to}"
+        );
+    }
+    let bounded =
+        flow::load_input(conn, board_id, flow::start_of(day("2026-10-05"))).expect("bounded input");
+    assert!(
+        bounded.moves.len() < every_move.moves.len(),
+        "the read of the last week has fewer moves: {} of {}",
+        bounded.moves.len(),
+        every_move.moves.len()
+    );
+    diesel::sql_query("SET search_path TO public")
+        .execute(conn)
+        .expect("search_path");
+
+    // REST: E started on 2026-08-02, before the range.
+    let query = BoardFlowQuery {
+        from: Some("2026-10-05".into()),
+        to: Some("2026-10-11".into()),
+    };
+    let flow = bob.board_flow(&slug, &query).await.expect("the flow");
+    let cycle: Vec<(String, f64)> = flow
+        .cycle_time
+        .items
+        .iter()
+        .map(|c| (c.short_code.clone(), c.days))
+        .collect();
+    assert_eq!(cycle, vec![(codes["E"].clone(), 66.0)]);
+    let ageing: Vec<(String, String)> = flow
+        .ageing
+        .iter()
+        .map(|a| (a.short_code.clone(), a.started_at.clone()))
+        .collect();
+    assert_eq!(
+        ageing,
+        vec![(codes["G"].clone(), "2026-08-06T09:00:00Z".to_string())]
+    );
+    assert_eq!(
+        flow.cumulative_flow.columns,
+        vec!["Backlog", "Todo", "Blocked", "Active", "Completed"]
+    );
+    assert_eq!(flow.cumulative_flow.days[0].counts, vec![0, 0, 0, 2, 1]);
+    // A second read is the same (from the cache).
+    let again = bob.board_flow(&slug, &query).await.expect("again");
+    assert_eq!(again.cycle_time, flow.cycle_time);
+    assert_eq!(again.cumulative_flow, flow.cumulative_flow);
+    assert_eq!(again.ageing.len(), 1);
+
+    // A transition: the next read has G done, not in progress.
+    admin
+        .transition_task(&codes["G"], &column["Completed"])
+        .await
+        .expect("G done");
+    let after = bob.board_flow(&slug, &query).await.expect("after");
+    assert!(after.ageing.is_empty(), "{:?}", after.ageing);
+}
+
+fn day(text: &str) -> chrono::NaiveDate {
+    text.parse().expect("a date")
 }

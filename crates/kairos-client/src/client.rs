@@ -737,6 +737,15 @@ impl KairosClient {
         .await
     }
 
+    /// `POST /api/tasks/{short_code}/reopen` — reopen a done task
+    /// (KAIROS-T-0564). The task moves to the first column of its board
+    /// that is not done, and its cancel mark ends. The caller holds
+    /// `transition_items` on the board of the task.
+    pub async fn reopen_task(&self, short_code: &str) -> Result<Task, Error> {
+        self.post_empty(&format!("/api/tasks/{short_code}/reopen"))
+            .await
+    }
+
     /// `POST /api/tasks/{short_code}/purge` — delete a task for good
     /// (KAIROS-T-0362). Nothing can bring it back. The caller holds
     /// `manage_tasks` on the board of the task.

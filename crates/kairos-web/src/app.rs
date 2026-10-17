@@ -62,8 +62,8 @@ use crate::pages;
 /// System. The toasts are the short notices of a mutation (the board, the
 /// item page).
 /// KAIROS-T-0397: the theme toggle of the top bar offers Hyper (Light /
-/// Dark / Hyper / System). `index.html` links the hyper stylesheet that
-/// it needs (`style/hyper.css`, written by `kairos-web-css`).
+/// Dark / Hyper / System). KAIROS-T-0605: a script of `index.html` loads
+/// the hyper stylesheet (written by `kairos-web-css`) only for Hyper.
 pub const OFFER_HYPER: bool = true;
 
 #[component]
@@ -111,19 +111,36 @@ pub fn App() -> impl IntoView {
 }
 
 /// The protected shell: Aurora `AppShell` with the Kairos brand, a top
-/// bar (whoami, theme, logout) and the `SideNav`. Unauthenticated → login
+/// bar (the search box, whoami, theme, logout) and the `SideNav`. Unauthenticated → login
 /// redirect via [`RedirectToIssuer`].
 ///
 /// Whoami is fetched ONCE here and shared (`LocalResource` is `Copy`) by
 /// the header badge and the "My teams" nav section (KAIROS-T-0068) — one
-/// identity round-trip per session, not one per consumer.
+/// identity round-trip per session, not one per consumer. Each page reads
+/// it with [`use_whoami`] (KAIROS-T-0622).
+///
+/// KAIROS-T-0622: a reload that found a cookie session already has the
+/// whoami body of the probe; that is the first value here. With no session
+/// there is no request: the shell shows the guard, not the identity.
 #[component]
 fn Shell() -> impl IntoView {
     let auth = use_auth();
     let whoami = LocalResource::new(move || {
         // Track the session so a fresh login refetches.
         auth.track_session();
-        api::whoami(auth)
+        let seed = auth.take_whoami_seed();
+        let live = auth.has_session_untracked();
+        async move {
+            match seed {
+                Some(me) => Ok(me),
+                None if !live => Err(ApiError::Http {
+                    status: 401,
+                    message: "There is no session.".to_string(),
+                    code: None,
+                }),
+                None => api::whoami(auth).await,
+            }
+        }
     });
     // Pages under the shell consume the same identity (KAIROS-T-0072: the
     // board view derives its capability mirror from it).
@@ -137,6 +154,7 @@ fn Shell() -> impl IntoView {
                 }.into_any())
                 header=Box::new(move || view! {
                     <Group justify="end" gap="sm">
+                        <pages::ShellSearchBox/>
                         <span data-testid="for-me-link">
                             <Button variant="subtle" size="xs" href="/">"For me"</Button>
                         </span>
@@ -284,6 +302,12 @@ fn RedirectToIssuer() -> impl IntoView {
     }
 }
 
+/// The shell's whoami (KAIROS-T-0622): one identity for every page under
+/// the shell. A page never fetches whoami on its own.
+pub(crate) fn use_whoami() -> LocalResource<Result<api::Whoami, ApiError>> {
+    expect_context::<LocalResource<Result<api::Whoami, ApiError>>>()
+}
+
 /// The path of the docs sites of the organization of the person
 /// (KAIROS-T-0408), `/pages/<org>/`, once whoami has answered.
 pub(crate) fn docs_sites_path() -> Option<String> {
@@ -409,27 +433,36 @@ mod tests {
         );
     }
 
-    /// KAIROS-T-0397: `index.html` links the hyper stylesheet after the
-    /// Aurora stylesheet (Aurora asks for this order) and before the
-    /// Kairos rules; the theme script comes before each of them.
+    /// KAIROS-T-0605: `index.html` links one stylesheet (Aurora, then the
+    /// Kairos rules) and no hyper stylesheet. The script that loads the
+    /// hyper file comes after the stylesheet (Aurora asks for this order);
+    /// the theme script comes before each of them.
     #[test]
-    fn index_html_links_the_hyper_stylesheet_after_aurora() {
+    fn index_html_loads_the_hyper_stylesheet_after_the_stylesheet() {
         let html = include_str!("../index.html");
-        let link = |href: &str| {
-            html.find(&format!(r#"<link data-trunk rel="css" href="{href}" />"#))
-                .unwrap_or_else(|| panic!("index.html links {href}"))
-        };
         let script = html
             .find(&format!(
                 "<script>{}</script>",
                 aurora_dark::THEME_INIT_SCRIPT
             ))
             .expect("index.html has THEME_INIT_SCRIPT as it is");
-        let (aurora, hyper, app) = (
-            link("style/aurora.css"),
-            link("style/hyper.css"),
-            link("app.css"),
+        let css = html
+            .find(r#"<link data-trunk rel="css" href="style/kairos.css" />"#)
+            .expect("index.html links style/kairos.css");
+        assert_eq!(html.matches(r#"rel="css""#).count(), 1, "one stylesheet");
+        let hyper = html
+            .find(r#"<link data-trunk rel="copy-file" href="style/hyper-"#)
+            .expect("index.html copies the hyper file with no link");
+        let loader = html
+            .find(
+                r#"document.write('<link id="' + ID + '" rel="stylesheet" href="' + H + '" />');"#,
+            )
+            .expect("index.html writes the hyper link for a stored hyper");
+        assert!(script < css && css < hyper && hyper < loader);
+        assert!(
+            html.contains(
+                r#"<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />"#
+            )
         );
-        assert!(script < aurora && aurora < hyper && hyper < app);
     }
 }

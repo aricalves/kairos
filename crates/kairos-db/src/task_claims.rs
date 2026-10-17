@@ -54,6 +54,10 @@
 //!   `release`, `transition`, `board_move`, `service_account`, `archive`,
 //!   `column` or `left`.
 //!
+//! Each change also emits `claim_changed` (KAIROS-T-0574) with the
+//! `change` `taken`, `handed_off`, `released` (a [`release`]) or `ended`
+//! (each other end of a claim).
+//!
 //! Who may hand off or release is the rule of the server; this module
 //! checks only the state of the task.
 
@@ -258,7 +262,14 @@ fn end_claim(
         )?;
         // KAIROS-T-0533: the next step was the plan of the person who held
         // the claim; the next holder starts from the facts.
-        crate::task_state::clear_next_step(conn, task_id)?;
+        crate::task_state::clear_next_step(conn, task_id, actor_id)?;
+        // KAIROS-T-0574.
+        let change = if reason == "release" {
+            events::ClaimChange::Released
+        } else {
+            events::ClaimChange::Ended
+        };
+        events::emit_claim_changed(conn, task_id, change, actor_id)?;
     }
     Ok(ended)
 }
@@ -305,7 +316,9 @@ pub(crate) fn after_column_change(
         ActivityAction::Claim,
         task_id,
         format!("claim:{actor_id}"),
-    )
+    )?;
+    // KAIROS-T-0574.
+    events::emit_claim_changed(conn, task_id, events::ClaimChange::Taken, actor_id)
 }
 
 /// The short code and the column of a live task, with the check that the
@@ -378,6 +391,7 @@ pub fn claim(conn: &mut PgConnection, task_id: Uuid, user: Uuid) -> Result<TaskC
         // KAIROS-T-0386: the comment shows the claim.
         crate::writeback::on_item_changed(conn, task_id)?;
         events::emit_item_event_by_id(conn, EventKind::ItemUpdated, "task", task_id, user)?;
+        events::emit_claim_changed(conn, task_id, events::ClaimChange::Taken, user)?;
         Ok(claim)
     })
 }
@@ -408,7 +422,7 @@ pub fn hand_off(
         }
         let claim = put_claim(conn, task_id, to_user, None)?;
         // KAIROS-T-0533: the next step was the previous holder's plan.
-        crate::task_state::clear_next_step(conn, task_id)?;
+        crate::task_state::clear_next_step(conn, task_id, actor_id)?;
         let from = existing.map_or_else(|| "none".to_string(), |c| c.user_id.to_string());
         log(
             conn,
@@ -422,6 +436,7 @@ pub fn hand_off(
         // KAIROS-T-0386: the comment shows the claim.
         crate::writeback::on_item_changed(conn, task_id)?;
         events::emit_item_event_by_id(conn, EventKind::ItemUpdated, "task", task_id, actor_id)?;
+        events::emit_claim_changed(conn, task_id, events::ClaimChange::HandedOff, actor_id)?;
         Ok(claim)
     })
 }

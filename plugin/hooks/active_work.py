@@ -32,6 +32,10 @@ repository, their initiatives, their next steps and the loop. The record
 can be stale (a change in the web UI, by a different agent), so the text
 always tells the agent to confirm with `get_item` and `board_items`.
 
+When the last background update of the code index failed, `compact` also
+gives the line of `index_update.py` with the refusal and the command to run
+again (KAIROS-T-0519).
+
 The next step is the text after the last `Next step:` (or `Next:`) in the
 notes of the task. Without one, the last line of the notes.
 
@@ -461,6 +465,17 @@ def build_context(values, record, session):
     return "\n".join(lines)
 
 
+def index_failure_line():
+    """The line of index_update.py when the last background update of the
+    code index of this checkout failed, else None (KAIROS-T-0519)."""
+    try:
+        import index_update
+
+        return index_update.last_failure_line(index_update.project_dir())
+    except Exception:  # the index line must never stop the compaction text
+        return None
+
+
 def cmd_compact(payload):
     session = payload.get("session_id")
     if not isinstance(session, str) or not SESSION_ID.match(session):
@@ -470,6 +485,9 @@ def cmd_compact(payload):
         return
     values = session_start.read_frontmatter(config_path)
     context = build_context(values, read_record(session), session)
+    failure = index_failure_line()
+    if failure:
+        context += "\n" + failure
     # KAIROS-T-0525: the wiring summary again, from the file and with no
     # probe, and the rules again; the compaction keeps neither.
     wiring = session_start.build_context(values, "not probed after a compaction")
