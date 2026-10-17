@@ -124,9 +124,17 @@ pub enum Error {
     #[error("The response has the status {status} and no error envelope: {body}")]
     UnexpectedResponse { status: u16, body: String },
 
-    /// The [`crate::TokenProvider`] could not produce a bearer token.
+    /// The [`crate::TokenProvider`] could not produce a bearer token: the
+    /// credentials are gone, expired, or refused. The caller must log in
+    /// again.
     #[error("The token provider gave an error: {0}")]
     Token(String),
+
+    /// The [`crate::TokenProvider`] could not reach its issuer to refresh
+    /// the bearer token (no answer, or a 5xx). The credentials are not known
+    /// to be invalid (KAIROS-T-0588): a new login does not help.
+    #[error("The token provider cannot reach the issuer: {0}")]
+    IssuerUnreachable(String),
 
     /// A WebSocket-level failure on the `/ws/events` helper.
     #[error("The WebSocket gave an error: {0}")]

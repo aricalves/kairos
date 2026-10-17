@@ -34,6 +34,20 @@ pub fn key_in_use() -> Option<&'static str> {
     KEY_IN_USE.get().copied()
 }
 
+/// The deployment that this process talks to, once a client is made. The
+/// message of a 401 names it in the `kairos login` command (KAIROS-T-0588).
+static DEPLOYMENT_IN_USE: OnceLock<String> = OnceLock::new();
+
+/// Record the deployment of this process. The first call wins.
+pub fn note_deployment(deployment: &str) {
+    let _ = DEPLOYMENT_IN_USE.set(deployment.to_string());
+}
+
+/// The deployment that this process talks to, if a client was made.
+pub fn deployment_in_use() -> Option<&'static str> {
+    DEPLOYMENT_IN_USE.get().map(String::as_str)
+}
+
 /// The values of the environment that choose the deployment and the bearer.
 #[derive(Clone, Default)]
 pub struct Env {
