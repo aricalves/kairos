@@ -26,6 +26,11 @@ of the request. The entity of the entry does not change the result.
 The server applies each filter before the page, so `total` is the
 count after the filters. An unknown team is a 422 `VALIDATION`.
 
+`total` is exact up to 1000 entries (KAIROS-T-0627). When the page
+ends after entry 1000, the bound is the end of the page. Past the bound
+the count stops: `total` is the bound + 1. That means "more than the
+bound".
+
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
 | `entity_id` | query | no | `string` | Filter: activity for a specific entity (UUID). |
