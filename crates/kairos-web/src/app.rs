@@ -111,7 +111,7 @@ pub fn App() -> impl IntoView {
 }
 
 /// The protected shell: Aurora `AppShell` with the Kairos brand, a top
-/// bar (whoami, theme, logout) and the `SideNav`. Unauthenticated → login
+/// bar (the search box, whoami, theme, logout) and the `SideNav`. Unauthenticated → login
 /// redirect via [`RedirectToIssuer`].
 ///
 /// Whoami is fetched ONCE here and shared (`LocalResource` is `Copy`) by
@@ -137,6 +137,7 @@ fn Shell() -> impl IntoView {
                 }.into_any())
                 header=Box::new(move || view! {
                     <Group justify="end" gap="sm">
+                        <pages::ShellSearchBox/>
                         <span data-testid="for-me-link">
                             <Button variant="subtle" size="xs" href="/">"For me"</Button>
                         </span>
