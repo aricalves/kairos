@@ -336,6 +336,7 @@ async fn a_task_moves_to_active_only_under_an_active_initiative() {
                 position: None,
                 is_done: None,
                 claims: Some(true),
+                keeps_claims: None,
                 wip_limit: None,
             },
         )
