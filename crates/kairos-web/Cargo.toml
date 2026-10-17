@@ -66,4 +66,6 @@ web-sys = { workspace = true, features = [
     "HtmlDetailsElement",
     # The graph zooms at the pointer (KAIROS-T-0492)
     "DomRect",
+    # The editor asks before the tab closes with a dirty draft (KAIROS-T-0581)
+    "BeforeUnloadEvent",
 ] }
