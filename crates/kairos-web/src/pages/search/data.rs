@@ -158,9 +158,10 @@ pub struct SearchResultGroups {
     pub adrs: Vec<Hit>,
 }
 
-/// One result row. mirror of: `kairos_client::types::{Strategy, Initiative,
-/// Task, Document, Adr}` (partial — the common fields every row renders,
-/// plus the per-type badges; serde ignores each type's other fields).
+/// One result row. mirror of: `kairos_client::types_cards::{StrategyCard,
+/// InitiativeCard, TaskCard, DocumentCard, AdrCard}` (partial — the common
+/// fields every row renders, plus the per-type badges; serde ignores each
+/// type's other fields). A hit has no content (KAIROS-T-0602).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Hit {
     pub short_code: String,
@@ -180,6 +181,11 @@ pub struct Hit {
     /// missing one, because the reader acts on it.
     #[serde(default)]
     pub archived_at: Option<String>,
+    /// About 200 characters of the content, near the first match of the
+    /// query (KAIROS-T-0602). `None` for an empty content, and from an
+    /// older server.
+    #[serde(default)]
+    pub snippet: Option<String>,
 }
 
 /// `POST /api/search`.
@@ -506,6 +512,28 @@ mod tests {
         assert_eq!(
             response.results.tasks[0].archived_at.as_deref(),
             Some("2026-09-23T11:30:07.479107Z")
+        );
+    }
+
+    /// KAIROS-T-0602: a hit is a card. It has a snippet and no content,
+    /// and the mirror decodes it.
+    #[test]
+    fn a_card_hit_has_a_snippet() {
+        let body = serde_json::json!({
+            "results": {"documents": [{
+                "id": "d", "short_code": "DEMO-D-0001", "title": "Login design",
+                "board_id": "b", "impacts": [], "template_id": null,
+                "lifecycle": "draft", "version": 1,
+                "created_at": "2026-07-01T10:00:00Z",
+                "updated_at": "2026-07-01T10:00:00Z",
+                "snippet": "…the login form posts to the token route…"
+            }]},
+            "total": 1, "limit": 25, "offset": 0
+        });
+        let response: SearchResponse = serde_json::from_value(body).expect("mirror decodes");
+        assert_eq!(
+            response.results.documents[0].snippet.as_deref(),
+            Some("…the login form posts to the token route…")
         );
     }
 

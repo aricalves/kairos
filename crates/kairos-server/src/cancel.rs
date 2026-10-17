@@ -38,11 +38,14 @@ fn mark_dto(
 
 /// Put the cancel marks of the tasks on their DTOs. Two queries for the
 /// list.
-pub fn attach_cancellations(
+pub fn attach_cancellations<T: crate::api::convert::TaskDto>(
     conn: &mut PgConnection,
-    tasks: &mut [dto::Task],
+    tasks: &mut [T],
 ) -> Result<(), diesel::result::Error> {
-    let ids: Vec<Uuid> = tasks.iter().filter_map(|t| t.id.parse().ok()).collect();
+    let ids: Vec<Uuid> = tasks
+        .iter()
+        .filter_map(|t| t.task_id().parse().ok())
+        .collect();
     let marks = task_cancellations::marks_of(conn, &ids)?;
     if marks.is_empty() {
         return Ok(());
@@ -50,10 +53,10 @@ pub fn attach_cancellations(
     let users: Vec<Uuid> = marks.values().map(|m| m.cancelled_by).collect();
     let names = task_claims::display_names(conn, &users)?;
     for task in tasks {
-        let Ok(id) = task.id.parse::<Uuid>() else {
+        let Ok(id) = task.task_id().parse::<Uuid>() else {
             continue;
         };
-        task.cancellation = marks.get(&id).map(|mark| mark_dto(mark, &names));
+        task.set_cancellation(marks.get(&id).map(|mark| mark_dto(mark, &names)));
     }
     Ok(())
 }

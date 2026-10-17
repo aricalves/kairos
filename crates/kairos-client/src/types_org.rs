@@ -11,8 +11,6 @@
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
-use crate::types::{Adr, Initiative, Strategy, Task};
-
 // ---------------------------------------------------------------------------
 // Boards
 // ---------------------------------------------------------------------------
@@ -229,10 +227,12 @@ pub struct BoardColumnItems {
     #[serde(default)]
     #[schema(required = true)]
     pub over_wip_limit: bool,
-    pub strategies: Vec<Strategy>,
-    pub initiatives: Vec<Initiative>,
-    pub tasks: Vec<Task>,
-    pub adrs: Vec<Adr>,
+    /// The cards of the column (KAIROS-T-0602): no `content` unless the
+    /// query has `fields=full`.
+    pub strategies: Vec<crate::types_cards::StrategyCard>,
+    pub initiatives: Vec<crate::types_cards::InitiativeCard>,
+    pub tasks: Vec<crate::types_cards::TaskCard>,
+    pub adrs: Vec<crate::types_cards::AdrCard>,
 }
 
 /// The default of `limit` of `GET /api/boards/{id}/items`
@@ -277,6 +277,12 @@ pub struct BoardItemsQuery {
     /// item of the page (KAIROS-T-0368). Default false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub with_metadata: bool,
+    /// `card` (the default): the cards have no `content`, `created_by` or
+    /// `updated_by`. `full`: the cards have them, as before cards
+    /// (KAIROS-T-0602). An other value is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[param(inline)]
+    pub fields: Option<crate::types_cards::CardFields>,
 }
 
 /// One team of an initiative or a strategy (KAIROS-T-0321). The item gets
