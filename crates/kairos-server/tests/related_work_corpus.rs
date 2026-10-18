@@ -494,3 +494,116 @@ fn related_work_finds_prior_art_across_repositories_on_a_real_corpus() {
         .execute(&mut admin)
         .expect("dropping scratch");
 }
+
+static SCRATCH_DB_TEXT: scratch::ScratchName =
+    scratch::ScratchName::new("kairos_related_work_corpus_text_test");
+
+/// The ten questions of KAIROS-T-0562 on the corpus, text only: no vectors and
+/// no model. Each line of the output is one question and its answer
+/// (`--nocapture`). The assertions hold what a text-only answer must not do:
+/// propose the unrelated items that the first version of COLLIERY-T-1757
+/// proposed, or give more than 3 proposals.
+#[test]
+fn text_only_answers_on_the_real_corpus() {
+    let admin_url = admin_database_url();
+    let mut admin = PgConnection::establish(&admin_url)
+        .unwrap_or_else(|e| panic!("cannot connect to compose postgres at {admin_url}: {e}"));
+    sql_query(format!(
+        "DROP DATABASE IF EXISTS {SCRATCH_DB_TEXT} WITH (FORCE)"
+    ))
+    .execute(&mut admin)
+    .expect("dropping scratch");
+    sql_query(format!("CREATE DATABASE {SCRATCH_DB_TEXT}"))
+        .execute(&mut admin)
+        .expect("creating scratch");
+    let _scratch_guard = scratch::ScratchGuard::new(&SCRATCH_DB_TEXT);
+    let url = with_database(&admin_url, &SCRATCH_DB_TEXT);
+    let mut conn = PgConnection::establish(&url).expect("connecting");
+    run_public_migrations(&mut conn).expect("public migrations");
+    provision_tenant(&mut conn, "colliery", "Colliery").expect("provisioning");
+    sql_query("SET search_path TO org_colliery, public")
+        .execute(&mut conn)
+        .expect("pinning");
+
+    let corpus = load_corpus();
+    let seeded = seed(&mut conn, &corpus);
+    // No refresh: the tenant has no vectors, so each answer is text only.
+    let service = EmbeddingService::new(Arc::new(kairos_embed::DeterministicProvider::default()));
+    let config = RetrievalConfig::default();
+
+    let mut answers: HashMap<&str, Vec<String>> = HashMap::new();
+    for asked in [
+        "COLLIERY-T-1757",
+        "COLLIERY-T-1801",
+        "COLLIERY-T-1776",
+        "COLLIERY-T-1772",
+        "COLLIERY-T-1821",
+        "COLLIERY-T-1810",
+        "COLLIERY-T-1843",
+        "COLLIERY-A-0109",
+        "COLLIERY-I-0220",
+        "COLLIERY-T-0252",
+    ] {
+        let found = service
+            .related_work(&mut conn, &seeded.code_of[asked], &config)
+            .expect("a text-only answer");
+        assert!(found.sources.degraded(), "the corpus has no vectors here");
+        assert!(
+            found.proposals.len() <= kairos_core::retrieval::TEXT_ONLY_LIMIT,
+            "{asked}: {} proposals",
+            found.proposals.len()
+        );
+        let proposed: Vec<String> = found
+            .proposals
+            .iter()
+            .map(|p| seeded.fixture_of[&p.short_code].clone())
+            .collect();
+        let scores: Vec<String> = found
+            .proposals
+            .iter()
+            .map(|p| format!("{} {:.2}", seeded.fixture_of[&p.short_code], p.score))
+            .collect();
+        println!(
+            "{asked}: {}",
+            if scores.is_empty() {
+                "None found".to_string()
+            } else {
+                scores.join(", ")
+            }
+        );
+        // The first 3 under the bar too, so a reader sees how close they are.
+        let open = RetrievalConfig {
+            text_floor: 0.0,
+            ..RetrievalConfig::default()
+        };
+        let under: Vec<String> = service
+            .related_work(&mut conn, &seeded.code_of[asked], &open)
+            .expect("a text-only answer with no floor")
+            .proposals
+            .iter()
+            .filter(|p| !proposed.contains(&seeded.fixture_of[&p.short_code]))
+            .map(|p| format!("{} {:.2}", seeded.fixture_of[&p.short_code], p.score))
+            .collect();
+        println!("    under the bar: {}", under.join(", "));
+        answers.insert(asked, proposed);
+    }
+
+    // The unrelated first 5 of COLLIERY-T-1757 before COLLIERY-T-1840.
+    for unrelated in [
+        "COLLIERY-T-1635",
+        "COLLIERY-T-1523",
+        "COLLIERY-T-1655",
+        "COLLIERY-I-0238",
+    ] {
+        assert!(
+            !answers["COLLIERY-T-1757"].iter().any(|c| c == unrelated),
+            "{unrelated} is about something else: {:?}",
+            answers["COLLIERY-T-1757"]
+        );
+    }
+    assert!(
+        !answers["COLLIERY-T-1757"].iter().any(|c| c == TWIN_CODE),
+        "the template twin is about something else: {:?}",
+        answers["COLLIERY-T-1757"]
+    );
+}
