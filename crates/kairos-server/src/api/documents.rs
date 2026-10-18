@@ -47,7 +47,7 @@ use diesel::prelude::*;
 use kairos_client::types as dto;
 use kairos_core::short_code::ItemType;
 use kairos_db::models::boards::Board;
-use kairos_db::models::enums::RelationshipType;
+use kairos_db::models::enums::{DocumentLifecycle, RelationshipType};
 use kairos_db::models::items::Document;
 use kairos_db::{graph, items, repositories};
 use serde_json::json;
@@ -122,24 +122,42 @@ pub(crate) async fn set_lifecycle(
     Path(short_code): Path<String>,
     ApiJson(body): ApiJson<dto::SetLifecycleRequest>,
 ) -> Result<Json<dto::Document>, ApiError> {
-    let lifecycle = parse_enum(
-        &body.lifecycle,
-        "lifecycle",
-        kairos_db::models::enums::DocumentLifecycle::ALL,
-    )?;
+    let lifecycle = parse_lifecycle(&body.lifecycle)?;
     let user = auth.user_id;
     let slug = tenant.slug.clone();
-    let updated = state
+    let (_, updated) = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            let document = load(conn, &short_code, Liveness::LiveOnly)?;
-            require_item_edit(conn, &slug, user, document.id, ItemType::Document)?;
-            let updated = items::set_document_lifecycle(conn, document.id, lifecycle, user)
-                .map_err(map_item_error)?;
-            render(conn, updated)
+            change_lifecycle(conn, &slug, user, &short_code, lifecycle)
         })
         .await?;
     Ok(Json(updated))
+}
+
+/// The lifecycle of the request, or 422 `VALIDATION` that names the value
+/// and lists the four values (KAIROS-A-0018).
+pub(crate) fn parse_lifecycle(value: &str) -> Result<DocumentLifecycle, ApiError> {
+    parse_enum(value, "lifecycle", DocumentLifecycle::ALL)
+}
+
+/// Set the lifecycle of the live document `short_code` (KAIROS-T-0078).
+/// The edit rule applies. REST `PATCH .../lifecycle` and the MCP tool
+/// `set_lifecycle` call this function (KAIROS-T-0555). The answer is the
+/// lifecycle before the call, and the document after it. The same value
+/// changes nothing.
+pub(crate) fn change_lifecycle(
+    conn: &mut PgConnection,
+    slug: &str,
+    user: Uuid,
+    short_code: &str,
+    lifecycle: DocumentLifecycle,
+) -> Result<(DocumentLifecycle, dto::Document), ApiError> {
+    let document = load(conn, short_code, Liveness::LiveOnly)?;
+    require_item_edit(conn, slug, user, document.id, ItemType::Document)?;
+    let before = document.lifecycle;
+    let updated =
+        items::set_document_lifecycle(conn, document.id, lifecycle, user).map_err(map_item_error)?;
+    Ok((before, render(conn, updated)?))
 }
 
 /// Load the live document with this short code, or 404.

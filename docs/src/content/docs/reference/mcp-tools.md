@@ -3,8 +3,8 @@ title: "MCP tools"
 ---
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-seventy-two tools. A drift gate in the test suite
-asserts that `tools/list` returns these seventy-two and no others. The same
+seventy-three tools. A drift gate in the test suite
+asserts that `tools/list` returns these seventy-three and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -22,7 +22,7 @@ organization.
 
 | URL | Profile | Tools |
 |---|---|---|
-| `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory, claims, notifications, the scales and templates, team pages to read: 41 tools. |
+| `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory, claims, notifications, the scales and templates, team pages to read: 42 tools. |
 | `/mcp?profile=admin` | admin | Teams, boards, columns and transitions, grants, metadata definitions and templates, dispatch rules and agent triage, the writes of team pages, org read tokens, delete and rebuild of repositories, board flow, purge: the other 31 tools. |
 | `/mcp?profile=all` | all | Each tool. |
 
@@ -33,8 +33,8 @@ The work tools:
 
 - items: `whoami`, `my_boards`, `my_work`, `board_items`, `search`, `get_item`,
   `get_history`, `related_work`, `create_item`, `edit_item`, `update_item`,
-  `transition_item`, `move_item`, `append_note`, `promote_note`, `set_state`,
-  `set_metadata`;
+  `transition_item`, `move_item`, `append_note`, `promote_note`,
+  `set_lifecycle`, `set_state`, `set_metadata`;
 - links and fields: `link_items`, `unlink_items`, `propose_edge`,
   `set_repository`, `set_work_class`, `set_team`, `clear_team`;
 - the end of an item: `cancel_item`, `reopen_item`, `delete_item`,
@@ -1120,6 +1120,39 @@ unknown board. `NOT_FOUND` for an unknown note id; the refusal lists the
 ids. `VALIDATION` for a kind that is not `adr` or `document`. `FORBIDDEN`
 by the edit rule, or without the capability on the board.
 
+### `set_lifecycle`
+
+Sets the lifecycle of a document: `draft`, `review`, `published` or
+`archived` (KAIROS-A-0018). Any move is allowed. A document is not on a
+board, so `transition_item` does not move it. `promote_note` makes a draft;
+this tool publishes it.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `short_code` | string | yes | — | The short code of the document. |
+| `lifecycle` | string | yes | — | `draft`, `review`, `published` or `archived`. |
+
+The result is one line:
+
+```text
+Set the lifecycle of ACME-D-0007 to published (was review).
+```
+
+A value that the document already has changes nothing:
+
+```text
+ACME-D-0007 is already published: nothing changed.
+```
+
+The edit rule applies: you created the document, or you hold
+`manage_documents` on its owner board. The rule is that of
+`PATCH /api/documents/{short_code}/lifecycle`.
+
+Refuses: `NOT_FOUND` for an unknown short code or an archived document.
+`VALIDATION` for an item that is not a document. `VALIDATION` for an
+unknown value; the refusal names the value and lists the four values.
+`FORBIDDEN` by the edit rule.
+
 ### `set_metadata`
 
 Sets, updates or clears metadata values on an item, and returns the item's
@@ -1300,7 +1333,8 @@ the agent key of a person. Then the claim names the person and has the mark
 leaves Active.
 
 Refuses: `NOT_FOUND` for an unknown short code or an archived item;
-`ITEM_NOT_ON_BOARD` for an item with no placement — documents always;
+`ITEM_NOT_ON_BOARD` for an item with no placement — documents always (the
+refusal names `set_lifecycle`);
 `VALIDATION` for a column that is not on that board, listing the board's
 columns; `FORBIDDEN` without `transition_items`; `INVALID_TRANSITION` for a
 target outside the board's transition graph, enumerating the allowed targets;
