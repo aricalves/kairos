@@ -276,7 +276,9 @@ fn supports_edges_to_adr(conn: &mut PgConnection, title: &str) -> i64 {
 /// `NOTIFY` when its transaction commits, so the wait gives a committed
 /// event the time to arrive; an event that was rolled back never does.
 async fn drain_events(listener: &mut PgConnection) -> Vec<String> {
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // KAIROS-T-0632: the emitter of the server sends the outbox every
+    // 100 ms, so wait for more than one pass.
+    tokio::time::sleep(Duration::from_millis(600)).await;
     listener
         .notifications_iter()
         .map(|n| n.expect("notification").payload)

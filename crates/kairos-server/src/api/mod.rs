@@ -225,9 +225,9 @@ impl From<diesel::result::Error> for Abort {
 /// left the item. Inside this function the transaction of a service is a
 /// savepoint, so an `Err` from `f` rolls back all of them.
 ///
-/// Events are safe in here. `emit_event` is a `pg_notify`, and PostgreSQL
-/// delivers a notification when its transaction commits, so a create that
-/// is rolled back sends none. Short code sequences are not transactional: a
+/// Events are safe in here. `emit_event` inserts a row of the event outbox
+/// (KAIROS-T-0632), and the emitter sends only committed rows, so a create
+/// that is rolled back sends none. Short code sequences are not transactional: a
 /// number that a refused create took stays taken, which is correct.
 pub fn atomically<T>(
     conn: &mut PgConnection,
