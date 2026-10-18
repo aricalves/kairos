@@ -565,6 +565,8 @@ Remove a transition edge by id. Requires `configure_boards`.
 
 The delivery log of a board, newest first: each delivery with its
 status and its tries. A person who belongs to the board reads it.
+`before` (the id of a delivery) gives the next page: the deliveries
+older than that one (KAIROS-T-0584).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
@@ -572,12 +574,13 @@ status and its tries. A person who belongs to the board reads it.
 | `target_id` | query | no | `string` | Only the deliveries of this target (id). |
 | `rule_id` | query | no | `string` | Only the deliveries of this rule (id). |
 | `limit` | query | no | `integer` | The newest deliveries to give, 1 to 200 (50). |
+| `before` | query | no | `string` | The id of a delivery of the log: the page has the deliveries older than it (KAIROS-T-0584). |
 
 | Response | Body | Meaning |
 |---|---|---|
 | `200` | array of [`WebhookDelivery`](../schemas/#webhookdelivery) | The deliveries, newest first |
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The caller does not belong to the board |
-| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown board or target |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown board or target, or `before` is not a delivery of the log |
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | VALIDATION: a limit out of range, or an id that is not a UUID |
 
 ### `GET /api/boards/{id}/webhook-targets`

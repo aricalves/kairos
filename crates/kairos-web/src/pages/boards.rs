@@ -269,7 +269,8 @@ pub(crate) fn board_powers(
     let team_member = board_team_id.is_some_and(|team| me.teams.iter().any(|mine| mine.id == team));
     // KAIROS-T-0410: `implied` is what the server says membership of this
     // board gives (the edit and the move on a strategy or initiative
-    // board). The server computes it; the mirror only reads it.
+    // board, for the `member` grant: KAIROS-T-0541). The server computes
+    // it; the mirror only reads it.
     let has = |required: &str| {
         (team_member && team_implies_on_team_board(required))
             || me
@@ -4266,7 +4267,8 @@ mod tests {
     }
 
     /// KAIROS-T-0410 client mirror: on a strategy or initiative board, the
-    /// `implied` list of the server (membership: any grant on the board)
+    /// `implied` list of the server (membership: the `member` grant,
+    /// KAIROS-T-0541)
     /// gives the move and the create of the board's items. It does not give
     /// Restore ([`holds_capability`] reads grants only), nor the members
     /// panel.
@@ -4278,7 +4280,7 @@ mod tests {
             "teams": [],
             "capabilities": [{
                 "board_slug": "initiatives",
-                "grants": ["configure_boards"],
+                "grants": ["member"],
                 "implied": ["manage_initiatives", "transition_items"],
             }],
         }))
@@ -4297,7 +4299,7 @@ mod tests {
         let other = board_powers(&member, "strategy", None, Some(EntityKind::Strategy));
         assert!(!other.transition && !other.create);
         // An older server sends no `implied`: the grants alone decide.
-        let old = me("member", &[], &[("initiatives", &["configure_boards"])]);
+        let old = me("member", &[], &[("initiatives", &["member"])]);
         let powers = board_powers(&old, "initiatives", None, Some(EntityKind::Initiative));
         assert!(!powers.transition && !powers.create);
     }

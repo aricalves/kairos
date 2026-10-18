@@ -22,6 +22,8 @@
 //!   could not, being tenant-wide resources behind a board-scoped grant.
 //! - **Administration** — `administer_members` (add/remove members, grant
 //!   capabilities).
+//! - **Membership** — `member`, on a strategy or an initiative board only
+//!   (KAIROS-T-0541). A member edits and moves each item on the board.
 //!
 //! The grant sent to the server is exactly the enabled set: globs travel
 //! as globs (one `manage_*` row, not five rows), and singles already
@@ -43,6 +45,7 @@ const SINGLES: &[&str] = &[
     "transition_items",
     "configure_boards",
     "administer_members",
+    "member",
 ];
 
 /// The editor's state as plain booleans — the pure, testable core.
@@ -116,6 +119,7 @@ pub struct EditorState {
     pub transition_items: RwSignal<bool>,
     pub configure_boards: RwSignal<bool>,
     pub administer_members: RwSignal<bool>,
+    pub member: RwSignal<bool>,
 }
 
 impl Default for EditorState {
@@ -146,6 +150,7 @@ impl EditorState {
             transition_items: single("transition_items"),
             configure_boards: single("configure_boards"),
             administer_members: single("administer_members"),
+            member: single("member"),
         }
     }
 
@@ -158,6 +163,7 @@ impl EditorState {
             "manage_adrs" => self.manage_adrs,
             "transition_items" => self.transition_items,
             "configure_boards" => self.configure_boards,
+            "member" => self.member,
             _ => self.administer_members,
         }
     }
@@ -200,8 +206,13 @@ fn CapabilityRow(
 }
 
 /// The grant editor (see module docs for the presentation design).
+/// `member_applies` shows the Membership group: true on a strategy or an
+/// initiative board (KAIROS-T-0541).
 #[component]
-pub fn CapabilityEditor(state: EditorState) -> impl IntoView {
+pub fn CapabilityEditor(
+    state: EditorState,
+    #[prop(optional)] member_applies: bool,
+) -> impl IntoView {
     view! {
         <Stack gap="sm">
             <Group gap="sm">
@@ -289,6 +300,13 @@ pub fn CapabilityEditor(state: EditorState) -> impl IntoView {
                             label="Members: add, remove, and give capabilities"
                             name="administer_members"/>
                     </Show>
+                    <Show when=move || member_applies>
+                        <Divider/>
+                        <Text bright=true size="sm" bold=true>"Membership"</Text>
+                        <CapabilityRow checked=state.member
+                            label="Member: edit and move each item on this board"
+                            name="member"/>
+                    </Show>
                 </Stack>
             </Show>
         </Stack>
@@ -374,6 +392,14 @@ mod tests {
         let stored = caps(&["manage_tasks", "transition_items"]);
         let flags = SelectionFlags::from_capabilities(&stored);
         assert!(!flags.full_access && !flags.manage_all && !flags.configure_all);
+        assert_eq!(compose_selection(&flags), stored);
+    }
+
+    /// KAIROS-T-0541: the member grant round-trips as a single.
+    #[test]
+    fn member_grant_round_trips() {
+        let stored = caps(&["transition_items", "member"]);
+        let flags = SelectionFlags::from_capabilities(&stored);
         assert_eq!(compose_selection(&flags), stored);
     }
 

@@ -3,6 +3,11 @@
 //! turn one on again, send a test, remove), the dispatch rules (make,
 //! remove), and the delivery log with each try.
 //!
+//! The delivery log has pages of [`LOG_PAGE`] deliveries (KAIROS-T-0584).
+//! "Older" sends the id of the last delivery of the page as `before`.
+//! The page asks for one delivery more than it shows, so it knows the
+//! last page. "Newer" goes back one page.
+//!
 //! The server decides the rights: a board manager writes, a person who
 //! belongs to the board reads. A refusal shows in the notice of the page.
 
@@ -174,12 +179,70 @@ async fn rules(auth: Auth, board: &str) -> Result<Vec<Rule>, ApiError> {
     get_json(auth, &format!("/api/boards/{board}/dispatch-rules")).await
 }
 
-async fn deliveries(auth: Auth, board: &str) -> Result<Vec<Delivery>, ApiError> {
-    get_json(
-        auth,
-        &format!("/api/boards/{board}/webhook-deliveries?limit=50"),
-    )
-    .await
+/// The deliveries of a page of the log.
+const LOG_PAGE: usize = 50;
+
+/// The pages of the log that the person went through (KAIROS-T-0584): the
+/// cursor of each page before the current one. Empty: the first page.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct LogPages {
+    cursors: Vec<String>,
+}
+
+impl LogPages {
+    /// The `before` of the current page.
+    fn before(&self) -> Option<&str> {
+        self.cursors.last().map(String::as_str)
+    }
+
+    /// The number of the current page, from 1.
+    fn number(&self) -> usize {
+        self.cursors.len() + 1
+    }
+
+    /// Go to the next page: the deliveries older than `last_id`.
+    fn older(&mut self, last_id: String) {
+        self.cursors.push(last_id);
+    }
+
+    /// Go back one page.
+    fn newer(&mut self) {
+        self.cursors.pop();
+    }
+}
+
+/// The URL of a page of the log: one delivery more than [`LOG_PAGE`], so
+/// the page knows when it is the last. Pure, host-tested.
+fn log_url(board: &str, before: Option<&str>) -> String {
+    let mut url = format!(
+        "/api/boards/{board}/webhook-deliveries?limit={}",
+        LOG_PAGE + 1
+    );
+    if let Some(before) = before {
+        url.push_str(&format!("&before={}", crate::api::encode_component(before)));
+    }
+    url
+}
+
+/// A page of the log, and whether an older page is there.
+#[derive(Clone, Debug, PartialEq)]
+struct LogPage {
+    deliveries: Vec<Delivery>,
+    more: bool,
+}
+
+/// The page from the answer to [`log_url`]: the first [`LOG_PAGE`]
+/// deliveries. Pure, host-tested.
+fn log_page(mut deliveries: Vec<Delivery>) -> LogPage {
+    let more = deliveries.len() > LOG_PAGE;
+    deliveries.truncate(LOG_PAGE);
+    LogPage { deliveries, more }
+}
+
+async fn deliveries(auth: Auth, board: &str, before: Option<String>) -> Result<LogPage, ApiError> {
+    get_json(auth, &log_url(board, before.as_deref()))
+        .await
+        .map(log_page)
 }
 
 /// mirror of: `kairos_client::types_dispatch::AgentTriage` (partial).
@@ -197,7 +260,6 @@ async fn agent_triage(auth: Auth, board: &str) -> Result<AgentTriage, ApiError> 
 struct Data {
     targets: Vec<Target>,
     rules: Vec<Rule>,
-    log: Vec<Delivery>,
     /// KAIROS-T-0428: an agent decides the triage of intake.
     agents_decide: bool,
 }
@@ -206,7 +268,6 @@ async fn load(auth: Auth, board: String) -> Result<Data, ApiError> {
     Ok(Data {
         targets: targets(auth, &board).await?,
         rules: rules(auth, &board).await?,
-        log: deliveries(auth, &board).await?,
         agents_decide: agent_triage(auth, &board).await?.agents_decide,
     })
 }
@@ -230,6 +291,16 @@ pub fn DispatchPanel(
         auth.track_session();
         reload.get();
         load(auth, board.get_value())
+    });
+    // KAIROS-T-0584: the log has its own pages. A change of the section
+    // reads the current page again.
+    let log_pages = RwSignal::new(LogPages::default());
+    let log = LocalResource::new(move || {
+        auth.track_session();
+        reload.get();
+        let before = log_pages.with(|pages| pages.before().map(str::to_string));
+        let board_id = board.get_value();
+        async move { deliveries(auth, &board_id, before).await }
     });
     // The secret of the target made last. It shows once.
     let made: RwSignal<Option<(String, String)>> = RwSignal::new(None);
@@ -395,7 +466,7 @@ pub fn DispatchPanel(
                                 <Button on_click=Callback::new(on_add_rule)>"Add rule"</Button>
                             </Group>
                             <Divider/>
-                            <DeliveryLog log=data.log.clone() reload/>
+                            <DeliveryLog log pages=log_pages reload/>
                         }.into_any()
                     }
                 }}
@@ -585,8 +656,62 @@ fn TriageSetting(
     }
 }
 
+/// The delivery log: a page, and the buttons Newer and Older.
 #[component]
-fn DeliveryLog(log: Vec<Delivery>, reload: RwSignal<u32>) -> impl IntoView {
+fn DeliveryLog(
+    log: LocalResource<Result<LogPage, ApiError>>,
+    pages: RwSignal<LogPages>,
+    reload: RwSignal<u32>,
+) -> impl IntoView {
+    let more = move || matches!(log.get(), Some(Ok(page)) if page.more);
+    let on_older = move |_| {
+        let Some(Ok(page)) = log.get_untracked() else {
+            return;
+        };
+        if let Some(last) = page.deliveries.last() {
+            pages.update(|pages| pages.older(last.id.clone()));
+        }
+    };
+    view! {
+        <div data-testid="delivery-log">
+            <Group justify="between">
+                <Text bright=true bold=true size="sm">"Delivery log, newest first"</Text>
+                <Button variant="subtle" size="xs"
+                    on_click=Callback::new(move |_| reload.update(|n| *n += 1))>
+                    "Refresh"
+                </Button>
+            </Group>
+            {move || match log.get() {
+                None => view! { <Loading label="Loading the log…"/> }.into_any(),
+                Some(Err(error)) => view! {
+                    <ErrorState error on_retry=Callback::new(move |_| reload.update(|n| *n += 1))/>
+                }.into_any(),
+                Some(Ok(page)) => view! { <DeliveryRows log=page.deliveries/> }.into_any(),
+            }}
+            <div data-testid="delivery-log-pager">
+                <Group justify="end" gap="sm">
+                    <Button variant="default" size="xs"
+                        disabled=Signal::derive(move || pages.with(|p| p.number() == 1))
+                        on_click=Callback::new(move |_| pages.update(LogPages::newer))>
+                        "Newer"
+                    </Button>
+                    <Text size="sm" dimmed=true>
+                        {move || format!("Page {}", pages.with(LogPages::number))}
+                    </Text>
+                    <Button variant="default" size="xs"
+                        disabled=Signal::derive(move || !more())
+                        on_click=Callback::new(on_older)>
+                        "Older"
+                    </Button>
+                </Group>
+            </div>
+        </div>
+    }
+}
+
+/// The rows of a page of the log.
+#[component]
+fn DeliveryRows(log: Vec<Delivery>) -> impl IntoView {
     let empty = log.is_empty();
     let rows = log
         .into_iter()
@@ -623,22 +748,13 @@ fn DeliveryLog(log: Vec<Delivery>, reload: RwSignal<u32>) -> impl IntoView {
         })
         .collect_view();
     view! {
-        <div data-testid="delivery-log">
-            <Group justify="between">
-                <Text bright=true bold=true size="sm">"Delivery log, newest first"</Text>
-                <Button variant="subtle" size="xs"
-                    on_click=Callback::new(move |_| reload.update(|n| *n += 1))>
-                    "Refresh"
-                </Button>
-            </Group>
-            {empty.then(|| view! { <Text size="sm" dimmed=true>"No delivery yet."</Text> })}
-            <Table label="Delivery log">
-                <thead><tr><th>"Time"</th><th>"Event"</th><th>"Task"</th><th>"Status"</th>
-                    <th class="cl-num">"Tries"</th><th class="cl-num">"Code"</th>
-                    <th>"Error"</th><th>"Each try"</th></tr></thead>
-                <tbody>{rows}</tbody>
-            </Table>
-        </div>
+        {empty.then(|| view! { <Text size="sm" dimmed=true>"No delivery yet."</Text> })}
+        <Table label="Delivery log">
+            <thead><tr><th>"Time"</th><th>"Event"</th><th>"Task"</th><th>"Status"</th>
+                <th class="cl-num">"Tries"</th><th class="cl-num">"Code"</th>
+                <th>"Error"</th><th>"Each try"</th></tr></thead>
+            <tbody>{rows}</tbody>
+        </Table>
     }
 }
 
@@ -725,6 +841,56 @@ mod tests {
             })
         );
         assert!(rule_body("enters the column", "Todo", "t1", "bug", "priority", "").is_err());
+    }
+
+    fn delivery(id: &str) -> Delivery {
+        Delivery {
+            id: id.into(),
+            event: "ping".into(),
+            short_code: None,
+            status: "delivered".into(),
+            tries: 1,
+            response_code: Some(200),
+            last_error: None,
+            created_at: "2026-10-17T09:00:00Z".into(),
+            log: Vec::new(),
+        }
+    }
+
+    /// KAIROS-T-0584: the page asks for one delivery more than it shows.
+    #[test]
+    fn a_page_of_the_log_knows_the_last_page() {
+        assert_eq!(
+            log_url("b1", None),
+            "/api/boards/b1/webhook-deliveries?limit=51"
+        );
+        assert_eq!(
+            log_url("b1", Some("d 9")),
+            "/api/boards/b1/webhook-deliveries?limit=51&before=d%209"
+        );
+        let full: Vec<Delivery> = (0..=LOG_PAGE).map(|n| delivery(&n.to_string())).collect();
+        let page = log_page(full);
+        assert!(page.more, "one more than the page: an older page is there");
+        assert_eq!(page.deliveries.len(), LOG_PAGE);
+        assert_eq!(page.deliveries.last().map(|d| d.id.as_str()), Some("49"));
+        let last = log_page(vec![delivery("a"), delivery("b")]);
+        assert!(!last.more, "the last page");
+        assert_eq!(last.deliveries.len(), 2);
+    }
+
+    /// KAIROS-T-0584: Older keeps the cursor of each page; Newer goes back.
+    #[test]
+    fn the_pager_of_the_log_goes_older_and_back() {
+        let mut pages = LogPages::default();
+        assert_eq!((pages.number(), pages.before()), (1, None));
+        pages.older("d50".into());
+        pages.older("d100".into());
+        assert_eq!((pages.number(), pages.before()), (3, Some("d100")));
+        pages.newer();
+        assert_eq!((pages.number(), pages.before()), (2, Some("d50")));
+        pages.newer();
+        pages.newer();
+        assert_eq!((pages.number(), pages.before()), (1, None));
     }
 
     #[test]

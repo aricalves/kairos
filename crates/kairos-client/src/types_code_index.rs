@@ -191,6 +191,10 @@ pub struct CodeIndexBuildListQuery {
     /// The most runs in the answer: 20 when not given, 100 at most.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<i64>,
+    /// The runs to skip before the page, newest first: 0 when not given
+    /// (KAIROS-T-0584).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<i64>,
 }
 
 /// The answer to `GET /api/repositories/{slug}/code-indexes/builds`.
@@ -202,6 +206,9 @@ pub struct CodeIndexBuildList {
     pub total: i64,
     /// The limit that the answer used.
     pub limit: i64,
+    /// The runs before the page, newest first (KAIROS-T-0584).
+    #[serde(default)]
+    pub offset: i64,
     /// Set when no code index builder runs for the deployment
     /// (KAIROS-T-0394): the server has the role `api`, and no server with
     /// the role `worker` ran the new-commits sweep lately. The text says
