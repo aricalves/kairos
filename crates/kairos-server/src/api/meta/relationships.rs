@@ -20,6 +20,7 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use kairos_client::types_meta as dto;
 use kairos_db::graph::{self, GraphError, Neighbor};
+use kairos_db::models::OrgRole;
 use kairos_db::models::enums::RelationshipType;
 use kairos_db::models::graph::ItemRelationship;
 use uuid::Uuid;
@@ -465,7 +466,7 @@ pub(crate) async fn create_relationship(
             // COLLIERY-T-0228: the link rule, for each relationship type.
             require_edge_write(
                 conn,
-                &tenant_ctx.slug,
+                tenant_ctx.role,
                 user,
                 relationship.as_str(),
                 source.typed(),
@@ -506,14 +507,14 @@ pub(crate) fn parent_for_create(
 /// it, so the rule lets the creator through.
 pub(crate) fn link_created_parent(
     conn: &mut PgConnection,
-    slug: &str,
+    role: OrgRole,
     user: Uuid,
     parent: &LiveRef,
     item: EdgeEnd,
 ) -> Result<(), ApiError> {
     require_edge_write(
         conn,
-        slug,
+        role,
         user,
         RelationshipType::Parent.as_str(),
         parent.typed(),
@@ -543,7 +544,7 @@ pub(crate) fn link_created_parent(
 /// `parent`, or `None`.
 pub(crate) fn change_parent(
     conn: &mut PgConnection,
-    slug: &str,
+    role: OrgRole,
     user: Uuid,
     item: EdgeEnd,
     parent: Option<&str>,
@@ -573,16 +574,16 @@ pub(crate) fn change_parent(
         if let (true, Some(old)) = (changes_old, &previous) {
             match old.item_type {
                 Some(old_type) => {
-                    require_edge_remove(conn, slug, user, parent_rel, (old.id, old_type), item)?
+                    require_edge_remove(conn, role, user, parent_rel, (old.id, old_type), item)?
                 }
                 // The parent is gone from the directory: the item decides.
-                None => require_item_edit(conn, slug, user, item_id, item_type)?,
+                None => require_item_edit(conn, role, user, item_id, item_type)?,
             }
         }
         if let Some(new) = &new_parent
             && previous.as_ref().is_none_or(|old| old.id != new.id)
         {
-            require_edge_write(conn, slug, user, parent_rel, new.typed(), item)?;
+            require_edge_write(conn, role, user, parent_rel, new.typed(), item)?;
         }
         let change = graph::set_parent(conn, item_id, new_parent.as_ref().map(|new| new.id), user)
             .map_err(|e| match e {
@@ -635,13 +636,13 @@ pub(crate) async fn set_parent(
     ApiJson(body): ApiJson<dto::SetParentRequest>,
 ) -> Result<Json<dto::SetParentResponse>, ApiError> {
     let user = auth.user_id;
-    let slug = tenant.slug.clone();
+    let role = tenant.role;
     let response = state
         .blocking
         .run(&tenant.slug, move |conn| {
             let item = resolve_family_item(conn, &family, &short_code, Liveness::LiveOnly)?;
             let fix = format!("PUT /api/{family}/{short_code}/parent");
-            change_parent(conn, &slug, user, item, body.parent.as_deref(), &fix)
+            change_parent(conn, role, user, item, body.parent.as_deref(), &fix)
                 .map(|(response, _)| response)
         })
         .await?;
@@ -709,7 +710,7 @@ pub(crate) async fn delete_relationship(
             // `unlink_items` calls.
             crate::api::remove_edge(
                 conn,
-                &tenant_ctx.slug,
+                tenant_ctx.role,
                 user,
                 edge.relationship,
                 (edge.source_id, source_type),

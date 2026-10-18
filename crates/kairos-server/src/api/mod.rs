@@ -56,6 +56,7 @@ use kairos_core::abac::EditUse;
 use kairos_core::board::TransitionError;
 use kairos_core::short_code::ItemType;
 use kairos_db::code_rename::RenameError;
+use kairos_db::models::OrgRole;
 use kairos_db::models::enums::RelationshipType;
 use kairos_db::{AbacError, BoardError, GraphError, ItemError, abac};
 use serde_json::json;
@@ -307,17 +308,26 @@ struct MissingEdit {
 /// it. The shared core of [`require_item_edit`] and [`require_edge_write`],
 /// so the two read the same facts and decide with the same function
 /// ([`kairos_core::abac::may_edit_item`]).
+///
+/// `role` is the role of the principal in the organization, from the
+/// request ([`crate::middleware::tenant::TenantContext::role`],
+/// KAIROS-T-0625). Each function of the edit rule and the link rule takes
+/// it so, and none reads it again. The facts are two queries: the row of
+/// the item on the table of `item_type`, and the capability
+/// ([`abac::edit_facts`]).
 fn missing_edit(
     conn: &mut PgConnection,
-    slug: &str,
+    role: OrgRole,
     user_id: Uuid,
     item_id: Uuid,
     item_type: ItemType,
     edit_use: EditUse,
 ) -> Result<Option<MissingEdit>, ApiError> {
     let capability = meta::manage_capability(item_type);
-    let (facts, board_id) = abac::edit_facts(conn, slug, user_id, item_id, capability, edit_use)
-        .map_err(map_abac_error)?;
+    let is_org_admin = role == OrgRole::Admin;
+    let (facts, board_id) =
+        abac::edit_facts(conn, user_id, is_org_admin, item_type, item_id, edit_use)
+            .map_err(map_abac_error)?;
     Ok(if kairos_core::abac::may_edit_item(facts) {
         None
     } else {
@@ -334,13 +344,13 @@ fn missing_edit(
 /// the item, if it has one. The decision is that of [`require_item_edit`].
 pub(crate) fn missing_item_edit(
     conn: &mut PgConnection,
-    slug: &str,
+    role: OrgRole,
     user_id: Uuid,
     item_id: Uuid,
     item_type: ItemType,
 ) -> Result<Option<Option<Uuid>>, ApiError> {
     Ok(
-        missing_edit(conn, slug, user_id, item_id, item_type, EditUse::Edit)?
+        missing_edit(conn, role, user_id, item_id, item_type, EditUse::Edit)?
             .map(|missing| missing.board_id),
     )
 }
@@ -402,12 +412,12 @@ pub(crate) fn manage_capability_of(item_type: ItemType) -> &'static str {
 /// board.
 pub fn require_item_edit(
     conn: &mut PgConnection,
-    slug: &str,
+    role: OrgRole,
     user_id: Uuid,
     item_id: Uuid,
     item_type: ItemType,
 ) -> Result<(), ApiError> {
-    require_item_edit_for(conn, slug, user_id, item_id, item_type, EditUse::Edit)
+    require_item_edit_for(conn, role, user_id, item_id, item_type, EditUse::Edit)
 }
 
 /// THE EDIT RULE for an archive or a restore (KAIROS-T-0410, KAIROS-A-0025
@@ -418,23 +428,23 @@ pub fn require_item_edit(
 /// as an admin. The refusal is the same 403.
 pub fn require_item_archive(
     conn: &mut PgConnection,
-    slug: &str,
+    role: OrgRole,
     user_id: Uuid,
     item_id: Uuid,
     item_type: ItemType,
 ) -> Result<(), ApiError> {
-    require_item_edit_for(conn, slug, user_id, item_id, item_type, EditUse::Archive)
+    require_item_edit_for(conn, role, user_id, item_id, item_type, EditUse::Archive)
 }
 
 fn require_item_edit_for(
     conn: &mut PgConnection,
-    slug: &str,
+    role: OrgRole,
     user_id: Uuid,
     item_id: Uuid,
     item_type: ItemType,
     edit_use: EditUse,
 ) -> Result<(), ApiError> {
-    match missing_edit(conn, slug, user_id, item_id, item_type, edit_use)? {
+    match missing_edit(conn, role, user_id, item_id, item_type, edit_use)? {
         None => note_claim(conn, user_id, (item_id, item_type)),
         Some(missing) => Err(ApiError::capability_required(
             missing.capability,
@@ -506,14 +516,14 @@ fn note_claim(
 /// `supports` edge of a document.
 pub fn require_edge_write(
     conn: &mut PgConnection,
-    slug: &str,
+    role: OrgRole,
     user_id: Uuid,
     relationship: &str,
     (source_id, source_type): EdgeEnd,
     (target_id, target_type): EdgeEnd,
 ) -> Result<(), ApiError> {
-    let source = missing_edit(conn, slug, user_id, source_id, source_type, EditUse::Edit)?;
-    let target = missing_edit(conn, slug, user_id, target_id, target_type, EditUse::Edit)?;
+    let source = missing_edit(conn, role, user_id, source_id, source_type, EditUse::Edit)?;
+    let target = missing_edit(conn, role, user_id, target_id, target_type, EditUse::Edit)?;
     if kairos_core::abac::may_write_edge(source.is_none(), target.is_none()) {
         note_claim(conn, user_id, (source_id, source_type))?;
         return note_claim(conn, user_id, (target_id, target_type));
@@ -594,7 +604,7 @@ pub(crate) fn short_code_of(conn: &mut PgConnection, id: Uuid) -> Result<String,
 /// `supports` edge of a document can go.
 pub fn require_edge_remove(
     conn: &mut PgConnection,
-    slug: &str,
+    role: OrgRole,
     user_id: Uuid,
     relationship: &str,
     source: EdgeEnd,
@@ -602,10 +612,10 @@ pub fn require_edge_remove(
 ) -> Result<(), ApiError> {
     let (document_id, target_type) = target;
     if !is_document_parent_edge(relationship, target_type) {
-        return require_edge_write(conn, slug, user_id, relationship, source, target);
+        return require_edge_write(conn, role, user_id, relationship, source, target);
     }
 
-    let missing = missing_edit(conn, slug, user_id, document_id, target_type, EditUse::Edit)?;
+    let missing = missing_edit(conn, role, user_id, document_id, target_type, EditUse::Edit)?;
     if kairos_core::abac::may_unlink_document_parent(missing.is_none()) {
         return Ok(());
     }
@@ -637,14 +647,14 @@ pub fn require_edge_remove(
 /// `unlink_items`, so the two surfaces cannot give different answers.
 pub fn remove_edge(
     conn: &mut PgConnection,
-    slug: &str,
+    role: OrgRole,
     user_id: Uuid,
     relationship: RelationshipType,
     source: EdgeEnd,
     target: EdgeEnd,
 ) -> Result<(), ApiError> {
     atomically(conn, |conn| {
-        require_edge_remove(conn, slug, user_id, relationship.as_str(), source, target)?;
+        require_edge_remove(conn, role, user_id, relationship.as_str(), source, target)?;
         kairos_db::graph::unlink_items(conn, source.0, target.0, relationship, user_id)
             .map_err(meta::relationships::map_link_error)
     })
