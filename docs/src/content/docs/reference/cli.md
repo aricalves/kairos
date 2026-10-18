@@ -249,12 +249,14 @@ differ.
 | `cancel` | no | no | yes | no | no |
 | `reopen` | no | no | yes | no | no |
 | `lane` | no | no | yes | no | no |
+| `lifecycle` | no | no | no | yes | no |
 | `archive` (alias `delete`) | yes | yes | yes | yes | yes |
 | `purge` | no | no | yes | no | no |
 | `restore` | yes | yes | yes | yes | yes |
 
 `documents` has no `transition` verb: documents have no board placement, and
-carry an editorial lifecycle instead of a column. `move` exists on `tasks`
+carry an editorial lifecycle instead of a column. `documents lifecycle` sets
+it. `move` exists on `tasks`
 and on `documents`. `tasks move` moves a task to a different delivery board.
 `documents move` gives a document to a different owner board. See
 [Flight levels](../../explanation/flight-levels/) and
@@ -667,6 +669,32 @@ The command prints the owner board of the document after the call:
 The owner board of the document ACME-D-0004 is <board-id>.
 ```
 
+### `documents lifecycle`
+
+```
+kairos documents lifecycle <SHORT_CODE> --to <STATE> [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<SHORT_CODE>` | string | required | The short code of the document. |
+| `--to <STATE>` | `draft`, `review`, `published` or `archived` | required | The lifecycle of the document after the call. |
+
+The command sets the editorial lifecycle of a document (KAIROS-A-0018). You
+can move a document from each value to each other value. A value that the
+document already has changes nothing. The edit rule applies: the creator of
+the document, or `manage_documents` on its owner board. The CLI refuses
+another value and lists the four values.
+
+The `archived` lifecycle is a label: the document stays live. To put the
+document away, use `documents archive`.
+
+The command prints the lifecycle of the document after the call:
+
+```text
+The document ACME-D-0004 is published.
+```
+
 ### `<noun> archive`
 
 ```
@@ -934,7 +962,7 @@ most. The definitions are in [`board_flow`](../mcp-tools/#board_flow).
 ### `kairos boards policy`
 
 ```
-kairos boards policy <BOARD> [--parent-gate on|off] [--owner-gate on|off] [OPTIONS]
+kairos boards policy <BOARD> [--parent-gate on|off] [--owner-gate on|off] [--blockers-gate on|off] [OPTIONS]
 ```
 
 | Argument / Option | Type | Default | Description |
@@ -942,6 +970,7 @@ kairos boards policy <BOARD> [--parent-gate on|off] [--owner-gate on|off] [OPTIO
 | `<BOARD>` | slug or UUID | required | The board. |
 | `--parent-gate` | `on` or `off` | unchanged | The policy `parent_gate` of a delivery board. |
 | `--owner-gate` | `on` or `off` | unchanged | The policy `owner_gate` of an initiative board. |
+| `--blockers-gate` | `on` or `off` | unchanged | The policy `blockers_gate` of a delivery board. |
 
 Shows the policies of a board, and sets them. To set a policy, you need
 `configure_boards` on the board. With `parent_gate` on, a task moves to a
@@ -950,7 +979,11 @@ different move with `PARENT_NOT_ACTIVE`.
 
 With `owner_gate` on, an initiative
 moves to Active only with an owner. Kairos refuses a different move with
-`OWNER_REQUIRED`. See
+`OWNER_REQUIRED`.
+
+With `blockers_gate` on, a task with open blockers does not move to a claims
+column or a done column. Kairos refuses the move with `BLOCKED`. The policy is
+off by default: the move succeeds with a warning. See
 [`set_board_policy`](../mcp-tools/#set_board_policy).
 
 ### `kairos boards wip-limit`

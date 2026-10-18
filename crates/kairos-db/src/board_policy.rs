@@ -43,6 +43,27 @@
 //!    moves only. A create of an initiative straight into Active is not a
 //!    move, and it is not checked.
 //!
+//! # `blockers_gate` (KAIROS-T-0565)
+//!
+//! A task can have open blockers: the sources of its `blocks` edges that
+//! are live and open ([`crate::dispatch::open_sql`]). A cancelled blocker
+//! is open (KAIROS-A-0038). The rule:
+//!
+//! 1. The trigger is a move of a task into a column with the `claims` flag
+//!    or the `is_done` flag: a transition, a reopen, or a move to the board
+//!    (its entry column). A cancel is no trigger: "won't do" needs no
+//!    finished blocker.
+//! 2. With the policy off, the move goes on. The server adds a warning
+//!    that names each open blocker ([`blockers_of_move`]).
+//! 3. With the policy on, the move is refused ([`BoardError::Blocked`]).
+//!    The refusal names each open blocker.
+//! 4. The policy is off by default, for each new board and each existing
+//!    one. Only a delivery board reads it. Many teams use `blocks` as a
+//!    note of order, and start work before the blocker is done. An open
+//!    cancelled blocker also stops a gated task until a person decides.
+//! 5. A task in Active or Completed with an open blocker stays there: the
+//!    rule checks moves only.
+//!
 //! Each function operates in the CURRENT `search_path` tenant schema.
 
 use diesel::pg::PgConnection;
@@ -124,6 +145,165 @@ pub fn set_owner_gate(
     ))
     .execute(conn)?;
     Ok(changed > 0)
+}
+
+/// The `blockers_gate` policy of the board. A board that does not exist
+/// reads as off.
+pub fn blockers_gate(conn: &mut PgConnection, board_id: Uuid) -> Result<bool, DieselError> {
+    use crate::schema::boards;
+    Ok(boards::table
+        .filter(boards::id.eq(board_id))
+        .select(boards::blockers_gate)
+        .first::<bool>(conn)
+        .optional()?
+        .unwrap_or(false))
+}
+
+/// Set the `blockers_gate` policy of the board. The caller checked
+/// `configure_boards`. Returns true when the value changed.
+pub fn set_blockers_gate(
+    conn: &mut PgConnection,
+    board_id: Uuid,
+    on: bool,
+) -> Result<bool, DieselError> {
+    use crate::schema::boards;
+    let changed = diesel::update(
+        boards::table
+            .filter(boards::id.eq(board_id))
+            .filter(boards::blockers_gate.ne(on)),
+    )
+    .set((
+        boards::blockers_gate.eq(on),
+        boards::updated_at.eq(diesel::dsl::now),
+    ))
+    .execute(conn)?;
+    Ok(changed > 0)
+}
+
+/// One open blocker of a task (module docs, `blockers_gate`).
+#[derive(Debug, Clone, PartialEq, Eq, QueryableByName)]
+pub struct OpenBlocker {
+    /// The short code of the blocker.
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub short_code: String,
+    /// The blocker is a cancelled task (KAIROS-A-0038).
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    pub cancelled: bool,
+}
+
+impl std::fmt::Display for OpenBlocker {
+    /// `KAIROS-T-0012 (open)`, or `KAIROS-T-0012 (cancelled)`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state = if self.cancelled { "cancelled" } else { "open" };
+        write!(f, "{} ({state})", self.short_code)
+    }
+}
+
+/// The blockers as one text: `KAIROS-T-0012 (open), KAIROS-T-0013
+/// (cancelled)`.
+pub fn blockers_text(blockers: &[OpenBlocker]) -> String {
+    blockers
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The open blockers of the item `item_id`: the sources of its `blocks`
+/// edges that are live and open ([`crate::dispatch::blocks_now_sql`]), by
+/// short code.
+pub fn open_blockers(
+    conn: &mut PgConnection,
+    item_id: Uuid,
+) -> Result<Vec<OpenBlocker>, DieselError> {
+    diesel::sql_query(format!(
+        "SELECT p.short_code, \
+                EXISTS (SELECT 1 FROM task_cancellations k WHERE k.task_id = p.id) AS cancelled \
+           FROM item_relationships r \
+           JOIN {items} p ON p.id = r.source_id \
+          WHERE r.relationship = 'blocks' AND r.target_id = $1 AND {blocks} \
+          ORDER BY p.short_code",
+        items = crate::dispatch::WORKFLOW_ITEMS,
+        blocks = crate::dispatch::blocks_now_sql("p"),
+    ))
+    .bind::<diesel::sql_types::Uuid, _>(item_id)
+    .load(conn)
+}
+
+/// The open blockers of a move of the task `task_id` into the column
+/// `to_column_id` (module docs, `blockers_gate`, decision 1). Empty when
+/// the column has neither the `claims` flag nor the `is_done` flag. The
+/// server reads it after the move for the warning.
+pub fn blockers_of_move(
+    conn: &mut PgConnection,
+    task_id: Uuid,
+    to_column_id: Uuid,
+) -> Result<Vec<OpenBlocker>, DieselError> {
+    use crate::schema::board_columns;
+    let flags: Option<(bool, bool)> = board_columns::table
+        .filter(board_columns::id.eq(to_column_id))
+        .select((board_columns::claims, board_columns::is_done))
+        .first(conn)
+        .optional()?;
+    match flags {
+        Some((claims, done)) if claims || done => open_blockers(conn, task_id),
+        _ => Ok(Vec::new()),
+    }
+}
+
+/// Check that the task `task_id` may go into the column `to_column_id`
+/// (module docs, `blockers_gate`). Call it in the transaction of the move,
+/// before the write. A board with the policy off passes.
+pub fn check_blockers(
+    conn: &mut PgConnection,
+    task_id: Uuid,
+    to_column_id: Uuid,
+) -> Result<(), BoardError> {
+    use crate::schema::{board_columns, boards, tasks};
+
+    let target: Option<(Uuid, String, bool, crate::models::enums::BoardLevel)> =
+        board_columns::table
+            .inner_join(boards::table.on(boards::id.eq(board_columns::board_id)))
+            .filter(board_columns::id.eq(to_column_id))
+            .select((
+                boards::id,
+                board_columns::name,
+                boards::blockers_gate,
+                boards::board_level,
+            ))
+            .first(conn)
+            .optional()?;
+    let Some((board_id, to_column, true, crate::models::enums::BoardLevel::Delivery)) = target
+    else {
+        return Ok(());
+    };
+    let blockers = blockers_of_move(conn, task_id, to_column_id)?;
+    if blockers.is_empty() {
+        return Ok(());
+    }
+    let task: String = tasks::table
+        .filter(tasks::id.eq(task_id))
+        .select(tasks::short_code)
+        .first(conn)?;
+    Err(BoardError::Blocked {
+        task,
+        to_column,
+        blockers,
+        board_id,
+    })
+}
+
+/// The board policies of a move of the task `task_id` into the column
+/// `to_column_id`: `parent_gate`, then `blockers_gate`. A transition, a
+/// reopen and a board move call this one function, in the transaction of
+/// the move, before the write.
+pub fn check_task_move(
+    conn: &mut PgConnection,
+    task_id: Uuid,
+    to_column_id: Uuid,
+) -> Result<(), BoardError> {
+    check_active_parent(conn, task_id, to_column_id)?;
+    check_blockers(conn, task_id, to_column_id)
 }
 
 /// Check that the initiative `initiative_id` may go into the column
@@ -277,6 +457,24 @@ pub fn check_active_parent(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_open_blocker_names_its_state() {
+        let blockers = [
+            OpenBlocker {
+                short_code: "ACME-T-0012".into(),
+                cancelled: false,
+            },
+            OpenBlocker {
+                short_code: "ACME-T-0013".into(),
+                cancelled: true,
+            },
+        ];
+        assert_eq!(
+            blockers_text(&blockers),
+            "ACME-T-0012 (open), ACME-T-0013 (cancelled)"
+        );
+    }
 
     #[test]
     fn active_and_monitoring_are_active() {

@@ -804,7 +804,9 @@ pub(crate) async fn move_task(
                 .map_err(map_board_error)?;
             crate::agent_triage::record(conn, &auth, task.id, triaged)?;
             let code = moved.rename.map_or(short_code, |rename| rename.new_code);
-            crate::claims::note_wip(conn, moved.column_id, &code)?;
+            // KAIROS-T-0371, KAIROS-T-0565: the WIP limit and the open
+            // blockers of the entry column.
+            crate::claims::note_task_move(conn, task.id, moved.column_id, &code)?;
             let moved = load(conn, &code, Liveness::LiveOnly)?.into_dto();
             embed(conn, moved)
         })
@@ -856,8 +858,9 @@ pub(crate) async fn transition_task(
             crate::claims::note(conn, task.id, user)?;
             boards::transition_task(conn, task.id, to_column_id, user).map_err(map_board_error)?;
             crate::agent_triage::record(conn, &auth, task.id, triaged)?;
-            // KAIROS-T-0371: a move into a column over its WIP limit.
-            crate::claims::note_wip(conn, to_column_id, &short_code)?;
+            // KAIROS-T-0371, KAIROS-T-0565: the WIP limit and the open
+            // blockers.
+            crate::claims::note_task_move(conn, task.id, to_column_id, &short_code)?;
             let task = load(conn, &short_code, Liveness::LiveOnly)?.into_dto();
             embed(conn, task)
         })

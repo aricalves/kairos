@@ -1213,6 +1213,21 @@ pub async fn cancel_task(auth: Auth, code: &str, reason: &str) -> Result<ItemDet
     .await
 }
 
+/// The path of a reopen (KAIROS-T-0648). Pure, host-tested.
+pub(crate) fn reopen_path(code: &str) -> String {
+    format!("/api/tasks/{code}/reopen")
+}
+
+/// `POST /api/tasks/{short_code}/reopen` — reopen a done task
+/// (KAIROS-T-0564, KAIROS-A-0048). The request has no body. The server
+/// moves the task to the first column of its board that is not done, and
+/// removes the cancel mark. Refusals the dialog shows inline: 403 without
+/// `transition_items`, 422 `TASK_NOT_DONE`, `NO_OPEN_COLUMN` or
+/// `PARENT_NOT_ACTIVE`.
+pub async fn reopen_task(auth: Auth, code: &str) -> Result<ItemDetail, ApiError> {
+    send_json(auth, Verb::Post, &reopen_path(code), None::<&()>).await
+}
+
 /// mirror of: `kairos_client::types::HandOffRequest`.
 #[derive(Serialize)]
 struct HandOffBody<'a> {

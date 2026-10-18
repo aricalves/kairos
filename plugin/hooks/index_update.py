@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The code index in each session (COLLIERY-T-1855, COLLIERY-I-0264).
 
-Three modes, one for each hook:
+Four modes:
 
 - `start` (SessionStart): if `kairos` is on PATH and the checkout has the
   Kairos wiring (`.claude/kairos.local.md`), start `worker` as a detached
@@ -13,8 +13,24 @@ Three modes, one for each hook:
   files, write it to the log, run `kairos index update --link-only` in the
   checkout, and clear the list only when the update succeeds. A failed update puts the
   list back for the next one. A second worker exits while one runs.
-- `record` (PostToolUse on Edit, Write, MultiEdit, NotebookEdit): append the
-  path (relative to the checkout) of an edited source file to the list.
+- `record` (PostToolUse on Edit, Write, MultiEdit, NotebookEdit): find the
+  checkout of the edited source file (the nearest folder above it with
+  `.git`), and append the path relative to that checkout to the list of that
+  checkout. Then start `debounce` for that checkout, if none waits already.
+- `debounce` (the background job after edits, KAIROS-T-0524): wait until no
+  edit came for N seconds, wait for an update that runs, then run the same
+  update as `worker`. One for each checkout at a time (`debounce.lock`).
+
+In a board folder (a folder with the clones below it, KAIROS-T-0348), each
+edit goes to the list of its own clone or worktree, and the update runs
+there. An edit outside a git checkout records nothing and starts nothing.
+The checkout must have the wiring (its own, or the one of its clone), or be
+below the folder of the session, which has the wiring.
+
+N is 30 s: an agent edits files some seconds apart, so one update runs for
+a burst of edits, and the index is new about a minute after the last edit.
+KAIROS_INDEX_DEBOUNCE_SECONDS overrides N; `off` runs no update after an
+edit.
 
 The background update runs no model (COLLIERY-T-2529): `--link-only` links
 the summaries that are in the pool (from Kairos or from an earlier update)
@@ -37,7 +53,8 @@ agent one line with the refusal and the command to run again. A result
 older than 7 days, or a file that does not parse, gives no line.
 
 The state is outside the checkout: `~/.claude/kairos-index/<name>-<hash>/`
-(`changed-files`, `update.log`, `update.log.1`, `last-update.json`, `lock`);
+(`changed-files`, `update.log`, `update.log.1`, `last-update.json`, `lock`,
+`last-edit`, `debounce.lock`);
 KAIROS_INDEX_STATE_DIR overrides the parent folder. The hook holds no
 credentials: `kairos index update` reads KAIROS_KEY or KAIROS_MCP_KEY and
 `.claude/kairos.local.md` itself (COLLIERY-T-1854). Each error gives no
@@ -49,6 +66,7 @@ import datetime
 import fcntl
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -64,6 +82,11 @@ RESULT_FORMAT = 1
 # changed since (KAIROS-T-0519).
 RESULT_MAX_AGE_SECONDS = 7 * 24 * 3600
 REFUSAL_MAX_CHARS = 600
+# The debounced update after edits (KAIROS-T-0524). See the module text.
+DEBOUNCE_ENV = "KAIROS_INDEX_DEBOUNCE_SECONDS"
+DEBOUNCE_SECONDS = 30.0
+EDIT_STAMP = "last-edit"
+DEBOUNCE_LOCK = "debounce.lock"
 
 
 def update_command():
@@ -72,6 +95,21 @@ def update_command():
     if os.environ.get("KAIROS_INDEX_SUMMARIZE", "").strip() == "1":
         return ["kairos", "index", "update"]
     return ["kairos", "index", "update", "--link-only"]
+
+
+def debounce_seconds():
+    """The quiet time before the update after an edit, in seconds, or None
+    when KAIROS_INDEX_DEBOUNCE_SECONDS is `off`. A bad value gives 30 s."""
+    raw = os.environ.get(DEBOUNCE_ENV, "").strip()
+    if raw.lower() == "off":
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEBOUNCE_SECONDS
+    if not math.isfinite(value) or value < 0:
+        return DEBOUNCE_SECONDS
+    return value
 
 
 def project_dir():
@@ -158,18 +196,79 @@ def relative_source_path(project, path):
     return relative.replace(os.sep, "/")
 
 
+def checkout_of(path):
+    """The checkout of a file: the nearest folder above it with `.git` (a
+    folder, or a file in a worktree), as git finds its toplevel. None when
+    no folder above the file has `.git`."""
+    folder = os.path.dirname(path)
+    while True:
+        if is_checkout(folder):
+            return folder
+        parent = os.path.dirname(folder)
+        if parent == folder:
+            return None
+        folder = parent
+
+
+def is_below(folder, top):
+    return folder == top or folder.startswith(top.rstrip(os.sep) + os.sep)
+
+
 def record(payload):
-    project = project_dir()
-    if not is_wired(project):
-        return
     tool_input = payload.get("tool_input") or {}
     path = tool_input.get("file_path") or tool_input.get("notebook_path")
-    relative = relative_source_path(project, path)
+    if not path or not isinstance(path, str):
+        return
+    project = project_dir()
+    absolute = os.path.realpath(os.path.join(project, path))
+    checkout = checkout_of(absolute)
+    if checkout is None:
+        return
+    relative = relative_source_path(checkout, absolute)
     if relative is None:
         return
-    folder = state_dir(project)
+    # The wiring of the checkout, or of the session folder above it (a
+    # board folder).
+    if not is_wired(checkout) and not (is_below(checkout, project) and is_wired(project)):
+        return
+    folder = state_dir(checkout)
     os.makedirs(folder, exist_ok=True)
     append_unique(os.path.join(folder, "changed-files"), [relative])
+    # The time of the last edit, after the list: a worker that reads this
+    # time and then takes the list has each edit up to this time.
+    stamp = os.path.join(folder, EDIT_STAMP)
+    with open(stamp, "a"):
+        pass
+    os.utime(stamp, None)
+    seconds = debounce_seconds()
+    if seconds is None or shutil.which("kairos") is None:
+        return
+    if is_held(os.path.join(folder, DEBOUNCE_LOCK)):
+        return  # a worker waits; it reads the new time of the last edit
+    spawn(["debounce", checkout, repr(seconds)], checkout)
+
+
+def is_held(path):
+    """Another process holds the lock file path."""
+    with open(path, "a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return True
+        return False
+
+
+def spawn(args, cwd):
+    """Start this script with args as a detached process, and do not wait."""
+    subprocess.Popen(
+        [sys.executable, os.path.abspath(__file__), *args],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        cwd=cwd,
+        start_new_session=True,
+        close_fds=True,
+    )
 
 
 # ----------------------------------------------------------------- start
@@ -193,6 +292,7 @@ def session_text(project, log):
         "symbol can have no summary until Kairos or a person makes one "
         "(`kairos index update`). KAIROS_INDEX_SUMMARIZE=1 in the environment "
         f"makes the background update run the model. Its log: {log}.",
+        after_edit_text(),
     ]
     if not os.path.isfile(os.path.join(project, ".kairos", "index.db")):
         lines.append(
@@ -202,6 +302,20 @@ def session_text(project, log):
             "the user to run `kairos index --full`."
         )
     return "\n".join(lines)
+
+
+def after_edit_text():
+    seconds = debounce_seconds()
+    if seconds is None:
+        return (
+            "KAIROS_INDEX_DEBOUNCE_SECONDS=off: no update runs after an edit. Run "
+            "`kairos index update --link-only` in the checkout after you change code."
+        )
+    return (
+        f"After you edit a source file, the update runs again {seconds:g} s after "
+        "your last edit, in the checkout of that file. Until then, the code tools "
+        "can show the old code."
+    )
 
 
 # --------------------------------------------------- the previous result
@@ -279,21 +393,13 @@ def start(payload):
     if shutil.which("kairos") is None or not is_wired(project):
         return
     if not is_checkout(project):
-        json.dump(context(NOT_A_CHECKOUT_TEXT), sys.stdout)
+        json.dump(context(NOT_A_CHECKOUT_TEXT + "\n" + after_edit_text()), sys.stdout)
         return
     folder = state_dir(project)
     os.makedirs(folder, exist_ok=True)
     # Read the result of the previous update before the new one starts.
     failure = failure_line(folder)
-    subprocess.Popen(
-        [sys.executable, os.path.abspath(__file__), "worker", project],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        cwd=project,
-        start_new_session=True,
-        close_fds=True,
-    )
+    spawn(["worker", project], project)
     text = session_text(project, os.path.join(folder, "update.log"))
     if failure:
         text += "\n" + failure
@@ -320,7 +426,68 @@ def worker(project):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             return  # an update runs already; it or the next one reads the list
-        run_update(project, folder)
+        run_update(project, folder, "the start of a session")
+
+
+def last_edit(stamp):
+    """The time of the last recorded edit, or None."""
+    try:
+        return os.stat(stamp).st_mtime
+    except OSError:
+        return None
+
+
+def has_list(folder):
+    """The list of changed files, or a list that a stopped worker left, has
+    an entry."""
+    changed = os.path.join(folder, "changed-files")
+    return bool(read_list(changed) or read_list(changed + ".taken"))
+
+
+def debounce(project, seconds):
+    """Run the update when no edit came for `seconds` (KAIROS-T-0524). One
+    for each checkout at a time: a second one exits at once."""
+    project = os.path.realpath(project)
+    folder = state_dir(project)
+    stamp = os.path.join(folder, EDIT_STAMP)
+    while True:
+        with open(os.path.join(folder, DEBOUNCE_LOCK), "a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return  # a worker waits already
+            handled = wait_and_update(project, folder, stamp, seconds)
+        # An edit after the last check, while this worker held the lock,
+        # started no worker: run again for it.
+        edited = last_edit(stamp)
+        if handled is None or edited is None or edited <= handled:
+            return
+
+
+def wait_and_update(project, folder, stamp, seconds):
+    """Wait for the quiet time and run the update until no edit is new. The
+    time of the last edit that an update has, or None."""
+    handled = None
+    while True:
+        edited = last_edit(stamp)
+        if edited is None or (handled is not None and edited <= handled):
+            return handled
+        wait = edited + seconds - time.time()
+        if wait > 0:
+            time.sleep(wait)
+            continue
+        with open(os.path.join(folder, "lock"), "a") as lock:
+            # Wait for an update that runs (the one of the session start).
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            edited = last_edit(stamp)
+            if edited is not None and edited + seconds > time.time():
+                continue  # an edit came during the wait
+            handled = edited
+            if has_list(folder):
+                run_update(
+                    project, folder, f"edits, {seconds:g} s after the last one"
+                )
+            # Else an update took the list after the edits: it has them.
 
 
 def run_logged(command, project, out, log):
@@ -348,7 +515,7 @@ def run_logged(command, project, out, log):
 EXIT_USAGE = 64
 
 
-def run_update(project, folder):
+def run_update(project, folder, reason):
     changed = os.path.join(folder, "changed-files")
     taken = changed + ".taken"
     # Take the list first. A list left by a stopped worker is taken again.
@@ -366,6 +533,7 @@ def run_update(project, folder):
         now = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
         command = update_command()
         out.write(f"\n=== {now} kairos index update in {project}\n")
+        out.write(f"Started by: {reason}\n")
         out.write(f"Command: {' '.join(command)}\n")
         if entries:
             count = f"{len(entries)} file" + ("" if len(entries) == 1 else "s")
@@ -443,6 +611,9 @@ def main():
     try:
         if mode == "worker" and len(sys.argv) > 2:
             worker(sys.argv[2])
+            return
+        if mode == "debounce" and len(sys.argv) > 3:
+            debounce(sys.argv[2], float(sys.argv[3]))
             return
         raw = sys.stdin.read()
         payload = json.loads(raw) if raw.strip() else {}

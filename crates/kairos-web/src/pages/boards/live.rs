@@ -136,6 +136,21 @@ pub fn subscribe_all_events(
     })
 }
 
+/// Subscribe to the WHOLE tenant stream with each event, kind included:
+/// the item page (KAIROS-T-0578) reads by the kind what changed.
+/// `board_configured` does not reach `on_event`, as for
+/// [`subscribe_all_events`].
+pub fn subscribe_item_events(
+    auth: Auth,
+    on_event: impl Fn(Option<&ThinEvent>) + 'static,
+) -> LiveBoardGuard {
+    subscribe(auth, None, move |event| {
+        if !is_board_configuration(event) {
+            on_event(event);
+        }
+    })
+}
+
 /// Whether the event is a change of the configuration of a board. Pure,
 /// host-tested.
 pub(crate) fn is_board_configuration(event: Option<&ThinEvent>) -> bool {

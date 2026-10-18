@@ -3,8 +3,8 @@ title: "MCP tools"
 ---
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-seventy-two tools. A drift gate in the test suite
-asserts that `tools/list` returns these seventy-two and no others. The same
+seventy-three tools. A drift gate in the test suite
+asserts that `tools/list` returns these seventy-three and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -22,7 +22,7 @@ organization.
 
 | URL | Profile | Tools |
 |---|---|---|
-| `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory, claims, notifications, the scales and templates, team pages to read: 41 tools. |
+| `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory, claims, notifications, the scales and templates, team pages to read: 42 tools. |
 | `/mcp?profile=admin` | admin | Teams, boards, columns and transitions, grants, metadata definitions and templates, dispatch rules and agent triage, the writes of team pages, org read tokens, delete and rebuild of repositories, board flow, purge: the other 31 tools. |
 | `/mcp?profile=all` | all | Each tool. |
 
@@ -33,8 +33,8 @@ The work tools:
 
 - items: `whoami`, `my_boards`, `my_work`, `board_items`, `search`, `get_item`,
   `get_history`, `related_work`, `create_item`, `edit_item`, `update_item`,
-  `transition_item`, `move_item`, `append_note`, `promote_note`, `set_state`,
-  `set_metadata`;
+  `transition_item`, `move_item`, `append_note`, `promote_note`,
+  `set_lifecycle`, `set_state`, `set_metadata`;
 - links and fields: `link_items`, `unlink_items`, `propose_edge`,
   `set_repository`, `set_work_class`, `set_team`, `clear_team`;
 - the end of an item: `cancel_item`, `reopen_item`, `delete_item`,
@@ -160,7 +160,8 @@ here, not from a refused `transition_item`.
 Each delivery board and each initiative board has a `policy:` line with its
 [board policies](#set_board_policy), for example
 `policy: parent_gate on (a task moves to a claims column only while its
-initiative is active)`.
+initiative is active); blockers_gate off (on: a task with an open blocker cannot
+move to a claims or done column; off: the move gets a warning)`.
 
 Each ADR board names its team
 (`ADR board of the team <slug>`), or the organization. A team ADR board holds
@@ -1153,6 +1154,40 @@ names the item. `VALIDATION` for a kind that is not `adr` or `document`.
 `FORBIDDEN` by the edit rule, or without the capability on the board. The
 events are `item_updated` and `note_promoted` for the item of the note.
 
+### `set_lifecycle`
+
+Sets the lifecycle of a document: `draft`, `review`, `published` or
+`archived` (KAIROS-A-0018). You can move a document from each value to
+each other value. A document is not on a board, so `transition_item` does
+not move it. `promote_note` makes a draft;
+this tool publishes it.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `short_code` | string | yes | — | The short code of the document. |
+| `lifecycle` | string | yes | — | `draft`, `review`, `published` or `archived`. |
+
+The result is one line:
+
+```text
+Set the lifecycle of ACME-D-0007 to published (was review).
+```
+
+A value that the document already has changes nothing:
+
+```text
+ACME-D-0007 is already published: nothing changed.
+```
+
+The edit rule applies: you created the document, or you hold
+`manage_documents` on its owner board. The rule is that of
+`PATCH /api/documents/{short_code}/lifecycle`.
+
+Refuses: `NOT_FOUND` for an unknown short code or an archived document.
+`VALIDATION` for an item that is not a document. `VALIDATION` for an
+unknown value; the refusal names the value and lists the four values.
+`FORBIDDEN` by the edit rule.
+
 ### `set_metadata`
 
 Sets, updates or clears metadata values on an item, and returns the item's
@@ -1339,7 +1374,8 @@ columns; `FORBIDDEN` without `transition_items`; `INVALID_TRANSITION` for a
 target outside the board's transition graph, enumerating the allowed targets;
 `AGENT_TRIAGE_OFF` for an agent's move of intake (a support-lane task in the
 entry column) while the board lets a person decide the triage. A task a
-person triaged out of the entry column moves as any other.
+person triaged out of the entry column moves as any other. The
+`ITEM_NOT_ON_BOARD` refusal for a document names `set_lifecycle`.
 
 Kairos also refuses `PARENT_NOT_ACTIVE` for a task that goes into a claims
 column under an inactive initiative. The board policy `parent_gate` sets this
@@ -1347,6 +1383,17 @@ rule. See [`set_board_policy`](#set_board_policy).
 
 Kairos refuses `OWNER_REQUIRED` for an initiative that goes into Active with
 no owner. The board policy `owner_gate` sets this rule.
+
+A task can have open blockers: the items that block it and are not done.
+Kairos counts a cancelled blocker as open. Such a task can move into a claims
+column or a done column. The answer then ends with a warning line:
+
+```text
+Warning: ACME-T-0012 is blocked by ACME-T-0009 (open). Your move into Active is recorded.
+```
+
+With the board policy `blockers_gate` on, Kairos refuses the move with
+`BLOCKED` instead. The details name each blocker.
 
 ### `move_item`
 
@@ -1367,8 +1414,9 @@ move is not an edit. The creator of the task gets no right to move it.
 
 The task keeps its repository. The move does not look at the repository.
 
-The entry column of the target board can hold claims. Then the policy
-`parent_gate` of the target board applies, as for `transition_item`.
+The entry column of the target board can hold claims. Then the policies
+`parent_gate` and `blockers_gate` of the target board apply, as for
+`transition_item`. The warning of open blockers applies too.
 
 A task in a done column does not move: the refusal is `TASK_DONE`. A move
 would put a completed or cancelled task live on the other board. Reopen the
@@ -1609,8 +1657,8 @@ board that is not done.
 The column is the first live column without the done flag, by position. On a
 default delivery board, that column is Backlog. The transition rules of the
 board do not apply: a default board has no transition out of Completed. The
-policy `parent_gate` applies when the column holds claims, as for
-`transition_item`.
+policies `parent_gate` and `blockers_gate` apply when the column holds claims,
+as for `transition_item`. The warning of open blockers applies too.
 
 The rest is the same as a transition. The activity log gets a row
 `transition`. The event is `item_transitioned`. The reopen removes the cancel
@@ -1636,6 +1684,8 @@ Refuses:
 - `NO_OPEN_COLUMN` for a board with only done columns.
 - `PARENT_NOT_ACTIVE` when the column holds claims, the policy `parent_gate`
   is on, and the initiative of the task is not active.
+- `BLOCKED` when the column holds claims, the policy `blockers_gate` is on,
+  and the task has open blockers.
 
 ## Relationships
 
@@ -2560,14 +2610,15 @@ Requires `configure_boards` on the board. REST:
 
 ### `set_board_policy`
 
-Sets the policies of a board (KAIROS-T-0641, KAIROS-T-0643). Each policy is
-on or off per board.
+Sets the policies of a board (KAIROS-T-0641, KAIROS-T-0643, KAIROS-T-0565).
+Each policy is on or off per board.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `board` | string | yes | — | Slug or UUID. |
 | `parent_gate` | boolean | no | — | A delivery board only. `true`: a task moves into a claims column only while its parent initiative is active. `false`: no check. |
 | `owner_gate` | boolean | no | — | An initiative board only. `true`: an initiative moves into Active only with an owner, and the owner of an initiative in Active or Monitoring cannot release it. `false`: no check. |
+| `blockers_gate` | boolean | no | — | A delivery board only. `true`: a task with open blockers does not move into a claims column or a done column. `false`: the move gets a warning. |
 
 `parent_gate` is on by default. With it on, a task moves into a claims column
 only while its parent initiative is in Active or Monitoring. A bucket
@@ -2584,6 +2635,14 @@ In Active and in Monitoring, Kairos refuses a release of the owner, also for
 an organization admin. A hand-off to a member
 of the board changes the owner. The refusal is `OWNER_REQUIRED`. An
 initiative in Active with no owner stays there.
+
+`blockers_gate` is off by default. An open blocker is an item that blocks the
+task and is not done. Kairos counts a cancelled blocker as open.
+
+With the policy off, a move into a claims column or a done column succeeds
+with a warning. With it on, Kairos refuses the move with `BLOCKED`. The check
+runs on a transition, a reopen and a move to the board. A cancel is no move of
+this kind. A task in Active with open blockers stays there.
 
 Send at least one policy. A policy of a different level of board is
 `VALIDATION`. `my_boards` shows the policies of each board.

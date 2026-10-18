@@ -18,7 +18,7 @@
 //! - create-from-template ([`create_doc`]) and the archive (a soft
 //!   delete) with cascade warning ([`delete`], A-0001);
 //! - for a task: Cancel with a reason, and Delete for good ([`end`],
-//!   KAIROS-T-0362);
+//!   KAIROS-T-0362); Reopen for a done task ([`end`], KAIROS-T-0648);
 //! - for a task: the claim, with Hand off and Release ([`claim`],
 //!   KAIROS-T-0369);
 //! - who may edit ([`access`], KAIROS-T-0581): the editor and the metadata
@@ -26,7 +26,11 @@
 //!   Archive shows only to a person who may archive;
 //! - the page stays mounted on a save and a panel action (KAIROS-T-0618):
 //!   the new item goes into a signal, and no panel reads again. The lists
-//!   of repositories and boards load when their control opens ([`picker`]).
+//!   of repositories and boards load when their control opens ([`picker`]);
+//! - the page is live (KAIROS-T-0578, [`live`]): one socket; an event of
+//!   the item reads it, and a change shows the banner "Changed on the
+//!   server" with Reload. The page does not mount again, and the editor
+//!   keeps the draft.
 
 mod access;
 pub(crate) mod api;
@@ -37,6 +41,7 @@ mod editor;
 mod end;
 mod external;
 mod item_owner;
+mod live;
 pub(crate) use kairos_markdown as markdown;
 mod metadata;
 mod owner;
@@ -65,7 +70,7 @@ use claim::ClaimPanel;
 use create_doc::CreateDocumentDialog;
 use delete::DeleteDialog;
 use editor::ContentEditor;
-use end::{CancelDialog, CancelledBanner, PurgeDialog};
+use end::{CancelDialog, CancelledBanner, PurgeDialog, ReopenDialog};
 use external::ExternalRefsPanel;
 use item_owner::OwnerPanel;
 use metadata::MetadataPanel;
@@ -246,6 +251,7 @@ fn ItemLoaded(item: ItemDetail, family: Family) -> impl IntoView {
     let delete_open = RwSignal::new(false);
     let cancel_open = RwSignal::new(false);
     let purge_open = RwSignal::new(false);
+    let reopen_open = RwSignal::new(false);
 
     // The facts that do not change while the page shows this code.
     let code = StoredValue::new(item.short_code.clone());
@@ -355,6 +361,111 @@ fn ItemLoaded(item: ItemDetail, family: Family) -> impl IntoView {
         })
     });
 
+    // KAIROS-T-0578: the live page. One socket; an event of this item reads
+    // what it changed, and the page compares the read with what it shows.
+    // `pending`: the last copy that a live read gave. `metadata_seen`: the
+    // values that the metadata panel shows; `metadata_read`: the last
+    // values that a live read gave.
+    let pending = RwSignal::new(None::<ItemDetail>);
+    let metadata_seen = RwSignal::new(None::<Vec<api::MetadataValue>>);
+    let metadata_read = RwSignal::new(None::<Vec<api::MetadataValue>>);
+    let metadata_reload = RwSignal::new(0u32);
+    let links_reload = RwSignal::new(0u32);
+    let run_reads = move |reads: live::Reads| {
+        if reads.links {
+            links_reload.try_update(|n| *n += 1);
+        }
+        if !(reads.item || reads.metadata) {
+            return;
+        }
+        let Some(code) = code.try_get_value() else {
+            return;
+        };
+        leptos::task::spawn_local(async move {
+            // A live read is best-effort: a failed read shows nothing, and
+            // the next event or reconnect reads again.
+            if reads.item
+                && let Ok(next) = api::fetch_item(auth, family, code.clone()).await
+            {
+                let _ = pending.try_set(Some(next));
+            }
+            if reads.metadata
+                && let Ok(values) = api::fetch_metadata(auth, family, code).await
+            {
+                let _ = metadata_read.try_set(Some(values));
+            }
+        });
+    };
+    // The reads of the events in one window: the coarse and the precise
+    // kind of one write give one read.
+    let window = StoredValue::new(live::Reads::default());
+    let live_guard: StoredValue<Option<boards::live::LiveBoardGuard>, LocalStorage> =
+        StoredValue::new_local(None);
+    let guard = boards::live::subscribe_item_events(auth, move |event| {
+        let Some(reads) = code.try_with_value(|code| live::reads_for(event, code)) else {
+            return;
+        };
+        if !reads.any() {
+            return;
+        }
+        let first = window.try_update_value(|open| {
+            let first = !open.any();
+            open.add(reads);
+            first
+        });
+        if first == Some(true) {
+            set_timeout(
+                move || {
+                    if let Some(reads) = window.try_update_value(std::mem::take) {
+                        run_reads(reads);
+                    }
+                },
+                std::time::Duration::from_millis(live::LIVE_WINDOW_MS),
+            );
+        }
+    });
+    live_guard.set_value(Some(guard));
+    on_cleanup(move || live_guard.set_value(None));
+    // The banner: `Some(parts)` while the server has a change that the page
+    // does not show.
+    let live_change = Memo::new(move |_| {
+        let mut parts = pending.with(|read| {
+            read.as_ref().and_then(|read| {
+                current.with(|shown| {
+                    live::is_newer_copy(shown, read).then(|| live::changed_parts(shown, read))
+                })
+            })
+        });
+        let metadata = metadata_seen.with(|seen| {
+            metadata_read.with(|read| live::values_differ(seen.as_deref(), read.as_deref()))
+        });
+        if metadata {
+            parts.get_or_insert_with(Vec::new).push("the metadata");
+        }
+        parts
+    });
+    let navigate = leptos_router::hooks::use_navigate();
+    // Reload: the page takes the copy that it read. It does not mount
+    // again; the editor keeps a dirty draft. A new code is a new page.
+    let reload_live = Callback::new(move |()| {
+        if let Some(next) = pending.get_untracked() {
+            if next.short_code != code.get_value() {
+                navigate(&format!("/items/{}", next.short_code), Default::default());
+                return;
+            }
+            show(next);
+        }
+        pending.set(None);
+        let metadata = metadata_seen.with_untracked(|seen| {
+            metadata_read
+                .with_untracked(|read| live::values_differ(seen.as_deref(), read.as_deref()))
+        });
+        metadata_read.set(None);
+        if metadata {
+            metadata_reload.update(|n| *n += 1);
+        }
+    });
+
     // ONE board read for the page (KAIROS-T-0164): the placement panel
     // renders it and the Restore affordance's capability mirror needs the
     // board's slug/team — a second fetch would be the same request. It
@@ -462,6 +573,14 @@ fn ItemLoaded(item: ItemDetail, family: Family) -> impl IntoView {
                         "Cancel task"
                     </Button>
                 })}
+                // KAIROS-T-0648: a done task (completed or cancelled) can
+                // be reopened.
+                {move || (task_powers.get().reopen && !archived.get()).then(|| view! {
+                    <Button variant="default" size="xs"
+                        on_click=Callback::new(move |_| reopen_open.set(true))>
+                        "Reopen"
+                    </Button>
+                })}
                 {move || can_archive.get().then(|| view! {
                     <Button variant="default" size="xs" disabled=archived
                         on_click=Callback::new(move |_| delete_open.set(true))>
@@ -476,6 +595,25 @@ fn ItemLoaded(item: ItemDetail, family: Family) -> impl IntoView {
                 })}
             </Group>
         </Group>
+        // KAIROS-T-0578: a change on the server that the page does not
+        // show yet. Reload does not mount the page again.
+        {move || live_change.get().map(|parts| view! {
+            <div data-testid="item-changed-banner">
+                <Alert title="Changed on the server" color=token::GOLD>
+                    <Group justify="between">
+                        <Stack gap="xs">
+                            <Text size="sm">{live::banner_text(&parts)}</Text>
+                            <Text size="sm" dimmed=true>
+                                "Reload to show the change. The editor keeps your draft."
+                            </Text>
+                        </Stack>
+                        <Button variant="default" size="xs" on_click=reload_live>
+                            "Reload"
+                        </Button>
+                    </Group>
+                </Alert>
+            </div>
+        })}
         <ChildrenProgressBar family code=code.get_value()/>
         <div class="kairos-item__grid">
             <Stack gap="sm">
@@ -535,11 +673,11 @@ fn ItemLoaded(item: ItemDetail, family: Family) -> impl IntoView {
                         on_moved/>
                 })}
                 <MetadataPanel family code=code.get_value() read_only=edit_read_only
-                    read_only_reason=edit_reason/>
+                    read_only_reason=edit_reason reload=metadata_reload seen=metadata_seen/>
                 // KAIROS-T-0508: the URIs that the item names, with a label.
                 <ExternalRefsPanel family code=code.get_value() board
                     created_by=created_by.clone() archived/>
-                <DevelopmentPanel family code=code.get_value()/>
+                <DevelopmentPanel family code=code.get_value() reload=links_reload/>
                 <EdgeProposalsPanel code=code.get_value()/>
                 // KAIROS-T-0195: below the agent-made suggestions, because this
                 // is the same idea from the other direction — one you were
@@ -558,6 +696,8 @@ fn ItemLoaded(item: ItemDetail, family: Family) -> impl IntoView {
                     <CancelDialog code=code.get_value() title=title.clone() open=cancel_open
                         on_cancelled=on_moved/>
                     <PurgeDialog code=code.get_value() title=title.clone() open=purge_open/>
+                    <ReopenDialog code=code.get_value() title=title.clone() open=reopen_open
+                        on_reopened=on_moved/>
                 })}
             }
         }}
@@ -665,6 +805,21 @@ struct TaskEndPowers {
     cancel: bool,
     /// Delete for good: `manage_tasks` on the board.
     purge: bool,
+    /// Reopen (KAIROS-T-0648): `transition_items` on the board, and the
+    /// task is in a done column. A cancelled task is in a done column too.
+    reopen: bool,
+}
+
+impl TaskEndPowers {
+    /// The powers from the capabilities and the column of the task. Pure,
+    /// host-tested.
+    fn from_rule(transition: bool, manage_tasks: bool, done: bool) -> Self {
+        Self {
+            cancel: transition && !done,
+            purge: manage_tasks,
+            reopen: transition && done,
+        }
+    }
 }
 
 /// The [`TaskEndPowers`] of the page: `false` for each until whoami and
@@ -696,15 +851,13 @@ fn task_end_powers(
                 .any(|c| Some(&c.id) == column.as_ref() && c.is_done)
         });
         let powers = boards::board_powers(&me, &board.slug, board.team_id.as_deref(), None);
-        TaskEndPowers {
-            cancel: powers.transition && !done,
-            purge: boards::holds_capability(
-                &me,
-                Some(&board.slug),
-                board.team_id.as_deref(),
-                "manage_tasks",
-            ),
-        }
+        let manage_tasks = boards::holds_capability(
+            &me,
+            Some(&board.slug),
+            board.team_id.as_deref(),
+            "manage_tasks",
+        );
+        TaskEndPowers::from_rule(powers.transition, manage_tasks, done)
     })
 }
 
@@ -2120,30 +2273,23 @@ fn link_state_color(state: &str) -> &'static str {
 /// Renders NOTHING when there are no links — an always-present empty
 /// panel is exactly what the T-0089 explorer rework removed.
 #[component]
-fn DevelopmentPanel(family: Family, #[prop(into)] code: String) -> impl IntoView {
+fn DevelopmentPanel(
+    family: Family,
+    #[prop(into)] code: String,
+    /// Webhook ingestion is the whole point of this panel, and it happens
+    /// without the user doing anything. The one socket of the page
+    /// (KAIROS-T-0578) bumps this on `item_links_changed` of the item and
+    /// on a reconnect; the panel reads the links again.
+    #[prop(into)]
+    reload: Signal<u32>,
+) -> impl IntoView {
     let auth = use_auth();
     let code = StoredValue::new(code);
-    let reload = RwSignal::new(0u32);
     let links = LocalResource::new(move || {
         auth.track_session();
         let _ = reload.get();
         api::fetch_links(auth, family, code.get_value())
     });
-
-    // Webhook ingestion is the whole point of this panel, and it happens
-    // without the user doing anything — so subscribe to the tenant stream
-    // and refetch when an event names THIS item (the T-0074 pattern; the
-    // item page has no other live subscription).
-    let live_guard: StoredValue<Option<crate::pages::boards::live::LiveBoardGuard>, LocalStorage> =
-        StoredValue::new_local(None);
-    let guard = crate::pages::boards::live::subscribe_all_events(auth, move |event_code| {
-        let concerns_me = event_code.is_none_or(|event_code| event_code == code.get_value());
-        if concerns_me {
-            reload.update(|n| *n += 1);
-        }
-    });
-    live_guard.set_value(Some(guard));
-    on_cleanup(move || live_guard.set_value(None));
 
     view! {
         {move || match links.get() {
@@ -2340,6 +2486,27 @@ mod tests {
         // A claim or a hand-off does not change the version.
         assert!(takes_copy(4, 4));
         assert!(!takes_copy(5, 4));
+    }
+
+    /// KAIROS-T-0648: Reopen shows for a done task to a person with
+    /// `transition_items`; Cancel shows for a task that is not done. A
+    /// cancelled task is in a done column, so it gets Reopen.
+    #[test]
+    fn reopen_shows_for_a_done_task_with_the_move_capability() {
+        let done = TaskEndPowers::from_rule(true, false, true);
+        assert!(done.reopen);
+        assert!(!done.cancel);
+        let open = TaskEndPowers::from_rule(true, false, false);
+        assert!(!open.reopen);
+        assert!(open.cancel);
+        let no_move = TaskEndPowers::from_rule(false, true, true);
+        assert!(!no_move.reopen);
+        assert!(!no_move.cancel);
+        assert!(no_move.purge);
+        assert_eq!(
+            TaskEndPowers::default(),
+            TaskEndPowers::from_rule(false, false, false)
+        );
     }
 
     /// The banner says WHEN, in something a person reads (KAIROS-T-0164):
