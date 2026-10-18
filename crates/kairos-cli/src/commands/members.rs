@@ -29,7 +29,9 @@ pub enum MembersCommand {
     /// Change a member's role (demoting the last admin is rejected with
     /// LAST_ADMIN)
     SetRole {
-        /// User id (UUID; see `kairos members list`)
+        /// The member: a user id (UUID), an email or a user name (see
+        /// `kairos members list`)
+        #[arg(value_name = "USER")]
         user_id: String,
         /// admin|member
         #[arg(long)]
@@ -40,7 +42,8 @@ pub enum MembersCommand {
     /// Remove a member (requires --confirm; removing the last admin is
     /// rejected with LAST_ADMIN)
     Remove {
-        /// User id (UUID)
+        /// The member: a user id (UUID), an email or a user name
+        #[arg(value_name = "USER")]
         user_id: String,
         /// Actually remove the membership
         #[arg(long)]
@@ -128,10 +131,7 @@ impl MembersCommand {
                 if common.json {
                     return print_json(&response);
                 }
-                println!(
-                    "Kairos removed the user {} from the organization.",
-                    response.user_id
-                );
+                println!("Kairos removed the user {user_id} from the organization.");
                 Ok(())
             }
         }

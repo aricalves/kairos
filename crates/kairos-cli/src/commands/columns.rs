@@ -4,11 +4,11 @@
 
 use kairos_client::KairosClient;
 use kairos_client::types_org::{
-    BoardColumn, BoardDetail, CreateColumnRequest, CreateTransitionRequest, UpdateColumnRequest,
+    BoardDetail, CreateColumnRequest, CreateTransitionRequest, UpdateColumnRequest,
 };
 
 use crate::commands::entities::require_confirm;
-use crate::context::{Common, client, print_json};
+use crate::context::{Common, client, find_column, print_json};
 use crate::error::CliError;
 use crate::listing::print_whole;
 use crate::table::Table;
@@ -125,29 +125,6 @@ pub enum TransitionsCommand {
         #[command(flatten)]
         common: Common,
     },
-}
-
-/// The column of `detail` with the name (no case) or the id `column`.
-pub(crate) fn find_column<'a>(
-    detail: &'a BoardDetail,
-    column: &str,
-) -> Result<&'a BoardColumn, CliError> {
-    detail
-        .columns
-        .iter()
-        .find(|c| c.id == column || c.name.eq_ignore_ascii_case(column))
-        .ok_or_else(|| {
-            CliError::Failure(format!(
-                "The board {} has no column {column:?}. The columns are: {}.",
-                detail.board.slug,
-                detail
-                    .columns
-                    .iter()
-                    .map(|c| c.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ))
-        })
 }
 
 fn column_name(detail: &BoardDetail, id: &str) -> String {
