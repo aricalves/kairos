@@ -154,9 +154,21 @@ upgrade.
 The server runs a retention pass at startup and then each 24 hours
 ([Configuration → Retention](../../reference/configuration/#retention)). With
 the defaults (`KAIROS_RETENTION_MODE=archive` and no `KAIROS_ARCHIVE_TARGET`),
-the pass removes no history and no activity. It logs a warning, because the
-server does not remove a row that it has not copied to an archive. It deletes
-only the expired password sessions.
+the pass removes no history and no activity. The server does not remove a row
+that it has not copied to an archive. So the pass skips the sweep of each
+tenant and reads no row of `item_history` or `activity_log`. It deletes only
+the expired password sessions and the other short-lived rows.
+
+The server shows this setting in five places:
+
+- `/readyz` gives `ready` and a second line that starts with `warning:`. The
+  status stays 200.
+- The Admin overview of the GUI shows the alert "Retention removes nothing".
+- The job of the pass records `skipped: no target`. `GET /api/org/retention`
+  shows the record of the last pass to an organization admin.
+- The `retention_sweep` row of each tenant starts with
+  `mode:archive skipped: no target`.
+- The server logs a warning at startup and at each pass.
 
 To make the database smaller, set one of these:
 
@@ -165,6 +177,13 @@ To make the database smaller, set one of these:
   that directory too: the rows are not in the dumps after the pass.
 - `KAIROS_RETENTION_MODE=discard`. The pass removes the old rows and keeps no
   copy.
+
+After you set one of these, `/readyz` gives only `ready`.
+
+The pass reads `item_history` one page of items at a time. It reads only the
+version and the time of each row. It reads the content only of the rows that
+it copies to the archive. It removes the rows in batches. So a large history
+does not fill the memory of the server.
 
 The pass does not remove items. Archiving work does not make the database
 smaller either, because it is a soft delete

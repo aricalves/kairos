@@ -1475,6 +1475,17 @@ impl KairosClient {
             .await
     }
 
+    /// `GET /api/me/notifications?read_before=` (KAIROS-T-0584): the next
+    /// page of the read notifications of the caller, read before
+    /// `read_before`.
+    pub async fn notifications_read_before(
+        &self,
+        read_before: &str,
+    ) -> Result<crate::types_notifications::NotificationList, Error> {
+        self.get(&format!("/api/me/notifications?read_before={read_before}"))
+            .await
+    }
+
     /// `GET /api/me/work` (KAIROS-T-0489): the work of the caller, in two
     /// lanes (initiatives and tasks).
     pub async fn my_work(&self) -> Result<crate::types_work::MyWork, Error> {
@@ -2133,6 +2144,20 @@ impl KairosClient {
         self.get(&format!(
             "/api/repositories/{reference}/code-indexes/builds{query}"
         ))
+        .await
+    }
+
+    /// `GET /api/repositories/{slug}/code-indexes/builds` with `limit` and
+    /// `offset` (KAIROS-T-0584): one page of the runs, newest first.
+    pub async fn code_index_builds_page(
+        &self,
+        reference: &str,
+        query: &crate::types_code_index::CodeIndexBuildListQuery,
+    ) -> Result<crate::types_code_index::CodeIndexBuildList, Error> {
+        self.get_query(
+            &format!("/api/repositories/{reference}/code-indexes/builds"),
+            query,
+        )
         .await
     }
 

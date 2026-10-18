@@ -13,6 +13,12 @@
 //! notification that came after the list stays unread (KAIROS-T-0550).
 //! A notification marked read here is read for the person only: each agent
 //! key of the person keeps its own read state.
+//!
+//! The page `/notifications` has "Show older" (KAIROS-T-0584). The first
+//! read gives up to 100 unread notifications and the 20 newest read ones.
+//! "Show older" adds the next page: the older unread ones (`before`), and
+//! after them the older read ones (`read_before`). A mark or an event of
+//! the person reads the first page again.
 
 use aurora_dark::components::{
     Anchor, Button, Divider, Empty, ErrorState, Group, Loading, PageHeader, Panel, Pill, Stack,
@@ -74,6 +80,97 @@ const SETTINGS: &str = "/api/me/notification-settings";
 
 async fn list(auth: Auth) -> Result<NotificationList, ApiError> {
     crate::api::get_json(auth, LIST).await
+}
+
+/// The most unread notifications in a page (mirror of
+/// `kairos_server::api::notifications::LIST_UNREAD`).
+const UNREAD_PAGE: usize = 100;
+/// The read notifications in the first page (mirror of `LIST_READ`).
+const READ_FIRST: usize = 20;
+/// The most read notifications in a page of `read_before` (mirror of
+/// `LIST_READ_PAGE`).
+const READ_PAGE: usize = 100;
+
+/// The cursor of the next page (KAIROS-T-0584).
+#[derive(Clone, Debug, PartialEq)]
+enum Cursor {
+    /// The unread notifications older than this id.
+    Before(String),
+    /// The read notifications read before this id.
+    ReadBefore(String),
+}
+
+impl Cursor {
+    /// The URL of the page. Pure, host-tested.
+    fn url(&self) -> String {
+        match self {
+            Cursor::Before(id) => format!("{LIST}?before={}", crate::api::encode_component(id)),
+            Cursor::ReadBefore(id) => {
+                format!("{LIST}?read_before={}", crate::api::encode_component(id))
+            }
+        }
+    }
+}
+
+/// The notifications that the page shows: each page that the person read,
+/// the unread ones first (KAIROS-T-0584).
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Pages {
+    unread: Vec<Notification>,
+    read: Vec<Notification>,
+    /// The last page of unread ones was full: an older one can be there.
+    unread_full: bool,
+    /// The last page of read ones was full.
+    read_full: bool,
+}
+
+impl Pages {
+    /// The pages after the first read. Pure, host-tested.
+    fn first(list: &NotificationList) -> Self {
+        let (unread, read): (Vec<_>, Vec<_>) = list
+            .items
+            .iter()
+            .cloned()
+            .partition(|n| n.read_at.is_none());
+        Pages {
+            unread_full: unread.len() >= UNREAD_PAGE,
+            read_full: read.len() >= READ_FIRST,
+            unread,
+            read,
+        }
+    }
+
+    /// The cursor of the next page: the older unread ones first, then the
+    /// older read ones. `None`: the page shows each notification. Pure,
+    /// host-tested.
+    fn next(&self) -> Option<Cursor> {
+        if self.unread_full {
+            return self.unread.last().map(|n| Cursor::Before(n.id.clone()));
+        }
+        if self.read_full {
+            return self.read.last().map(|n| Cursor::ReadBefore(n.id.clone()));
+        }
+        None
+    }
+
+    /// Add the page of `cursor`. Pure, host-tested.
+    fn add(&mut self, cursor: &Cursor, page: NotificationList) {
+        match cursor {
+            Cursor::Before(_) => {
+                self.unread_full = page.items.len() >= UNREAD_PAGE;
+                self.unread.extend(page.items);
+            }
+            Cursor::ReadBefore(_) => {
+                self.read_full = page.items.len() >= READ_PAGE;
+                self.read.extend(page.items);
+            }
+        }
+    }
+
+    /// Each notification of the pages: the unread ones, then the read ones.
+    fn items(&self) -> Vec<Notification> {
+        self.unread.iter().chain(&self.read).cloned().collect()
+    }
 }
 
 /// What a mark sends: one id, or all up to the newest unread id of the
@@ -343,6 +440,36 @@ pub fn NotificationsPage() -> impl IntoView {
         StoredValue::new_local(Some(guard));
     on_cleanup(move || live_guard.set_value(None));
 
+    // KAIROS-T-0584: the pages that the person read. A new first page
+    // starts them again.
+    let pages = RwSignal::new(Pages::default());
+    let older_busy = RwSignal::new(false);
+    let older_error: RwSignal<Option<ApiError>> = RwSignal::new(None);
+    Effect::new(move |_| {
+        if let Some(Ok(list)) = notifications.get() {
+            pages.set(Pages::first(&list));
+            older_error.set(None);
+        }
+    });
+    let on_older = move |_| {
+        if older_busy.get_untracked() {
+            return;
+        }
+        let Some(cursor) = pages.with_untracked(Pages::next) else {
+            return;
+        };
+        older_busy.set(true);
+        leptos::task::spawn_local(async move {
+            let page: Result<NotificationList, ApiError> =
+                crate::api::get_json(auth, &cursor.url()).await;
+            older_busy.set(false);
+            match page {
+                Ok(page) => pages.update(|pages| pages.add(&cursor, page)),
+                Err(error) => older_error.set(Some(error)),
+            }
+        });
+    };
+
     // The switches of the settings, filled when the settings arrive.
     let hand_off = RwSignal::new(true);
     let blocker_cleared = RwSignal::new(true);
@@ -446,10 +573,30 @@ pub fn NotificationsPage() -> impl IntoView {
                         Some(Err(error)) => view! {
                             <ErrorState error on_retry=Callback::new(move |_| reload.update(|n| *n += 1))/>
                         }.into_any(),
-                        Some(Ok(list)) => view! {
-                            <NotificationRows items=list.items busy on_marked/>
-                        }.into_any(),
+                        Some(Ok(list)) => {
+                            // Before the effect fills the pages, the first
+                            // read is the list.
+                            let items = pages.with(|p| {
+                                if *p == Pages::default() {
+                                    Pages::first(&list).items()
+                                } else {
+                                    p.items()
+                                }
+                            });
+                            view! { <NotificationRows items busy on_marked/> }.into_any()
+                        }
                     }}
+                    {move || older_error.get().map(|error| view! { <ErrorState error/> })}
+                    {move || pages.with(|p| p.next().is_some()).then(|| view! {
+                        <Group justify="center">
+                            <Button variant="default" size="xs"
+                                disabled=Signal::derive(move || older_busy.get())
+                                on_click=Callback::new(on_older)
+                                attr:data-testid="notifications-older">
+                                "Show older"
+                            </Button>
+                        </Group>
+                    })}
                 </Stack>
             </Panel>
             <Panel title="Settings"
@@ -494,9 +641,61 @@ pub fn NotificationsPage() -> impl IntoView {
 #[cfg(test)]
 mod tests {
     use super::{
-        MarkWhat, Notification, NotificationList, count_text, kind_label, mark_body, newest_unread,
-        when,
+        Cursor, MarkWhat, Notification, NotificationList, Pages, READ_FIRST, READ_PAGE,
+        UNREAD_PAGE, count_text, kind_label, mark_body, newest_unread, when,
     };
+
+    fn note(id: String, read: bool) -> Notification {
+        Notification {
+            id,
+            kind: "mention".into(),
+            short_code: None,
+            text: "t".into(),
+            created_at: "2026-10-17T09:00:00Z".into(),
+            read_at: read.then(|| "2026-10-17T10:00:00Z".into()),
+        }
+    }
+
+    fn page(prefix: &str, count: usize, read: bool) -> NotificationList {
+        NotificationList {
+            unread: 0,
+            items: (0..count)
+                .map(|n| note(format!("{prefix}{n}"), read))
+                .collect(),
+        }
+    }
+
+    /// KAIROS-T-0584: "Show older" reads the older unread pages first, then
+    /// the older read pages, and stops at the last page.
+    #[test]
+    fn show_older_goes_through_the_unread_then_the_read_pages() {
+        let mut first = page("u", UNREAD_PAGE, false);
+        first.items.extend(page("r", READ_FIRST, true).items);
+        let mut pages = Pages::first(&first);
+        let next = pages.next().expect("a full unread page: more");
+        assert_eq!(next, Cursor::Before("u99".into()));
+        assert_eq!(next.url(), "/api/me/notifications?before=u99");
+        pages.add(&next, page("v", 3, false));
+        let next = pages.next().expect("the read ones are next");
+        assert_eq!(next, Cursor::ReadBefore("r19".into()));
+        assert_eq!(next.url(), "/api/me/notifications?read_before=r19");
+        pages.add(&next, page("s", READ_PAGE, true));
+        let next = pages.next().expect("a full read page: more");
+        assert_eq!(next, Cursor::ReadBefore(format!("s{}", READ_PAGE - 1)));
+        pages.add(&next, page("t", 4, true));
+        assert_eq!(pages.next(), None, "the last page");
+        let items = pages.items();
+        assert_eq!(items.len(), UNREAD_PAGE + 3 + READ_FIRST + READ_PAGE + 4);
+        assert_eq!(items[UNREAD_PAGE + 2].id, "v2", "the unread ones first");
+        assert!(items[UNREAD_PAGE + 3].read_at.is_some());
+    }
+
+    #[test]
+    fn a_short_first_page_has_no_older_page() {
+        let mut first = page("u", 2, false);
+        first.items.extend(page("r", 5, true).items);
+        assert_eq!(Pages::first(&first).next(), None);
+    }
 
     #[test]
     fn the_body_marks_one_or_all_up_to_the_newest() {

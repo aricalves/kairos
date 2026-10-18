@@ -638,8 +638,25 @@ pub fn list_deliveries_as(
     let rule_id = given(&query.rule_id)
         .map(|id| parse_uuid(&id, "rule_id"))
         .transpose()?;
-    let deliveries =
-        db::list_deliveries(conn, &targets, rule_id, limit).map_err(ApiError::internal)?;
+    // KAIROS-T-0584: the cursor of the next page is a delivery of the board.
+    let before = match given(&query.before) {
+        Some(id) => {
+            let id = parse_uuid(&id, "before")?;
+            match db::get_delivery(conn, id).map_err(ApiError::internal)? {
+                Some(delivery) if targets.contains(&delivery.target_id) => Some(delivery),
+                _ => {
+                    return Err(ApiError::not_found(format!(
+                        "The log of the board {} has no delivery with the id {id}.",
+                        board.slug
+                    ))
+                    .with_details(json!({ "argument": "before" })));
+                }
+            }
+        }
+        None => None,
+    };
+    let deliveries = db::list_deliveries(conn, &targets, rule_id, before.as_ref(), limit)
+        .map_err(ApiError::internal)?;
     delivery_views(conn, deliveries)
 }
 
@@ -1045,6 +1062,8 @@ pub(crate) async fn delete_dispatch_rule(
 
 /// The delivery log of a board, newest first: each delivery with its
 /// status and its tries. A person who belongs to the board reads it.
+/// `before` (the id of a delivery) gives the next page: the deliveries
+/// older than that one (KAIROS-T-0584).
 #[utoipa::path(
     get,
     path = "/api/boards/{id}/webhook-deliveries",
@@ -1053,7 +1072,7 @@ pub(crate) async fn delete_dispatch_rule(
     responses(
         (status = 200, description = "The deliveries, newest first", body = [dto::WebhookDelivery]),
         (status = 403, description = "The caller does not belong to the board", body = kairos_client::types::ErrorEnvelope),
-        (status = 404, description = "Unknown board or target", body = kairos_client::types::ErrorEnvelope),
+        (status = 404, description = "Unknown board or target, or `before` is not a delivery of the log", body = kairos_client::types::ErrorEnvelope),
         (status = 422, description = "VALIDATION: a limit out of range, or an id that is not a UUID", body = kairos_client::types::ErrorEnvelope),
     ),
 )]

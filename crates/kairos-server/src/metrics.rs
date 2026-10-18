@@ -317,6 +317,11 @@ pub async fn metrics_handler(State(state): State<AppState>) -> Response {
 /// pending public-schema migrations. Returns `200 ready` only when the async
 /// pool answers `SELECT 1` and the embedded migration tree is fully applied;
 /// otherwise `503` with a reason. Distinct from `/healthz` (pure liveness).
+///
+/// KAIROS-T-0631: when the retention settings make the pass remove nothing
+/// (`archive` with no target) or fail (an `s3://` target), the body adds a
+/// second line `warning: …`. The status stays 200: a setting that the
+/// server cannot parse stops the start, and these settings parse.
 pub async fn readyz(State(state): State<AppState>) -> Response {
     // 1. Async-pool connectivity — the runtime data path.
     let connectivity = async {
@@ -353,13 +358,38 @@ pub async fn readyz(State(state): State<AppState>) -> Response {
             "not ready: pending database migrations".to_string(),
         )
             .into_response(),
-        Ok(false) => (StatusCode::OK, "ready".to_string()).into_response(),
+        Ok(false) => (StatusCode::OK, ready_body(&state.retention)).into_response(),
+    }
+}
+
+/// The body of a ready `/readyz`: `ready`, and a warning line when the
+/// retention settings remove nothing or fail (KAIROS-T-0631).
+fn ready_body(retention: &kairos_core::retention::RetentionConfig) -> String {
+    match retention.warning() {
+        Some(warning) => format!("ready\nwarning: {warning}"),
+        None => "ready".to_string(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_ready_body_names_a_retention_that_removes_nothing() {
+        use kairos_core::retention::{ArchiveTarget, RetentionConfig};
+        let body = ready_body(&RetentionConfig::default());
+        let mut lines = body.lines();
+        assert_eq!(lines.next(), Some("ready"));
+        let warning = lines.next().expect("a warning line");
+        assert!(warning.starts_with("warning: "), "{warning}");
+        assert!(warning.contains("KAIROS_ARCHIVE_TARGET"), "{warning}");
+        let with_target = RetentionConfig {
+            archive_target: ArchiveTarget::parse("/var/archive"),
+            ..RetentionConfig::default()
+        };
+        assert_eq!(ready_body(&with_target), "ready");
+    }
 
     #[test]
     fn histogram_buckets_are_cumulative() {

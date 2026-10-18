@@ -1073,7 +1073,7 @@ kairos boards dispatch test-target <BOARD> <TARGET> [OPTIONS]
 kairos boards dispatch add-rule <BOARD> [--trigger entered_column|unblocked] [--column <COLUMN>] --target <TARGET> [--task-type <TYPE>] [--metadata <SLUG=VALUE>] [--repository <REPO>] [OPTIONS]
 kairos boards dispatch remove-rule <BOARD> <RULE> --confirm [OPTIONS]
 kairos boards dispatch agent-triage <BOARD> [--on | --off] [OPTIONS]
-kairos boards dispatch log <BOARD> [--target <TARGET>] [--rule <RULE>] [--limit <N>] [OPTIONS]
+kairos boards dispatch log <BOARD> [--target <TARGET>] [--rule <RULE>] [--limit <N>] [--before <DELIVERY>] [OPTIONS]
 ```
 
 Sends tasks to agent runners (KAIROS-T-0385). A rule names a column, a filter
@@ -1092,7 +1092,7 @@ Kairos sends one signed delivery to the target. See
 | `add-rule` | `configure_boards` | Makes a rule. |
 | `remove-rule` | `configure_boards` | Removes a rule. Its deliveries stay in the log. It needs `--confirm`. |
 | `agent-triage` | a place on the board; `configure_boards` with `--on` or `--off` | Shows or sets who decides the triage of intake. `--on`: an agent decides. `--off`: an agent proposes with a note, and a person decides. |
-| `log` | a place on the board | Shows the newest deliveries, with the status, the tries and the response code. |
+| `log` | a place on the board | Shows the newest deliveries, with the status, the tries and the response code. `--before <DELIVERY>` shows the deliveries older than that delivery. |
 
 A place on the board is a grant on the board, a place in its team, or the
 admin role. Without `--confirm`, `remove-target` and `remove-rule` remove
