@@ -315,6 +315,25 @@ pub fn try_lock(path: &Path) -> Result<Option<CacheLock>, CliError> {
     }
 }
 
+/// Take the lock of the cache at `path` when it comes free within 5 s, else
+/// `None`. The tests use it to check that a holder gave the lock back
+/// (KAIROS-T-0657). A plain [`try_lock`] right after the drop can fail: a
+/// child process that a parallel test spawns (git, in the index tests) gets
+/// a copy of the lock file descriptor and holds the lock until its exec.
+#[cfg(test)]
+pub fn try_lock_soon(path: &Path) -> Result<Option<CacheLock>, CliError> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if let Some(lock) = try_lock(path)? {
+            return Ok(Some(lock));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(None);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 /// Open (and make) the lock file, mode 0600, in the private directory.
 fn open_lock_file(path: &Path) -> Result<std::fs::File, CliError> {
     let lock_path = lock_path(path);
@@ -740,7 +759,9 @@ mod tests {
         }
         assert!(try_lock(&path).expect("try").is_none(), "the lock is held");
         drop(held);
-        let again = try_lock(&path).expect("try").expect("the lock is free");
+        let again = try_lock_soon(&path)
+            .expect("try")
+            .expect("the lock is free");
         drop(again);
         let _ = std::fs::remove_dir_all(&dir);
     }

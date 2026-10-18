@@ -228,12 +228,12 @@ pub(crate) async fn update_strategy(
     ApiJson(body): ApiJson<dto::UpdateContentRequest>,
 ) -> Result<Json<dto::Strategy>, ApiError> {
     let user = auth.user_id;
-    let slug = tenant.slug.clone();
+    let role = tenant.role;
     let updated = state
         .blocking
         .run(&tenant.slug, move |conn| {
             let strategy = load(conn, &short_code, Liveness::LiveOnly)?;
-            require_item_edit(conn, &slug, user, strategy.id, ItemType::Strategy)?;
+            require_item_edit(conn, role, user, strategy.id, ItemType::Strategy)?;
             let update = items::ContentUpdate {
                 new_title: body.title.as_deref(),
                 new_content: &body.content,
@@ -293,14 +293,21 @@ pub(crate) async fn delete_strategy(
 ) -> Result<Json<dto::DeleteResponse>, ApiError> {
     let user = auth.user_id;
     let slug = tenant.slug.clone();
+    let role = tenant.role;
     let outcome = state
         .blocking
         .run(&tenant.slug, move |conn| {
             let strategy = load(conn, &short_code, Liveness::LiveOnly)?;
             // The edit rule for the strategy, and then for each descendant
             // (COLLIERY-T-0234): `archive_item` does the two.
-            let outcome =
-                super::cascade::archive_item(conn, &slug, user, strategy.id, ItemType::Strategy)?;
+            let outcome = super::cascade::archive_item(
+                conn,
+                &slug,
+                role,
+                user,
+                strategy.id,
+                ItemType::Strategy,
+            )?;
             Ok(super::cascade::delete_response(outcome))
         })
         .await?;

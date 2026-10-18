@@ -83,6 +83,7 @@ pub(crate) fn parse_kind(kind: &str, wording: CreateWording) -> Result<ItemType,
 pub(crate) fn promote_note(
     conn: &mut PgConnection,
     slug: &str,
+    role: kairos_db::models::OrgRole,
     user: Uuid,
     input: PromoteInput<'_>,
     wording: CreateWording,
@@ -97,7 +98,7 @@ pub(crate) fn promote_note(
         .with_details(serde_json::json!({ wording.details_key: "board" })));
     }
     // The mark on the note is an edit of the source item.
-    require_item_edit(conn, slug, user, source_id, source_type)?;
+    require_item_edit(conn, role, user, source_id, source_type)?;
     let found = match kairos_markdown::notes::parse_note_id(input.note_id) {
         Some(seq) => {
             kairos_db::item_notes::lock_note(conn, source_id, seq).map_err(ApiError::internal)?
@@ -170,7 +171,7 @@ pub(crate) fn promote_note(
             if supports {
                 require_edge_write(
                     conn,
-                    slug,
+                    role,
                     user,
                     RelationshipType::Supports.as_str(),
                     (source_id, source_type),
@@ -191,6 +192,7 @@ pub(crate) fn promote_note(
             let created = documents::create(
                 conn,
                 slug,
+                role,
                 user,
                 NewDocument {
                     title: &title,

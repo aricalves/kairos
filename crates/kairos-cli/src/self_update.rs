@@ -2,7 +2,14 @@
 //!
 //! The server tells its version at `GET /version` (open). The CLI compares
 //! it with its own. `self-update` downloads the release tarball of this
-//! platform from GitHub, checks its `.sha256`, and swaps the binary.
+//! platform, checks it, and swaps the binary.
+//!
+//! The trust rule (KAIROS-T-0595, KAIROS-A-0058): the `.sha256` of a
+//! tarball always comes from the published release (GitHub, or
+//! `KAIROS_RELEASES_URL`), never from the server. The server can name a
+//! mirror for the tarball, but a tarball that is not the published one does
+//! not match. A version older than this CLI needs `--version` or
+//! `--allow-downgrade`.
 //!
 //! The swap writes the new binary to a new file next to the old one and
 //! renames it over the old path. Writing over the old file in place gets
@@ -10,7 +17,8 @@
 //! code signature of that file. The old binary stays as `<name>.bak`.
 //! A failed download or a bad checksum leaves the old binary in place.
 
-use std::io::Read;
+use std::collections::BTreeMap;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -20,7 +28,7 @@ use sha2::{Digest, Sha256};
 
 use crate::auth::{self, Source};
 use crate::credentials;
-use crate::error::{CliError, EXIT_OUTDATED};
+use crate::error::{CliError, EXIT_FAILURE, EXIT_OUTDATED};
 
 /// The version of this CLI.
 pub const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -28,6 +36,9 @@ pub const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Where the release assets are. `KAIROS_RELEASES_URL` overrides it (tests,
 /// a mirror).
 const RELEASES_URL: &str = "https://github.com/colliery-io/kairos/releases";
+
+/// The variable that replaces [`RELEASES_URL`].
+const RELEASES_URL_VAR: &str = "KAIROS_RELEASES_URL";
 
 /// The latest release, for `--latest`.
 const LATEST_API: &str = "https://api.github.com/repos/colliery-io/kairos/releases/latest";
@@ -38,17 +49,20 @@ const AUTO_UPDATE_VAR: &str = "KAIROS_AUTO_UPDATE";
 /// The variable that turns the daily check off (`0`).
 const UPDATE_CHECK_VAR: &str = "KAIROS_UPDATE_CHECK";
 
+/// The file of the daily check, in the config directory.
+const CHECK_FILE: &str = "version-check.json";
+
 /// One check a day at most.
 const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 
 /// `kairos self-update`.
-#[derive(clap::Args, Debug)]
+#[derive(clap::Args, Debug, Default)]
 pub struct SelfUpdateArgs {
     /// Deployment base URL whose version to install (defaults to KAIROS_URL,
     /// then the only cached deployment)
     #[arg(long)]
     pub url: Option<String>,
-    /// Install this version instead of the version of the server (e.g. 0.12.0)
+    /// Install this version instead of the version of the server (e.g. 0.12.0). It can be older than this CLI
     #[arg(long, conflicts_with = "latest")]
     pub version: Option<String>,
     /// Install the latest release instead of the version of the server
@@ -56,70 +70,179 @@ pub struct SelfUpdateArgs {
     pub latest: bool,
     /// Only say which version the server has and which this CLI has. The exit
     /// code is 3 when the server is newer, else 0
-    #[arg(long, conflicts_with_all = ["version", "latest"])]
+    #[arg(long, conflicts_with_all = ["version", "latest", "allow_downgrade"])]
     pub check: bool,
+    /// Install the version of the server, or of --latest, also when it is older than this CLI
+    #[arg(long)]
+    pub allow_downgrade: bool,
+    /// Print one JSON object: the versions and the action that the command took or refused
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// What `self-update` did, or refused to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Action {
+    /// `--check`: the command changed nothing.
+    Checked,
+    /// The CLI has the version already.
+    Unchanged,
+    /// A newer version is in place.
+    Updated,
+    /// An older version is in place (`--version` or `--allow-downgrade`).
+    Installed,
+    /// The version is older than this CLI and no option allows it.
+    Refused,
+}
+
+/// The result of `self-update`: the JSON object of `--json`. `message` is
+/// the line that the command prints without `--json`.
+#[derive(Debug, Serialize)]
+pub struct Outcome {
+    pub cli_version: String,
+    /// The version of the server, when the command asked the server.
+    pub server_version: Option<String>,
+    /// The deployment, when the command asked the server.
+    pub deployment: Option<String>,
+    /// The version that the command installs, or refuses to install.
+    pub version: Option<String>,
+    pub action: Action,
+    pub message: String,
+    /// The path of the binary, after a swap.
+    pub binary: Option<String>,
+    /// The path of the old binary, after a swap.
+    pub backup: Option<String>,
+}
+
+impl Outcome {
+    fn new(action: Action, message: String) -> Self {
+        Self {
+            cli_version: CLI_VERSION.to_string(),
+            server_version: None,
+            deployment: None,
+            version: None,
+            action,
+            message,
+            binary: None,
+            backup: None,
+        }
+    }
+
+    /// 3 for `--check` when the server is newer (KAIROS-T-0588), 1 for a
+    /// refusal, else 0.
+    fn exit_code(&self) -> ExitCode {
+        let newer = || {
+            self.server_version
+                .as_deref()
+                .is_some_and(|server| compare(CLI_VERSION, server).is_lt())
+        };
+        match self.action {
+            Action::Checked if newer() => ExitCode::from(EXIT_OUTDATED),
+            Action::Refused => ExitCode::from(EXIT_FAILURE),
+            _ => ExitCode::SUCCESS,
+        }
+    }
 }
 
 impl SelfUpdateArgs {
-    /// The exit code of the command: 0, or 3 for `--check` when the server
-    /// is newer than the CLI (KAIROS-T-0588), so a script can update on it.
+    /// The exit code of the command: 0, 3 for `--check` when the server is
+    /// newer than the CLI (KAIROS-T-0588), or 1 for a refused downgrade.
+    /// Without `--json`, a refusal is an error line on stderr. With
+    /// `--json`, each outcome is one object on stdout.
     pub async fn run(self) -> Result<ExitCode, CliError> {
         let http = http()?;
+        let json = self.json;
+        let outcome = self.outcome(&http).await?;
+        if json {
+            let text = serde_json::to_string_pretty(&outcome).map_err(|err| {
+                CliError::Failure(format!("The CLI cannot write the JSON: {err}."))
+            })?;
+            println!("{text}");
+        } else if outcome.action == Action::Refused {
+            return Err(CliError::Failure(outcome.message));
+        } else {
+            println!("{}", outcome.message);
+        }
+        Ok(outcome.exit_code())
+    }
+
+    async fn outcome(self, http: &reqwest::Client) -> Result<Outcome, CliError> {
         if self.check {
             let deployment = deployment(self.url.as_deref())?;
-            let server = server_version(&http, &deployment).await?.version;
-            let (line, code) = check_line(&deployment, &server);
-            println!("{line}");
-            return Ok(code);
+            let server = server_version(http, &deployment).await?.version;
+            let mut outcome = Outcome::new(Action::Checked, check_line(&deployment, &server));
+            outcome.server_version = Some(server);
+            outcome.deployment = Some(deployment);
+            return Ok(outcome);
         }
-        let release = match (self.version, self.latest) {
-            (Some(version), _) => Release::published(version.trim_start_matches('v'))?,
-            (None, true) => Release::published(&latest_version(&http).await?)?,
+        let explicit = self.version.is_some();
+        let (release, asked) = match (self.version, self.latest) {
+            (Some(version), _) => (Release::published(version.trim_start_matches('v'))?, None),
+            (None, true) => (Release::published(&latest_version(http).await?)?, None),
             (None, false) => {
                 let deployment = deployment(self.url.as_deref())?;
-                server_version(&http, &deployment)
+                let server = server_version(http, &deployment)
                     .await
                     .map_err(|err| match err {
                         CliError::Failure(message) => CliError::Failure(format!(
                             "{message} Name one with --version or use --latest."
                         )),
                         other => other,
-                    })?
-                    .release()?
+                    })?;
+                let version = server.version.clone();
+                (server.release()?, Some((deployment, version)))
             }
         };
-        println!("{}", update_to(&http, &release).await?);
-        Ok(ExitCode::SUCCESS)
+        let mut outcome = match downgrade_refusal(&release.version, explicit, self.allow_downgrade)
+        {
+            Some(message) => Outcome::new(Action::Refused, message),
+            None => update_to(http, &release).await?,
+        };
+        outcome.version = Some(release.version);
+        if let Some((deployment, server)) = asked {
+            outcome.deployment = Some(deployment);
+            outcome.server_version = Some(server);
+        }
+        Ok(outcome)
     }
+}
+
+/// The refusal of a version older than this CLI, or None. `--version`
+/// names the version, so it is not refused; `--allow-downgrade` allows the
+/// version of the server or of `--latest` (KAIROS-T-0595).
+fn downgrade_refusal(version: &str, explicit: bool, allowed: bool) -> Option<String> {
+    if explicit || allowed || !compare(CLI_VERSION, version).is_gt() {
+        return None;
+    }
+    Some(format!(
+        "The version {version} is older than this CLI ({CLI_VERSION}). Nothing changed. \
+         To install it, use --allow-downgrade or --version {version}."
+    ))
 }
 
 /// The line of `--check` and its exit code: 3 when the server is newer than
 /// this CLI, else 0 (KAIROS-T-0588).
-fn check_line(deployment: &str, server: &str) -> (String, ExitCode) {
-    match compare(CLI_VERSION, server) {
-        std::cmp::Ordering::Less => (
-            format!(
-                "The CLI is {CLI_VERSION}; the server {deployment} is {server}. \
-                 Run `kairos self-update`."
-            ),
-            ExitCode::from(EXIT_OUTDATED),
-        ),
-        _ => (
-            format!("The CLI is {CLI_VERSION}; the server {deployment} is {server}."),
-            ExitCode::SUCCESS,
-        ),
+fn check_line(deployment: &str, server: &str) -> String {
+    if compare(CLI_VERSION, server).is_lt() {
+        format!(
+            "The CLI is {CLI_VERSION}; the server {deployment} is {server}. \
+             Run `kairos self-update`."
+        )
+    } else {
+        format!("The CLI is {CLI_VERSION}; the server {deployment} is {server}.")
     }
 }
 
 /// Download, check and install a release. The same version is no change.
-/// Gives the line to print: `self-update` prints it on stdout, the daily
-/// check on stderr, so the output of a command stays what it is
-/// (KAIROS-T-0460).
-async fn update_to(http: &reqwest::Client, release: &Release) -> Result<String, CliError> {
+/// `self-update` prints the message on stdout, the daily check on stderr,
+/// so the output of a command stays what it is (KAIROS-T-0460).
+async fn update_to(http: &reqwest::Client, release: &Release) -> Result<Outcome, CliError> {
     let version = &release.version;
     if version == CLI_VERSION {
-        return Ok(format!(
-            "The CLI is {CLI_VERSION} already: nothing changed."
+        return Ok(Outcome::new(
+            Action::Unchanged,
+            format!("The CLI is {CLI_VERSION} already: nothing changed."),
         ));
     }
     let asset = release.url.rsplit('/').next().unwrap_or("the tarball");
@@ -130,11 +253,18 @@ async fn update_to(http: &reqwest::Client, release: &Release) -> Result<String, 
         .and_then(|path| path.canonicalize())
         .map_err(|err| CliError::Failure(format!("The CLI cannot find its own path: {err}.")))?;
     let backup = install(&exe, &binary)?;
-    Ok(installed_line(version, &exe, &backup))
+    let action = match compare(CLI_VERSION, version) {
+        std::cmp::Ordering::Greater => Action::Installed,
+        _ => Action::Updated,
+    };
+    let mut outcome = Outcome::new(action, installed_line(version, &exe, &backup));
+    outcome.binary = Some(exe.display().to_string());
+    outcome.backup = Some(backup.display().to_string());
+    Ok(outcome)
 }
 
 /// The line after a swap. A version older than this CLI is installed, not
-/// an update (`self-update` installs the version of the server).
+/// an update.
 fn installed_line(version: &str, exe: &Path, backup: &Path) -> String {
     let what = match compare(CLI_VERSION, version) {
         std::cmp::Ordering::Greater => format!("Installed {version} in place of {CLI_VERSION}"),
@@ -157,9 +287,15 @@ struct Release {
 
 impl Release {
     /// The tarball of `version` for this platform on the published releases
-    /// (GitHub, or `KAIROS_RELEASES_URL`).
+    /// (GitHub, or `KAIROS_RELEASES_URL`). The version must look like a
+    /// release version: it goes into the path of the URL of the checksum.
     fn published(version: &str) -> Result<Self, CliError> {
-        let base = std::env::var("KAIROS_RELEASES_URL")
+        if !is_release_version(version) {
+            return Err(CliError::Failure(format!(
+                "`{version}` is not a release version (e.g. 0.12.0). Nothing changed."
+            )));
+        }
+        let base = std::env::var(RELEASES_URL_VAR)
             .ok()
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| RELEASES_URL.to_string());
@@ -176,8 +312,30 @@ impl Release {
     }
 }
 
+/// A version of the form `1.2.3`, with an optional `-pre.1` part. Only
+/// digits, letters, `.` and `-`: a `/` or `..` cannot move the URL of the
+/// checksum to another place.
+fn is_release_version(version: &str) -> bool {
+    let (core, pre) = match version.split_once('-') {
+        Some((core, pre)) => (core, Some(pre)),
+        None => (version, None),
+    };
+    let parts: Vec<&str> = core.split('.').collect();
+    let core_ok = parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()));
+    let pre_ok = pre.is_none_or(|pre| {
+        pre.split('.').all(|part| {
+            !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+    });
+    core_ok && pre_ok
+}
+
 /// The body of `GET /version`: the version of the server and the tarballs
-/// of the CLI of that version.
+/// of the CLI of that version. The server also sends a link to a
+/// `.sha256`; the CLI does not use it (KAIROS-T-0595).
 #[derive(Debug, Deserialize)]
 struct ServerVersion {
     version: String,
@@ -189,19 +347,20 @@ struct ServerVersion {
 struct CliDownload {
     target: String,
     url: String,
-    sha256_url: String,
 }
 
 impl ServerVersion {
-    /// The tarball for this platform that the server names. A server with
-    /// no links (an older one) gives the published release of its version.
-    /// A server whose links have no tarball for this platform is refused,
-    /// and the message names the platforms it lists (KAIROS-T-0460): a
-    /// mirror that lacks one is a gap to fix, not a reason to go to GitHub.
+    /// The tarball for this platform that the server names, with the
+    /// checksum of the published release. A server with no links (an older
+    /// one) gives the published release of its version. A server whose
+    /// links have no tarball for this platform is refused, and the message
+    /// names the platforms it lists (KAIROS-T-0460): a mirror that lacks
+    /// one is a gap to fix, not a reason to go to GitHub.
     fn release(self) -> Result<Release, CliError> {
         let target = target_triple()?;
+        let published = Release::published(&self.version)?;
         if self.cli.is_empty() {
-            return Release::published(&self.version);
+            return Ok(published);
         }
         let listed: Vec<String> = self.cli.iter().map(|d| d.target.clone()).collect();
         match self
@@ -210,9 +369,8 @@ impl ServerVersion {
             .find(|download| download.target == target)
         {
             Some(download) => Ok(Release {
-                version: self.version,
                 url: download.url,
-                sha256_url: download.sha256_url,
+                ..published
             }),
             None => Err(CliError::Failure(format!(
                 "The server lists the CLI {} for {}, not for this platform ({target}). \
@@ -225,10 +383,12 @@ impl ServerVersion {
     }
 }
 
-/// The daily check, run after a command that succeeded. It prints one line on stderr when
-/// the server is newer, at most once a day for a deployment. With
-/// `KAIROS_AUTO_UPDATE=1` it updates instead. It never fails the command:
-/// a check that cannot run says nothing.
+/// The daily check, run after a command that succeeded. It asks the
+/// deployment of the command (else the default deployment) for its
+/// version, at most once a day for each deployment. When the server is
+/// newer, it prints one line on stderr. With `KAIROS_AUTO_UPDATE=1` it
+/// updates instead, but not from an `http://` deployment. It never fails
+/// the command: a check that cannot run says nothing.
 pub async fn daily_check() {
     // KAIROS-T-0460: a script or CI turns the check off.
     if std::env::var(UPDATE_CHECK_VAR).is_ok_and(|value| value.trim() == "0") {
@@ -237,61 +397,77 @@ pub async fn daily_check() {
     let Ok(dir) = credentials::config_dir() else {
         return;
     };
-    let Ok(deployment) = deployment(None) else {
+    let Some(deployment) = check_deployment(auth::deployment_in_use(), || deployment(None).ok())
+    else {
         return;
     };
-    let path = dir.join("version-check.json");
-    let now = credentials::unix_now();
-    let previous: Option<CheckState> = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok());
-    if let Some(state) = &previous
-        && state.deployment == deployment
-        && now.saturating_sub(state.checked_at) < CHECK_INTERVAL_SECS
-    {
-        return;
+    let auto = std::env::var(AUTO_UPDATE_VAR).is_ok_and(|value| value == "1");
+    if let Some(line) = check_once(&dir, &deployment, credentials::unix_now(), auto).await {
+        // A closed stderr is no reason to fail the command.
+        let _ = writeln!(std::io::stderr(), "{line}");
     }
-    // A server that does not answer is a check too: an empty version, so a
-    // dead deployment does not slow each command down.
-    let server = match http_with_timeout(Duration::from_secs(2)) {
-        Ok(probe) => server_version(&probe, &deployment).await.ok(),
-        Err(_) => None,
+}
+
+/// The deployment of the daily check: the one that the command used
+/// (`--url`, `KAIROS_URL`, the checkout settings or the cache), else the
+/// default deployment (KAIROS-T-0595).
+fn check_deployment(
+    in_use: Option<&str>,
+    default: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    in_use.map(str::to_string).or_else(default)
+}
+
+/// One daily check of `deployment`: the line to print, or None. Only a
+/// server that answers is recorded: an unreachable server is asked again by
+/// the next command, so its warning is not muted for a day.
+async fn check_once(dir: &Path, deployment: &str, now: u64, auto: bool) -> Option<String> {
+    let path = dir.join(CHECK_FILE);
+    let mut state = CheckState::load(&path);
+    if state.is_recent(deployment, now) {
+        return None;
+    }
+    let probe = http_with_timeout(Duration::from_secs(2)).ok()?;
+    let server = server_version(&probe, deployment).await.ok()?;
+    let version = server.version.clone();
+    state.record(deployment, now, &version);
+    state.save(dir, &path);
+    if !compare(CLI_VERSION, &version).is_lt() {
+        return None;
+    }
+    if !auto {
+        return Some(newer_line(deployment, &version));
+    }
+    if is_plain_http(deployment) {
+        return Some(format!(
+            "{} {AUTO_UPDATE_VAR} does not update from an http:// deployment.",
+            newer_line(deployment, &version)
+        ));
+    }
+    let result = match (http(), server.release()) {
+        (Ok(http), Ok(release)) => update_to(&http, &release).await,
+        (Err(err), _) | (_, Err(err)) => Err(err),
     };
-    let version = server
-        .as_ref()
-        .map(|server| server.version.clone())
-        .unwrap_or_default();
-    let state = CheckState {
-        deployment,
-        checked_at: now,
-        server_version: version.clone(),
-    };
-    if let Ok(text) = serde_json::to_string(&state) {
-        let _ = std::fs::create_dir_all(&dir);
-        let _ = std::fs::write(&path, text);
-    }
-    let Some(server) = server else {
-        return;
-    };
-    if compare(CLI_VERSION, &version) != std::cmp::Ordering::Less {
-        return;
-    }
-    if std::env::var(AUTO_UPDATE_VAR).is_ok_and(|value| value == "1") {
-        let result = match (http(), server.release()) {
-            (Ok(http), Ok(release)) => update_to(&http, &release).await,
-            (Err(err), _) | (_, Err(err)) => Err(err),
-        };
-        // On stderr: the command's own output on stdout stays what it is.
-        match result {
-            Ok(line) => eprintln!("{line}"),
-            Err(err) => eprintln!("warning: the CLI could not update itself to {version}: {err}"),
-        }
-        return;
-    }
-    eprintln!(
-        "warning: the CLI is {CLI_VERSION} and the server is {version}. \
-         Run `kairos self-update`."
-    );
+    Some(match result {
+        Ok(outcome) => outcome.message,
+        Err(err) => format!("warning: the CLI could not update itself to {version}: {err}"),
+    })
+}
+
+/// The warning of the daily check. It names `--check` and the update.
+fn newer_line(deployment: &str, server: &str) -> String {
+    format!(
+        "warning: the CLI is {CLI_VERSION} and the server {deployment} is {server}. \
+         Run `kairos self-update` to install {server}, or `kairos self-update --check` \
+         to compare the versions."
+    )
+}
+
+/// The deployment has the scheme `http`: no TLS.
+fn is_plain_http(deployment: &str) -> bool {
+    deployment
+        .get(..7)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("http://"))
 }
 
 /// The line for a code tools server older than its deployment
@@ -317,12 +493,50 @@ fn behind_line(cli: &str, server: &str) -> Option<String> {
     ))
 }
 
-/// What the daily check keeps between runs.
-#[derive(Debug, Serialize, Deserialize)]
+/// What the daily check keeps between runs: the last answer of each
+/// deployment. A file of an older CLI reads as no state.
+#[derive(Debug, Default, Serialize, Deserialize)]
 struct CheckState {
-    deployment: String,
+    #[serde(default)]
+    deployments: BTreeMap<String, Checked>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Checked {
     checked_at: u64,
     server_version: String,
+}
+
+impl CheckState {
+    fn load(path: &Path) -> Self {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+
+    fn is_recent(&self, deployment: &str, now: u64) -> bool {
+        self.deployments
+            .get(deployment)
+            .is_some_and(|checked| now.saturating_sub(checked.checked_at) < CHECK_INTERVAL_SECS)
+    }
+
+    fn record(&mut self, deployment: &str, now: u64, server_version: &str) {
+        self.deployments.insert(
+            deployment.to_string(),
+            Checked {
+                checked_at: now,
+                server_version: server_version.to_string(),
+            },
+        );
+    }
+
+    fn save(&self, dir: &Path, path: &Path) {
+        if let Ok(text) = serde_json::to_string(self) {
+            let _ = std::fs::create_dir_all(dir);
+            let _ = std::fs::write(path, text);
+        }
+    }
 }
 
 fn deployment(url: Option<&str>) -> Result<String, CliError> {
@@ -518,6 +732,8 @@ fn install(exe: &Path, binary: &[u8]) -> Result<PathBuf, CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 
     fn tarball(files: &[(&str, &[u8])]) -> Vec<u8> {
         let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
@@ -541,20 +757,98 @@ mod tests {
             .collect()
     }
 
+    /// A local server that answers each request with `status` and `body`,
+    /// and counts the requests.
+    fn stub(status: u16, body: impl Into<String>) -> (String, Arc<AtomicUsize>) {
+        let body: String = body.into();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                counter.fetch_add(1, SeqCst);
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let response = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        (url, hits)
+    }
+
+    /// A URL where nothing listens.
+    fn dead_url() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        url
+    }
+
     /// KAIROS-T-0588: `--check` exits 3 when the server is newer, 0 when
     /// the CLI is the same version or newer.
     #[test]
     fn check_exits_3_when_the_server_is_newer() {
-        let (line, code) = check_line("https://k.test", "999.0.0");
+        let line = check_line("https://k.test", "999.0.0");
         assert!(line.contains("Run `kairos self-update`"), "{line}");
-        assert_eq!(code, ExitCode::from(EXIT_OUTDATED));
-
-        let (line, code) = check_line("https://k.test", CLI_VERSION);
+        let line = check_line("https://k.test", CLI_VERSION);
         assert!(!line.contains("self-update"), "{line}");
-        assert_eq!(code, ExitCode::SUCCESS);
 
-        let (_, code) = check_line("https://k.test", "0.0.1");
-        assert_eq!(code, ExitCode::SUCCESS);
+        let checked = |server: &str| {
+            let mut outcome = Outcome::new(Action::Checked, String::new());
+            outcome.server_version = Some(server.to_string());
+            outcome.exit_code()
+        };
+        assert_eq!(checked("999.0.0"), ExitCode::from(EXIT_OUTDATED));
+        assert_eq!(checked(CLI_VERSION), ExitCode::SUCCESS);
+        assert_eq!(checked("0.0.1"), ExitCode::SUCCESS);
+    }
+
+    /// KAIROS-T-0595: an older version needs `--version` or
+    /// `--allow-downgrade`, and the refusal names both.
+    #[test]
+    fn a_downgrade_needs_version_or_allow_downgrade() {
+        let refusal = downgrade_refusal("0.0.1", false, false).expect("refused");
+        assert!(refusal.contains("--allow-downgrade"), "{refusal}");
+        assert!(refusal.contains("--version 0.0.1"), "{refusal}");
+        assert!(refusal.contains("Nothing changed"), "{refusal}");
+        assert_eq!(downgrade_refusal("0.0.1", true, false), None);
+        assert_eq!(downgrade_refusal("0.0.1", false, true), None);
+        assert_eq!(downgrade_refusal("999.0.0", false, false), None);
+        assert_eq!(downgrade_refusal(CLI_VERSION, false, false), None);
+        let refused = Outcome::new(Action::Refused, refusal);
+        assert_eq!(refused.exit_code(), ExitCode::from(EXIT_FAILURE));
+    }
+
+    /// KAIROS-T-0595: `--json` is one object with the versions and the
+    /// action.
+    #[test]
+    fn the_json_object_names_the_versions_and_the_action() {
+        let mut outcome = Outcome::new(Action::Refused, "no".into());
+        outcome.server_version = Some("0.0.1".into());
+        outcome.version = Some("0.0.1".into());
+        outcome.deployment = Some("https://k.test".into());
+        let value = serde_json::to_value(&outcome).unwrap();
+        assert_eq!(value["cli_version"], CLI_VERSION);
+        assert_eq!(value["server_version"], "0.0.1");
+        assert_eq!(value["version"], "0.0.1");
+        assert_eq!(value["deployment"], "https://k.test");
+        assert_eq!(value["action"], "refused");
+        assert_eq!(value["message"], "no");
+        assert!(value["binary"].is_null() && value["backup"].is_null());
+        for (action, name) in [
+            (Action::Checked, "checked"),
+            (Action::Unchanged, "unchanged"),
+            (Action::Updated, "updated"),
+            (Action::Installed, "installed"),
+        ] {
+            assert_eq!(serde_json::to_value(action).unwrap(), name);
+        }
     }
 
     #[test]
@@ -574,6 +868,31 @@ mod tests {
         assert_eq!(compare("0.12.0", "0.12.0"), Equal);
         assert_eq!(compare("v0.12.1", "0.12.0"), Greater);
         assert_eq!(compare("1.0.0", "0.99.99"), Greater);
+    }
+
+    /// KAIROS-T-0595: the version goes into the URL of the checksum, so a
+    /// server cannot move that URL with `/` or `..`.
+    #[test]
+    fn only_a_release_version_makes_a_url() {
+        for good in ["0.12.0", "1.2.3", "0.13.0-rc.1", "10.0.0-beta-2"] {
+            assert!(is_release_version(good), "{good}");
+        }
+        for bad in [
+            "",
+            "0.12",
+            "0.12.0.1",
+            "v0.12.0",
+            "0.12.x",
+            "0.12.0-",
+            "0.12.0-rc..1",
+            "0.12.0/../../../evil/repo/releases/download/v1",
+            "../0.12.0",
+            "0.12.0?x=1",
+        ] {
+            assert!(!is_release_version(bad), "{bad}");
+        }
+        let err = Release::published("1.0.0/../../x").unwrap_err().to_string();
+        assert!(err.contains("not a release version"), "{err}");
     }
 
     #[test]
@@ -624,8 +943,10 @@ mod tests {
         }
     }
 
+    /// KAIROS-T-0595: the server can name a mirror for the tarball, but the
+    /// checksum is the one of the published release, not the server's.
     #[test]
-    fn the_server_names_the_tarball_of_this_platform() {
+    fn the_server_names_the_tarball_but_not_the_checksum() {
         let target = target_triple().unwrap();
         let server: ServerVersion = serde_json::from_value(serde_json::json!({
             "version": "9.9.9",
@@ -635,14 +956,27 @@ mod tests {
             ],
         }))
         .unwrap();
-        assert_eq!(
-            server.release().unwrap(),
-            Release {
-                version: "9.9.9".into(),
-                url: "https://mirror/k.tar.gz".into(),
-                sha256_url: "https://mirror/k.tar.gz.sha256".into(),
-            }
+        let release = server.release().unwrap();
+        let published = Release::published("9.9.9").unwrap();
+        assert_eq!(release.url, "https://mirror/k.tar.gz");
+        assert_eq!(release.sha256_url, published.sha256_url);
+        assert!(
+            release.sha256_url.ends_with(&format!(
+                "/download/v9.9.9/kairos-9.9.9-{target}.tar.gz.sha256"
+            )),
+            "{release:?}"
         );
+        assert!(!release.sha256_url.contains("mirror"), "{release:?}");
+    }
+
+    /// A server that sends a version that is not a release version is
+    /// refused before any download.
+    #[test]
+    fn a_server_with_a_bad_version_is_refused() {
+        let server: ServerVersion =
+            serde_json::from_value(serde_json::json!({"version": "1.0.0/../../x"})).unwrap();
+        let err = server.release().unwrap_err().to_string();
+        assert!(err.contains("not a release version"), "{err}");
     }
 
     #[test]
@@ -694,5 +1028,109 @@ mod tests {
     #[test]
     fn this_platform_has_a_release_target() {
         assert!(target_triple().is_ok());
+    }
+
+    /// KAIROS-T-0595: the daily check asks the deployment of the command;
+    /// the default deployment only when the command used none.
+    #[test]
+    fn the_check_uses_the_deployment_of_the_command() {
+        let default = || Some("https://default.test".to_string());
+        assert_eq!(
+            check_deployment(Some("https://command.test"), default).as_deref(),
+            Some("https://command.test")
+        );
+        assert_eq!(
+            check_deployment(None, default).as_deref(),
+            Some("https://default.test")
+        );
+        assert_eq!(check_deployment(None, || None), None);
+    }
+
+    #[test]
+    fn plain_http_is_found() {
+        assert!(is_plain_http("http://k.test"));
+        assert!(is_plain_http("HTTP://k.test"));
+        assert!(!is_plain_http("https://k.test"));
+        assert!(!is_plain_http("http"));
+    }
+
+    /// KAIROS-T-0595: a server that does not answer is not recorded, so the
+    /// next command asks it again.
+    #[tokio::test]
+    async fn an_unreachable_server_is_not_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let dead = dead_url();
+        assert_eq!(check_once(dir.path(), &dead, 1_000, false).await, None);
+        assert!(!dir.path().join(CHECK_FILE).exists());
+
+        // A server that answers with no version is not recorded either.
+        let (broken, hits) = stub(503, "{}");
+        assert_eq!(check_once(dir.path(), &broken, 1_000, false).await, None);
+        assert_eq!(check_once(dir.path(), &broken, 1_001, false).await, None);
+        assert_eq!(hits.load(SeqCst), 2, "asked again");
+        assert!(!dir.path().join(CHECK_FILE).exists());
+    }
+
+    /// KAIROS-T-0595: the warning names the deployment and `--check`; an
+    /// answer is recorded for a day, for that deployment only.
+    #[tokio::test]
+    async fn a_newer_server_gives_one_warning_a_day_for_each_deployment() {
+        let dir = tempfile::tempdir().unwrap();
+        let (newer, hits) = stub(200, r#"{"version": "999.0.0"}"#);
+        let line = check_once(dir.path(), &newer, 1_000, false)
+            .await
+            .expect("a warning");
+        assert!(line.starts_with("warning:"), "{line}");
+        assert!(line.contains(&newer), "{line}");
+        assert!(line.contains("999.0.0"), "{line}");
+        assert!(line.contains("`kairos self-update --check`"), "{line}");
+        assert!(line.contains("`kairos self-update`"), "{line}");
+
+        // Recorded: no second request within a day.
+        assert_eq!(check_once(dir.path(), &newer, 2_000, false).await, None);
+        assert_eq!(hits.load(SeqCst), 1);
+        let state = CheckState::load(&dir.path().join(CHECK_FILE));
+        assert_eq!(state.deployments[&newer].server_version, "999.0.0");
+
+        // Another deployment has a check of its own.
+        let (same, same_hits) = stub(200, format!(r#"{{"version": "{CLI_VERSION}"}}"#));
+        assert_eq!(check_once(dir.path(), &same, 2_000, false).await, None);
+        assert_eq!(same_hits.load(SeqCst), 1);
+        let state = CheckState::load(&dir.path().join(CHECK_FILE));
+        assert_eq!(state.deployments.len(), 2);
+
+        // A day later the first deployment is asked again.
+        let later = 1_000 + CHECK_INTERVAL_SECS;
+        assert!(check_once(dir.path(), &newer, later, false).await.is_some());
+        assert_eq!(hits.load(SeqCst), 2);
+    }
+
+    /// The state file of an older CLI reads as no state.
+    #[test]
+    fn an_old_state_file_reads_as_no_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(CHECK_FILE);
+        std::fs::write(
+            &path,
+            r#"{"deployment":"https://k.test","checked_at":5,"server_version":"0.1.0"}"#,
+        )
+        .unwrap();
+        assert!(!CheckState::load(&path).is_recent("https://k.test", 6));
+    }
+
+    /// KAIROS-T-0595: `KAIROS_AUTO_UPDATE` does not install from an
+    /// `http://` deployment: the check asks for the version only, and the
+    /// line says why it did not update.
+    #[tokio::test]
+    async fn auto_update_refuses_an_http_deployment() {
+        let dir = tempfile::tempdir().unwrap();
+        let (newer, hits) = stub(200, r#"{"version": "999.0.0"}"#);
+        let line = check_once(dir.path(), &newer, 1_000, true)
+            .await
+            .expect("a line");
+        assert!(line.contains("KAIROS_AUTO_UPDATE"), "{line}");
+        assert!(line.contains("http://"), "{line}");
+        assert!(line.contains("--check"), "{line}");
+        assert_eq!(hits.load(SeqCst), 1, "no download");
     }
 }

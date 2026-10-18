@@ -5,7 +5,8 @@
 use crate::commands::entities::ListArgs;
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
-use crate::table::{Table, print_page_footer};
+use crate::listing::fetch;
+use crate::table::Table;
 
 use kairos_client::types_org::{
     BoardItemsQuery, BoardItemsResponse, CreateBoardRequest, UpdateBoardRequest,
@@ -201,9 +202,9 @@ impl BoardsCommand {
             }
             Self::List(args) => {
                 let client = client(&args.common)?;
-                let envelope = client.list_boards(args.page()).await?;
+                let envelope = fetch(args.paging(), |page| client.list_boards(page)).await?;
                 if args.common.json {
-                    return print_json(&envelope);
+                    return envelope.print_json();
                 }
                 if envelope.items.is_empty() {
                     println!("(none)");
@@ -220,12 +221,7 @@ impl BoardsCommand {
                     }
                     print!("{}", table.render());
                 }
-                print_page_footer(
-                    envelope.total,
-                    envelope.limit,
-                    envelope.offset,
-                    envelope.items.len(),
-                );
+                envelope.print_footer();
                 Ok(())
             }
             Self::Show {
