@@ -353,22 +353,37 @@ impl Credential {
     /// Whether the credential is still valid: the session is not ended,
     /// the key is not revoked, the token is not expired.
     async fn is_valid(&self, state: &AppState) -> bool {
-        match self {
+        let result = match self {
             Self::Cookie(token) => crate::login::authenticate_session(state, token)
                 .await
-                .is_ok(),
+                .map(drop),
             Self::Bearer(token) if crate::service_accounts::auth::is_api_key(token) => {
                 crate::service_accounts::auth::authenticate_api_key(state, token)
                     .await
-                    .is_ok()
+                    .map(drop)
             }
             Self::Bearer(token) if crate::local_auth::is_session_token(token) => {
                 crate::login::authenticate_session(state, token)
                     .await
-                    .is_ok()
+                    .map(drop)
             }
-            Self::Bearer(token) => state.auth.verify(token).await.is_ok(),
-        }
+            Self::Bearer(token) => state
+                .auth
+                .verify(token)
+                .await
+                .map(drop)
+                .map_err(crate::error::ApiError::from),
+        };
+        still_valid(&result)
+    }
+}
+
+/// Whether a check of a credential keeps the socket open. A fault of the
+/// server (a 5xx) is not a refusal: the next check decides. Pure.
+fn still_valid(result: &Result<(), crate::error::ApiError>) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(error) => error.status.is_server_error(),
     }
 }
 
@@ -868,6 +883,18 @@ mod tests {
             Credential::of(&headers),
             Some(Credential::Bearer("a.b.c".to_string()))
         );
+    }
+
+    /// KAIROS-T-0621: a refused credential closes the socket. A fault of
+    /// the server does not.
+    #[test]
+    fn a_refusal_closes_and_a_fault_does_not() {
+        use crate::error::ApiError;
+        assert!(still_valid(&Ok(())));
+        assert!(!still_valid(&Err(ApiError::unauthorized("ended"))));
+        assert!(still_valid(&Err(ApiError::internal(
+            "the database is down"
+        ))));
     }
 
     #[test]
