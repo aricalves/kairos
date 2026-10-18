@@ -59,8 +59,9 @@
 //! (`notification_settings`). [`notify`] applies the 3 rules in its one
 //! insert.
 //!
-//! Each new notification sends the event `notification_created` to its
-//! person only ([`crate::events::emit_notification_event`]).
+//! The new notifications of one write send one event
+//! `notification_created` to their persons only, with the list of the
+//! persons ([`crate::events::emit_notification_event`], KAIROS-T-0632).
 
 use std::collections::BTreeMap;
 
@@ -154,15 +155,14 @@ pub fn notify(
     let short_code = item.map_or("", |(_, code)| code);
     let mut users: Vec<Uuid> = told.into_iter().map(|r| r.user_id).collect();
     users.sort();
-    for user in &users {
-        events::emit_notification_event(
-            conn,
-            events::NOTIFICATION_CREATED,
-            *user,
-            short_code,
-            actor,
-        )?;
-    }
+    // KAIROS-T-0632: one event with the list of the persons told.
+    events::emit_notification_event(
+        conn,
+        events::NOTIFICATION_CREATED,
+        &users,
+        short_code,
+        actor,
+    )?;
     Ok(users)
 }
 
@@ -1114,7 +1114,7 @@ pub fn mark_read(
         events::emit_notification_event(
             conn,
             events::NOTIFICATIONS_READ,
-            reader.user,
+            &[reader.user],
             "",
             reader.user,
         )?;

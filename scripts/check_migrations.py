@@ -67,6 +67,7 @@ LARGE_TABLES = frozenset({
     "webhook_delivery_tries",
     # public schema
     "auth_failures",
+    "event_outbox",
     "jobs",
     "local_sessions",
 })
