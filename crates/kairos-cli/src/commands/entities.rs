@@ -13,8 +13,8 @@ use kairos_client::EntityKind;
 use kairos_client::types::{
     Adr, AppendNoteResponse, CreateAdrRequest, CreateDocumentRequest, CreateInitiativeRequest,
     CreateStrategyRequest, CreateTaskRequest, DeleteResponse, Document, ImpactListQuery,
-    Initiative, ListQuery, Pagination, PromoteNoteRequest, PromoteNoteResponse, RestoreResponse,
-    Strategy, Task, UpdateContentRequest,
+    Initiative, ListEnvelope, ListQuery, Pagination, PromoteNoteRequest, PromoteNoteResponse,
+    RestoreResponse, Strategy, Task, UpdateContentRequest,
 };
 use kairos_client::types_meta::{HistoryVersion, ItemActivityEntry};
 use kairos_client::types_repositories::Impact;
@@ -478,8 +478,9 @@ fn lane_line(short_code: &str, work_class: &str) -> String {
 const HISTORY_LIMIT: i64 = 20;
 
 /// `<noun> history` output (KAIROS-T-0557): the lines of MCP `get_history`.
-/// `--json` prints the two envelopes of the server as they are, under
-/// `versions` and `activity`.
+/// `--json` prints the two lists in the list shape of the CLI
+/// (KAIROS-T-0644): `items`, `total` and `next_offset`, under `versions`
+/// and `activity`.
 pub fn emit_history(
     common: &Common,
     short_code: &str,
@@ -488,12 +489,21 @@ pub fn emit_history(
 ) -> Result<(), CliError> {
     if common.json {
         return print_json(&serde_json::json!({
-            "versions": versions,
-            "activity": activity,
+            "versions": list_json(versions),
+            "activity": list_json(activity),
         }));
     }
     print!("{}", history_text(short_code, versions, activity));
     Ok(())
+}
+
+/// One server page in the list shape of the CLI (KAIROS-T-0644).
+fn list_json<T: utoipa::ToSchema>(page: &ListEnvelope<T>) -> crate::listing::ListJson<'_, T> {
+    crate::listing::ListJson {
+        items: &page.items,
+        total: page.total,
+        next_offset: crate::listing::next_offset(page.total, page.offset, page.items.len()),
+    }
 }
 
 /// The text of [`emit_history`]. Pure.

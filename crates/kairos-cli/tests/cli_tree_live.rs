@@ -606,6 +606,8 @@ async fn cli_command_tree_golden_path_live() {
     let history: serde_json::Value = serde_json::from_str(&stdout).expect("history JSON");
     assert_eq!(history["versions"]["total"], 1, "{stdout}");
     assert_eq!(history["activity"]["total"], 2, "{stdout}");
+    assert_eq!(history["activity"]["next_offset"], 1, "{stdout}");
+    assert!(history["versions"]["next_offset"].is_null(), "{stdout}");
     assert_eq!(
         history["activity"]["items"].as_array().map(Vec::len),
         Some(1)

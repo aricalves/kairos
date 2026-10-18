@@ -426,10 +426,9 @@ values, state writes, links and more:
 - 3 older rows are not shown. Use a larger --limit to see them.
 ```
 
-With `--json`, the command prints one object with two keys. `versions` has
-the envelope of `GET /api/{entity_type}/{short_code}/history`. `activity` has
-the envelope of `GET /api/{entity_type}/{short_code}/activity`. Each envelope
-has `items`, `total`, `limit` and `offset`.
+With `--json`, the command prints one object with two keys: `versions` and
+`activity`. Each key has a list in the shape of the `list` verbs: `items`,
+`total` and `next_offset`.
 
 ### `<noun> create`
 
