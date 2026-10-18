@@ -157,6 +157,8 @@ pub fn AdminMembersPage() -> impl IntoView {
                 </Group>
             </Panel>
             <super::agent_keys::OrgAgentKeysPanel reload/>
+            // KAIROS-T-0587: the service accounts and their keys.
+            <super::service_accounts::ServiceAccountsPanel reload/>
             </Show>
         </Stack>
     }
