@@ -491,7 +491,9 @@ pub struct CreateTaskRequest {
     /// Until then a `repository` alone chose the board (KAIROS-T-0104).
     #[serde(default)]
     pub board_id: Option<String>,
-    /// Column to place it in (UUID); defaults to the board's first column.
+    /// The entry column of the board (UUID), the default (KAIROS-T-0566).
+    /// A task starts there, for every caller: any other column is a 422
+    /// that names the entry column. Create the task, then move it.
     #[serde(default)]
     pub column_id: Option<String>,
     pub title: String,

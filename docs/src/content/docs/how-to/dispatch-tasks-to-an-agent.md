@@ -9,6 +9,10 @@ example, a bug that enters Todo can start a Claude Code session that works on
 the bug. Kairos does not start the session itself. Kairos sends a signed HTTP
 request to a runner, and the runner starts the agent.
 
+A task enters a column by a transition, a move to another board, a cancel or a
+create. A new task starts in the entry column of its board. A task from forge
+intake starts there too. So a rule on the entry column fires for each new task.
+
 **Before you start:**
 
 - You have `configure_boards` on the board, or you are an organization admin.

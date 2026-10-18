@@ -390,9 +390,12 @@ document is a move. See [Capabilities](../capabilities/#the-edit-rule).
 
 ## entry column
 
-A board's first column by position, among its live columns. A new item goes
-there by default. A task that moves to a different delivery board goes there. A
-[request](#request) goes there.
+A board's first column by position, among its live columns. A new task and a
+new initiative start there. Kairos refuses a create into a different column
+(KAIROS-T-0566, KAIROS-T-0643). Create the item, then move it.
+
+A new strategy or ADR goes there by default. A task that moves to a different delivery board
+goes there. A [request](#request) goes there.
 
 ## external reference
 

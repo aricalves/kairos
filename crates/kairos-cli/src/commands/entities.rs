@@ -1178,7 +1178,8 @@ pub struct TaskCreateArgs {
     /// The board decides the team of the task (COLLIERY-A-0023)
     #[arg(long, value_name = "BOARD", required_unless_present = "team")]
     pub board: Option<String>,
-    /// Column to place it in (UUID; defaults to the board's first column)
+    /// The entry column of the board (UUID), the default. A task starts
+    /// there; any other column is refused: move the task after the create
     #[arg(long, value_name = "COLUMN_ID")]
     pub column: Option<String>,
     /// Title
