@@ -875,6 +875,7 @@ fn parse_jobs(
         ("KAIROS_JOB_LIMIT_WEBHOOK_DELIVERY", kinds::WEBHOOK_DELIVERY),
         ("KAIROS_JOB_LIMIT_GITHUB_WRITEBACK", kinds::GITHUB_WRITEBACK),
         ("KAIROS_JOB_LIMIT_ISSUE_IMPORT", kinds::ISSUE_IMPORT),
+        ("KAIROS_JOB_LIMIT_ISSUE_WRITEBACK", kinds::ISSUE_WRITEBACK),
     ] {
         let default = settings.limit(kind);
         let limit: usize = parse_num(get, var, default)?;
@@ -1313,6 +1314,7 @@ mod tests {
         assert!(!config.webhooks.allow_private);
         assert_eq!(config.jobs.limit("webhook_delivery"), 4);
         assert_eq!(config.jobs.limit("github_writeback"), 2);
+        assert_eq!(config.jobs.limit("issue_writeback"), 2);
         assert_eq!(config.writeback.api_url, "https://api.github.com");
 
         let mut vars = MINIMAL.to_vec();
@@ -1478,6 +1480,7 @@ mod tests {
             kinds::EMBEDDING_BATCH,
             kinds::WEBHOOK_DELIVERY,
             kinds::GITHUB_WRITEBACK,
+            kinds::ISSUE_WRITEBACK,
             "site_cleanup",
         ];
         for kind in builds {

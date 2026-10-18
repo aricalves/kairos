@@ -320,7 +320,7 @@ One repository in full. The output has these parts:
   when, and the result of the last write. With the token, Kairos writes a
   comment and the commit status `kairos` on each GitHub pull request that
   links to an item. No tool gives or sets the token. See
-  [Turn on GitHub write-back](../../how-to/turn-on-github-write-back/).
+  [Turn on forge write-back](../../how-to/turn-on-github-write-back/).
 - `code index build`: `on` or `off`. When it is `off`, the builder of the
   server does not build the code index of the repository.
   `update_repository` sets it.

@@ -157,6 +157,14 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
         config.public_url.clone(),
     )
     .register(&jobs);
+    // KAIROS-T-0575: the write-back of an issue that became a task.
+    crate::forge::issue_writeback::IssueWriteBackService::new(
+        job_pool.clone(),
+        config.secrets_key.clone(),
+        config.writeback.clone(),
+        config.public_url.clone(),
+    )
+    .register(&jobs);
     // KAIROS-T-0487: the import of the open issues is a job of the queue.
     crate::forge::import::IssueImportService::new(
         job_pool.clone(),
@@ -367,6 +375,14 @@ pub fn state_with(config: AppConfig, pool: TenantPool, auth: Arc<Authenticator>)
     .with_public_url(config.public_url.clone())
     .register(&jobs);
     crate::forge::writeback::WriteBackService::new(
+        job_pool.clone(),
+        config.secrets_key.clone(),
+        config.writeback.clone(),
+        config.public_url.clone(),
+    )
+    .register(&jobs);
+    // KAIROS-T-0575: the write-back of an issue that became a task.
+    crate::forge::issue_writeback::IssueWriteBackService::new(
         job_pool.clone(),
         config.secrets_key.clone(),
         config.writeback.clone(),
