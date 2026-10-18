@@ -892,6 +892,27 @@ mod tests {
         );
     }
 
+    /// KAIROS-T-0646: `repos local` takes one folder or none. A second
+    /// folder or an unknown flag is refused, and the error names it.
+    #[test]
+    fn repos_local_takes_one_folder_or_none() {
+        for argv in [
+            &["kairos", "repos", "local"][..],
+            &["kairos", "repos", "local", "boards/acme", "--json"][..],
+        ] {
+            let cli = Cli::try_parse_from(argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
+            assert!(matches!(cli.command, Command::Repos(_)));
+        }
+        let err = Cli::try_parse_from(["kairos", "repos", "local", "a", "b"])
+            .err()
+            .expect("a second folder is refused");
+        assert!(err.to_string().contains("'b'"), "{err}");
+        let err = Cli::try_parse_from(["kairos", "repos", "local", "--fetch"])
+            .err()
+            .expect("an unknown flag is refused");
+        assert!(err.to_string().contains("--fetch"), "{err}");
+    }
+
     /// KAIROS-T-0386: `repos write-token` parses its subcommands, and takes
     /// no token as an argument.
     #[test]
