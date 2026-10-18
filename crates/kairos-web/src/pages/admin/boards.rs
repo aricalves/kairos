@@ -409,7 +409,7 @@ pub fn AdminBoardPage() -> impl IntoView {
                         <MutationNotice outcome/>
                         <ColumnsPanel board_id=id.clone() columns=detail.columns.clone()
                             transitions=detail.transitions.clone() busy outcome reload/>
-                        // KAIROS-T-0587: parent_gate or owner_gate, by level.
+                        // KAIROS-T-0587, KAIROS-T-0652: the policies of the level.
                         <super::board_policy::BoardPolicyPanel board=policy_board
                             busy outcome reload/>
                         <TransitionsPanel board_id=id.clone() columns=detail.columns.clone()
@@ -878,6 +878,8 @@ fn MembersPanel(
     };
 
     let (title, caption) = members_panel_words(&board_level);
+    // KAIROS-T-0541: the member grant applies on these two levels only.
+    let member_applies = matches!(board_level.as_str(), "strategy" | "initiative");
     let empty_message = no_members_message(&board_level);
 
     view! {
@@ -958,7 +960,7 @@ fn MembersPanel(
                                 </Group>
                                 <Show when=move || editing.get()>
                                     <Stack gap="sm">
-                                        <CapabilityEditor state=editor/>
+                                        <CapabilityEditor state=editor member_applies/>
                                         <Group>
                                             <Button on_click=Callback::new(on_save)>
                                                 "Save grants"
@@ -993,7 +995,7 @@ fn MembersPanel(
                         <Select label="Organization member" options value=add_email/>
                     }
                 }}
-                <CapabilityEditor state=add_editor/>
+                <CapabilityEditor state=add_editor member_applies/>
                 <Group>
                     <Button on_click=Callback::new(on_add)>"Add member with grants"</Button>
                 </Group>
@@ -1089,6 +1091,7 @@ mod tests {
             code_prefix: id.to_uppercase(),
             parent_gate: None,
             owner_gate: None,
+            blockers_gate: None,
         }
     }
 

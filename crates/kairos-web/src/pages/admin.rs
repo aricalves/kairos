@@ -36,9 +36,10 @@
 //! gate is UX, the server is the authority (A-0006).
 
 use aurora_dark::components::{
-    Anchor, ErrorState, Group, Loading, PageHeader, Panel, SimpleGrid, Stack, Text,
+    Alert, Anchor, ErrorState, Group, Loading, PageHeader, Panel, SimpleGrid, Stack, Text,
 };
 use aurora_dark::frame::{TabItem, Tabs};
+use aurora_dark::tokens::token;
 use leptos::prelude::*;
 use leptos_router::components::Outlet;
 use leptos_router::hooks::use_location;
@@ -252,10 +253,73 @@ pub fn AdminHomePage() -> impl IntoView {
                 </>
             });
             view! {
+                {is_admin.then(|| view! { <RetentionPanel/> })}
                 <SimpleGrid cols=2>
                     {card("/admin/boards", "Boards", boards_blurb)}
                     {admin_only}
                 </SimpleGrid>
+            }
+        }}
+    }
+}
+
+/// mirror of: `kairos_client::types_org::RetentionStatus` (partial).
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct RetentionStatus {
+    mode: String,
+    #[serde(default)]
+    archive_target: Option<String>,
+    status: String,
+    #[serde(default)]
+    warning: Option<String>,
+    #[serde(default)]
+    last_result: Option<String>,
+    #[serde(default)]
+    last_run_at: Option<String>,
+}
+
+/// The line of the overview for the retention settings (KAIROS-T-0631).
+fn retention_line(status: &RetentionStatus) -> String {
+    let target = status.archive_target.as_deref().unwrap_or("none");
+    let last = match (&status.last_result, &status.last_run_at) {
+        (Some(result), Some(at)) => format!("Last pass {at}: {result}."),
+        (Some(result), None) => format!("Last pass: {result}."),
+        _ => "No pass ended yet.".to_string(),
+    };
+    format!("Mode {}, archive target {target}. {last}", status.mode)
+}
+
+/// The retention settings of the deployment on the overview
+/// (KAIROS-T-0631): an alert when the pass removes nothing or fails by its
+/// settings, else one line.
+#[component]
+fn RetentionPanel() -> impl IntoView {
+    let auth = crate::auth::use_auth();
+    let retention = LocalResource::new(move || {
+        auth.track_session();
+        crate::api::get_json::<RetentionStatus>(auth, "/api/org/retention")
+    });
+    view! {
+        {move || match retention.get() {
+            None => view! { <Loading/> }.into_any(),
+            Some(Err(e)) => view! { <ErrorState error=e/> }.into_any(),
+            Some(Ok(status)) => {
+                let line = retention_line(&status);
+                match status.warning.clone() {
+                    Some(warning) => view! {
+                        <Alert title="Retention removes nothing" color=token::GOLD>
+                            <Stack gap="xs">
+                                <Text size="sm">{warning}</Text>
+                                <Text dimmed=true size="sm">{line}</Text>
+                            </Stack>
+                        </Alert>
+                    }.into_any(),
+                    None => view! {
+                        <Panel title="Retention">
+                            <Text dimmed=true size="sm">{format!("{line} Status {}.", status.status)}</Text>
+                        </Panel>
+                    }.into_any(),
+                }
             }
         }}
     }
@@ -437,6 +501,28 @@ mod tests {
             },
             field: field.map(str::to_string),
         }
+    }
+
+    /// KAIROS-T-0631: the line names the mode, the target and the last pass.
+    #[test]
+    fn the_retention_line_names_the_mode_the_target_and_the_last_pass() {
+        let status: RetentionStatus = serde_json::from_value(serde_json::json!({
+            "mode": "archive",
+            "status": "no_target",
+            "warning": "KAIROS_ARCHIVE_TARGET is not set.",
+            "history_hot_days": 90,
+            "history_keep_latest": 5,
+            "activity_retention_days": 365,
+            "last_result": "skipped: no target",
+            "last_run_at": "2026-10-17T12:00:00+00:00"
+        }))
+        .expect("the wire shape decodes");
+        assert_eq!(status.status, "no_target");
+        assert_eq!(
+            retention_line(&status),
+            "Mode archive, archive target none. Last pass 2026-10-17T12:00:00+00:00: \
+             skipped: no target."
+        );
     }
 
     /// COLLIERY-T-0265: a refusal about the slug shows below the field

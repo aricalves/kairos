@@ -247,3 +247,12 @@ token of the repository, or no token. The answer is the list that stays.
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The host has no token |
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | A host that is not a host |
 
+### `GET /api/org/retention`
+
+The retention settings of the deployment and the last pass.
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`RetentionStatus`](../schemas/#retentionstatus) | The retention settings and the last pass |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The caller is not an organization admin |
+

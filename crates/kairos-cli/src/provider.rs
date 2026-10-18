@@ -7,6 +7,9 @@
 //! that the CLI cannot reach is `Error::IssuerUnreachable`, exit code 1
 //! (KAIROS-T-0588): the login stays.
 //!
+//! A refresh holds the lock of the cache ([`credentials::lock`],
+//! KAIROS-T-0594), so two processes do not send one refresh token twice.
+//!
 //! A local session (COLLIERY-T-0213) is not refreshed. It is used until it
 //! expires, and then the same `Error::Token` gives the command to log in
 //! again.
@@ -18,7 +21,7 @@ use std::pin::Pin;
 use kairos_client::{Error, TokenProvider};
 use tokio::sync::Mutex;
 
-use crate::credentials::{self, unix_now};
+use crate::credentials::{self, DeploymentCredentials, unix_now};
 use crate::oidc;
 
 /// A refreshing token provider over one deployment's cache entry.
@@ -28,8 +31,8 @@ pub struct CachedTokenProvider {
     /// Normalized deployment URL (the cache key).
     deployment: String,
     http: reqwest::Client,
-    /// Serializes refreshes so concurrent requests don't race the
-    /// (rotating) refresh token.
+    /// Serializes the requests of this process. The lock file of the cache
+    /// serializes the refreshes of all processes.
     refresh_lock: Mutex<()>,
 }
 
@@ -49,10 +52,7 @@ impl CachedTokenProvider {
         let _guard = self.refresh_lock.lock().await;
         // Re-read the cache on every request: another process (or an
         // earlier refresh in this one) may have rotated the tokens.
-        let mut store =
-            credentials::load(&self.path).map_err(|err| Error::Token(err.to_string()))?;
-        let entry = credentials::entry_for(&store, &self.deployment)
-            .map_err(|err| Error::Token(err.to_string()))?;
+        let (_, entry) = self.read_entry()?;
 
         // A local session (COLLIERY-T-0213) has no issuer and no refresh
         // token, so it never reaches the refresh below. When it is over, the
@@ -67,6 +67,16 @@ impl CachedTokenProvider {
             return Ok(entry.access_token);
         }
 
+        if !entry.needs_refresh(unix_now()) {
+            return Ok(entry.access_token);
+        }
+
+        // KAIROS-T-0594: take the lock of the cache, and read the cache
+        // again. Another process can have refreshed the token while this
+        // one waited; then its token is good, and its refresh token is the
+        // only one that the issuer still accepts.
+        let _cache_lock = self.lock_cache().await?;
+        let (mut store, entry) = self.read_entry()?;
         if !entry.needs_refresh(unix_now()) {
             return Ok(entry.access_token);
         }
@@ -120,6 +130,26 @@ impl CachedTokenProvider {
 }
 
 impl CachedTokenProvider {
+    /// The cache, and the entry of this deployment.
+    fn read_entry(&self) -> Result<(credentials::CredentialStore, DeploymentCredentials), Error> {
+        let store = credentials::load(&self.path).map_err(|err| Error::Token(err.to_string()))?;
+        let entry = credentials::entry_for(&store, &self.deployment)
+            .map_err(|err| Error::Token(err.to_string()))?;
+        Ok((store, entry))
+    }
+
+    /// The lock of the cache. The wait for it runs on a blocking thread, so
+    /// it does not stop the runtime.
+    async fn lock_cache(&self) -> Result<credentials::CacheLock, Error> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || credentials::lock(&path))
+            .await
+            .map_err(|err| {
+                Error::Token(format!("The CLI cannot lock the credential cache: {err}."))
+            })?
+            .map_err(|err| Error::Token(err.to_string()))
+    }
+
     /// The error of a refresh that gave no token (KAIROS-T-0588). An issuer
     /// that the CLI cannot reach is a transport failure (exit 1): the login
     /// stays, and a new login would not help. A refusal of the issuer is the
@@ -149,7 +179,7 @@ impl TokenProvider for CachedTokenProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::credentials::{CredentialStore, DeploymentCredentials};
+    use crate::credentials::CredentialStore;
     use kairos_client::types_auth::Secret;
 
     const DEPLOYMENT: &str = "http://one.kairos.test";
@@ -203,6 +233,60 @@ mod tests {
         );
         assert!(!message.contains("refresh"), "{message}");
         assert!(!message.contains(BEARER), "{message}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// KAIROS-T-0594: a refresh waits for the lock of the cache. When the
+    /// holder of the lock wrote a new token, the refresh uses that token and
+    /// does not go to the issuer.
+    ///
+    /// The issuer of the entry is a closed port: a refresh that does not
+    /// wait fails at once with `IssuerUnreachable`. With the lock held, the
+    /// call cannot end, whatever the timing of the threads.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_refresh_waits_for_the_lock_and_reads_the_cache_again() {
+        let dir =
+            std::env::temp_dir().join(format!("kairos-cli-provider-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("credentials.json");
+        let expired = DeploymentCredentials {
+            access_token: "old-access".into(),
+            refresh_token: Some("old-refresh".into()),
+            expires_at: 1,
+            issuer: "http://127.0.0.1:9".into(),
+            client_id: "kairos-cli".into(),
+            tenant: None,
+            api_bearer: Default::default(),
+            kind: Default::default(),
+            email: None,
+        };
+        let mut store = CredentialStore::default();
+        store.deployments.insert(DEPLOYMENT.into(), expired.clone());
+        credentials::save(&path, &store).expect("save");
+
+        // Another process holds the lock and refreshes.
+        let held = credentials::lock(&path).expect("lock");
+        let provider = std::sync::Arc::new(CachedTokenProvider::new(
+            path.clone(),
+            DEPLOYMENT.to_string(),
+        ));
+        let task = tokio::spawn({
+            let provider = provider.clone();
+            async move { provider.current_token().await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(!task.is_finished(), "the refresh must wait for the lock");
+
+        let mut fresh = expired;
+        fresh.access_token = "new-access".into();
+        fresh.refresh_token = Some("new-refresh".into());
+        fresh.expires_at = unix_now() + 3600;
+        store.deployments.insert(DEPLOYMENT.into(), fresh);
+        credentials::save(&path, &store).expect("save the refreshed token");
+        drop(held);
+
+        let token = task.await.expect("join").expect("the token of the holder");
+        assert_eq!(token, "new-access");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

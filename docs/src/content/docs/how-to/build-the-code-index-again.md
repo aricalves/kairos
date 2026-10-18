@@ -23,9 +23,13 @@ outcome, commit, count of symbols, and the text of a failure. Use
 
 The same records are in the GUI. Find the repository on the team page, or
 on the page Admin, Repositories, and open "Show code index". The panel
-shows the newest index, the last runs and the indexed commits. It updates
-when a run starts or ends. The REST route is
-`GET /api/repositories/{slug}/code-indexes/builds`.
+shows the newest index, the runs and the indexed commits. It updates
+when a run starts or ends.
+
+A page of the panel shows 5 runs. Use the pager below the runs to see the
+older runs. The REST route is
+`GET /api/repositories/{slug}/code-indexes/builds`. Send `offset` with
+`limit` to get a page past the first.
 
 ### The SCIP warnings of a run
 

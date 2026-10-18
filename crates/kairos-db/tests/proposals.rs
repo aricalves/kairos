@@ -17,8 +17,8 @@ use uuid::Uuid;
 use kairos_db::graph::GraphError;
 use kairos_db::models::{BoardLevel, NewUser, RelationshipType, TaskType, WorkClass};
 use kairos_db::proposals::{
-    MAX_PENDING_PER_ITEM, NewProposal, ProposalError, confirm, pending_for_item, propose, reject,
-    stats,
+    Decider, MAX_PENDING_PER_ITEM, NewProposal, ProposalError, confirm, pending_for_item, propose,
+    reject, stats,
 };
 use kairos_db::{create_board, items, provision_tenant, run_public_migrations, schema};
 
@@ -43,6 +43,14 @@ static SCRATCH_DB: scratch::ScratchName = scratch::ScratchName::new("kairos_prop
 
 fn admin_database_url() -> String {
     std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
+}
+
+/// A person who decides with a login, not an agent key.
+fn person(user_id: Uuid) -> Decider {
+    Decider {
+        user_id,
+        agent_key: false,
+    }
 }
 
 fn with_database(url: &str, db: &str) -> String {
@@ -81,6 +89,16 @@ fn edge_proposal_lifecycle() {
         .returning(schema::users::id)
         .get_result::<Uuid>(&mut conn)
         .expect("alice");
+    let bob = diesel::insert_into(schema::users::table)
+        .values(NewUser {
+            external_id: "dex|bob".into(),
+            user_name: "dex|bob".into(),
+            email: "bob@acme.test".into(),
+            display_name: "Bob".into(),
+        })
+        .returning(schema::users::id)
+        .get_result::<Uuid>(&mut conn)
+        .expect("bob");
     let agent = diesel::insert_into(schema::users::table)
         .values(kairos_db::models::public::NewServiceAccountUser {
             external_id: "svc|agent".into(),
@@ -174,19 +192,60 @@ fn edge_proposal_lifecycle() {
     // handlers is a rule the third handler will not have.
     assert!(
         matches!(
-            confirm(&mut conn, p.id, agent),
+            confirm(&mut conn, p.id, person(agent)),
             Err(ProposalError::NotHuman)
         ),
         "a service account confirming its own proposal is the whole thing rule 6 \
          exists to prevent"
     );
     assert!(matches!(
-        reject(&mut conn, p.id, agent),
+        reject(&mut conn, p.id, person(agent)),
         Err(ProposalError::NotHuman)
     ));
 
+    // ---- an agent key does not decide (KAIROS-T-0538) ---------------------
+    // The key is the person, so the user id alone does not tell them apart.
+    let via_key = Decider {
+        user_id: alice,
+        agent_key: true,
+    };
+    assert!(matches!(
+        confirm(&mut conn, p.id, via_key),
+        Err(ProposalError::AgentKey)
+    ));
+    assert!(matches!(
+        reject(&mut conn, p.id, via_key),
+        Err(ProposalError::AgentKey)
+    ));
+
+    // ---- the proposer does not decide (KAIROS-T-0538) ----------------------
+    let by_alice = propose(
+        &mut conn,
+        NewProposal {
+            target_id: c.id,
+            ..evidence(0.2)
+        },
+        alice,
+    )
+    .expect("a person proposes");
+    assert!(matches!(
+        confirm(&mut conn, by_alice.id, person(alice)),
+        Err(ProposalError::Proposer)
+    ));
+    assert!(matches!(
+        reject(&mut conn, by_alice.id, person(alice)),
+        Err(ProposalError::Proposer)
+    ));
+    let other = confirm(&mut conn, by_alice.id, person(bob)).expect("another person confirms");
+    assert_eq!(other.decided_by, Some(bob));
+    // Two decisions of one proposal: the second one is refused.
+    assert!(matches!(
+        reject(&mut conn, by_alice.id, person(bob)),
+        Err(ProposalError::AlreadyDecided { ref state, .. }) if state == "confirmed"
+    ));
+
     // ---- reject is recorded, not erased ------------------------------------
-    let rejected = reject(&mut conn, p.id, alice).expect("rejecting");
+    let rejected = reject(&mut conn, p.id, person(alice)).expect("rejecting");
     assert_eq!(rejected.state, "rejected");
     assert_eq!(rejected.decided_by, Some(alice));
     assert!(rejected.decided_at.is_some());
@@ -195,12 +254,8 @@ fn edge_proposal_lifecycle() {
         "no longer pending"
     );
     let s = stats(&mut conn).expect("stats");
-    assert_eq!((s.pending, s.confirmed, s.rejected), (0, 0, 1));
-    assert_eq!(
-        s.confirm_rate(),
-        Some(0.0),
-        "a feature nobody agrees with should read as zero, not as absent"
-    );
+    assert_eq!((s.pending, s.confirmed, s.rejected), (0, 1, 1));
+    assert_eq!(s.confirm_rate(), Some(0.5));
 
     // A rejected pair CAN be proposed again — a rejection judges the evidence at
     // the time, and better evidence deserves another hearing.
@@ -208,16 +263,16 @@ fn edge_proposal_lifecycle() {
 
     // ---- a decision is not revisited ---------------------------------------
     assert!(matches!(
-        reject(&mut conn, p.id, alice),
+        reject(&mut conn, p.id, person(alice)),
         Err(ProposalError::AlreadyDecided { .. })
     ));
     assert!(matches!(
-        confirm(&mut conn, p.id, alice),
+        confirm(&mut conn, p.id, person(alice)),
         Err(ProposalError::AlreadyDecided { .. })
     ));
 
     // ---- confirm creates the real edge -------------------------------------
-    let confirmed = confirm(&mut conn, second.id, alice).expect("confirming");
+    let confirmed = confirm(&mut conn, second.id, person(alice)).expect("confirming");
     assert_eq!(confirmed.state, "confirmed");
     assert_eq!(confirmed.decided_by, Some(alice));
     #[derive(diesel::QueryableByName)]
@@ -236,8 +291,7 @@ fn edge_proposal_lifecycle() {
     .count;
     assert_eq!(edge, 1, "the edge really exists now");
     let s = stats(&mut conn).expect("stats");
-    assert_eq!((s.pending, s.confirmed, s.rejected), (0, 1, 1));
-    assert_eq!(s.confirm_rate(), Some(0.5));
+    assert_eq!((s.pending, s.confirmed, s.rejected), (0, 2, 1));
 
     // ---- the graph's OWN checks are inherited, not re-implemented ----------
     // Two of them, both refused at confirmation time rather than at proposal
@@ -258,7 +312,7 @@ fn edge_proposal_lifecycle() {
         agent,
     )
     .expect("proposing is allowed — the graph is consulted on confirmation");
-    let refused = confirm(&mut conn, loop_proposal.id, alice)
+    let refused = confirm(&mut conn, loop_proposal.id, person(alice))
         .expect_err("confirming a cycle must be refused");
     assert!(
         matches!(
@@ -276,7 +330,7 @@ fn edge_proposal_lifecycle() {
             .any(|p| p.id == loop_proposal.id && p.state == "pending"),
         "still waiting: {still:?}"
     );
-    reject(&mut conn, loop_proposal.id, alice).expect("rejected on its merits instead");
+    reject(&mut conn, loop_proposal.id, person(alice)).expect("rejected on its merits instead");
 
     // 2. The rule matrix. `parent` does not run task -> task, and an agent that
     // proposes one gets the same refusal a human would.
@@ -293,13 +347,71 @@ fn edge_proposal_lifecycle() {
         agent,
     )
     .expect("proposing an ill-shaped edge is allowed");
-    let refused =
-        confirm(&mut conn, wrong_shape.id, alice).expect_err("task -> task parent must be refused");
+    let refused = confirm(&mut conn, wrong_shape.id, person(alice))
+        .expect_err("task -> task parent must be refused");
     assert!(
         matches!(refused, ProposalError::Graph(GraphError::Rule(_))),
         "by the existing rule matrix: {refused}"
     );
-    reject(&mut conn, wrong_shape.id, alice).expect("cleaning up");
+    reject(&mut conn, wrong_shape.id, person(alice)).expect("cleaning up");
+
+    // ---- two decisions at the same time (KAIROS-T-0538) --------------------
+    // The UPDATE has `state = 'pending'`. The first decision holds the row
+    // lock in an open transaction. The second passes the check before the
+    // UPDATE, then waits on the lock. When the first commits, the second
+    // changes no row and is refused. Without the condition, both succeed.
+    let d = task(&mut conn, "D");
+    let e = task(&mut conn, "E");
+    let raced = propose(
+        &mut conn,
+        NewProposal {
+            source_id: d.id,
+            target_id: e.id,
+            ..evidence(0.4)
+        },
+        agent,
+    )
+    .expect("proposing");
+    let session = |url: &str| {
+        let mut conn = PgConnection::establish(url).expect("connecting");
+        sql_query("SET search_path TO org_acme, public")
+            .execute(&mut conn)
+            .expect("pinning");
+        conn
+    };
+    let mut first = session(&url);
+    let mut second = session(&url);
+    let pid = |conn: &mut PgConnection| {
+        #[derive(diesel::QueryableByName)]
+        struct Pid {
+            #[diesel(sql_type = diesel::sql_types::Integer)]
+            pid: i32,
+        }
+        sql_query("SELECT pg_backend_pid() AS pid")
+            .get_result::<Pid>(conn)
+            .expect("pid")
+            .pid
+    };
+    let second_pid = pid(&mut second);
+    let raced_id = raced.id;
+    let late = std::thread::scope(|scope| {
+        first
+            .transaction::<_, ProposalError, _>(|first| {
+                confirm(first, raced_id, person(alice)).expect("the first decision");
+                let waiter = scope.spawn(move || reject(&mut second, raced_id, person(bob)));
+                wait_for_lock(&mut conn, second_pid);
+                Ok(waiter)
+            })
+            .expect("the first decision commits")
+            .join()
+            .expect("the second decision")
+    });
+    assert!(
+        matches!(late, Err(ProposalError::AlreadyDecided { ref state, .. }) if state == "confirmed"),
+        "the second decision changes no row: {late:?}"
+    );
+    let row = pending_for_item(&mut conn, d.id).expect("pending");
+    assert!(row.is_empty(), "decided once: {row:?}");
 
     // ---- the cap ------------------------------------------------------------
     let hub = task(&mut conn, "Hub");
@@ -336,4 +448,29 @@ fn edge_proposal_lifecycle() {
         matches!(capped, Err(ProposalError::TooManyPending { limit, .. }) if limit == MAX_PENDING_PER_ITEM),
         "an agent loop must not bury the signal under its own output: {capped:?}"
     );
+}
+
+/// Wait until the backend `pid` waits on a lock: the second decision is in
+/// its UPDATE. Panics after 20 seconds.
+fn wait_for_lock(conn: &mut PgConnection, pid: i32) {
+    #[derive(diesel::QueryableByName)]
+    struct Waiting {
+        #[diesel(sql_type = diesel::sql_types::Bool)]
+        waiting: bool,
+    }
+    for _ in 0..400 {
+        let waiting = sql_query(
+            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
+                            WHERE pid = $1 AND wait_event_type = 'Lock') AS waiting",
+        )
+        .bind::<diesel::sql_types::Integer, _>(pid)
+        .get_result::<Waiting>(conn)
+        .expect("reading pg_stat_activity")
+        .waiting;
+        if waiting {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    panic!("the second decision never waited on the row lock");
 }

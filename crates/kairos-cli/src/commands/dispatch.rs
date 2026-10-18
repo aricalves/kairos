@@ -159,6 +159,9 @@ pub enum DispatchCommand {
         /// The newest deliveries to show, 1 to 200 (50)
         #[arg(long)]
         limit: Option<i64>,
+        /// Show the deliveries older than this delivery (id): the next page
+        #[arg(long)]
+        before: Option<String>,
         #[command(flatten)]
         common: Common,
     },
@@ -449,6 +452,7 @@ impl DispatchCommand {
                 target,
                 rule,
                 limit,
+                before,
                 common,
             } => {
                 let client = client(&common)?;
@@ -459,6 +463,7 @@ impl DispatchCommand {
                             target_id: target,
                             rule_id: rule,
                             limit,
+                            before,
                         },
                     )
                     .await?;

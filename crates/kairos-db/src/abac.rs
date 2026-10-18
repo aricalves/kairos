@@ -126,12 +126,16 @@ struct BoolRow {
 /// for an archive and a restore.
 ///
 /// Third arm (KAIROS-T-0410, KAIROS-A-0025 decision 1): on a board of the
-/// level `strategy` or `initiative`, a principal who holds ANY grant on the
-/// board is a member of it, and membership implies `manage_<type>` of the
-/// board and `transition_items`
+/// level `strategy` or `initiative`, a principal who holds the member grant
+/// ([`kairos_core::abac::MEMBER`] bound as `$8`, matched as each grant: so
+/// `member` or `*`) is a member of it, and membership implies
+/// `manage_<type>` of the board and `transition_items`
 /// ([`kairos_core::abac::member_implies_on_strategy_board`] bound as `$6`,
 /// [`kairos_core::abac::member_implies_on_initiative_board`] as `$7`).
-/// Nothing is stored: the revoke of the last grant is the revocation.
+/// Since KAIROS-T-0541 no other grant makes a member: until then any grant
+/// did, so `transition_items` or `configure_boards` alone also edited.
+/// Nothing is stored: the revoke of the member grant is the revocation.
+/// The pure mirror is [`kairos_core::abac::grants_membership`].
 /// Archive and restore do not take this arm: see
 /// [`check_granted_capability`].
 pub fn check_capability(
@@ -193,7 +197,11 @@ fn check_capability_with(
                        OR ($7 AND b.board_level = 'initiative'))
                   AND EXISTS (
                       SELECT 1 FROM board_member_capabilities
-                      WHERE board_id = $1 AND user_id = $2
+                      WHERE board_id = $1
+                        AND user_id = $2
+                        AND ($8 LIKE replace(replace(replace(replace(
+                                 capability, '\', '\\'), '%', '\%'), '_', '\_'), '*', '%')
+                             OR capability = '*')
                   )
             )
           ) AS authorized",
@@ -205,14 +213,17 @@ fn check_capability_with(
     .bind::<Bool, _>(kairos_core::abac::team_implies_on_adr_board(required))
     .bind::<Bool, _>(membership && kairos_core::abac::member_implies_on_strategy_board(required))
     .bind::<Bool, _>(membership && kairos_core::abac::member_implies_on_initiative_board(required))
+    .bind::<Text, _>(kairos_core::abac::MEMBER)
     .get_result(conn)?;
     Ok(row.authorized)
 }
 
 /// Whether `user_id` is a MEMBER of the board: it holds any grant on it
-/// (KAIROS-T-0410, KAIROS-A-0025 decision 1). The third arm of
-/// [`check_capability`] asks the same test. On a strategy or an initiative
-/// board, a member may claim an item with no owner (KAIROS-T-0411).
+/// (KAIROS-T-0410, KAIROS-A-0025 decision 1). On a strategy or an initiative
+/// board, a member may claim an item with no owner (KAIROS-T-0411). The
+/// third arm of [`check_capability`] is narrower since KAIROS-T-0541: only
+/// the member grant ([`kairos_core::abac::MEMBER`]) gives the edit and the
+/// move. This test, for the claim and the hand-off, still counts any grant.
 pub fn is_board_member(
     conn: &mut PgConnection,
     board_id: Uuid,

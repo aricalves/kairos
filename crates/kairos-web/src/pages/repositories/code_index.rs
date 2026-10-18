@@ -10,6 +10,10 @@
 //! short code is the slug of the repository makes it read again, so a run
 //! that starts or ends shows with no reload.
 //!
+//! The runs have pages of [`RUNS_SHOWN`] (KAIROS-T-0584): the pager under
+//! them sends `offset`. On a page past the first, the panel reads the
+//! newest run too, so "Build again" stays off while a run is active.
+//!
 //! The panel has `data-code-index-repo`, not `data-repo`: the row of the
 //! repository has `data-repo` already, and the e2e specs select it alone.
 //!
@@ -27,6 +31,7 @@
 use aurora_dark::components::{
     Alert, Button, Empty, ErrorState, Group, Loading, Pill, Stack, Text,
 };
+use aurora_dark::data::Pagination;
 use aurora_dark::tokens::{ApiError, token};
 use leptos::prelude::*;
 use serde::Deserialize;
@@ -36,8 +41,8 @@ use crate::auth::{Auth, use_auth};
 use crate::pages::boards::live;
 use crate::pages::item::api::error_text;
 
-/// The runs that the panel shows.
-const RUNS_SHOWN: i64 = 5;
+/// The runs of a page of the panel.
+const RUNS_SHOWN: usize = 5;
 
 /// The indexed commits that the panel shows before "Show all".
 const INDEXES_SHOWN: usize = 10;
@@ -128,6 +133,9 @@ pub struct CacheUse {
 pub struct CodeIndexBuildList {
     pub items: Vec<CodeIndexBuild>,
     pub total: i64,
+    /// The runs before the page (KAIROS-T-0584).
+    #[serde(default)]
+    pub offset: i64,
     /// Set when no code index builder runs (KAIROS-T-0394).
     #[serde(default)]
     pub builder: Option<String>,
@@ -141,25 +149,48 @@ pub struct CodeIndexBuildList {
 pub struct CodeIndexState {
     /// The indexed commits, newest write first.
     pub indexes: Vec<CodeIndex>,
-    /// The runs, newest first.
+    /// A page of the runs, newest first.
     pub builds: CodeIndexBuildList,
+    /// The newest run of the repository, on any page (KAIROS-T-0584).
+    pub newest_run: Option<CodeIndexBuild>,
 }
 
 impl CodeIndexState {
     /// Whether a run is active: the newest run is `running`.
     pub fn running(&self) -> bool {
-        self.builds
-            .items
-            .first()
+        self.newest_run
+            .as_ref()
             .is_some_and(|run| run.outcome == "running")
     }
 }
 
-async fn read_state(auth: Auth, slug: &str) -> Result<CodeIndexState, ApiError> {
+/// The URL of a page of the runs. Pure, host-tested.
+fn runs_url(base: &str, offset: usize) -> String {
+    if offset == 0 {
+        format!("{base}/builds?limit={RUNS_SHOWN}")
+    } else {
+        format!("{base}/builds?limit={RUNS_SHOWN}&offset={offset}")
+    }
+}
+
+async fn read_state(auth: Auth, slug: &str, offset: usize) -> Result<CodeIndexState, ApiError> {
     let base = format!("/api/repositories/{}/code-indexes", encode_component(slug));
     let indexes = get_json(auth, &base).await?;
-    let builds = get_json(auth, &format!("{base}/builds?limit={RUNS_SHOWN}")).await?;
-    Ok(CodeIndexState { indexes, builds })
+    let builds: CodeIndexBuildList = get_json(auth, &runs_url(&base, offset)).await?;
+    let newest_run = if offset == 0 {
+        builds.items.first().cloned()
+    } else {
+        get_json::<CodeIndexBuildList>(auth, &format!("{base}/builds?limit=1"))
+            .await?
+            .items
+            .into_iter()
+            .next()
+    };
+    Ok(CodeIndexState {
+        indexes,
+        builds,
+        newest_run,
+    })
 }
 
 /// `POST /api/repositories/{slug}/code-indexes/rebuild`: the answer is the
@@ -332,6 +363,9 @@ pub fn CodeIndexPanel(
     let open = RwSignal::new(false);
     let show_all = RwSignal::new(false);
     let reload = RwSignal::new(0u32);
+    // KAIROS-T-0584: the page of the runs.
+    let runs_offset = RwSignal::new(0usize);
+    let runs_limit = RwSignal::new(RUNS_SHOWN);
     let busy = RwSignal::new(false);
     // `(ok, text)`: the answer of the last "Build again".
     let notice: RwSignal<Option<(bool, String)>> = RwSignal::new(None);
@@ -345,9 +379,10 @@ pub fn CodeIndexPanel(
         auth.track_session();
         let _ = reload.get();
         let wanted = open.get();
+        let offset = runs_offset.get();
         async move {
             if wanted {
-                read_state(auth, &slug.get_value()).await.map(Some)
+                read_state(auth, &slug.get_value(), offset).await.map(Some)
             } else {
                 Ok(None)
             }
@@ -436,6 +471,7 @@ pub fn CodeIndexPanel(
                         let newest = state.indexes.first().map(index_line);
                         let count = state.indexes.len();
                         let runs = state.builds.items.clone();
+                        let runs_total = usize::try_from(state.builds.total).unwrap_or(0);
                         let indexes = state.indexes.clone();
                         let builder = state.builds.builder.clone();
                         // The disk use is for an organization admin.
@@ -461,7 +497,7 @@ pub fn CodeIndexPanel(
                                         </Text>
                                     }.into_any(),
                                 }}
-                                <Text size="xs" dimmed=true>"Last runs of the builder"</Text>
+                                <Text size="xs" dimmed=true>"Runs of the builder, newest first"</Text>
                                 {if runs.is_empty() {
                                     view! {
                                         <Empty message="No run of the builder yet. Kairos builds the index \
@@ -501,6 +537,13 @@ pub fn CodeIndexPanel(
                                         </Stack>
                                     }.into_any()
                                 }}
+                                {(runs_total > RUNS_SHOWN).then(|| view! {
+                                    <div data-testid="code-index-runs-pager">
+                                        <Pagination offset=runs_offset limit=runs_limit
+                                            total=runs_total
+                                            range_label=Callback::new(|range| shell_api::page_range_text(&range))/>
+                                    </div>
+                                })}
                                 {disk.map(|disk| view! {
                                     <Text size="xs" dimmed=true>"Disk use of the builder"</Text>
                                     <Stack gap="xs" attr:data-testid="code-index-disk">
@@ -653,11 +696,35 @@ mod tests {
             run_line(&missing),
             "first · t · 10 symbols · ollama-cloud/m · 7 summaries missing"
         );
+        let newest_run = list.items.first().cloned();
         let state = CodeIndexState {
             indexes: vec![index],
-            builds: list,
+            builds: list.clone(),
+            newest_run,
         };
         assert!(!state.running(), "the newest run is ok");
+        // KAIROS-T-0584: on a page past the first, the newest run decides.
+        let past_first = CodeIndexState {
+            newest_run: list.items.get(1).cloned(),
+            ..state
+        };
+        assert!(past_first.running(), "the newest run is running");
+    }
+
+    /// KAIROS-T-0584: a page of the runs sends its offset.
+    #[test]
+    fn a_page_of_the_runs_sends_its_offset() {
+        let base = "/api/repositories/site/code-indexes";
+        assert_eq!(runs_url(base, 0), format!("{base}/builds?limit=5"));
+        assert_eq!(runs_url(base, 5), format!("{base}/builds?limit=5&offset=5"));
+        let page: CodeIndexBuildList =
+            serde_json::from_str(r#"{"items":[],"total":12,"limit":5,"offset":10}"#)
+                .expect("a page decodes");
+        assert_eq!((page.total, page.offset), (12, 10));
+        assert_eq!(
+            shell_api::page_range_text(&aurora_dark::data::page_range(10, 5, 12)),
+            "The list shows items 11 to 12 of 12."
+        );
     }
 
     #[test]

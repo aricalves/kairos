@@ -849,6 +849,20 @@ first start of a deployment runs the pass at once. One pass:
 - Writes one `retention_sweep` row to the `activity_log` of each tenant that
   it sweeps, with the counts of the rows it archived and removed.
 - Logs the counts for each tenant and the number of deleted sessions.
+- Writes its record in the field `result` of the payload of its job.
+  `GET /api/org/retention` shows the record of the last pass.
+
+The pass reads `item_history` one page of items at a time. It reads only the
+version and the time of each row. It reads the content only of the rows that
+it archives. It reads `activity_log` one page of rows at a time. It removes
+the rows in batches.
+
+In the mode `archive` with no `KAIROS_ARCHIVE_TARGET`, the pass reads no row
+of `item_history` and `activity_log`, and removes none. The `retention_sweep`
+row and the record of the job then say `skipped: no target`. `/readyz` adds a
+line that starts with `warning:`, and the status stays 200. The Admin overview
+of the GUI shows an alert. An `s3://` target gives a warning too, because
+each pass fails.
 
 When there are 2 or more replicas, only one replica runs a pass. A failed
 pass is logged and tried again. The next pass runs on time. A value that the
@@ -868,7 +882,7 @@ exception: empty means no target.
 | `KAIROS_ARCHIVE_TARGET` | filesystem path or `s3://…` URL | unset | Where prune candidates are offloaded as NDJSON. A `file://` prefix is stripped. An `s3://` value parses to a distinct S3 target that the shipped code rejects with a typed not-implemented error, rather than being misread as a directory name. Empty means no target. |
 | `KAIROS_NOTIFICATIONS_READ_DAYS` | unsigned integer (days) | `30` | The days that a read notification stays. `0` keeps read notifications. An unread notification stays until the person reads it. |
 | `KAIROS_CODE_INDEX_POOL_DAYS` | unsigned integer (days) | `30` | The days that a summary of a code-index pool stays when no stored index uses it. `0` keeps such summaries. A summary that an index uses stays. |
-| `KAIROS_RETENTION_MODE` | `archive` \| `discard` \| `off` | `archive` | `archive` offloads before pruning and, with no target configured, prunes nothing and logs a warning instead. `discard` prunes without archiving. `off` disables the sweeper entirely. Case-insensitive; any other value fails to parse. |
+| `KAIROS_RETENTION_MODE` | `archive` \| `discard` \| `off` | `archive` | `archive` offloads before pruning and, with no target configured, reads and prunes nothing and records `skipped: no target`. `discard` prunes without archiving. `off` disables the sweeper entirely. Case-insensitive; any other value fails to parse. |
 
 Past the hot window, compaction keeps the first and last snapshot per item per
 UTC calendar month and treats the intermediate versions as prune candidates.
@@ -1021,7 +1035,14 @@ and a message naming all three.
 The directory is created mode `0700`, and `credentials.json` inside it is
 written mode `0600` — both at creation and on every rewrite, including the
 token-refresh path. Writes are atomic: a temporary file is written and then
-renamed.
+renamed. The name of the temporary file has the process id:
+`credentials.json.<PID>.tmp`.
+
+A token refresh holds an advisory lock of the operating system on
+`credentials.json.lock`. `login` and `logout` hold it while they change the
+cache. A second process that must refresh waits for the lock. Then it reads
+the cache again and uses the new token. Thus two processes do not send the
+same refresh token, which an issuer that rotates refresh tokens accepts once.
 
 ### `credentials.json`
 
@@ -1076,8 +1097,11 @@ An entry for a local session holds the session bearer in `access_token`.
 A token is refreshed when its `expires_at` is within 30 seconds of now, so a
 token never expires mid-request. The CLI does not refresh a local session. The
 CLI uses it until its `expires_at`. After that, each command fails with exit 2
-and gives the `kairos login` command. A file that does not parse as JSON is an
-authentication error (exit 2) naming the file.
+and gives the `kairos login` command.
+
+A file that does not parse is an authentication error (exit 2). The message
+names the file and the fault. The JSON is not valid, it stops early, or it does
+not have the fields of a credential cache.
 
 ### `kairos index update` and the base index
 
@@ -1095,6 +1119,7 @@ index. The output says so. The tool `fetch_index` of the code tools does the sam
 |---|---|
 | `--url`, then `KAIROS_URL`, then `deployment_url` in `.claude/kairos.local.md` | The Kairos deployment. With none of them, the CLI uses the deployment of `kairos login`. |
 | `KAIROS_KEY`, then `KAIROS_MCP_KEY` | An agent key or a service-account key, sent as the bearer, as for each other command ([CLI → Authentication](../cli/#authentication)). With neither, the CLI uses the credentials of `kairos login`. |
+| `--tenant`, then `tenant` in `.claude/kairos.local.md` | The tenant, for the credentials of `kairos login`. With neither, the CLI uses the tenant of the login. A key carries its tenant. |
 | `--repository`, then `repository` in `.claude/kairos.local.md` | The repository in Kairos. With neither, the CLI uses the repository whose `repo_url` is the `origin` remote of the checkout. |
 | `--max-changed` | The most files that can change since the base index. When the update runs a model, the default is 200. With `--link-only` or on a hosted repository, there is no default limit. |
 | `--link-only` | Do not run the summary model. The update links the summaries that are in the pool of the index, and it does not make new summaries. The background update of the Claude Code plugin uses this option. |

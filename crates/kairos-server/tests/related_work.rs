@@ -228,13 +228,39 @@ fn related_work_proposes_and_degrades() {
         !degraded.proposals.is_empty(),
         "rule 7: it answers from text rather than returning nothing"
     );
+    // KAIROS-T-0562: the response says "Text only" once, in its note, and no
+    // proposal repeats it.
+    assert!(
+        degraded.sources.note().starts_with("Text only"),
+        "{}",
+        degraded.sources.note()
+    );
     assert!(
         degraded
             .proposals
             .iter()
-            .all(|p| p.why.contains("Text only")),
-        "and every proposal admits it: {:?}",
-        degraded.proposals[0].why
+            .all(|p| !p.why.contains("Text only")),
+        "no proposal repeats the warning: {:?}",
+        degraded
+            .proposals
+            .iter()
+            .map(|p| &p.why)
+            .collect::<Vec<_>>()
+    );
+    assert!(degraded.proposals.len() <= kairos_core::retrieval::TEXT_ONLY_LIMIT);
+    let degraded_codes: Vec<&str> = degraded
+        .proposals
+        .iter()
+        .map(|p| p.short_code.as_str())
+        .collect();
+    assert_eq!(
+        degraded_codes.first(),
+        Some(&twin.short_code.as_str()),
+        "the strongest title match comes first: {degraded_codes:?}"
+    );
+    assert!(
+        !degraded_codes.contains(&linked.short_code.as_str()),
+        "{degraded_codes:?}"
     );
 
     // ---- embed everything, then ask again ----------------------------------
@@ -349,6 +375,198 @@ fn related_work_proposes_and_degrades() {
     service
         .related_work(&mut conn, "DEMO-T-9999", &config)
         .expect_err("an unknown item must not read as 'nothing is related'");
+}
+
+static SCRATCH_DB_TEXT: scratch::ScratchName =
+    scratch::ScratchName::new("kairos_related_work_text_test");
+
+/// KAIROS-T-0562: with no vectors, the answer is short and has a bar.
+///
+/// A match on common words gives no proposal. A strong title match on the same
+/// board comes first. A weak match on the same board stays under the bar. And
+/// with vectors, the answer has no bar and the old limit.
+#[test]
+fn text_only_answers_are_short_and_have_a_bar() {
+    let admin_url = admin_database_url();
+    let mut admin = PgConnection::establish(&admin_url)
+        .unwrap_or_else(|e| panic!("cannot connect to compose postgres at {admin_url}: {e}"));
+    sql_query(format!(
+        "DROP DATABASE IF EXISTS {SCRATCH_DB_TEXT} WITH (FORCE)"
+    ))
+    .execute(&mut admin)
+    .expect("dropping scratch");
+    sql_query(format!("CREATE DATABASE {SCRATCH_DB_TEXT}"))
+        .execute(&mut admin)
+        .expect("creating scratch");
+    let _scratch_guard = scratch::ScratchGuard::new(&SCRATCH_DB_TEXT);
+    let url = with_database(&admin_url, &SCRATCH_DB_TEXT);
+
+    let mut conn = PgConnection::establish(&url).expect("connecting");
+    run_public_migrations(&mut conn).expect("public migrations");
+    provision_tenant(&mut conn, "acme", "Acme Inc").expect("provisioning");
+    sql_query("SET search_path TO org_acme, public")
+        .execute(&mut conn)
+        .expect("pinning");
+
+    let robin = diesel::insert_into(schema::users::table)
+        .values(NewUser {
+            external_id: "dex|robin".into(),
+            user_name: "dex|robin".into(),
+            email: "robin@acme.test".into(),
+            display_name: "Robin".into(),
+        })
+        .returning(schema::users::id)
+        .get_result::<Uuid>(&mut conn)
+        .expect("robin");
+    let board_of = |conn: &mut PgConnection, name: &str, slug: &str| {
+        let team = seed_board_team(conn, &format!("{name} Team"), &format!("{slug}-team"));
+        create_board(
+            conn,
+            BoardLevel::Delivery,
+            name,
+            slug,
+            kairos_db::CodePrefix::FromSlug,
+            Some(team),
+            Some(robin),
+        )
+        .expect("board")
+        .id
+    };
+    // `alpha` sorts before `payments`, so a tie on the score would put the
+    // item of the other board first. The board weight must decide.
+    let payments = board_of(&mut conn, "Payments", "payments");
+    let alpha = board_of(&mut conn, "Alpha", "alpha");
+
+    let task = |conn: &mut PgConnection, board: Uuid, title: &str, content: &str| {
+        items::create_task(
+            conn,
+            CreateTask {
+                board_id: board,
+                column_id: None,
+                title,
+                content,
+                task_type: TaskType::Task,
+                work_class: WorkClass::Planned,
+                repository_id: None,
+            },
+            robin,
+        )
+        .expect("task")
+    };
+
+    // Common words: most items have "build" and "test" in the title.
+    let racy = task(
+        &mut conn,
+        payments,
+        "Flaky ETXTBSY race in the build test",
+        "The test binary is still open for writing when the build runs it.",
+    );
+    for (i, title) in [
+        "Build the docs test page",
+        "Test the login build",
+        "Speed up the build of the test suite",
+        "Build cache for the test image",
+        "Test data for the nightly build",
+        "Split the build and the test steps",
+        "Test the release build on a clean host",
+        "Build badge for the test report",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let board = if i % 2 == 0 { payments } else { alpha };
+        task(
+            &mut conn,
+            board,
+            title,
+            "Routine work on the pipeline, and nothing about a race.",
+        );
+    }
+
+    // A strong title match, once on the board of the subject and once on
+    // another board.
+    let subject = task(
+        &mut conn,
+        payments,
+        "Webhook retry backoff for the payments queue",
+        "Retries of a failed webhook go out at once, and the queue fills.",
+    );
+    let same_board = task(
+        &mut conn,
+        payments,
+        "Webhook retry backoff in the payments queue",
+        "The retry of a webhook needs a backoff.",
+    );
+    let other_board = task(
+        &mut conn,
+        alpha,
+        "Webhook retry backoff in the payments queue",
+        "The retry of a webhook needs a backoff.",
+    );
+    // Only one word of the title, on the same board: under the bar.
+    let weak_same_board = task(
+        &mut conn,
+        payments,
+        "Payments dashboard colours",
+        "The colours of the dashboard.",
+    );
+
+    let provider: Arc<dyn EmbeddingProvider> = Arc::new(DeterministicProvider::default());
+    let service = EmbeddingService::new(provider);
+    let config = RetrievalConfig::default();
+
+    // ---- common words only: none found ------------------------------------
+    let found = service
+        .related_work(&mut conn, &racy.short_code, &config)
+        .expect("a text-only answer");
+    assert!(found.sources.degraded(), "no vectors yet");
+    assert!(
+        found.proposals.is_empty(),
+        "a match on \"build\" and \"test\" is not related work: {:?}",
+        found
+            .proposals
+            .iter()
+            .map(|p| (&p.short_code, &p.title, p.score))
+            .collect::<Vec<_>>()
+    );
+
+    // ---- a strong title match on the same board comes first ---------------
+    let found = service
+        .related_work(&mut conn, &subject.short_code, &config)
+        .expect("a text-only answer");
+    let codes: Vec<&str> = found
+        .proposals
+        .iter()
+        .map(|p| p.short_code.as_str())
+        .collect();
+    assert_eq!(
+        codes,
+        [
+            same_board.short_code.as_str(),
+            other_board.short_code.as_str()
+        ],
+        "the same board first, and the weak match under the bar: {:?}",
+        found
+            .proposals
+            .iter()
+            .map(|p| (&p.short_code, p.score))
+            .collect::<Vec<_>>()
+    );
+    assert!(!codes.contains(&weak_same_board.short_code.as_str()));
+    assert!(found.proposals.iter().all(|p| !p.why.contains("Text only")));
+
+    // ---- with vectors: no bar, and the old limit ---------------------------
+    service.refresh_batch(&mut conn, 100).expect("embedding");
+    let found = service
+        .related_work(&mut conn, &racy.short_code, &config)
+        .expect("a hybrid answer");
+    assert!(!found.sources.degraded(), "vectors now");
+    assert_eq!(found.sources.note(), "Ranked across text and meaning.");
+    assert_eq!(
+        found.proposals.len(),
+        config.limit,
+        "the hybrid answer has no text bar and keeps its limit"
+    );
 }
 
 /// Eyeball real retrieval against the seeded `demo` tenant, with the **real**
