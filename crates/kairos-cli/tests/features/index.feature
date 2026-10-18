@@ -10,6 +10,17 @@ Feature: The CLI and the code tools
     Then the status shows the count of files, symbols, edges and summaries
     And the index is in .kairos/index.db and git ignores it
 
+  # KAIROS-T-0654: with --json, each command prints one JSON object.
+  Scenario: Build and status with --json give one JSON object each
+    Given the polyglot fixture with no index
+    When I run "kairos index build --json" and then "kairos index status --json"
+    Then each output is one JSON object with the counts of the index
+
+  Scenario: duplicates and references with --json give the list envelope
+    Given an index of the polyglot fixture
+    When I run "kairos index duplicates --json" and then "kairos index references Queue --file src/queue.rs --json"
+    Then each output is the list envelope, with the rows of the text
+
   # The deterministic vectors of the tests come from a hash of the text, so
   # their rank is noise. These 2 scenarios check the text rank
   # (KAIROS-T-0423), so their index has no vectors.

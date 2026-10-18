@@ -92,6 +92,7 @@ fn new_task(board: &str, title: &str, content: &str) -> CreateTaskRequest {
         team_id: None,
         repository: None,
         from_team: None,
+        parent: None,
     }
 }
 

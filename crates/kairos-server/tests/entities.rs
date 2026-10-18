@@ -408,6 +408,7 @@ async fn entity_endpoints_against_live_stack() {
             content: "M2 endpoints".into(),
             complexity: Some("m".into()),
             bucket_type: None,
+            parent: None,
         })
         .await
         .expect("creating initiative");
@@ -426,6 +427,7 @@ async fn entity_endpoints_against_live_stack() {
                 content: String::new(),
                 complexity: Some("huge".into()),
                 bucket_type: None,
+                parent: None,
             })
             .await,
     );
@@ -505,6 +507,7 @@ async fn entity_endpoints_against_live_stack() {
         work_class: Some("planned".into()),
         team_id: None,
         from_team: None,
+        parent: None,
     };
     let err = rejection(bob.create_task(&create_task_request).await);
     match &err {
@@ -543,6 +546,7 @@ async fn entity_endpoints_against_live_stack() {
             work_class: None,
             team_id: None,
             from_team: None,
+            parent: None,
         })
         .await
         .expect("creating bug task");
@@ -572,6 +576,7 @@ async fn entity_endpoints_against_live_stack() {
             work_class: None,
             team_id: None,
             from_team: None,
+            parent: None,
         })
         .await
         .expect("creating a task by board slug");
@@ -595,6 +600,7 @@ async fn entity_endpoints_against_live_stack() {
                 work_class: None,
                 team_id: None,
                 from_team: None,
+                parent: None,
             })
             .await,
     );
@@ -657,6 +663,7 @@ async fn entity_endpoints_against_live_stack() {
             work_class: None,
             team_id: None,
             from_team: None,
+            parent: None,
         })
         .await
         .expect("creating support task");
@@ -676,6 +683,7 @@ async fn entity_endpoints_against_live_stack() {
             work_class: Some("support".into()),
             team_id: None,
             from_team: None,
+            parent: None,
         })
         .await
         .expect("creating unplanned bug");
@@ -814,6 +822,7 @@ async fn entity_endpoints_against_live_stack() {
                 work_class: None,
                 team_id: None,
                 from_team: None,
+                parent: None,
             })
             .await,
     );
@@ -830,6 +839,7 @@ async fn entity_endpoints_against_live_stack() {
                 work_class: None,
                 team_id: None,
                 from_team: None,
+                parent: None,
             })
             .await,
     );
@@ -1369,6 +1379,7 @@ async fn entity_endpoints_against_live_stack() {
             content: String::new(),
             complexity: None,
             bucket_type: None,
+            parent: None,
         })
         .await,
     );

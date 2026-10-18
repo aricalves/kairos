@@ -37,6 +37,22 @@ pub const PUBLIC_MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations/
 /// rather than running this tree directly.
 pub const TENANT_MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations/tenant");
 
+/// The tenant migrations that run outside a transaction, by version, with
+/// their `up.sql` (KAIROS-T-0639).
+///
+/// Such a migration has `run_in_transaction = false` in its
+/// `metadata.toml`, and one statement with `CONCURRENTLY` (the convention
+/// of KAIROS-T-0639, checked by `scripts/check_migrations.py`). The boot
+/// and `migrate-tenants` run it as it is. [`crate::tenant::provision_tenant`]
+/// runs every migration in one transaction, where `CONCURRENTLY` is
+/// refused. There the schema is new and its tables are empty, so it runs
+/// this SQL without the word `CONCURRENTLY`.
+///
+/// Diesel does not give the SQL of an embedded migration, so each entry
+/// reads the file with `include_str!`. Add the entry with the migration. A
+/// unit test fails when this list and the tree do not agree.
+pub const TENANT_NO_TRANSACTION_SQL: &[(&str, &str)] = &[];
+
 /// Errors from establishing a migration connection or applying migrations.
 #[derive(Debug, thiserror::Error)]
 pub enum MigrationError {
@@ -172,4 +188,79 @@ pub fn run_public_migrations(conn: &mut PgConnection) -> Result<Vec<String>, Mig
 pub fn has_pending_public_migrations(conn: &mut PgConnection) -> Result<bool, MigrationError> {
     conn.has_pending_migration(PUBLIC_MIGRATIONS)
         .map_err(|e| MigrationError::Migration(e.to_string()))
+}
+
+/// `sql` without the keyword `CONCURRENTLY` (KAIROS-T-0639): the form of a
+/// no-transaction migration that provisioning runs inside its transaction
+/// ([`TENANT_NO_TRANSACTION_SQL`]). The match ignores case and takes whole
+/// words only.
+pub(crate) fn without_concurrently(sql: &str) -> String {
+    const WORD: &str = "concurrently";
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut out = String::with_capacity(sql.len());
+    let mut rest = sql;
+    while let Some(at) = rest.to_ascii_lowercase().find(WORD) {
+        let before = rest[..at].chars().next_back();
+        let after = rest[at + WORD.len()..].chars().next();
+        out.push_str(&rest[..at]);
+        if before.is_some_and(is_word) || after.is_some_and(is_word) {
+            out.push_str(&rest[at..at + WORD.len()]);
+        }
+        rest = &rest[at + WORD.len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use diesel::migration::MigrationSource;
+    use diesel::pg::Pg;
+
+    use super::*;
+
+    /// KAIROS-T-0639: provisioning finds the SQL of each no-transaction
+    /// tenant migration in [`TENANT_NO_TRANSACTION_SQL`], and the list has
+    /// no other entry.
+    #[test]
+    fn the_no_transaction_list_matches_the_tenant_tree() {
+        let migrations = MigrationSource::<Pg>::migrations(&TENANT_MIGRATIONS).expect("the tree");
+        let in_tree: BTreeSet<String> = migrations
+            .iter()
+            .filter(|m| !m.metadata().run_in_transaction())
+            .map(|m| m.name().version().to_string())
+            .collect();
+        let listed: BTreeSet<String> = TENANT_NO_TRANSACTION_SQL
+            .iter()
+            .map(|(version, _)| version.to_string())
+            .collect();
+        assert_eq!(
+            listed.len(),
+            TENANT_NO_TRANSACTION_SQL.len(),
+            "a version is in TENANT_NO_TRANSACTION_SQL two times"
+        );
+        assert_eq!(
+            in_tree, listed,
+            "each tenant migration with run_in_transaction = false needs an entry in \
+             TENANT_NO_TRANSACTION_SQL, and each entry needs such a migration"
+        );
+    }
+
+    #[test]
+    fn without_concurrently_removes_the_keyword_only() {
+        assert_eq!(
+            without_concurrently("CREATE INDEX CONCURRENTLY a_idx ON a (b)"),
+            "CREATE INDEX  a_idx ON a (b)"
+        );
+        assert_eq!(
+            without_concurrently("drop index concurrently if exists a_idx"),
+            "drop index  if exists a_idx"
+        );
+        assert_eq!(
+            without_concurrently("CREATE INDEX concurrently_idx ON a (not_concurrently)"),
+            "CREATE INDEX concurrently_idx ON a (not_concurrently)"
+        );
+    }
 }
