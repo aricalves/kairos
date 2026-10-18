@@ -3,7 +3,7 @@
 //! (KAIROS-I-0012), `restore_item` (KAIROS-A-0020), `related_work`
 //! (KAIROS-T-0191), `propose_edge` (KAIROS-T-0192), `set_repository`
 //! (COLLIERY-T-0220), and `add_repository` and `update_repository`
-//! (COLLIERY-T-0266); later tasks added more (75 in all, in the profiles
+//! (COLLIERY-T-0266); later tasks added more (78 in all, in the profiles
 //! of `profiles.rs`, KAIROS-T-0454) — each a
 //! thin wrapper over the same `kairos-core`/`kairos-db` services the REST
 //! handlers call — through [`crate::blocking::BlockingTenantPool`], never
@@ -244,6 +244,18 @@ pub struct DeleteDispatchRuleParams {
     pub board: String,
     /// The id of the rule (from `list_dispatch_rules`).
     pub rule_id: String,
+}
+
+/// `remove_webhook_target`, `enable_webhook_target` and
+/// `test_webhook_target` (KAIROS-T-0558).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct WebhookTargetParams {
+    /// The board, by slug (e.g. "platform-delivery") or UUID.
+    pub board: String,
+    /// The id of the webhook target (from `list_dispatch_rules`).
+    pub target_id: String,
 }
 
 /// `list_org_read_tokens` (KAIROS-T-0431).
@@ -970,9 +982,13 @@ pub struct RestoreItemParams {
 pub struct DeleteItemParams {
     /// The item's short code.
     pub short_code: String,
-    /// Must be true: the call archives the item AND each descendant that a
-    /// parent edge connects to it. The response lists the cascade.
-    pub confirm: bool,
+    /// True to archive: the call archives the item AND each descendant that
+    /// a parent edge connects to it. The response lists the cascade.
+    pub confirm: Option<bool>,
+    /// True to see the cascade first (KAIROS-T-0558): the answer lists what
+    /// an archive by you would take and leave. Nothing changes. Not with
+    /// `confirm: true`.
+    pub preview: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1367,7 +1383,7 @@ pub struct SaveTemplateParams {
 }
 
 // ---------------------------------------------------------------------------
-// The tools (75; the list of each profile is asserted in tests/mcp.rs)
+// The tools (78; the list of each profile is asserted in tests/mcp.rs)
 // ---------------------------------------------------------------------------
 
 #[tool_router(vis = "pub(super)")]
@@ -2486,6 +2502,98 @@ impl KairosMcp {
         .await
     }
 
+    // KAIROS-T-0558: the webhook targets that create_dispatch_rule makes.
+    #[tool(
+        description = "Remove a webhook target of a board, with its dispatch rules and its delivery log. You cannot undo it. `board` is a slug or UUID; `target_id` comes from list_dispatch_rules. Needs configure_boards on the board."
+    )]
+    pub async fn remove_webhook_target(
+        &self,
+        Parameters(params): Parameters<WebhookTargetParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let (user, slug) = (auth.user_id, tenant.slug.clone());
+        self.run_tool(&tenant, move |conn| {
+            let target = crate::api::org::dispatch::delete_target_as(
+                conn,
+                &slug,
+                user,
+                &params.board,
+                &params.target_id,
+            )?;
+            Ok(format!(
+                "Removed the webhook target {} ({}), with its dispatch rules and its delivery \
+                 log.",
+                target.name, target.id
+            ))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Turn a webhook target of a board on again, with its failed tries in a row at 0. Kairos queues the skipped deliveries of the last 30 days again, oldest first; the answer counts them. `board` is a slug or UUID; `target_id` comes from list_dispatch_rules. Needs configure_boards on the board."
+    )]
+    pub async fn enable_webhook_target(
+        &self,
+        Parameters(params): Parameters<WebhookTargetParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let (user, slug) = (auth.user_id, tenant.slug.clone());
+        let result = self
+            .run_tool(&tenant, move |conn| {
+                let target = crate::api::org::dispatch::enable_target_as(
+                    conn,
+                    &slug,
+                    user,
+                    &params.board,
+                    &params.target_id,
+                )?;
+                Ok(format!(
+                    "The webhook target {} ({}) is on. Kairos queued {} skipped deliveries \
+                     again.",
+                    target.name,
+                    target.id,
+                    target.redelivered.unwrap_or(0)
+                ))
+            })
+            .await;
+        // As REST: the worker sends the queued deliveries now.
+        self.state.jobs.wake();
+        result
+    }
+
+    #[tool(
+        description = "Send a test delivery (the event `ping`) to a webhook target of a board. A target that is off gets a skipped delivery. The answer gives the id of the delivery; list_dispatch_rules shows its status. `board` is a slug or UUID; `target_id` comes from list_dispatch_rules. Needs configure_boards on the board."
+    )]
+    pub async fn test_webhook_target(
+        &self,
+        Parameters(params): Parameters<WebhookTargetParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let (user, slug) = (auth.user_id, tenant.slug.clone());
+        let result = self
+            .run_tool(&tenant, move |conn| {
+                let delivery = crate::api::org::dispatch::test_target_as(
+                    conn,
+                    &slug,
+                    user,
+                    &params.board,
+                    &params.target_id,
+                )?;
+                Ok(format!(
+                    "Queued the test delivery {} (event ping) to the webhook target {}. Its \
+                     status: {}.",
+                    delivery.id, delivery.target_id, delivery.status
+                ))
+            })
+            .await;
+        // As REST: the worker sends the delivery now.
+        self.state.jobs.wake();
+        result
+    }
+
     // KAIROS-T-0431: the read token of the organization for each forge host.
     #[tool(
         description = "The read tokens of the organization for the code index builder: for each forge host (for example github.com), who set the token and when. Never the token. The builder uses the token of the host of a repository before the token of the repository. Only an organization admin."
@@ -2687,7 +2795,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "One item by short code: type, board and column, version, markdown content, metadata, relationships (parent chain, children, blockers and blocked, supporting documents; a done end is marked [done], a cancelled one [cancelled]), and as it applies: the claim of a task in Active, the owner and teams of a strategy or initiative, the owner board and impacted repositories of a document or ADR, the cancel mark of a task, the external references (URIs with a label) of any item. A retired code finds the item and names the current code."
+        description = "One item by short code: type, board and column, version, markdown content, metadata, relationships (parent chain, children, blockers and blocked, supporting documents; a done end is marked [done], a cancelled one [cancelled]), and as it applies: the claim of a task in Active, the owner and teams of a strategy or initiative, the owner board and impacted repositories of a document or ADR, the cancel mark of a task, the external references (URIs with a label) of any item, and its edge proposals (each pending one and the 5 newest decided ones, with the state). A retired code finds the item and names the current code."
     )]
     pub async fn get_item(
         &self,
@@ -4352,7 +4460,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Archive an item by short code (it is not deleted): hidden from boards and default search, read-only, and `restore_item` brings it back. Needs `confirm: true`: the archive cascades to the descendants that you can edit, and the answer lists what was archived and what stayed, and why. You can archive an item you created, or with `manage_<type>` on its board. An agent's archive of intake is refused with AGENT_TRIAGE_OFF while the board lets a person decide. `purge_task` (admin profile) deletes an archived task for good."
+        description = "Archive an item by short code (it is not deleted): hidden from boards and default search, read-only, and `restore_item` brings it back. Needs `confirm: true`: the archive cascades to the descendants that you can edit, and the answer lists what was archived and what stayed, and why. `preview: true` lists that cascade first and changes nothing. You can archive an item you created, or with `manage_<type>` on its board. An agent's archive of intake is refused with AGENT_TRIAGE_OFF while the board lets a person decide. `purge_task` (admin profile) deletes an archived task for good."
     )]
     pub async fn delete_item(
         &self,
@@ -4364,11 +4472,23 @@ impl KairosMcp {
         let slug = tenant.slug.clone();
         let role = tenant.role;
         self.run_tool(&tenant, move |conn| {
-            if !params.confirm {
+            let confirm = params.confirm.unwrap_or(false);
+            let preview = params.preview.unwrap_or(false);
+            if confirm && preview {
+                return Err(ApiError::validation(
+                    "Send preview=true to see the cascade, or confirm=true to archive. Do not \
+                     send both.",
+                ));
+            }
+            if preview {
+                let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
+                return delete_preview_text(conn, &slug, role, user, &item);
+            }
+            if !confirm {
                 return Err(ApiError::validation(
                     "delete_item must have confirm=true. The call archives the item and \
                      each descendant that a parent edge connects to it. A restore brings \
-                     each one back.",
+                     each one back. Send preview=true to see the cascade first.",
                 ));
             }
             let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
@@ -4409,6 +4529,7 @@ impl KairosMcp {
             }
             out.push_str(&crate::api::cascade::not_reached_lines(
                 &outcome.not_reached,
+                false,
             ));
             Ok(out)
         })
@@ -5718,6 +5839,59 @@ fn slug_from_title(title: &str) -> String {
 // Shared item projection + lookups (sync, on the blocking connection)
 // ---------------------------------------------------------------------------
 
+/// The answer of `delete_item {preview: true}` (KAIROS-T-0558): what an
+/// archive of `item` by the caller would take and leave, with the plan of
+/// the archive ([`kairos_db::items::preview_cascade_as`]), and whether the
+/// caller may archive the item. A read: it changes nothing.
+fn delete_preview_text(
+    conn: &mut PgConnection,
+    slug: &str,
+    role: kairos_db::models::OrgRole,
+    user: Uuid,
+    item: &ItemView,
+) -> Result<String, ApiError> {
+    let principal = kairos_db::items::Principal {
+        org_slug: slug,
+        user_id: user,
+    };
+    let preview = kairos_db::items::preview_cascade_as(conn, principal, item.item_type, item.id)
+        .map_err(crate::api::map_item_error)?;
+    let refusal = crate::api::archive_refusal(conn, role, user, item.id, item.item_type)?;
+    Ok(preview_text(&preview, refusal.as_ref()))
+}
+
+/// The text of a preview of an archive (KAIROS-T-0558). Pure.
+fn preview_text(preview: &kairos_db::items::CascadePreview, refusal: Option<&ApiError>) -> String {
+    let code = &preview.root_short_code;
+    let mut out = format!("Preview of an archive of {code}. Nothing is archived.\n");
+    if let Some(refusal) = refusal {
+        out.push_str(&format!(
+            "You cannot archive {code}: {}: {}\n",
+            refusal.code, refusal.message
+        ));
+    }
+    if preview.cascaded_short_codes.is_empty() {
+        out.push_str("Cascade: none.\n");
+    } else {
+        let count = preview.cascaded_short_codes.len();
+        out.push_str(&format!(
+            "The cascade would archive {count} descendant{}: {}.\n",
+            if count == 1 { "" } else { "s" },
+            preview.cascaded_short_codes.join(", ")
+        ));
+    }
+    out.push_str(&crate::api::cascade::not_reached_lines(
+        &preview.not_reached,
+        true,
+    ));
+    if refusal.is_none() {
+        out.push_str(&format!(
+            "To archive, call delete_item with short_code {code} and confirm=true.\n"
+        ));
+    }
+    out
+}
+
 /// The answer text of `get_item` for `short_code` (KAIROS-T-0626: a
 /// function of its own, so that a test can count its statements).
 ///
@@ -5882,6 +6056,16 @@ pub fn get_item_text(conn: &mut PgConnection, short_code: &str) -> Result<String
         out.push_str(&external);
     }
 
+    // KAIROS-T-0558: the edge proposals of the item, so that an agent
+    // learns the outcome of `propose_edge`.
+    let proposals: Vec<ProposalRow> =
+        serde_json::from_str(&facts.proposals).map_err(ApiError::internal)?;
+    out.push_str(&proposals_section(
+        &item.short_code,
+        facts.proposals_pending,
+        &proposals,
+    ));
+
     // KAIROS-T-0504: the notes of the item, each one with its id, so
     // that an agent cites `note n-3 on ACME-T-0012`.
     let notes = kairos_core::items::notes(&item.content);
@@ -5968,7 +6152,47 @@ const ITEM_FACTS_SQL: &str = "\
            ARRAY(SELECT x.uri FROM item_external_refs x WHERE x.item_id = $1 \
                   ORDER BY x.created_at, x.uri, x.id) AS external_uris, \
            ARRAY(SELECT x.label FROM item_external_refs x WHERE x.item_id = $1 \
-                  ORDER BY x.created_at, x.uri, x.id) AS external_labels \
+                  ORDER BY x.created_at, x.uri, x.id) AS external_labels, \
+           (SELECT count(*) FROM edge_proposals ep WHERE ep.state = 'pending' \
+               AND (ep.source_id = $1 OR ep.target_id = $1)) AS proposals_pending, \
+           COALESCE((SELECT json_agg(json_build_object( \
+                   'id', p.id, 'source', p.source, 'target', p.target, \
+                   'relationship', p.relationship, 'state', p.state, 'why', p.why, \
+                   'proposer', p.proposer, 'proposed_on', p.proposed_on, \
+                   'decider', p.decider, 'decided_on', p.decided_on) \
+                   ORDER BY p.pick, p.n) \
+              FROM ((SELECT 0 AS pick, row_number() OVER ( \
+                            ORDER BY ep.score DESC, ep.created_at, ep.id) AS n, \
+                            ep.id, sd.short_code AS source, td.short_code AS target, \
+                            ep.relationship, ep.state, ep.why, \
+                            COALESCE(pu.display_name, ep.proposed_by::text) AS proposer, \
+                            to_char(ep.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') \
+                                AS proposed_on, \
+                            NULL::text AS decider, NULL::text AS decided_on \
+                       FROM edge_proposals ep \
+                       LEFT JOIN entity_directory sd ON sd.id = ep.source_id \
+                       LEFT JOIN entity_directory td ON td.id = ep.target_id \
+                       LEFT JOIN public.users pu ON pu.id = ep.proposed_by \
+                      WHERE ep.state = 'pending' \
+                        AND (ep.source_id = $1 OR ep.target_id = $1) \
+                      ORDER BY n LIMIT 20) \
+                    UNION ALL \
+                    (SELECT 1, row_number() OVER ( \
+                            ORDER BY ep.decided_at DESC NULLS LAST, ep.id), \
+                            ep.id, sd.short_code, td.short_code, \
+                            ep.relationship, ep.state, ep.why, \
+                            COALESCE(pu.display_name, ep.proposed_by::text), \
+                            to_char(ep.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'), \
+                            COALESCE(du.display_name, ep.decided_by::text), \
+                            to_char(ep.decided_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') \
+                       FROM edge_proposals ep \
+                       LEFT JOIN entity_directory sd ON sd.id = ep.source_id \
+                       LEFT JOIN entity_directory td ON td.id = ep.target_id \
+                       LEFT JOIN public.users pu ON pu.id = ep.proposed_by \
+                       LEFT JOIN public.users du ON du.id = ep.decided_by \
+                      WHERE ep.state <> 'pending' \
+                        AND (ep.source_id = $1 OR ep.target_id = $1) \
+                      ORDER BY 2 LIMIT 5)) AS p), '[]')::text AS proposals \
       FROM (SELECT 1) AS one \
       LEFT JOIN boards b ON b.id = $2 \
       LEFT JOIN board_columns c ON c.id = $3 \
@@ -6045,6 +6269,62 @@ struct ItemFacts {
     external_uris: Vec<String>,
     #[diesel(sql_type = diesel::sql_types::Array<SqlNullable<SqlText>>)]
     external_labels: Vec<Option<String>>,
+    /// The count of the pending proposals of the item (KAIROS-T-0558).
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    proposals_pending: i64,
+    /// The proposals of the item as JSON: at most 20 pending ones, then the
+    /// 5 newest decided ones (KAIROS-T-0558). See [`ProposalRow`].
+    #[diesel(sql_type = SqlText)]
+    proposals: String,
+}
+
+/// One edge proposal of an item, as `get_item` lists it (KAIROS-T-0558).
+#[derive(Debug, Deserialize)]
+struct ProposalRow {
+    id: Uuid,
+    source: Option<String>,
+    target: Option<String>,
+    relationship: String,
+    state: String,
+    why: String,
+    proposer: String,
+    proposed_on: String,
+    decider: Option<String>,
+    decided_on: Option<String>,
+}
+
+/// The `## Proposals` section of `get_item` (KAIROS-T-0558): each pending
+/// edge proposal of the item, and the newest decided ones, with the state.
+/// Empty when the item has none. Pure.
+fn proposals_section(short_code: &str, pending: i64, rows: &[ProposalRow]) -> String {
+    if rows.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("\n## Proposals\n");
+    for row in rows {
+        let edge = format!(
+            "{} -[{}]-> {}",
+            row.source.as_deref().unwrap_or("(gone)"),
+            row.relationship,
+            row.target.as_deref().unwrap_or("(gone)")
+        );
+        out.push_str(&format!(
+            "- {}: {edge} ({}), proposed by {} on {}",
+            row.state, row.id, row.proposer, row.proposed_on
+        ));
+        if let (Some(by), Some(on)) = (&row.decider, &row.decided_on) {
+            out.push_str(&format!(", {} by {by} on {on}", row.state));
+        }
+        out.push_str(&format!(". Why: {}\n", clip_line(&row.why, 120)));
+    }
+    let listed = rows.iter().filter(|row| row.state == "pending").count() as i64;
+    if pending > listed {
+        out.push_str(&format!(
+            "- {} more pending proposals. GET /api/items/{short_code}/proposals lists each one.\n",
+            pending - listed
+        ));
+    }
+    out
 }
 
 impl ItemFacts {
@@ -9222,6 +9502,86 @@ mod related_work_render_tests {
             "# Possibly related to ACME-T-0001\n\n\
              The search found no related work. Ranked across text and meaning.\n\n\
              This is one search. It does not prove that no related work exists.\n"
+        );
+    }
+}
+
+#[cfg(test)]
+mod t0558_tests {
+    //! KAIROS-T-0558: the preview of `delete_item` and the proposals of
+    //! `get_item`.
+    use super::{ProposalRow, preview_text, proposals_section};
+    use crate::error::ApiError;
+    use kairos_db::items::{CascadePreview, NotReached, NotReachedReason};
+    use uuid::Uuid;
+
+    #[test]
+    fn a_preview_lists_the_cascade_and_archives_nothing() {
+        let preview = CascadePreview {
+            root_short_code: "ACME-I-0001".into(),
+            cascaded_short_codes: vec!["ACME-T-0001".into(), "ACME-T-0002".into()],
+            not_reached: vec![NotReached {
+                short_code: "WEB-T-0003".into(),
+                reason: NotReachedReason::Below {
+                    short_code: "ACME-T-0002".into(),
+                },
+            }],
+        };
+        assert_eq!(
+            preview_text(&preview, None),
+            "Preview of an archive of ACME-I-0001. Nothing is archived.\n\
+             The cascade would archive 2 descendants: ACME-T-0001, ACME-T-0002.\n\
+             The archive would not reach 1 item. They would stay live and keep their parent.\n\
+             - WEB-T-0003: It is below ACME-T-0002.\n\
+             To archive, call delete_item with short_code ACME-I-0001 and confirm=true.\n"
+        );
+        let alone = CascadePreview {
+            root_short_code: "ACME-T-0009".into(),
+            cascaded_short_codes: Vec::new(),
+            not_reached: Vec::new(),
+        };
+        let refusal = ApiError::forbidden("No right.");
+        let text = preview_text(&alone, Some(&refusal));
+        assert_eq!(
+            text,
+            "Preview of an archive of ACME-T-0009. Nothing is archived.\n\
+             You cannot archive ACME-T-0009: FORBIDDEN: No right.\n\
+             Cascade: none.\n"
+        );
+    }
+
+    fn row(state: &str, decider: Option<&str>) -> ProposalRow {
+        ProposalRow {
+            id: Uuid::nil(),
+            source: Some("ACME-T-0001".into()),
+            target: Some("ACME-T-0002".into()),
+            relationship: "blocks".into(),
+            state: state.into(),
+            why: "The first writes the table.".into(),
+            proposer: "Robin".into(),
+            proposed_on: "2026-10-17".into(),
+            decider: decider.map(str::to_string),
+            decided_on: decider.map(|_| "2026-10-18".to_string()),
+        }
+    }
+
+    #[test]
+    fn the_proposals_section_gives_each_state() {
+        assert_eq!(proposals_section("ACME-T-0001", 0, &[]), "");
+        assert_eq!(
+            proposals_section(
+                "ACME-T-0001",
+                3,
+                &[row("pending", None), row("rejected", Some("Sam"))]
+            ),
+            "\n## Proposals\n\
+             - pending: ACME-T-0001 -[blocks]-> ACME-T-0002 \
+             (00000000-0000-0000-0000-000000000000), proposed by Robin on 2026-10-17. \
+             Why: The first writes the table.\n\
+             - rejected: ACME-T-0001 -[blocks]-> ACME-T-0002 \
+             (00000000-0000-0000-0000-000000000000), proposed by Robin on 2026-10-17, \
+             rejected by Sam on 2026-10-18. Why: The first writes the table.\n\
+             - 2 more pending proposals. GET /api/items/ACME-T-0001/proposals lists each one.\n"
         );
     }
 }

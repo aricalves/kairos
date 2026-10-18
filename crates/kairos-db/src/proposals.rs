@@ -503,6 +503,8 @@ pub fn confirm(
             relationship,
             actor,
         )?;
+        // KAIROS-T-0558: the proposer learns the outcome.
+        crate::notifications::on_proposal_decided(conn, &decided, actor)?;
         Ok(decided)
     })
 }
@@ -522,7 +524,13 @@ pub fn reject(
 ) -> Result<EdgeProposal, ProposalError> {
     let proposal = load_pending(conn, id)?;
     require_approver(conn, decider, &proposal)?;
-    decide(conn, id, "rejected", decider.user_id)
+    // The decision and the notification of the proposer (KAIROS-T-0558)
+    // land together.
+    conn.transaction(|conn| {
+        let decided = decide(conn, id, "rejected", decider.user_id)?;
+        crate::notifications::on_proposal_decided(conn, &decided, decider.user_id)?;
+        Ok(decided)
+    })
 }
 
 /// How the proposals are going.
