@@ -20,7 +20,7 @@ One `activity_log` row, as returned by `GET /api/activity`.
 | `agent_key_id` | `string`, nullable | no | The agent key (UUID) of the request that made this change, when an agent made it with the agent key of a person (KAIROS-T-0359). The actor is still the person: show "Alice (agent)". Null for a change made without an agent key, and for each change made before Kairos recorded the key. |
 | `details` | `string` | yes | Structured context, e.g. `"column:Draft->Active"`. |
 | `entity_archived_at` | `string`, nullable | no | When the item acted on was archived (RFC 3339). Null for a live item, and when `entity_short_code` is null. |
-| `entity_id` | `string`, nullable | no | The item acted on (UUID). Null for a relationship between two items: `details` names the two. For an `impacts` link it is the document or the ADR of the link (COLLIERY-T-0269). |
+| `entity_id` | `string`, nullable | no | The item acted on (UUID). For a relationship between two items it is the source of the edge, and `details` names the two (KAIROS-T-0638; null in older rows whose source is not known). For an `impacts` link it is the document or the ADR of the link (COLLIERY-T-0269). |
 | `entity_short_code` | `string`, nullable | no | The short code of the item acted on (COLLIERY-T-0262), live or archived. Null when the entry is not about an item (a board, a team, a member), and when Kairos has no item with the id. |
 | `entity_title` | `string`, nullable | no | The title of the item acted on, as it is now. Null when `entity_short_code` is null. |
 | `entity_type` | `string`, nullable | no | `strategy|initiative|task|document|adr`. Null when `entity_id` is null. |
