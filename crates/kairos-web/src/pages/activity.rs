@@ -33,6 +33,11 @@
 //!   gives the short code and the title of the item of each entry, so the
 //!   page reads no list of items. [`entity_cell`] makes the cell. An entry
 //!   with no item says why it has no link.
+//! - The item filter has a picker (KAIROS-T-0584): after a short pause in
+//!   the typing, the page sends the text to `POST /api/search` and shows
+//!   the matches. A click on a match puts its code in the field. A typed
+//!   code works as before. "Since" is a date field: the filter starts at
+//!   00:00 UTC of the date.
 //! - Rollback writes through `api::patch_json` — the standard versioned
 //!   save path (conventions § Data layer), so the A-0004 409 contract is
 //!   handled exactly like any other content edit.
@@ -53,6 +58,7 @@ use serde::Deserialize;
 
 use crate::api;
 use crate::auth::{Auth, use_auth};
+use crate::pages::search::data::{SearchFilter, SearchRequest, SearchResponse, search};
 use crate::pages::teams::api as teams_api;
 
 /// Feed page size. Deliberately below the server default (50) so
@@ -61,6 +67,12 @@ const PAGE_SIZE: i64 = 25;
 
 /// The "no filter" option label shared by the actor/action selects.
 const ALL: &str = "(all)";
+
+/// The pause in the typing before the item picker searches, in ms.
+const PICKER_PAUSE_MS: u64 = 250;
+
+/// The most matches that the item picker shows.
+const PICKER_MATCHES: i64 = 8;
 
 // ---------------------------------------------------------------------------
 // Mirror DTOs (partial on purpose; serde ignores the rest)
@@ -369,13 +381,27 @@ async fn fetch_item_head(auth: Auth, code: String) -> Result<(ItemHead, &'static
     Ok((head, family))
 }
 
-/// `GET /api/{family}/{code}/history` — the version list, newest first.
+/// The versions of a page of the history (KAIROS-T-0584).
+const HISTORY_PAGE: usize = 50;
+
+/// The query of a page of the history. Pure, host-tested.
+fn history_query(offset: usize) -> String {
+    format!("limit={HISTORY_PAGE}&offset={offset}")
+}
+
+/// `GET /api/{family}/{code}/history` — a page of the version list, newest
+/// first (KAIROS-T-0584).
 async fn fetch_versions(
     auth: Auth,
     code: String,
+    offset: usize,
 ) -> Result<ListEnvelope<HistoryVersion>, ApiError> {
     let (_, family) = fetch_item_head(auth, code.clone()).await?;
-    api::get_json(auth, &format!("/api/{family}/{code}/history?limit=200")).await
+    api::get_json(
+        auth,
+        &format!("/api/{family}/{code}/history?{}", history_query(offset)),
+    )
+    .await
 }
 
 /// `GET /api/{family}/{code}/history?version=N` — one full snapshot.
@@ -397,6 +423,68 @@ async fn fetch_snapshot(
 /// (COLLIERY-T-0258).
 async fn fetch_members(auth: Auth) -> Result<Vec<Member>, ApiError> {
     api::get_all(auth, "/api/members").await
+}
+
+/// The text that the item picker searches for, or `None`: a text of
+/// fewer than 2 characters, or a full short code. Pure, host-tested.
+fn picker_query(text: &str) -> Option<String> {
+    let text = text.trim();
+    if text.chars().count() < 2 || family_of_short_code(text).is_some() {
+        return None;
+    }
+    Some(text.to_string())
+}
+
+/// The search of the item picker: live and archived items, as the feed has
+/// both. Pure, host-tested.
+fn picker_request(query: String) -> SearchRequest {
+    SearchRequest {
+        q: Some(query),
+        filter: Some(SearchFilter {
+            include_deleted: true,
+            ..SearchFilter::default()
+        }),
+        limit: Some(PICKER_MATCHES),
+        ..SearchRequest::default()
+    }
+}
+
+/// The matches of the item picker: `(code, label)`, each type of item,
+/// [`PICKER_MATCHES`] at most. Pure, host-tested.
+fn picker_matches(response: &SearchResponse) -> Vec<(String, String)> {
+    let groups = &response.results;
+    groups
+        .strategies
+        .iter()
+        .chain(&groups.initiatives)
+        .chain(&groups.tasks)
+        .chain(&groups.documents)
+        .chain(&groups.adrs)
+        .take(usize::try_from(PICKER_MATCHES).unwrap_or(8))
+        .map(|hit| {
+            (
+                hit.short_code.clone(),
+                format!("{} · {}", hit.short_code, hit.title),
+            )
+        })
+        .collect()
+}
+
+/// The value of `since` for a date of the date field (`2026-07-14`): 00:00
+/// UTC of that date. A value that is not a date goes as it is, and the
+/// server refuses it with a reason. Pure, host-tested.
+fn since_param(date: &str) -> String {
+    let date = date.trim();
+    let is_date = date.len() == 10
+        && date.char_indices().all(|(i, c)| match i {
+            4 | 7 => c == '-',
+            _ => c.is_ascii_digit(),
+        });
+    if is_date {
+        format!("{date}T00:00:00Z")
+    } else {
+        date.to_string()
+    }
 }
 
 /// The applied activity-feed filters (what the resource fetches for).
@@ -516,6 +604,34 @@ pub fn ActivityPage() -> impl IntoView {
         auth.track_session();
         teams_api::list_teams(auth)
     });
+    // KAIROS-T-0584: the item picker searches after a pause in the typing.
+    let picker_text = RwSignal::new(String::new());
+    let picker_turn = StoredValue::new(0u32);
+    Effect::new(move |_| {
+        let text = entity_input.get();
+        let turn = picker_turn.get_value().wrapping_add(1);
+        picker_turn.set_value(turn);
+        set_timeout(
+            move || {
+                if picker_turn.try_get_value() == Some(turn) {
+                    picker_text.set(text);
+                }
+            },
+            std::time::Duration::from_millis(PICKER_PAUSE_MS),
+        );
+    });
+    let picks = LocalResource::new(move || {
+        auth.track_session();
+        let query = picker_query(&picker_text.get());
+        async move {
+            match query {
+                Some(query) => search(auth, &picker_request(query))
+                    .await
+                    .map(|response| picker_matches(&response)),
+                None => Ok(Vec::new()),
+            }
+        }
+    });
     // COLLIERY-T-0265: the team is a filter of the route, as each other
     // filter. The page reads the entries after the filters, and it removes
     // none.
@@ -560,7 +676,7 @@ pub fn ActivityPage() -> impl IntoView {
                 a if a == ALL => String::new(),
                 a => a,
             },
-            since: since_input.get().trim().to_string(),
+            since: since_param(&since_input.get()),
             team_slug,
             team_name,
             offset: 0,
@@ -590,8 +706,8 @@ pub fn ActivityPage() -> impl IntoView {
                 <Stack gap="xs">
                     <Group align="end" gap="sm" wrap=true>
                         <TextInput
-                            label="Entity short code"
-                            placeholder="e.g. PLATFORM-T-0001"
+                            label="Item (code or words)"
+                            placeholder="PLATFORM-T-0001, or words of the title"
                             value=entity_input
                         />
                         {move || {
@@ -608,8 +724,8 @@ pub fn ActivityPage() -> impl IntoView {
                             view! { <Select label="Team (by members)" options=options value=team_input/> }
                         }}
                         <TextInput
-                            label="Since (RFC 3339)"
-                            placeholder="2026-07-14T00:00:00Z"
+                            label="Since (UTC)"
+                            input_type="date"
                             value=since_input
                         />
                         <Button on_click=Callback::new(move |()| apply())>"Apply"</Button>
@@ -617,6 +733,28 @@ pub fn ActivityPage() -> impl IntoView {
                             "Clear"
                         </Button>
                     </Group>
+                    {move || match picks.get() {
+                        Some(Ok(matches)) if !matches.is_empty() => view! {
+                            <div data-testid="activity-item-picks">
+                                <Group gap="xs" wrap=true>
+                                    <Text dimmed=true size="xs">"Select an item:"</Text>
+                                    {matches.into_iter().map(|(code, label)| {
+                                        let picked = code.clone();
+                                        view! {
+                                            <Button variant="subtle" size="xs"
+                                                attr:data-code=code
+                                                on_click=Callback::new(move |_| {
+                                                    entity_input.set(picked.clone());
+                                                })>
+                                                {label}
+                                            </Button>
+                                        }
+                                    }).collect_view()}
+                                </Group>
+                            </div>
+                        }.into_any(),
+                        _ => ().into_any(),
+                    }}
                     <Text dimmed=true size="xs" attr:data-testid="activity-team-rule">
                         {TEAM_FILTER_RULE}
                     </Text>
@@ -792,10 +930,21 @@ pub fn ItemHistoryPage() -> impl IntoView {
         let _ = refresh.get();
         fetch_item_head(auth, code.get())
     });
+    // KAIROS-T-0584: the page of the versions. A new item starts at the
+    // first page.
+    let history_offset = RwSignal::new(0usize);
+    let history_limit = RwSignal::new(HISTORY_PAGE);
+    Effect::new(move |previous: Option<String>| {
+        let now = code.get();
+        if previous.is_some_and(|previous| previous != now) {
+            history_offset.set(0);
+        }
+        now
+    });
     let versions = LocalResource::new(move || {
         auth.track_session();
         let _ = refresh.get();
-        fetch_versions(auth, code.get())
+        fetch_versions(auth, code.get(), history_offset.get())
     });
     let members = LocalResource::new(move || {
         auth.track_session();
@@ -998,17 +1147,11 @@ pub fn ItemHistoryPage() -> impl IntoView {
                     let archived = head_now
                         .as_ref()
                         .is_some_and(|(item, _)| item.archived_at.is_some());
-                    // COLLIERY-T-0258: the list has the newest 200 versions.
-                    // An item with more versions says that the list is
-                    // not complete.
-                    let incomplete = api::incomplete_list_note(page.items.len(), page.total);
+                    // KAIROS-T-0584: the versions have pages. The count of
+                    // the history is exact.
+                    let total = usize::try_from(page.total).unwrap_or(0);
                     view! {
                         <Panel title="Versions" caption="The newest version is first. Select A and B to compare 2 versions.">
-                            {incomplete.map(|note| view! {
-                                <Text size="xs" dimmed=true>
-                                    {format!("{note} The list has the newest versions.")}
-                                </Text>
-                            })}
                             {archived.then(|| view! {
                                 <Text size="xs" dimmed=true>
                                     "You can read and compare the versions. You cannot roll back \
@@ -1028,6 +1171,13 @@ pub fn ItemHistoryPage() -> impl IntoView {
                                     confirm_open.set(true);
                                 })
                             />
+                            {(total > HISTORY_PAGE).then(|| view! {
+                                <div data-testid="history-pager">
+                                    <Pagination offset=history_offset limit=history_limit
+                                        total=total
+                                        range_label=Callback::new(|range| api::page_range_text(&range))/>
+                                </div>
+                            })}
                         </Panel>
                     }.into_any()
                 }
@@ -1266,6 +1416,72 @@ fn DiffPanel(view_model: DiffView) -> impl IntoView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// KAIROS-T-0584: the picker searches for words, not for a full code.
+    #[test]
+    fn the_item_picker_searches_for_words() {
+        assert_eq!(picker_query(" a "), None, "too short");
+        assert_eq!(picker_query("DEMO-T-0001"), None, "a full code");
+        assert_eq!(picker_query(" login page ").as_deref(), Some("login page"));
+        assert_eq!(picker_query("DEMO-T").as_deref(), Some("DEMO-T"));
+        let request = serde_json::to_value(picker_request("login".into())).expect("json");
+        assert_eq!(
+            request,
+            serde_json::json!({
+                "q": "login", "filter": { "include_deleted": true }, "limit": 8
+            })
+        );
+    }
+
+    #[test]
+    fn the_item_picker_shows_the_code_and_the_title() {
+        let response: SearchResponse = serde_json::from_value(serde_json::json!({
+            "results": {
+                "initiatives": [{"short_code": "DEMO-I-0001", "title": "Sign-up",
+                                 "created_at": "2026-10-01T00:00:00Z"}],
+                "tasks": [{"short_code": "DEMO-T-0002", "title": "Fix login",
+                           "created_at": "2026-10-02T00:00:00Z"}]
+            },
+            "total": 2, "limit": 8, "offset": 0
+        }))
+        .expect("a search response");
+        assert_eq!(
+            picker_matches(&response),
+            vec![
+                (
+                    "DEMO-I-0001".to_string(),
+                    "DEMO-I-0001 · Sign-up".to_string()
+                ),
+                (
+                    "DEMO-T-0002".to_string(),
+                    "DEMO-T-0002 · Fix login".to_string()
+                ),
+            ]
+        );
+    }
+
+    /// KAIROS-T-0584: the date field gives 00:00 UTC of the date.
+    #[test]
+    fn the_date_of_since_is_midnight_utc() {
+        assert_eq!(since_param("2026-07-14"), "2026-07-14T00:00:00Z");
+        assert_eq!(since_param(""), "");
+        assert_eq!(
+            since_param("14/07/2026"),
+            "14/07/2026",
+            "the server refuses it"
+        );
+    }
+
+    /// KAIROS-T-0584: a page of the history sends its offset.
+    #[test]
+    fn a_page_of_the_history_sends_its_offset() {
+        assert_eq!(history_query(0), "limit=50&offset=0");
+        assert_eq!(history_query(100), "limit=50&offset=100");
+        assert_eq!(
+            api::page_range_text(&aurora_dark::data::page_range(50, 50, 120)),
+            "The list shows items 51 to 100 of 120."
+        );
+    }
 
     /// Letter → family mapping covers all five S-0004 types and rejects
     /// non-codes (drives both the entity filter and the history routes).

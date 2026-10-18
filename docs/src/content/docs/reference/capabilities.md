@@ -26,6 +26,7 @@ else is refused at grant time.
 | `transition_items` | Move items between the board's columns, and between the Planned and Support lanes; cancel a task |
 | `configure_boards` | Add, rename, reorder and remove columns and transitions |
 | `administer_members` | Add and remove board members, and grant and revoke their capabilities |
+| `member` | On a strategy or initiative board only: membership of the board. A member edits and moves each item on the board. See [Computed capabilities](#computed-capabilities). |
 
 A `manage_<type>` capability gates the create of an item on the board. For an
 edit or a delete, the capability is one of three ways in: see
@@ -38,8 +39,8 @@ on each board. These capabilities apply:
 
 | Board level | Capabilities that apply |
 |---|---|
-| `strategy` | `manage_strategies`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members` |
-| `initiative` | `manage_initiatives`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members` |
+| `strategy` | `manage_strategies`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members`, `member` |
+| `initiative` | `manage_initiatives`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members`, `member` |
 | `delivery` | `manage_tasks`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members`, `pages` |
 | `adr` | `manage_adrs`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members` |
 
@@ -130,7 +131,7 @@ are unaffected.
 `*` matches any sequence of characters, including an empty one. Every other
 character matches itself. Matching is **case-sensitive**.
 
-The API accepts only the twelve values in the two tables above as a stored
+The API accepts only the thirteen values in the two tables above as a stored
 grant; anything else — including a pattern such as `manage_*s` — is refused at
 grant time with `VALIDATION`. The matcher itself is general, and the rules
 below describe it, because it is the matcher that decides authorisation and it
@@ -176,34 +177,39 @@ check rather than by a stored row:
   `my_boards` show the capabilities that each team board gives.
 - **On a strategy or initiative board, the set also has `manage_strategies` or
   `manage_initiatives`.** Each such board has a team. A member of that team can
-  edit and move the items of the board with no grant. A person with a grant on
-  the board can do the same. Archive and restore still need a grant.
-- **On a strategy or initiative board, a grant makes a person a member.** A
-  person with one or more grants on the board is a member of it. A member
-  holds these capabilities on the board with no further grant:
+  edit and move the items of the board with no grant. A person with the
+  `member` grant on the board can do the same. Archive and restore still need
+  a grant.
+- **On a strategy or initiative board, the `member` grant makes a person a
+  member.** A person with `member` or `*` on the board is a member of it. A
+  member holds these capabilities on the board with no further grant:
 
   | Board level | Capabilities of a member |
   |---|---|
   | `strategy` | `manage_strategies`, `transition_items` |
   | `initiative` | `manage_initiatives`, `transition_items` |
 
-  Thus a member can edit and move each item on the board. A grant of
-  `configure_boards` only is sufficient.
+  Thus a member can edit and move each item on the board.
+
+  No other grant makes a member. A person with only `pages`,
+  `configure_boards` or `administer_members` cannot edit or move the items.
+  A person with only `transition_items` can move the items and cannot edit
+  them. Before KAIROS-T-0541, each grant on the board made a member.
 
   Archive and restore still need a grant of `manage_<type>`.
   `configure_boards` and `administer_members` still need their own grants.
-  Delivery and ADR boards do not have this rule. When you revoke the last
-  grant of a person on the board, the person is not a member.
+  Delivery and ADR boards do not have this rule. When you revoke the `member`
+  grant of a person, the person is not a member.
 
   The REST `whoami` shows the capabilities under `implied`, for each board in
   `capabilities`. The MCP tools `whoami` and `my_boards` show them too.
 
-  A member can also claim an item of the board that has no
-  [owner](../glossary/#owner) (`claim_item`, or
-  `POST /api/{entity_type}/{short_code}/owner/claim`). The owner can hand the
-  item off to a member of the board, or release it. An organization admin can
-  set or clear the owner. A new owner is always a member of the board. The
-  owner gets no capability.
+  A person with a grant on the board can claim an item of the board that has
+  no [owner](../glossary/#owner). Use `claim_item`, or
+  `POST /api/{entity_type}/{short_code}/owner/claim`. For the claim and the
+  hand-off, each grant counts, not only `member`. The owner can hand the item
+  off to a person with a grant on the board, or release it. An organization
+  admin can set or clear the owner. The owner gets no capability.
 
 ## `manage_structure`
 

@@ -45,6 +45,8 @@ pub(crate) fn router() -> Router<AppState> {
 pub(crate) const LIST_UNREAD: i64 = 100;
 /// The read notifications in a list.
 pub(crate) const LIST_READ: i64 = 20;
+/// The most read notifications in a page of `read_before` (KAIROS-T-0584).
+pub(crate) const LIST_READ_PAGE: i64 = 100;
 
 /// The reader of a request (KAIROS-T-0550): the person, or the agent key
 /// of the request. Each keeps its own read state.
@@ -87,12 +89,37 @@ fn notification_ids(
 /// The list of the reader: the unread notifications (newest first,
 /// [`LIST_UNREAD`] at most), then the [`LIST_READ`] newest read ones, and
 /// the count of the unread ones. With `before` (an id), the next page: the
-/// unread ones older than that one, and no read ones.
+/// unread ones older than that one, and no read ones. With `read_before`
+/// (the id of a read notification, KAIROS-T-0584), the next page of the
+/// read ones: [`LIST_READ_PAGE`] at most, read before that one, and no
+/// unread ones.
 pub(crate) fn list_for(
     conn: &mut diesel::pg::PgConnection,
     reader: &Reader,
     before: Option<&str>,
+    read_before: Option<&str>,
 ) -> Result<(Vec<kairos_db::notifications::Notification>, i64), ApiError> {
+    if let Some(read_before) = read_before {
+        if before.is_some() {
+            return Err(ApiError::validation(
+                "Send `before` or `read_before`, not both. `before` gives the next page of \
+                 the unread notifications. `read_before` gives the next page of the read ones.",
+            ));
+        }
+        let id = notification_ids(conn, reader, &[read_before.to_string()])?[0];
+        let items = kairos_db::notifications::read_page(conn, reader, id, LIST_READ_PAGE)
+            .map_err(ApiError::internal)?
+            .ok_or_else(|| {
+                ApiError::validation(format!(
+                    "The notification {id} is unread for you. `read_before` takes a read \
+                         notification. Use `before` for the next page of the unread ones."
+                ))
+                .with_details(serde_json::json!({ "argument": "read_before" }))
+            })?;
+        let unread =
+            kairos_db::notifications::unread_count(conn, reader).map_err(ApiError::internal)?;
+        return Ok((items, unread));
+    }
     let before = match before {
         Some(id) => notification_ids(conn, reader, &[id.to_string()])?
             .first()
@@ -186,11 +213,15 @@ fn notification_view(n: kairos_db::notifications::Notification) -> Notification 
 pub(crate) struct ListQuery {
     /// The id of a notification: the page has the unread ones older than it.
     pub before: Option<String>,
+    /// The id of a read notification: the page has the read ones read
+    /// before it (KAIROS-T-0584).
+    pub read_before: Option<String>,
 }
 
 /// The caller's notifications: each unread one (newest first, 100 at most),
 /// then the 20 newest read ones. `before` gives the next page of unread
-/// ones. The read state is the caller's: the person, or the agent key of
+/// ones. `read_before` gives the next page of read ones: 100 at most, read
+/// before that one (KAIROS-T-0584). The read state is the caller's: the person, or the agent key of
 /// the request (KAIROS-T-0550). A service account has none.
 #[utoipa::path(
     get,
@@ -198,10 +229,12 @@ pub(crate) struct ListQuery {
     tag = "me",
     params(
         ("before" = Option<String>, Query, description = "The id of a notification. The page has the unread notifications older than it, and no read ones"),
+        ("read_before" = Option<String>, Query, description = "The id of a read notification. The page has the read notifications that the caller read before it, 100 at most, and no unread ones"),
     ),
     responses(
         (status = 200, description = "The unread notifications, then the newest read ones", body = NotificationList),
-        (status = 404, description = "`before` is not a notification of the caller", body = kairos_client::types::ErrorEnvelope),
+        (status = 404, description = "`before` or `read_before` is not a notification of the caller", body = kairos_client::types::ErrorEnvelope),
+        (status = 422, description = "`before` and `read_before` together, or `read_before` is unread for the caller", body = kairos_client::types::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn list_notifications(
@@ -215,7 +248,12 @@ pub(crate) async fn list_notifications(
         .blocking
         .run(&tenant.slug, move |conn| {
             let reader = reader_for(conn, user, key)?;
-            list_for(conn, &reader, query.before.as_deref())
+            list_for(
+                conn,
+                &reader,
+                query.before.as_deref(),
+                query.read_before.as_deref(),
+            )
         })
         .await?;
     Ok(Json(NotificationList {

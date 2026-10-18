@@ -255,14 +255,89 @@ pub fn load(path: &Path) -> Result<CredentialStore, CliError> {
             )));
         }
     };
-    serde_json::from_str(&contents).map_err(|err| {
-        CliError::Auth(format!(
-            "The credential cache at {} is corrupted ({err}).\n\
-             Run `kairos login --url <deployment>` to log in again. The login writes a new \
-             cache. As an alternative, delete the file.",
-            path.display()
-        ))
-    })
+    serde_json::from_str(&contents).map_err(|err| corrupted(path, &err))
+}
+
+/// The error of a cache file that the CLI cannot parse (KAIROS-T-0594). The
+/// text says what is wrong: the file is not JSON, or it is JSON with the
+/// wrong shape.
+fn corrupted(path: &Path, err: &serde_json::Error) -> CliError {
+    use serde_json::error::Category;
+    let fault = match err.classify() {
+        Category::Data => "The file is JSON, but it does not have the fields of a credential cache",
+        Category::Eof => "The file stops before the end of the JSON",
+        Category::Syntax | Category::Io => "The file is not valid JSON",
+    };
+    CliError::Auth(format!(
+        "The credential cache at {} is corrupted. {fault}: {err}.\n\
+         Run `kairos login --url <deployment>` to log in again. The login writes a new \
+         cache. As an alternative, delete the file.",
+        path.display()
+    ))
+}
+
+/// The lock file of the cache at `path`: `credentials.json.lock`.
+pub fn lock_path(path: &Path) -> PathBuf {
+    path.with_extension("json.lock")
+}
+
+/// An exclusive lock on the credential cache (KAIROS-T-0594). The lock ends
+/// when the value is dropped.
+///
+/// The lock is an OS advisory lock on [`lock_path`] (`flock` on Unix,
+/// `LockFileEx` on Windows), so it holds across processes. Two commands that
+/// refresh at the same time would each send the same refresh token. An
+/// issuer that rotates refresh tokens accepts only the first, and the second
+/// command loses the login. With the lock, the second command waits, reads
+/// the cache again, and uses the new token.
+#[derive(Debug)]
+pub struct CacheLock {
+    _file: std::fs::File,
+}
+
+/// Take the lock of the cache at `path`. The call waits while another
+/// process holds the lock.
+pub fn lock(path: &Path) -> Result<CacheLock, CliError> {
+    let file = open_lock_file(path)?;
+    file.lock().map_err(|err| lock_error(path, &err))?;
+    Ok(CacheLock { _file: file })
+}
+
+/// Take the lock of the cache at `path` if no other holder has it. `None`
+/// when another holder has the lock. The tests use it.
+#[cfg(test)]
+pub fn try_lock(path: &Path) -> Result<Option<CacheLock>, CliError> {
+    let file = open_lock_file(path)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(CacheLock { _file: file })),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(err)) => Err(lock_error(path, &err)),
+    }
+}
+
+/// Open (and make) the lock file, mode 0600, in the private directory.
+fn open_lock_file(path: &Path) -> Result<std::fs::File, CliError> {
+    let lock_path = lock_path(path);
+    if let Some(parent) = lock_path.parent() {
+        create_private_dir(parent)?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+        .open(&lock_path)
+        .map_err(|err| lock_error(path, &err))
+}
+
+fn lock_error(path: &Path, err: &std::io::Error) -> CliError {
+    CliError::Failure(format!(
+        "The CLI cannot lock {}: {err}.",
+        lock_path(path).display()
+    ))
 }
 
 /// Write the store to `path` atomically (temp file + rename) with mode
@@ -282,7 +357,9 @@ pub fn save(path: &Path, store: &CredentialStore) -> Result<(), CliError> {
         ))
     })?;
 
-    let tmp = path.with_extension("json.tmp");
+    // The name has the process id (KAIROS-T-0594): two processes that save
+    // at the same time do not write into one temp file.
+    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
     write_private_file(&tmp, &json).map_err(|err| {
         CliError::Failure(format!("The CLI cannot write {}: {err}.", tmp.display()))
     })?;
@@ -591,6 +668,80 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("credentials.json"), "{message}");
         assert!(message.contains("kairos login"), "{message}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// KAIROS-T-0594: the text of a corrupted cache says what is wrong.
+    #[test]
+    fn the_corrupted_cache_text_names_the_fault() {
+        let dir = scratch_dir("corrupt-fault");
+        let path = dir.join("credentials.json");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        for (contents, fault) in [
+            ("not json", "The file is not valid JSON"),
+            (
+                "{\"version\": 1, \"deployments\": {",
+                "The file stops before the end",
+            ),
+            (
+                "{\"version\": 1, \"deployments\": {\"https://x\": {\"issuer\": 3}}}",
+                "does not have the fields of a credential cache",
+            ),
+        ] {
+            std::fs::write(&path, contents).expect("write");
+            let message = load(&path).expect_err(contents).to_string();
+            assert!(message.contains("is corrupted. "), "{message}");
+            assert!(message.contains(fault), "{contents}: {message}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// KAIROS-T-0594: the temp file of a save has the process id in its
+    /// name, and the save leaves no temp file.
+    #[test]
+    fn the_temp_file_has_the_pid_and_does_not_stay() {
+        let dir = scratch_dir("tmp-pid");
+        let path = dir.join("credentials.json");
+        save(&path, &CredentialStore::default()).expect("save");
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .expect("read dir")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(names, vec!["credentials.json".to_string()]);
+        // A stale temp file of the old fixed name does not block a save.
+        std::fs::create_dir(dir.join("credentials.json.tmp")).expect("a stale name");
+        save(&path, &CredentialStore::default()).expect("save with the old name taken");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// KAIROS-T-0594: the lock of the cache is exclusive. A second holder
+    /// cannot take it while the first has it, and can take it after.
+    #[test]
+    fn the_cache_lock_is_exclusive() {
+        let dir = scratch_dir("lock");
+        let path = dir.join("credentials.json");
+        let held = lock(&path).expect("lock");
+        assert!(lock_path(&path).exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(lock_path(&path))
+                .expect("meta")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        assert!(try_lock(&path).expect("try").is_none(), "the lock is held");
+        drop(held);
+        let again = try_lock(&path).expect("try").expect("the lock is free");
+        drop(again);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

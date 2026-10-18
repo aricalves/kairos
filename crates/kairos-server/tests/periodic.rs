@@ -10,7 +10,9 @@
 //! 4. A server that does not run a pass gives the run back, with no try
 //!    counted.
 //! 5. The retention pass is a periodic job: it deletes an expired session
-//!    and adds its next run.
+//!    and adds its next run. With the default `archive` mode and no target
+//!    the job records `skipped: no target`, and so does the audit row of
+//!    the tenant (KAIROS-T-0631).
 //!
 //! Runs against the compose Postgres (`angreal services up`). Owns the
 //! scratch databases `kairos_periodic_t0376_*`.
@@ -418,4 +420,30 @@ async fn the_retention_pass_runs_as_a_periodic_job() {
     let states: Vec<&str> = jobs.iter().map(|j| j.state.as_str()).collect();
     assert_eq!(states, vec!["done", "queued"]);
     assert!(jobs[1].run_after > chrono::Utc::now() + chrono::Duration::hours(23));
+
+    // KAIROS-T-0631: the record of the run, on the job and in the tenant.
+    assert_eq!(
+        jobs[0].payload_json()["result"],
+        "skipped: no target",
+        "{}",
+        jobs[0].payload
+    );
+    assert!(
+        jobs[1].payload_json().get("result").is_none(),
+        "the next run starts with no record: {}",
+        jobs[1].payload
+    );
+    diesel::sql_query("SET search_path TO org_acme, public")
+        .execute(&mut c)
+        .expect("pin acme");
+    let details: Vec<String> = kairos_db::schema::activity_log::table
+        .filter(kairos_db::schema::activity_log::action.eq("retention_sweep"))
+        .select(kairos_db::schema::activity_log::details)
+        .load(&mut c)
+        .expect("audit rows");
+    assert_eq!(details.len(), 1, "{details:?}");
+    assert!(
+        details[0].starts_with("mode:archive skipped: no target"),
+        "{details:?}"
+    );
 }
