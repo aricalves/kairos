@@ -78,8 +78,15 @@ fn resolve_owner(conn: &mut PgConnection, raw: &str) -> Result<Uuid, ApiError> {
             .select(users::id)
             .first(conn)
             .optional(),
-        Err(_) => users::table
+        // KAIROS-T-0589: an email, or a user name.
+        Err(_) if raw.contains('@') => users::table
             .filter(users::email.eq(raw))
+            .filter(users::kind.eq(kairos_db::models::USER_KIND_HUMAN))
+            .select(users::id)
+            .first(conn)
+            .optional(),
+        Err(_) => users::table
+            .filter(users::user_name.eq(raw))
             .filter(users::kind.eq(kairos_db::models::USER_KIND_HUMAN))
             .select(users::id)
             .first(conn)
@@ -88,8 +95,8 @@ fn resolve_owner(conn: &mut PgConnection, raw: &str) -> Result<Uuid, ApiError> {
     .map_err(ApiError::internal)?;
     found.ok_or_else(|| {
         ApiError::validation(format!(
-            "No person has the user id or the email {raw:?}. Send the user id or the email \
-             of a person."
+            "No person has the user id, the email or the user name {raw:?}. Send the user id, \
+             the email or the user name of a person."
         ))
         .with_details(serde_json::json!({ "field": "user" }))
     })

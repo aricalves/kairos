@@ -93,7 +93,7 @@ pub enum AgentKeysCommand {
     /// List the agent keys of each person, newest first (prefixes only;
     /// never the secret). A revoked key stays in the list
     List {
-        /// Only the keys of this person: a user id (UUID) or an email
+        /// Only the keys of this person: a user id (UUID), an email or a user name
         #[arg(long)]
         user: Option<String>,
         #[command(flatten)]
