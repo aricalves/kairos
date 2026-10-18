@@ -560,6 +560,7 @@ Body of `POST /api/adrs`. `board_id`/`column_id` follow the DDL rule: both set (
 | `content` | `string` | no | Markdown content; defaults to empty. |
 | `decision_date` | `string`, nullable | no | `YYYY-MM-DD`. |
 | `decision_maker` | `string`, nullable | no |  |
+| `parent` | `string`, nullable | no | The short code of the item that the ADR supports: a strategy, an initiative or a task (KAIROS-T-0591). The server writes the `supports` edge in the transaction of the create: a refused parent leaves no ADR. A retired code finds its item. |
 | `title` | `string` | yes |  |
 
 The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
@@ -2010,6 +2011,15 @@ Response of `POST /api/{entity_type}/{short_code}/notes/{note_id}/promote` (KAIR
 | `promoted_to` | `string` | yes | The short code of the new item. |
 | `short_code` | `string` | yes | The short code of the source item. |
 | `supports` | `boolean` | yes | True when the new item `supports` the source item. False for a note on a document or an ADR: no edge joins two attachments. |
+
+## ProposedRelationship
+
+The answer of `POST /api/relationships` when the call made a proposal and no edge (202, KAIROS-T-0569). A `blocks` edge needs the right to edit the target. A caller who can edit the source only gets this.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `message` | `string` | yes | What the call did, and who can confirm the proposal. |
+| `proposal` | [`EdgeProposalDto`](#edgeproposaldto) | yes | The proposal. Confirm it with `POST /api/proposals/{id}/confirm`. |
 
 ## PurgeTaskResponse
 

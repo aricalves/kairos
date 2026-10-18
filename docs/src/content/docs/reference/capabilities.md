@@ -456,11 +456,15 @@ create of a document needs `manage_documents` on its owner: see
 
 This is the link rule. A principal can create or remove an edge when the
 principal can edit the item at one end. The source is sufficient, and the
-target is sufficient. [The edit rule](#the-edit-rule) decides each end.
+target is sufficient. [The edit rule](#the-edit-rule) decides each end. The
+create of a `blocks` edge needs the target: see
+[A `blocks` edge needs the blocked item](#a-blocks-edge-needs-the-blocked-item).
 
 | Relationship | Who can write it |
 |---|---|
-| `parent`, `blocks`, `supports`, `informs`, `supersedes` | A principal who can edit the source **or** the target: its creator, **or** a holder of `manage_<type>` on its authorization board, **or** an organization admin |
+| `parent`, `supports`, `informs`, `supersedes` | A principal who can edit the source **or** the target: its creator, **or** a holder of `manage_<type>` on its authorization board, **or** an organization admin |
+| Create `blocks` | A principal who can edit the target, the blocked item. With the source only, the call makes a proposal |
+| Remove `blocks` | A principal who can edit the source **or** the target |
 
 No relationship type needs the admin role. Releases up to and including 0.4.0
 kept `supports`, `informs` and `supersedes` for organization admins. In those
@@ -474,6 +478,38 @@ change. A caller who can edit the two ends of an impossible edge gets
 
 A refusal names two capabilities, one for each end. The caller needs one of
 them.
+
+### A `blocks` edge needs the blocked item
+
+A `blocks` edge changes the work of its target. The card of the target shows
+it blocked, and the claimant of the target gets the events. So the create of a
+`blocks` edge needs the right to edit the target (KAIROS-T-0569).
+
+| The caller can edit | `link_items` and `POST /api/relationships` give |
+|---|---|
+| The target | The edge. REST answers 201. |
+| The source only | A proposal of the edge, and no edge. REST answers 202 with `message` and `proposal`. |
+| Neither end | 403 `FORBIDDEN`. |
+
+The answer of a proposal names the proposal and who can confirm it. A holder
+of `approve_proposals` on the board of one end confirms, or an organization
+admin. See [The decision of an edge proposal](#the-decision-of-an-edge-proposal).
+
+The server records no proposal of an edge that cannot exist. The type rule
+gives `RELATIONSHIP_RULE`, and an edge that exists gives `ALREADY_LINKED`. The
+same proposal, pending, gives `CONFLICT`. The confirm does the cycle check.
+
+The refusal of a `blocks` edge names the target first.
+`details.required_capability` and `details.board_id` are those of the target.
+Each entry of `details.any_of` has `gives`: `edge` for the target, and
+`proposal` for the source.
+
+The remove of a `blocks` edge keeps the link rule: a principal who can edit
+one end removes it. To remove a blocker does not stop the work of a team.
+
+Until KAIROS-T-0569, a principal who could edit the source wrote a `blocks`
+edge. So a team could block the work of a different team, and that team did
+not agree.
 
 ### The `supports` edge of a document
 

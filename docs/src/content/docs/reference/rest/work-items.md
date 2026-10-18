@@ -836,13 +836,17 @@ repository. An unknown repository is a 422 `VALIDATION`.
 Create an ADR. On a board: requires `manage_adrs` on that board.
 Off-board (no `board_id`): org-admin-only (A-0006 fallback).
 
+`parent` (KAIROS-T-0591) is the short code of the item that the ADR
+supports: a strategy, an initiative or a task. The ADR and its
+`supports` edge are one transaction: a refused parent leaves no ADR.
+
 Request body (required): `application/json`, [`CreateAdrRequest`](../schemas/#createadrrequest)
 
 | Response | Body | Meaning |
 |---|---|---|
 | `201` | [`Adr`](../schemas/#adr) | Created |
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Missing capability |
-| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown board/column or bad date |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown board/column/parent, a parent that is not a strategy, an initiative or a task, or bad date |
 
 ### `GET /api/adrs/{short_code}`
 

@@ -94,7 +94,7 @@ fn not_approver(message: &str, boards: &kairos_db::proposals::ApprovalBoards) ->
 ///
 /// Short codes rather than ids because this is read by a person deciding
 /// something, and a UUID pair tells them nothing about what they are agreeing to.
-fn to_dto(
+pub(crate) fn to_dto(
     conn: &mut diesel::pg::PgConnection,
     p: kairos_db::proposals::EdgeProposal,
 ) -> Result<dto_search::EdgeProposalDto, ApiError> {
