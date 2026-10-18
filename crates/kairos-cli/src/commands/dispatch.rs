@@ -7,8 +7,8 @@ use crate::error::CliError;
 use crate::table::Table;
 
 use kairos_client::types_dispatch::{
-    CreateDispatchRuleRequest, CreateWebhookTargetRequest, DispatchRule, WebhookDeliveriesQuery,
-    WebhookDelivery, WebhookTarget,
+    CreateDispatchRuleRequest, CreateWebhookTargetRequest, DispatchRule, RedeliverQuery,
+    WebhookDeliveriesQuery, WebhookDelivery, WebhookTarget,
 };
 
 /// The dispatch of a board to agent runners.
@@ -54,8 +54,8 @@ pub enum DispatchCommand {
         #[command(flatten)]
         common: Common,
     },
-    /// Turn a webhook target on again after Kairos turned it off (needs
-    /// configure_boards)
+    /// Turn a webhook target on again after Kairos turned it off, and send
+    /// its skipped deliveries of the last 30 days (needs configure_boards)
     #[command(name = "enable-target")]
     EnableTarget {
         /// Board slug or id (UUID)
@@ -64,6 +64,22 @@ pub enum DispatchCommand {
         /// The id of the target
         #[arg(value_name = "TARGET")]
         target: String,
+        #[command(flatten)]
+        common: Common,
+    },
+    /// Send the skipped deliveries of a webhook target that is on again,
+    /// oldest first (needs configure_boards)
+    Redeliver {
+        /// Board slug or id (UUID)
+        #[arg(value_name = "BOARD")]
+        board: String,
+        /// The id of the target
+        #[arg(value_name = "TARGET")]
+        target: String,
+        /// Only the events at or after this time (RFC 3339). Without it:
+        /// each skipped delivery of the last 30 days
+        #[arg(long, value_name = "TIME")]
+        since: Option<String>,
         #[command(flatten)]
         common: Common,
     },
@@ -178,6 +194,22 @@ pub fn split_metadata(raw: &str) -> Result<(String, String), CliError> {
         _ => Err(CliError::Failure(format!(
             "--metadata {raw:?} is not SLUG=VALUE. Send for example --metadata priority=high."
         ))),
+    }
+}
+
+/// What `enable-target` and `redeliver` queued again (KAIROS-T-0577).
+/// Pure.
+pub fn redelivered_text(target: &WebhookTarget) -> String {
+    match target.redelivered.unwrap_or(0) {
+        0 => format!(
+            "Kairos had no skipped delivery of {} to send again.",
+            target.name
+        ),
+        1 => format!("Kairos queued 1 skipped delivery of {} again.", target.name),
+        n => format!(
+            "Kairos queued {n} skipped deliveries of {} again, oldest first.",
+            target.name
+        ),
     }
 }
 
@@ -339,6 +371,23 @@ impl DispatchCommand {
                     return print_json(&target);
                 }
                 println!("The webhook target {} ({}) is on.", target.name, target.id);
+                println!("{}", redelivered_text(&target));
+                Ok(())
+            }
+            Self::Redeliver {
+                board,
+                target,
+                since,
+                common,
+            } => {
+                let client = client(&common)?;
+                let target = client
+                    .redeliver_webhook_target(&board, &target, &RedeliverQuery { since })
+                    .await?;
+                if common.json {
+                    return print_json(&target);
+                }
+                println!("{}", redelivered_text(&target));
                 Ok(())
             }
             Self::TestTarget {
@@ -496,5 +545,38 @@ mod tests {
         for bad in ["priority", "=high", "priority="] {
             assert!(split_metadata(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn the_answer_counts_the_deliveries_queued_again() {
+        let target = |redelivered| WebhookTarget {
+            id: "t1".into(),
+            board_id: "b1".into(),
+            name: "Runner".into(),
+            url: "https://hooks.example.com/run".into(),
+            enabled: true,
+            consecutive_failures: 0,
+            disabled_at: None,
+            disabled_reason: None,
+            created_by: "u1".into(),
+            created_at: "2026-10-17T09:00:00Z".into(),
+            redelivered,
+        };
+        assert_eq!(
+            redelivered_text(&target(Some(0))),
+            "Kairos had no skipped delivery of Runner to send again."
+        );
+        assert_eq!(
+            redelivered_text(&target(None)),
+            "Kairos had no skipped delivery of Runner to send again."
+        );
+        assert_eq!(
+            redelivered_text(&target(Some(1))),
+            "Kairos queued 1 skipped delivery of Runner again."
+        );
+        assert_eq!(
+            redelivered_text(&target(Some(3))),
+            "Kairos queued 3 skipped deliveries of Runner again, oldest first."
+        );
     }
 }
