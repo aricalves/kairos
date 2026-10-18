@@ -430,9 +430,9 @@ token.
 
 Set or replace the write token of a GitHub or GitLab repository. An
 organization admin or a member of the owner team can do it. Kairos
-encrypts the token, and writes each open pull request that links to an
-item and each issue whose task changed. The response is the status,
-with no token.
+encrypts the token. Then Kairos writes each open pull request that
+links to an item, and each issue whose task changed. The response is
+the status, with no token.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
