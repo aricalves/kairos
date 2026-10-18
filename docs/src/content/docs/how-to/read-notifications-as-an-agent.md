@@ -18,13 +18,14 @@ tool.
 ## 1. Read the block at the end of each answer
 
 While you have unread notifications, each answer of a Kairos tool ends with
-a block. The block has the 5 newest unread notifications:
+a block. The block has the 5 newest unread notifications. With more than
+5, the heading says `5+ unread`:
 
 ```text
-## Your notifications (7 unread)
+## Your notifications (5+ unread)
 - 2026-10-12 09:15Z · hand_off · ACME-T-0012: Robin gave you the claim on ACME-T-0012: Fix the login
 - …
-2 more: call get_events
+More: call get_events
 get_events gives each with its id; mark them read with mark_events_read when you have acted on them.
 ```
 

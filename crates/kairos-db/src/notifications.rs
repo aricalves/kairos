@@ -96,20 +96,12 @@ pub struct Notification {
     pub read_at: Option<DateTime<Utc>>,
 }
 
-/// [`unread`]: the newest unread notifications, and the count of all the
-/// unread ones.
+/// [`unread`]: the newest unread notifications, and whether there are more
+/// (KAIROS-T-0612: no count, so the query stops at the limit).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Unread {
     pub newest: Vec<Notification>,
-    pub total: i64,
-}
-
-#[derive(QueryableByName)]
-struct UnreadRow {
-    #[diesel(embed)]
-    notification: Notification,
-    #[diesel(sql_type = BigInt)]
-    total: i64,
+    pub more: bool,
 }
 
 #[derive(QueryableByName)]
@@ -905,26 +897,31 @@ const SELECT_VIEW: &str = "SELECT v.id, v.kind, v.item_id, d.short_code, d.entit
      d.title, v.text, v.actor_id, v.created_at, v.read_at \
      FROM v LEFT JOIN entity_directory d ON d.id = v.item_id";
 
-/// The newest `limit` unread notifications of the reader, and the count of
-/// all the unread ones. One query.
+/// The newest `limit` unread notifications of the reader, and whether there
+/// are more. One query.
+///
+/// KAIROS-T-0612: the query reads `limit + 1` rows and has no count, so it
+/// stops at the limit; the join of `entity_directory` comes after the
+/// limit, on those rows only. An agent rarely reads all its notifications,
+/// and a count read each unread row on each MCP answer.
 pub fn unread(conn: &mut PgConnection, reader: &Reader, limit: i64) -> Result<Unread, DieselError> {
-    let rows: Vec<UnreadRow> = sql_query(format!(
-        "{READER_VIEW} SELECT v.id, v.kind, v.item_id, d.short_code, d.entity_type, d.title, \
-                v.text, v.actor_id, v.created_at, v.read_at, count(*) OVER () AS total \
-           FROM v LEFT JOIN entity_directory d ON d.id = v.item_id \
-          WHERE v.read_at IS NULL \
-          ORDER BY v.created_at DESC, v.id DESC LIMIT $4"
+    let mut newest: Vec<Notification> = sql_query(format!(
+        "{READER_VIEW}, u AS ( \
+             SELECT * FROM v WHERE v.read_at IS NULL \
+              ORDER BY v.created_at DESC, v.id DESC LIMIT $4) \
+         SELECT u.id, u.kind, u.item_id, d.short_code, d.entity_type, d.title, \
+                u.text, u.actor_id, u.created_at, u.read_at \
+           FROM u LEFT JOIN entity_directory d ON d.id = u.item_id \
+          ORDER BY u.created_at DESC, u.id DESC"
     ))
     .bind::<SqlUuid, _>(reader.user)
     .bind::<Array<SqlUuid>, _>(reader.key_ids())
     .bind::<Nullable<Timestamptz>, _>(reader.since())
-    .bind::<BigInt, _>(limit)
+    .bind::<BigInt, _>(limit + 1)
     .load(conn)?;
-    let total = rows.first().map_or(0, |r| r.total);
-    Ok(Unread {
-        newest: rows.into_iter().map(|r| r.notification).collect(),
-        total,
-    })
+    let more = newest.len() as i64 > limit;
+    newest.truncate(limit.max(0) as usize);
+    Ok(Unread { newest, more })
 }
 
 /// The notifications of the reader for a list: the unread ones (newest
