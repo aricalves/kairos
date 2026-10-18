@@ -249,12 +249,14 @@ differ.
 | `cancel` | no | no | yes | no | no |
 | `reopen` | no | no | yes | no | no |
 | `lane` | no | no | yes | no | no |
+| `lifecycle` | no | no | no | yes | no |
 | `archive` (alias `delete`) | yes | yes | yes | yes | yes |
 | `purge` | no | no | yes | no | no |
 | `restore` | yes | yes | yes | yes | yes |
 
 `documents` has no `transition` verb: documents have no board placement, and
-carry an editorial lifecycle instead of a column. `move` exists on `tasks`
+carry an editorial lifecycle instead of a column. `documents lifecycle` sets
+it. `move` exists on `tasks`
 and on `documents`. `tasks move` moves a task to a different delivery board.
 `documents move` gives a document to a different owner board. See
 [Flight levels](../../explanation/flight-levels/) and
@@ -657,6 +659,32 @@ The command prints the owner board of the document after the call:
 
 ```text
 The owner board of the document ACME-D-0004 is <board-id>.
+```
+
+### `documents lifecycle`
+
+```
+kairos documents lifecycle <SHORT_CODE> --to <STATE> [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<SHORT_CODE>` | string | required | The short code of the document. |
+| `--to <STATE>` | `draft`, `review`, `published` or `archived` | required | The lifecycle of the document after the call. |
+
+The command sets the editorial lifecycle of a document (KAIROS-A-0018). You
+can move a document from each value to each other value. A value that the
+document already has changes nothing. The edit rule applies: the creator of
+the document, or `manage_documents` on its owner board. The CLI refuses
+another value and lists the four values.
+
+The `archived` lifecycle is a label: the document stays live. To put the
+document away, use `documents archive`.
+
+The command prints the lifecycle of the document after the call:
+
+```text
+The document ACME-D-0004 is published.
 ```
 
 ### `<noun> archive`

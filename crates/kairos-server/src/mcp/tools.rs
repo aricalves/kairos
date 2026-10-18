@@ -3,7 +3,7 @@
 //! (KAIROS-I-0012), `restore_item` (KAIROS-A-0020), `related_work`
 //! (KAIROS-T-0191), `propose_edge` (KAIROS-T-0192), `set_repository`
 //! (COLLIERY-T-0220), and `add_repository` and `update_repository`
-//! (COLLIERY-T-0266); later tasks added more (72 in all, in the profiles
+//! (COLLIERY-T-0266); later tasks added more (73 in all, in the profiles
 //! of `profiles.rs`, KAIROS-T-0454) — each a
 //! thin wrapper over the same `kairos-core`/`kairos-db` services the REST
 //! handlers call — through [`crate::blocking::BlockingTenantPool`], never
@@ -634,6 +634,17 @@ pub struct SetWorkClassParams {
     pub short_code: String,
     /// The lane: planned | support.
     pub work_class: String,
+}
+
+/// Parameters for `set_lifecycle` (KAIROS-T-0555).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct SetLifecycleParams {
+    /// The short code of the document (e.g. "ACME-D-0012").
+    pub short_code: String,
+    /// The lifecycle: draft | review | published | archived.
+    pub lifecycle: String,
 }
 
 /// Parameters for `promote_note` (KAIROS-T-0505).
@@ -1309,7 +1320,7 @@ pub struct SaveTemplateParams {
 }
 
 // ---------------------------------------------------------------------------
-// The tools (72; the list of each profile is asserted in tests/mcp.rs)
+// The tools (73; the list of each profile is asserted in tests/mcp.rs)
 // ---------------------------------------------------------------------------
 
 #[tool_router(vis = "pub(super)")]
@@ -3263,6 +3274,52 @@ impl KairosMcp {
         .await
     }
 
+    // KAIROS-T-0555: a document moves between draft, review, published
+    // and archived. A document is not on a board (KAIROS-A-0018), so
+    // `transition_item` cannot move it. REST and this tool call one
+    // function (`crate::api::documents::change_lifecycle`).
+    #[tool(
+        description = "Set the lifecycle of a DOCUMENT: `lifecycle` is draft, review, published or archived. You can move a document from each value to each other value. A document is not on a board, so `transition_item` does not move it. A value that the document already has changes nothing. The edit rule applies: the creator of the document, or `manage_documents` on its owner board. `promote_note` makes a draft: publish it with this tool."
+    )]
+    pub async fn set_lifecycle(
+        &self,
+        Parameters(params): Parameters<SetLifecycleParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            let lifecycle = crate::api::documents::parse_lifecycle(&params.lifecycle)?;
+            let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
+            if item.item_type != ItemType::Document {
+                return Err(ApiError::validation(format!(
+                    "The {} {} is not a document. set_lifecycle applies to documents only.",
+                    item.item_type, item.short_code
+                )));
+            }
+            let (before, updated) = crate::api::documents::change_lifecycle(
+                conn,
+                &slug,
+                user,
+                &item.short_code,
+                lifecycle,
+            )?;
+            Ok(if before == lifecycle {
+                format!(
+                    "{} is already {}: nothing changed.",
+                    updated.short_code, updated.lifecycle
+                )
+            } else {
+                format!(
+                    "Set the lifecycle of {} to {} (was {}).",
+                    updated.short_code, updated.lifecycle, before
+                )
+            })
+        })
+        .await
+    }
+
     // KAIROS-T-0506: the live state of a task.
     #[tool(
         description = "Write the live state of a TASK: `branch`, `commit`, `pushed`, `pr_url`, `next_step` (send at least one). The write is a patch: a field that you send is set, `null` clears it, a field that you do not send is kept. `expected_updated_at` (the `updated_at` you read) refuses a write over a state that changed since, with CONFLICT and the current state. A hand-off or a release clears `next_step`. The state is not a note: it is one current line that `get_item`, `board_items` and the card show, with who wrote it when. Write it after each commit, each push, a PR, and before you stop. The edit rule applies: the creator of the task, or `manage_tasks` on its board."
@@ -3603,10 +3660,19 @@ impl KairosMcp {
                 _ => {
                     return Err(ApiError::unprocessable(
                         "ITEM_NOT_ON_BOARD",
-                        format!(
-                            "The {} {} is not on a board, so it cannot move between columns.",
-                            item.item_type, item.short_code
-                        ),
+                        if item.item_type == ItemType::Document {
+                            format!(
+                                "The document {} is not on a board, so it cannot move between \
+                                 columns. Use set_lifecycle to move it between draft, review, \
+                                 published and archived.",
+                                item.short_code
+                            )
+                        } else {
+                            format!(
+                                "The {} {} is not on a board, so it cannot move between columns.",
+                                item.item_type, item.short_code
+                            )
+                        },
                     ));
                 }
             };
