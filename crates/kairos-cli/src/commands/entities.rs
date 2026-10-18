@@ -13,8 +13,8 @@ use kairos_client::EntityKind;
 use kairos_client::types::{
     Adr, AppendNoteResponse, CreateAdrRequest, CreateDocumentRequest, CreateInitiativeRequest,
     CreateStrategyRequest, CreateTaskRequest, DeleteResponse, Document, ImpactListQuery,
-    Initiative, ItemNote, ListQuery, Pagination, PromoteNoteRequest,
-    PromoteNoteResponse, RestoreResponse, Strategy, Task, UpdateContentRequest,
+    Initiative, ItemNote, ListQuery, Pagination, PromoteNoteRequest, PromoteNoteResponse,
+    RestoreResponse, Strategy, Task, UpdateContentRequest,
 };
 use kairos_client::types_repositories::Impact;
 
