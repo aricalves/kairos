@@ -571,8 +571,8 @@ pub(crate) fn create(
 /// update writes nothing (COLLIERY-T-0255). The refusal names the slug and
 /// the board that has it. A board can keep its slug in an update.
 ///
-/// The body has the fields `name`, `slug`, `team_id`, `parent_gate` and
-/// `owner_gate` only. A different field of the board (`id`, `board_level`) is a 422
+/// The body has the fields `name`, `slug`, `team_id`, `parent_gate`,
+/// `owner_gate` and `blockers_gate` only. A different field of the board (`id`, `board_level`) is a 422
 /// `VALIDATION` that names the field (COLLIERY-T-0249).
 ///
 /// `parent_gate` sets a board policy of a delivery board (KAIROS-T-0641).
@@ -584,6 +584,11 @@ pub(crate) fn create(
 /// With the policy on, an initiative moves into its Active column only with
 /// an owner. On a board of a different level, the field is a 422
 /// `VALIDATION`.
+///
+/// `blockers_gate` sets a board policy of a delivery board (KAIROS-T-0565).
+/// With the policy on, a blocked task does not move into a claims column
+/// or a done column. On a board of a different level, the
+/// field is a 422 `VALIDATION`.
 ///
 /// The short-code prefix of a board does not change (COLLIERY-T-3099). A
 /// body with `code_prefix` is a 422 `CODE_PREFIX_IS_FIXED` that says so
@@ -623,7 +628,7 @@ pub(crate) async fn update_board(
     let nothing_to_update = || {
         ApiError::validation(
             "The request has no field to change. Send one or more of name, slug, team_id, \
-             parent_gate and owner_gate.",
+             parent_gate, owner_gate and blockers_gate.",
         )
     };
     if body.name.is_none()
@@ -631,6 +636,7 @@ pub(crate) async fn update_board(
         && sent_team.is_none()
         && body.parent_gate.is_none()
         && body.owner_gate.is_none()
+        && body.blockers_gate.is_none()
     {
         return Err(nothing_to_update());
     }
@@ -650,12 +656,14 @@ pub(crate) async fn update_board(
                 && body.slug.is_none()
                 && body.parent_gate.is_none()
                 && body.owner_gate.is_none()
+                && body.blockers_gate.is_none()
             {
                 return Err(nothing_to_update());
             }
             let policies = PolicyChange {
                 parent_gate: body.parent_gate,
                 owner_gate: body.owner_gate,
+                blockers_gate: body.blockers_gate,
             };
             check_policies(&board, policies)?;
             // COLLIERY-T-0258: the form of a slug that the caller sent. A
@@ -722,12 +730,14 @@ pub(crate) struct PolicyChange {
     pub parent_gate: Option<bool>,
     /// `owner_gate`, a policy of an initiative board (KAIROS-T-0643).
     pub owner_gate: Option<bool>,
+    /// `blockers_gate`, a policy of a delivery board (KAIROS-T-0565).
+    pub blockers_gate: Option<bool>,
 }
 
 impl PolicyChange {
     /// True when the request sends no policy.
     pub(crate) fn is_empty(self) -> bool {
-        self.parent_gate.is_none() && self.owner_gate.is_none()
+        self.parent_gate.is_none() && self.owner_gate.is_none() && self.blockers_gate.is_none()
     }
 }
 
@@ -749,6 +759,14 @@ pub(crate) fn check_policies(board: &Board, change: PolicyChange) -> Result<(), 
             board.slug, board.board_level
         ))
         .with_details(json!({ "field": "owner_gate" })));
+    }
+    if change.blockers_gate.is_some() && board.board_level != BoardLevel::Delivery {
+        return Err(ApiError::validation(format!(
+            "The board {} is a {} board. blockers_gate is a policy of a delivery board only. \
+             Leave out blockers_gate.",
+            board.slug, board.board_level
+        ))
+        .with_details(json!({ "field": "blockers_gate" })));
     }
     Ok(())
 }
@@ -791,6 +809,20 @@ pub(crate) fn apply_policies(
         )?;
         changed = true;
     }
+    if let Some(on) = change.blockers_gate
+        && kairos_db::board_policy::set_blockers_gate(conn, board.id, on)
+            .map_err(ApiError::internal)?
+    {
+        log_activity(
+            conn,
+            user,
+            ActivityAction::BoardConfig,
+            board.id,
+            "board",
+            format!("blockers_gate:{on}"),
+        )?;
+        changed = true;
+    }
     Ok(changed)
 }
 
@@ -807,7 +839,7 @@ pub(crate) fn set_board_policy_as(
     require_capability(conn, slug, Some(board.id), user, CONFIGURE)?;
     if change.is_empty() {
         return Err(ApiError::validation(
-            "The request has no policy to set. Send parent_gate or owner_gate.",
+            "The request has no policy to set. Send parent_gate, owner_gate or blockers_gate.",
         ));
     }
     check_policies(&board, change)?;

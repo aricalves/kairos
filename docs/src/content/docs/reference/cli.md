@@ -954,7 +954,7 @@ most. The definitions are in [`board_flow`](../mcp-tools/#board_flow).
 ### `kairos boards policy`
 
 ```
-kairos boards policy <BOARD> [--parent-gate on|off] [--owner-gate on|off] [OPTIONS]
+kairos boards policy <BOARD> [--parent-gate on|off] [--owner-gate on|off] [--blockers-gate on|off] [OPTIONS]
 ```
 
 | Argument / Option | Type | Default | Description |
@@ -962,6 +962,7 @@ kairos boards policy <BOARD> [--parent-gate on|off] [--owner-gate on|off] [OPTIO
 | `<BOARD>` | slug or UUID | required | The board. |
 | `--parent-gate` | `on` or `off` | unchanged | The policy `parent_gate` of a delivery board. |
 | `--owner-gate` | `on` or `off` | unchanged | The policy `owner_gate` of an initiative board. |
+| `--blockers-gate` | `on` or `off` | unchanged | The policy `blockers_gate` of a delivery board. |
 
 Shows the policies of a board, and sets them. To set a policy, you need
 `configure_boards` on the board. With `parent_gate` on, a task moves to a
@@ -970,7 +971,11 @@ different move with `PARENT_NOT_ACTIVE`.
 
 With `owner_gate` on, an initiative
 moves to Active only with an owner. Kairos refuses a different move with
-`OWNER_REQUIRED`. See
+`OWNER_REQUIRED`.
+
+With `blockers_gate` on, a task with open blockers does not move to a claims
+column or a done column. Kairos refuses the move with `BLOCKED`. The policy is
+off by default: the move succeeds with a warning. See
 [`set_board_policy`](../mcp-tools/#set_board_policy).
 
 ### `kairos boards wip-limit`

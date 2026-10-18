@@ -111,6 +111,7 @@ diesel::table! {
         code_prefix -> Text,
         parent_gate -> Bool,
         owner_gate -> Bool,
+        blockers_gate -> Bool,
     }
 }
 
