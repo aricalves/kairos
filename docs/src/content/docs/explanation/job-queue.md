@@ -143,6 +143,7 @@ The limits are for each server: with 2 servers, 2 embedded builds can run.
 | `webhook_delivery` | One signed webhook delivery. | `KAIROS_JOB_LIMIT_WEBHOOK_DELIVERY` (4) |
 | `github_writeback` | The comment and the status of one pull request. | `KAIROS_JOB_LIMIT_GITHUB_WRITEBACK` (2) |
 | `issue_import` | The import of the open issues of one repository. | `KAIROS_JOB_LIMIT_ISSUE_IMPORT` (2) |
+| `issue_writeback` | The comment and the state of one issue that became a task. | `KAIROS_JOB_LIMIT_ISSUE_WRITEBACK` (2) |
 | `periodic` | A periodic pass. | `KAIROS_JOB_LIMIT_PERIODIC` (1) |
 
 The limit of the embedded builds keeps the CPU of a server for one model at
@@ -179,6 +180,7 @@ that takes seconds holds no connection of the pool.
 | A webhook delivery | `webhook_delivery` | The change that fires it, in its transaction | delivery |
 | A GitHub write-back | `github_writeback` | The change of a linked item, in its transaction | pull request (one queued job) |
 | An import of the open issues | `issue_import` | The API, when an organization admin asks | repository |
+| An issue write-back | `issue_writeback` | The change of the task of an issue, in its transaction; a new write token | issue (one queued job) |
 | The retention pass | `periodic` | Each server at its start; then each run adds the next run | pass |
 | The sweep of the code index | `periodic` | Each server at its start; then each run adds the next run | pass |
 

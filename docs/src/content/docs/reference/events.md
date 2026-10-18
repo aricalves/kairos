@@ -192,6 +192,13 @@ time for each key. It sends none for a revoked key or a key with no expiry.
 It sends none for the old key of a rotation.
 
 The text names the key and `kairos keys rotate`. The notification has no item, so `short_code` is empty.
+
+The proposal kind (KAIROS-T-0558):
+
+| `kind` | Kairos makes it when |
+|---|---|
+| `proposal_decided` | A person confirms or rejects an edge proposal. The proposer gets it. The text names the edge, the state and the decider. `short_code` is the code of the source of the edge |
+
 The [MCP tools reference](../mcp-tools/#your-notifications) lists each kind.
 
 ## Client → server: filters

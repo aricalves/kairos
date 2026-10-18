@@ -2,6 +2,11 @@
 // the deployment offers must have been exercised by some journey, or be
 // allow-listed with a reason.
 //
+// The GUI is not in that bar: the journeys open a part of the pages, and
+// the e2e tier covers the screens. The gate NAMES each route of the app
+// that no journey opens, with the e2e specs that open it (KAIROS-T-0586),
+// so a green gate does not read as a GUI coverage that it does not have.
+//
 // Named `zz-` so the serial runner takes it last, after every journey has
 // recorded what it did. It asks the DEPLOYMENT what exists (`tools/list`,
 // `kairos --help`) rather than hard-coding a vocabulary, so a surface
@@ -14,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { Cast } from '../personas';
 import { runContext } from '../run/context';
 import { surfaceUsage } from '../run/coverage';
+import { guiCoverage, ROUTE_MAP } from '../run/gui-routes';
 import { COVERAGE } from '../run/reporter';
 
 /**
@@ -93,10 +99,17 @@ test('every MCP tool and CLI noun is exercised by a journey, or allow-listed wit
     return !offered.includes(name) || exercised.includes(name);
   });
 
+  // The GUI: named, not gated. An empty route map means the gate cannot
+  // read the app any more, which must not pass as "nothing outside".
+  const gui = guiCoverage(used.gui);
+  expect(gui.routes.length, `no route read from ${ROUTE_MAP}`).toBeGreaterThan(0);
+  for (const line of gui.outside) testInfo.annotations.push({ type: 'gui outside UAT', description: line });
+
   await testInfo.attach(COVERAGE, {
     body: JSON.stringify({
       mcp: { offered: tools.length, exercised: used.mcp.length },
       cli: { offered: nouns.length, exercised: used.cli.length },
+      gui: { routes: gui.routes.length, opened: gui.opened.length, outside: gui.outside },
       allowed,
       uncovered,
       stale,

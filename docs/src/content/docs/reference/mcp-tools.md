@@ -3,8 +3,8 @@ title: "MCP tools"
 ---
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-seventy-five tools. A drift gate in the test suite
-asserts that `tools/list` returns these seventy-five and no others. The same
+seventy-eight tools. A drift gate in the test suite
+asserts that `tools/list` returns these seventy-eight and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -23,7 +23,7 @@ organization.
 | URL | Profile | Tools |
 |---|---|---|
 | `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory and code index builds, the members, claims, notifications, the scales and templates, board flow, dispatch rules and team pages to read: 47 tools. |
-| `/mcp?profile=admin` | admin | Teams, boards, columns and transitions, grants, metadata definitions and templates, the writes of dispatch rules, agent triage, the writes of team pages, org read tokens, the delete of repositories, purge: the other 28 tools. |
+| `/mcp?profile=admin` | admin | Teams, boards, columns and transitions, grants, metadata definitions and templates, the writes of dispatch rules and webhook targets, agent triage, the writes of team pages, org read tokens, the delete of repositories, purge: the other 31 tools. |
 | `/mcp?profile=all` | all | Each tool. |
 
 The profile changes the list, not the rights. Kairos runs a call to a tool
@@ -324,7 +324,7 @@ One repository in full. The output has these parts:
   when, and the result of the last write. With the token, Kairos writes a
   comment and the commit status `kairos` on each GitHub pull request that
   links to an item. No tool gives or sets the token. See
-  [Turn on GitHub write-back](../../how-to/turn-on-github-write-back/).
+  [Turn on forge write-back](../../how-to/turn-on-github-write-back/).
 - `code index build`: `on` or `off`. When it is `off`, the builder of the
   server does not build the code index of the repository.
   `update_repository` sets it.
@@ -777,6 +777,21 @@ An item that had other codes has the line `retired codes`:
 
 ```text
 - retired codes: COLLIERY-T-2430
+```
+
+An item with [edge proposals](#propose_edge) has the section `## Proposals`
+after the relationships (KAIROS-T-0558). The item can be the source or the
+target. The section lists each pending proposal first, at most 20. Then it
+lists the 5 newest decided proposals.
+
+Each line gives the state, the edge, the id, the proposer and the reason. A
+decided line also gives the decider and the date. When more proposals wait,
+the last line gives their count.
+
+```text
+## Proposals
+- pending: ACME-T-0012 -[blocks]-> ACME-T-0014 (5f0c…), proposed by Robin on 2026-10-17. Why: The first writes the table.
+- confirmed: ACME-T-0012 -[parent]-> ACME-I-0003 (9a1d…), proposed by Robin on 2026-10-16, confirmed by Sam on 2026-10-18. Why: The same goal.
 ```
 
 An item with notes has the section `## Notes` after the relationships. Each
@@ -1981,7 +1996,11 @@ board that reports to people who believe it. Nobody reads an edge again once it
 exists.
 
 The proposal appears on both items in the interface, with your reasoning, for
-someone to accept or decline. Confirming creates the real edge, and is refused by
+someone to accept or decline. [`get_item`](#get_item) lists the proposals of an
+item in the section `## Proposals`, with the state of each one (KAIROS-T-0558).
+After the decision, Kairos sends you a `proposal_decided`
+[notification](#your-notifications). It names the edge, the state and the
+decider. You get no notification for a decision that you made yourself. Confirming creates the real edge, and is refused by
 the same cycle and rule checks that refuse any other edge.
 
 To propose, a caller needs no capability: a proposal writes no edge and changes
@@ -2025,7 +2044,24 @@ each one back.
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `short_code` | string | yes | — | The item's short code. |
-| `confirm` | boolean | yes | — | Must be `true`. |
+| `confirm` | boolean | no | `false` | `true` archives the item. |
+| `preview` | boolean | no | `false` | `true` shows the cascade and changes nothing. Not with `confirm: true`. |
+
+Send `preview: true` before the archive (KAIROS-T-0558). The preview uses the
+plan of the archive, for you as the caller. It lists the descendants that the
+archive would take. It names each descendant that would stay, and the reason.
+
+The preview changes no item. When the edit rule refuses you the named item,
+the preview says so. REST `GET /api/{entity_type}/{short_code}/cascade-preview`
+gives the same cascade.
+
+```text
+Preview of an archive of ACME-I-0001. Nothing is archived.
+The cascade would archive 2 descendants: ACME-T-0001, ACME-T-0002.
+The archive would not reach 1 item. They would stay live and keep their parent.
+- WEB-T-0003: You need `manage_tasks` on the board <board-id>.
+To archive, call delete_item with short_code ACME-I-0001 and confirm=true.
+```
 
 The archive cascades through `parent` edges to each descendant that the caller
 can edit. Archived items remain retrievable by short code and searchable with
@@ -2052,13 +2088,14 @@ The archive did not reach 2 items. They stay live and keep their parent.
 
 The output has no such lines when the archive reached each descendant.
 
-Refuses: `VALIDATION` when `confirm` is `false` — checked before the short code
-is looked up, so such a call never reports an unknown item; `NOT_FOUND` for an
+Refuses: `VALIDATION` when `confirm` and `preview` are both `false` or both
+`true` — checked before the short code is looked up, so such a call never
+reports an unknown item; `NOT_FOUND` for an
 unknown short code or an already-archived item; `FORBIDDEN` when the
 [edit rule](../capabilities/#the-edit-rule) refuses the caller;
 `AGENT_TRIAGE_OFF` for an agent's archive of intake while the board lets a
-person decide (KAIROS-T-0537). A call with no `confirm` gets `VALIDATION`.
-The text names the argument, and `details.argument` is `confirm`.
+person decide (KAIROS-T-0537). A call with no `confirm` and no `preview`
+gets `VALIDATION`. The text names `confirm=true` and `preview=true`.
 
 ### `restore_item`
 
@@ -2563,6 +2600,7 @@ A notification tells a person about an event of their work (KAIROS-T-0381):
 | `claim_dropped` | A person leaves the organization, and their claim on a task of the board of your team ends. The task stays in its column, free. |
 | `claim_stale` | A claim has no write and no state change for `KAIROS_STALE_CLAIM_DAYS` days (default 14). You get it for your claim, or for a claim on a task of an initiative that you own. The claim stays. Kairos sends it once for each quiet period. |
 | `key_expiring` | An agent key of yours expires in 7 days or less. An organization admin also gets it for a key of a service account. Kairos sends it one time for each key. The text names the key and the `kairos keys rotate` command. |
+| `proposal_decided` | A person confirms or rejects an [edge proposal](#propose_edge) that you made (KAIROS-T-0558). The text names the edge, the state and the decider. A proposal of your agent key is your proposal. |
 
 You get no notification for a change that you made. You can turn a kind off
 with `PUT /api/me/notification-settings` or on the Notifications page of the
@@ -2832,6 +2870,44 @@ Refuses: `FORBIDDEN` without `configure_boards`; `NOT_FOUND` for an unknown
 board or rule.
 
 REST: `DELETE /api/boards/{id}/dispatch-rules/{rule_id}`.
+
+The next three tools work on a webhook target of a board (KAIROS-T-0558). They
+are in the admin profile. Each one requires `configure_boards` on the board, as
+REST does. Each one takes these arguments:
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `board` | string | yes | — | Slug or UUID. |
+| `target_id` | string | yes | — | The id of the target, from `list_dispatch_rules`. |
+
+Each one refuses:
+
+- `FORBIDDEN` without `configure_boards`;
+- `NOT_FOUND` for an unknown board, or a target of a different board;
+- `VALIDATION` for a `target_id` that is not a UUID, and for an unknown
+  argument.
+
+### `remove_webhook_target`
+
+Removes a target, with its rules and its delivery log. You cannot undo it.
+
+REST: `DELETE /api/boards/{id}/webhook-targets/{target_id}`.
+
+### `enable_webhook_target`
+
+Turns a target on again and sets its failed tries in a row to 0. Kairos queues
+the `skipped` deliveries of the last 30 days again, oldest first. The answer
+gives their count.
+
+REST: `POST /api/boards/{id}/webhook-targets/{target_id}/enable`.
+
+### `test_webhook_target`
+
+Sends a test delivery with the event `ping` to a target. A target that is off
+gets a `skipped` delivery. The answer gives the id and the status of the
+delivery. `list_dispatch_rules` shows the delivery in the log.
+
+REST: `POST /api/boards/{id}/webhook-targets/{target_id}/test`.
 
 ## Read tokens of the organization
 

@@ -66,6 +66,7 @@ struct NotificationSettings {
     claim_dropped: bool,
     claim_stale: bool,
     key_expiring: bool,
+    proposal_decided: bool,
 }
 
 /// mirror of: `kairos_client::types_notifications::MarkNotificationsReadResponse`
@@ -219,6 +220,7 @@ fn kind_label(kind: &str) -> &'static str {
         "claim_dropped" => "Claim dropped",
         "claim_stale" => "Claim stale",
         "key_expiring" => "Key expiring",
+        "proposal_decided" => "Proposal decided",
         _ => "Notification",
     }
 }
@@ -485,6 +487,7 @@ pub fn NotificationsPage() -> impl IntoView {
     let claim_dropped = RwSignal::new(true);
     let claim_stale = RwSignal::new(true);
     let key_expiring = RwSignal::new(true);
+    let proposal_decided = RwSignal::new(true);
     let settings_reload = RwSignal::new(0u32);
     let settings = LocalResource::new(move || {
         auth.track_session();
@@ -505,6 +508,7 @@ pub fn NotificationsPage() -> impl IntoView {
             claim_dropped.set(s.claim_dropped);
             claim_stale.set(s.claim_stale);
             key_expiring.set(s.key_expiring);
+            proposal_decided.set(s.proposal_decided);
         }
     });
     let on_save = move |_| {
@@ -521,6 +525,7 @@ pub fn NotificationsPage() -> impl IntoView {
             "claim_dropped": claim_dropped.get_untracked(),
             "claim_stale": claim_stale.get_untracked(),
             "key_expiring": key_expiring.get_untracked(),
+            "proposal_decided": proposal_decided.get_untracked(),
         });
         run_mutation(
             busy,
@@ -633,6 +638,8 @@ pub fn NotificationsPage() -> impl IntoView {
                                     label="A claim of yours, or on a task of your initiative, has no write for days"/>
                                 <Switch checked=key_expiring
                                     label="An agent key of yours, or a key of a service account, expires within 7 days"/>
+                                <Switch checked=proposal_decided
+                                    label="A person confirms or rejects an edge proposal that you made"/>
                                 <Group justify="end">
                                     <Button on_click=Callback::new(on_save)>"Save"</Button>
                                 </Group>
@@ -753,6 +760,7 @@ mod tests {
             "claim_dropped",
             "claim_stale",
             "key_expiring",
+            "proposal_decided",
         ] {
             assert_ne!(kind_label(kind), "Notification", "{kind}");
         }
