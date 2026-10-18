@@ -5,6 +5,10 @@
 //! - `/readyz` returns 503 (pending migrations) on a fresh scratch DB and
 //!   flips to 200 (ready) once the public migrations are applied — the
 //!   A-0013 DB-connectivity + pending-migration semantics.
+//! - KAIROS-T-0631: with the default retention (`archive`, no target) the
+//!   ready body adds a `warning:` line and the status stays 200; with a
+//!   target the body is `ready`. `GET /api/org/retention` refuses a member
+//!   and gives an admin the `no_target` status with the warning.
 //! - `/metrics` scrapes: the body parses as Prometheus text, the expected
 //!   metric families are present (HTTP duration histogram, pool-connection
 //!   gauges, per-tenant counter), and the counters ADVANCE across a second
@@ -151,6 +155,24 @@ async fn metrics_and_readyz_against_live_stack() {
     // --- /readyz: ready once migrations are applied --------------------------
     let (status, _ct, body) = raw_request(&router, Method::GET, "/readyz", None, &[]).await;
     assert_eq!(status, StatusCode::OK, "ready after migrations: {body}");
+    // KAIROS-T-0631: the default retention removes nothing, and says so.
+    let mut lines = body.lines();
+    assert_eq!(lines.next(), Some("ready"), "{body}");
+    let warning = lines.next().unwrap_or_default();
+    assert!(
+        warning.starts_with("warning: ") && warning.contains("KAIROS_ARCHIVE_TARGET"),
+        "readyz names the missing archive target: {body}"
+    );
+
+    // With an archive target the body is `ready` and nothing more.
+    let mut with_target = app::state_with(base_config(&scratch_url), pool.clone(), auth.clone());
+    with_target.retention = Arc::new(kairos_core::retention::RetentionConfig {
+        archive_target: kairos_core::retention::ArchiveTarget::parse("/var/archive"),
+        ..Default::default()
+    });
+    let target_router = app::router(with_target);
+    let (status, _ct, body) = raw_request(&target_router, Method::GET, "/readyz", None, &[]).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body, "ready");
 
     provision_tenant(&mut conn, "acme", "Acme Inc").expect("provision acme");
@@ -273,6 +295,53 @@ async fn metrics_and_readyz_against_live_stack() {
         (FIRST_BATCH + SECOND_BATCH) as f64,
         "per-tenant counter advanced across requests"
     );
+
+    // --- KAIROS-T-0631: GET /api/org/retention ------------------------------
+    let (status, body) = request(
+        &router,
+        Method::GET,
+        "/api/org/retention",
+        Some(&alice),
+        TENANT_HEADERS,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a member is refused: {body}");
+    diesel::update(
+        organization_members::table
+            .filter(organization_members::organization_id.eq(org_id))
+            .filter(organization_members::user_id.eq(alice_id)),
+    )
+    .set(organization_members::role.eq(OrgRole::Admin))
+    .execute(&mut conn)
+    .expect("make alice an admin");
+    // The cache of the auth and tenant lookups (KAIROS-T-0609) keeps the
+    // member role; a new router reads the admin role.
+    let admin_router = app::router(app::state_with(
+        base_config(&scratch_url),
+        pool.clone(),
+        auth.clone(),
+    ));
+    let (status, body) = request(
+        &admin_router,
+        Method::GET,
+        "/api/org/retention",
+        Some(&alice),
+        TENANT_HEADERS,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["mode"], "archive");
+    assert_eq!(body["status"], "no_target");
+    assert!(body.get("archive_target").is_none(), "{body}");
+    assert!(
+        body["warning"]
+            .as_str()
+            .is_some_and(|w| w.contains("KAIROS_ARCHIVE_TARGET")),
+        "{body}"
+    );
+    assert!(body.get("last_result").is_none(), "no pass ran: {body}");
 
     drop_scratch_db(&mut admin_conn, SCRATCH_DB);
 }

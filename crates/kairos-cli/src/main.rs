@@ -107,9 +107,9 @@ enum Command {
         KAIROS_MCP_KEY). Do this when the issuer gives the CLI no device grant, for example \
         Google.")]
     Login {
-        /// Deployment base URL (e.g. https://kairos.example.com)
+        /// Deployment base URL, e.g. https://kairos.example.com (defaults to KAIROS_URL)
         #[arg(long)]
-        url: String,
+        url: Option<String>,
         /// Email of a local account. The CLI asks for the password, or reads it from standard input
         // COLLIERY-T-0213. There is no `--password`, and there must not be
         // one: an argument is visible in the process list and stays in the
@@ -135,13 +135,13 @@ enum Command {
     },
     /// Forget the cached credentials for a deployment, and end a local session
     Logout {
-        /// Deployment base URL (defaults to the only cached deployment)
+        /// Deployment base URL (defaults to KAIROS_URL, then the only cached deployment)
         #[arg(long)]
         url: Option<String>,
     },
     /// Show the authenticated user, organization, role, and teams
     Whoami {
-        /// Deployment base URL (defaults to the only cached deployment)
+        /// Deployment base URL (defaults to KAIROS_URL, then the only cached deployment)
         #[arg(long)]
         url: Option<String>,
         /// Tenant slug override (defaults to the tenant cached at login)
@@ -301,7 +301,7 @@ async fn dispatch(command: Command) -> Result<(), CliError> {
             email: Some(email),
             tenant,
             ..
-        } => login_local(&url, &email, tenant).await,
+        } => login_local(&login_url(url, &auth::Env::from_process())?, &email, tenant).await,
         Command::Login {
             url,
             email: None,
@@ -309,8 +309,11 @@ async fn dispatch(command: Command) -> Result<(), CliError> {
             tenant,
             client_id,
             bearer,
-        } => login(&url, issuer.as_deref(), tenant, client_id, bearer).await,
-        Command::Logout { url } => logout(url.as_deref()).await,
+        } => {
+            let url = login_url(url, &auth::Env::from_process())?;
+            login(&url, issuer.as_deref(), tenant, client_id, bearer).await
+        }
+        Command::Logout { url } => logout(url.or(auth::Env::from_process().url).as_deref()).await,
         Command::Whoami { url, tenant, json } => whoami(url.as_deref(), tenant, json).await,
         Command::Me(args) => (*args).run().await,
         Command::State(args) => (*args).run().await,
@@ -338,6 +341,17 @@ async fn dispatch(command: Command) -> Result<(), CliError> {
         Command::Templates(command) => command.run().await,
         Command::SelfUpdate(args) => args.run().await.map(|_| ()),
     }
+}
+
+/// The deployment of `kairos login`: `--url`, else `KAIROS_URL`
+/// (KAIROS-T-0594).
+fn login_url(url: Option<String>, env: &auth::Env) -> Result<String, CliError> {
+    url.or_else(|| env.url.clone()).ok_or_else(|| {
+        CliError::Failure(format!(
+            "The CLI does not know the deployment. Use --url or set {}.",
+            auth::URL_VAR
+        ))
+    })
 }
 
 /// `kairos login` — discover the issuer, run the device grant, cache the
@@ -418,6 +432,9 @@ async fn login(
         .to_string();
 
     let path = credentials::credentials_path()?;
+    // KAIROS-T-0594: no refresh of another process writes between the read
+    // and the write.
+    let _lock = credentials::lock(&path)?;
     let mut store = load_store_for_login(&path);
     store.deployments.insert(
         deployment.clone(),
@@ -527,6 +544,7 @@ async fn login_local(url: &str, email: &str, tenant: Option<String>) -> Result<(
         })?;
 
     let path = credentials::credentials_path()?;
+    let _lock = credentials::lock(&path)?;
     let mut store = load_store_for_login(&path);
     store.deployments.insert(
         deployment.clone(),
@@ -608,24 +626,10 @@ fn login_failure(err: ApiError, deployment: &str) -> CliError {
 /// does not answer is not a reason to keep it.
 async fn logout(url: Option<&str>) -> Result<(), CliError> {
     let path = credentials::credentials_path()?;
-    let mut store = credentials::load(&path)?;
-    if store.deployments.is_empty() {
+    let Some((deployment, entry)) = forget(&path, url)? else {
         println!("The cache has no credentials. The CLI changed nothing.");
         return Ok(());
-    }
-    let deployment = credentials::resolve_deployment(&store, url)?;
-    let Some(entry) = store.deployments.remove(&deployment) else {
-        return Err(CliError::Failure(format!(
-            "The cache has no credentials for {deployment}. The cache has: {}.",
-            store
-                .deployments
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ")
-        )));
     };
-    credentials::save(&path, &store)?;
 
     if entry.is_local_session() {
         let mut client = KairosClient::with_static_token(&deployment, entry.access_token);
@@ -656,13 +660,41 @@ async fn logout(url: Option<&str>) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Remove the entry of `url` (else of the only deployment) from the cache
+/// at `path`, under the lock of the cache (KAIROS-T-0594). `None` when the
+/// cache is empty.
+fn forget(
+    path: &std::path::Path,
+    url: Option<&str>,
+) -> Result<Option<(String, DeploymentCredentials)>, CliError> {
+    let _lock = credentials::lock(path)?;
+    let mut store = credentials::load(path)?;
+    if store.deployments.is_empty() {
+        return Ok(None);
+    }
+    let deployment = credentials::resolve_deployment(&store, url)?;
+    let Some(entry) = store.deployments.remove(&deployment) else {
+        return Err(CliError::Failure(format!(
+            "The cache has no credentials for {deployment}. The cache has: {}.",
+            store
+                .deployments
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    };
+    credentials::save(path, &store)?;
+    Ok(Some((deployment, entry)))
+}
+
 /// `kairos whoami` — the identity probe via `kairos-client`.
 async fn whoami(
     url: Option<&str>,
     tenant_override: Option<String>,
     json: bool,
 ) -> Result<(), CliError> {
-    let client = context::client(&context::Common {
+    let (client, credential) = context::client_with_credential(&context::Common {
         url: url.map(str::to_string),
         tenant: tenant_override,
         json,
@@ -678,6 +710,9 @@ async fn whoami(
         );
     } else {
         print_identity(&identity);
+        // KAIROS-T-0594: the source of the credential. `--json` prints the
+        // response of the server only.
+        println!("{credential}");
     }
     Ok(())
 }
@@ -1013,7 +1048,7 @@ mod tests {
                 bearer,
             } => {
                 assert_eq!(email, None);
-                assert_eq!(url, "http://localhost:8080");
+                assert_eq!(url.as_deref(), Some("http://localhost:8080"));
                 assert_eq!(issuer, None);
                 assert_eq!(tenant.as_deref(), Some("acme"));
                 assert_eq!(client_id, "kairos-cli");
@@ -1052,10 +1087,64 @@ mod tests {
         let cli = Cli::try_parse_from(["kairos", "logout"]).expect("logout parses");
         assert!(matches!(cli.command, Command::Logout { url: None }));
 
-        assert!(
-            Cli::try_parse_from(["kairos", "login"]).is_err(),
-            "--url is required"
+        // KAIROS-T-0594: `--url` is optional; KAIROS_URL stands in for it.
+        let cli = Cli::try_parse_from(["kairos", "login"]).expect("login parses");
+        assert!(matches!(cli.command, Command::Login { url: None, .. }));
+    }
+
+    /// KAIROS-T-0594: `login` reads KAIROS_URL when `--url` is absent, and
+    /// `--url` wins. With neither, the error names both.
+    #[test]
+    fn login_reads_kairos_url() {
+        let env = auth::Env::from_lookup(|name| {
+            (name == auth::URL_VAR).then(|| "https://env.example".to_string())
+        });
+        assert_eq!(login_url(None, &env).unwrap(), "https://env.example");
+        assert_eq!(
+            login_url(Some("https://flag.example".into()), &env).unwrap(),
+            "https://flag.example"
         );
+        let err = login_url(None, &auth::Env::default()).unwrap_err();
+        assert_eq!(err.exit_code(), error::EXIT_FAILURE);
+        let text = err.to_string();
+        assert!(
+            text.contains("--url") && text.contains("KAIROS_URL"),
+            "{text}"
+        );
+    }
+
+    /// KAIROS-T-0594: `logout` removes the entry of the URL that it gets
+    /// (the caller gives `--url`, else KAIROS_URL), and keeps the others.
+    #[test]
+    fn logout_forgets_the_entry_of_the_url() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let path = dir.path().join("credentials.json");
+        let mut store = CredentialStore::default();
+        for url in ["https://a.example", "https://b.example"] {
+            store.deployments.insert(
+                url.into(),
+                DeploymentCredentials::local_session(
+                    &kairos_client::types_auth::Secret::new("kairos_ss_x"),
+                    u64::MAX,
+                    "ada@example.test".into(),
+                    None,
+                ),
+            );
+        }
+        credentials::save(&path, &store).expect("save");
+        // Two deployments and no URL: the CLI does not guess.
+        assert!(forget(&path, None).is_err());
+        let (gone, _) = forget(&path, Some("https://b.example/"))
+            .expect("forget")
+            .expect("an entry");
+        assert_eq!(gone, "https://b.example");
+        let left = credentials::load(&path).expect("load");
+        assert_eq!(
+            left.deployments.keys().collect::<Vec<_>>(),
+            vec!["https://a.example"]
+        );
+        // The lock is free after the call.
+        assert!(credentials::try_lock(&path).expect("try").is_some());
     }
 
     /// COLLIERY-T-0213: `--email` selects the password login, and it does

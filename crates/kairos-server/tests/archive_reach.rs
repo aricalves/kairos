@@ -1491,6 +1491,8 @@ async fn archive_reach_and_proposal_confirm_against_live_stack() {
         checks.check(
             &format!("14: a service account cannot {verb}"),
             status == 403
+                && body["error"]["code"] == json!("PERSON_DECIDES")
+                && body["error"]["details"]["reason"] == json!("service_account")
                 && body["error"]["message"]
                     .as_str()
                     .is_some_and(|m| m.contains("service account")),

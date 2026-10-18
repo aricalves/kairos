@@ -41,8 +41,11 @@ journey(
       const readyBody = (await ready.text()).trim();
       // Readiness is database connectivity AND no pending migrations
       // (KAIROS-A-0013) — a binary ahead of its schema must not take
-      // traffic, so "ready" is a claim, not a ping.
-      expect(readyBody).toBe('ready');
+      // traffic, so "ready" is a claim, not a ping. A second line
+      // `warning: …` names a retention that removes nothing (KAIROS-T-0631).
+      const [readyLine, ...rest] = readyBody.split('\n');
+      expect(readyLine).toBe('ready');
+      for (const line of rest) expect(line).toMatch(/^warning: /);
       // The probes sit outside the auth stack ON PURPOSE, and nothing else
       // does: the same request to the API without a token is refused.
       const guarded = await probe('/api/whoami');

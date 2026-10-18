@@ -206,11 +206,16 @@ curl http://localhost:8080/readyz
 ```
 ok
 ready
+warning: KAIROS_RETENTION_MODE is archive and KAIROS_ARCHIVE_TARGET is not set. The retention pass removes no rows from item_history and activity_log. Set KAIROS_ARCHIVE_TARGET to a directory, or set KAIROS_RETENTION_MODE to discard.
 ```
 
 Those two answer different questions, and the difference matters when you
 deploy for real. `/healthz` says the process is alive. `/readyz` says it can
 reach its database — which is what Kubernetes should gate traffic on.
+
+The `warning:` line does not stop the traffic. It tells you that the history
+of this deployment does not get smaller. To change this, see
+[Back up and restore](../../how-to/back-up-and-restore/#size-for-the-growth).
 
 Now open <http://localhost:8080>. Kairos serves the interface from the same
 process, and you will be sent to Dex to sign in as `admin@example.com` /

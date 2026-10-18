@@ -44,7 +44,7 @@ pub struct RemoteArgs {
     /// The Kairos deployment. Default: KAIROS_URL, else `deployment_url` in .claude/kairos.local.md, else the only deployment of `kairos login`
     #[arg(long)]
     pub url: Option<String>,
-    /// The tenant, when the token is from `kairos login`. Default: the tenant of the login
+    /// The tenant, when the token is from `kairos login`. Default: `tenant` in .claude/kairos.local.md, else the tenant of the login
     #[arg(long)]
     pub tenant: Option<String>,
     /// The repository in Kairos. Default: `repository` in .claude/kairos.local.md, else the repository of the `origin` remote
@@ -271,10 +271,24 @@ fn client(
     })?;
     let provider = Arc::new(CachedTokenProvider::new(path, deployment.clone()));
     let mut client = KairosClient::new(&deployment, provider);
-    if let Some(tenant) = args.tenant.clone().or(entry.tenant) {
+    if let Some(tenant) = login_tenant(args, settings, entry.tenant) {
         client = client.with_tenant(tenant);
     }
     Ok(Some((client, deployment)))
+}
+
+/// The tenant of a token from `kairos login` (KAIROS-T-0594): `--tenant`,
+/// else `tenant` in `.claude/kairos.local.md`, else the tenant of the login.
+/// A key carries its tenant, so a key does not use the settings file.
+fn login_tenant(
+    args: &RemoteArgs,
+    settings: &HashMap<String, String>,
+    cached: Option<String>,
+) -> Option<String> {
+    args.tenant
+        .clone()
+        .or_else(|| settings.get("tenant").cloned())
+        .or(cached)
 }
 
 /// The `key: value` lines of the front matter of `.claude/kairos.local.md`.
@@ -436,6 +450,33 @@ mod tests {
         assert_eq!(settings["repository"], "kairos");
         assert_eq!(settings.len(), 3);
         assert!(super::settings(&dir.path().join("none")).is_empty());
+    }
+
+    /// KAIROS-T-0594: the tenant of a login is `--tenant`, else `tenant`
+    /// in the settings file, else the tenant of the login.
+    #[test]
+    fn the_tenant_of_a_login_reads_the_settings_file() {
+        let settings: HashMap<String, String> =
+            [("tenant".to_string(), "colliery".to_string())].into();
+        let none = RemoteArgs::default();
+        let flag = RemoteArgs {
+            tenant: Some("flag".into()),
+            ..RemoteArgs::default()
+        };
+        let cached = || Some("cached".to_string());
+        assert_eq!(
+            login_tenant(&flag, &settings, cached()).as_deref(),
+            Some("flag")
+        );
+        assert_eq!(
+            login_tenant(&none, &settings, cached()).as_deref(),
+            Some("colliery")
+        );
+        assert_eq!(
+            login_tenant(&none, &HashMap::new(), cached()).as_deref(),
+            Some("cached")
+        );
+        assert_eq!(login_tenant(&none, &HashMap::new(), None), None);
     }
 
     #[test]
