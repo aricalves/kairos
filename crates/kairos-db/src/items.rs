@@ -687,12 +687,25 @@ macro_rules! content_table_ops {
         /// Soft-delete every LIVE row of this table whose id is in `ids`
         /// (already-deleted rows are left untouched); returns the short
         /// codes actually deleted.
+        ///
+        /// KAIROS-T-0634: first lock the rows in the order of the ids. A
+        /// blocker that closes locks its dependants in this order too
+        /// ([`crate::dispatch::on_dependants_freed`]), so the two wait in
+        /// turn and do not lock each other out. An `UPDATE` alone locks
+        /// its rows in the order of the scan.
         fn $delete_fn(
             conn: &mut PgConnection,
             ids: &[Uuid],
             actor: Uuid,
         ) -> Result<Vec<String>, DieselError> {
             use crate::schema::$table::dsl;
+            dsl::$table
+                .filter(dsl::id.eq_any(ids))
+                .filter(dsl::deleted_at.is_null())
+                .order(dsl::id)
+                .select(dsl::id)
+                .for_update()
+                .load::<Uuid>(conn)?;
             diesel::update(
                 dsl::$table
                     .filter(dsl::id.eq_any(ids))
