@@ -22,7 +22,8 @@ pub struct Common {
     /// Tenant slug override (defaults to the tenant cached at login)
     #[arg(long)]
     pub tenant: Option<String>,
-    /// Print the raw JSON DTO instead of the human-readable rendering
+    /// Print JSON instead of the human-readable rendering. A list prints
+    /// items, total and next_offset
     #[arg(long)]
     pub json: bool,
 }

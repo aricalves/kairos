@@ -36,7 +36,7 @@
 //! gate is UX, the server is the authority (A-0006).
 
 use aurora_dark::components::{
-    Alert, Anchor, ErrorState, Group, Loading, PageHeader, Panel, SimpleGrid, Stack, Text,
+    Alert, Anchor, ErrorState, Group, Loading, PageHeader, Panel, SimpleGrid, Stack, Table, Text,
 };
 use aurora_dark::frame::{TabItem, Tabs};
 use aurora_dark::tokens::token;
@@ -254,6 +254,7 @@ pub fn AdminHomePage() -> impl IntoView {
             });
             view! {
                 {is_admin.then(|| view! { <RetentionPanel/> })}
+                {is_admin.then(|| view! { <JobsPanel/> })}
                 <SimpleGrid cols=2>
                     {card("/admin/boards", "Boards", boards_blurb)}
                     {admin_only}
@@ -320,6 +321,133 @@ fn RetentionPanel() -> impl IntoView {
                         </Panel>
                     }.into_any(),
                 }
+            }
+        }}
+    }
+}
+
+/// mirror of: `kairos_client::types_org::JobKindCounts`.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct JobKindCounts {
+    kind: String,
+    queued: i64,
+    leased: i64,
+    done: i64,
+    failed: i64,
+}
+
+/// mirror of: `kairos_client::types_org::JobFailure` (partial).
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct JobFailure {
+    kind: String,
+    #[serde(default)]
+    tenant: Option<String>,
+    tries: i32,
+    max_tries: i32,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    finished_at: Option<String>,
+}
+
+/// mirror of: `kairos_client::types_org::JobQueueStatus`.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct JobQueueStatus {
+    kinds: Vec<JobKindCounts>,
+    failures: Vec<JobFailure>,
+}
+
+/// The head line of a failed job on the overview (KAIROS-T-0576): the
+/// time, the kind, the organization and the try.
+fn failure_line(failure: &JobFailure) -> String {
+    format!(
+        "{}, {}, {}, try {} of {}",
+        failure.finished_at.as_deref().unwrap_or("no end time"),
+        failure.kind,
+        failure.tenant.as_deref().unwrap_or("deployment"),
+        failure.tries,
+        failure.max_tries,
+    )
+}
+
+/// The job queue on the overview (KAIROS-T-0576): the jobs of each kind in
+/// each state, and the last failures with their error
+/// (`GET /api/admin/jobs`).
+#[component]
+fn JobsPanel() -> impl IntoView {
+    let auth = crate::auth::use_auth();
+    let jobs = LocalResource::new(move || {
+        auth.track_session();
+        crate::api::get_json::<JobQueueStatus>(auth, "/api/admin/jobs")
+    });
+    view! {
+        {move || match jobs.get() {
+            None => view! { <Loading/> }.into_any(),
+            Some(Err(e)) => view! { <ErrorState error=e/> }.into_any(),
+            Some(Ok(status)) => {
+                let kinds = if status.kinds.is_empty() {
+                    view! { <Text dimmed=true size="sm">"No jobs."</Text> }.into_any()
+                } else {
+                    let rows = status
+                        .kinds
+                        .into_iter()
+                        .map(|kind| view! {
+                            <tr>
+                                <td><Text mono=true size="sm">{kind.kind}</Text></td>
+                                <td>{kind.queued}</td>
+                                <td>{kind.leased}</td>
+                                <td>{kind.done}</td>
+                                <td>{kind.failed}</td>
+                            </tr>
+                        })
+                        .collect_view();
+                    view! {
+                        <Table label="Jobs by kind and state">
+                            <thead>
+                                <tr>
+                                    <th>"Kind"</th>
+                                    <th>"Queued"</th>
+                                    <th>"Leased"</th>
+                                    <th>"Done"</th>
+                                    <th>"Failed"</th>
+                                </tr>
+                            </thead>
+                            <tbody>{rows}</tbody>
+                        </Table>
+                    }
+                    .into_any()
+                };
+                let failures = if status.failures.is_empty() {
+                    view! { <Text dimmed=true size="sm">"No failed jobs."</Text> }.into_any()
+                } else {
+                    status
+                        .failures
+                        .into_iter()
+                        .map(|failure| {
+                            let line = failure_line(&failure);
+                            let error = failure
+                                .error
+                                .unwrap_or_else(|| "No error recorded.".to_string());
+                            view! {
+                                <Stack gap="xs">
+                                    <Text size="sm">{line}</Text>
+                                    <Text mono=true dimmed=true size="xs">{error}</Text>
+                                </Stack>
+                            }
+                        })
+                        .collect_view()
+                        .into_any()
+                };
+                view! {
+                    <Panel title="Job queue">
+                        <Stack gap="sm">
+                            {kinds}
+                            <Text size="sm">"Last failures, newest first"</Text>
+                            {failures}
+                        </Stack>
+                    </Panel>
+                }
+                .into_any()
             }
         }}
     }
@@ -522,6 +650,41 @@ mod tests {
             retention_line(&status),
             "Mode archive, archive target none. Last pass 2026-10-17T12:00:00+00:00: \
              skipped: no target."
+        );
+    }
+
+    /// KAIROS-T-0576: the wire shape of `GET /api/admin/jobs` decodes, and
+    /// the line of a failure names the time, the kind, the organization
+    /// and the try.
+    #[test]
+    fn the_jobs_decode_and_a_failure_line_names_its_job() {
+        let status: JobQueueStatus = serde_json::from_value(serde_json::json!({
+            "kinds": [
+                {"kind": "periodic", "queued": 1, "leased": 0, "done": 4, "failed": 0}
+            ],
+            "failures": [
+                {
+                    "id": "00000000-0000-0000-0000-000000000001",
+                    "kind": "webhook_delivery",
+                    "tenant": "acme",
+                    "tries": 5,
+                    "max_tries": 5,
+                    "error": "The target answered 500.",
+                    "finished_at": "2026-10-17T12:00:00+00:00"
+                },
+                {"id": "00000000-0000-0000-0000-000000000002", "kind": "periodic",
+                 "tries": 1, "max_tries": 3}
+            ]
+        }))
+        .expect("the wire shape decodes");
+        assert_eq!(status.kinds[0].done, 4);
+        assert_eq!(
+            failure_line(&status.failures[0]),
+            "2026-10-17T12:00:00+00:00, webhook_delivery, acme, try 5 of 5"
+        );
+        assert_eq!(
+            failure_line(&status.failures[1]),
+            "no end time, periodic, deployment, try 1 of 3"
         );
     }
 

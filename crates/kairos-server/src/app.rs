@@ -133,9 +133,13 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
         std::time::Duration::from_secs(config.auth_cache_secs),
     ));
     // KAIROS-T-0394: the worker registers only the kinds of its role.
+    // KAIROS-T-0576: the worker counts its failures in the metrics of
+    // the state.
+    let metrics = Arc::new(crate::metrics::Metrics::new());
     let jobs = Arc::new(
         crate::jobs::Worker::new(job_pool.clone(), instance, config.jobs.clone())
-            .with_role(config.role),
+            .with_role(config.role)
+            .with_metrics(Arc::clone(&metrics)),
     );
     // KAIROS-T-0384: the signed webhook deliveries are jobs of the queue.
     crate::webhooks::WebhookService::new(
@@ -173,7 +177,7 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
         job_pool,
         auth: Arc::new(auth),
         embedding: build_embedding_service(),
-        metrics: Arc::new(crate::metrics::Metrics::new()),
+        metrics,
         throttle,
         auth_cache,
         code_index,
@@ -348,9 +352,11 @@ pub fn state_with(config: AppConfig, pool: TenantPool, auth: Arc<Authenticator>)
         std::time::Duration::from_secs(config.auth_cache_secs),
     ));
     // The worker of a test state runs no job until a test starts it.
+    let metrics = Arc::new(crate::metrics::Metrics::new());
     let jobs = Arc::new(
         crate::jobs::Worker::new(job_pool.clone(), uuid::Uuid::new_v4(), config.jobs.clone())
-            .with_role(config.role),
+            .with_role(config.role)
+            .with_metrics(Arc::clone(&metrics)),
     );
     // KAIROS-T-0384: a test that drains the worker sends the deliveries.
     crate::webhooks::WebhookService::new(
@@ -384,7 +390,7 @@ pub fn state_with(config: AppConfig, pool: TenantPool, auth: Arc<Authenticator>)
         // Tests drive embedding explicitly; a provider built here would load a
         // 65 MB model into every in-process router.
         embedding: None,
-        metrics: Arc::new(crate::metrics::Metrics::new()),
+        metrics,
         throttle,
         auth_cache,
         code_index: None,
