@@ -558,6 +558,7 @@ Body of `POST /api/adrs`. `board_id`/`column_id` follow the DDL rule: both set (
 | `content` | `string` | no | Markdown content; defaults to empty. |
 | `decision_date` | `string`, nullable | no | `YYYY-MM-DD`. |
 | `decision_maker` | `string`, nullable | no |  |
+| `parent` | `string`, nullable | no | The short code of the item that the ADR supports: a strategy, an initiative or a task (KAIROS-T-0591). The server writes the `supports` edge in the transaction of the create: a refused parent leaves no ADR. A retired code finds its item. |
 | `title` | `string` | yes |  |
 
 The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
