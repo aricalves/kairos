@@ -19,7 +19,8 @@ pub struct WebhookTarget {
     /// query and no fragment.
     pub url: String,
     /// False: Kairos turned the target off after failed tries, and sends
-    /// nothing to it until a board manager turns it on again.
+    /// nothing to it until a board manager turns it on again. Then Kairos
+    /// sends the deliveries that it skipped (KAIROS-T-0577).
     pub enabled: bool,
     /// The failed tries in a row.
     pub consecutive_failures: i32,
@@ -27,6 +28,22 @@ pub struct WebhookTarget {
     pub disabled_reason: Option<String>,
     pub created_by: String,
     pub created_at: String,
+    /// Only in the answer of `enable` and `redeliver` (KAIROS-T-0577): the
+    /// number of `skipped` deliveries that Kairos queued again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redelivered: Option<i64>,
+}
+
+/// `POST /api/boards/{id}/webhook-targets/{target_id}/redeliver` query
+/// (KAIROS-T-0577).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+#[serde(deny_unknown_fields)]
+pub struct RedeliverQuery {
+    /// Only the deliveries of events at or after this time (RFC 3339).
+    /// With no value: each skipped delivery of the last 30 days.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<String>,
 }
 
 /// `POST /api/boards/{id}/webhook-targets` body.

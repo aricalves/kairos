@@ -196,7 +196,6 @@ fn activity(conn: &mut PgConnection, action: ActivityAction, actor: Uuid) -> Vec
     schema::activity_log::table
         .filter(schema::activity_log::action.eq(action.as_str()))
         .filter(schema::activity_log::actor_id.eq(actor))
-        .filter(schema::activity_log::entity_id.is_null())
         .order((
             schema::activity_log::occurred_at.asc(),
             schema::activity_log::id.asc(),
@@ -285,6 +284,36 @@ fn a_second_parent_is_refused_and_set_parent_swaps_the_edge() {
             .last()
             .cloned(),
         Some(format!("relationship:parent:{i2_code}->{t1_code}"))
+    );
+    // KAIROS-T-0638: each row of the swap names the source of its edge:
+    // the old parent for the remove, the new parent for the add.
+    let entity_of = |conn: &mut PgConnection, action: ActivityAction, details: String| {
+        schema::activity_log::table
+            .filter(schema::activity_log::actor_id.eq(f.alice))
+            .filter(schema::activity_log::action.eq(action.as_str()))
+            .filter(schema::activity_log::details.eq(details))
+            .select((
+                schema::activity_log::entity_id,
+                schema::activity_log::entity_type,
+            ))
+            .first::<(Option<Uuid>, Option<String>)>(conn)
+            .expect("the row of the swap")
+    };
+    assert_eq!(
+        entity_of(
+            &mut conn,
+            ActivityAction::RelationshipRemove,
+            format!("relationship:parent:{i1_code}->{t1_code}")
+        ),
+        (Some(f.i1), Some("initiative".to_string()))
+    );
+    assert_eq!(
+        entity_of(
+            &mut conn,
+            ActivityAction::RelationshipAdd,
+            format!("relationship:parent:{i2_code}->{t1_code}")
+        ),
+        (Some(f.i2), Some("initiative".to_string()))
     );
 
     // The same parent again writes nothing.

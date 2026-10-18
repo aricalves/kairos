@@ -56,6 +56,7 @@ pub(crate) const COLUMNS: &[(&str, &str)] = &[
     ("pages", "Sites"),
     ("purge", "Purge"),
     ("member", "Member"),
+    ("approve_proposals", "Proposals"),
 ];
 
 /// The board levels in the order of the grid, with the title of each group.
@@ -660,7 +661,7 @@ mod tests {
     /// Each column is a grantable capability, and no glob.
     #[test]
     fn the_columns_are_the_capabilities() {
-        assert_eq!(COLUMNS.len(), 11);
+        assert_eq!(COLUMNS.len(), 12);
         assert!(COLUMNS.iter().all(|(name, _)| !name.contains('*')));
         assert_eq!(
             LEVELS.iter().map(|(l, _)| *l).collect::<Vec<_>>(),
