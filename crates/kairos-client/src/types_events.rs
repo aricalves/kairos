@@ -20,6 +20,7 @@ pub struct ThinEvent {
     /// `item_created|item_updated|item_transitioned|item_moved|item_deleted|`
     /// `item_restored|relationship_changed|metadata_changed|item_links_changed|code_index_build_changed|`
     /// `task_state_changed|task_cancelled|claim_changed|board_configured` (KAIROS-T-0574),
+    /// `note_appended|note_promoted` (KAIROS-T-0630),
     /// and for the person of the connection only (KAIROS-T-0381)
     /// `notification_created|notifications_read`.
     ///
@@ -42,8 +43,9 @@ pub struct ThinEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub column_id: Option<String>,
     /// What changed, for `claim_changed` (`taken|handed_off|released|ended`)
-    /// and `board_configured` (the setting, e.g. `column_add`); omitted
-    /// otherwise (KAIROS-T-0574).
+    /// and `board_configured` (the setting, e.g. `column_add`); the id of
+    /// the note for `note_appended` and `note_promoted` (KAIROS-T-0630);
+    /// omitted otherwise (KAIROS-T-0574).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub change: Option<String>,
     /// The acting user's id (UUID). For a change made with the agent key

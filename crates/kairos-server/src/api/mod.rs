@@ -939,12 +939,23 @@ pub fn map_abac_error(e: AbacError) -> ApiError {
 /// handlers catch it themselves to attach the full current entity as
 /// `details.current`; this fallback still returns a correct 409 from the
 /// typed fields should another path surface one.
-/// [`kairos_db::items::NoteError`] → API error (KAIROS-T-0367).
-pub fn map_note_error(e: kairos_db::items::NoteError) -> ApiError {
+/// [`kairos_db::item_notes::NoteError`] → API error (KAIROS-T-0367).
+pub fn map_note_error(e: kairos_db::item_notes::NoteError) -> ApiError {
     match e {
-        kairos_db::items::NoteError::EmptyText => ApiError::validation(e.to_string()),
-        kairos_db::items::NoteError::Item(inner) => map_item_error(inner),
+        kairos_db::item_notes::NoteError::EmptyText => ApiError::validation(e.to_string()),
+        kairos_db::item_notes::NoteError::Item(inner) => map_item_error(inner),
     }
+}
+
+/// The notes of the item with the id `item_id` (a UUID, as a DTO has it),
+/// for the `notes` field of the read of one item (KAIROS-T-0630).
+pub(crate) fn item_notes(
+    conn: &mut PgConnection,
+    item_id: &str,
+) -> Result<Option<Vec<dto::ItemNote>>, ApiError> {
+    let id: uuid::Uuid = item_id.parse().map_err(ApiError::internal)?;
+    let notes = kairos_db::item_notes::notes_of(conn, id).map_err(ApiError::internal)?;
+    Ok(Some(notes.into_iter().map(convert::note).collect()))
 }
 
 pub fn map_item_error(e: ItemError) -> ApiError {

@@ -272,11 +272,18 @@ fn ItemLoaded(item: ItemDetail, family: Family) -> impl IntoView {
     let current = RwSignal::new(item);
     // Show a new copy, unless it is older than the copy on the page. The
     // `try_` reads: the copy can come after the page is gone.
-    let show = move |next: ItemDetail| {
-        let Some(shown) = current.try_with_untracked(|item| item.version) else {
+    let show = move |mut next: ItemDetail| {
+        let Some((shown, notes)) =
+            current.try_with_untracked(|item| (item.version, item.notes.clone()))
+        else {
             return;
         };
         if takes_copy(shown, next.version) {
+            // KAIROS-T-0630: the answer of a write has no notes. The page
+            // keeps the notes that it shows.
+            if next.notes.is_none() {
+                next.notes = notes;
+            }
             let _ = current.try_set(next);
         }
     };
@@ -323,6 +330,7 @@ fn ItemLoaded(item: ItemDetail, family: Family) -> impl IntoView {
         Memo::new(move |_| current.with(|item| item.repository.as_ref().map(|r| r.slug.clone())));
     let claim = Memo::new(move |_| current.with(|item| item.claim.clone()));
     let state = Memo::new(move |_| current.with(|item| item.state.clone()));
+    let notes = Memo::new(move |_| current.with(|item| item.notes.clone().unwrap_or_default()));
     let owner = Memo::new(move |_| current.with(|item| item.owner.clone()));
     let impacts = Memo::new(move |_| current.with(|item| item.impacts.clone()));
     let lifecycle = Memo::new(move |_| current.with(|item| item.lifecycle.clone()));
@@ -470,17 +478,21 @@ fn ItemLoaded(item: ItemDetail, family: Family) -> impl IntoView {
         </Group>
         <ChildrenProgressBar family code=code.get_value()/>
         <div class="kairos-item__grid">
-            <ContentEditor
-                family
-                code=code.get_value()
-                initial_title
-                initial_content
-                initial_version
-                read_only=edit_read_only
-                read_only_reason=edit_reason
-                server
-                on_saved
-            />
+            <Stack gap="sm">
+                <ContentEditor
+                    family
+                    code=code.get_value()
+                    initial_title
+                    initial_content
+                    initial_version
+                    read_only=edit_read_only
+                    read_only_reason=edit_reason
+                    server
+                    on_saved
+                />
+                // KAIROS-T-0630: the notes are not part of the content.
+                <NotesList notes/>
+            </Stack>
             <Stack gap="sm">
                 // COLLIERY-T-0269: the board of a document is its owner,
                 // and not a placement. The document has no column, no
@@ -694,6 +706,59 @@ fn task_end_powers(
             ),
         }
     })
+}
+
+/// The notes of the item, read-only (KAIROS-T-0630): each note with its id
+/// as an anchor (`#n-3`), its date and author, its text as markdown, and
+/// the item that a promote made from it. Nothing for an item with no notes.
+#[component]
+fn NotesList(#[prop(into)] notes: Signal<Vec<api::Note>>) -> impl IntoView {
+    view! {
+        {move || {
+            let notes = notes.get();
+            (!notes.is_empty()).then(|| {
+                let rows = notes
+                    .into_iter()
+                    .map(|note| {
+                        let promoted = note.promoted_to.clone().map(|code| view! {
+                            <Text size="xs">
+                                "Promoted to "
+                                <Anchor href=format!("/items/{code}")>{code.clone()}</Anchor>
+                            </Text>
+                        });
+                        let anchor = note.id.clone();
+                        let href = format!("#{}", note.id);
+                        let byline = note_byline(&note.created_at, &note.author);
+                        let html = markdown::to_html(&note.text);
+                        view! {
+                            <section class="kairos-note" id=anchor>
+                                <Group gap="sm">
+                                    <a class="kairos-note-link" href=href>
+                                        <Text mono=true size="sm">{note.id}</Text>
+                                    </a>
+                                    <Text dimmed=true size="xs">{byline}</Text>
+                                </Group>
+                                <div class="kairos-markdown" inner_html=html></div>
+                                {promoted}
+                            </section>
+                        }
+                    })
+                    .collect_view();
+                view! {
+                    <Panel title="Notes" caption="in the order they were written">
+                        <Stack gap="sm">{rows}</Stack>
+                    </Panel>
+                }
+            })
+        }}
+    }
+}
+
+/// The line under the id of a note: `2026-10-17 · Robin`. Pure,
+/// host-tested.
+fn note_byline(created_at: &str, author: &str) -> String {
+    let date = created_at.get(..10).unwrap_or(created_at);
+    format!("{date} · {author}")
 }
 
 /// `2026-09-23T11:30:07.479107Z` → `2026-09-23 11:30 UTC` (display only;
@@ -2260,6 +2325,15 @@ mod tests {
 
     /// KAIROS-T-0618: the page takes a copy of the same version or newer,
     /// and not an older copy (a read that answered late).
+    #[test]
+    fn a_note_names_its_date_and_its_author() {
+        assert_eq!(
+            note_byline("2026-10-17T09:30:00+00:00", "Robin"),
+            "2026-10-17 · Robin"
+        );
+        assert_eq!(note_byline("", "Sam"), " · Sam");
+    }
+
     #[test]
     fn the_page_takes_no_older_copy() {
         assert!(takes_copy(4, 5));

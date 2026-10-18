@@ -193,9 +193,9 @@ journey(
         short_code: bug,
         text: 'Proposal: work now, in the support lane. Checkout is down for trial accounts and the fix is small.',
       });
-      expect(noted).toContain(`Appended a note to ${bug}`);
+      expect(noted).toContain(`Appended note n-1 to ${bug}.`);
       const item = await mcp.call('get_item', { short_code: bug });
-      expect(item).toContain('## Note (');
+      expect(item).toContain('## Note n-1 (');
       expect(item).toContain('Proposal: work now');
       return { queue_line: line.trim().slice(0, 120), move: 'AGENT_TRIAGE_OFF', proposal: 'note on the bug' };
     });

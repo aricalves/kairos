@@ -57,7 +57,7 @@ An assertion that you make without evidence, in a note or in a reply, carries th
 
 ## Work
 
-The task item is your **working memory**. Every few significant steps, `append_note` findings, decisions, dead ends ruled out, and plan changes onto it (one call: no version, no anchor text; the note gets a heading with the date and your name) — the item must let any session, or another agent, resume cold after this conversation's context is gone. Reference commits, files, and other items by hash, path, or short code rather than restating them. End each note with a `Next step:` line: after a context compaction, the plugin gives you that line again for each Active task.
+The task item is your **working memory**. Every few significant steps, `append_note` findings, decisions, dead ends ruled out, and plan changes onto it (one call: no version, no anchor text; the note gets an id, and `get_item` shows it after the content under a heading with the date and your name) — the item must let any session, or another agent, resume cold after this conversation's context is gone. Reference commits, files, and other items by hash, path, or short code rather than restating them. End each note with a `Next step:` line: after a context compaction, the plugin gives you that line again for each Active task.
 
 The task also has a **live state**, separate from the notes: one current line that `get_item`, `board_items` and the card show. Write it with `set_state` (`branch`, `commit`, `pushed`, `pr_url`, `next_step`) after each commit, after each push, after a PR opens, and before any stop or hand-off. The write is a patch (KAIROS-A-0029): a field that you do not send keeps its value, and `null` clears it. A note records what happened; the state says where the work is now.
 

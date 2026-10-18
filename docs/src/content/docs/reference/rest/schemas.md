@@ -85,6 +85,7 @@ An Architecture Decision Record, as returned by `/api/adrs`. Board placement is 
 | `decision_maker` | `string`, nullable | no |  |
 | `id` | `string` | yes | Entity id (UUID). |
 | `impacts` | array of [`Impact`](#impact) | no | The repositories that the ADR impacts (COLLIERY-T-0269), by slug. An `impacts` link says what the ADR is about. It gives no right. |
+| `notes` | `array`, nullable | no | The notes of the item, in the order of their ids (KAIROS-T-0630). Present on the read of one item (`GET /api/{family}/{short_code}`), empty when the item has none. Absent from lists and from the answers of writes. A note is not part of `content`. |
 | `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-A-{NNNN}`). |
 | `title` | `string` | yes |  |
 | `updated_at` | `string` | yes | RFC 3339. |
@@ -187,13 +188,13 @@ The server refuses a body with a field that is not in this table ([Errors](../..
 
 ## AppendNoteResponse
 
-Response of `POST /api/{entity_type}/{short_code}/notes` (KAIROS-T-0367): the version that the note made, and the id of the note (KAIROS-T-0504).
+Response of `POST /api/{entity_type}/{short_code}/notes` (KAIROS-T-0367): the id of the note (KAIROS-T-0504). A note writes no version of the content (KAIROS-T-0630).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `note_id` | `string` | no | The id of the note: `n-3`. The heading of the note carries it, and the item page anchors it (`#n-3`). The default is for the client only: a response of an older server has no `note_id`. |
+| `note_id` | `string` | no | The id of the note: `n-3`. The item page anchors it (`#n-3`). The default is for the client only: a response of an older server has no `note_id`. |
 | `short_code` | `string` | yes | The item's short code. |
-| `version` | `integer` | yes | The new version of the item. |
+| `version` | `integer` | yes | The version of the content of the item. A note does not change it. |
 
 ## ArchiveCompletedResponse
 
@@ -1009,6 +1010,7 @@ A supporting document, as returned by `/api/documents`. Documents do not live on
 | `id` | `string` | yes | Entity id (UUID). |
 | `impacts` | array of [`Impact`](#impact) | no | The repositories that the document impacts (COLLIERY-T-0269), by slug. An `impacts` link says what the document is about. It gives no right. |
 | `lifecycle` | `string` | yes | Editorial lifecycle: `draft|review|published|archived` (KAIROS-T-0078). A label with free transitions â never a board column, never metadata. |
+| `notes` | `array`, nullable | no | The notes of the item, in the order of their ids (KAIROS-T-0630). Present on the read of one item (`GET /api/{family}/{short_code}`), empty when the item has none. Absent from lists and from the answers of writes. A note is not part of `content`. |
 | `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-D-{NNNN}`). |
 | `template_id` | `string`, nullable | no | Template the document was stamped from (UUID), if any. |
 | `title` | `string` | yes |  |
@@ -1310,6 +1312,7 @@ An initiative (Flight Level 2), as returned by `/api/initiatives`.
 | `created_by` | `string` | yes | Creator user id (UUID). |
 | `id` | `string` | yes | Entity id (UUID). |
 | `is_bucket` | `boolean` | yes | Whether this initiative is a bucket. |
+| `notes` | `array`, nullable | no | The notes of the item, in the order of their ids (KAIROS-T-0630). Present on the read of one item (`GET /api/{family}/{short_code}`), empty when the item has none. Absent from lists and from the answers of writes. A note is not part of `content`. |
 | `owner` | [`ItemOwner`](#itemowner), nullable | no |  |
 | `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-I-{NNNN}`). |
 | `title` | `string` | yes |  |
@@ -1414,6 +1417,19 @@ Response of `GET/PATCH /api/{entity_type}/{short_code}/metadata`.
 |---|---|---|---|
 | `short_code` | `string` | yes | The item the values belong to. |
 | `values` | array of [`MetadataValue`](#metadatavalue) | yes | All metadata values on the item, ordered by definition slug. |
+
+## ItemNote
+
+One note of an item (KAIROS-T-0630): a row of its own, not part of the content of the item.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `author` | `string` | yes | The name of the author: the display name of the user, or the name of an old note as written. |
+| `author_id` | `string`, nullable | no | The user that wrote the note (UUID). Absent for an old note whose name is no user of the organization. |
+| `created_at` | `string` | yes | RFC 3339. |
+| `id` | `string` | yes | The id of the note in its item: `n-3`. Cite it as `note n-3 on ACME-T-0012`. |
+| `promoted_to` | `string`, nullable | no | The short code of the draft ADR or document that a promote made from the note. Absent until then. A note is promoted once. |
+| `text` | `string` | yes | The markdown text. It can have headings. |
 
 ## ItemOwner
 
@@ -2540,6 +2556,7 @@ A strategy (Flight Level 3), as returned by `/api/strategies`.
 | `created_by` | `string` | yes | Creator user id (UUID). |
 | `hypothesis` | `string`, nullable | no |  |
 | `id` | `string` | yes | Entity id (UUID). |
+| `notes` | `array`, nullable | no | The notes of the item, in the order of their ids (KAIROS-T-0630). Present on the read of one item (`GET /api/{family}/{short_code}`), empty when the item has none. Absent from lists and from the answers of writes. A note is not part of `content`. |
 | `owner` | [`ItemOwner`](#itemowner), nullable | no |  |
 | `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-S-{NNNN}`). |
 | `title` | `string` | yes |  |
@@ -2613,6 +2630,7 @@ A task/bug/tech-debt item (Flight Level 1), as returned by `/api/tasks`.
 | `created_at` | `string` | yes | RFC 3339. |
 | `created_by` | `string` | yes | Creator user id (UUID). |
 | `id` | `string` | yes | Entity id (UUID). |
+| `notes` | `array`, nullable | no | The notes of the item, in the order of their ids (KAIROS-T-0630). Present on the read of one item (`GET /api/{family}/{short_code}`), empty when the item has none. Absent from lists and from the answers of writes. A note is not part of `content`. |
 | `repository` | [`RepositoryRef`](#repositoryref), nullable | no |  |
 | `repository_id` | `string`, nullable | no | The repository this task is issued against (UUID), if bound (KAIROS-T-0104, A-0019). |
 | `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-T-{NNNN}`). |

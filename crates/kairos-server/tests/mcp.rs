@@ -1940,17 +1940,21 @@ async fn mcp_endpoint_against_live_stack() {
             json!({"short_code": filed, "text": "The filer adds a note."}),
         )
         .await;
+    // KAIROS-T-0630: a note is a row; the content stays at version 3.
     assert!(
-        text.contains(&format!("Appended note n-1 to {filed} (version 4).")),
+        text.contains(&format!(
+            "Appended note n-1 to {filed}. The content stays at version 3."
+        )),
         "{text}"
     );
     let text = session
         .call_ok("get_item", json!({"short_code": filed}))
         .await;
     assert!(
-        text.contains("edited again by the filer\n\n## Note n-1 (")
+        text.contains("- version: 3\n")
+            && text.contains("edited again by the filer\n\n## Note n-1 (")
             && text.contains(")\n\nThe filer adds a note."),
-        "the note is at the end, under a dated heading with its id: {text}"
+        "the note follows the content, under a dated heading with its id: {text}"
     );
     // KAIROS-T-0504: get_item lists the notes with their ids, before the content.
     let notes_at = text.find("\n## Notes\n- n-1 (").expect("a Notes section");
@@ -2090,10 +2094,31 @@ async fn mcp_endpoint_against_live_stack() {
         )),
         "{text}"
     );
+    // KAIROS-T-0551, KAIROS-T-0630: a note is promoted one time only.
+    let text = session
+        .call_err(
+            "promote_note",
+            json!({"short_code": filed, "note_id": "n-1", "kind": "document", "board": "platform-delivery"}),
+        )
+        .await;
+    assert!(
+        text.contains("CONFLICT") && text.contains(&promoted_adr) && text.contains(&filed),
+        "{text}"
+    );
+    let text = bob_session
+        .call_ok(
+            "append_note",
+            json!({"short_code": filed, "text": "A second idea.\n\n## Detail\n\nA heading stays."}),
+        )
+        .await;
+    assert!(
+        text.contains(&format!("Appended note n-2 to {filed}.")),
+        "{text}"
+    );
     let text = session
         .call_ok(
             "promote_note",
-            json!({"short_code": filed, "note_id": "n-1", "kind": "document", "board": "platform-delivery"}),
+            json!({"short_code": filed, "note_id": "n-2", "kind": "document", "board": "platform-delivery"}),
         )
         .await;
     let promoted_doc = extract_code(&text, "ACME-D-");
@@ -2109,7 +2134,10 @@ async fn mcp_endpoint_against_live_stack() {
             json!({"short_code": filed, "note_id": "n-7", "kind": "adr", "board": "adrs"}),
         )
         .await;
-    assert!(text.contains("NOT_FOUND") && text.contains("n-1"), "{text}");
+    assert!(
+        text.contains("NOT_FOUND") && text.contains("n-1, n-2"),
+        "{text}"
+    );
     let text = session
         .call_err(
             "promote_note",
@@ -2120,10 +2148,16 @@ async fn mcp_endpoint_against_live_stack() {
         text.contains("VALIDATION") && text.contains("document"),
         "{text}"
     );
+    bob_session
+        .call_ok(
+            "append_note",
+            json!({"short_code": filed, "text": "A third idea."}),
+        )
+        .await;
     let text = bob_session
         .call_err(
             "promote_note",
-            json!({"short_code": filed, "note_id": "n-1", "kind": "adr", "board": "adrs"}),
+            json!({"short_code": filed, "note_id": "n-3", "kind": "adr", "board": "adrs"}),
         )
         .await;
     assert!(

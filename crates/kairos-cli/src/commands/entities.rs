@@ -13,8 +13,8 @@ use kairos_client::EntityKind;
 use kairos_client::types::{
     Adr, AppendNoteResponse, CreateAdrRequest, CreateDocumentRequest, CreateInitiativeRequest,
     CreateStrategyRequest, CreateTaskRequest, DeleteResponse, Document, ImpactListQuery,
-    Initiative, ListEnvelope, ListQuery, Pagination, PromoteNoteRequest, PromoteNoteResponse,
-    RestoreResponse, Strategy, Task, UpdateContentRequest,
+    Initiative, ItemNote, ListEnvelope, ListQuery, Pagination, PromoteNoteRequest,
+    PromoteNoteResponse, RestoreResponse, Strategy, Task, UpdateContentRequest,
 };
 use kairos_client::types_repositories::Impact;
 
@@ -461,6 +461,9 @@ pub trait EntityView: serde::Serialize + utoipa::ToSchema {
     /// `(label, value)` detail lines for `get` (content rendered
     /// separately).
     fn fields(&self) -> Vec<(&'static str, String)>;
+    /// The notes of the item (KAIROS-T-0630): the read of one item has
+    /// them; a list does not.
+    fn notes(&self) -> &[ItemNote];
 }
 
 fn or_dash(value: &Option<String>) -> String {
@@ -498,6 +501,9 @@ impl EntityView for Strategy {
     }
     fn content(&self) -> &str {
         &self.content
+    }
+    fn notes(&self) -> &[ItemNote] {
+        self.notes.as_deref().unwrap_or_default()
     }
     fn column_id(&self) -> Option<&str> {
         Some(&self.column_id)
@@ -542,6 +548,9 @@ impl EntityView for Initiative {
     }
     fn content(&self) -> &str {
         &self.content
+    }
+    fn notes(&self) -> &[ItemNote] {
+        self.notes.as_deref().unwrap_or_default()
     }
     fn column_id(&self) -> Option<&str> {
         Some(&self.column_id)
@@ -588,6 +597,9 @@ impl EntityView for Task {
     }
     fn content(&self) -> &str {
         &self.content
+    }
+    fn notes(&self) -> &[ItemNote] {
+        self.notes.as_deref().unwrap_or_default()
     }
     fn column_id(&self) -> Option<&str> {
         Some(&self.column_id)
@@ -660,6 +672,9 @@ impl EntityView for Document {
     fn content(&self) -> &str {
         &self.content
     }
+    fn notes(&self) -> &[ItemNote] {
+        self.notes.as_deref().unwrap_or_default()
+    }
     fn column_id(&self) -> Option<&str> {
         None
     }
@@ -706,6 +721,9 @@ impl EntityView for Adr {
     }
     fn content(&self) -> &str {
         &self.content
+    }
+    fn notes(&self) -> &[ItemNote] {
+        self.notes.as_deref().unwrap_or_default()
     }
     fn column_id(&self) -> Option<&str> {
         self.column_id.as_deref()
@@ -788,8 +806,27 @@ pub fn emit_get<T: EntityView>(common: &Common, item: &T) -> Result<(), CliError
         println!("  {label}: {value}");
     }
     println!();
-    println!("{}", item.content());
+    if item.notes().is_empty() {
+        println!("{}", item.content());
+    } else {
+        println!("{}{}", item.content().trim_end(), notes_text(item.notes()));
+    }
     Ok(())
+}
+
+/// The notes after the content in `get` (KAIROS-T-0630): each one under
+/// its `## Note n-3 (date, name)` heading, as the MCP `get_item` shows
+/// them. Empty for no notes.
+fn notes_text(notes: &[ItemNote]) -> String {
+    kairos_markdown::notes::render_notes(notes.iter().map(|note| {
+        kairos_markdown::notes::NoteParts {
+            seq: kairos_markdown::notes::parse_note_id(&note.id).unwrap_or_default(),
+            date: note.created_at.get(..10).unwrap_or(&note.created_at),
+            author: &note.author,
+            text: &note.text,
+            promoted_to: note.promoted_to.as_deref(),
+        }
+    }))
 }
 
 pub fn emit_created<T: EntityView>(common: &Common, item: &T) -> Result<(), CliError> {
@@ -949,13 +986,14 @@ pub fn emit_promoted(common: &Common, response: &PromoteNoteResponse) -> Result<
     Ok(())
 }
 
-/// `note` output (KAIROS-T-0367): the new version.
+/// `note` output (KAIROS-T-0367): the id of the note. A note writes no
+/// version (KAIROS-T-0630).
 pub fn emit_noted(common: &Common, response: &AppendNoteResponse) -> Result<(), CliError> {
     if common.json {
         return print_json(response);
     }
     println!(
-        "Kairos appended note {} to {} (version {}).",
+        "Kairos appended note {} to {}. The content stays at version {}.",
         response.note_id, response.short_code, response.version
     );
     Ok(())
@@ -1586,6 +1624,36 @@ entity_family_cli!(
 mod tests {
     use super::*;
     use crate::error::EXIT_FAILURE;
+
+    /// KAIROS-T-0630: `get` prints the notes after the content, each one
+    /// under its heading, with the mark of a promote.
+    #[test]
+    fn the_notes_follow_the_content() {
+        let notes = vec![
+            ItemNote {
+                id: "n-1".into(),
+                author_id: None,
+                author: "Robin".into(),
+                created_at: "2026-10-17T09:30:00+00:00".into(),
+                text: "One.\n\n## Findings\n\nTwo.".into(),
+                promoted_to: Some("ACME-A-0001".into()),
+            },
+            ItemNote {
+                id: "n-2".into(),
+                author_id: None,
+                author: "Sam".into(),
+                created_at: "2026-10-18T10:00:00+00:00".into(),
+                text: "Three.".into(),
+                promoted_to: None,
+            },
+        ];
+        assert_eq!(
+            notes_text(&notes),
+            "\n\n## Note n-1 (2026-10-17, Robin)\n\nOne.\n\n## Findings\n\nTwo.\n\n\
+             Promoted to ACME-A-0001.\n\n## Note n-2 (2026-10-18, Sam)\n\nThree."
+        );
+        assert_eq!(notes_text(&[]), "");
+    }
 
     /// COLLIERY-T-3100 / T-3101: `get` with a retired code says so, and a
     /// move that renames names the two codes. The same code says nothing.

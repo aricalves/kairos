@@ -155,7 +155,9 @@ pub(crate) async fn get_adr(
         .blocking
         .run(&tenant.slug, move |conn| {
             let adr = load(conn, &short_code, Liveness::IncludeArchived)?;
-            render(conn, adr)
+            let mut adr = render(conn, adr)?;
+            adr.notes = crate::api::item_notes(conn, &adr.id)?;
+            Ok(adr)
         })
         .await?;
     Ok(Json(adr))

@@ -131,6 +131,7 @@ export default defineConfig({
 						page('explanation/capabilities-and-access', 'Capabilities and access'),
 						page('explanation/choosing-how-people-log-in', 'Choosing how people log in'),
 						page('explanation/archiving', 'Archiving'),
+						page('explanation/notes', 'Notes'),
 						page(
 							'explanation/repositories-as-execution-scope',
 							'Repositories as execution scope',

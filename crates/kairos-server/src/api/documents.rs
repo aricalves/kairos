@@ -288,7 +288,9 @@ pub(crate) async fn get_document(
         .blocking
         .run(&tenant.slug, move |conn| {
             let document = load(conn, &short_code, Liveness::IncludeArchived)?;
-            render(conn, document)
+            let mut document = render(conn, document)?;
+            document.notes = crate::api::item_notes(conn, &document.id)?;
+            Ok(document)
         })
         .await?;
     Ok(Json(document))

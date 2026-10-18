@@ -88,4 +88,4 @@ Skip this step when no originating item was found. Otherwise append a structured
 - <one bullet per significant finding, prefixed [standards] or [spec]>
 ```
 
-`append_note` puts the record at the end of the item, under a heading with the date and your name, in one call: no version and no anchor text. Keep the record compact: findings in full live in the conversation; the item carries the durable summary.
+`append_note` adds the record to the item as a note in one call: no version and no anchor text. `get_item` shows it after the content, under a heading with its id, the date and your name. Keep the record compact: findings in full live in the conversation; the item carries the durable summary.

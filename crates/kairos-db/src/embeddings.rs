@@ -104,7 +104,9 @@ pub struct PendingItem {
     /// The item's title.
     #[diesel(sql_type = Text)]
     pub title: String,
-    /// The item's content.
+    /// The item's content, and then its notes as `## Note` sections
+    /// (KAIROS-T-0630: the SQL function `item_notes_markdown`). So a note
+    /// is embedded as it was when it was part of the content.
     #[diesel(sql_type = Text)]
     pub content: String,
     /// The repository the item is issued against, if any (tasks only).
@@ -218,7 +220,9 @@ pub fn pending_primary(
     // An archived parent counts (COLLIERY-T-1840): `entity_directory` has
     // archived rows, and the join no longer filters them out.
     let rows = sql_query(
-        "SELECT s.id, s.entity_type, s.short_code, s.title, s.content, \
+        "SELECT s.id, s.entity_type, s.short_code, s.title, \
+                coalesce(rtrim(s.content, E' \\t\\r\\n\\f\\v') || item_notes_markdown(s.id), \
+                         s.content) AS content, \
                 r.slug AS repository, p.title AS parent_title, \
                 e.content_hash AS stored_hash \
          FROM searchable_items s \
