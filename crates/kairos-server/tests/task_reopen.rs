@@ -278,6 +278,7 @@ async fn a_done_task_is_reopened_and_not_moved() {
         team_id: None,
         repository: None,
         from_team: None,
+        parent: None,
     };
     let blocks = |source: &str, target: &str| CreateRelationshipRequest {
         source_short_code: source.into(),

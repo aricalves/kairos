@@ -92,6 +92,15 @@
 //! distinguish "changed" from "already so" and the activity log records
 //! only real mutations — the same convention as
 //! [`crate::abac::grant_capability`].
+//!
+//! # One parent (KAIROS-T-0572)
+//!
+//! An item has one parent. [`link_items`] refuses a `parent` edge to an
+//! item that has a parent with [`GraphError::ParentExists`]. The partial
+//! unique index `item_relationships_one_parent` (on `target_id` where the
+//! relationship is `parent`) refuses it in the database too, so two writes
+//! at the same time cannot both win. [`set_parent`] replaces the edge, or
+//! removes it, in one transaction.
 
 use chrono::{DateTime, Utc};
 use diesel::pg::PgConnection;
@@ -139,6 +148,18 @@ pub enum GraphError {
         relationship: RelationshipType,
         source_id: Uuid,
         target_id: Uuid,
+    },
+    /// The item has a parent already (KAIROS-T-0572): an item has one
+    /// parent. The unique index `item_relationships_one_parent` refuses a
+    /// second one too. [`set_parent`] changes the parent.
+    #[error(
+        "{item} has the parent {parent} already. An item has one parent. To change the parent, set the new parent: it replaces the old one."
+    )]
+    ParentExists {
+        /// The short code of the item (the target of the edge).
+        item: String,
+        /// The short code of the parent that the item has.
+        parent: String,
     },
     /// No such edge exists to unlink.
     #[error("No {relationship} edge goes from {source_id} to {target_id}.")]
@@ -291,6 +312,119 @@ fn check_acyclic(
     Ok(())
 }
 
+/// The name of the unique index that holds one parent per item
+/// (KAIROS-T-0572, migration `2026-10-17-002200_one_parent`).
+pub const ONE_PARENT_INDEX: &str = "item_relationships_one_parent";
+
+/// The short code of an item, archived or not, or its id when the item is
+/// gone: the label of an end in an activity row or a refusal.
+fn label_of(conn: &mut PgConnection, id: Uuid) -> Result<String, GraphError> {
+    let row: Option<DirectoryRow> =
+        sql_query("SELECT entity_type, short_code FROM entity_directory WHERE id = $1")
+            .bind::<SqlUuid, _>(id)
+            .get_result(conn)
+            .optional()?;
+    Ok(row.map_or_else(|| id.to_string(), |row| row.short_code))
+}
+
+/// The parent of an item: the source of its `parent` edge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParentRef {
+    /// The id of the parent.
+    pub id: Uuid,
+    /// The type of the parent, when it is in `entity_directory`.
+    pub item_type: Option<ItemType>,
+    /// The short code of the parent (its id when the parent is gone).
+    pub short_code: String,
+    /// Whether the parent is archived. The edge to an archived parent
+    /// stays (module docs, `# Liveness`).
+    pub archived: bool,
+}
+
+#[derive(QueryableByName)]
+struct ParentRow {
+    #[diesel(sql_type = SqlUuid)]
+    id: Uuid,
+    #[diesel(sql_type = Nullable<Text>)]
+    entity_type: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    short_code: Option<String>,
+    #[diesel(sql_type = Nullable<Timestamptz>)]
+    deleted_at: Option<DateTime<Utc>>,
+}
+
+/// The parent of `item_id`, archived or not, or `None` (KAIROS-T-0572).
+/// An item has one parent; with data from before the migration the oldest
+/// edge answers, as `get_item` did.
+pub fn parent_of(conn: &mut PgConnection, item_id: Uuid) -> Result<Option<ParentRef>, GraphError> {
+    let row: Option<ParentRow> = sql_query(
+        "SELECT r.source_id AS id, d.entity_type, d.short_code, d.deleted_at \
+           FROM item_relationships r \
+           LEFT JOIN entity_directory d ON d.id = r.source_id \
+          WHERE r.target_id = $1 AND r.relationship = 'parent' \
+          ORDER BY r.created_at, r.id LIMIT 1",
+    )
+    .bind::<SqlUuid, _>(item_id)
+    .get_result(conn)
+    .optional()?;
+    row.map(|row| {
+        Ok(ParentRef {
+            id: row.id,
+            item_type: row
+                .entity_type
+                .as_deref()
+                .map(parse_entity_type)
+                .transpose()?,
+            short_code: row.short_code.unwrap_or_else(|| row.id.to_string()),
+            archived: row.deleted_at.is_some(),
+        })
+    })
+    .transpose()
+}
+
+/// Insert one edge, in a savepoint, so that a refusal of the database
+/// leaves the transaction usable. A duplicate is
+/// [`GraphError::AlreadyLinked`]; a second parent that a write at the same
+/// time made is [`GraphError::ParentExists`] (the index
+/// [`ONE_PARENT_INDEX`]).
+fn insert_edge(
+    conn: &mut PgConnection,
+    source_id: Uuid,
+    target_id: Uuid,
+    relationship: RelationshipType,
+) -> Result<ItemRelationship, GraphError> {
+    let inserted = conn.transaction::<_, DieselError, _>(|conn| {
+        diesel::insert_into(crate::schema::item_relationships::table)
+            .values(NewItemRelationship {
+                source_id,
+                target_id,
+                relationship,
+            })
+            .returning(ItemRelationship::as_returning())
+            .get_result(conn)
+    });
+    match inserted {
+        Err(DieselError::DatabaseError(DatabaseErrorKind::UniqueViolation, info))
+            if info.constraint_name() == Some(ONE_PARENT_INDEX) =>
+        {
+            let parent = parent_of(conn, target_id)?
+                .map_or_else(|| "another item".to_string(), |parent| parent.short_code);
+            Err(GraphError::ParentExists {
+                item: label_of(conn, target_id)?,
+                parent,
+            })
+        }
+        Err(DieselError::DatabaseError(DatabaseErrorKind::UniqueViolation, _)) => {
+            Err(GraphError::AlreadyLinked {
+                relationship,
+                source_id,
+                target_id,
+            })
+        }
+        other => Ok(other?),
+    }
+}
+
 /// Create a `relationship` edge from `source_id` to `target_id`
 /// (KAIROS-A-0001 orientation — see [`kairos_core::graph`]'s semantics
 /// table), in ONE transaction:
@@ -302,7 +436,9 @@ fn check_acyclic(
 /// 3. for the acyclic relationships (`parent`/`blocks`) the edge must not
 ///    close a directed cycle over the relationship's existing edges
 ///    ([`check_acyclic`], under a lock → [`GraphError::CycleDetected`]);
-/// 4. insert (duplicate → [`GraphError::AlreadyLinked`], module docs) and
+/// 4. a `parent` edge to an item that has a different parent is
+///    [`GraphError::ParentExists`] (KAIROS-T-0572, module docs);
+/// 5. insert (duplicate → [`GraphError::AlreadyLinked`], module docs) and
 ///    write the `relationship_add` activity row.
 pub fn link_items(
     conn: &mut PgConnection,
@@ -327,24 +463,19 @@ pub fn link_items(
             check_acyclic(conn, relationship, source_id, target_id)?;
         }
 
-        let inserted = diesel::insert_into(crate::schema::item_relationships::table)
-            .values(NewItemRelationship {
-                source_id,
-                target_id,
-                relationship,
-            })
-            .returning(ItemRelationship::as_returning())
-            .get_result(conn);
-        let created = match inserted {
-            Err(DieselError::DatabaseError(DatabaseErrorKind::UniqueViolation, _)) => {
-                return Err(GraphError::AlreadyLinked {
-                    relationship,
-                    source_id,
-                    target_id,
-                });
-            }
-            other => other?,
-        };
+        // KAIROS-T-0572: an item has one parent. The same parent again is
+        // the duplicate below.
+        if relationship == RelationshipType::Parent
+            && let Some(parent) = parent_of(conn, target_id)?
+            && parent.id != source_id
+        {
+            return Err(GraphError::ParentExists {
+                item: target_code,
+                parent: parent.short_code,
+            });
+        }
+
+        let created = insert_edge(conn, source_id, target_id, relationship)?;
 
         log_relationship_activity(
             conn,
@@ -446,6 +577,149 @@ pub fn unlink_items(
             }
         }
         Ok(())
+    })
+}
+
+/// What [`set_parent`] did (KAIROS-T-0572).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParentChange {
+    /// The short code of the item.
+    pub item: String,
+    /// The parent before the write, by short code, or `None`.
+    pub previous: Option<String>,
+    /// The parent after the write, by short code, or `None`.
+    pub parent: Option<String>,
+    /// Whether the write changed an edge. `false`: the item had this
+    /// parent already (or no parent, for `None`), and nothing was written.
+    pub changed: bool,
+}
+
+/// Set the parent of `item_id` to `parent_id`, or remove it with `None`,
+/// in ONE transaction (KAIROS-T-0572). The old `parent` edge goes and the
+/// new one comes, so no reader sees the item with two parents or, for a
+/// change, with none.
+///
+/// 1. The item and the new parent are live
+///    ([`GraphError::ItemNotFound`]); they differ ([`GraphError::SelfLink`]).
+/// 2. The type rules admit the edge ([`GraphError::Rule`]).
+/// 3. The same parent again, or `None` for an item with no parent, writes
+///    nothing: `changed` is false.
+/// 4. The cycle check of the new edge ([`check_acyclic`]). It takes its
+///    lock before the delete, in the order of [`link_items`]: the lock
+///    first, then the rows. The old edge goes into the item, so it is not
+///    on a path from the item, and the check gives the same answer.
+/// 5. The old edge goes, with its `relationship_remove` row. The old
+///    parent can be archived: the edge to it goes all the same.
+/// 6. The insert of the new edge, with its
+///    `relationship_add` row. A second parent that a write at the same
+///    time made is [`GraphError::ParentExists`]; the transaction then
+///    removes nothing.
+/// 7. One `relationship_changed` event for each live item of the three.
+///
+/// WHO may do it is not decided here: the server asks the link rule for
+/// each edge that changes.
+pub fn set_parent(
+    conn: &mut PgConnection,
+    item_id: Uuid,
+    parent_id: Option<Uuid>,
+    actor: Uuid,
+) -> Result<ParentChange, GraphError> {
+    conn.transaction::<_, GraphError, _>(|conn| {
+        let (item_type, item_code) =
+            resolve_entity(conn, item_id)?.ok_or(GraphError::ItemNotFound(item_id))?;
+        let new_parent = match parent_id {
+            Some(parent_id) => {
+                if parent_id == item_id {
+                    return Err(GraphError::SelfLink(item_id));
+                }
+                let (parent_type, parent_code) =
+                    resolve_entity(conn, parent_id)?.ok_or(GraphError::ItemNotFound(parent_id))?;
+                rules::check_link(rules::Relationship::Parent, parent_type, item_type)?;
+                Some((parent_id, parent_type, parent_code))
+            }
+            None => None,
+        };
+        let previous = parent_of(conn, item_id)?;
+
+        let unchanged = match (&previous, &new_parent) {
+            (None, None) => true,
+            (Some(old), Some((new_id, _, _))) => old.id == *new_id,
+            _ => false,
+        };
+        if unchanged {
+            return Ok(ParentChange {
+                item: item_code,
+                previous: previous.as_ref().map(|old| old.short_code.clone()),
+                parent: new_parent.map(|(_, _, code)| code),
+                changed: false,
+            });
+        }
+
+        if let Some((new_id, _, _)) = &new_parent {
+            check_acyclic(conn, RelationshipType::Parent, *new_id, item_id)?;
+        }
+
+        if let Some(old) = &previous {
+            use crate::schema::item_relationships::dsl;
+            let deleted = diesel::delete(
+                dsl::item_relationships
+                    .filter(dsl::source_id.eq(old.id))
+                    .filter(dsl::target_id.eq(item_id))
+                    .filter(dsl::relationship.eq(RelationshipType::Parent)),
+            )
+            .execute(conn)?;
+            // 0: a write at the same time removed the edge first. That
+            // write has its own row.
+            if deleted > 0 {
+                log_relationship_activity(
+                    conn,
+                    actor,
+                    ActivityAction::RelationshipRemove,
+                    RelationshipType::Parent,
+                    &old.short_code,
+                    &item_code,
+                )?;
+            }
+        }
+
+        if let Some((new_id, _, new_code)) = &new_parent {
+            insert_edge(conn, *new_id, item_id, RelationshipType::Parent)?;
+            log_relationship_activity(
+                conn,
+                actor,
+                ActivityAction::RelationshipAdd,
+                RelationshipType::Parent,
+                new_code,
+                &item_code,
+            )?;
+        }
+
+        // KAIROS-T-0022: one thin event for each live end, on commit.
+        let mut ends = vec![(item_type, item_id)];
+        if let Some(old) = &previous
+            && let (Some(old_type), false) = (old.item_type, old.archived)
+        {
+            ends.push((old_type, old.id));
+        }
+        if let Some((new_id, new_type, _)) = &new_parent {
+            ends.push((*new_type, *new_id));
+        }
+        for (end_type, end_id) in ends {
+            crate::events::emit_item_event_by_id(
+                conn,
+                crate::events::EventKind::RelationshipChanged,
+                end_type.entity_type(),
+                end_id,
+                actor,
+            )?;
+        }
+
+        Ok(ParentChange {
+            item: item_code,
+            previous: previous.map(|old| old.short_code),
+            parent: new_parent.map(|(_, _, code)| code),
+            changed: true,
+        })
     })
 }
 

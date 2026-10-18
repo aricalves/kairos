@@ -2344,6 +2344,25 @@ impl KairosClient {
         self.post_created("/api/relationships", request).await
     }
 
+    /// `PUT /api/{family}/{short_code}/parent` (KAIROS-T-0572): set the
+    /// parent of an initiative or a task, or remove it with `None`. The new
+    /// edge replaces the old one in one transaction. The link rule applies
+    /// to each edge that changes.
+    pub async fn set_parent(
+        &self,
+        kind: EntityKind,
+        short_code: &str,
+        parent: Option<&str>,
+    ) -> Result<crate::types_meta::SetParentResponse, Error> {
+        self.put_ok(
+            &format!("/api/{kind}/{short_code}/parent"),
+            &crate::types_meta::SetParentRequest {
+                parent: parent.map(str::to_string),
+            },
+        )
+        .await
+    }
+
     /// `DELETE /api/relationships/{id}`. The link rule applies, as for
     /// the create. For the `supports` edge of a document the caller must
     /// be able to edit the document (COLLIERY-T-0235).

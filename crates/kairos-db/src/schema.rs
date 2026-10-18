@@ -60,6 +60,7 @@ diesel::table! {
         last_used_at -> Nullable<Timestamptz>,
         revoked_at -> Nullable<Timestamptz>,
         replaced_by -> Nullable<Uuid>,
+        expiring_notified_at -> Nullable<Timestamptz>,
     }
 }
 
