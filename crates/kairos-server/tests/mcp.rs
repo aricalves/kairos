@@ -79,14 +79,16 @@ const SCRATCH_DB: &str = "kairos_mcp_t0026_test";
 const REPOSITORY_TOOLS_DB: &str = "kairos_mcp_t0266_test";
 /// The scratch database of the triage test (KAIROS-T-0368).
 const TRIAGE_TOOLS_DB: &str = "kairos_mcp_t0368_test";
+/// The scratch database of the member test (KAIROS-T-0556).
+const MEMBER_TOOLS_DB: &str = "kairos_mcp_t0556_test";
 
 /// The tenant slug.
 const TENANT: &str = "acme";
 
 /// How many tools `tools/list` returns, and the word the reference pages
 /// use for that number (COLLIERY-T-0220, COLLIERY-T-0266).
-const TOOL_COUNT: usize = 72;
-const TOOL_COUNT_WORD: &str = "seventy-two";
+const TOOL_COUNT: usize = 73;
+const TOOL_COUNT_WORD: &str = "seventy-three";
 
 /// Every request carries a real `Host` header and the tenant resolves from
 /// its subdomain against the configured base domain — the S-0006 REQ-1.2
@@ -649,6 +651,8 @@ async fn mcp_endpoint_against_live_stack() {
         // and end it.
         "hand_off_item",
         "release_item",
+        // KAIROS-T-0556: the people of the organization, a team or a board.
+        "list_members",
         // KAIROS-T-0411: take a strategy or an initiative with no owner.
         // hand_off_item and release_item change the owner too.
         "claim_item",
@@ -786,6 +790,7 @@ async fn mcp_endpoint_against_live_stack() {
             "claim_item",
             "hand_off_item",
             "release_item",
+            "list_members",
             "get_events",
             "mark_events_read",
             "list_metadata_definitions",
@@ -890,6 +895,7 @@ async fn mcp_endpoint_against_live_stack() {
             "sixty-three",
             "fifty-eight",
             "sixty-seven",
+            "seventy-two",
         ] {
             assert!(
                 !reference.contains(stale),
@@ -4430,4 +4436,247 @@ async fn triage_tools_against_live_stack() {
     drop(conn);
     let _ = platform;
     drop_scratch_db(&mut admin_conn, TRIAGE_TOOLS_DB);
+}
+
+/// KAIROS-T-0556: `list_members` gives the people of the organization, of a
+/// team and of a board, by the user name that `hand_off_item` and a mention
+/// take. `whoami` gives the user name of the caller.
+///
+/// Cast: `svc` is an organization admin in no team. `alice` is a member of
+/// the team `platform`. `bob` has a grant on the board of `platform`. "Build
+/// Bot" is a service account.
+#[tokio::test]
+async fn member_tools_against_live_stack() {
+    let mut admin_conn = recreate_scratch_db(MEMBER_TOOLS_DB);
+    let scratch_url = with_database(&common::admin_database_url(), MEMBER_TOOLS_DB);
+    let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
+    run_public_migrations(&mut conn).expect("running public migrations");
+    provision_tenant(&mut conn, TENANT, "Acme Inc").expect("provisioning acme");
+    let org_id: Uuid = organizations::table
+        .filter(organizations::slug.eq(TENANT))
+        .select(organizations::id)
+        .first(&mut conn)
+        .expect("acme org row");
+
+    let http = reqwest::Client::new();
+    let pool = TenantPool::new(&scratch_url, 4).await.expect("pool");
+    let auth = Arc::new(
+        Authenticator::discover(ISSUER, AUDIENCE)
+            .await
+            .expect("OIDC discovery against live Dex"),
+    );
+    let router = app::router(app::state_with(
+        base_config(&scratch_url),
+        pool.clone(),
+        auth,
+    ));
+
+    let mut cast = Vec::new();
+    for (name, role) in [
+        ("svc", OrgRole::Admin),
+        ("alice", OrgRole::Member),
+        ("bob", OrgRole::Member),
+    ] {
+        let token = user_token(&http, name).await;
+        let (status, _, _) = raw_request(
+            &router,
+            Method::POST,
+            "/mcp",
+            Some(&token),
+            None,
+            Some(
+                json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+                "protocolVersion": "2025-06-18", "capabilities": {},
+                "clientInfo": {"name": "t", "version": "0"}}}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{name}");
+        let id = user_id(&mut conn, &format!("{name}@kairos.test"));
+        diesel::insert_into(organization_members::table)
+            .values(NewOrganizationMember {
+                organization_id: org_id,
+                user_id: id,
+                role,
+            })
+            .execute(&mut conn)
+            .unwrap_or_else(|e| panic!("granting {name} membership: {e}"));
+        // The login gives the OIDC subject as the user name. SCIM sets a
+        // readable one.
+        diesel::update(users::table.filter(users::id.eq(id)))
+            .set(users::user_name.eq(name))
+            .execute(&mut conn)
+            .expect("the user name");
+        cast.push((token, id));
+    }
+    let [(_, svc), (alice_token, alice), (_, bob)] =
+        <[(String, Uuid); 3]>::try_from(cast).expect("three users");
+    let robot = kairos_db::service_accounts::create_service_account(&mut conn, org_id, "Build Bot")
+        .expect("the service account");
+
+    sql_query("SET search_path TO org_acme, public")
+        .execute(&mut conn)
+        .expect("pinning search_path");
+    let platform = team_with_board(&mut conn, "Platform", "platform", true);
+    diesel::insert_into(kairos_db::schema::team_members::table)
+        .values(kairos_db::models::teams::NewTeamMember {
+            team_id: platform.id,
+            user_id: alice,
+        })
+        .execute(&mut conn)
+        .expect("team member");
+    let board: Uuid = boards::table
+        .filter(boards::slug.eq("platform-delivery"))
+        .select(boards::id)
+        .first(&mut conn)
+        .expect("the board of platform");
+    diesel::insert_into(kairos_db::schema::board_member_capabilities::table)
+        .values(kairos_db::models::boards::NewBoardMemberCapability {
+            board_id: board,
+            user_id: bob,
+            capability: "manage_tasks".into(),
+            granted_by: svc,
+        })
+        .execute(&mut conn)
+        .expect("the grant of bob");
+
+    let (mut session, _) = McpSession::connect(&router, &alice_token).await;
+    let line_of = |text: &str, user_name: &str| -> String {
+        text.lines()
+            .find(|line| line.starts_with(&format!("- {user_name} — ")))
+            .unwrap_or_else(|| panic!("no line of {user_name}: {text}"))
+            .to_string()
+    };
+
+    // --- whoami gives the user name -------------------------------------------
+    let text = session.call_ok("whoami", json!({})).await;
+    assert!(text.contains("\n- user name: alice\n"), "{text}");
+
+    // --- the organization: each member, the kind and the role ---------------
+    let text = session.call_ok("list_members", json!({})).await;
+    assert!(
+        text.starts_with("# Members of the organization acme\n"),
+        "{text}"
+    );
+    let alice_line = line_of(&text, "alice");
+    assert!(
+        alice_line.contains("<alice@kairos.test> · person · role: member"),
+        "{alice_line}"
+    );
+    assert!(
+        line_of(&text, "svc").ends_with("· person · role: admin"),
+        "{text}"
+    );
+    let robot_line = line_of(&text, &robot.user_name);
+    assert!(
+        robot_line.contains("Build Bot <")
+            && robot_line.ends_with("· service account · role: member"),
+        "{robot_line}"
+    );
+    assert_eq!(
+        text.lines().filter(|l| l.starts_with("- ")).count(),
+        4,
+        "{text}"
+    );
+    // The order is the order of the user names.
+    let order: Vec<&str> = text
+        .lines()
+        .filter_map(|l| l.strip_prefix("- ")?.split(" — ").next())
+        .collect();
+    let mut sorted = order.clone();
+    sorted.sort_unstable();
+    assert_eq!(order, sorted, "{text}");
+
+    // --- a page --------------------------------------------------------------
+    let text = session.call_ok("list_members", json!({"limit": 1})).await;
+    assert!(
+        text.contains(
+            "Members: 4. Shown: 1 (limit 1, offset 0). Call again with offset 1 for the next part."
+        ),
+        "{text}"
+    );
+    let text = session
+        .call_ok("list_members", json!({"limit": 2, "offset": 3}))
+        .await;
+    assert!(
+        text.contains("Members: 4. Shown: 1 (limit 2, offset 3).\n"),
+        "{text}"
+    );
+
+    // --- a team --------------------------------------------------------------
+    let text = session
+        .call_ok("list_members", json!({"team": "platform"}))
+        .await;
+    assert!(
+        text.starts_with("# Members of the team platform (Platform)\n"),
+        "{text}"
+    );
+    assert!(
+        line_of(&text, "alice").ends_with("<alice@kairos.test> · person"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("- bob — ") && !text.contains("- svc — "),
+        "{text}"
+    );
+
+    // --- a board: the capabilities, by a grant and by the team ---------------
+    let text = session
+        .call_ok("list_members", json!({"board": "platform-delivery"}))
+        .await;
+    assert!(
+        text.starts_with("# Members of the board platform-delivery (Platform Delivery)\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("An organization admin holds each capability on each board."),
+        "{text}"
+    );
+    assert!(
+        line_of(&text, "bob").ends_with("· person · capabilities: manage_tasks (grant)"),
+        "{text}"
+    );
+    let alice_line = line_of(&text, "alice");
+    assert!(
+        alice_line.contains("· capabilities: ")
+            && alice_line.contains("transition_items")
+            && alice_line.ends_with("(team platform, no grant)"),
+        "{alice_line}"
+    );
+    assert!(!text.contains("- svc — "), "{text}");
+
+    // --- refusals: an unknown team or board, both at once, an unknown argument
+    let text = session
+        .call_err("list_members", json!({"team": "nope"}))
+        .await;
+    assert!(
+        text.starts_with("VALIDATION") && text.contains("\"nope\""),
+        "{text}"
+    );
+    let text = session
+        .call_err("list_members", json!({"board": "nope"}))
+        .await;
+    assert!(
+        text.starts_with("NOT_FOUND") && text.contains("\"nope\""),
+        "{text}"
+    );
+    let text = session
+        .call_err(
+            "list_members",
+            json!({"team": "platform", "board": "platform-delivery"}),
+        )
+        .await;
+    assert!(
+        text.starts_with("VALIDATION") && text.contains("Send `team` or `board`, not both."),
+        "{text}"
+    );
+    let text = session
+        .call_err("list_members", json!({"person": "alice"}))
+        .await;
+    assert!(text.contains("person"), "{text}");
+
+    drop(session);
+    drop(pool);
+    drop(conn);
+    drop_scratch_db(&mut admin_conn, MEMBER_TOOLS_DB);
 }

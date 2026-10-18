@@ -2445,7 +2445,8 @@ async fn a_document_names_its_board_and_impacts_a_repository_against_live_stack(
     // and purge_task, and KAIROS-T-0363 added archive_completed.
     // KAIROS-T-0385 added the 3 tools of the dispatch rules. KAIROS-T-0434
     // added the 5 tools of the team page. KAIROS-T-0489 added my_work.
-    checks.same("H1: the number of tools", tools.len(), 72);
+    // KAIROS-T-0556 added list_members.
+    checks.same("H1: the number of tools", tools.len(), 73);
     let schema_of = |name: &str| -> Value {
         tools
             .iter()

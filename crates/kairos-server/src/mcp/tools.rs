@@ -3,7 +3,7 @@
 //! (KAIROS-I-0012), `restore_item` (KAIROS-A-0020), `related_work`
 //! (KAIROS-T-0191), `propose_edge` (KAIROS-T-0192), `set_repository`
 //! (COLLIERY-T-0220), and `add_repository` and `update_repository`
-//! (COLLIERY-T-0266); later tasks added more (72 in all, in the profiles
+//! (COLLIERY-T-0266); later tasks added more (73 in all, in the profiles
 //! of `profiles.rs`, KAIROS-T-0454) — each a
 //! thin wrapper over the same `kairos-core`/`kairos-db` services the REST
 //! handlers call — through [`crate::blocking::BlockingTenantPool`], never
@@ -95,6 +95,25 @@ use super::service::{KairosMcp, tool_error, tool_text};
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 pub struct WhoamiParams {}
+
+/// `list_members` (KAIROS-T-0556): the people of the organization, of a
+/// team or of a board.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct ListMembersParams {
+    /// Only the members of this team (slug or UUID). Do not send it with
+    /// `board`.
+    pub team: Option<String>,
+    /// Only the members of this board, with their capabilities (slug or
+    /// UUID). Do not send it with `team`.
+    pub board: Option<String>,
+    /// The number of members in the result (default 50, maximum 200).
+    pub limit: Option<i64>,
+    /// The number of members to skip (default 0). The result gives the
+    /// offset of the next part.
+    pub offset: Option<i64>,
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -1309,7 +1328,7 @@ pub struct SaveTemplateParams {
 }
 
 // ---------------------------------------------------------------------------
-// The tools (72; the list of each profile is asserted in tests/mcp.rs)
+// The tools (73; the list of each profile is asserted in tests/mcp.rs)
 // ---------------------------------------------------------------------------
 
 #[tool_router(vis = "pub(super)")]
@@ -1327,7 +1346,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Who am I in this Kairos organization: identity, org role, teams, my teams' repositories, the boards where I hold write capabilities, and the implicit capabilities every member has. Call this first to establish working context."
+        description = "Who am I in this Kairos organization: identity (display name, email, user name), org role, teams, my teams' repositories, the boards where I hold write capabilities, and the implicit capabilities every member has. Call this first to establish working context."
     )]
     pub async fn whoami(
         &self,
@@ -1367,7 +1386,16 @@ impl KairosMcp {
                 .load(conn)
                 .map_err(ApiError::internal)?;
 
+            // KAIROS-T-0556: the user name is what `hand_off_item`, the
+            // `claimed_by` filter of `search` and an `@mention` take.
+            let user_name: String = kairos_db::schema::users::table
+                .filter(kairos_db::schema::users::id.eq(user_id))
+                .select(kairos_db::schema::users::user_name)
+                .first(conn)
+                .map_err(ApiError::internal)?;
+
             let mut out = format!("# {display_name} <{email}>\n");
+            out.push_str(&format!("- user name: {user_name}\n"));
             out.push_str(&format!("- organization: {org_slug} (role: {role})\n"));
             out.push_str("\n## Teams\n");
             if member_teams.is_empty() {
@@ -1483,6 +1511,58 @@ impl KairosMcp {
                 }
             }
             Ok(out)
+        })
+        .await
+    }
+
+    #[tool(
+        description = "The members of the organization, of a team or of a board. Each line gives the user name, the display name, the email and the kind: person, service account or system actor. With no argument, the tool lists the organization and the role of each member. `team` (slug or UUID) lists the members of the team. `board` (slug or UUID) lists the members of the board and their capabilities: by a grant, by membership of the board, or by the team of the board. Send `team` or `board`, not both. Send the user name to `hand_off_item` or to the `claimed_by` filter of `search`, or write `@<user name>` to mention a person. At most 50 by default (`limit` up to 200, `offset`); a partial result says so and gives the next `offset`."
+    )]
+    pub async fn list_members(
+        &self,
+        Parameters(params): Parameters<ListMembersParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (_, tenant) = Self::caller(&context)?;
+        let (org_id, org_slug) = (tenant.org_id, tenant.slug.clone());
+        self.run_tool(&tenant, move |conn| {
+            let (limit, offset) = crate::api::clamp_pagination(&kairos_client::types::Pagination {
+                limit: params.limit,
+                offset: params.offset,
+            });
+            let (heading, members) = match (params.team.as_deref(), params.board.as_deref()) {
+                (Some(_), Some(_)) => {
+                    return Err(ApiError::validation(
+                        "Send `team` or `board`, not both. `team` lists the members of a team. \
+                         `board` lists the members of a board and their capabilities.",
+                    )
+                    .with_details(json!({ "arguments": ["team", "board"] })));
+                }
+                (Some(reference), None) => {
+                    let team = team_by_ref(conn, reference)?;
+                    (
+                        format!("# Members of the team {} ({})\n", team.slug, team.name),
+                        team_member_lines(conn, team.id)?,
+                    )
+                }
+                (None, Some(reference)) => {
+                    let board = board_by_ref(conn, reference)?;
+                    (
+                        format!(
+                            "# Members of the board {} ({})\nAn organization admin holds each \
+                             capability on each board. `list_members` with no argument gives \
+                             the role of each member.\n",
+                            board.slug, board.name
+                        ),
+                        board_member_lines(conn, &board)?,
+                    )
+                }
+                (None, None) => (
+                    format!("# Members of the organization {org_slug}\n"),
+                    org_member_lines(conn, org_id)?,
+                ),
+            };
+            Ok(render_members(&heading, members, limit, offset))
         })
         .await
     }
@@ -7259,6 +7339,196 @@ fn policy_text(board: &Board) -> Option<String> {
     }
 }
 
+/// One line of `list_members` (KAIROS-T-0556): a member and, as the scope
+/// gives it, the organization role or the capabilities on a board.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MemberLine {
+    user_name: String,
+    display_name: String,
+    email: String,
+    kind: String,
+    detail: Option<String>,
+}
+
+impl MemberLine {
+    fn of(user: &kairos_db::models::User, detail: Option<String>) -> Self {
+        Self {
+            user_name: user.user_name.clone(),
+            display_name: user.display_name.clone(),
+            email: user.email.clone(),
+            kind: user.kind.clone(),
+            detail,
+        }
+    }
+}
+
+/// The word of `list_members` for a `users.kind`.
+fn member_kind(kind: &str) -> &'static str {
+    use kairos_db::models::public::{USER_KIND_SERVICE_ACCOUNT, USER_KIND_SYSTEM};
+    match kind {
+        USER_KIND_SERVICE_ACCOUNT => "service account",
+        USER_KIND_SYSTEM => "system actor",
+        _ => "person",
+    }
+}
+
+/// The `users` rows of `ids`, by id.
+fn users_by_id(
+    conn: &mut PgConnection,
+    ids: &[Uuid],
+) -> Result<HashMap<Uuid, kairos_db::models::User>, ApiError> {
+    use kairos_db::schema::users;
+    let rows: Vec<kairos_db::models::User> = users::table
+        .filter(users::id.eq_any(ids))
+        .select(kairos_db::models::User::as_select())
+        .load(conn)
+        .map_err(ApiError::internal)?;
+    Ok(rows.into_iter().map(|user| (user.id, user)).collect())
+}
+
+/// The members of the organization, with their roles.
+fn org_member_lines(conn: &mut PgConnection, org_id: Uuid) -> Result<Vec<MemberLine>, ApiError> {
+    use kairos_db::schema::{organization_members, users};
+    let rows: Vec<(kairos_db::models::User, OrgRole)> = organization_members::table
+        .inner_join(users::table)
+        .filter(organization_members::organization_id.eq(org_id))
+        .select((
+            kairos_db::models::User::as_select(),
+            organization_members::role,
+        ))
+        .load(conn)
+        .map_err(ApiError::internal)?;
+    Ok(rows
+        .iter()
+        .map(|(user, role)| MemberLine::of(user, Some(format!("role: {role}"))))
+        .collect())
+}
+
+/// The members of a team. `team_members` is in the tenant schema and
+/// `users` in `public`, so these are two queries.
+fn team_member_lines(conn: &mut PgConnection, team_id: Uuid) -> Result<Vec<MemberLine>, ApiError> {
+    use kairos_db::schema::team_members;
+    let ids: Vec<Uuid> = team_members::table
+        .filter(team_members::team_id.eq(team_id))
+        .select(team_members::user_id)
+        .load(conn)
+        .map_err(ApiError::internal)?;
+    Ok(users_by_id(conn, &ids)?
+        .values()
+        .map(|user| MemberLine::of(user, None))
+        .collect())
+}
+
+/// The members of a board and their capabilities: the grants, the
+/// capabilities that board membership gives (KAIROS-T-0410), and those
+/// that the team of the board gives (KAIROS-T-0072). `whoami` says them
+/// the same way.
+fn board_member_lines(conn: &mut PgConnection, board: &Board) -> Result<Vec<MemberLine>, ApiError> {
+    use kairos_db::schema::{board_member_capabilities as caps, team_members, teams};
+    let grants: Vec<(Uuid, String)> = caps::table
+        .filter(caps::board_id.eq(board.id))
+        .order(caps::capability.asc())
+        .select((caps::user_id, caps::capability))
+        .load(conn)
+        .map_err(ApiError::internal)?;
+    let mut granted: BTreeMap<Uuid, Vec<String>> = BTreeMap::new();
+    for (user_id, capability) in grants {
+        granted.entry(user_id).or_default().push(capability);
+    }
+    let (team_slug, in_team): (Option<String>, Vec<Uuid>) = match board.team_id {
+        Some(team_id) => (
+            teams::table
+                .filter(teams::id.eq(team_id))
+                .filter(teams::deleted_at.is_null())
+                .select(teams::slug)
+                .first(conn)
+                .optional()
+                .map_err(ApiError::internal)?,
+            team_members::table
+                .filter(team_members::team_id.eq(team_id))
+                .select(team_members::user_id)
+                .load(conn)
+                .map_err(ApiError::internal)?,
+        ),
+        None => (None, Vec::new()),
+    };
+    // A deleted team gives no capability.
+    let in_team: Vec<Uuid> = if team_slug.is_some() {
+        in_team
+    } else {
+        Vec::new()
+    };
+    let mut ids: Vec<Uuid> = granted.keys().copied().collect();
+    ids.extend(in_team.iter().filter(|id| !granted.contains_key(*id)));
+    let users = users_by_id(conn, &ids)?;
+    let member = member_capabilities(board.board_level);
+    let team = team_capabilities(board.board_level);
+    let mut lines = Vec::new();
+    for id in ids {
+        let Some(user) = users.get(&id) else { continue };
+        let mut parts = Vec::new();
+        if let Some(capabilities) = granted.get(&id) {
+            parts.push(format!("{} (grant)", capabilities.join(", ")));
+            if !member.is_empty() {
+                parts.push(format!("{} (board member, no grant)", member.join(", ")));
+            }
+        }
+        if let Some(slug) = team_slug.as_deref()
+            && in_team.contains(&id)
+        {
+            parts.push(format!("{} (team {slug}, no grant)", team.join(", ")));
+        }
+        lines.push(MemberLine::of(
+            user,
+            Some(format!("capabilities: {}", parts.join("; "))),
+        ));
+    }
+    Ok(lines)
+}
+
+/// The text of `list_members`: the members in the order of their user
+/// names, one page of them. Pure.
+fn render_members(heading: &str, mut members: Vec<MemberLine>, limit: i64, offset: i64) -> String {
+    members.sort_by(|a, b| a.user_name.cmp(&b.user_name));
+    let total = members.len() as i64;
+    let page: Vec<&MemberLine> = members
+        .iter()
+        .skip(offset.max(0) as usize)
+        .take(limit.max(0) as usize)
+        .collect();
+    let shown = page.len() as i64;
+    let mut out = heading.to_string();
+    if offset > 0 || offset + shown < total {
+        out.push_str(&format!(
+            "Members: {total}. Shown: {shown} (limit {limit}, offset {offset})."
+        ));
+        if offset + shown < total {
+            out.push_str(&format!(
+                " Call again with offset {} for the next part.",
+                offset + shown
+            ));
+        }
+        out.push('\n');
+    }
+    if total == 0 {
+        out.push_str("(none)\n");
+    }
+    for member in page {
+        out.push_str(&format!(
+            "- {} — {} <{}> · {}",
+            member.user_name,
+            member.display_name,
+            member.email,
+            member_kind(&member.kind)
+        ));
+        if let Some(detail) = &member.detail {
+            out.push_str(&format!(" · {detail}"));
+        }
+        out.push('\n');
+    }
+    out
+}
+
 fn team_capabilities(level: BoardLevel) -> &'static [&'static str] {
     kairos_core::abac::team_capabilities(level.as_str())
 }
@@ -8465,5 +8735,72 @@ mod moves_line_tests {
             "Backlog [entry] → Todo | Todo → Active | Active [claims, WIP 3] → Todo, Completed | Completed [done]"
         );
         assert_eq!(moves_line(&[], &[]), "");
+    }
+}
+
+#[cfg(test)]
+mod render_members_tests {
+    //! KAIROS-T-0556: the text of `list_members`.
+    use super::{MemberLine, render_members};
+
+    fn member(user_name: &str, kind: &str, detail: Option<&str>) -> MemberLine {
+        MemberLine {
+            user_name: user_name.into(),
+            display_name: format!("{user_name} Doe"),
+            email: format!("{user_name}@example.test"),
+            kind: kind.into(),
+            detail: detail.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn the_members_are_in_the_order_of_the_user_names_with_the_kind() {
+        let text = render_members(
+            "# Members\n",
+            vec![
+                member("sam", "service_account", Some("role: member")),
+                member("jamie", "human", Some("role: admin")),
+                member("forge", "system", None),
+            ],
+            50,
+            0,
+        );
+        assert_eq!(
+            text,
+            "# Members\n\
+             - forge — forge Doe <forge@example.test> · system actor\n\
+             - jamie — jamie Doe <jamie@example.test> · person · role: admin\n\
+             - sam — sam Doe <sam@example.test> · service account · role: member\n"
+        );
+    }
+
+    #[test]
+    fn a_part_gives_the_count_and_the_next_offset() {
+        let members = || {
+            vec![
+                member("robin", "human", None),
+                member("sam", "human", None),
+                member("jamie", "human", None),
+            ]
+        };
+        let first = render_members("# M\n", members(), 2, 0);
+        assert!(
+            first.contains(
+                "Members: 3. Shown: 2 (limit 2, offset 0). Call again with offset 2 for the next part."
+            ),
+            "{first}"
+        );
+        assert!(
+            first.contains("- jamie") && first.contains("- robin"),
+            "{first}"
+        );
+        assert!(!first.contains("- sam"), "{first}");
+        let last = render_members("# M\n", members(), 2, 2);
+        assert!(
+            last.contains("Members: 3. Shown: 1 (limit 2, offset 2).\n"),
+            "{last}"
+        );
+        assert!(last.contains("- sam"), "{last}");
+        assert_eq!(render_members("# M\n", Vec::new(), 50, 0), "# M\n(none)\n");
     }
 }
