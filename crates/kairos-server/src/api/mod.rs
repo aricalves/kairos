@@ -966,6 +966,7 @@ pub fn map_item_error(e: ItemError) -> ApiError {
         ItemError::HistoryNotFound { item_id, version } => ApiError::not_found(format!(
             "The item {item_id} has no version {version} in its history."
         )),
+        e @ ItemError::HistoryCorrupt { .. } => ApiError::internal(e),
         ItemError::VersionConflict {
             expected_version,
             current_version,

@@ -5,7 +5,8 @@
 //! version list (newest first — `version`, `edited_by`, `edited_at`);
 //! with `?version=N`, that snapshot's full title + content. Version 1 is
 //! the create-time baseline (T-0012), so every item has history from
-//! birth.
+//! birth. A version can be a diff row (KAIROS-T-0651): the snapshot has
+//! the full text all the same.
 
 use axum::extract::{Extension, Path, State};
 use axum::routing::get;
@@ -63,12 +64,8 @@ pub(crate) async fn get_history(
                 resolve_family_item(conn, &family, &short_code, Liveness::IncludeArchived)?;
 
             if let Some(version) = query.version {
-                let snapshot: ItemHistory = history::table
-                    .filter(history::item_id.eq(item_id))
-                    .filter(history::version.eq(version))
-                    .select(ItemHistory::as_select())
-                    .first(conn)
-                    .optional()
+                // KAIROS-T-0651: a diff row gets its text from its base row.
+                let snapshot: ItemHistory = kairos_db::history::version_row(conn, item_id, version)
                     .map_err(ApiError::internal)?
                     .ok_or_else(|| {
                         ApiError::not_found(format!(

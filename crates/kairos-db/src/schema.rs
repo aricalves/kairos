@@ -364,6 +364,8 @@ diesel::table! {
         edited_by -> Uuid,
         edited_at -> Timestamptz,
         agent_key_id -> Nullable<Uuid>,
+        base_version -> Nullable<Int4>,
+        content_diff -> Nullable<Text>,
     }
 }
 

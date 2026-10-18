@@ -196,15 +196,20 @@ fn task_row(conn: &mut PgConnection, id: Uuid) -> (String, String, String, i32) 
         .expect("reading the task")
 }
 
-/// (version, title, content, editor) of the newest history row.
+/// (version, title, content, editor) of the newest history row. A diff
+/// row (KAIROS-T-0651) gets its full text.
 fn newest_history(conn: &mut PgConnection, id: Uuid) -> (i32, String, String, Uuid) {
     use kairos_db::schema::item_history::dsl;
-    dsl::item_history
+    let version: i32 = dsl::item_history
         .filter(dsl::item_id.eq(id))
         .order(dsl::version.desc())
-        .select((dsl::version, dsl::title, dsl::content, dsl::edited_by))
+        .select(dsl::version)
         .first(conn)
-        .expect("reading the history")
+        .expect("reading the history");
+    let row = kairos_db::history::version_row(conn, id, version)
+        .expect("reading the text of the version")
+        .expect("the newest version");
+    (row.version, row.title, row.content, row.edited_by)
 }
 
 // ---------------------------------------------------------------------------

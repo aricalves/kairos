@@ -1267,6 +1267,48 @@ async fn mcp_endpoint_against_live_stack() {
         "current content for reconciliation: {text}"
     );
 
+    // --- get_history with version reads a diff row (KAIROS-T-0651) ---------
+    // v3 is a full row (the diff from the short v2 text is not smaller);
+    // v4 is a diff from v3. The snapshot of v4 has its full text.
+    let long_text = |v: i32| -> String {
+        (0..40)
+            .map(|i| {
+                if i == v {
+                    format!("Line {i}: changed in v{v}.\n")
+                } else {
+                    format!("Line {i}: the kondensator log, with some words.\n")
+                }
+            })
+            .collect()
+    };
+    for v in 3..=4 {
+        let text = session
+            .call_ok(
+                "update_item",
+                json!({"short_code": task_code, "content": long_text(v), "version": v - 1}),
+            )
+            .await;
+        assert!(text.contains(&format!("to version {v}")), "{text}");
+    }
+    let text = session
+        .call_ok(
+            "get_history",
+            json!({"short_code": task_code, "version": 4}),
+        )
+        .await;
+    assert!(
+        text.starts_with(&format!("# {task_code} v4 — ")),
+        "the shape stays: {text}"
+    );
+    assert!(text.contains(&long_text(4)), "the full text of v4: {text}");
+    let text = session
+        .call_ok(
+            "get_history",
+            json!({"short_code": task_code, "version": 2}),
+        )
+        .await;
+    assert!(text.contains("recalibrate to 1.21 GW"), "{text}");
+
     // --- ABAC parity: the link rule (COLLIERY-T-0228). alice is a member,
     // and she can edit the items here. Until then `informs` was refused
     // with FORBIDDEN, because it needed the admin role, and the type rule

@@ -888,6 +888,11 @@ Past the hot window, compaction keeps the first and last snapshot per item per
 UTC calendar month and treats the intermediate versions as prune candidates.
 See [Archiving](../../explanation/archiving/).
 
+A row of `item_history` can be a diff from an older full row of the same item.
+At most 10 versions separate a row from its full row. The pass keeps the full
+row of each row that it keeps, so each kept version keeps its text. Each row in
+the archive has the full text in `content`.
+
 ### Job queue
 
 Each server runs a worker for the job queue (KAIROS-T-0373). The jobs are in

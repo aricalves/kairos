@@ -1271,6 +1271,64 @@ async fn meta_endpoints_against_live_stack() {
     );
     assert!(matches!(err, Error::NotFound { .. }), "{err}");
 
+    // KAIROS-T-0651: a long text makes diff rows. v4 is a full row (the
+    // diff from "c3" is not smaller), v5 and v6 are diffs from v4. The
+    // snapshot of each gives the full text, in the same shape.
+    let long_text = |v: i32| -> String {
+        (0..40)
+            .map(|i| {
+                if i == v {
+                    format!("Line {i}: changed in v{v}.\n")
+                } else {
+                    format!("Line {i}: the text of the task, with some words.\n")
+                }
+            })
+            .collect()
+    };
+    for v in 4..=6 {
+        alice
+            .update_task(
+                &t1_code,
+                &UpdateContentRequest {
+                    title: None,
+                    content: long_text(v),
+                    version: v - 1,
+                },
+            )
+            .await
+            .unwrap_or_else(|e| panic!("edit to v{v}: {e}"));
+    }
+    sql_query("SET search_path TO org_acme, public")
+        .execute(&mut conn)
+        .expect("pinning search_path");
+    let forms: Vec<(i32, Option<i32>)> = kairos_db::schema::item_history::table
+        .inner_join(
+            kairos_db::schema::tasks::table
+                .on(kairos_db::schema::tasks::id.eq(kairos_db::schema::item_history::item_id)),
+        )
+        .filter(kairos_db::schema::tasks::short_code.eq(&t1_code))
+        .filter(kairos_db::schema::item_history::version.ge(4))
+        .order(kairos_db::schema::item_history::version.asc())
+        .select((
+            kairos_db::schema::item_history::version,
+            kairos_db::schema::item_history::base_version,
+        ))
+        .load(&mut conn)
+        .expect("loading the history forms");
+    sql_query("SET search_path TO DEFAULT")
+        .execute(&mut conn)
+        .expect("resetting search_path");
+    assert_eq!(forms, vec![(4, None), (5, Some(4)), (6, Some(4))]);
+    for v in 4..=6 {
+        let body = bob
+            .history_snapshot(EntityKind::Task, &t1_code, v)
+            .await
+            .unwrap_or_else(|e| panic!("v{v} snapshot: {e}"));
+        assert_eq!(body.version, v);
+        assert_eq!(body.title, "Wire endpoints v2");
+        assert_eq!(body.content, long_text(v), "the text of v{v}");
+    }
+
     // ==========================================================================
     // Activity log: combinable filters + pagination (S-0005)
     // ==========================================================================

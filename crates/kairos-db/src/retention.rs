@@ -30,10 +30,16 @@
 //!
 //! The sweep never loads a table whole. It reads `item_history` a page of
 //! items at a time, in `item_id` order, and only the metadata columns
-//! `(id, item_id, version, edited_at)`; it reads the content only of the
-//! rows that it archives. It reads `activity_log` a page of rows at a time,
-//! in `(occurred_at, id)` order. Each delete names at most one batch of
-//! ids. [`SweepPaging`] sets the sizes.
+//! `(id, item_id, version, edited_at, base_version)`; it reads the content
+//! only of the rows that it archives. It reads `activity_log` a page of
+//! rows at a time, in `(occurred_at, id)` order. Each delete names at most
+//! one batch of ids. [`SweepPaging`] sets the sizes.
+//!
+//! # Diff rows (KAIROS-T-0651)
+//!
+//! A diff row needs its base full row ([`crate::history`]). The planner
+//! keeps the base of each row that it keeps, so each kept version keeps
+//! its text. The archive line of a diff row has the full text.
 //!
 //! # Archive layout
 //!
@@ -111,6 +117,10 @@ pub enum RetentionError {
     /// Listing tenants for the fleet sweep failed.
     #[error(transparent)]
     Tenant(#[from] TenantError),
+    /// The text of a version to archive cannot be read (KAIROS-T-0651);
+    /// nothing was deleted.
+    #[error(transparent)]
+    History(#[from] crate::history::HistoryError),
     /// Any other database error.
     #[error("The database gave an error: {0}.")]
     Database(#[from] DieselError),
@@ -207,7 +217,10 @@ impl SweepReport {
 // NDJSON archive rows (full column fidelity)
 // ---------------------------------------------------------------------------
 
-/// Full-fidelity `item_history` archive row (every DDL column).
+/// Full-fidelity `item_history` archive row (every DDL column). `content`
+/// is always the full text of the version, also for a diff row
+/// (KAIROS-T-0651), so each line of the archive stands alone.
+/// `base_version` and `content_diff` are as stored.
 #[derive(Serialize)]
 struct HistoryArchiveRow<'a> {
     id: Uuid,
@@ -218,6 +231,8 @@ struct HistoryArchiveRow<'a> {
     edited_by: Uuid,
     edited_at: DateTime<Utc>,
     agent_key_id: Option<Uuid>,
+    base_version: Option<i32>,
+    content_diff: Option<&'a str>,
 }
 
 impl<'a> From<&'a ItemHistory> for HistoryArchiveRow<'a> {
@@ -231,6 +246,8 @@ impl<'a> From<&'a ItemHistory> for HistoryArchiveRow<'a> {
             edited_by: row.edited_by,
             edited_at: row.edited_at,
             agent_key_id: row.agent_key_id,
+            base_version: row.base_version,
+            content_diff: row.content_diff.as_deref(),
         }
     }
 }
@@ -474,8 +491,8 @@ pub fn sweep_tenant_with(
 }
 
 /// The `item_history` columns that the planner needs: `(id, item_id,
-/// version, edited_at)`. Never the title or the content.
-type HistoryMetaRow = (Uuid, Uuid, i32, DateTime<Utc>);
+/// version, edited_at, base_version)`. Never the title or the content.
+type HistoryMetaRow = (Uuid, Uuid, i32, DateTime<Utc>, Option<i32>);
 
 /// Plan `item_history` page by page (KAIROS-T-0631): a page is the
 /// metadata of every row of up to `items_per_page` items, in `item_id`
@@ -518,19 +535,25 @@ fn plan_history_pages(
                 item_history::item_id,
                 item_history::version,
                 item_history::edited_at,
+                item_history::base_version,
             ))
             .load(conn)?;
         let ids: HashMap<(Uuid, i32), Uuid> = rows
             .iter()
-            .map(|(id, item, version, _)| ((*item, *version), *id))
+            .map(|(id, item, version, ..)| ((*item, *version), *id))
             .collect();
+        // KAIROS-T-0651: the planner keeps the base full row of each diff
+        // row that it keeps.
         let meta: Vec<HistoryRowMeta> = rows
             .iter()
-            .map(|(_, item_id, version, edited_at)| HistoryRowMeta {
-                item_id: *item_id,
-                version: *version,
-                edited_at: *edited_at,
-            })
+            .map(
+                |(_, item_id, version, edited_at, base_version)| HistoryRowMeta {
+                    item_id: *item_id,
+                    version: *version,
+                    edited_at: *edited_at,
+                    base_version: *base_version,
+                },
+            )
             .collect();
         // The plan is sorted by (item_id, version), so the ids are too.
         let page_ids: Vec<Uuid> = plan_history_compaction(&meta, now, config)
@@ -545,6 +568,9 @@ fn plan_history_pages(
                     .order((item_history::item_id.asc(), item_history::version.asc()))
                     .select(ItemHistory::as_select())
                     .load(conn)?;
+                // KAIROS-T-0651: the archive has the full text of each row.
+                // The base rows are still in the table: no delete ran yet.
+                let full = crate::history::with_full_content(conn, full)?;
                 for row in &full {
                     archive.write_line(&serde_json::to_string(&HistoryArchiveRow::from(row))?)?;
                 }

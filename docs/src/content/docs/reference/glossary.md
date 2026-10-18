@@ -878,7 +878,7 @@ different delivery board entirely and lands it in that board's entry column.
 ## version
 
 An item's content revision counter. Content edits bump it and write a history
-snapshot; edits are optimistically concurrent, so an edit based on a stale
+snapshot (stored as a diff, with a full copy at most each 10 versions); edits are optimistically concurrent, so an edit based on a stale
 version is refused with `CONFLICT` carrying the current version. Setting a
 document's editorial lifecycle is not a content edit and does not bump it.
 

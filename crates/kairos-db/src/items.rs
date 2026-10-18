@@ -49,6 +49,9 @@
 //! - [`rollback_item`] copies a historical snapshot forward as a NEW
 //!   version through the same concurrency-checked path (history is
 //!   append-only; nothing is rewritten).
+//! - A version is a full row or a diff row (KAIROS-T-0651): see
+//!   [`crate::history`]. Read the text of a version with
+//!   [`crate::history::version_row`], not from `item_history.content`.
 //!
 //! # Soft delete (KAIROS-A-0001)
 //!
@@ -84,7 +87,7 @@ use crate::models::enums::{
     ActivityAction, BucketType, Complexity, DocumentLifecycle, RelationshipType, TaskType,
     WorkClass,
 };
-use crate::models::graph::{NewActivityLogEntry, NewItemHistory};
+use crate::models::graph::NewActivityLogEntry;
 use crate::models::items::{
     Adr, Document, Initiative, NewAdr, NewDocument, NewInitiative, NewStrategy, NewTask, Strategy,
     Task,
@@ -116,6 +119,14 @@ pub enum ItemError {
     /// target does not exist).
     #[error("The item {item_id} has no version {version} in its history.")]
     HistoryNotFound { item_id: Uuid, version: i32 },
+    /// The history has the version, but its text cannot be read: a diff
+    /// row without its base, or a diff that does not fit (KAIROS-T-0651).
+    #[error("The server cannot read the version {version} of the item {item_id}. {reason}")]
+    HistoryCorrupt {
+        item_id: Uuid,
+        version: i32,
+        reason: String,
+    },
     /// No live board with this id exists.
     #[error("The board {0} does not exist.")]
     BoardNotFound(Uuid),
@@ -134,6 +145,23 @@ pub enum ItemError {
     /// Any other database error.
     #[error("The database gave an error: {0}.")]
     Database(#[from] DieselError),
+}
+
+impl From<crate::history::HistoryError> for ItemError {
+    fn from(e: crate::history::HistoryError) -> Self {
+        match e {
+            crate::history::HistoryError::Corrupt {
+                item_id,
+                version,
+                reason,
+            } => ItemError::HistoryCorrupt {
+                item_id,
+                version,
+                reason,
+            },
+            crate::history::HistoryError::Database(e) => ItemError::Database(e),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -463,7 +491,8 @@ fn log_activity(
     Ok(())
 }
 
-/// Append one `item_history` snapshot (append-only, KAIROS-A-0004).
+/// Append one `item_history` version (append-only, KAIROS-A-0004): a full
+/// row or a diff row (KAIROS-T-0651, [`crate::history::insert_version`]).
 fn insert_history(
     conn: &mut PgConnection,
     item_id: Uuid,
@@ -472,16 +501,7 @@ fn insert_history(
     content: &str,
     actor: Uuid,
 ) -> Result<(), DieselError> {
-    diesel::insert_into(crate::schema::item_history::table)
-        .values(NewItemHistory {
-            item_id,
-            version,
-            title: title.to_string(),
-            content: content.to_string(),
-            edited_by: actor,
-        })
-        .execute(conn)?;
-    Ok(())
+    crate::history::insert_version(conn, item_id, version, title, content, actor)
 }
 
 /// The short code that a new row has until [`finish_create`] gives it its
@@ -1537,18 +1557,15 @@ pub fn rollback_item(
     actor: Uuid,
 ) -> Result<i32, ItemError> {
     conn.transaction::<_, ItemError, _>(|conn| {
-        use crate::schema::item_history;
-
-        let snapshot: Option<(String, String)> = item_history::table
-            .filter(item_history::item_id.eq(item_id))
-            .filter(item_history::version.eq(to_version))
-            .select((item_history::title, item_history::content))
-            .first(conn)
-            .optional()?;
-        let (title, content) = snapshot.ok_or(ItemError::HistoryNotFound {
-            item_id,
-            version: to_version,
-        })?;
+        // KAIROS-T-0651: the text of a diff row comes from its base row.
+        let snapshot = crate::history::version_row(conn, item_id, to_version)?;
+        let (title, content) =
+            snapshot
+                .map(|row| (row.title, row.content))
+                .ok_or(ItemError::HistoryNotFound {
+                    item_id,
+                    version: to_version,
+                })?;
 
         let (current_version, ..) =
             load_live_content(conn, item_type, item_id)?.ok_or(ItemError::ItemNotFound {
