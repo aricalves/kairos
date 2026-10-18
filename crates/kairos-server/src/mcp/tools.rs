@@ -3,7 +3,7 @@
 //! (KAIROS-I-0012), `restore_item` (KAIROS-A-0020), `related_work`
 //! (KAIROS-T-0191), `propose_edge` (KAIROS-T-0192), `set_repository`
 //! (COLLIERY-T-0220), and `add_repository` and `update_repository`
-//! (COLLIERY-T-0266); later tasks added more (74 in all, in the profiles
+//! (COLLIERY-T-0266); later tasks added more (75 in all, in the profiles
 //! of `profiles.rs`, KAIROS-T-0454) — each a
 //! thin wrapper over the same `kairos-core`/`kairos-db` services the REST
 //! handlers call — through [`crate::blocking::BlockingTenantPool`], never
@@ -648,6 +648,29 @@ pub struct SetRepositoryParams {
     pub repository: Option<String>,
 }
 
+/// Parameters for `set_parent` (KAIROS-T-0572).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct SetParentParams {
+    /// The short code of the initiative or the task (e.g. "ACME-T-0012").
+    pub short_code: String,
+    /// The short code of the new parent: a strategy for an initiative, an
+    /// initiative for a task. Send null to remove the parent. Required: a
+    /// call without it changes nothing and is refused.
+    #[serde(default, deserialize_with = "present_value")]
+    pub parent: Option<Option<String>>,
+}
+
+/// `Some(value)` for an argument that is in the call, also when it is null:
+/// absent is `None` (the `#[serde(default)]`), null is `Some(None)`.
+fn present_value<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(Option::<String>::deserialize(deserializer)?))
+}
+
 /// Parameters for `set_work_class` (KAIROS-T-0433).
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -1062,8 +1085,9 @@ pub struct GrantCapabilityParams {
     pub user: String,
     /// A board capability (manage_tasks, manage_documents, manage_adrs,
     /// manage_initiatives, manage_strategies, transition_items,
-    /// configure_boards, administer_members, pages, member, or a glob: *,
-    /// manage_*, configure_*, transition_*), or manage_structure.
+    /// configure_boards, administer_members, pages, purge, member,
+    /// approve_proposals, or a glob: *, manage_*, configure_*,
+    /// transition_*), or manage_structure.
     pub capability: String,
     /// The board, by slug or UUID. A board capability needs it. For
     /// manage_structure, omit it for a grant at the organization.
@@ -1343,7 +1367,7 @@ pub struct SaveTemplateParams {
 }
 
 // ---------------------------------------------------------------------------
-// The tools (74; the list of each profile is asserted in tests/mcp.rs)
+// The tools (75; the list of each profile is asserted in tests/mcp.rs)
 // ---------------------------------------------------------------------------
 
 #[tool_router(vis = "pub(super)")]
@@ -1664,7 +1688,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "One repository: owner team and its delivery board, open task count, default branch and where it comes from, the team's `description` of how to work in it (read it before working in an unfamiliar repository), the documents and ADRs that impact it, the other ADRs of the owner team (newest first, 50 at most, none superseded; read each with `get_item` before planning), its open branches and pull requests with their items and those not linked to an item, the forge filters, and the lines read token, write-back, code index build and code index breaker (a tripped breaker stops builds until `rebuild_code_index` (admin profile)). `repository` is a slug or UUID; `include_deleted: true` adds archived documents and ADRs."
+        description = "One repository: owner team and its delivery board, open task count, default branch and where it comes from, the team's `description` of how to work in it (read it before working in an unfamiliar repository), the documents and ADRs that impact it, the other ADRs of the owner team (newest first, 50 at most, none superseded; read each with `get_item` before planning), its open branches and pull requests with their items and those not linked to an item, the forge filters, and the lines read token, write-back, code index build and code index breaker (a tripped breaker stops builds until `rebuild_code_index`). `repository` is a slug or UUID; `include_deleted: true` adds archived documents and ADRs."
     )]
     pub async fn get_repository(
         &self,
@@ -1820,7 +1844,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "The boards of the organization by level (strategy, initiative, delivery, ADR), with the columns and item counts of your delivery boards, the team of each ADR board, and the capabilities that your teams or your board memberships give you with no grant. Optional `level`."
+        description = "The boards of the organization by level (strategy, initiative, delivery, ADR), with the columns and item counts of your delivery boards, the team of each ADR board, the capabilities that your teams or your board memberships give you with no grant, and the boards where you approve edge proposals. Optional `level`."
     )]
     pub async fn my_boards(
         &self,
@@ -1975,9 +1999,23 @@ impl KairosMcp {
                 }
                 // KAIROS-T-0410: what membership of a strategy or initiative
                 // board (the `member` grant, KAIROS-T-0541) gives me.
-                let member = member_capabilities(board.board_level, &grants_on(board.id));
+                let grants = grants_on(board.id);
+                let member = member_capabilities(board.board_level, &grants);
                 if !member.is_empty() {
                     out.push_str(&format!("  member capabilities: {}\n", member.join(", ")));
+                }
+                // KAIROS-T-0659: a holder of `approve_proposals` decides the
+                // edge proposals of the items of this board.
+                if grants.iter().any(|grant| {
+                    kairos_core::abac::capability_matches(
+                        grant,
+                        kairos_core::abac::APPROVE_PROPOSALS,
+                    )
+                }) {
+                    out.push_str(
+                        "  approve_proposals: you confirm or reject the edge proposals of \
+                         its items\n",
+                    );
                 }
             }
             Ok(out)
@@ -2752,7 +2790,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Propose a `parent` or `blocks` edge between two items for a person to confirm; you cannot create or confirm it yourself. Use it when `related_work` shows a real dependency, and say why: the reason is shown to who decides. A person other than the proposer confirms or rejects it, and not with an agent key. That person must be able to edit one of the two items."
+        description = "Propose a `parent` or `blocks` edge between two items. The proposal is not an edge until someone confirms it. Use it when `related_work` shows a real dependency, and say why: the reason is shown to who decides. A holder of `approve_proposals` on the board of one of the two items confirms or rejects it, or an organization admin. The holder can be you, your agent key or a service account. The answer names the two boards."
     )]
     pub async fn propose_edge(
         &self,
@@ -2787,10 +2825,16 @@ impl KairosMcp {
                 user,
             )
             .map_err(crate::api::proposals::map_proposal_error)?;
+            // KAIROS-T-0659: the answer says who decides.
+            let boards = kairos_db::proposals::approval_boards(conn, source.id, target.id)
+                .map_err(crate::api::proposals::map_proposal_error)?;
             Ok(format!(
-                "Proposed {} -[{}]-> {} ({}). It is NOT an edge yet. A person other than the \
-                 proposer must confirm it, and not with an agent key.",
-                source.short_code, params.relationship, target.short_code, proposal.id
+                "Proposed {} -[{}]-> {} ({}). It is NOT an edge yet. {}",
+                source.short_code,
+                params.relationship,
+                target.short_code,
+                proposal.id,
+                boards.deciders()
             ))
         })
         .await
@@ -3278,6 +3322,62 @@ impl KairosMcp {
                     updated.short_code
                 ),
             })
+        })
+        .await
+    }
+
+    // KAIROS-T-0572: an item has one parent. A change of parent was an
+    // unlink and a link, two calls, with a moment of no parent between
+    // them, or of two. One tool, one transaction, by the function that
+    // PUT /api/{family}/{short_code}/parent calls.
+    #[tool(
+        description = "Set the parent of an initiative (a strategy) or a task (an initiative), or remove it with `parent: null`. An item has one parent: the new parent replaces the old one in one transaction. The same parent again changes nothing. You need to be able to edit the item, or the parent at each end that changes. A change of parent is not a move: the board rules do not apply."
+    )]
+    pub async fn set_parent(
+        &self,
+        Parameters(params): Parameters<SetParentParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let role = tenant.role;
+        self.run_tool(&tenant, move |conn| {
+            let Some(parent) = params.parent else {
+                return Err(ApiError::validation(
+                    "The argument parent is required. Send the short code of the new parent, \
+                     or null to remove the parent.",
+                )
+                .with_details(json!({ "argument": "parent" })));
+            };
+            let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
+            let (change, renamed) = crate::api::meta::relationships::change_parent(
+                conn,
+                role,
+                user,
+                (item.id, item.item_type),
+                parent.as_deref(),
+                "set_parent",
+            )?;
+            let was = change.previous_parent.as_deref().unwrap_or("none");
+            let mut out = match (&change.parent, change.changed) {
+                (Some(now), true) => format!(
+                    "Set the parent of {}: {now} (was {was}).",
+                    change.short_code
+                ),
+                (None, true) => format!(
+                    "Removed the parent of {}: the item has no parent (was {was}).",
+                    change.short_code
+                ),
+                (Some(now), false) => format!(
+                    "{} has the parent {now} already. Nothing changed.",
+                    change.short_code
+                ),
+                (None, false) => format!("{} has no parent. Nothing changed.", change.short_code),
+            };
+            if let Some(line) = renamed {
+                out.push_str(&format!("\n{line}"));
+            }
+            Ok(out)
         })
         .await
     }
@@ -4003,7 +4103,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Create an edge between two items by short code: parent, supports, informs, supersedes or blocks (type rules and cycles are checked). `blocks`: the target waits for the source; add it when a task must wait, none between parallel tasks. You need to be able to edit one of the two: you created it, or you hold `manage_<type>` on its board. `impacts` goes from a document or an ADR (`source`) to a repository (`target`: slug or UUID): it says what the item is about and gives no right. A task links to a repository with `set_repository`. `external` links any item (`source`) to a URI (`target`: http, https or mailto) with an optional `label`: an RFC, a design page or an issue that Kairos does not hold; `get_item` and `related_work` show it."
+        description = "Create an edge between two items by short code: parent, supports, informs, supersedes or blocks (type rules and cycles are checked). `blocks`: the target waits for the source; add it when a task must wait, none between parallel tasks. You need to be able to edit one of the two: you created it, or you hold `manage_<type>` on its board. `impacts` goes from a document or an ADR (`source`) to a repository (`target`: slug or UUID): it says what the item is about and gives no right. A task links to a repository with `set_repository`. An item has one parent: `set_parent` replaces it. `external` links any item (`source`) to a URI (`target`: http, https or mailto) with an optional `label`: an RFC, a design page or an issue that Kairos does not hold; `get_item` and `related_work` show it."
     )]
     pub async fn link_items(
         &self,
@@ -4240,7 +4340,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Archive an item by short code (it is not deleted): hidden from boards and default search, read-only, and `restore_item` brings it back. Needs `confirm: true`: the archive cascades to the descendants that you can edit, and the answer lists what was archived and what stayed, and why. You can archive an item you created, or with `manage_<type>` on its board. `purge_task` (admin profile) deletes a task for good."
+        description = "Archive an item by short code (it is not deleted): hidden from boards and default search, read-only, and `restore_item` brings it back. Needs `confirm: true`: the archive cascades to the descendants that you can edit, and the answer lists what was archived and what stayed, and why. You can archive an item you created, or with `manage_<type>` on its board. An agent's archive of intake is refused with AGENT_TRIAGE_OFF while the board lets a person decide. `purge_task` (admin profile) deletes an archived task for good."
     )]
     pub async fn delete_item(
         &self,
@@ -4260,6 +4360,19 @@ impl KairosMcp {
                 ));
             }
             let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
+            // KAIROS-T-0537: an archive of intake is a triage (won't do).
+            // The edit rule first, so a caller with no right gets its 403.
+            let triaged = if item.item_type == ItemType::Task {
+                crate::api::require_item_archive(conn, role, user, item.id, item.item_type)?;
+                crate::agent_triage::check(
+                    conn,
+                    &auth,
+                    item.id,
+                    crate::agent_triage::TriageMove::Cancel,
+                )?
+            } else {
+                None
+            };
             // The same archive as REST `DELETE` (COLLIERY-T-0234): the edit
             // rule for the item, and then for each descendant.
             let outcome = crate::api::cascade::archive_item(
@@ -4270,6 +4383,7 @@ impl KairosMcp {
                 item.id,
                 item.item_type,
             )?;
+            crate::agent_triage::record(conn, &auth, item.id, triaged)?;
             let mut out = format!("Archived {}.\n", outcome.root_short_code);
             if outcome.cascaded_short_codes.is_empty() {
                 out.push_str("Cascade: none.\n");
@@ -4413,7 +4527,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Delete a TASK for good, with its history, metadata, edges, forge links and claim. You cannot undo it; `delete_item` archives instead. The activity log keeps the code and title. Needs `confirm: true` and `manage_tasks` on its board. Send the current code (a retired code is not followed)."
+        description = "Delete an archived TASK for good, with its history, metadata, edges, forge links, external references, forge intake row and claim. You cannot undo it. Archive the task first with `delete_item`: a live task is refused with TASK_LIVE. The activity log keeps the code and title. Needs `confirm: true` and `purge` on its board: team membership does not give it, and organization admins have it. An agent's purge of intake is refused with AGENT_TRIAGE_OFF while the board lets a person decide. Send the current code (a retired code is not followed)."
     )]
     pub async fn purge_task(
         &self,
@@ -4421,7 +4535,6 @@ impl KairosMcp {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let (auth, tenant) = Self::caller(&context)?;
-        let user = auth.user_id;
         let slug = tenant.slug.clone();
         self.run_tool(&tenant, move |conn| {
             if !params.confirm {
@@ -4431,7 +4544,7 @@ impl KairosMcp {
                 )
                 .with_details(serde_json::json!({ "argument": "confirm" })));
             }
-            let purged = crate::api::tasks::purge(conn, &slug, &params.short_code, user)?;
+            let purged = crate::api::tasks::purge(conn, &slug, &params.short_code, &auth)?;
             Ok(format!(
                 "Deleted {} (\"{}\") for good. No restore can bring it back.",
                 purged.short_code, purged.title
@@ -4613,7 +4726,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Grant a capability to a member (`user`: user id, email, user name or service account name). A board capability (manage_tasks, manage_documents, manage_adrs, manage_initiatives, manage_strategies, transition_items, configure_boards, administer_members, pages, member, or a glob such as manage_*) needs `board` and `administer_members` there, or `manage_structure`. `manage_structure` (only an org admin grants it): with no `board`, the structure of the organization; with `board`, that board's columns, transitions, members and grants."
+        description = "Grant a capability to a member (`user`: user id, email, user name or service account name). A board capability (manage_tasks, manage_documents, manage_adrs, manage_initiatives, manage_strategies, transition_items, configure_boards, administer_members, pages, purge, member, approve_proposals, or a glob such as manage_*) needs `board` and `administer_members` there, or `manage_structure`. `manage_structure` (only an org admin grants it): with no `board`, the structure of the organization; with `board`, that board's columns, transitions, members and grants."
     )]
     pub async fn grant_capability(
         &self,
@@ -7227,8 +7340,10 @@ struct ChainRow {
 /// too, hiding live grandparents along with it.
 ///
 /// One statement (KAIROS-T-0626): a recursive CTE that takes, at each
-/// step, the oldest incoming `parent` edge whose source is in
-/// `entity_directory`, as the loop before it did, to a depth of 10.
+/// step, the incoming `parent` edge whose source is in `entity_directory`,
+/// to a depth of 10. An item has one parent since KAIROS-T-0572 (a unique
+/// index), so each step has one edge; `ORDER BY ... LIMIT 1` stays as
+/// defense-in-depth.
 fn parent_chain(conn: &mut PgConnection, item_id: Uuid) -> Result<Vec<ChainRow>, ApiError> {
     sql_query(
         "WITH RECURSIVE chain (depth, id, short_code, title, deleted_at) AS ( \
@@ -7416,6 +7531,10 @@ fn map_link_error(e: GraphError) -> ApiError {
         }
         e @ GraphError::AlreadyLinked { .. } => {
             ApiError::unprocessable("ALREADY_LINKED", e.to_string())
+        }
+        // KAIROS-T-0572: an item has one parent.
+        e @ GraphError::ParentExists { .. } => {
+            crate::api::meta::relationships::parent_exists(e, "set_parent")
         }
         e @ (GraphError::SelfLink(_) | GraphError::ItemNotFound(_)) => {
             ApiError::validation(e.to_string())

@@ -24,6 +24,9 @@
 //!   capabilities).
 //! - **Membership** — `member`, on a strategy or an initiative board only
 //!   (KAIROS-T-0541). A member edits and moves each item on the board.
+//! - **Proposals** — `approve_proposals`, on each board (KAIROS-T-0659). A
+//!   holder confirms or rejects the edge proposals of the items of the
+//!   board.
 //!
 //! The grant sent to the server is exactly the enabled set: globs travel
 //! as globs (one `manage_*` row, not five rows), and singles already
@@ -46,6 +49,7 @@ const SINGLES: &[&str] = &[
     "configure_boards",
     "administer_members",
     "member",
+    "approve_proposals",
 ];
 
 /// The editor's state as plain booleans — the pure, testable core.
@@ -120,6 +124,7 @@ pub struct EditorState {
     pub configure_boards: RwSignal<bool>,
     pub administer_members: RwSignal<bool>,
     pub member: RwSignal<bool>,
+    pub approve_proposals: RwSignal<bool>,
 }
 
 impl Default for EditorState {
@@ -151,6 +156,7 @@ impl EditorState {
             configure_boards: single("configure_boards"),
             administer_members: single("administer_members"),
             member: single("member"),
+            approve_proposals: single("approve_proposals"),
         }
     }
 
@@ -164,6 +170,7 @@ impl EditorState {
             "transition_items" => self.transition_items,
             "configure_boards" => self.configure_boards,
             "member" => self.member,
+            "approve_proposals" => self.approve_proposals,
             _ => self.administer_members,
         }
     }
@@ -307,6 +314,11 @@ pub fn CapabilityEditor(
                             label="Member: edit and move each item on this board"
                             name="member"/>
                     </Show>
+                    <Divider/>
+                    <Text bright=true size="sm" bold=true>"Proposals"</Text>
+                    <CapabilityRow checked=state.approve_proposals
+                        label="Confirm or reject the edge proposals of the items on this board"
+                        name="approve_proposals"/>
                 </Stack>
             </Show>
         </Stack>
@@ -393,6 +405,18 @@ mod tests {
         let flags = SelectionFlags::from_capabilities(&stored);
         assert!(!flags.full_access && !flags.manage_all && !flags.configure_all);
         assert_eq!(compose_selection(&flags), stored);
+    }
+
+    /// KAIROS-T-0659: the grant to decide proposals round-trips as a
+    /// single, and `manage_*` does not cover it.
+    #[test]
+    fn approve_proposals_round_trips() {
+        let stored = caps(&["manage_tasks", "approve_proposals"]);
+        let flags = SelectionFlags::from_capabilities(&stored);
+        assert_eq!(compose_selection(&flags), stored);
+        let with_glob = caps(&["manage_*", "approve_proposals"]);
+        let flags = SelectionFlags::from_capabilities(&with_glob);
+        assert_eq!(compose_selection(&flags), with_glob);
     }
 
     /// KAIROS-T-0541: the member grant round-trips as a single.

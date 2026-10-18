@@ -20,7 +20,7 @@ One `activity_log` row, as returned by `GET /api/activity`.
 | `agent_key_id` | `string`, nullable | no | The agent key (UUID) of the request that made this change, when an agent made it with the agent key of a person (KAIROS-T-0359). The actor is still the person: show "Alice (agent)". Null for a change made without an agent key, and for each change made before Kairos recorded the key. |
 | `details` | `string` | yes | Structured context, e.g. `"column:Draft->Active"`. |
 | `entity_archived_at` | `string`, nullable | no | When the item acted on was archived (RFC 3339). Null for a live item, and when `entity_short_code` is null. |
-| `entity_id` | `string`, nullable | no | The item acted on (UUID). Null for a relationship between two items: `details` names the two. For an `impacts` link it is the document or the ADR of the link (COLLIERY-T-0269). |
+| `entity_id` | `string`, nullable | no | The item acted on (UUID). For a relationship between two items it is the source of the edge, and `details` names the two (KAIROS-T-0638; null in older rows whose source is not known). For an `impacts` link it is the document or the ADR of the link (COLLIERY-T-0269). |
 | `entity_short_code` | `string`, nullable | no | The short code of the item acted on (COLLIERY-T-0262), live or archived. Null when the entry is not about an item (a board, a team, a member), and when Kairos has no item with the id. |
 | `entity_title` | `string`, nullable | no | The title of the item acted on, as it is now. Null when `entity_short_code` is null. |
 | `entity_type` | `string`, nullable | no | `strategy|initiative|task|document|adr`. Null when `entity_id` is null. |
@@ -670,6 +670,7 @@ Body of `POST /api/initiatives`.
 | `column_id` | `string`, nullable | no | The entry column of the board (UUID), the default. An initiative starts in Discovery (KAIROS-T-0643): a different column is a 422 `VALIDATION` on `column_id`. A move takes it on. |
 | `complexity` | `string`, nullable | no | T-shirt sizing (`xs|s|m|l|xl`). |
 | `content` | `string` | no | Markdown content; defaults to empty. |
+| `parent` | `string`, nullable | no | The short code of the parent strategy (KAIROS-T-0572). The server writes the `parent` edge in the transaction of the create: a refused parent leaves no initiative. A retired code finds its item. |
 | `title` | `string` | yes |  |
 
 The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
@@ -796,6 +797,7 @@ Body of `POST /api/tasks`.
 | `column_id` | `string`, nullable | no | Column to place it in (UUID); defaults to the board's first column. |
 | `content` | `string` | no | Markdown content; defaults to empty. |
 | `from_team` | `string`, nullable | no | The team that sends the task, by slug or UUID (KAIROS-T-0426). When it is not the team of the board, the task is a request whoever sends it: entry column, support lane. Omit it for today's rule. Kairos does not keep it on the task: name the sending team in the body. |
+| `parent` | `string`, nullable | no | The short code of the parent initiative (KAIROS-T-0572). The server writes the `parent` edge in the transaction of the create: a refused parent leaves no task. A retired code finds its item. In a claims column, `parent_gate` applies (KAIROS-A-0040). |
 | `repository` | `string`, nullable | no | The repository the task links to (slug or UUID, KAIROS-T-0104). An optional link that says where the code is. It can be any live repository, of any team, and it does not choose the board (COLLIERY-T-0217, COLLIERY-A-0023). `repository` is THE reference field name on the wire (KAIROS-T-0115). The old name `repository_id` is refused, as each field that the route does not know (COLLIERY-T-0259). |
 | `task_type` | `string`, nullable | no | `task|bug|tech_debt|support`; defaults to `task`. |
 | `team_id` | `string`, nullable | no | A team (UUID). It names the team whose delivery board gets the task, when no board is named (COLLIERY-T-0217); a team without exactly one live delivery board is a 422. With a board it must be that board's team (COLLIERY-T-0216): any other team is a 422, never silently ignored. The BOARD decides the team of the task in both cases. |
@@ -2504,6 +2506,27 @@ Body of `PUT /api/org/read-tokens/{host}` (KAIROS-T-0431, an organization admin)
 
 The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
 
+## SetParentRequest
+
+Body of `PUT /api/{entity_type}/{short_code}/parent` (KAIROS-T-0572): set the parent of an initiative or a task, or remove it. An item has one parent, and the new edge replaces the old one in one transaction. `parent` is required: a short code, or `null` to remove the parent. A body without it is a 422, so that an empty body never removes a parent.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `parent` | `string`, nullable | yes | The short code of the new parent: a strategy for an initiative, an initiative for a task. A retired code finds its item. `null` removes the parent. |
+
+The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
+
+## SetParentResponse
+
+Response of `PUT /api/{entity_type}/{short_code}/parent` (KAIROS-T-0572).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `changed` | `boolean` | yes | `false` when the item had this parent already (or none, for `null`). Kairos then writes nothing. |
+| `parent` | `string`, nullable | no | The parent now, by short code; `null` when the item has none. |
+| `previous_parent` | `string`, nullable | no | The parent before the write, by short code; `null` when it had none. |
+| `short_code` | `string` | yes | The short code of the item. |
+
 ## SetPasswordRequest
 
 `PUT /api/local-accounts/{user_id}/password` body.
@@ -3243,9 +3266,10 @@ A webhook target of a board: a URL. Kairos sends signed deliveries to it. The se
 | `created_by` | `string` | yes |  |
 | `disabled_at` | `string`, nullable | no |  |
 | `disabled_reason` | `string`, nullable | no |  |
-| `enabled` | `boolean` | yes | False: Kairos turned the target off after failed tries, and sends nothing to it until a board manager turns it on again. |
+| `enabled` | `boolean` | yes | False: Kairos turned the target off after failed tries, and sends nothing to it until a board manager turns it on again. Then Kairos sends the deliveries that it skipped (KAIROS-T-0577). |
 | `id` | `string` | yes |  |
 | `name` | `string` | yes |  |
+| `redelivered` | `integer`, nullable | no | Only in the answer of `enable` and `redeliver` (KAIROS-T-0577): the number of `skipped` deliveries that Kairos queued again. |
 | `url` | `string` | yes | The URL. A person who cannot configure the board gets it with no query and no fragment. |
 
 ## WorkBlocker

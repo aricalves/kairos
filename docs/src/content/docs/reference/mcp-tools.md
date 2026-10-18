@@ -3,8 +3,8 @@ title: "MCP tools"
 ---
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-seventy-four tools. A drift gate in the test suite
-asserts that `tools/list` returns these seventy-four and no others. The same
+seventy-five tools. A drift gate in the test suite
+asserts that `tools/list` returns these seventy-five and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -22,12 +22,15 @@ organization.
 
 | URL | Profile | Tools |
 |---|---|---|
-| `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory, the members, claims, notifications, the scales and templates, team pages to read: 43 tools. |
-| `/mcp?profile=admin` | admin | Teams, boards, columns and transitions, grants, metadata definitions and templates, dispatch rules and agent triage, the writes of team pages, org read tokens, delete and rebuild of repositories, board flow, purge: the other 31 tools. |
+| `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory and code index builds, the members, claims, notifications, the scales and templates, board flow, dispatch rules and team pages to read: 47 tools. |
+| `/mcp?profile=admin` | admin | Teams, boards, columns and transitions, grants, metadata definitions and templates, the writes of dispatch rules, agent triage, the writes of team pages, org read tokens, the delete of repositories, purge: the other 28 tools. |
 | `/mcp?profile=all` | all | Each tool. |
 
-You can call each tool under each profile: the profile changes the list,
-not the rights. Kairos refuses an unknown profile, and the refusal names it.
+The profile changes the list, not the rights. Kairos runs a call to a tool
+that the profile does not list, with the usual checks of the rights. A client
+such as Claude Code calls only the tools that `tools/list` gives. Thus a
+Claude Code session needs a server with the admin profile for an admin tool.
+Kairos refuses an unknown profile, and the refusal names it.
 
 The work tools:
 
@@ -36,7 +39,7 @@ The work tools:
   `transition_item`, `move_item`, `append_note`, `promote_note`,
   `set_lifecycle`, `set_state`, `set_metadata`;
 - links and fields: `link_items`, `unlink_items`, `propose_edge`,
-  `set_repository`, `set_work_class`, `set_team`, `clear_team`;
+  `set_repository`, `set_parent`, `set_work_class`, `set_team`, `clear_team`;
 - the end of an item: `cancel_item`, `reopen_item`, `delete_item`,
   `restore_item`, `archive_completed`;
 - repositories: `list_repositories`, `get_repository`, `add_repository`,
@@ -45,7 +48,10 @@ The work tools:
   `get_events`, `mark_events_read`;
 - people: `list_members`;
 - scales and templates: `list_metadata_definitions`, `list_templates`;
-- team pages, to read: `team_pages`.
+- team pages, to read: `team_pages`;
+- the flow of a board and its dispatch rules, to read: `board_flow`,
+  `list_dispatch_rules`;
+- a code index build: `rebuild_code_index`.
 
 To administer from Claude Code, add a second server with the admin profile:
 
@@ -97,6 +103,7 @@ Codes an agent can receive, and what each means.
 | `NO_OWNER` | A `release_item` of a strategy or an initiative that has no owner. |
 | `NOT_BOARD_MEMBER` | A `hand_off_item` of a strategy or an initiative to a person who is not a member of the board of the item. |
 | `TASK_DONE` | A `cancel_item` or a `move_item` of a task that is in a done column. Reopen the task first: `reopen_item`. |
+| `TASK_LIVE` | A `purge_task` of a task that is not archived. Archive the task first: `delete_item`. |
 | `TASK_NOT_DONE` | A `reopen_item` of a task that is not in a done column. |
 | `NO_OPEN_COLUMN` | A `reopen_item` of a task whose board has only done columns. |
 | `NO_DONE_COLUMN` | A `cancel_item` of a task whose board has no done column. |
@@ -1249,6 +1256,35 @@ Refuses: `NOT_FOUND` for an unknown short code or an archived task.
 `VALIDATION` when the item is not a task, and for an unknown `repository`.
 `FORBIDDEN` when the edit rule refuses the caller.
 
+### `set_parent`
+
+Sets the parent of an initiative or a task, or removes it (KAIROS-T-0572).
+An item has one parent. The new parent replaces the old one in one
+transaction, so no reader sees two parents or none.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `short_code` | string | yes | — | The short code of the initiative or the task. |
+| `parent` | string or null | yes | — | The short code of the new parent: a strategy for an initiative, an initiative for a task. Send null to remove the parent. A retired code finds its item. |
+
+The [link rule](../capabilities/#who-can-write-relationships) applies to each
+edge that changes. The caller can edit the item, or the parent at that end.
+So the creator of a task can move it to a different initiative.
+
+The same parent again changes nothing, and the answer says so. A change of
+parent is not a move: the board rules and `parent_gate` do not apply. The
+`get_item` answer then shows the new parent chain.
+
+The tool refuses with these codes:
+
+| Code | When |
+|---|---|
+| `VALIDATION` | The call has no `parent` argument. The item is a strategy, a document or an ADR: they have no parent. The parent is unknown or archived. |
+| `NOT_FOUND` | The item is unknown or archived, or the call names it by a retired code. |
+| `RELATIONSHIP_RULE` | The parent has the wrong type. |
+| `FORBIDDEN` | The link rule refuses the caller. |
+| `PARENT_EXISTS` | A write at the same time gave the item a parent. |
+
 ### `set_work_class`
 
 Changes the lane of a task: planned or support. Moving a support request to
@@ -1751,6 +1787,7 @@ The tool refuses with these codes:
 | `RELATIONSHIP_RULE` | That relationship is not possible between those two item types. |
 | `CYCLE_DETECTED` | The edge makes a cycle. |
 | `ALREADY_LINKED` | The edge is there. |
+| `PARENT_EXISTS` | A `parent` edge to an item that has a different parent. An item has one parent (KAIROS-T-0572). `details` names the item and its parent. Use [`set_parent`](#set_parent) to change the parent. |
 
 #### The relationship `external`
 
@@ -1911,8 +1948,8 @@ Returns a plain note, not an error, when the deployment has embeddings disabled.
 
 ### `propose_edge`
 
-Proposes a `parent` or `blocks` edge for a **human** to confirm. It does not
-create the edge.
+Proposes a `parent` or `blocks` edge for a holder of `approve_proposals` to
+confirm. It does not create the edge.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
@@ -1921,25 +1958,24 @@ create the edge.
 | `relationship` | string | yes | — | `parent` or `blocks`. Nothing else may be proposed. |
 | `why` | string | yes | — | Your reasoning, in your own words. Kept verbatim and shown to whoever decides. |
 
-There is deliberately **no confirm or reject tool**. Deciding is a person's, and
-an agent cannot rule on its own suggestion — a wrong `parent` edge re-parents
-work onto a board that reports to people who will believe it, and nobody
-re-reads an edge once it exists.
+There is deliberately **no confirm or reject tool**. A decision is a separate
+step, in the web interface or over REST. A wrong `parent` edge moves work to a
+board that reports to people who believe it. Nobody reads an edge again once it
+exists.
 
 The proposal appears on both items in the interface, with your reasoning, for
 someone to accept or decline. Confirming creates the real edge, and is refused by
 the same cycle and rule checks that refuse any other edge.
 
 To propose, a caller needs no capability: a proposal writes no edge and changes
-no item. The confirm takes the
-[link rule](../capabilities/#who-can-write-relationships). The person who
-confirms must be able to edit the item at one end. A refused confirm leaves the
-proposal pending.
+no item.
 
-A person other than the proposer confirms or rejects. The server refuses
-a decision with an agent key and a decision by the proposer
-(`PERSON_DECIDES`). An agent key proposes as its person. So a different
-person decides the proposals of your agent.
+A holder of `approve_proposals` on the board of the source or of the target
+confirms or rejects. An organization admin can also decide. The agent key of a
+holder, a service account that holds the grant, and the proposer can decide.
+The answer of `propose_edge` names the two boards. A caller with no grant gets
+403 `FORBIDDEN`, and the proposal stays pending. See
+[The decision of an edge proposal](../capabilities/#the-decision-of-an-edge-proposal).
 
 Refuses: `VALIDATION` for a relationship outside `parent`/`blocks`;
 `NOT_FOUND` for a short code that names no live item; `CONFLICT` when an
@@ -2002,7 +2038,9 @@ The output has no such lines when the archive reached each descendant.
 Refuses: `VALIDATION` when `confirm` is `false` — checked before the short code
 is looked up, so such a call never reports an unknown item; `NOT_FOUND` for an
 unknown short code or an already-archived item; `FORBIDDEN` when the
-[edit rule](../capabilities/#the-edit-rule) refuses the caller. A call with no `confirm` gets `VALIDATION`.
+[edit rule](../capabilities/#the-edit-rule) refuses the caller;
+`AGENT_TRIAGE_OFF` for an agent's archive of intake while the board lets a
+person decide (KAIROS-T-0537). A call with no `confirm` gets `VALIDATION`.
 The text names the argument, and `details.argument` is `confirm`.
 
 ### `restore_item`
@@ -2057,30 +2095,41 @@ that is not a delivery board.
 
 ### `purge_task`
 
-Deletes a task for good. **You cannot undo this.** No restore brings the task
-back. To archive a task, which a restore can undo, use `delete_item`.
+Deletes an archived task for good. **You cannot undo this.** No restore brings
+the task back. Archive the task first with `delete_item`, which a restore can
+undo.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `short_code` | string | yes | — | The task's current short code. A retired code is not followed. |
 | `confirm` | boolean | yes | — | Must be `true`. |
 
-The task can be live or archived. The purge removes these rows of the task:
+The task must be archived (KAIROS-T-0570). The purge removes these rows of the
+task:
 
 - the task, its content history and its metadata values;
 - its edges and its edge proposals;
-- its forge links, its embeddings and its retired codes;
+- its forge links, its external references and its embeddings;
+- its retired codes and its forge intake row. Thus a new import of the issue
+  makes a task again;
 - its claim and its cancel mark.
 
 The items at the other end of the edges stay. The rows of the activity log
 about the task stay. The purge adds one row `purge` with the code and the
 title: `short_code:ACME-T-0012 title:Old task`.
 
-Needs `manage_tasks` on the board of the task: board managers and organization
-admins only. The creator of the task gets no right here.
+Needs the capability `purge` on the board of the task. Team membership does not
+give it, and `manage_tasks` is not enough. Organization admins have it. The
+creator of the task gets no right here.
 
-Refuses: `VALIDATION` when `confirm` is `false`; `NOT_FOUND` for an unknown
-short code; `FORBIDDEN` without `manage_tasks`.
+Refuses:
+
+- `VALIDATION` when `confirm` is `false`.
+- `NOT_FOUND` for an unknown short code.
+- `FORBIDDEN` without `purge`.
+- `TASK_LIVE` for a live task.
+- `AGENT_TRIAGE_OFF` for an agent's purge of intake while the board lets a
+  person decide (KAIROS-T-0537).
 
 ## The structure of the organization
 
@@ -2636,10 +2685,12 @@ another column.
 
 An agent is a caller with an agent key, or a service account. Intake is a
 task in the support lane in the entry column of its board. Its triage is
-`set_work_class` to planned, `transition_item` out of the entry column,
-`move_item` to another board, or `cancel_item`. With the setting off (the
-default), Kairos refuses an agent's triage with `AGENT_TRIAGE_OFF`. The agent
-then writes its proposal with `append_note`: planned backlog, work now,
+`set_work_class` to planned, `transition_item` out of the entry column, or
+`move_item` to another board. A `cancel_item`, a `delete_item` and a
+`purge_task` are triage too (KAIROS-T-0537).
+
+With the setting off (the default), Kairos refuses an agent's triage with
+`AGENT_TRIAGE_OFF`. The agent then writes its proposal with `append_note`: planned backlog, work now,
 another team, or won't do, and why. A person moves the task.
 
 Once a person has triaged the task out of the entry column, an agent moves it

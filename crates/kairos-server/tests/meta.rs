@@ -199,6 +199,7 @@ async fn meta_endpoints_against_live_stack() {
             content: "scope".into(),
             complexity: None,
             bucket_type: None,
+            parent: None,
         })
         .await
         .expect("creating initiative");
@@ -217,6 +218,7 @@ async fn meta_endpoints_against_live_stack() {
                 work_class: None,
                 team_id: None,
                 from_team: None,
+                parent: None,
             })
             .await
             .expect("creating task");
@@ -1301,25 +1303,26 @@ async fn meta_endpoints_against_live_stack() {
         .expect("entity_id filter");
     // KAIROS-T-0359: the move into Active claims the task and the move out
     // of it releases the claim, so the walk adds a claim and a release row.
-    assert_eq!(body.total, 6, "{body:?}");
+    // KAIROS-T-0638: t1 is the source of the blocks edge to t2, so the add
+    // and the remove of that edge are rows of t1 too.
+    assert_eq!(body.total, 8, "{body:?}");
     let actions: Vec<&str> = body.items.iter().map(|i| i.action.as_str()).collect();
+    assert_eq!(actions[0], "relationship_remove", "{body:?}");
+    assert_eq!(actions[6..], ["relationship_add", "create"], "{body:?}");
+    // A claim and its transition share one time, so their order is free.
+    let mut walk = actions[1..6].to_vec();
+    walk.sort_unstable();
     assert_eq!(
-        actions,
-        [
-            "transition",
-            "release",
-            "transition",
-            "claim",
-            "transition",
-            "create"
-        ],
+        walk,
+        ["claim", "release", "transition", "transition", "transition"],
         "{body:?}"
     );
-    assert_eq!(body.items[5].entity_type.as_deref(), Some("task"));
+    assert_eq!(body.items[7].entity_type.as_deref(), Some("task"));
 
     // action filter: the blocks link (svc), and the parent link, the
     // informs link (COLLIERY-T-0228: a member writes it now) and the two
-    // document supports edges (alice) are relationship_add rows.
+    // document supports edges (alice) are relationship_add rows. Each names
+    // the source of its edge (KAIROS-T-0638).
     let body = bob
         .activity(&ActivityQuery {
             action: Some("relationship_add".into()),
@@ -1331,7 +1334,7 @@ async fn meta_endpoints_against_live_stack() {
     assert!(
         body.items
             .iter()
-            .all(|item| item.entity_id.is_none() && item.details.starts_with("relationship:")),
+            .all(|item| item.entity_id.is_some() && item.details.starts_with("relationship:")),
         "{body:?}"
     );
 

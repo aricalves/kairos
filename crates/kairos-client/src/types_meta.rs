@@ -159,6 +159,47 @@ pub struct CreateRelationshipRequest {
     pub relationship: String,
 }
 
+/// Body of `PUT /api/{entity_type}/{short_code}/parent` (KAIROS-T-0572):
+/// set the parent of an initiative or a task, or remove it. An item has
+/// one parent, and the new edge replaces the old one in one transaction.
+///
+/// `parent` is required: a short code, or `null` to remove the parent. A
+/// body without it is a 422, so that an empty body never removes a parent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetParentRequest {
+    /// The short code of the new parent: a strategy for an initiative, an
+    /// initiative for a task. A retired code finds its item. `null`
+    /// removes the parent.
+    #[serde(deserialize_with = "present_or_null")]
+    #[schema(required = true, nullable)]
+    pub parent: Option<String>,
+}
+
+/// A field that must be in the body, with a value or `null`. Serde reads a
+/// missing `Option` as `None`; with `deserialize_with` and no `default`,
+/// a missing field is an error.
+fn present_or_null<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer)
+}
+
+/// Response of `PUT /api/{entity_type}/{short_code}/parent` (KAIROS-T-0572).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SetParentResponse {
+    /// The short code of the item.
+    pub short_code: String,
+    /// The parent now, by short code; `null` when the item has none.
+    pub parent: Option<String>,
+    /// The parent before the write, by short code; `null` when it had none.
+    pub previous_parent: Option<String>,
+    /// `false` when the item had this parent already (or none, for
+    /// `null`). Kairos then writes nothing.
+    pub changed: bool,
+}
+
 /// A relationship edge, as returned by `POST /api/relationships`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Relationship {
@@ -476,9 +517,11 @@ pub struct ActivityEntry {
     /// the action `update` (COLLIERY-T-0265). `claim`, `hand_off` and
     /// `release` are changes to the claim of a task (KAIROS-T-0359).
     pub action: String,
-    /// The item acted on (UUID). Null for a relationship between two
-    /// items: `details` names the two. For an `impacts` link it is the
-    /// document or the ADR of the link (COLLIERY-T-0269).
+    /// The item acted on (UUID). For a relationship between two items it
+    /// is the source of the edge, and `details` names the two
+    /// (KAIROS-T-0638; null in older rows whose source is not known). For
+    /// an `impacts` link it is the document or the ADR of the link
+    /// (COLLIERY-T-0269).
     pub entity_id: Option<String>,
     /// `strategy|initiative|task|document|adr`. Null when `entity_id` is
     /// null.

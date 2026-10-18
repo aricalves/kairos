@@ -317,8 +317,8 @@ listings, and remains readable and restorable. It [cascades](#cascade) through
 it for one item; archived descendants stay archived. The GUI calls this
 Archive.
 
-**The delete for good** (a [purge](#purge)). Only a task, and only by a board
-manager. The GUI calls this Delete.
+**The delete for good** (a [purge](#purge)). Only an archived task, and only by
+a holder of `purge`. The GUI calls this Delete.
 
 ## delivery board
 
@@ -517,9 +517,12 @@ history. Also called a *work item*.
 The rule that decides who can write a [relationship](#relationship). A
 principal can create or remove an edge when the principal can edit the item at
 one end. The [edit rule](#edit-rule) decides each end. The rule is the same
-for each relationship type. The confirm of an edge proposal writes an edge, so
-the rule applies to the confirm also. See
+for each relationship type. See
 [Capabilities](../capabilities/#who-can-write-relationships).
+
+The confirm of an edge proposal does not take this rule. The grant
+`approve_proposals` on the board of one end decides it: see
+[Capabilities](../capabilities/#the-decision-of-an-edge-proposal).
 
 The `supports` edge of a document is the one exception: the principal must be
 able to edit the document.
@@ -597,12 +600,15 @@ The delete of a task for good (KAIROS-T-0362): REST
 `POST /api/tasks/{code}/purge`, MCP `purge_task`, CLI `kairos tasks purge`, and
 the GUI button Delete. Nothing can bring the task back.
 
-The purge removes the
-task, its history, its metadata, its edges, its forge links and its claim. The
-activity log keeps its rows, and gets one row `purge` with the code and the
-title. To purge a task, a principal needs `manage_tasks` on the board of the
-task. A board manager and an organization admin have it. The other destructive
-operation is dropping a tenant.
+Archive the task first. Kairos refuses a live task with `TASK_LIVE`
+(KAIROS-T-0570). The purge removes the task, its history, its metadata, its
+edges and its forge links. It also removes its external references, its forge
+intake row and its claim. The activity log keeps its rows, and gets one row
+`purge` with the code and the title.
+
+To purge a task, a principal needs the capability `purge` on the board of the
+task. Team membership does not give it. An organization admin has it. The other
+destructive operation is dropping a tenant.
 
 ## put away
 

@@ -79,7 +79,8 @@ You can do the same with REST: `GET` and `PUT /api/me/notification-settings`.
 
 ## How long a notification stays
 
-An unread notification stays until you read it. Kairos deletes a read
+Kairos deletes an unread notification after
+`KAIROS_NOTIFICATIONS_UNREAD_DAYS` days (180). It deletes a read
 notification after `KAIROS_NOTIFICATIONS_READ_DAYS` days (30). See
 [Configuration](../../reference/configuration/#retention).
 

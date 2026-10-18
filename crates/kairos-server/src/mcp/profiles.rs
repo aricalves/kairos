@@ -5,15 +5,16 @@
 //! profile lists the tools of the daily work. `?profile=admin` lists the
 //! administration tools, and `?profile=all` lists each tool.
 //!
-//! Only the list changes: a tool of each profile can be called under each
-//! profile, so a caller that knows a name does not break.
+//! Only the list changes. The server runs a call to a tool that the profile
+//! does not list, so a caller that knows a name does not break. A client
+//! such as Claude Code calls only the tools of the list (KAIROS-T-0559).
 
 use axum::http::request::Parts;
 use rmcp::model::Tool;
 
 /// The tools of the daily work: the default profile. Picked from the calls
 /// of the agents (2026-10-14): these make nearly all of them.
-pub(super) const WORK: [&str; 43] = [
+pub(super) const WORK: [&str; 47] = [
     "whoami",
     "my_boards",
     // KAIROS-T-0489: the work of the person, in two lanes.
@@ -40,6 +41,8 @@ pub(super) const WORK: [&str; 43] = [
     "set_state",
     "set_metadata",
     "set_repository",
+    // KAIROS-T-0572: one parent per item, changed in one call.
+    "set_parent",
     "set_work_class",
     "set_team",
     "clear_team",
@@ -70,6 +73,11 @@ pub(super) const WORK: [&str; 43] = [
     // A board session reads the charter of a team: its scope, and how a
     // request reaches it. The four writes of team pages stay admin.
     "team_pages",
+    // KAIROS-T-0559: two reads and a build request that a task worker
+    // needs. `get_repository` names `rebuild_code_index`.
+    "board_flow",
+    "list_dispatch_rules",
+    "rebuild_code_index",
 ];
 
 /// A profile of `tools/list`.

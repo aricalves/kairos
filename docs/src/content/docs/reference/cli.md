@@ -274,6 +274,7 @@ differ.
 | `cancel` | no | no | yes | no | no |
 | `reopen` | no | no | yes | no | no |
 | `lane` | no | no | yes | no | no |
+| `set-parent` | no | yes | yes | no | no |
 | `lifecycle` | no | no | no | yes | no |
 | `archive` (alias `delete`) | yes | yes | yes | yes | yes |
 | `purge` | no | no | yes | no | no |
@@ -434,11 +435,13 @@ Options specific to one noun:
 | `strategies` | `--hypothesis <HYPOTHESIS>` | string | none | The strategy's hypothesis. |
 | `initiatives` | `--complexity <COMPLEXITY>` | `xs` \| `s` \| `m` \| `l` \| `xl` | none | T-shirt sizing. |
 | `initiatives` | `--bucket-type <KIND>` | `tech_debt` \| `bug` \| `ad_hoc` | none | Marks the initiative as a bucket of this kind. |
+| `initiatives` | `--parent <STRATEGY>` | short code | none | The parent strategy. Kairos writes the initiative and the `parent` edge in one transaction: a refused parent leaves no initiative (KAIROS-T-0572). |
 | `tasks` | `--type <TASK_TYPE>` | `task` \| `bug` \| `tech_debt` \| `support` | `task` | Task type. |
 | `tasks` | `--work-class <WORK_CLASS>` | `planned` \| `support` | `support` for support-type tasks, `planned` otherwise; always `support` on a board that the caller does not manage | Planned/Support lane. On a board that the caller does not manage, `planned` is refused with 403. |
 | `tasks` | `--from-team <TEAM>` | slug or UUID | none | The team that sends the task. When it is not the team of the board, the task is a request: entry column, support lane, also for a manager of the board. With it, `planned` and a column other than the entry column are refused with 422. Kairos does not keep it on the task: name the sending team in the body. |
 | `tasks` | `--team <TEAM_ID>` | UUID | none | Team. Without `--board`, the task goes to the delivery board of this team. With `--board`, it must be the team of that board. |
 | `tasks` | `--repo <REPOSITORY>` | slug or UUID | none | Repository the task links to. It can be any repository, of any team. It does not choose the board. |
+| `tasks` | `--parent <INITIATIVE>` | short code | none | The parent initiative. Kairos writes the task and the `parent` edge in one transaction: a refused parent leaves no task (KAIROS-T-0572). In a claims column, `parent_gate` applies. |
 | `documents` | `--template <TEMPLATE_ID>` | UUID | none | Template to stamp content and metadata defaults from. |
 | `adrs` | `--decision-maker <DECISION_MAKER>` | string | none | Decision maker. |
 | `adrs` | `--decision-date <DATE>` | `YYYY-MM-DD` | none | Decision date. |
@@ -670,6 +673,29 @@ after the call:
 ACME-T-0001 is in the planned lane.
 ```
 
+### `initiatives set-parent`, `tasks set-parent`
+
+```
+kairos initiatives set-parent <SHORT_CODE> (<PARENT> | --remove) [OPTIONS]
+kairos tasks set-parent <SHORT_CODE> (<PARENT> | --remove) [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<SHORT_CODE>` | string | required | The short code of the initiative or the task. |
+| `<PARENT>` | string | required unless `--remove` | The new parent: a strategy for an initiative, an initiative for a task. |
+| `--remove` | flag | off | Remove the parent. |
+
+An item has one parent (KAIROS-T-0572). The new parent replaces the old one
+in one transaction. The link rule applies to each edge that changes: you can
+edit the item, or the parent at that end. A parent that the item has already
+changes nothing. A change of parent is not a move, so `parent_gate` does not
+apply. The command prints the parent after the call:
+
+```text
+The parent of ACME-T-0001 is ACME-I-0002 (was ACME-I-0001).
+```
+
 ### `state`
 
 ```
@@ -788,13 +814,15 @@ kairos tasks purge <SHORT_CODE> --confirm [OPTIONS]
 
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
-| `<SHORT_CODE>` | string | required | The task's current short code. |
+| `<SHORT_CODE>` | string | required | The current short code of an archived task. |
 | `--confirm` | flag | off | Required for the purge to happen. Without it, nothing is deleted. |
 
-Deletes a task for good (a [purge](../glossary/#purge)). **You cannot undo
-this.** No `restore` brings the task back. The task can be live or archived.
-You need `manage_tasks` on the board of the task. To keep a copy that you can
-restore, use `tasks archive`.
+Deletes an archived task for good (a [purge](../glossary/#purge)). **You
+cannot undo this.** No `restore` brings the task back. Archive the task first
+with `tasks archive`. Kairos refuses a live task with `TASK_LIVE`.
+
+You need the `purge` capability on the board of the task. Team membership does
+not give it, and an organization admin has it.
 
 ### `<noun> restore`
 
@@ -1119,6 +1147,7 @@ kairos boards dispatch list <BOARD> [OPTIONS]
 kairos boards dispatch add-target <BOARD> --name <NAME> --hook-url <URL> [OPTIONS]
 kairos boards dispatch remove-target <BOARD> <TARGET> --confirm [OPTIONS]
 kairos boards dispatch enable-target <BOARD> <TARGET> [OPTIONS]
+kairos boards dispatch redeliver <BOARD> <TARGET> [--since <TIME>] [OPTIONS]
 kairos boards dispatch test-target <BOARD> <TARGET> [OPTIONS]
 kairos boards dispatch add-rule <BOARD> [--trigger entered_column|unblocked] [--column <COLUMN>] --target <TARGET> [--task-type <TYPE>] [--metadata <SLUG=VALUE>] [--repository <REPO>] [OPTIONS]
 kairos boards dispatch remove-rule <BOARD> <RULE> --confirm [OPTIONS]
@@ -1136,7 +1165,8 @@ Kairos sends one signed delivery to the target. See
 | `list` | a place on the board | Shows the rules and the targets of the board. |
 | `add-target` | `configure_boards` | Makes a target. The command shows its secret one time. |
 | `remove-target` | `configure_boards` | Removes a target, with its rules and its log. It needs `--confirm`. |
-| `enable-target` | `configure_boards` | Turns on a target that Kairos turned off. |
+| `enable-target` | `configure_boards` | Turns on a target that Kairos turned off. Kairos sends the skipped deliveries of the last 30 days again. |
+| `redeliver` | `configure_boards` | Sends the skipped deliveries of a target that is on again, oldest first. `--since` sends only the events at or after that time (RFC 3339). |
 | `test-target` | `configure_boards` | Sends the event `ping` to a target. |
 | `add-rule` | `configure_boards` | Makes a rule. |
 | `remove-rule` | `configure_boards` | Removes a rule. Its deliveries stay in the log. It needs `--confirm`. |

@@ -87,8 +87,8 @@ const TENANT: &str = "acme";
 
 /// How many tools `tools/list` returns, and the word the reference pages
 /// use for that number (COLLIERY-T-0220, COLLIERY-T-0266).
-const TOOL_COUNT: usize = 74;
-const TOOL_COUNT_WORD: &str = "seventy-four";
+const TOOL_COUNT: usize = 75;
+const TOOL_COUNT_WORD: &str = "seventy-five";
 
 /// Every request carries a real `Host` header and the tenant resolves from
 /// its subdomain against the configured base domain — the S-0006 REQ-1.2
@@ -561,10 +561,12 @@ async fn mcp_endpoint_against_live_stack() {
          work them; writes require board capabilities and edits use optimistic versioning. \
          Repositories: `list_repositories` and `get_repository` read the directory, \
          `add_repository` and `update_repository` write it, and `set_repository` links a \
-         task to one. `/mcp` lists the work profile; `/mcp?profile=admin` the \
-         administration tools (teams, boards, grants, metadata, dispatch, team page writes, \
-         org read tokens, purge, board flow); `/mcp?profile=all` each tool. Every tool is \
-         callable under every profile."
+         task to one. `/mcp` lists the work profile: items, repositories, members, claims, \
+         notifications, board flow and dispatch rules to read. `/mcp?profile=admin` lists \
+         the administration tools: teams, boards, grants, metadata, dispatch rule writes, \
+         team page writes, org read tokens, purge. `/mcp?profile=all` lists each tool. The \
+         server runs a call to a tool that the profile does not list. A client such as \
+         Claude Code calls only the listed tools."
     );
 
     // --- KAIROS-T-0392: stateless — no handshake, a stale session id -------
@@ -632,6 +634,8 @@ async fn mcp_endpoint_against_live_stack() {
         // COLLIERY-T-0220 (COLLIERY-A-0023): set or clear the repository of
         // a task. A tool of its own, not an argument of `update_item`.
         "set_repository",
+        // KAIROS-T-0572: set or remove the parent of an item in one call.
+        "set_parent",
         // KAIROS-T-0433: change the lane of a task. A tool of its own, as
         // set_repository.
         "set_work_class",
@@ -780,6 +784,7 @@ async fn mcp_endpoint_against_live_stack() {
             "set_state",
             "set_metadata",
             "set_repository",
+            "set_parent",
             "set_work_class",
             "set_team",
             "clear_team",
@@ -802,6 +807,10 @@ async fn mcp_endpoint_against_live_stack() {
             "archive_completed",
             "team_pages",
             "my_work",
+            // KAIROS-T-0559: two reads and a build request of a task worker.
+            "board_flow",
+            "list_dispatch_rules",
+            "rebuild_code_index",
         ]
         .iter()
         .map(|n| n.to_string())
@@ -836,6 +845,9 @@ async fn mcp_endpoint_against_live_stack() {
             "{refused}"
         );
         // A tool of the admin profile is called through the default path.
+        // The tool runs: its own refusal comes back, not an unknown tool
+        // (KAIROS-T-0559: `board_flow` is a work tool now).
+        assert!(!work.contains(&"list_org_read_tokens".to_string()));
         let (status, _, body) = raw_request(
             &router,
             Method::POST,
@@ -843,13 +855,17 @@ async fn mcp_endpoint_against_live_stack() {
             Some(&alice_token),
             None,
             Some(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-                        "params": {"name": "board_flow",
-                                   "arguments": {"board": "platform-delivery"}}})),
+                        "params": {"name": "list_org_read_tokens", "arguments": {}}})),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
+        let answer = rpc_message(&body);
+        assert_eq!(answer["result"]["isError"], json!(true), "{body}");
         assert!(
-            rpc_message(&body)["result"]["isError"] != json!(true),
+            answer["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("FORBIDDEN:"),
             "{body}"
         );
     }
@@ -891,6 +907,7 @@ async fn mcp_endpoint_against_live_stack() {
             "thirty-nine",
             "forty-one",
             "seventy-two",
+            "seventy-three",
             "forty-four",
             "forty-five",
             "forty-six",
@@ -900,7 +917,7 @@ async fn mcp_endpoint_against_live_stack() {
             "sixty-three",
             "fifty-eight",
             "sixty-seven",
-            "seventy-three",
+            "seventy-four",
         ] {
             assert!(
                 !reference.contains(stale),

@@ -18,7 +18,7 @@ startup with a message naming the variable — invalid values are never silently
 replaced by defaults — and an empty or whitespace-only value is treated as
 unset.
 
-The five retention variables are not among them. The server reads them at
+The retention variables are not among them. The server reads them at
 startup too, but their parsing rules are different. That section gives them.
 
 ### Required
@@ -634,7 +634,8 @@ cache. After the builder stores the index, it removes the file.
 
 An index keeps only the summaries that its code needs. A summary that no
 index uses stays in the pool for `KAIROS_CODE_INDEX_POOL_DAYS` (see
-[Retention](#retention)). The run shows the number of summaries that it made
+[Retention](#retention)). The retention pass keeps the newest
+`KAIROS_CODE_INDEX_KEEP` indexes of each repository and ref. The run shows the number of summaries that it made
 and the number that it reused.
 
 If a first build of a commit fails, the server does not try that commit
@@ -831,21 +832,34 @@ The retention pass runs each 24 hours. The interval is fixed. The pass is a
 periodic job (see [Job queue](#job-queue)): one server runs each pass. The
 first start of a deployment runs the pass at once. One pass:
 
-- In each tenant, removes the `item_history` rows and the `activity_log` rows
-  that the five variables below make prune candidates. The mode sets what
-  happens to them first.
+- In each tenant, removes the `item_history` rows, the `team_page_history`
+  rows and the `activity_log` rows that the variables below make prune
+  candidates. The mode sets what happens to them first. `team_page_history`
+  has the rules of `item_history`: a team page is an item.
 - Deletes the password sessions (`local_sessions`) that expired before the
   pass. This occurs in each mode, also `off`, because an expired session
   cannot log in.
 - In each tenant, deletes the read notifications that were read more than
   `KAIROS_NOTIFICATIONS_READ_DAYS` days before the pass. This occurs in each
   mode, also `off`, and the pass does not archive them.
+- In each tenant, deletes the unread notifications that are older than
+  `KAIROS_NOTIFICATIONS_UNREAD_DAYS` days. This occurs in each mode, also
+  `off`, and the pass does not archive them.
+- In each tenant, deletes the code indexes that are not among the newest
+  `KAIROS_CODE_INDEX_KEEP` of their repository and ref. "Newest" is the time
+  of the last write of the index. The indexes with no ref are one group of
+  the repository. This occurs in each mode, also `off`. A build or an upload
+  can make the index again.
 - In each tenant, deletes the summaries of the code-index pools that no
-  stored index uses, when a build made them more than
-  `KAIROS_CODE_INDEX_POOL_DAYS` days before the pass. Such a summary comes
-  from a build that did not end, or from code that changed before the build
-  ended. This occurs in each mode, also `off`. A build can make the summary
-  again.
+  stored index uses, after `KAIROS_CODE_INDEX_POOL_DAYS` days. The pass also
+  deletes a summary whose last use is older than each stored index of its
+  repository. This occurs in each mode, also `off`. A build can make the
+  summary again.
+- In each tenant, deletes the webhook deliveries that finished more than 30
+  days before the pass, for each target. A finished delivery is
+  `delivered`, `failed` or `skipped`. A `pending` delivery stays. The tries
+  of a delivery go with it. This occurs in each mode, also `off`. The
+  interval is fixed.
 - Writes one `retention_sweep` row to the `activity_log` of each tenant that
   it sweeps, with the counts of the rows it archived and removed.
 - Logs the counts for each tenant and the number of deleted sessions.
@@ -854,8 +868,12 @@ first start of a deployment runs the pass at once. One pass:
 
 The pass reads `item_history` one page of items at a time. It reads only the
 version and the time of each row. It reads the content only of the rows that
-it archives. It reads `activity_log` one page of rows at a time. It removes
-the rows in batches.
+it archives. It reads `team_page_history` one page of team pages at a time,
+in the same way.
+
+It reads `activity_log` one page of rows at a time. It reads
+the code indexes one page of repositories at a time, with no structure. Each
+delete removes one batch of rows at most.
 
 The pass keeps each `activity_log` row that moves an item: the actions
 `transition`, `cancel` and `board_move`. It keeps them at each age, also past
@@ -864,7 +882,7 @@ Without them, a task in progress for more than the window has no start and no
 age.
 
 In the mode `archive` with no `KAIROS_ARCHIVE_TARGET`, the pass reads no row
-of `item_history` and `activity_log`, and removes none. The `retention_sweep`
+of `item_history`, `team_page_history` and `activity_log`, and removes none. The `retention_sweep`
 row and the record of the job then say `skipped: no target`. `/readyz` adds a
 line that starts with `warning:`, and the status stays 200. The Admin overview
 of the GUI shows an alert. An `s3://` target gives a warning too, because
@@ -875,10 +893,19 @@ pass is logged and tried again. The next pass runs on time. A value that the
 server cannot parse stops the start.
 
 Their parsing differs from the sixteen variables above: empty is not treated as
-unset. An empty `KAIROS_HISTORY_HOT_DAYS`, `KAIROS_HISTORY_KEEP_LATEST`,
-`KAIROS_ACTIVITY_RETENTION_DAYS`, `KAIROS_NOTIFICATIONS_READ_DAYS`, `KAIROS_CODE_INDEX_POOL_DAYS` or `KAIROS_RETENTION_MODE` is a parse error
-rather than a fallback to the default. `KAIROS_ARCHIVE_TARGET` is the one
-exception: empty means no target.
+unset. An empty value of one of these variables is a parse error, not a
+fallback to the default:
+
+- `KAIROS_HISTORY_HOT_DAYS`
+- `KAIROS_HISTORY_KEEP_LATEST`
+- `KAIROS_ACTIVITY_RETENTION_DAYS`
+- `KAIROS_NOTIFICATIONS_READ_DAYS`
+- `KAIROS_NOTIFICATIONS_UNREAD_DAYS`
+- `KAIROS_CODE_INDEX_POOL_DAYS`
+- `KAIROS_CODE_INDEX_KEEP`
+- `KAIROS_RETENTION_MODE`
+
+`KAIROS_ARCHIVE_TARGET` is the one exception: empty means no target.
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
@@ -886,8 +913,10 @@ exception: empty means no target.
 | `KAIROS_HISTORY_KEEP_LATEST` | unsigned integer | `5` | Latest-N guard. The newest N versions of an item are never prune candidates regardless of age. |
 | `KAIROS_ACTIVITY_RETENTION_DAYS` | unsigned integer (days) | `365` | `activity_log` window. Rows older than this are archive-then-delete candidates, with no compaction tiers. The rows that move an item (`transition`, `cancel`, `board_move`) stay at each age. |
 | `KAIROS_ARCHIVE_TARGET` | filesystem path or `s3://…` URL | unset | Where prune candidates are offloaded as NDJSON. A `file://` prefix is stripped. An `s3://` value parses to a distinct S3 target that the shipped code rejects with a typed not-implemented error, rather than being misread as a directory name. Empty means no target. |
-| `KAIROS_NOTIFICATIONS_READ_DAYS` | unsigned integer (days) | `30` | The days that a read notification stays. `0` keeps read notifications. An unread notification stays until the person reads it. |
-| `KAIROS_CODE_INDEX_POOL_DAYS` | unsigned integer (days) | `30` | The days that a summary of a code-index pool stays when no stored index uses it. `0` keeps such summaries. A summary that an index uses stays. |
+| `KAIROS_NOTIFICATIONS_READ_DAYS` | unsigned integer (days) | `30` | The days that a read notification stays. `0` keeps read notifications. |
+| `KAIROS_NOTIFICATIONS_UNREAD_DAYS` | unsigned integer (days) | `180` | The days that an unread notification stays after the server made it. `0` keeps unread notifications. |
+| `KAIROS_CODE_INDEX_KEEP` | unsigned integer | `5` | The code indexes that stay for each repository and ref: the newest by the time of the last write. `0` keeps each index. |
+| `KAIROS_CODE_INDEX_POOL_DAYS` | unsigned integer (days) | `30` | The days that a summary of a code-index pool stays when no stored index uses it. `0` keeps such summaries. A summary that a stored index uses stays. |
 | `KAIROS_RETENTION_MODE` | `archive` \| `discard` \| `off` | `archive` | `archive` offloads before pruning and, with no target configured, reads and prunes nothing and records `skipped: no target`. `discard` prunes without archiving. `off` disables the sweeper entirely. Case-insensitive; any other value fails to parse. |
 
 Past the hot window, compaction keeps the first and last snapshot per item per
@@ -1316,7 +1345,7 @@ A folder with no Terraform code shows its summary and its files only.
 `deploy/helm/kairos/values.yaml`. Most values under `config` become entries in a
 ConfigMap that the Deployment loads with `envFrom`. Two exceptions: the
 `config.webClientSecret*` values never reach the ConfigMap — the secret is
-Secret-sourced, like `DATABASE_URL` — and the five `config.retention.*` values
+Secret-sourced, like `DATABASE_URL` — and the `config.retention.*` values
 plus the two `config.otel.*` values are emitted only when non-empty. The chart
 provides no identity provider, and
 provides PostgreSQL only as an evaluation convenience you can decline
@@ -1484,7 +1513,9 @@ The read-only root filesystem is compatible with a filesystem
 | `config.retention.historyKeepLatest` | integer or null | `null` | Sets `KAIROS_HISTORY_KEEP_LATEST`. Emitted only when non-empty. |
 | `config.retention.activityRetentionDays` | integer or null | `null` | Sets `KAIROS_ACTIVITY_RETENTION_DAYS`. Emitted only when non-empty. |
 | `config.retention.notificationsReadDays` | integer or null | `null` | Sets `KAIROS_NOTIFICATIONS_READ_DAYS`. Emitted only when not null, so `0` is emitted. |
+| `config.retention.notificationsUnreadDays` | integer or null | `null` | Sets `KAIROS_NOTIFICATIONS_UNREAD_DAYS`. Emitted only when not null, so `0` is emitted. |
 | `config.retention.codeIndexPoolDays` | integer or null | `null` | Sets `KAIROS_CODE_INDEX_POOL_DAYS`. Emitted only when not null, so `0` is emitted. |
+| `config.retention.codeIndexKeep` | integer or null | `null` | Sets `KAIROS_CODE_INDEX_KEEP`. Emitted only when not null, so `0` is emitted. |
 | `config.retention.archiveTarget` | string | `""` | Sets `KAIROS_ARCHIVE_TARGET`. Emitted only when non-empty. |
 | `config.retention.mode` | string | `""` | Sets `KAIROS_RETENTION_MODE`. Emitted only when non-empty. |
 | `database.url` | string | `""` | Sets `DATABASE_URL` through a chart-rendered Secret. |

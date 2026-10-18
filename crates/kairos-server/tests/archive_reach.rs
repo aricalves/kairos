@@ -17,7 +17,10 @@
 //! the edit rule. It stops at a descendant that the caller may not edit,
 //! and takes nothing below it. The response names each descendant that
 //! stays. A descendant that stays keeps its `parent` edge. The confirm of a
-//! proposal takes the link rule, as each other edge write does.
+//! proposal took the link rule, as each other edge write does. Since
+//! KAIROS-T-0659 the grant `approve_proposals` on the board of one end
+//! decides a proposal, or the org admin role. So a member with no grant
+//! still cannot confirm an edge that they proposed.
 //!
 //! This is a security boundary, so the negative cases are the contract.
 //! Each refusal is checked where the data is stored: the row is read after
@@ -440,6 +443,7 @@ fn task_on(board: &str, title: &str) -> CreateTaskRequest {
         team_id: None,
         repository: None,
         from_team: None,
+        parent: None,
     }
 }
 
@@ -452,6 +456,7 @@ async fn initiative_by(client: &KairosClient, board: &str, title: &str) -> Initi
             content: "original content".into(),
             complexity: None,
             bucket_type: None,
+            parent: None,
         })
         .await
         .unwrap_or_else(|e| panic!("creating initiative {title:?}: {e}"))
@@ -668,6 +673,7 @@ async fn archive_reach_and_proposal_confirm_against_live_stack() {
             content: String::new(),
             complexity: None,
             bucket_type: None,
+            parent: None,
         })
         .await
     {
@@ -1324,13 +1330,12 @@ async fn archive_reach_and_proposal_confirm_against_live_stack() {
     );
     let details = &body["error"]["details"];
     checks.check(
-        "12 (i): the refusal has the details of each other edge refusal",
-        details["relationship"] == json!("parent")
-            && details["required_capability"] == json!("manage_initiatives")
-            && details["board_id"] == json!(initiative_board)
+        "12 (i): the refusal names approve_proposals and the board of each end",
+        details["required_capability"] == json!("approve_proposals")
             && details["any_of"][0]["end"] == json!("source")
+            && details["any_of"][0]["board_id"] == json!(initiative_board)
             && details["any_of"][1]["end"] == json!("target")
-            && details["any_of"][1]["required_capability"] == json!("manage_tasks")
+            && details["any_of"][1]["required_capability"] == json!("approve_proposals")
             && details["any_of"][1]["board_id"] == json!(platform_board),
         format!("{details}"),
     );
@@ -1376,9 +1381,21 @@ async fn archive_reach_and_proposal_confirm_against_live_stack() {
     );
 
     // =======================================================================
-    // Case 13. alice edits one end and confirms: the edge exists
-    // (criterion j). An agent made the proposal.
+    // Case 13. alice holds approve_proposals on the board of one end and
+    // confirms: the edge exists (criterion j, KAIROS-T-0659). An agent made
+    // the proposal.
     // =======================================================================
+    for (board, user) in [(&web_board, alice_id), (&platform_board, bob_id)] {
+        svc.add_board_member(
+            board,
+            &AddBoardMemberRequest {
+                user_id: user.to_string(),
+                capabilities: vec!["approve_proposals".into()],
+            },
+        )
+        .await
+        .expect("grant approve_proposals");
+    }
     let blocker = task_by(&alice, &web_board, "13: the task of alice").await;
     let blocked = task_by(&bob, &platform_board, "13: the task of bob").await;
     let reply = maker_mcp
@@ -1422,7 +1439,7 @@ async fn archive_reach_and_proposal_confirm_against_live_stack() {
     )
     .await;
     checks.check(
-        "13 (j): alice edits the source, and her confirm succeeds",
+        "13 (j): alice holds the grant on the board of the source, and her confirm succeeds",
         status == 200 && body["state"] == json!("confirmed"),
         format!("{status} {body}"),
     );
@@ -1436,7 +1453,8 @@ async fn archive_reach_and_proposal_confirm_against_live_stack() {
         ) == 1,
         "no edge",
     );
-    // bob edits the TARGET of a proposal, and confirms: either end.
+    // bob holds the grant on the board of the TARGET, and confirms: either
+    // end.
     let second = task_by(&bob, &platform_board, "13: a second task of bob").await;
     let reply = maker_mcp
         .call(
@@ -1457,15 +1475,16 @@ async fn archive_reach_and_proposal_confirm_against_live_stack() {
     )
     .await;
     checks.check(
-        "13 (j): bob edits the target, and his confirm succeeds",
+        "13 (j): bob holds the grant on the board of the target, and his confirm succeeds",
         status == 200
             && edges_between(&mut conn, &blocker.short_code, &second.short_code, "blocks") == 1,
         format!("{status} {body}"),
     );
 
     // =======================================================================
-    // Case 14. A service account cannot confirm, as before. It created the
-    // source, so the link rule is not what refuses it.
+    // Case 14. A service account with no approve_proposals cannot decide.
+    // It created the source, so the link rule is not what refuses it: the
+    // grant is (KAIROS-T-0659).
     // =======================================================================
     let by_maker = task_by(&maker, &platform_board, "14: the request of the agent").await;
     let other = task_by(&bob, &platform_board, "14: the task of bob").await;
@@ -1489,13 +1508,13 @@ async fn archive_reach_and_proposal_confirm_against_live_stack() {
         )
         .await;
         checks.check(
-            &format!("14: a service account cannot {verb}"),
+            &format!("14: a service account with no grant cannot {verb}"),
             status == 403
-                && body["error"]["code"] == json!("PERSON_DECIDES")
-                && body["error"]["details"]["reason"] == json!("service_account")
+                && body["error"]["code"] == json!("FORBIDDEN")
+                && body["error"]["details"]["required_capability"] == json!("approve_proposals")
                 && body["error"]["message"]
                     .as_str()
-                    .is_some_and(|m| m.contains("service account")),
+                    .is_some_and(|m| m.contains("approve_proposals")),
             format!("{status} {body}"),
         );
     }
@@ -1507,7 +1526,7 @@ async fn archive_reach_and_proposal_confirm_against_live_stack() {
             && waiting[0]["state"] == json!("pending"),
         format!("{waiting:?}"),
     );
-    // A reject writes no edge, so it has no link rule: carol can reject.
+    // A reject takes the grant too (KAIROS-T-0659): carol holds none.
     let (status, body) = raw(
         &http,
         reqwest::Method::POST,
@@ -1517,7 +1536,21 @@ async fn archive_reach_and_proposal_confirm_against_live_stack() {
     )
     .await;
     checks.check(
-        "14: a person who edits neither end can reject, as before, and no edge results",
+        "14: a person with no grant cannot reject",
+        status == 403 && body["error"]["code"] == json!("FORBIDDEN"),
+        format!("{status} {body}"),
+    );
+    // bob holds the grant on the board of both ends, and rejects.
+    let (status, body) = raw(
+        &http,
+        reqwest::Method::POST,
+        &base,
+        &format!("/api/proposals/{proposal}/reject"),
+        &bob_token,
+    )
+    .await;
+    checks.check(
+        "14: a holder rejects, and no edge results",
         status == 200
             && body["state"] == json!("rejected")
             && edges_between(&mut conn, &by_maker.short_code, &other.short_code, "blocks") == 0,

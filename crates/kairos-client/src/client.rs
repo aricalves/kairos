@@ -926,7 +926,27 @@ impl KairosClient {
             .await
     }
 
-    /// `POST /api/boards/{id}/webhook-targets/{target_id}/enable`.
+    /// `POST /api/boards/{id}/webhook-targets/{target_id}/redeliver`
+    /// (KAIROS-T-0577): queue the `skipped` deliveries of a target that is
+    /// on again. `redelivered` of the answer counts them.
+    pub async fn redeliver_webhook_target(
+        &self,
+        board: &str,
+        target_id: &str,
+        query: &crate::types_dispatch::RedeliverQuery,
+    ) -> Result<crate::types_dispatch::WebhookTarget, Error> {
+        let path = format!("/api/boards/{board}/webhook-targets/{target_id}/redeliver");
+        self.execute(
+            format!("POST {path}"),
+            200,
+            self.http.post(self.url(&path)).query(query),
+        )
+        .await
+    }
+
+    /// `POST /api/boards/{id}/webhook-targets/{target_id}/enable`. The
+    /// answer counts the `skipped` deliveries that Kairos queued again
+    /// (`redelivered`, KAIROS-T-0577).
     pub async fn enable_webhook_target(
         &self,
         board: &str,
@@ -2342,6 +2362,25 @@ impl KairosClient {
         request: &CreateRelationshipRequest,
     ) -> Result<Relationship, Error> {
         self.post_created("/api/relationships", request).await
+    }
+
+    /// `PUT /api/{family}/{short_code}/parent` (KAIROS-T-0572): set the
+    /// parent of an initiative or a task, or remove it with `None`. The new
+    /// edge replaces the old one in one transaction. The link rule applies
+    /// to each edge that changes.
+    pub async fn set_parent(
+        &self,
+        kind: EntityKind,
+        short_code: &str,
+        parent: Option<&str>,
+    ) -> Result<crate::types_meta::SetParentResponse, Error> {
+        self.put_ok(
+            &format!("/api/{kind}/{short_code}/parent"),
+            &crate::types_meta::SetParentRequest {
+                parent: parent.map(str::to_string),
+            },
+        )
+        .await
     }
 
     /// `DELETE /api/relationships/{id}`. The link rule applies, as for

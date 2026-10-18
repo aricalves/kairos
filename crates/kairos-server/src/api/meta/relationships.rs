@@ -20,21 +20,27 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use kairos_client::types_meta as dto;
 use kairos_db::graph::{self, GraphError, Neighbor};
+use kairos_db::models::OrgRole;
 use kairos_db::models::enums::RelationshipType;
 use kairos_db::models::graph::ItemRelationship;
 use uuid::Uuid;
 
 use diesel::prelude::*;
+use serde_json::json;
 
 use super::resolve_family_item;
 use crate::api::convert_meta::{relationship_dto, timestamp};
-use crate::api::{Liveness, parse_enum, parse_uuid, require_edge_write, resolve_live_ref};
+use crate::api::{
+    EdgeEnd, LiveRef, Liveness, atomically, parse_enum, parse_uuid, require_edge_remove,
+    require_edge_write, require_item_edit, resolve_live_ref,
+};
 use crate::app::AppState;
 use crate::body::ApiJson;
 use crate::error::ApiError;
 use crate::input::ApiQuery;
 use crate::middleware::auth::AuthContext;
 use crate::middleware::tenant::TenantContext;
+use kairos_core::short_code::ItemType;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -48,6 +54,10 @@ pub fn router() -> Router<AppState> {
         )
         .route("/api/{entity_type}/{short_code}/graph", get(get_item_graph))
         .route("/api/{entity_type}/{short_code}/links", get(get_item_links))
+        .route(
+            "/api/{entity_type}/{short_code}/parent",
+            axum::routing::put(set_parent),
+        )
         .route("/api/relationships", post(create_relationship))
         .route("/api/relationships/{id}", delete(delete_relationship))
 }
@@ -278,12 +288,27 @@ pub(crate) fn map_link_error(e: GraphError) -> ApiError {
         e @ GraphError::AlreadyLinked { .. } => {
             ApiError::unprocessable("ALREADY_LINKED", e.to_string())
         }
+        // KAIROS-T-0572: an item has one parent.
+        e @ GraphError::ParentExists { .. } => {
+            parent_exists(e, "set_parent: PUT /api/<family>/<short_code>/parent")
+        }
         e @ (GraphError::SelfLink(_) | GraphError::ItemNotFound(_)) => {
             ApiError::validation(e.to_string())
         }
         e @ GraphError::NotLinked { .. } => ApiError::not_found(e.to_string()),
         GraphError::Database(e) => ApiError::internal(e),
     }
+}
+
+/// The 422 `PARENT_EXISTS` of a second parent (KAIROS-T-0572). `fix`
+/// names the call that changes the parent on the surface of the caller.
+/// `details` has the item and its parent, by short code.
+pub(crate) fn parent_exists(e: GraphError, fix: &str) -> ApiError {
+    let details = match &e {
+        GraphError::ParentExists { item, parent } => json!({ "item": item, "parent": parent }),
+        _ => json!({}),
+    };
+    ApiError::unprocessable("PARENT_EXISTS", format!("{e} Use {fix}.")).with_details(details)
 }
 
 /// Fold one direction's neighbors (already ordered by relationship, then
@@ -459,6 +484,175 @@ pub(crate) async fn create_relationship(
         })
         .await?;
     Ok((StatusCode::CREATED, Json(created)))
+}
+
+/// The parent of a create (KAIROS-T-0572): resolve `parent` and check the
+/// type rules BEFORE the item is written, so that a parent that cannot be
+/// is a refusal and not a rollback. A retired code finds its item
+/// (KAIROS-T-0560). `details.field` is `parent`.
+pub(crate) fn parent_for_create(
+    conn: &mut PgConnection,
+    parent: &str,
+    item_type: ItemType,
+) -> Result<LiveRef, ApiError> {
+    let found = resolve_live_ref(conn, parent, "parent")
+        .map_err(|e| e.with_details(json!({ "field": "parent" })))?;
+    kairos_core::graph::check_link(
+        kairos_core::graph::Relationship::Parent,
+        found.item_type,
+        item_type,
+    )
+    .map_err(|e| ApiError::validation(e.to_string()).with_details(json!({ "field": "parent" })))?;
+    Ok(found)
+}
+
+/// Write the `parent` edge of a new item (KAIROS-T-0572). The caller runs
+/// it in the transaction of the create ([`atomically`]), so a refusal here
+/// leaves no item. WHO is the link rule, by the function that
+/// `POST /api/relationships` asks; the creator of the new item can edit
+/// it, so the rule lets the creator through.
+pub(crate) fn link_created_parent(
+    conn: &mut PgConnection,
+    role: OrgRole,
+    user: Uuid,
+    parent: &LiveRef,
+    item: EdgeEnd,
+) -> Result<(), ApiError> {
+    require_edge_write(
+        conn,
+        role,
+        user,
+        RelationshipType::Parent.as_str(),
+        parent.typed(),
+        item,
+    )?;
+    graph::link_items(conn, parent.id, item.0, RelationshipType::Parent, user)
+        .map_err(crate::api::map_graph_error)?;
+    Ok(())
+}
+
+/// Set the parent of an item, or remove it (KAIROS-T-0572): ONE function
+/// for `PUT /api/{entity_type}/{short_code}/parent` and MCP `set_parent`.
+///
+/// - Only an initiative or a task has a parent: each other type is a 422
+///   `VALIDATION`.
+/// - `parent` is resolved as each reference of a write: a retired code
+///   finds its item (KAIROS-T-0560), an archived one is refused.
+/// - WHO: the link rule for each edge that changes. The remove of the old
+///   edge asks [`require_edge_remove`], the new edge asks
+///   [`require_edge_write`]: the caller may edit the item, or the parent at
+///   that end. A write that changes nothing checks nothing and writes
+///   nothing.
+/// - The swap is [`graph::set_parent`], in one transaction with the checks.
+///
+/// `fix` names the call of the surface in a `PARENT_EXISTS` refusal. The
+/// second value is the line that names the current code of a retired
+/// `parent`, or `None`.
+pub(crate) fn change_parent(
+    conn: &mut PgConnection,
+    role: OrgRole,
+    user: Uuid,
+    item: EdgeEnd,
+    parent: Option<&str>,
+    fix: &str,
+) -> Result<(dto::SetParentResponse, Option<String>), ApiError> {
+    let (item_id, item_type) = item;
+    if !matches!(item_type, ItemType::Initiative | ItemType::Task) {
+        let supports = if matches!(item_type, ItemType::Document | ItemType::Adr) {
+            " A document or an ADR supports an item: use a supports edge."
+        } else {
+            ""
+        };
+        return Err(ApiError::validation(format!(
+            "A {item_type} has no parent. An initiative has a strategy as its parent, and a \
+             task has an initiative.{supports}"
+        )));
+    }
+    atomically(conn, |conn| {
+        let new_parent = parent
+            .map(|code| resolve_live_ref(conn, code, "parent"))
+            .transpose()?;
+        let previous = graph::parent_of(conn, item_id).map_err(map_link_error)?;
+        let parent_rel = RelationshipType::Parent.as_str();
+        let changes_old = previous
+            .as_ref()
+            .is_some_and(|old| new_parent.as_ref().is_none_or(|new| new.id != old.id));
+        if let (true, Some(old)) = (changes_old, &previous) {
+            match old.item_type {
+                Some(old_type) => {
+                    require_edge_remove(conn, role, user, parent_rel, (old.id, old_type), item)?
+                }
+                // The parent is gone from the directory: the item decides.
+                None => require_item_edit(conn, role, user, item_id, item_type)?,
+            }
+        }
+        if let Some(new) = &new_parent
+            && previous.as_ref().is_none_or(|old| old.id != new.id)
+        {
+            require_edge_write(conn, role, user, parent_rel, new.typed(), item)?;
+        }
+        let change = graph::set_parent(conn, item_id, new_parent.as_ref().map(|new| new.id), user)
+            .map_err(|e| match e {
+                e @ GraphError::ParentExists { .. } => parent_exists(e, fix),
+                other => map_link_error(other),
+            })?;
+        Ok((
+            dto::SetParentResponse {
+                short_code: change.item,
+                parent: change.parent,
+                previous_parent: change.previous,
+                changed: change.changed,
+            },
+            new_parent.and_then(|new| new.renamed()),
+        ))
+    })
+}
+
+/// Set the parent of an initiative or a task, or remove it with `null`
+/// (KAIROS-T-0572). An item has one parent. The new edge replaces the old
+/// one in one transaction, so no reader sees two parents.
+///
+/// The link rule applies to each edge that changes (COLLIERY-T-0228). The
+/// caller may edit the item, or the parent at that end. The same parent
+/// again changes nothing (`changed: false`). Kairos refuses a retired code
+/// of the item. A retired code of the parent finds its item
+/// (KAIROS-T-0560). The move rules do not apply: a change of parent is not
+/// a move (KAIROS-A-0040 decision 7).
+#[utoipa::path(
+    put,
+    path = "/api/{entity_type}/{short_code}/parent",
+    tag = "relationships",
+    params(
+        ("entity_type" = String, Path, description = "initiatives or tasks"),
+        ("short_code" = String, Path, description = "The item's short code"),
+    ),
+    request_body = dto::SetParentRequest,
+    responses(
+        (status = 200, description = "The parent now and before; `changed` is false when nothing changed", body = dto::SetParentResponse),
+        (status = 403, description = "The caller may edit neither the item nor the parent at an end that changes", body = kairos_client::types::ErrorEnvelope),
+        (status = 404, description = "Unknown family or short code", body = kairos_client::types::ErrorEnvelope),
+        (status = 422, description = "No `parent` key, a type with no parent, an unknown or archived parent, RELATIONSHIP_RULE, or PARENT_EXISTS (a write at the same time set a parent)", body = kairos_client::types::ErrorEnvelope),
+    ),
+)]
+pub(crate) async fn set_parent(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Extension(tenant): Extension<TenantContext>,
+    Path((family, short_code)): Path<(String, String)>,
+    ApiJson(body): ApiJson<dto::SetParentRequest>,
+) -> Result<Json<dto::SetParentResponse>, ApiError> {
+    let user = auth.user_id;
+    let role = tenant.role;
+    let response = state
+        .blocking
+        .run(&tenant.slug, move |conn| {
+            let item = resolve_family_item(conn, &family, &short_code, Liveness::LiveOnly)?;
+            let fix = format!("PUT /api/{family}/{short_code}/parent");
+            change_parent(conn, role, user, item, body.parent.as_deref(), &fix)
+                .map(|(response, _)| response)
+        })
+        .await?;
+    Ok(Json(response))
 }
 
 /// Remove a relationship edge by id.
