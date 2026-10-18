@@ -1304,7 +1304,8 @@ async fn meta_endpoints_against_live_stack() {
 
     // action filter: the blocks link (svc), and the parent link, the
     // informs link (COLLIERY-T-0228: a member writes it now) and the two
-    // document supports edges (alice) are relationship_add rows.
+    // document supports edges (alice) are relationship_add rows. Each names
+    // the source of its edge (KAIROS-T-0638).
     let body = bob
         .activity(&ActivityQuery {
             action: Some("relationship_add".into()),
@@ -1316,7 +1317,7 @@ async fn meta_endpoints_against_live_stack() {
     assert!(
         body.items
             .iter()
-            .all(|item| item.entity_id.is_none() && item.details.starts_with("relationship:")),
+            .all(|item| item.entity_id.is_some() && item.details.starts_with("relationship:")),
         "{body:?}"
     );
 

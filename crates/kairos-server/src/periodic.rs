@@ -206,9 +206,11 @@ impl Worker {
 pub const RETENTION_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// The pass of retention (KAIROS-T-0366): on a connection of its own,
-/// [`kairos_db::retention::run_retention_pass`] sweeps `item_history` and
-/// `activity_log` of each tenant by the retention settings, and deletes the
-/// expired password sessions. A failed pass is tried again, and the next
+/// [`kairos_db::retention::run_retention_pass`] sweeps `item_history`,
+/// `team_page_history` and `activity_log` of each tenant by the retention
+/// settings, and deletes the expired password sessions, the old
+/// notifications, code indexes, summaries and webhook deliveries
+/// (KAIROS-T-0638). A failed pass is tried again, and the next
 /// run is due one interval later all the same.
 ///
 /// KAIROS-T-0631: the run writes its record in the field `result` of the
@@ -261,7 +263,11 @@ fn retention_run(
             item_history_pruned = report.item_history.rows_pruned,
             activity_log_archived = report.activity_log.rows_archived,
             activity_log_pruned = report.activity_log.rows_pruned,
-            warnings = report.item_history.warnings + report.activity_log.warnings,
+            team_page_history_archived = report.team_page_history.rows_archived,
+            team_page_history_pruned = report.team_page_history.rows_pruned,
+            warnings = report.item_history.warnings
+                + report.activity_log.warnings
+                + report.team_page_history.warnings,
             "retention: tenant swept"
         );
     }
@@ -289,7 +295,10 @@ fn retention_run(
         expired_sessions_deleted = pass.expired_sessions_deleted,
         expired_auth_failures_deleted = pass.expired_auth_failures_deleted,
         read_notifications_deleted = pass.read_notifications_deleted,
+        unread_notifications_deleted = pass.unread_notifications_deleted,
+        code_indexes_deleted = pass.code_indexes_deleted,
         unused_summaries_deleted = pass.unused_summaries_deleted,
+        webhook_deliveries_deleted = pass.webhook_deliveries_deleted,
         "retention: pass done"
     );
     Ok(())

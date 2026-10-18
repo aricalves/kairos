@@ -414,6 +414,35 @@ archiving is not a permission boundary, and would force a real deletion path
 rather than a visibility flag. That is a review trigger on the decision, not a
 promise about it.
 
+## What the retention pass removes
+
+An archive removes no row. The retention pass removes old rows from some
+tables. This table gives each table and its rule.
+[Configuration → Retention](../../reference/configuration/#retention) gives
+the variables that change the defaults.
+
+| Table | Rule | Default | Archive first |
+|---|---|---|---|
+| `item_history` | Past the hot window, keep the first and the last version of an item in each month. Always keep the newest versions of an item. | 90 days, 5 versions | Yes, in the mode `archive` |
+| `team_page_history` | The rule of `item_history`, for each team page. | 90 days, 5 versions | Yes, in the mode `archive` |
+| `activity_log` | Remove the rows that are older than the window. | 365 days | Yes, in the mode `archive` |
+| `notifications` | Remove a read notification after the read window. Remove an unread notification after the unread window. | 30 days read, 180 days unread | No |
+| `code_indexes` | Keep the newest indexes of each repository and ref. | 5 indexes | No |
+| `code_index_summaries` | Remove a summary that no stored index uses, after the pool window. | 30 days | No |
+| `webhook_deliveries` | Remove a delivery that finished before the window, with its tries. A `pending` delivery stays. | 30 days | No |
+| `local_sessions` | Remove a password session after it expires. | None | No |
+| `auth_failures` | Remove a row of the login throttle after its window and its lockout end. | None | No |
+
+The mode `off` stops the first three rules. The other rules apply in each
+mode. Their rows are caches, or copies of facts that other rows keep. The
+value `0` keeps each row of that kind.
+
+In the mode `archive` with no target, the first three rules remove nothing.
+The pass then reads no row of those tables.
+
+A relationship row of `activity_log` names the source of the edge as its
+entity. So the activity of an item shows the edges that start at the item.
+
 ## Where this comes from
 
 - [KAIROS-A-0020](https://github.com/colliery-io/kairos/blob/main/.metis/adrs/KAIROS-A-0020.md)

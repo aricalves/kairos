@@ -466,9 +466,11 @@ pub struct ActivityEntry {
     /// the action `update` (COLLIERY-T-0265). `claim`, `hand_off` and
     /// `release` are changes to the claim of a task (KAIROS-T-0359).
     pub action: String,
-    /// The item acted on (UUID). Null for a relationship between two
-    /// items: `details` names the two. For an `impacts` link it is the
-    /// document or the ADR of the link (COLLIERY-T-0269).
+    /// The item acted on (UUID). For a relationship between two items it
+    /// is the source of the edge, and `details` names the two
+    /// (KAIROS-T-0638; null in older rows whose source is not known). For
+    /// an `impacts` link it is the document or the ADR of the link
+    /// (COLLIERY-T-0269).
     pub entity_id: Option<String>,
     /// `strategy|initiative|task|document|adr`. Null when `entity_id` is
     /// null.

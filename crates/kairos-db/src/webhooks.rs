@@ -44,8 +44,10 @@ pub const JOB_PRIORITY: i32 = 15;
 /// (`KAIROS_WEBHOOK_MAX_TRIES`).
 pub const DEFAULT_MAX_TRIES: i32 = 12;
 
-/// A finished delivery is kept for this many days. Each new delivery of a
-/// target removes the older finished ones of that target.
+/// A finished delivery (delivered, failed or skipped) is kept for this many
+/// days. Each new delivery of a target removes the older finished ones of
+/// that target, and the retention pass removes them for each target
+/// (KAIROS-T-0638), so the log of a quiet target goes too.
 pub const KEEP_DAYS: i64 = 30;
 
 /// The statuses of a delivery.
@@ -423,6 +425,24 @@ pub fn queue_delivery(
         .execute(conn)?;
         Ok(Some(delivery))
     })
+}
+
+/// Delete at most `limit` deliveries that finished before `cutoff`, of
+/// each target (the retention pass, KAIROS-T-0638, which calls it until a
+/// page deletes fewer than `limit`). A pending delivery stays. The tries of
+/// a delivery go with it. Returns the count.
+pub fn delete_finished_before(
+    conn: &mut PgConnection,
+    cutoff: DateTime<Utc>,
+    limit: i64,
+) -> Result<usize, DieselError> {
+    sql_query(
+        "DELETE FROM webhook_deliveries WHERE id IN ( \
+             SELECT id FROM webhook_deliveries WHERE finished_at < $1 LIMIT $2)",
+    )
+    .bind::<Timestamptz, _>(cutoff)
+    .bind::<diesel::sql_types::BigInt, _>(limit)
+    .execute(conn)
 }
 
 /// The delivery `id`.
