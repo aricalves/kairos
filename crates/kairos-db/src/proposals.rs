@@ -393,10 +393,20 @@ fn require_approver(
     proposal: &EdgeProposal,
 ) -> Result<(), ProposalError> {
     let (actor, is_org_admin) = (decider.user_id, decider.is_org_admin);
-    if is_org_admin {
+    // KAIROS-T-0536: with an agent key that has a scope, the admin role
+    // decides only on a board of one end that the scope allows.
+    if is_org_admin && crate::key_scope::scope_of(actor).is_none() {
         return Ok(());
     }
     let boards = approval_boards(conn, proposal.source_id, proposal.target_id)?;
+    let in_scope = |end: &Option<EndBoard>| {
+        crate::key_scope::allows(
+            actor,
+            kairos_core::abac::APPROVE_PROPOSALS,
+            end.as_ref().map(|board| board.id),
+        )
+    };
+    let is_org_admin = is_org_admin && (in_scope(&boards.source) || in_scope(&boards.target));
     let mut holds = |end: &Option<EndBoard>| -> Result<bool, ProposalError> {
         match end {
             Some(board) => Ok(crate::abac::check_capability(

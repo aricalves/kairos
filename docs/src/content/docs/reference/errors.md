@@ -35,6 +35,7 @@ in *this* envelope. See [SCIM](../scim/#errors).
 |---|---|---|---|
 | `UNAUTHORIZED` | 401 | No token, or a token that does not verify | — |
 | `FORBIDDEN` | 403 | Authenticated, but not allowed | one of five shapes — see below |
+| `KEY_SCOPE` | 403 | The request uses an agent key, and the scope of the key does not have the action. See [The scope of an agent key](../capabilities/#the-scope-of-an-agent-key) | `required_capability`, `board_id`, `scope_needs` (the capability that the scope must have), `reason` (`capability`, `board` or `no_board`), `key_scope` (`capabilities`, `boards`) |
 | `MEMBERSHIP_REQUIRED` | 403 | Authenticated against the issuer, but not a member of this tenant | `organization` — the slug that was resolved |
 | `NOT_FOUND` | 404 | The thing the call is about does not exist | — |
 | `TENANT_NOT_FOUND` | 404 | The request host resolves to no provisioned tenant | — |

@@ -328,6 +328,7 @@ async fn a_holder_of_approve_proposals_on_either_board_decides_once() {
             name: "board session".into(),
             expires_at: None,
             no_expiry: false,
+            scope: None,
         })
         .await
         .expect("agent key")

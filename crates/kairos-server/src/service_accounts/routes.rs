@@ -95,6 +95,48 @@ pub(crate) struct CreateApiKeyRequest {
     /// `expires_at`.
     #[serde(default)]
     pub no_expiry: bool,
+    /// The scope of an agent key (KAIROS-T-0536), for
+    /// `POST /api/me/agent-keys` only. Omitted: the default scope, each
+    /// capability but `purge` and `manage_structure`, on each board. The key
+    /// of a service account has no scope: that route refuses the field.
+    #[serde(default)]
+    pub scope: Option<KeyScopeRequest>,
+}
+
+/// The scope of a new agent key (KAIROS-T-0536). A scope never adds a
+/// right: the key can do an action when the person can do it AND the scope
+/// has it.
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct KeyScopeRequest {
+    /// The capabilities of the key, from the vocabulary of the capabilities
+    /// reference: the board capabilities, `manage_structure` and
+    /// `file_backlog`. `[]` makes a read-only key. Omitted: the default
+    /// list (each one but `purge` and `manage_structure`).
+    #[serde(default)]
+    pub capabilities: Option<Vec<String>>,
+    /// The boards where the key can act, by slug or id. Omitted: each
+    /// board. With a list, an action that has no board is refused.
+    #[serde(default)]
+    pub boards: Option<Vec<String>>,
+}
+
+/// The scope of a key (KAIROS-T-0536). `null` in place of this object: the
+/// key has no scope and no limit (a key made before KAIROS-T-0536).
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct KeyScopeView {
+    /// The capabilities of the key, sorted. Empty: a read-only key.
+    pub capabilities: Vec<String>,
+    /// The boards of the key. `null`: each board.
+    pub boards: Option<Vec<KeyScopeBoard>>,
+}
+
+/// One board of a [`KeyScopeView`].
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct KeyScopeBoard {
+    pub id: String,
+    /// The slug of the board; `null` when the board is deleted.
+    pub slug: Option<String>,
 }
 
 /// `POST /api/service-accounts/{id}/keys` response — the ONLY place the secret
@@ -108,6 +150,9 @@ pub(crate) struct ApiKeyCreatedResponse {
     pub prefix: String,
     pub created_at: String,
     pub expires_at: Option<String>,
+    /// The scope of the key (KAIROS-T-0536); `null` for the key of a
+    /// service account.
+    pub scope: Option<KeyScopeView>,
 }
 
 /// One row of `GET /api/service-accounts/{id}/keys` — never a secret or hash.
@@ -123,6 +168,8 @@ pub(crate) struct ApiKeyView {
     /// The key that a rotation made in place of this key (KAIROS-T-0370).
     /// The old secret works until `expires_at`, the end of the grace time.
     pub replaced_by: Option<String>,
+    /// The scope of the key (KAIROS-T-0536). `null`: no scope, no limit.
+    pub scope: Option<KeyScopeView>,
 }
 
 /// The response of a rotation (KAIROS-T-0370). It has the new key and its
@@ -286,6 +333,106 @@ pub(super) fn parse_expiry(
     .transpose()
 }
 
+/// The scope of a new agent key (KAIROS-T-0536): the request, or the
+/// default. Kairos refuses an unknown capability and an unknown board, and
+/// names it. A read-only key has `capabilities: []`.
+pub(super) fn resolve_scope(
+    conn: &mut diesel::pg::PgConnection,
+    request: Option<&KeyScopeRequest>,
+) -> Result<kairos_core::key_scope::KeyScope, ApiError> {
+    use kairos_core::key_scope::{KeyScope, parse_capabilities, scope_capabilities};
+    let mut scope = KeyScope::default_for_agent_key();
+    let Some(request) = request else {
+        return Ok(scope);
+    };
+    if let Some(names) = &request.capabilities {
+        scope.capabilities = parse_capabilities(names).map_err(|name| {
+            ApiError::validation(format!(
+                "The scope names the capability {name:?}. A scope can name these \
+                 capabilities: {}.",
+                scope_capabilities().join(", ")
+            ))
+            .with_details(serde_json::json!({ "field": "scope.capabilities", "value": name }))
+        })?;
+    }
+    if let Some(references) = &request.boards {
+        if references.is_empty() {
+            return Err(ApiError::validation(
+                "The scope has an empty list of boards. Send one board or more, or omit \
+                 `boards` for each board.",
+            )
+            .with_details(serde_json::json!({ "field": "scope.boards" })));
+        }
+        let mut boards = std::collections::BTreeSet::new();
+        for reference in references {
+            let id = crate::api::board_id_by_ref(conn, reference.trim()).map_err(|_| {
+                ApiError::validation(format!(
+                    "The scope names the board {reference:?}. No live board has that slug or \
+                     id."
+                ))
+                .with_details(serde_json::json!({ "field": "scope.boards", "value": reference }))
+            })?;
+            boards.insert(id);
+        }
+        scope.boards = Some(boards);
+    }
+    Ok(scope)
+}
+
+/// The view of a scope (KAIROS-T-0536). With `conn`, each board gets its
+/// slug; with none, the slugs are `null`.
+pub(super) fn scope_view(
+    conn: Option<&mut diesel::pg::PgConnection>,
+    scope: &kairos_core::key_scope::KeyScope,
+) -> Result<KeyScopeView, ApiError> {
+    use diesel::prelude::*;
+    let boards = match (&scope.boards, conn) {
+        (None, _) => None,
+        (Some(ids), conn) => {
+            let ids: Vec<Uuid> = ids.iter().copied().collect();
+            let slugs: Vec<(Uuid, String)> = match conn {
+                Some(conn) => {
+                    use kairos_db::schema::boards;
+                    boards::table
+                        .filter(boards::id.eq_any(&ids))
+                        .filter(boards::deleted_at.is_null())
+                        .select((boards::id, boards::slug))
+                        .load(conn)
+                        .map_err(ApiError::internal)?
+                }
+                None => Vec::new(),
+            };
+            Some(
+                ids.iter()
+                    .map(|id| KeyScopeBoard {
+                        id: id.to_string(),
+                        slug: slugs
+                            .iter()
+                            .find(|(b, _)| b == id)
+                            .map(|(_, slug)| slug.clone()),
+                    })
+                    .collect(),
+            )
+        }
+    };
+    Ok(KeyScopeView {
+        capabilities: scope.capabilities.iter().cloned().collect(),
+        boards,
+    })
+}
+
+/// [`key_view`] with the slugs of the boards of the scope.
+pub(super) fn key_view_in(
+    conn: &mut diesel::pg::PgConnection,
+    k: &ApiKey,
+) -> Result<ApiKeyView, ApiError> {
+    let mut view = key_view(k);
+    if let Some(scope) = k.scope() {
+        view.scope = Some(scope_view(Some(conn), &scope)?);
+    }
+    Ok(view)
+}
+
 pub(super) fn key_view(k: &ApiKey) -> ApiKeyView {
     ApiKeyView {
         id: k.id.to_string(),
@@ -296,6 +443,7 @@ pub(super) fn key_view(k: &ApiKey) -> ApiKeyView {
         last_used_at: k.last_used_at.map(rfc3339),
         revoked_at: k.revoked_at.map(rfc3339),
         replaced_by: k.replaced_by.map(|id| id.to_string()),
+        scope: k.scope().and_then(|scope| scope_view(None, &scope).ok()),
     }
 }
 
@@ -472,7 +620,7 @@ pub(crate) async fn delete_service_account(
         (status = 201, description = "Key minted; secret shown once", body = ApiKeyCreatedResponse),
         (status = 403, description = "Org admin required", body = kairos_client::types::ErrorEnvelope),
         (status = 404, description = "Unknown service account", body = kairos_client::types::ErrorEnvelope),
-        (status = 422, description = "Empty name, bad expiry, or expires_at with no_expiry", body = kairos_client::types::ErrorEnvelope),
+        (status = 422, description = "Empty name, bad expiry, expires_at with no_expiry, or a scope (the key of a service account has none)", body = kairos_client::types::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn create_key(
@@ -486,6 +634,15 @@ pub(crate) async fn create_key(
     let name = body.name.trim().to_string();
     if name.is_empty() {
         return Err(ApiError::validation("The name is empty. Send a name."));
+    }
+    // KAIROS-T-0536: a scope is for an agent key. A service account has its
+    // grants and no more.
+    if body.scope.is_some() {
+        return Err(ApiError::validation(
+            "The key of a service account has no scope. Remove `scope`. Give the service \
+             account only the grants that it needs.",
+        )
+        .with_details(serde_json::json!({ "field": "scope" })));
     }
     let expires_at = resolve_expiry(&body, state.config.api_key_ttl_days, chrono::Utc::now())?;
 
@@ -538,6 +695,7 @@ pub(crate) async fn create_key(
             prefix: row.prefix,
             created_at: rfc3339(row.created_at),
             expires_at: row.expires_at.map(rfc3339),
+            scope: None,
         }),
     ))
 }

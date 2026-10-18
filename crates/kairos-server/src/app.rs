@@ -697,6 +697,19 @@ pub struct WhoamiResponse {
     /// The caller's grants of `manage_structure` (KAIROS-T-0337): the grant
     /// at the organization first, then the grants on boards.
     pub structure: Vec<WhoamiStructureGrant>,
+    /// The agent key of the request (KAIROS-T-0536), or null when the
+    /// request does not use an agent key.
+    pub agent_key: Option<WhoamiAgentKey>,
+}
+
+/// The agent key of [`WhoamiResponse::agent_key`] (KAIROS-T-0536).
+#[derive(Debug, serde::Serialize)]
+pub struct WhoamiAgentKey {
+    /// `api_keys.id`.
+    pub id: Uuid,
+    /// The scope of the key. `null`: the key has no scope, and so no limit
+    /// (a key made before KAIROS-T-0536).
+    pub scope: Option<crate::service_accounts::routes::KeyScopeView>,
 }
 
 /// One grant of [`WhoamiResponse::structure`].
@@ -855,7 +868,44 @@ async fn whoami(
         })
         .collect();
 
+    // KAIROS-T-0536: the agent key of the request, and its scope.
+    let agent_key = match auth.agent_key {
+        None => None,
+        Some(id) => {
+            let scope = match &auth.key_scope {
+                None => None,
+                Some(scope) => {
+                    let ids: Vec<Uuid> = scope.boards.iter().flatten().copied().collect();
+                    let slugs: Vec<(Uuid, String)> = schema::boards::table
+                        .filter(schema::boards::id.eq_any(&ids))
+                        .filter(schema::boards::deleted_at.is_null())
+                        .select((schema::boards::id, schema::boards::slug))
+                        .load(&mut *conn)
+                        .await
+                        .map_err(ApiError::internal)?;
+                    Some(crate::service_accounts::routes::KeyScopeView {
+                        capabilities: scope.capabilities.iter().cloned().collect(),
+                        boards: scope.boards.as_ref().map(|boards| {
+                            boards
+                                .iter()
+                                .map(|board| crate::service_accounts::routes::KeyScopeBoard {
+                                    id: board.to_string(),
+                                    slug: slugs
+                                        .iter()
+                                        .find(|(b, _)| b == board)
+                                        .map(|(_, slug)| slug.clone()),
+                                })
+                                .collect()
+                        }),
+                    })
+                }
+            };
+            Some(WhoamiAgentKey { id, scope })
+        }
+    };
+
     Ok(Json(WhoamiResponse {
+        agent_key,
         structure,
         user: WhoamiUser {
             id: auth.user_id,

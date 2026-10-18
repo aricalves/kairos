@@ -747,6 +747,13 @@ fn print_identity(identity: &WhoamiResponse) {
             .collect();
         println!("manage_structure: {}", scopes.join(", "));
     }
+    // KAIROS-T-0536: the scope of the agent key in use.
+    if let Some(key) = &identity.agent_key {
+        match &key.scope {
+            Some(scope) => println!("key scope: {}", scope.describe()),
+            None => println!("key scope: none (the key can do each thing that you can do)"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1767,6 +1774,87 @@ mod tests {
             _ => panic!("expected keys revoke"),
         }
         assert!(Cli::try_parse_from(["kairos", "keys", "create"]).is_err());
+
+        // KAIROS-T-0536: the scope of an agent key.
+        let cli = Cli::try_parse_from([
+            "kairos",
+            "keys",
+            "create",
+            "--name",
+            "ci",
+            "--scope",
+            "manage_tasks,transition_items",
+            "--scope-board",
+            "web",
+            "--scope-board",
+            "ops",
+        ])
+        .expect("keys create with a scope parses");
+        match cli.command {
+            Command::Keys(KeysCommand::Create {
+                scope,
+                read_only,
+                scope_board,
+                ..
+            }) => {
+                let request =
+                    commands::keys::scope_request(scope, read_only, scope_board).expect("a scope");
+                assert_eq!(
+                    request.capabilities,
+                    Some(vec![
+                        "manage_tasks".to_string(),
+                        "transition_items".to_string()
+                    ])
+                );
+                assert_eq!(
+                    request.boards,
+                    Some(vec!["web".to_string(), "ops".to_string()])
+                );
+            }
+            _ => panic!("expected keys create"),
+        }
+        let cli = Cli::try_parse_from(["kairos", "keys", "create", "--name", "r", "--read-only"])
+            .expect("--read-only parses");
+        match cli.command {
+            Command::Keys(KeysCommand::Create {
+                scope,
+                read_only,
+                scope_board,
+                ..
+            }) => {
+                let request =
+                    commands::keys::scope_request(scope, read_only, scope_board).expect("a scope");
+                assert_eq!(request.capabilities, Some(Vec::new()));
+                assert_eq!(request.boards, None);
+            }
+            _ => panic!("expected keys create"),
+        }
+        assert_eq!(commands::keys::scope_request(None, false, Vec::new()), None);
+        for args in [
+            &[
+                "kairos",
+                "keys",
+                "create",
+                "--name",
+                "x",
+                "--scope",
+                "purge",
+                "--read-only",
+            ][..],
+            &[
+                "kairos",
+                "keys",
+                "create",
+                "--name",
+                "x",
+                "--service-account",
+                "sa",
+                "--scope",
+                "purge",
+            ][..],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err(), "{args:?}");
+        }
     }
 
     /// KAIROS-T-0388: `admin agent-keys list` takes a user filter and a

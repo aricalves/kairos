@@ -8,6 +8,10 @@
 //! for no expiry. Rotate gives a key a new secret (shown once); the old secret
 //! works until the end of the grace time.
 //!
+//! KAIROS-T-0536: each new key has a scope. With the two fields empty, the
+//! key gets each capability but `purge` and `manage_structure`. A list of
+//! capabilities or of boards limits the key. Each key shows its scope.
+//!
 //! The data layer is here: three calls on `/api/me/agent-keys`, through the
 //! `crate::api` helpers (envelope-aware errors, the 401 hook).
 
@@ -36,6 +40,55 @@ pub struct AgentKey {
     /// The key that a rotation made in place of this key (KAIROS-T-0370).
     #[serde(default)]
     pub replaced_by: Option<String>,
+    /// The scope (KAIROS-T-0536). `None`: no scope, no limit.
+    #[serde(default)]
+    pub scope: Option<KeyScope>,
+}
+
+/// mirror of: `kairos_client::types_service_accounts::KeyScope`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct KeyScope {
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub boards: Option<Vec<KeyScopeBoard>>,
+}
+
+/// mirror of: `kairos_client::types_service_accounts::KeyScopeBoard`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct KeyScopeBoard {
+    pub id: String,
+    #[serde(default)]
+    pub slug: Option<String>,
+}
+
+/// The scope of a key in words. Pure, host-tested.
+pub(crate) fn scope_text(scope: Option<&KeyScope>) -> String {
+    let Some(scope) = scope else {
+        return "Scope: none. The key can do each thing that you can do.".to_string();
+    };
+    let capabilities = if scope.capabilities.is_empty() {
+        "read-only".to_string()
+    } else {
+        scope.capabilities.join(", ")
+    };
+    let boards = match &scope.boards {
+        None => "each board".to_string(),
+        Some(boards) => boards
+            .iter()
+            .map(|b| b.slug.clone().unwrap_or_else(|| b.id.clone()))
+            .collect::<Vec<_>>()
+            .join(", "),
+    };
+    format!("Scope: {capabilities} on {boards}.")
+}
+
+/// The words of a comma list, trimmed, with no empty word.
+fn words(list: &str) -> Vec<String> {
+    list.split(',')
+        .map(str::trim)
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// mirror of: `kairos_client::types_service_accounts::ApiKeyRotated`
@@ -68,26 +121,46 @@ async fn list_agent_keys(auth: Auth) -> Result<Vec<AgentKey>, ApiError> {
         .map(|list| list.items)
 }
 
-/// The body of a new key. Pure, host-tested.
-pub(crate) fn create_body(
-    name: &str,
-    expires_at: Option<&str>,
-    no_expiry: bool,
-) -> serde_json::Value {
-    match (expires_at, no_expiry) {
-        (_, true) => json!({ "name": name, "no_expiry": true }),
-        (Some(expires_at), false) => json!({ "name": name, "expires_at": expires_at }),
-        (None, false) => json!({ "name": name }),
-    }
+/// The fields of the form of a new key.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct NewKey {
+    pub name: String,
+    pub expires_at: Option<String>,
+    pub no_expiry: bool,
+    /// The capabilities, separated by commas. Empty: the default scope.
+    pub capabilities: String,
+    /// No capabilities: a read-only key.
+    pub read_only: bool,
+    /// The boards, separated by commas. Empty: each board.
+    pub boards: String,
 }
 
-async fn create_agent_key(
-    auth: Auth,
-    name: &str,
-    expires_at: Option<&str>,
-    no_expiry: bool,
-) -> Result<AgentKeyCreated, ApiError> {
-    crate::api::post_json(auth, PATH, &create_body(name, expires_at, no_expiry)).await
+/// The body of a new key. Pure, host-tested.
+pub(crate) fn create_body(new: &NewKey) -> serde_json::Value {
+    let mut body = match (&new.expires_at, new.no_expiry) {
+        (_, true) => json!({ "name": new.name, "no_expiry": true }),
+        (Some(expires_at), false) => json!({ "name": new.name, "expires_at": expires_at }),
+        (None, false) => json!({ "name": new.name }),
+    };
+    let mut scope = serde_json::Map::new();
+    let capabilities = words(&new.capabilities);
+    if new.read_only {
+        scope.insert("capabilities".into(), json!([]));
+    } else if !capabilities.is_empty() {
+        scope.insert("capabilities".into(), json!(capabilities));
+    }
+    let boards = words(&new.boards);
+    if !boards.is_empty() {
+        scope.insert("boards".into(), json!(boards));
+    }
+    if !scope.is_empty() {
+        body["scope"] = serde_json::Value::Object(scope);
+    }
+    body
+}
+
+async fn create_agent_key(auth: Auth, new: &NewKey) -> Result<AgentKeyCreated, ApiError> {
+    crate::api::post_json(auth, PATH, &create_body(new)).await
 }
 
 async fn rotate_agent_key(auth: Auth, key_id: &str) -> Result<AgentKeyRotated, ApiError> {
@@ -133,6 +206,9 @@ pub fn AgentKeysPage() -> impl IntoView {
     let name = RwSignal::new(String::new());
     let expires_at = RwSignal::new(String::new());
     let no_expiry = RwSignal::new(false);
+    let capabilities = RwSignal::new(String::new());
+    let read_only = RwSignal::new(false);
+    let boards = RwSignal::new(String::new());
     // The end of the old secret after the last rotation.
     let grace_end: RwSignal<Option<String>> = RwSignal::new(None);
 
@@ -140,15 +216,20 @@ pub fn AgentKeysPage() -> impl IntoView {
         if busy.get_untracked() {
             return;
         }
-        let key_name = name.get_untracked().trim().to_string();
         let expiry = expires_at.get_untracked().trim().to_string();
-        let forever = no_expiry.get_untracked();
+        let new = NewKey {
+            name: name.get_untracked().trim().to_string(),
+            expires_at: (!expiry.is_empty()).then_some(expiry),
+            no_expiry: no_expiry.get_untracked(),
+            capabilities: capabilities.get_untracked(),
+            read_only: read_only.get_untracked(),
+            boards: boards.get_untracked(),
+        };
         busy.set(true);
         made.set(None);
         grace_end.set(None);
         leptos::task::spawn_local(async move {
-            let expiry = (!expiry.is_empty()).then_some(expiry);
-            let result = create_agent_key(auth, &key_name, expiry.as_deref(), forever).await;
+            let result = create_agent_key(auth, &new).await;
             busy.set(false);
             match result {
                 Ok(created) => {
@@ -157,6 +238,9 @@ pub fn AgentKeysPage() -> impl IntoView {
                     name.set(String::new());
                     expires_at.set(String::new());
                     no_expiry.set(false);
+                    capabilities.set(String::new());
+                    read_only.set(false);
+                    boards.set(String::new());
                     reload.update(|n| *n += 1);
                 }
                 Err(error) => outcome.set(Some(Err(error))),
@@ -215,8 +299,18 @@ pub fn AgentKeysPage() -> impl IntoView {
                     <TextInput label="Expires at (optional)" value=expires_at
                         placeholder="2027-01-01T00:00:00Z"/>
                     <Switch checked=no_expiry label="No expiry"/>
+                </Group>
+                <Group align="end" gap="sm" wrap=true>
+                    <TextInput label="Capabilities (optional)" value=capabilities
+                        placeholder="manage_tasks, transition_items"/>
+                    <TextInput label="Boards (optional)" value=boards placeholder="web, ops"/>
+                    <Switch checked=read_only label="Read-only"/>
                     <Button on_click=Callback::new(on_create)>"Make key"</Button>
                 </Group>
+                <Text size="sm" dimmed=true>
+                    "With no capabilities, the key gets each capability but purge and \
+                     manage_structure. The key never does more than you can do."
+                </Text>
             </Panel>
             <Panel title="Your agent keys"
                 caption="Kairos keeps the start of each key only. A revoked key stays in the \
@@ -296,10 +390,11 @@ pub fn AgentKeysPage() -> impl IntoView {
                                 </Group>
                                 <Text dimmed=true size="sm">
                                     {format!(
-                                        "Made {}. Expires {}. Last used {}.",
+                                        "Made {}. Expires {}. Last used {}. {}",
                                         day(Some(&key.created_at)),
                                         day(key.expires_at.as_deref()),
                                         day(key.last_used_at.as_deref()),
+                                        scope_text(key.scope.as_ref()),
                                     )}
                                 </Text>
                                 <Divider/>
@@ -315,21 +410,78 @@ pub fn AgentKeysPage() -> impl IntoView {
 
 #[cfg(test)]
 mod tests {
-    use super::{create_body, day, day_and_time};
+    use super::{KeyScope, KeyScopeBoard, NewKey, create_body, day, day_and_time, scope_text};
+
+    fn key(name: &str) -> NewKey {
+        NewKey {
+            name: name.into(),
+            ..NewKey::default()
+        }
+    }
 
     #[test]
     fn the_body_asks_for_no_expiry_or_a_date() {
         assert_eq!(
-            create_body("k", None, true),
+            create_body(&NewKey {
+                no_expiry: true,
+                ..key("k")
+            }),
             serde_json::json!({"name": "k", "no_expiry": true})
         );
         assert_eq!(
-            create_body("k", Some("2027-01-01T00:00:00Z"), false),
+            create_body(&NewKey {
+                expires_at: Some("2027-01-01T00:00:00Z".into()),
+                ..key("k")
+            }),
             serde_json::json!({"name": "k", "expires_at": "2027-01-01T00:00:00Z"})
         );
+        assert_eq!(create_body(&key("k")), serde_json::json!({"name": "k"}));
+    }
+
+    #[test]
+    fn the_body_has_the_scope_only_when_the_form_names_one() {
         assert_eq!(
-            create_body("k", None, false),
-            serde_json::json!({"name": "k"})
+            create_body(&NewKey {
+                capabilities: " manage_tasks, ,transition_items ".into(),
+                boards: "web".into(),
+                ..key("k")
+            }),
+            serde_json::json!({"name": "k", "scope": {
+                "capabilities": ["manage_tasks", "transition_items"],
+                "boards": ["web"],
+            }})
+        );
+        assert_eq!(
+            create_body(&NewKey {
+                capabilities: "purge".into(),
+                read_only: true,
+                ..key("k")
+            }),
+            serde_json::json!({"name": "k", "scope": {"capabilities": []}})
+        );
+    }
+
+    #[test]
+    fn the_scope_reads_as_words() {
+        assert_eq!(
+            scope_text(None),
+            "Scope: none. The key can do each thing that you can do."
+        );
+        let scope = KeyScope {
+            capabilities: vec!["manage_tasks".into()],
+            boards: Some(vec![KeyScopeBoard {
+                id: "b1".into(),
+                slug: Some("web".into()),
+            }]),
+        };
+        assert_eq!(scope_text(Some(&scope)), "Scope: manage_tasks on web.");
+        let read_only = KeyScope {
+            capabilities: Vec::new(),
+            boards: None,
+        };
+        assert_eq!(
+            scope_text(Some(&read_only)),
+            "Scope: read-only on each board."
         );
     }
 

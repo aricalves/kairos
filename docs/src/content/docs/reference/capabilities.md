@@ -255,6 +255,78 @@ the organization has `details.scope` = `organization`. A refusal of
 `configure_boards` or `administer_members` has `details.or_capability` =
 `manage_structure`.
 
+## The scope of an agent key
+
+An agent key has a scope (KAIROS-T-0536, KAIROS-A-0063). The scope is a list of
+capabilities and an optional list of boards. A request with the key can do an
+action only when two conditions are true:
+
+1. The person can do the action.
+2. The scope has the capability of the action, on the board of the action.
+
+Thus a scope never gives a right to the key. It only takes rights away.
+
+### The names of a scope
+
+A scope can name each capability of [the grantable vocabulary](#the-grantable-vocabulary),
+`manage_structure` and `file_backlog`. Kairos refuses each other name, and a
+glob such as `*`. The refusal is `VALIDATION`, with `details.field` =
+`scope.capabilities` and `details.value` = the name.
+
+| Scope | What the key can do |
+|---|---|
+| No `scope` in the request | The default scope: each capability but `purge` and `manage_structure`, on each board |
+| `capabilities: []` | Nothing. The key is read-only |
+| A list of capabilities | Only the actions of these capabilities |
+| A list of boards | Only the actions on these boards. An action with no board is refused |
+
+A scope does not limit a read. Each member of the organization can read each item.
+
+### Which capability an action needs
+
+| Action | The scope needs |
+|---|---|
+| An action of a board capability | That capability, for example `manage_tasks` or `purge` |
+| An edit, an archive or a restore of an item | `manage_<type>` of the item. The creator and the claim of a task count only through it |
+| A request to another team | `file_backlog` |
+| A change of teams, boards and the grants of `manage_structure` | `manage_structure` |
+| The work of the organization admin role: accounts, keys, SCIM tokens, templates, metadata definitions, delivery streams, forge connections | `manage_structure` |
+| A claim, a hand-off or a release of the owner of an item | `member` |
+| A write to a team page or an announcement | `manage_documents` |
+
+The organization admin role passes each check only inside the scope. For
+example, the default key of an admin can make a task on each board. It cannot
+purge a task or make a team.
+
+### The refusal
+
+The refusal is `KEY_SCOPE`, with status 403. The refusal names the scope:
+
+| Field of `details` | Value |
+|---|---|
+| `required_capability` | The capability of the action |
+| `board_id` | The board of the action, or null |
+| `scope_needs` | The capability that the scope must have. For the work of the admin role, this is `manage_structure` |
+| `reason` | `capability`, `board` or `no_board` |
+| `key_scope` | The `capabilities` and the `boards` of the key. `boards` null means each board |
+
+When the scope has the capability and the person does not, the refusal is
+`FORBIDDEN`, as for a login.
+
+### Keys from before the scope
+
+Each key that existed before KAIROS-T-0536 has no scope. Such a key has no
+limit: it keeps each right of its person. Thus no agent stops at the upgrade.
+Make a new key with a scope, and revoke the old key, to limit an agent.
+
+A rotation keeps the scope of the key. The scope of a key does not change
+after Kairos makes it. The key of a service account has no scope: a service
+account has only its grants.
+
+`whoami` shows the scope of the key in use: REST `agent_key.scope`, the MCP
+section `Agent key scope` and the CLI line `key scope:`. See
+[Give an agent your key](../../how-to/give-an-agent-your-key/#choose-the-scope-of-the-key).
+
 ## How a board is resolved
 
 Authorisation needs a board, and not every item carries one directly.
