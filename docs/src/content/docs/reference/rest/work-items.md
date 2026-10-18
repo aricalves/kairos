@@ -255,11 +255,11 @@ is that a listing nobody asked hides put-away work.
 
 Create a task. `task_type` defaults to `task`.
 
-A task starts in the entry column of its board, for every caller
-(KAIROS-T-0566): a `column_id` that is not the entry column is a 422.
-Create the task there, then move it: the move runs the claim, the WIP
-warning and the dispatch rules of the column. The dispatch rules of the
-entry column fire for the create.
+A task starts in the entry column of its board (KAIROS-T-0566). A
+`column_id` of another column gives a 422. Create the task there, then
+move it. The move runs the claim, the WIP warning and the dispatch rules
+of the column. The dispatch rules of the entry column fire for the
+create.
 
 A caller with `manage_tasks` on the target board can use any work class.
 Every other member of the tenant sends a request (`file_backlog`,
