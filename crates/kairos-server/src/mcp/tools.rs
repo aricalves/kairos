@@ -2649,7 +2649,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Propose a `parent` or `blocks` edge between two items for a person to confirm; you cannot create or confirm it yourself. Use it when `related_work` shows a real dependency, and say why: the reason is shown to who decides. The person who confirms must be able to edit one of the two items."
+        description = "Propose a `parent` or `blocks` edge between two items for a person to confirm; you cannot create or confirm it yourself. Use it when `related_work` shows a real dependency, and say why: the reason is shown to who decides. A person other than the proposer confirms or rejects it, and not with an agent key. That person must be able to edit one of the two items."
     )]
     pub async fn propose_edge(
         &self,
@@ -2685,7 +2685,8 @@ impl KairosMcp {
             )
             .map_err(crate::api::proposals::map_proposal_error)?;
             Ok(format!(
-                "Proposed {} -[{}]-> {} ({}). It is NOT an edge yet. A person must confirm it.",
+                "Proposed {} -[{}]-> {} ({}). It is NOT an edge yet. A person other than the \
+                 proposer must confirm it, and not with an agent key.",
                 source.short_code, params.relationship, target.short_code, proposal.id
             ))
         })
@@ -7905,7 +7906,13 @@ fn render_related_work(
 ) -> String {
     let mut out = format!("# Possibly related to {}\n\n", found.short_code);
     if found.proposals.is_empty() {
-        out.push_str("The search found no related work. ");
+        if found.sources.degraded() {
+            // KAIROS-T-0562: no item clears the text bar. Say that, not five
+            // weak matches.
+            out.push_str("None found. No item matches enough of the rare words of the title. ");
+        } else {
+            out.push_str("The search found no related work. ");
+        }
         out.push_str(found.sources.note());
         out.push_str("\n\nThis is one search. It does not prove that no related work exists.\n");
         out.push_str(&render_external_refs(external));
@@ -8544,5 +8551,98 @@ mod moves_line_tests {
             "Backlog [entry] → Todo | Todo → Active | Active [claims, WIP 3] → Todo, Completed | Completed [done]"
         );
         assert_eq!(moves_line(&[], &[]), "");
+    }
+}
+
+#[cfg(test)]
+mod related_work_render_tests {
+    //! KAIROS-T-0562: the text of `related_work`. A text-only answer says
+    //! "Text only" one time, at the top, and "None found" when no item is over
+    //! the bar. The text of an answer with vectors does not change.
+    use super::render_related_work;
+    use crate::embedding::RelatedWork;
+    use kairos_core::retrieval::{Candidate, GraphRelation, RetrievalConfig, Sources, propose};
+
+    fn candidate(code: &str, lexical: usize, vector: Option<usize>, text: f32) -> Candidate {
+        Candidate {
+            short_code: code.into(),
+            title: format!("Title of {code}"),
+            entity_type: "task".into(),
+            lexical_rank: Some(lexical),
+            vector_rank: vector,
+            graph: GraphRelation::default(),
+            finished: false,
+            heading: None,
+            text_score: Some(text),
+        }
+    }
+
+    fn answer(sources: Sources, candidates: &[Candidate]) -> RelatedWork {
+        RelatedWork {
+            short_code: "ACME-T-0001".into(),
+            proposals: propose(candidates, sources, &RetrievalConfig::default()),
+            sources,
+        }
+    }
+
+    const TEXT_ONLY: Sources = Sources {
+        lexical: true,
+        vector: false,
+    };
+    const BOTH: Sources = Sources {
+        lexical: true,
+        vector: true,
+    };
+
+    #[test]
+    fn a_text_only_answer_says_text_only_once_at_the_top() {
+        let candidates: Vec<Candidate> = (0..6)
+            .map(|i| candidate(&format!("ACME-T-{:04}", i + 2), i, None, 0.9))
+            .collect();
+        let text = render_related_work(&answer(TEXT_ONLY, &candidates), &[]);
+        assert_eq!(text.matches("Text only").count(), 1, "{text}");
+        let note = text.find("Text only").expect("the note");
+        let first = text.find("- **").expect("a proposal");
+        assert!(
+            note < first,
+            "the warning comes before the proposals: {text}"
+        );
+        assert_eq!(text.matches("- **").count(), 3, "at most 3: {text}");
+    }
+
+    #[test]
+    fn a_text_only_answer_under_the_bar_is_none_found() {
+        let weak = [candidate("ACME-T-0002", 0, None, 0.1)];
+        let text = render_related_work(&answer(TEXT_ONLY, &weak), &[]);
+        assert!(
+            text.starts_with("# Possibly related to ACME-T-0001\n\nNone found."),
+            "{text}"
+        );
+        assert_eq!(text.matches("Text only").count(), 1, "{text}");
+        assert!(!text.contains("- **"), "{text}");
+    }
+
+    /// The text of an answer with vectors, word for word as before
+    /// KAIROS-T-0562. A low text score changes nothing here.
+    #[test]
+    fn an_answer_with_vectors_reads_as_before() {
+        let found = answer(BOTH, &[candidate("ACME-T-0002", 0, Some(0), 0.01)]);
+        assert_eq!(
+            render_related_work(&found, &[]),
+            "# Possibly related to ACME-T-0001\n\n\
+             Ranked across text and meaning. \"Nothing joins them\" means no direct edge and \
+             no shared parent — not that a path was searched for and missed. The graph is \
+             sparse, so absence is weak evidence.\n\n\
+             These are PROPOSALS, not findings. Examine a proposal before you use it.\n\n\
+             - **ACME-T-0002** — Title of ACME-T-0002 (possible dependency)\n  \
+             Matches both the words and the meaning, and nothing in the graph joins them.\n"
+        );
+        let none = answer(BOTH, &[]);
+        assert_eq!(
+            render_related_work(&none, &[]),
+            "# Possibly related to ACME-T-0001\n\n\
+             The search found no related work. Ranked across text and meaning.\n\n\
+             This is one search. It does not prove that no related work exists.\n"
+        );
     }
 }

@@ -207,6 +207,7 @@ nothing on the others. The other 409s and what they carry instead:
 | Registering a repository whose slug is taken | — |
 | The create or the update of a board with the slug of a live board. The create of a team whose delivery board gets such a slug | `slug`, and `board` (`id`, `name`): the board that has the slug |
 | Registering a repository already registered for that forge | — |
+| A confirm or a reject of an edge proposal that is decided already. Of two decisions at the same time, one gets this | — |
 | `DEFINITION_IN_USE` (its own code; see below) | its own fields |
 
 **The distinction to internalise**, because it decides how a client branches:
@@ -302,6 +303,7 @@ refusal is `VALIDATION` with `details.field` = `board` (MCP:
 | `CYCLE_DETECTED` | 422 | The edge would create a cycle | — |
 | `RELATIONSHIP_RULE` | 422 | The edge is not legal between those two entity types. For an `impacts` link: the subject is not a document and not an ADR | `relationship`. For an `impacts` link, also `source_type` and `allowed_source_types` |
 | `ALREADY_LINKED` | 422 | That edge already exists. For an `impacts` link: the item impacts that repository already | — |
+| `PERSON_DECIDES` | 403 | The caller cannot confirm or reject an edge proposal. A person other than the proposer decides, with a login and not with an agent key (KAIROS-T-0538). The proposal stays pending | `reason`: `service_account`, `agent_key` or `proposer` |
 
 ### Tenant configuration
 
