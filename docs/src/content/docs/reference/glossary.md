@@ -550,7 +550,8 @@ release it. An organization admin can set or clear it. A new owner is always a
 member of the board. Nobody else can change it.
 
 The owner stays in each column, Completed too. The owner gets no right: the
-owner can do what a member of the board can do.
+grants of the owner decide what the owner can do. Only the `member` grant
+gives the edit and the move of the items (KAIROS-T-0541).
 
 An active initiative has an owner (KAIROS-T-0643). With the board policy
 `owner_gate` on, an initiative moves into Active only with an owner. In Active
