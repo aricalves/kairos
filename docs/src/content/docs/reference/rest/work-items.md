@@ -300,6 +300,10 @@ back. To delete a task for good, use `POST /api/tasks/{short_code}/purge`.
 
 The edit rule applies (COLLIERY-T-0228). The caller created the
 task, holds `manage_tasks` on its board, or is an organization admin.
+Intake is a support-lane task in the entry column, and its archive is
+a "won't do". Kairos refuses an agent's archive of intake with
+`AGENT_TRIAGE_OFF` while the board lets a person decide
+(KAIROS-T-0537).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
@@ -308,7 +312,7 @@ task, holds `manage_tasks` on its board, or is an organization admin.
 | Response | Body | Meaning |
 |---|---|---|
 | `200` | [`DeleteResponse`](../schemas/#deleteresponse) | Archived; notes the cascade. A restore brings the task back |
-| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Refused by the edit rule: the caller did not create the item and lacks the capability |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Refused by the edit rule: the caller did not create the item and lacks the capability, or AGENT_TRIAGE_OFF (an agent's archive of intake) |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown short code |
 
 ### `PATCH /api/tasks/{short_code}`
@@ -462,26 +466,35 @@ Request body (required): `application/json`, [`MoveTaskRequest`](../schemas/#mov
 
 ### `POST /api/tasks/{short_code}/purge`
 
-Delete a task for good (KAIROS-T-0362). Nothing can bring it back. The
-task can be live or archived.
+Delete an archived task for good (KAIROS-T-0362). Nothing can bring it
+back. Archive the task first (`DELETE /api/tasks/{short_code}`). Kairos
+refuses a live task with `TASK_LIVE` (KAIROS-T-0570).
 
 The purge removes these rows of the task:
 
 - the task, its history and its metadata;
 - its edges and its edge proposals;
-- its forge links, its embeddings and its retired codes;
+- its forge links, its external references and its embeddings;
+- its retired codes and its forge intake row;
 - its claim and its cancel mark.
 
 The items at the other end of the edges stay. The activity rows about
-the task stay. One new row (`purge`) names the code and the title.
+the task stay. One new row (`purge`) names the code and the title. A
+new import of the issue of an intake task makes a task again.
 
 This is a separate route, and not a flag of `DELETE`. `DELETE`
 archives. A purge must not be one query parameter away from an
 archive.
 
-Requires `manage_tasks` on the board of the task (an organization
-admin has it). The creator of the task gets no right here. Send the
-current code. The route does not follow a retired code.
+Requires `purge` on the board of the task. Team membership does not
+give it, and `manage_tasks` is not enough. An organization admin has
+it. The creator of the task gets no right here.
+
+Intake is a
+support-lane task in the entry column. Kairos refuses an agent's purge
+of intake with `AGENT_TRIAGE_OFF` while the board lets a person decide
+(KAIROS-T-0537). Send the current code. The route does not follow a
+retired code.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
@@ -490,8 +503,9 @@ current code. The route does not follow a retired code.
 | Response | Body | Meaning |
 |---|---|---|
 | `200` | [`PurgeTaskResponse`](../schemas/#purgetaskresponse) | Deleted for good |
-| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Missing manage_tasks on the board of the task |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Missing purge on the board of the task, or AGENT_TRIAGE_OFF (an agent's purge of intake) |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown short code |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | TASK_LIVE: the task is not archived. Archive it first |
 
 ### `POST /api/tasks/{short_code}/release`
 

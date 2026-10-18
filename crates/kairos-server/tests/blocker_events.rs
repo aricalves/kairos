@@ -4,7 +4,9 @@
 //!    and tells the claimant (`blocker_cleared`). An unlink with an open
 //!    blocker left tells the claimant only. An unlink of the edge of a done
 //!    blocker does nothing.
-//! 2. A purge of an open blocker frees its dependants in the same way.
+//! 2. A purge needs an archived task (KAIROS-T-0570): the archive of an
+//!    open blocker frees its dependants, and the purge after it tells
+//!    nobody again.
 //! 3. A dependant can be an initiative: the rule of its board fires, and
 //!    its owner is told.
 //! 4. A done blocker that leaves the done column tells the claimant of each
@@ -359,7 +361,7 @@ async fn a_blocker_that_goes_away_or_comes_back_tells_the_dependant() {
     blocks(&bob, &p, &w4).await;
     moves(&alice, &w4, &columns, &["Todo", "Active"]).await;
     let _ = new_notes(&mut conn, &mut notes);
-    admin.purge_task(&p).await.expect("purge");
+    admin.delete_task(&p).await.expect("archive");
     assert_eq!(
         summary(&new_unblocked(&mut conn, &mut sent)),
         vec![(w4.clone(), p.clone(), "task".to_string())]
@@ -369,9 +371,12 @@ async fn a_blocker_that_goes_away_or_comes_back_tells_the_dependant() {
         vec![(
             alice_id,
             "blocker_cleared".to_string(),
-            format!("{p} does not block {w4} now: it is purged.")
+            format!("{p} does not block {w4} now: it is archived.")
         )]
     );
+    admin.purge_task(&p).await.expect("purge");
+    assert!(new_unblocked(&mut conn, &mut sent).is_empty());
+    assert!(new_notes(&mut conn, &mut notes).is_empty());
 
     // --- 3. An initiative waits for a task --------------------------------
     let initiative = admin

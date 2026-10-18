@@ -558,7 +558,8 @@ fn ItemLoaded(item: ItemDetail, family: Family) -> impl IntoView {
                     </Button>
                 })}
                 // KAIROS-T-0362: a task can be cancelled (not when it is
-                // done) and deleted for good (board managers only).
+                // done) and deleted for good. KAIROS-T-0570: the delete is
+                // for an archived task, and needs `purge` on the board.
                 {move || (task_powers.get().cancel && !archived.get() && !cancelled.get()).then(|| view! {
                     <Button variant="default" size="xs"
                         on_click=Callback::new(move |_| cancel_open.set(true))>
@@ -579,7 +580,7 @@ fn ItemLoaded(item: ItemDetail, family: Family) -> impl IntoView {
                         "Archive"
                     </Button>
                 })}
-                {move || task_powers.get().purge.then(|| view! {
+                {move || (task_powers.get().purge && archived.get()).then(|| view! {
                     <Button variant="default" size="xs" bad=true
                         on_click=Callback::new(move |_| purge_open.set(true))>
                         "Delete"
@@ -791,7 +792,9 @@ struct TaskEndPowers {
     /// Cancel: `transition_items` on the board (the capability of a move),
     /// and the task is not in a done column.
     cancel: bool,
-    /// Delete for good: `manage_tasks` on the board.
+    /// Delete for good: `purge` on the board (KAIROS-T-0570). Team
+    /// membership does not give it. The page shows the control on an
+    /// archived task only.
     purge: bool,
     /// Reopen (KAIROS-T-0648): `transition_items` on the board, and the
     /// task is in a done column. A cancelled task is in a done column too.
@@ -801,10 +804,10 @@ struct TaskEndPowers {
 impl TaskEndPowers {
     /// The powers from the capabilities and the column of the task. Pure,
     /// host-tested.
-    fn from_rule(transition: bool, manage_tasks: bool, done: bool) -> Self {
+    fn from_rule(transition: bool, purge: bool, done: bool) -> Self {
         Self {
             cancel: transition && !done,
-            purge: manage_tasks,
+            purge,
             reopen: transition && done,
         }
     }
@@ -839,13 +842,9 @@ fn task_end_powers(
                 .any(|c| Some(&c.id) == column.as_ref() && c.is_done)
         });
         let powers = boards::board_powers(&me, &board.slug, board.team_id.as_deref(), None);
-        let manage_tasks = boards::holds_capability(
-            &me,
-            Some(&board.slug),
-            board.team_id.as_deref(),
-            "manage_tasks",
-        );
-        TaskEndPowers::from_rule(powers.transition, manage_tasks, done)
+        let purge =
+            boards::holds_capability(&me, Some(&board.slug), board.team_id.as_deref(), "purge");
+        TaskEndPowers::from_rule(powers.transition, purge, done)
     })
 }
 
