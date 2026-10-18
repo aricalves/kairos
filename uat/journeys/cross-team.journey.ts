@@ -157,6 +157,9 @@ journey(
       await openItem(page, filed);
       const repository = page.locator('[data-testid="repository-control"]');
       await expect(repository, 'the repository is an edit').toBeVisible({ timeout: 10_000 });
+      // KAIROS-T-0618: the picker is closed until "Change repository"
+      // opens it; "Set repository" is in the picker.
+      await repository.getByRole('button', { name: 'Change repository' }).click();
       await expect(repository.getByRole('button', { name: 'Set repository' })).toBeVisible();
       await expect(page.getByRole('button', { name: 'Archive', exact: true })).toBeEnabled();
       // The repository control needs whoami, so whoami has resolved: the
@@ -256,11 +259,16 @@ journey(
 
     await step(alice, `lists what was filed against ${THEIR_REPO} with the CLI and sees carol as the author`, async () => {
       const cli = await alice.cli();
-      const hits = await cli.json(['search', '--repo', THEIR_REPO, '--limit', '100']);
-      const row = (hits.results?.tasks ?? []).find((t: any) => t.short_code === filed);
-      expect(row).toBeTruthy();
+      // KAIROS-T-0602: a search hit is a card, with no `created_by`. The
+      // search filters by the author instead (KAIROS-T-0488), and the item
+      // names its creator.
       const me = await (await carol.api()).whoami();
-      expect(row.created_by).toBe(me.user.id);
+      const hits = await cli.json([
+        'search', '--repo', THEIR_REPO, '--created-by', me.user.email, '--limit', '100',
+      ]);
+      const row = (hits.results?.tasks ?? []).find((t: any) => t.short_code === filed);
+      expect(row, `${filed} is in the search by its author`).toBeTruthy();
+      expect((await (await alice.api()).task(filed)).created_by).toBe(me.user.id);
       return { task: filed, created_by: me.user.email };
     });
 
@@ -270,16 +278,29 @@ journey(
       const page = await bob.gui();
       await openItem(page, filed);
       // Two-sided: bob manages platform only, so there is nowhere he may
-      // push this card. The GUI hides the control rather than dangling it.
-      await expect(page.locator('[data-testid="move-board"]')).toHaveCount(0);
+      // push this card. KAIROS-T-0618: he holds the source half, so the
+      // control shows; the boards load when he opens it, and it offers no
+      // board.
+      const control = page.locator('[data-testid="move-board"]');
+      await control.getByRole('button', { name: 'Move to another board' }).click();
+      await expect(control.getByText('You cannot move this task to another delivery board.')).toBeVisible();
+      await expect(control.locator('select')).toHaveCount(0);
       return { board_select_offered: false };
     });
 
-    await step(alice, `moves the ticket to the web board while it is still bound to ${THEIR_REPO}, and it keeps the repository`, async () => {
+    await step(alice, `reopens the ticket and moves it to the web board while it is still bound to ${THEIR_REPO}, and it keeps the repository`, async () => {
       const page = await alice.gui();
       await openItem(page, filed);
+      // KAIROS-T-0564: bob took it to Completed, and a done task does not
+      // move to another board. She reopens it first (KAIROS-T-0648).
+      await page.getByRole('button', { name: 'Reopen', exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: `Reopen ${filed}?` });
+      await dialog.getByRole('button', { name: 'Reopen', exact: true }).click();
+      await expect(page.locator('.cl-toast', { hasText: `Kairos reopened ${filed}.` })).toBeVisible();
       const control = page.locator('[data-testid="move-board"]');
       await expect(control).toBeVisible();
+      // KAIROS-T-0618: the board list loads when the control opens.
+      await control.getByRole('button', { name: 'Move to another board' }).click();
       await control.locator('select').selectOption(carolBoard);
       await control.getByRole('button', { name: 'Move board' }).click();
       // Until COLLIERY-T-0217 this was refused with REPOSITORY_OWNER_MISMATCH
@@ -290,7 +311,7 @@ journey(
       expect(moved.repository?.slug, 'the ticket keeps its repository').toBe(THEIR_REPO);
       await openBoard(page, theirBoard);
       await expect(card(page, filed)).toHaveCount(0);
-      return { task: filed, still_bound_to: THEIR_REPO, moved_to: carolBoard };
+      return { task: filed, reopened: true, still_bound_to: THEIR_REPO, moved_to: carolBoard };
     });
 
     await step(carol, 'finds it on her board but cannot push it back — platform\'s board is not hers to write', async () => {

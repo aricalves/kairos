@@ -23,6 +23,13 @@ async function createFromHeader(page: Page, kind: string, title: string): Promis
   return (await codeLink.innerText()).trim();
 }
 
+/**
+ * The reply of a tool without the notification footer that MCP adds when
+ * the caller has unread events (KAIROS-T-0382). Other journeys of the run
+ * (a blocker cleared on the on-call board) decide whether it is there.
+ */
+const firstLine = (text: string) => text.split('\n')[0];
+
 journey(
   'planning',
   'A strategy is broken down until it is work on a board',
@@ -94,7 +101,7 @@ journey(
       const before = await mcp.call('get_item', { short_code: initiative });
       expect(before).toContain('- teams: none');
       const set = await mcp.call('set_team', { short_code: initiative, team: 'platform' });
-      expect(set).toBe(`Set the team platform on ${initiative} by hand.`);
+      expect(firstLine(set)).toBe(`Set the team platform on ${initiative} by hand.`);
       const after = await mcp.call('get_item', { short_code: initiative });
       expect(after).toContain('- teams: platform (set by hand)');
       return { short_code: initiative, teams: 'platform (set by hand)' };
@@ -126,7 +133,7 @@ journey(
       expect(listed).toContain(`- ${initiative} [initiative]`);
       expect(listed).toContain('[teams: platform]');
       const cleared = await mcp.call('clear_team', { short_code: initiative, team: 'platform' });
-      expect(cleared).toBe(`Cleared the team platform set by hand on ${initiative}.`);
+      expect(firstLine(cleared)).toBe(`Cleared the team platform set by hand on ${initiative}.`);
       const after = await mcp.call('get_item', { short_code: initiative });
       expect(after).toContain('- teams: platform (from tasks)');
       return { short_code: initiative, teams: 'platform (from tasks)' };
@@ -144,14 +151,21 @@ journey(
     await step(alice, 'opens the Graph tab and sees the initiative, both tasks and the blocks edge', async () => {
       const page = await alice.gui();
       await page.goto(`/items/${initiative}?view=graph`);
-      // COLLIERY-T-1836: the Aurora `Dag`; a node's `data-id` is its code.
-      await expect(page.locator('.cl-dag__node--current')).toHaveAttribute('data-id', initiative);
+      // KAIROS-T-0492: the initiative is the header of the group box of its
+      // tasks, not a node; the tasks are nodes (`data-id` is the code).
+      await expect(
+        page.locator(`.kairos-graph__header--current[data-group="${initiative}"]`),
+      ).toHaveCount(1);
       for (const code of [bound, blocker]) {
         await expect(page.locator(`.cl-dag__node[data-id="${code}"]`)).toBeVisible();
       }
-      // parent is drawn as containment (lanes); blocks is the one arrow.
+      // parent is drawn as the group box; blocks is the one arrow. A straight
+      // arrow has no height, so Playwright calls it hidden: count it.
       await expect(page.locator('svg.cl-dag path.cl-dag__edge')).toHaveCount(1);
-      return { nodes: [initiative, bound, blocker], arrows: 'blocks ×1 (parent shown as containment)' };
+      await expect(
+        page.locator(`svg.cl-dag path.cl-dag__edge[data-from="${blocker}"]`),
+      ).toHaveCount(1);
+      return { group: initiative, nodes: [bound, blocker], arrows: 'blocks ×1 (parent shown as the group box)' };
     });
 
     await step(bob, 'opens the platform board and sees the bound task marked blocked', async () => {
