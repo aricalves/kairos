@@ -1947,7 +1947,7 @@ kairos repos write-token status <REPOSITORY> [OPTIONS]
 Sets, removes or shows the write token of the write-back (KAIROS-T-0386).
 With the token, Kairos writes a comment and the status `kairos` on each
 linked GitHub pull request. Kairos also comments on each issue that became a
-task, and closes or opens the issue with the task (KAIROS-T-0575). You must be
+task. It closes or opens the issue with the task (KAIROS-T-0575). You must be
 an organization admin or a member of the owner team.
 
 `set` reads the token from standard input, as `kairos repos credential set`
