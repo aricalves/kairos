@@ -37,8 +37,12 @@
 //! - **Cumulative flow**: for each day of the range (UTC), the number of
 //!   live items in each column at the end of the day.
 //!
-//! Only the live items of the board count: an archived item, and an item
-//! that is on a different board now, do not.
+//! The items of the board count. An archived item counts for its time on
+//! the board (KAIROS-T-0571): its timeline ends at the archive. So an
+//! item archived from a done column keeps its done time and its cycle
+//! time, and "Archive completed" keeps the throughput. An archived item is
+//! not work in progress, and the cumulative flow drops it on the day of
+//! the archive. An item that is on a different board now does not count.
 //!
 //! # The read is bounded by the range (KAIROS-T-0627)
 //!
@@ -48,7 +52,9 @@
 //! (the column at the start of the range), the first entry into a start
 //! column, and the last entry into a done column. The numbers are the same
 //! as from every move. The cumulative flow has an old column name only
-//! when it has an item on a day of the range.
+//! when it has an item on a day of the range. [`load_board`] reads the
+//! archived items whose archive is in the range or after it: an item
+//! archived before the range has no part in it.
 //!
 //! [`FlowBoard::stamp`] is a hash of what the board has now: the columns,
 //! the items with their column and the time of their last change, and the
@@ -77,14 +83,18 @@ pub struct FlowColumn {
     pub claims: bool,
 }
 
-/// A live item of the board.
+/// An item of the board: live, or archived (KAIROS-T-0571).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlowItem {
     pub id: Uuid,
     pub short_code: String,
     pub title: String,
+    /// The column now; for an archived item, the column it was archived
+    /// from.
     pub column_id: Uuid,
     pub created_at: DateTime<Utc>,
+    /// The time of the archive; `None` for a live item.
+    pub archived_at: Option<DateTime<Utc>>,
 }
 
 /// One move of an item: the time and the column after it, by name. `None`
@@ -279,6 +289,10 @@ pub fn compute(input: &FlowInput, from: NaiveDate, to: NaiveDate, now: DateTime<
         for m in moves {
             line.push((m.at, m.to.clone()));
         }
+        // KAIROS-T-0571: an archived item leaves the board at its archive.
+        if let Some(archived_at) = item.archived_at {
+            line.push((archived_at, None));
+        }
         timelines.push((item, line));
     }
 
@@ -333,7 +347,9 @@ pub fn compute(input: &FlowInput, from: NaiveDate, to: NaiveDate, now: DateTime<
                 }),
                 _ => done_without_start += 1,
             }
-        } else if let Some(started_at) = started_at {
+        } else if item.archived_at.is_none()
+            && let Some(started_at) = started_at
+        {
             ageing.push(AgeingItem {
                 short_code: item.short_code.clone(),
                 title: item.title.clone(),
@@ -473,9 +489,15 @@ pub struct FlowBoard {
     pub stamp: u64,
 }
 
-/// Read the live columns of the board `board_id`, its live items (of the
-/// four types) and the cancelled tasks. 4 queries and one for each type.
-pub fn load_board(conn: &mut PgConnection, board_id: Uuid) -> Result<FlowBoard, DieselError> {
+/// Read the live columns of the board `board_id`, its items (of the four
+/// types) and the cancelled tasks. 4 queries and one for each type. The
+/// items are the live items, and the archived items with an archive at
+/// `since` or after it (KAIROS-T-0571, module docs).
+pub fn load_board(
+    conn: &mut PgConnection,
+    board_id: Uuid,
+    since: DateTime<Utc>,
+) -> Result<FlowBoard, DieselError> {
     use crate::schema::{adrs, board_columns, initiatives, strategies, tasks};
 
     let columns: Vec<FlowColumn> = board_columns::table
@@ -498,14 +520,26 @@ pub fn load_board(conn: &mut PgConnection, board_id: Uuid) -> Result<FlowBoard, 
         })
         .collect();
 
-    type Row = (Uuid, String, String, Uuid, DateTime<Utc>, DateTime<Utc>);
+    type Row = (
+        Uuid,
+        String,
+        String,
+        Uuid,
+        DateTime<Utc>,
+        DateTime<Utc>,
+        Option<DateTime<Utc>>,
+    );
     let mut rows: Vec<Row> = Vec::new();
-    macro_rules! live_items {
+    macro_rules! board_items {
         ($table:ident) => {
             rows.extend(
                 $table::table
                     .filter($table::board_id.eq(board_id))
-                    .filter($table::deleted_at.is_null())
+                    .filter(
+                        $table::deleted_at
+                            .is_null()
+                            .or($table::deleted_at.ge(since)),
+                    )
                     .select((
                         $table::id,
                         $table::short_code,
@@ -513,18 +547,19 @@ pub fn load_board(conn: &mut PgConnection, board_id: Uuid) -> Result<FlowBoard, 
                         $table::column_id,
                         $table::created_at,
                         $table::updated_at,
+                        $table::deleted_at,
                     ))
                     .load::<Row>(conn)?,
             )
         };
     }
-    live_items!(strategies);
-    live_items!(initiatives);
-    live_items!(tasks);
+    board_items!(strategies);
+    board_items!(initiatives);
+    board_items!(tasks);
     rows.extend(
         adrs::table
             .filter(adrs::board_id.eq(Some(board_id)))
-            .filter(adrs::deleted_at.is_null())
+            .filter(adrs::deleted_at.is_null().or(adrs::deleted_at.ge(since)))
             .filter(adrs::column_id.is_not_null())
             .select((
                 adrs::id,
@@ -533,6 +568,7 @@ pub fn load_board(conn: &mut PgConnection, board_id: Uuid) -> Result<FlowBoard, 
                 adrs::column_id.assume_not_null(),
                 adrs::created_at,
                 adrs::updated_at,
+                adrs::deleted_at,
             ))
             .load::<Row>(conn)?,
     );
@@ -571,12 +607,13 @@ pub fn load_board(conn: &mut PgConnection, board_id: Uuid) -> Result<FlowBoard, 
     let items = rows
         .into_iter()
         .map(
-            |(id, short_code, title, column_id, created_at, _)| FlowItem {
+            |(id, short_code, title, column_id, created_at, _, archived_at)| FlowItem {
                 id,
                 short_code,
                 title,
                 column_id,
                 created_at,
+                archived_at,
             },
         )
         .collect();
@@ -746,7 +783,7 @@ pub fn load_input(
     board_id: Uuid,
     since: DateTime<Utc>,
 ) -> Result<FlowInput, DieselError> {
-    let board = load_board(conn, board_id)?;
+    let board = load_board(conn, board_id, since)?;
     let moves = load_moves(conn, board_id, &board, since)?;
     Ok(FlowInput::new(board, moves))
 }
@@ -821,6 +858,7 @@ mod tests {
             title: format!("Task {code}"),
             column_id: columns[column].id,
             created_at: at("2026-09-28T08:00:00Z"),
+            archived_at: None,
         };
         let items = vec![
             item(0, "A", 3),
@@ -1000,6 +1038,47 @@ mod tests {
             vec!["Backlog", "Todo", "Active", "Done", "Review"]
         );
         assert!(flow.cfd.iter().all(|d| d.counts.len() == 5));
+    }
+
+    /// KAIROS-T-0571: an archived item counts for its time on the board.
+    /// A (done) and C (cancelled) are archived on Fri 2026-10-02, B (in
+    /// progress) on Sat 2026-10-03.
+    #[test]
+    fn an_archived_item_counts_until_its_archive() {
+        let (mut input, ids) = board();
+        for item in &mut input.items {
+            if item.id == ids[0] || item.id == ids[2] {
+                item.archived_at = Some(at("2026-10-02T12:00:00Z"));
+            }
+            if item.id == ids[1] {
+                item.archived_at = Some(at("2026-10-03T12:00:00Z"));
+            }
+        }
+        let flow = compute(
+            &input,
+            date("2026-09-28"),
+            date("2026-10-11"),
+            at("2026-10-11T10:00:00Z"),
+        );
+        // The done time, the cycle time and the cancel stay.
+        assert_eq!(flow.done_count(), 2);
+        assert_eq!(flow.cancelled_count(), 1);
+        assert_eq!(flow.cycle_times.len(), 1);
+        assert_eq!(flow.cycle_times[0].short_code, "A");
+        // An archived item is not work in progress.
+        assert!(flow.ageing.is_empty(), "{:?}", flow.ageing);
+        // The cumulative flow drops each item on the day of its archive.
+        let day = |date: &str| {
+            flow.cfd
+                .iter()
+                .find(|d| d.date.to_string() == date)
+                .map(|d| d.counts.clone())
+                .expect("a day")
+        };
+        assert_eq!(day("2026-10-01"), vec![0, 1, 1, 2]);
+        assert_eq!(day("2026-10-02"), vec![0, 1, 1, 0]);
+        assert_eq!(day("2026-10-03"), vec![0, 1, 0, 0]);
+        assert_eq!(day("2026-10-06"), vec![0, 0, 0, 1]);
     }
 
     #[test]

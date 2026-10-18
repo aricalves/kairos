@@ -89,11 +89,13 @@ pub struct ItemRelationshipsResponse {
 pub struct ChildrenProgressResponse {
     /// The parent item's short code.
     pub short_code: String,
-    /// Direct live children (soft-deleted excluded; supports/informs
-    /// material never counts).
+    /// Direct children that count: the live children, and the archived
+    /// children in a done column (KAIROS-T-0571). Supports/informs
+    /// material never counts.
     pub total: i64,
     /// Children sitting in `is_done` columns, less the cancelled tasks
-    /// (KAIROS-T-0567).
+    /// (KAIROS-T-0567). An archived child in a done column counts here
+    /// (KAIROS-T-0571).
     pub done: i64,
     /// Cancelled tasks among the children (KAIROS-T-0567). A cancel is
     /// "won't do", not done. The default is for the client only: a
@@ -106,6 +108,13 @@ pub struct ChildrenProgressResponse {
     #[serde(default)]
     #[schema(required = true)]
     pub open: i64,
+    /// Children archived from a column that is not done (KAIROS-T-0571).
+    /// They are not open work, and they are not in `total`. The default
+    /// is for the client only: a response of an older server has no
+    /// `removed`.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub removed: i64,
     /// False when no board hosting the children has a done-flagged
     /// column — show composition only, never a done fraction.
     ///
@@ -116,7 +125,8 @@ pub struct ChildrenProgressResponse {
     #[serde(default)]
     #[schema(required = true)]
     pub has_done_columns: bool,
-    /// Per-column composition, board-then-position order.
+    /// Per-column composition of the children that count,
+    /// board-then-position order.
     pub by_column: Vec<ChildColumnProgress>,
 }
 
