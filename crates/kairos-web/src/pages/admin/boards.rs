@@ -409,7 +409,7 @@ pub fn AdminBoardPage() -> impl IntoView {
                         <MutationNotice outcome/>
                         <ColumnsPanel board_id=id.clone() columns=detail.columns.clone()
                             transitions=detail.transitions.clone() busy outcome reload/>
-                        // KAIROS-T-0587: parent_gate or owner_gate, by level.
+                        // KAIROS-T-0587, KAIROS-T-0652: the policies of the level.
                         <super::board_policy::BoardPolicyPanel board=policy_board
                             busy outcome reload/>
                         <TransitionsPanel board_id=id.clone() columns=detail.columns.clone()
@@ -1091,6 +1091,7 @@ mod tests {
             code_prefix: id.to_uppercase(),
             parent_gate: None,
             owner_gate: None,
+            blockers_gate: None,
         }
     }
 

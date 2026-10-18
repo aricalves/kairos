@@ -1,13 +1,13 @@
-//! The claim flags of a column and the policy of a board, on
-//! `/admin/boards/:board` (KAIROS-T-0587).
+//! The claim flags of a column and the policies of a board, on
+//! `/admin/boards/:board` (KAIROS-T-0587, KAIROS-T-0652).
 //!
 //! - [`ColumnFlagSwitch`]: the switches `claims` and `keeps_claims` of a
 //!   column row (KAIROS-T-0359, KAIROS-A-0034), beside the done flag and
 //!   the WIP limit.
-//! - [`BoardPolicyPanel`]: the policy of the board by its level:
-//!   `parent_gate` on a delivery board (KAIROS-A-0040), `owner_gate` on an
-//!   initiative board (KAIROS-A-0042). The other levels have no policy, and
-//!   the panel is not there.
+//! - [`BoardPolicyPanel`]: the policies of the board by its level:
+//!   `parent_gate` (KAIROS-A-0040) and `blockers_gate` (KAIROS-A-0053) on a
+//!   delivery board, `owner_gate` on an initiative board (KAIROS-A-0042).
+//!   The other levels have no policy, and the panel is not there.
 //!
 //! A switch sends one field (`PATCH`); a refusal turns the switch back.
 
@@ -50,19 +50,27 @@ pub(crate) fn flag_message(flag: ColumnFlag, on: bool) -> String {
 /// Pure, host-tested.
 pub(crate) fn policy_words(policy: BoardPolicy) -> (&'static str, &'static str, &'static str) {
     match policy {
-        BoardPolicy::ParentGate => (
+        BoardPolicy::Parent => (
             "Board policy: parent gate",
             "When the policy is on, a task moves into a column that gives claims only while \
              its initiative is active. An initiative in Active or Monitoring is active. A \
              bucket initiative is always active. A task with no initiative moves freely.",
             "A task needs an active initiative",
         ),
-        BoardPolicy::OwnerGate => (
+        BoardPolicy::Owner => (
             "Board policy: owner gate",
             "When the policy is on, an initiative moves to Active only with an owner. The \
              owner of an initiative in Active or Monitoring cannot release it. A hand-off \
              changes the owner.",
             "An initiative needs an owner",
+        ),
+        BoardPolicy::Blockers => (
+            "Board policy: blockers gate",
+            "When the policy is on, Kairos refuses a move of a task with an open blocker. \
+             The rule applies to a column that gives claims and to a done column. A cancelled \
+             blocker is open. When the policy is off, Kairos records the move and gives a \
+             warning.",
+            "A task needs completed blockers",
         ),
     }
 }
@@ -70,8 +78,9 @@ pub(crate) fn policy_words(policy: BoardPolicy) -> (&'static str, &'static str, 
 /// What the page says after a change of a policy. Pure, host-tested.
 pub(crate) fn policy_message(policy: BoardPolicy, on: bool) -> String {
     let name = match policy {
-        BoardPolicy::ParentGate => "parent gate",
-        BoardPolicy::OwnerGate => "owner gate",
+        BoardPolicy::Parent => "parent gate",
+        BoardPolicy::Owner => "owner gate",
+        BoardPolicy::Blockers => "blockers gate",
     };
     let state = if on { "on" } else { "off" };
     format!("Kairos turned the {name} of the board {state}.")
@@ -121,8 +130,8 @@ pub(crate) fn ColumnFlagSwitch(
     }
 }
 
-/// The policy of the board, by its level. Nothing for a level with no
-/// policy.
+/// The policies of the board, by its level: one panel per policy. Nothing
+/// for a level with no policy.
 #[component]
 pub(crate) fn BoardPolicyPanel(
     board: api::Board,
@@ -130,42 +139,62 @@ pub(crate) fn BoardPolicyPanel(
     outcome: RwSignal<MutationOutcome>,
     reload: RwSignal<u32>,
 ) -> impl IntoView {
+    BoardPolicy::for_level(&board.board_level)
+        .iter()
+        .map(|&policy| {
+            view! {
+                <PolicySwitch board_id=board.id.clone() policy on=policy.of(&board)
+                    busy outcome reload/>
+            }
+        })
+        .collect_view()
+}
+
+/// The panel of one policy. The switch shows the value of the board; a
+/// click sends the new value, and a refusal turns the switch back.
+#[component]
+fn PolicySwitch(
+    board_id: String,
+    policy: BoardPolicy,
+    on: bool,
+    busy: RwSignal<bool>,
+    outcome: RwSignal<MutationOutcome>,
+    reload: RwSignal<u32>,
+) -> impl IntoView {
     let auth = use_auth();
-    BoardPolicy::for_level(&board.board_level).map(|policy| {
-        let (title, caption, label) = policy_words(policy);
-        let checked = RwSignal::new(policy.of(&board));
-        let board_id = StoredValue::new(board.id.clone());
-        let on_change = Callback::new(move |value: bool| {
-            let board_id = board_id.get_value();
-            run_mutation(
-                busy,
-                outcome,
-                reload,
-                policy_message(policy, value),
-                async move {
-                    let result = api::set_board_policy(auth, &board_id, policy, value)
-                        .await
-                        .map(|_| ());
-                    if result.is_err() {
-                        checked.set(!value);
-                    }
-                    result
-                },
-            );
-        });
-        view! {
-            <Panel title=title caption=caption>
-                <Stack gap="xs">
-                    <span data-testid=policy.field()>
-                        <Switch checked label=label disabled=busy on_change/>
-                    </span>
-                    <Text dimmed=true size="xs">
-                        "An agent and the command line set the same policy."
-                    </Text>
-                </Stack>
-            </Panel>
-        }
-    })
+    let (title, caption, label) = policy_words(policy);
+    let checked = RwSignal::new(on);
+    let board_id = StoredValue::new(board_id);
+    let on_change = Callback::new(move |value: bool| {
+        let board_id = board_id.get_value();
+        run_mutation(
+            busy,
+            outcome,
+            reload,
+            policy_message(policy, value),
+            async move {
+                let result = api::set_board_policy(auth, &board_id, policy, value)
+                    .await
+                    .map(|_| ());
+                if result.is_err() {
+                    checked.set(!value);
+                }
+                result
+            },
+        );
+    });
+    view! {
+        <Panel title=title caption=caption>
+            <Stack gap="xs">
+                <span data-testid=policy.field()>
+                    <Switch checked label=label disabled=busy on_change/>
+                </span>
+                <Text dimmed=true size="xs">
+                    "An agent and the command line set the same policy."
+                </Text>
+            </Stack>
+        </Panel>
+    }
 }
 
 #[cfg(test)]
@@ -187,19 +216,32 @@ mod tests {
     #[test]
     fn each_policy_has_its_words() {
         assert_eq!(
-            policy_words(BoardPolicy::ParentGate).0,
+            policy_words(BoardPolicy::Parent).0,
             "Board policy: parent gate"
         );
         assert_eq!(
-            policy_words(BoardPolicy::OwnerGate).0,
+            policy_words(BoardPolicy::Owner).0,
             "Board policy: owner gate"
         );
+        let (title, caption, label) = policy_words(BoardPolicy::Blockers);
+        assert_eq!(title, "Board policy: blockers gate");
+        assert!(caption.contains("Kairos refuses a move of a task with an open blocker."));
+        assert!(caption.contains("A cancelled blocker is open."));
+        assert_eq!(label, "A task needs completed blockers");
         assert_eq!(
-            policy_message(BoardPolicy::ParentGate, false),
+            policy_message(BoardPolicy::Blockers, true),
+            "Kairos turned the blockers gate of the board on."
+        );
+        assert_eq!(
+            policy_message(BoardPolicy::Blockers, false),
+            "Kairos turned the blockers gate of the board off."
+        );
+        assert_eq!(
+            policy_message(BoardPolicy::Parent, false),
             "Kairos turned the parent gate of the board off."
         );
         assert_eq!(
-            policy_message(BoardPolicy::OwnerGate, true),
+            policy_message(BoardPolicy::Owner, true),
             "Kairos turned the owner gate of the board on."
         );
     }
@@ -212,9 +254,15 @@ mod tests {
             texts.push(flag_message(flag, true));
             texts.push(flag_message(flag, false));
         }
-        for policy in [BoardPolicy::ParentGate, BoardPolicy::OwnerGate] {
+        for policy in [
+            BoardPolicy::Parent,
+            BoardPolicy::Owner,
+            BoardPolicy::Blockers,
+        ] {
             let (title, caption, label) = policy_words(policy);
             texts.extend([title.to_string(), caption.to_string(), label.to_string()]);
+            texts.push(policy_message(policy, true));
+            texts.push(policy_message(policy, false));
         }
         for text in texts {
             for sentence in text.split(". ") {
