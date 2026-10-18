@@ -1038,3 +1038,167 @@ async fn ws_events_against_live_stack() {
     drop(pool);
     drop_scratch_db(&mut admin_conn, SCRATCH_DB);
 }
+
+/// The scratch database of [`ws_person_only_and_lagged`].
+const LAGGED_DB: &str = "kairos_ws_lagged_t0621_test";
+
+/// Send `NOTIFY kairos_events` as the services do, with a raw payload.
+fn notify(conn: &mut PgConnection, payload: &Value) {
+    sql_query(format!(
+        "SELECT pg_notify('kairos_events', '{}')",
+        payload.to_string().replace('\'', "''")
+    ))
+    .execute(conn)
+    .expect("pg_notify");
+}
+
+/// KAIROS-T-0621: the filter `person_only` passes only the events of the
+/// person. A board filter also passes them. A socket that falls behind
+/// gets the frame `{"event":"lagged"}`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ws_person_only_and_lagged() {
+    let mut admin_conn = recreate_scratch_db(LAGGED_DB);
+    let scratch_url = with_database(&common::admin_database_url(), LAGGED_DB);
+    let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
+    run_public_migrations(&mut conn).expect("running public migrations");
+    provision_tenant(&mut conn, "acme", "Acme Inc").expect("provisioning acme");
+    let acme_org: Uuid = organizations::table
+        .filter(organizations::slug.eq("acme"))
+        .select(organizations::id)
+        .first(&mut conn)
+        .expect("acme org row");
+
+    let http = reqwest::Client::new();
+    let alice_token = user_token(&http, "alice").await;
+    let pool = TenantPool::new(&scratch_url, 4).await.expect("pool");
+    let auth = Arc::new(
+        Authenticator::discover(ISSUER, AUDIENCE)
+            .await
+            .expect("OIDC discovery against live Dex"),
+    );
+    let router = app::router(app::state_with(
+        base_config(&scratch_url),
+        pool.clone(),
+        auth,
+    ));
+    let server = spawn_server(router).await;
+    let alice = server.client(&alice_token, "acme");
+    let _ = alice.whoami().await;
+    let alice_id = user_id(&mut conn, "alice@kairos.test");
+    diesel::insert_into(kairos_db::schema::organization_members::table)
+        .values(NewOrganizationMember {
+            organization_id: acme_org,
+            user_id: alice_id,
+            role: OrgRole::Member,
+        })
+        .execute(&mut conn)
+        .expect("granting acme membership");
+    let mut acme = tenant_connection(&scratch_url, "org_acme");
+    let board = board_of_level(&mut acme, BoardLevel::Strategy);
+
+    let item_event = |code: &str| {
+        serde_json::json!({
+            "tenant": "acme", "event": "item_updated", "entity_type": "strategy",
+            "short_code": code, "board_id": board.to_string(),
+            "actor": alice_id.to_string(), "occurred_at": "2026-10-18T12:00:00Z",
+        })
+    };
+    let bell_event = |code: &str| {
+        serde_json::json!({
+            "tenant": "acme", "recipient": alice_id.to_string(),
+            "event": "notification_created", "entity_type": "notification",
+            "short_code": code, "board_id": null,
+            "actor": alice_id.to_string(), "occurred_at": "2026-10-18T12:00:00Z",
+        })
+    };
+
+    // =========================================================================
+    // person_only: the events of the person, no event of the items
+    // =========================================================================
+    let mut bell = alice.connect_events().await.expect("bell socket");
+    bell.subscribe_person()
+        .await
+        .expect("subscribe person_only");
+    let mut by_board = alice.connect_events().await.expect("board socket");
+    by_board
+        .subscribe_board(&board.to_string())
+        .await
+        .expect("subscribe board");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    notify(&mut conn, &item_event("ACME-S-0001"));
+    notify(&mut conn, &bell_event("ACME-S-0002"));
+    let (event, raw) = recv_event(&mut bell).await;
+    assert_eq!(
+        event.event, "notification_created",
+        "the item event is filtered out: {raw}"
+    );
+    assert_eq!(event.short_code, "ACME-S-0002");
+    assert!(
+        raw.get("recipient").is_none(),
+        "recipient is stripped: {raw}"
+    );
+
+    let (first, _) = recv_event(&mut by_board).await;
+    let (second, _) = recv_event(&mut by_board).await;
+    assert_eq!(
+        (first.event.as_str(), second.event.as_str()),
+        ("item_updated", "notification_created"),
+        "the board filter passes its board and the person"
+    );
+    bell.close().await.expect("close bell");
+    by_board.close().await.expect("close board socket");
+
+    // =========================================================================
+    // lagged: a socket that does not read falls behind the buffer
+    // =========================================================================
+    let mut slow = alice.connect_events().await.expect("slow socket");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Big unique payloads: the socket buffers fill, and the server stops
+    // reading the channel of the tenant. 4000 events pass its buffer.
+    sql_query(format!(
+        "SELECT pg_notify('kairos_events', json_build_object(
+             'tenant', 'acme', 'event', 'item_updated', 'entity_type', 'strategy',
+             'short_code', 'ACME-S-' || g, 'board_id', '{board}',
+             'actor', '{alice_id}', 'occurred_at', '2026-10-18T12:00:00Z',
+             'pad', repeat('x', 7000))::text)
+         FROM generate_series(1, 4000) AS g"
+    ))
+    .execute(&mut conn)
+    .expect("pg_notify flood");
+    // Let the listener pass the events before the socket reads again.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let mut frames = 0usize;
+    let lagged = tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let raw = slow.next_event_raw().await.expect("frame");
+            frames += 1;
+            if raw["event"] == "lagged" {
+                return raw;
+            }
+        }
+    })
+    .await
+    .expect("the lagged frame within the timeout");
+    assert_eq!(lagged, serde_json::json!({ "event": "lagged" }));
+    assert!(frames < 4000, "events were skipped: {frames} frames");
+
+    // The socket stays open after the frame.
+    notify(&mut conn, &item_event("ACME-S-9999"));
+    let found = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let raw = slow.next_event_raw().await.expect("frame");
+            if raw["short_code"] == "ACME-S-9999" {
+                return;
+            }
+        }
+    })
+    .await;
+    assert!(found.is_ok(), "the socket gets the events after the lag");
+    slow.close().await.expect("close slow socket");
+
+    drop(conn);
+    drop(acme);
+    drop(pool);
+    drop_scratch_db(&mut admin_conn, LAGGED_DB);
+}

@@ -193,11 +193,13 @@ journey(
         short_code: bug,
         text: 'Proposal: work now, in the support lane. Checkout is down for trial accounts and the fix is small.',
       });
-      expect(noted).toContain(`Appended note n-1 to ${bug}.`);
+      // KAIROS-T-0504: each note has an id, and the answer names it.
+      const noteId = noted.match(new RegExp(`^Appended note (n-\\d+) to ${bug}\\.`))?.[1];
+      expect(noteId, noted).toBeTruthy();
       const item = await mcp.call('get_item', { short_code: bug });
-      expect(item).toContain('## Note n-1 (');
+      expect(item).toContain(`## Note ${noteId} (`);
       expect(item).toContain('Proposal: work now');
-      return { queue_line: line.trim().slice(0, 120), move: 'AGENT_TRIAGE_OFF', proposal: 'note on the bug' };
+      return { queue_line: line.trim().slice(0, 120), move: 'AGENT_TRIAGE_OFF', proposal: `note ${noteId} on the bug` };
     });
 
     await step(alice, 'reads the proposal and lets agents decide the triage on the on-call board (MCP)', async () => {

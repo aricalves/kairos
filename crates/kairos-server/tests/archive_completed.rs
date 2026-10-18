@@ -242,6 +242,7 @@ async fn archive_completed_archives_the_done_columns() {
         team_id: None,
         repository: None,
         from_team: None,
+        parent: None,
     };
 
     // --- the board: one finished, one cancelled, one in Active -------------

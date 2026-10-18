@@ -313,6 +313,7 @@ async fn main() -> ExitCode {
                 content: format!("Golden-path initiative ({SEARCH_TOKEN})."),
                 complexity: Some("m".to_string()),
                 bucket_type: None,
+                parent: None,
             })
             .await,
     );
@@ -348,6 +349,7 @@ async fn main() -> ExitCode {
                     work_class: None,
                     team_id: None,
                     from_team: None,
+                    parent: None,
                 })
                 .await,
         );

@@ -58,6 +58,14 @@ a different date, send `expires_at` (the CLI option `--expires-at`). To make a
 key with no expiry, send `no_expiry: true`. In the CLI, that is the flag
 `--no-expiry`. On the Agent keys page, it is the switch **No expiry**.
 
+Kairos tells you before a key expires. When a key expires in 7 days or less,
+Kairos sends the notification `key_expiring`. The person of an agent key gets
+it. For a key of a service account, each organization admin gets it.
+
+The text names the key and the command `kairos keys rotate`. Kairos sends it one time
+for each key. A rotation makes a new key. Kairos tells you about the new key
+when it expires soon.
+
 ## `KAIROS_SECRETS_KEY`
 
 `KAIROS_SECRETS_KEY` encrypts the secrets that Kairos keeps in the database. They

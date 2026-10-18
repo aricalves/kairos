@@ -1501,6 +1501,8 @@ mod tests {
         // KAIROS-T-0531: the report of the stale claims runs where the API runs.
         let stale = crate::periodic::STALE_CLAIMS;
         assert!(ServerRole::Api.runs_pass(stale) && !ServerRole::Worker.runs_pass(stale));
+        let keys = crate::periodic::KEY_EXPIRING;
+        assert!(ServerRole::Api.runs_pass(keys) && !ServerRole::Worker.runs_pass(keys));
         assert!(ServerRole::Api.serves_api() && !ServerRole::Worker.serves_api());
     }
 
