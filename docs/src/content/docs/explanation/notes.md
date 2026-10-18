@@ -35,8 +35,12 @@ The text of the note.
 
 `get_item` also lists the notes after the relationships, one line for each
 note. The REST read of one item has the array `notes`, and `content` has no
-note. `kairos <noun> get` prints the notes after the content. The item page
-of the GUI shows each note with an anchor, for example `#n-3`.
+note. `kairos <noun> get` prints the notes after the content.
+
+The item page of the GUI has a Notes panel. Each note has an anchor, for
+example `#n-3`. A link to the anchor highlights the note. A person who can
+edit the item can add a note and promote a note. A note of another writer
+shows in the panel at once.
 
 Cite a note by its id: "note n-3 on ACME-T-0012". Kairos never gives an id
 again, so a citation stays true.

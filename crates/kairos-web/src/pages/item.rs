@@ -44,6 +44,7 @@ mod item_owner;
 mod live;
 pub(crate) use kairos_markdown as markdown;
 mod metadata;
+mod notes;
 mod owner;
 mod picker;
 mod state;
@@ -74,6 +75,7 @@ use end::{CancelDialog, CancelledBanner, PurgeDialog, ReopenDialog};
 use external::ExternalRefsPanel;
 use item_owner::OwnerPanel;
 use metadata::MetadataPanel;
+use notes::NotesPanel;
 use owner::{ImpactsPanel, OwnerBoardPanel};
 use picker::{Picker, load_on_open, picker_state};
 use state::StatePanel;
@@ -387,6 +389,14 @@ fn ItemLoaded(item: ItemDetail, family: Family) -> impl IntoView {
             if reads.item
                 && let Ok(next) = api::fetch_item(auth, family, code.clone()).await
             {
+                // KAIROS-T-0579: the Notes panel takes new notes at once.
+                // No draft holds them, so they need no banner.
+                let takes = current.try_with_untracked(|shown| {
+                    notes::takes_notes(shown.notes.as_deref(), next.notes.as_deref())
+                });
+                if takes == Some(true) {
+                    let _ = current.try_update(|shown| shown.notes.clone_from(&next.notes));
+                }
                 let _ = pending.try_set(Some(next));
             }
             if reads.metadata
@@ -629,7 +639,15 @@ fn ItemLoaded(item: ItemDetail, family: Family) -> impl IntoView {
                     on_saved
                 />
                 // KAIROS-T-0630: the notes are not part of the content.
-                <NotesList notes/>
+                // KAIROS-T-0579: add a note, its anchor, promote it.
+                <NotesPanel
+                    family
+                    code=code.get_value()
+                    notes
+                    read_only=edit_read_only
+                    read_only_reason=edit_reason
+                    on_changed=refresh
+                />
             </Stack>
             <Stack gap="sm">
                 // COLLIERY-T-0269: the board of a document is its owner,
@@ -859,59 +877,6 @@ fn task_end_powers(
         );
         TaskEndPowers::from_rule(powers.transition, manage_tasks, done)
     })
-}
-
-/// The notes of the item, read-only (KAIROS-T-0630): each note with its id
-/// as an anchor (`#n-3`), its date and author, its text as markdown, and
-/// the item that a promote made from it. Nothing for an item with no notes.
-#[component]
-fn NotesList(#[prop(into)] notes: Signal<Vec<api::Note>>) -> impl IntoView {
-    view! {
-        {move || {
-            let notes = notes.get();
-            (!notes.is_empty()).then(|| {
-                let rows = notes
-                    .into_iter()
-                    .map(|note| {
-                        let promoted = note.promoted_to.clone().map(|code| view! {
-                            <Text size="xs">
-                                "Promoted to "
-                                <Anchor href=format!("/items/{code}")>{code.clone()}</Anchor>
-                            </Text>
-                        });
-                        let anchor = note.id.clone();
-                        let href = format!("#{}", note.id);
-                        let byline = note_byline(&note.created_at, &note.author);
-                        let html = markdown::to_html(&note.text);
-                        view! {
-                            <section class="kairos-note" id=anchor>
-                                <Group gap="sm">
-                                    <a class="kairos-note-link" href=href>
-                                        <Text mono=true size="sm">{note.id}</Text>
-                                    </a>
-                                    <Text dimmed=true size="xs">{byline}</Text>
-                                </Group>
-                                <div class="kairos-markdown" inner_html=html></div>
-                                {promoted}
-                            </section>
-                        }
-                    })
-                    .collect_view();
-                view! {
-                    <Panel title="Notes" caption="in the order they were written">
-                        <Stack gap="sm">{rows}</Stack>
-                    </Panel>
-                }
-            })
-        }}
-    }
-}
-
-/// The line under the id of a note: `2026-10-17 · Robin`. Pure,
-/// host-tested.
-fn note_byline(created_at: &str, author: &str) -> String {
-    let date = created_at.get(..10).unwrap_or(created_at);
-    format!("{date} · {author}")
 }
 
 /// `2026-09-23T11:30:07.479107Z` → `2026-09-23 11:30 UTC` (display only;
@@ -2471,15 +2436,6 @@ mod tests {
 
     /// KAIROS-T-0618: the page takes a copy of the same version or newer,
     /// and not an older copy (a read that answered late).
-    #[test]
-    fn a_note_names_its_date_and_its_author() {
-        assert_eq!(
-            note_byline("2026-10-17T09:30:00+00:00", "Robin"),
-            "2026-10-17 · Robin"
-        );
-        assert_eq!(note_byline("", "Sam"), " · Sam");
-    }
-
     #[test]
     fn the_page_takes_no_older_copy() {
         assert!(takes_copy(4, 5));
