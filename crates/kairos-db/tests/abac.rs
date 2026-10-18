@@ -1206,10 +1206,10 @@ fn board_membership_gives_edit_and_move_on_strategy_and_initiative_boards() {
         );
         let (edit, _) = abac::edit_facts(
             &mut conn,
-            "memberco",
             member,
+            false,
+            ItemType::Initiative,
             initiative,
-            rules::MANAGE_INITIATIVES,
             EditUse::Edit,
         )
         .expect("edit facts");

@@ -228,15 +228,8 @@ fn each_refusal_of_the_edit_and_link_rules_is_unchanged() {
         .returning(schema::adrs::id)
         .get_result(conn)
         .expect("adr");
-    // The planner holds a grant on the initiative board: a member of it.
-    abac::grant_capability(
-        conn,
-        initiatives,
-        planner,
-        rules::TRANSITION_ITEMS,
-        db_admin,
-    )
-    .expect("grant");
+    // The planner holds the member grant on the initiative board (KAIROS-T-0541).
+    abac::grant_capability(conn, initiatives, planner, rules::MEMBER, db_admin).expect("grant");
 
     let member = OrgRole::Member;
 
