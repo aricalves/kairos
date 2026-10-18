@@ -962,6 +962,49 @@ pub fn list(
     Ok(out)
 }
 
+/// The next page of the read notifications of the reader (KAIROS-T-0584):
+/// the ones read before `read_before`, in the order of [`list`] (the time
+/// of the read, then the id), newest first, `limit` at most. `None`: the
+/// reader did not read `read_before`, or it is not a notification of the
+/// person. A page has no unread notification.
+pub fn read_page(
+    conn: &mut PgConnection,
+    reader: &Reader,
+    read_before: Uuid,
+    limit: i64,
+) -> Result<Option<Vec<Notification>>, DieselError> {
+    #[derive(QueryableByName)]
+    struct ReadAt {
+        #[diesel(sql_type = Timestamptz)]
+        read_at: DateTime<Utc>,
+    }
+    let cursor: Option<ReadAt> = sql_query(format!(
+        "{READER_VIEW} SELECT v.read_at FROM v WHERE v.id = $4 AND v.read_at IS NOT NULL"
+    ))
+    .bind::<SqlUuid, _>(reader.user)
+    .bind::<Array<SqlUuid>, _>(reader.key_ids())
+    .bind::<Nullable<Timestamptz>, _>(reader.since())
+    .bind::<SqlUuid, _>(read_before)
+    .get_result(conn)
+    .optional()?;
+    let Some(cursor) = cursor else {
+        return Ok(None);
+    };
+    let page: Vec<Notification> = sql_query(format!(
+        "{READER_VIEW} {SELECT_VIEW} WHERE v.read_at IS NOT NULL \
+           AND (v.read_at, v.id) < ($4, $5) \
+          ORDER BY v.read_at DESC, v.id DESC LIMIT $6"
+    ))
+    .bind::<SqlUuid, _>(reader.user)
+    .bind::<Array<SqlUuid>, _>(reader.key_ids())
+    .bind::<Nullable<Timestamptz>, _>(reader.since())
+    .bind::<Timestamptz, _>(cursor.read_at)
+    .bind::<SqlUuid, _>(read_before)
+    .bind::<BigInt, _>(limit)
+    .load(conn)?;
+    Ok(Some(page))
+}
+
 /// What [`mark_read`] marks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mark<'a> {

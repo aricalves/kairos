@@ -45,7 +45,8 @@ The answer ends with the `up_to` value: the id of the newest unread
 notification.
 
 With REST, use `GET /api/me/notifications`. Add `?before=<id>` for the next
-page.
+page. Add `?read_before=<id>` for the read notifications that the key read
+before `<id>`.
 
 ## 3. Act, then mark them read
 

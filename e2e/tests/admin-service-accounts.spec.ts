@@ -5,8 +5,9 @@
 //      with Copy and the warning), rotate it (the grace time shows), revoke
 //      the new key and delete the account, each after a confirmation;
 //   2. Admin → Boards → a delivery board: the switch "Keeps claims" of Todo
-//      goes on and off, and the switch of the parent gate goes off and on;
-//      the initiative board shows the owner gate and no parent gate;
+//      goes on and off, the switch of the parent gate goes off and on, and
+//      the switch of the blockers gate goes on and off (KAIROS-T-0652); the
+//      initiative board shows the owner gate and no parent or blockers gate;
 //   3. the initiative create dialog makes a bucket of the kind bug;
 //   4. Admin → Repositories: Rotate gives a new webhook URL and secret.
 //
@@ -169,18 +170,36 @@ test('admin boards: the claim flags of a column and the board policies', async (
       expect((await api(token, 'GET', `/api/boards/${delivery.id}`)).parent_gate).toBe(true);
     });
 
+    await test.step('the blockers gate of the delivery board goes on, then off', async () => {
+      // KAIROS-T-0652: the gate is off by default (KAIROS-A-0053).
+      const gate = page.locator('[data-testid="blockers_gate"] [role="switch"]');
+      await expect(gate).toHaveAttribute('aria-checked', 'false');
+      await gate.click();
+      await expect(page.getByText('Kairos turned the blockers gate of the board on.')).toBeVisible();
+      expect((await api(token, 'GET', `/api/boards/${delivery.id}`)).blockers_gate).toBe(true);
+      await page.locator('[data-testid="blockers_gate"] [role="switch"]').click();
+      await expect(
+        page.getByText('Kairos turned the blockers gate of the board off.'),
+      ).toBeVisible();
+      expect((await api(token, 'GET', `/api/boards/${delivery.id}`)).blockers_gate).toBe(false);
+    });
+
     await test.step('the initiative board shows the owner gate only', async () => {
       await page.goto(`/admin/boards/${initiatives.id}`);
       await expect(page.locator('[data-testid="owner_gate"] [role="switch"]')).toBeVisible({
         timeout: 30_000,
       });
       await expect(page.locator('[data-testid="parent_gate"]')).toHaveCount(0);
+      await expect(page.locator('[data-testid="blockers_gate"]')).toHaveCount(0);
     });
   } finally {
     await api(token, 'PATCH', `/api/boards/${delivery.id}/columns/${todo}`, {
       keeps_claims: false,
     });
-    await api(token, 'PATCH', `/api/boards/${delivery.id}`, { parent_gate: true });
+    await api(token, 'PATCH', `/api/boards/${delivery.id}`, {
+      parent_gate: true,
+      blockers_gate: false,
+    });
   }
 });
 

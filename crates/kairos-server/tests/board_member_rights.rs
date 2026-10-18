@@ -2,13 +2,19 @@
 //! strategy or initiative board edits and moves every item on it, against
 //! the booted production router.
 //!
-//! - A person with only `configure_boards` on the initiative board edits
-//!   (`PATCH`) and moves (`transition`) an initiative that a different
-//!   person created.
+//! - KAIROS-T-0541: only the `member` grant makes a member. A person with
+//!   only `configure_boards` or only `pages` on the initiative board does
+//!   not edit (`PATCH`) or move (`transition`). A person with only
+//!   `transition_items` moves and does not edit. Until KAIROS-T-0541 this
+//!   test showed that `configure_boards` alone edits and moves: that was
+//!   the bug.
+//! - A person with the `member` grant edits and moves an initiative that a
+//!   different person created.
 //! - A person with no grant on the board is refused (403).
 //! - Archive and restore still need `manage_initiatives` (403 without it).
-//! - The removal of the last grant removes the rights.
-//! - `whoami` (REST and MCP) and `my_boards` show the implied capabilities.
+//! - The removal of the member grant removes the rights.
+//! - `whoami` (REST and MCP) and `my_boards` show the implied capabilities
+//!   for the member grant only.
 //!
 //! The rule is computed when the server reads it
 //! (`kairos_db::abac::check_capability`). Nothing is stored. The db-layer
@@ -266,6 +272,7 @@ async fn a_member_of_an_initiative_board_edits_and_moves_each_initiative_against
     let version = body["version"].as_i64().expect("version");
     let design = column_id(&mut conn, "initiatives", "Design");
     let ready = column_id(&mut conn, "initiatives", "Ready");
+    let decompose = column_id(&mut conn, "initiatives", "Decompose");
 
     // --- Before a grant: alice is not a member, and is refused.
     let (status, body) = as_user(
@@ -278,7 +285,7 @@ async fn a_member_of_an_initiative_board_edits_and_moves_each_initiative_against
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert!(body.to_string().contains("manage_initiatives"), "{body}");
 
-    // --- Only `configure_boards` on the board: alice is a member.
+    // --- KAIROS-T-0541: a grant other than `member` makes no member.
     let (status, body) = as_user(&svc, Method::GET, "/api/boards/initiatives", None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let board = body["id"].as_str().expect("board id").to_string();
@@ -290,6 +297,78 @@ async fn a_member_of_an_initiative_board_edits_and_moves_each_initiative_against
     )
     .await;
     assert!(status.is_success(), "{status}: {body}");
+    for (grant, moves) in [
+        ("configure_boards", false),
+        ("pages", false),
+        ("transition_items", true),
+    ] {
+        let (status, body) = as_user(
+            &svc,
+            Method::PATCH,
+            &format!("/api/boards/{board}/members/{alice_id}"),
+            Some(json!({ "capabilities": [grant] })),
+        )
+        .await;
+        assert!(status.is_success(), "{grant}: {status}: {body}");
+        let (status, body) = as_user(
+            &alice,
+            Method::PATCH,
+            &format!("/api/initiatives/{code}"),
+            Some(json!({ "content": format!("Only {grant}."), "version": version })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{grant} edits: {body}");
+        assert!(body.to_string().contains("manage_initiatives"), "{body}");
+        // REST whoami: no implied capability without the member grant.
+        let (status, body) = as_user(&alice, Method::GET, "/api/whoami", None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let entry = body["capabilities"]
+            .as_array()
+            .expect("capabilities")
+            .iter()
+            .find(|entry| entry["board_slug"] == "initiatives")
+            .expect("the initiative board")
+            .clone();
+        assert_eq!(entry["implied"], json!([]), "{grant}: {entry}");
+        let (status, body) = as_user(
+            &alice,
+            Method::POST,
+            &format!("/api/initiatives/{code}/transition"),
+            Some(json!({ "to_column_id": design })),
+        )
+        .await;
+        if moves {
+            assert_eq!(status, StatusCode::OK, "{grant} moves: {body}");
+        } else {
+            assert_eq!(status, StatusCode::FORBIDDEN, "{grant} moves: {body}");
+            assert!(body.to_string().contains("transition_items"), "{body}");
+        }
+    }
+    // MCP whoami and my_boards: no member line for `transition_items`.
+    let session = connect(&router, &alice).await;
+    let (_, text) = call(&router, &alice, session.as_deref(), "whoami", json!({})).await;
+    assert!(!text.contains("(board member, no grant)"), "{text}");
+    let (_, text) = call(&router, &alice, session.as_deref(), "my_boards", json!({})).await;
+    assert!(
+        !board_block(&text, "initiatives")
+            .iter()
+            .any(|line| line.contains("member capabilities")),
+        "{text}"
+    );
+
+    // --- The member grant: alice is a member of the board.
+    let (status, body) = as_user(
+        &svc,
+        Method::PATCH,
+        &format!("/api/boards/{board}/members/{alice_id}"),
+        Some(json!({ "capabilities": ["member"] })),
+    )
+    .await;
+    assert!(status.is_success(), "{status}: {body}");
+    let (status, body) =
+        as_user(&svc, Method::GET, &format!("/api/initiatives/{code}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let version = body["version"].as_i64().expect("version");
 
     // She edits an initiative that svc created...
     let (status, body) = as_user(
@@ -305,17 +384,21 @@ async fn a_member_of_an_initiative_board_edits_and_moves_each_initiative_against
         &alice,
         Method::POST,
         &format!("/api/initiatives/{code}/transition"),
-        Some(json!({ "to_column_id": design })),
+        Some(json!({ "to_column_id": ready })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) =
+        as_user(&svc, Method::GET, &format!("/api/initiatives/{code}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let version = body["version"].as_i64().expect("version");
 
     // --- A person with no grant on the board is refused.
     let (status, body) = as_user(
         &bob,
         Method::PATCH,
         &format!("/api/initiatives/{code}"),
-        Some(json!({ "content": "Not mine.", "version": version + 1 })),
+        Some(json!({ "content": "Not mine.", "version": version })),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
@@ -323,7 +406,7 @@ async fn a_member_of_an_initiative_board_edits_and_moves_each_initiative_against
         &bob,
         Method::POST,
         &format!("/api/initiatives/{code}/transition"),
-        Some(json!({ "to_column_id": ready })),
+        Some(json!({ "to_column_id": decompose })),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
@@ -375,7 +458,7 @@ async fn a_member_of_an_initiative_board_edits_and_moves_each_initiative_against
         .find(|entry| entry["board_slug"] == "initiatives")
         .expect("the initiative board")
         .clone();
-    assert_eq!(entry["grants"], json!(["configure_boards"]), "{entry}");
+    assert_eq!(entry["grants"], json!(["member"]), "{entry}");
     assert_eq!(
         entry["implied"],
         json!(["manage_initiatives", "transition_items"]),
@@ -406,12 +489,13 @@ async fn a_member_of_an_initiative_board_edits_and_moves_each_initiative_against
         "{text}"
     );
 
-    // --- The removal of the last grant removes the rights.
+    // --- The removal of the member grant removes the rights, though alice
+    // keeps `configure_boards` on the board.
     let (status, body) = as_user(
         &svc,
-        Method::DELETE,
+        Method::PATCH,
         &format!("/api/boards/{board}/members/{alice_id}"),
-        None,
+        Some(json!({ "capabilities": ["configure_boards"] })),
     )
     .await;
     assert!(status.is_success(), "{status}: {body}");
@@ -431,7 +515,7 @@ async fn a_member_of_an_initiative_board_edits_and_moves_each_initiative_against
         &alice,
         Method::POST,
         &format!("/api/initiatives/{code}/transition"),
-        Some(json!({ "to_column_id": ready })),
+        Some(json!({ "to_column_id": decompose })),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");

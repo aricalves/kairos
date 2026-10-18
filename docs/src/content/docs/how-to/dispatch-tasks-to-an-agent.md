@@ -151,7 +151,12 @@ The GUI has the same targets, rules and log. Open **Admin**, then
    trigger for the last blocker. Then select the column, the target and a
    filter, and select **Add rule**. With the trigger for the last blocker,
    the column can be **any column**.
-3. Read the **Delivery log**. Select **Refresh** to read it again.
+3. Read the **Delivery log**. Select **Refresh** to read it again. A page
+   shows 50 deliveries. Select **Older** for the next page, and **Newer** to
+   go back.
+
+With the CLI, `--before <id>` shows the deliveries older than the delivery
+`<id>`. Send the id of the last delivery of a page to get the next page.
 
 ## Related reading
 
