@@ -2443,6 +2443,7 @@ A notification tells a person about an event of their work (KAIROS-T-0381):
 | `agent_key_revoked` | An organization admin revokes an agent key of yours. The text names the key and its prefix. |
 | `claim_dropped` | A person leaves the organization, and their claim on a task of the board of your team ends. The task stays in its column, free. |
 | `claim_stale` | A claim has no write and no state change for `KAIROS_STALE_CLAIM_DAYS` days (default 14). You get it for your claim, or for a claim on a task of an initiative that you own. The claim stays. Kairos sends it once for each quiet period. |
+| `key_expiring` | An agent key of yours expires in 7 days or less. An organization admin also gets it for a key of a service account. Kairos sends it one time for each key. The text names the key and the `kairos keys rotate` command. |
 
 You get no notification for a change that you made. You can turn a kind off
 with `PUT /api/me/notification-settings` or on the Notifications page of the
