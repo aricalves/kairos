@@ -1240,6 +1240,176 @@ mod tests {
         assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument, "{err}");
     }
 
+    /// KAIROS-T-0589: one flag name per concept, and each old name still
+    /// parses as a hidden alias. `show` is the verb, `get` its alias.
+    #[test]
+    fn the_new_flag_names_parse_and_the_old_names_stay_as_aliases() {
+        use clap::CommandFactory;
+        let pairs: [(&[&str], &[&str]); 9] = [
+            (
+                &[
+                    "kairos", "tasks", "create", "--board", "b", "--title", "t", "--kind", "bug",
+                ],
+                &[
+                    "kairos", "tasks", "create", "--board", "b", "--title", "t", "--type", "bug",
+                ],
+            ),
+            (
+                &[
+                    "kairos",
+                    "teams",
+                    "create",
+                    "--name",
+                    "n",
+                    "--slug",
+                    "s",
+                    "--code-prefix",
+                    "S",
+                    "--kind",
+                    "platform",
+                ],
+                &[
+                    "kairos",
+                    "teams",
+                    "create",
+                    "--name",
+                    "n",
+                    "--slug",
+                    "s",
+                    "--code-prefix",
+                    "S",
+                    "--type",
+                    "platform",
+                ],
+            ),
+            (
+                &["kairos", "teams", "update", "s", "--kind", "platform"],
+                &["kairos", "teams", "update", "s", "--type", "platform"],
+            ),
+            (
+                &["kairos", "search", "--kind", "bug"],
+                &["kairos", "search", "--task-type", "bug"],
+            ),
+            (
+                &[
+                    "kairos", "boards", "dispatch", "add-rule", "web", "--target", "t", "--kind",
+                    "bug", "--repo", "r",
+                ],
+                &[
+                    "kairos",
+                    "boards",
+                    "dispatch",
+                    "add-rule",
+                    "web",
+                    "--target",
+                    "t",
+                    "--task-type",
+                    "bug",
+                    "--repository",
+                    "r",
+                ],
+            ),
+            (
+                &["kairos", "boards", "flow", "web", "--until", "2026-10-18"],
+                &["kairos", "boards", "flow", "web", "--to", "2026-10-18"],
+            ),
+            (
+                &["kairos", "index", "update", "--repo", "kairos"],
+                &["kairos", "index", "update", "--repository", "kairos"],
+            ),
+            (
+                &["kairos", "tasks", "show", "ACME-T-0001"],
+                &["kairos", "tasks", "get", "ACME-T-0001"],
+            ),
+            (
+                &["kairos", "streams", "show", "payments"],
+                &["kairos", "streams", "get", "payments"],
+            ),
+        ];
+        for (new, old) in pairs {
+            Cli::try_parse_from(new).unwrap_or_else(|e| panic!("{new:?}: {e}"));
+            Cli::try_parse_from(old).unwrap_or_else(|e| panic!("{old:?}: {e}"));
+        }
+        for args in [
+            &["kairos", "teams", "show", "platform"][..],
+            &["kairos", "teams", "get", "platform"][..],
+            &["kairos", "repos", "show", "kairos"][..],
+            &["kairos", "repos", "get", "kairos"][..],
+            &[
+                "kairos",
+                "tasks",
+                "note",
+                "ACME-T-0001",
+                "--text-file",
+                "note.md",
+            ][..],
+            &[
+                "kairos",
+                "tasks",
+                "create",
+                "--board",
+                "b",
+                "--title",
+                "t",
+                "--content-file",
+                "-",
+            ][..],
+            &[
+                "kairos",
+                "documents",
+                "create",
+                "--board",
+                "b",
+                "--title",
+                "t",
+                "--template",
+                "rfc",
+                "--content-file",
+                "body.md",
+            ][..],
+        ] {
+            Cli::try_parse_from(args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
+        }
+        // A note needs --text or --text-file, not both.
+        for args in [
+            &["kairos", "tasks", "note", "ACME-T-0001"][..],
+            &[
+                "kairos",
+                "tasks",
+                "note",
+                "ACME-T-0001",
+                "--text",
+                "x",
+                "--text-file",
+                "f",
+            ][..],
+            &[
+                "kairos",
+                "tasks",
+                "create",
+                "--board",
+                "b",
+                "--title",
+                "t",
+                "--content",
+                "x",
+                "--content-file",
+                "f",
+            ][..],
+        ] {
+            assert!(
+                Cli::try_parse_from(args).is_err(),
+                "{args:?} must be refused"
+            );
+        }
+        // The old names are hidden: the help shows the new name only.
+        let mut command = Cli::command();
+        let tasks = command.find_subcommand_mut("tasks").expect("tasks");
+        let help = tasks.render_long_help().to_string();
+        assert!(help.contains("show"), "{help}");
+        assert!(!help.contains("  get "), "{help}");
+    }
+
     /// The KAIROS-T-0037 command tree parses: every A-0015 noun with its
     /// verbs and documented flags.
     #[test]
@@ -1264,7 +1434,7 @@ mod tests {
                 assert_eq!(args.board.as_deref(), Some("b-1"));
                 assert_eq!(args.title, "Fix login");
                 assert_eq!(args.task_type.as_deref(), Some("bug"));
-                assert_eq!(args.content, "body");
+                assert_eq!(args.content.as_deref(), Some("body"));
             }
             _ => panic!("expected tasks create"),
         }

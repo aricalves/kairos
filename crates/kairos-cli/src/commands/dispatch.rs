@@ -99,15 +99,17 @@ pub enum DispatchCommand {
         /// The id of a webhook target of the board
         #[arg(long)]
         target: String,
-        /// Only tasks of this type: task, bug, tech_debt or support
-        #[arg(long = "task-type")]
+        /// Only tasks of this kind: task, bug, tech_debt or support. The old
+        /// name --task-type still works
+        #[arg(long = "kind", alias = "task-type", value_name = "KIND")]
         task_type: Option<String>,
         /// Only tasks with this metadata value, as SLUG=VALUE (e.g.
         /// priority=high)
         #[arg(long, value_name = "SLUG=VALUE")]
         metadata: Option<String>,
-        /// Only tasks of this repository (slug or UUID)
-        #[arg(long)]
+        /// Only tasks of this repository (slug or UUID). The old name
+        /// --repository still works
+        #[arg(long = "repo", alias = "repository", value_name = "REPOSITORY")]
         repository: Option<String>,
         #[command(flatten)]
         common: Common,
