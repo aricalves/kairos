@@ -33,6 +33,7 @@ Command groups, each detailed below:
 | Published sites | `pages` |
 | Machine access | `service-accounts`, `keys`, `admin agent-keys` |
 | Code index settings | `admin code-index-settings` |
+| The job queue | `admin jobs` |
 | Deployment administration | `admin tenants` |
 | The code index of a checkout | `index` |
 | The CLI itself | `self-update` |
@@ -2115,6 +2116,28 @@ input, never from an argument:
 ```sh
 printf '%s' "$OLLAMA_KEY" | kairos admin code-index-settings set --summary-provider ollama-cloud --summary-url https://ollama.com/v1 --summary-model gemma4:31b --summary-secret-stdin
 ```
+
+## The job queue
+
+An organization admin reads the job queue. Another person gets `403`. See
+[The job queue](../../explanation/job-queue/#what-to-watch).
+
+### `kairos admin jobs`
+
+```
+kairos admin jobs [OPTIONS]
+```
+
+Shows a table with one row for each kind of job. The columns are the counts of
+the jobs in each state: `QUEUED`, `LEASED`, `DONE` and `FAILED`. Below the
+table, it shows the last 20 failed jobs, newest first. Each failure has a line
+with the time, the kind, the organization, the try and the job id. The error
+is on the next line, at most 500 characters. A job of the deployment shows
+`(deployment)` in place of the organization.
+
+The command shows the jobs of your organization and the jobs of the
+deployment. It does not show the jobs of other organizations. `--json` prints
+the response of `GET /api/admin/jobs`.
 
 ## Deployment administration
 

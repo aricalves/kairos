@@ -2116,6 +2116,13 @@ impl KairosClient {
         .await
     }
 
+    /// `GET /api/admin/jobs` — the job queue of the organization and of
+    /// the deployment: the jobs by kind and state, and the last failures
+    /// (KAIROS-T-0576, an organization admin).
+    pub async fn admin_jobs(&self) -> Result<crate::types_org::JobQueueStatus, Error> {
+        self.get("/api/admin/jobs").await
+    }
+
     /// `GET /api/org/code-index-settings` — the provider settings of the
     /// code index of the tenant (KAIROS-T-0339); the secrets as a status.
     pub async fn code_index_settings(
