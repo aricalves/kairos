@@ -8,7 +8,8 @@ use kairos_client::types_org::{
 use crate::commands::entities::{ListArgs, require_confirm};
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
-use crate::table::{Table, print_page_footer};
+use crate::listing::{fetch, print_whole};
+use crate::table::Table;
 
 /// Operations on delivery streams.
 #[derive(clap::Subcommand, Debug)]
@@ -120,21 +121,16 @@ impl StreamsCommand {
         match self {
             Self::List(args) => {
                 let client = client(&args.common)?;
-                let envelope = client.list_streams(args.page()).await?;
+                let envelope = fetch(args.paging(), |page| client.list_streams(page)).await?;
                 if args.common.json {
-                    return print_json(&envelope);
+                    return envelope.print_json();
                 }
                 if envelope.items.is_empty() {
                     println!("(none)");
                 } else {
                     print!("{}", stream_table(&envelope.items).render());
                 }
-                print_page_footer(
-                    envelope.total,
-                    envelope.limit,
-                    envelope.offset,
-                    envelope.items.len(),
-                );
+                envelope.print_footer();
                 Ok(())
             }
             Self::Get { stream_id, common } => {
@@ -228,7 +224,7 @@ impl StreamTeamsCommand {
                 let client = client(&common)?;
                 let teams = client.list_stream_teams(&stream_id).await?;
                 if common.json {
-                    return print_json(&teams);
+                    return print_whole(&teams);
                 }
                 if teams.is_empty() {
                     println!("(none)");

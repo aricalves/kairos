@@ -13,6 +13,7 @@ use super::teams::team_id;
 use crate::commands::entities::require_confirm;
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
+use crate::listing::print_whole;
 
 /// Operations on the team page of a team.
 #[derive(clap::Subcommand, Debug)]
@@ -248,7 +249,7 @@ impl TeamPagesCommand {
                 let team_id = team_id(&team);
                 let pages = client.list_team_pages(&team_id).await?;
                 if common.json {
-                    return print_json(&pages);
+                    return print_whole(&pages);
                 }
                 print!("{}", render_tree(&pages));
                 Ok(())
