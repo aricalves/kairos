@@ -33,6 +33,7 @@ Command groups, each detailed below:
 | Published sites | `pages` |
 | Machine access | `service-accounts`, `keys`, `admin agent-keys` |
 | Code index settings | `admin code-index-settings` |
+| The job queue | `admin jobs` |
 | Deployment administration | `admin tenants` |
 | The code index of a checkout | `index` |
 | The CLI itself | `self-update` |
@@ -94,7 +95,7 @@ the per-command tables below.
 |---|---|---|---|
 | `--url <URL>` | string | `KAIROS_URL`, then the only cached deployment | Deployment base URL. Required when more than one deployment is cached and `KAIROS_URL` is not set. |
 | `--tenant <TENANT>` | string | the tenant cached at login (none with a key) | Tenant slug, sent as the `X-Tenant` header. Used by deployments that resolve tenants by header rather than by host subdomain. |
-| `--json` | flag | off | Print the raw JSON DTO instead of the human-readable table. |
+| `--json` | flag | off | Print JSON instead of the human-readable table. A list prints one envelope: see [the JSON of a list](#the-json-of-a-list). |
 
 `--url` values are normalized by trimming whitespace and trailing slashes, so
 `https://kairos.example/` and `https://kairos.example` address the same cached
@@ -294,6 +295,7 @@ kairos <noun> list [OPTIONS]
 |---|---|---|---|
 | `--limit <LIMIT>` | integer | server default 50, maximum 200 | Page size. |
 | `--offset <OFFSET>` | integer | 0 | Rows to skip. |
+| `--all` | flag | off | Read each page. The CLI asks for one page after the other and prints each row. Not with `--limit` or `--offset`. |
 | `--include-deleted` | flag | off | Also list archived (put-away) items, marked `[archived]` in the `CODE` column. Without the flag, only live items are returned. |
 
 `documents list` and `adrs list` have one more option:
@@ -319,13 +321,57 @@ Next: --offset 200
 
 The `Next:` line is there only when more rows follow the page. To read the
 next page, run the command again with that option. The last page has no
-`Next:` line. With `--json`, the command prints the envelope of the server
-as it is: `items`, `total`, `limit` and `offset`.
+`Next:` line.
+
+`--all` reads each page. The CLI asks for one page after the other, with the
+maximum page size of the server. It prints each row, and then `total: N`.
+`--all` with `--limit` or `--offset` is a usage error (exit 64).
 
 These verbs page so: `<noun> list`, `boards list`,
 `members list`, `teams list`, `streams list`, `repos list`, `metadata list`,
 `templates list`, `admin agent-keys list`, `admin tenants list` and
 `kairos search`.
+
+#### The JSON of a list
+
+With `--json`, each `list` verb and `kairos search` print one envelope
+(KAIROS-A-0057):
+
+```json
+{
+  "items": [ ... ],
+  "total": 340,
+  "next_offset": 200
+}
+```
+
+| Key | Description |
+|---|---|
+| `items` | The rows of the page. With `--all`, each row. |
+| `total` | The count of the rows that match, before the page. |
+| `next_offset` | The `--offset` of the next page. It is `null` on the last page and with `--all`. |
+
+A list that the server does not page has the same envelope. Its `total` is
+the count of the rows, and `next_offset` is `null`. These lists are
+`grants list`, `keys list`, `service-accounts list`,
+`boards columns list`, `boards transitions list`, `teams members list`,
+`teams pages list` and `streams teams list`.
+
+`kairos search` gives the hits in one `items` list, in the order of the
+groups: strategies, initiatives, tasks, documents, ADRs. Each hit has an
+`entity_type` key: `strategy`, `initiative`, `task`, `document` or `adr`.
+
+`dispatch list` gives two lists, and keeps its shape:
+`{"rules": [...], "targets": [...]}`.
+
+A script must accept a key that it does not know: a new key can come later.
+
+This envelope changes the `--json` shape of the lists (KAIROS-T-0644).
+Before, a paged list printed the envelope of the server (`items`, `total`,
+`limit`, `offset`). `search` printed the groups in `results`. Some lists
+printed a bare array. A script that reads `results.tasks`, a bare array,
+`limit` or `offset` must change. Read `items`, and use `next_offset` for the
+next page.
 
 ### `<noun> get`
 
@@ -922,6 +968,7 @@ Ordering and paging:
 | `--order <ORDER>` | `asc` \| `desc` | `desc` | Sort order. |
 | `--limit <LIMIT>` | integer | server default 25, maximum 100 | Page size. |
 | `--offset <OFFSET>` | integer | 0 | Offset into the combined result set. |
+| `--all` | flag | off | Read each page of hits. Not with `--limit`, `--offset` or `--query-json`. |
 
 Raw body:
 
@@ -950,6 +997,7 @@ kairos boards list [OPTIONS]
 |---|---|---|---|
 | `--limit <LIMIT>` | integer | server default 50, maximum 200 | Page size. |
 | `--offset <OFFSET>` | integer | 0 | Rows to skip. |
+| `--all` | flag | off | Read each page. The CLI asks for one page after the other and prints each row. Not with `--limit` or `--offset`. |
 
 ### `kairos boards show`
 
@@ -1195,6 +1243,7 @@ kairos members list [OPTIONS]
 |---|---|---|---|
 | `--limit <LIMIT>` | integer | server default 50, maximum 200 | Page size. |
 | `--offset <OFFSET>` | integer | 0 | Rows to skip. |
+| `--all` | flag | off | Read each page. The CLI asks for one page after the other and prints each row. Not with `--limit` or `--offset`. |
 
 ### `kairos members add`
 
@@ -1245,6 +1294,7 @@ kairos teams list [OPTIONS]
 |---|---|---|---|
 | `--limit <LIMIT>` | integer | server default 50, maximum 200 | Page size. |
 | `--offset <OFFSET>` | integer | 0 | Rows to skip. |
+| `--all` | flag | off | Read each page. The CLI asks for one page after the other and prints each row. Not with `--limit` or `--offset`. |
 
 ### `kairos teams get`
 
@@ -1405,6 +1455,7 @@ kairos streams list [OPTIONS]
 |---|---|---|---|
 | `--limit <LIMIT>` | integer | server default 50, maximum 200 | Page size. |
 | `--offset <OFFSET>` | integer | 0 | Rows to skip. |
+| `--all` | flag | off | Read each page. The CLI asks for one page after the other and prints each row. Not with `--limit` or `--offset`. |
 
 ### `kairos streams get`
 
@@ -1478,6 +1529,7 @@ kairos repos list [OPTIONS]
 | `--team <TEAM>` | slug or UUID | all teams | Only this team's repositories. |
 | `--limit <LIMIT>` | integer | server default 50, maximum 200 | Page size. |
 | `--offset <OFFSET>` | integer | 0 | Rows to skip. |
+| `--all` | flag | off | Read each page. The CLI asks for one page after the other and prints each row. Not with `--limit` or `--offset`. |
 
 After the table, the command prints the count of the repositories and the
 page: `total: 12 (limit 50, offset 0)`. See
@@ -1881,6 +1933,7 @@ kairos metadata delete <DEFINITION> --confirm [OPTIONS]
 | `<DEFINITION>` | slug or UUID | required on `update` and `delete` | The metadata definition. |
 | `--limit <LIMIT>` | integer | server default 50, maximum 200 | On `list`: the page size. |
 | `--offset <OFFSET>` | integer | 0 | On `list`: the rows to skip. |
+| `--all` | flag | off | On `list`: read each page. Not with `--limit` or `--offset`. |
 | `--name <NAME>` | string | required on `create` | The name. |
 | `--slug <SLUG>` | string | required on `create` | The slug. |
 | `--type <TYPE>` | string | required on `create` | `string`, `enum` or `date`. It does not change later. |
@@ -1889,8 +1942,8 @@ kairos metadata delete <DEFINITION> --confirm [OPTIONS]
 | `--confirm` | flag | off | Required on `delete` for the deletion to happen. Without it, the command exits 1. |
 
 `list` shows one page of the metadata definitions. See
-[the pages of a list](#the-pages-of-a-list). `update` and `delete` find the
-slug on each page. Only an organization admin can create, update or delete a
+[the pages of a list](#the-pages-of-a-list). `update` and `delete` send the
+slug or the id to the server. The server finds the definition in one call. Only an organization admin can create, update or delete a
 definition. `delete` refuses a definition that an item or a
 template uses, and the message names them.
 
@@ -1908,6 +1961,7 @@ kairos templates delete <TEMPLATE> --confirm [OPTIONS]
 | `<TEMPLATE>` | slug or UUID | required on `update` and `delete` | The template. |
 | `--limit <LIMIT>` | integer | server default 50, maximum 200 | On `list`: the page size. |
 | `--offset <OFFSET>` | integer | 0 | On `list`: the rows to skip. |
+| `--all` | flag | off | On `list`: read each page. Not with `--limit` or `--offset`. |
 | `--name <NAME>` | string | required on `create` | The name. |
 | `--slug <SLUG>` | string | required on `create` | The slug. |
 | `--content <TEXT>` | string | empty | The markdown of a new item of the template. |
@@ -1915,8 +1969,8 @@ kairos templates delete <TEMPLATE> --confirm [OPTIONS]
 | `--confirm` | flag | off | Required on `delete` for the deletion to happen. Without it, the command exits 1. |
 
 `list` shows one page of the templates. See
-[the pages of a list](#the-pages-of-a-list). `update` and `delete` find the
-slug on each page. Only an organization admin can create, update or delete a
+[the pages of a list](#the-pages-of-a-list). `update` and `delete` send the
+slug or the id to the server. The server finds the template in one call. Only an organization admin can create, update or delete a
 template. Items from a deleted template keep their content and their
 metadata.
 
@@ -2105,6 +2159,7 @@ kairos admin agent-keys list [--user <USER>] [OPTIONS]
 | `--user <USER>` | UUID or email | none | Only the keys of this person. A value that names no person gets `422`. |
 | `--limit <LIMIT>` | integer | server default 50, maximum 200 | Page size. |
 | `--offset <OFFSET>` | integer | 0 | Rows to skip. |
+| `--all` | flag | off | Read each page. The CLI asks for one page after the other and prints each row. Not with `--limit` or `--offset`. |
 
 The newest key is first. Each row shows the id, the owner, the name and the
 prefix. It also shows the dates of creation, expiry, last use and revocation.
@@ -2172,6 +2227,28 @@ input, never from an argument:
 printf '%s' "$OLLAMA_KEY" | kairos admin code-index-settings set --summary-provider ollama-cloud --summary-url https://ollama.com/v1 --summary-model gemma4:31b --summary-secret-stdin
 ```
 
+## The job queue
+
+An organization admin reads the job queue. Another person gets `403`. See
+[The job queue](../../explanation/job-queue/#what-to-watch).
+
+### `kairos admin jobs`
+
+```
+kairos admin jobs [OPTIONS]
+```
+
+Shows a table with one row for each kind of job. The columns are the counts of
+the jobs in each state: `QUEUED`, `LEASED`, `DONE` and `FAILED`. Below the
+table, it shows the last 20 failed jobs, newest first. Each failure has a line
+with the time, the kind, the organization, the try and the job id. The error
+is on the next line, at most 500 characters. A job of the deployment shows
+`(deployment)` in place of the organization.
+
+The command shows the jobs of your organization and the jobs of the
+deployment. It does not show the jobs of other organizations. `--json` prints
+the response of `GET /api/admin/jobs`.
+
 ## Deployment administration
 
 `admin tenants` is cross-tenant tenant provisioning, restricted to deployment
@@ -2188,6 +2265,7 @@ kairos admin tenants list [OPTIONS]
 |---|---|---|---|
 | `--limit <LIMIT>` | integer | server default 50, maximum 200 | Page size. |
 | `--offset <OFFSET>` | integer | 0 | Rows to skip. |
+| `--all` | flag | off | Read each page. The CLI asks for one page after the other and prints each row. Not with `--limit` or `--offset`. |
 
 ### `kairos admin tenants create`
 

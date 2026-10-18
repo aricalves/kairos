@@ -42,6 +42,7 @@ mod context;
 mod credentials;
 mod error;
 mod index;
+mod listing;
 mod oidc;
 mod password;
 mod provider;

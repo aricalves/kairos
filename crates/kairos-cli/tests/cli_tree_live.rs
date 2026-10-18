@@ -392,8 +392,8 @@ async fn cli_command_tree_golden_path_live() {
     // KAIROS-T-0593: one page holds all; no next offset.
     assert!(!stdout.contains("Next:"), "boards list: {stdout}");
 
-    // A page with more rows after it names the next offset; --json keeps
-    // the envelope of the server.
+    // A page with more rows after it names the next offset; --json prints
+    // the envelope of the CLI (KAIROS-T-0644, KAIROS-A-0057).
     let (code, stdout, stderr) =
         run_cli(config_dir.path(), &["boards", "list", "--limit", "1"]).await;
     assert_eq!(code, 0, "boards list --limit 1 failed: {stderr}");
@@ -415,7 +415,64 @@ async fn cli_command_tree_golden_path_live() {
         .map(String::as_str)
         .collect();
     keys.sort_unstable();
-    assert_eq!(keys, ["items", "limit", "offset", "total"], "{stdout}");
+    assert_eq!(keys, ["items", "next_offset", "total"], "{stdout}");
+    assert_eq!(envelope["next_offset"], 1, "{stdout}");
+    assert_eq!(
+        envelope["items"].as_array().map(Vec::len),
+        Some(1),
+        "{stdout}"
+    );
+    let boards_total = envelope["total"].as_i64().expect("total");
+
+    // The last page has a null next_offset.
+    let last = (boards_total - 1).to_string();
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &[
+            "boards", "list", "--limit", "1", "--offset", &last, "--json",
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "boards list of the last page failed: {stderr}");
+    let envelope: serde_json::Value = serde_json::from_str(&stdout).expect("envelope JSON");
+    assert!(envelope["next_offset"].is_null(), "{stdout}");
+
+    // --all reads each page: each board, no next offset.
+    let (code, stdout, stderr) =
+        run_cli(config_dir.path(), &["boards", "list", "--all", "--json"]).await;
+    assert_eq!(code, 0, "boards list --all failed: {stderr}");
+    let envelope: serde_json::Value = serde_json::from_str(&stdout).expect("envelope JSON");
+    assert_eq!(
+        envelope["items"].as_array().map(Vec::len),
+        usize::try_from(boards_total).ok(),
+        "{stdout}"
+    );
+    assert!(envelope["next_offset"].is_null(), "{stdout}");
+    let (code, stdout, stderr) = run_cli(config_dir.path(), &["boards", "list", "--all"]).await;
+    assert_eq!(code, 0, "boards list --all failed: {stderr}");
+    assert!(
+        stdout.ends_with(&format!("total: {boards_total}\n")),
+        "{stdout}"
+    );
+    // --all with --limit is a usage error.
+    let (code, _, stderr) = run_cli(
+        config_dir.path(),
+        &["boards", "list", "--all", "--limit", "1"],
+    )
+    .await;
+    assert_eq!(code, 64, "--all with --limit: {stderr}");
+
+    // A list that the server does not page has the same envelope.
+    let (code, stdout, stderr) = run_cli(config_dir.path(), &["grants", "list", "--json"]).await;
+    assert_eq!(code, 0, "grants list --json failed: {stderr}");
+    let envelope: serde_json::Value = serde_json::from_str(&stdout).expect("envelope JSON");
+    assert!(envelope["items"].is_array(), "{stdout}");
+    assert_eq!(
+        envelope["total"].as_u64(),
+        envelope["items"].as_array().map(|a| a.len() as u64),
+        "{stdout}"
+    );
+    assert!(envelope["next_offset"].is_null(), "{stdout}");
 
     let (code, stdout, stderr) =
         run_cli(config_dir.path(), &["boards", "show", &delivery_board_id]).await;
@@ -579,14 +636,21 @@ async fn cli_command_tree_golden_path_live() {
     .await;
     assert_eq!(code, 0);
     let results: serde_json::Value = serde_json::from_str(&stdout).expect("search JSON");
+    // KAIROS-A-0057: one flat list of hits; each hit names its type.
+    let hits = results["items"].as_array().expect("items");
+    let hit = |kind: &str| {
+        hits.iter()
+            .find(|hit| hit["entity_type"] == kind)
+            .map(|hit| hit["short_code"].clone())
+    };
+    assert_eq!(hit("task"), Some(task_code.as_str().into()), "{stdout}");
     assert_eq!(
-        results["results"]["tasks"][0]["short_code"],
-        task_code.as_str()
+        hit("initiative"),
+        Some(initiative_code.as_str().into()),
+        "{stdout}"
     );
-    assert_eq!(
-        results["results"]["initiatives"][0]["short_code"],
-        initiative_code.as_str()
-    );
+    assert_eq!(results["total"], 2, "{stdout}");
+    assert!(results["next_offset"].is_null(), "{stdout}");
 
     let (code, stdout, stderr) = run_cli(
         config_dir.path(),
@@ -608,6 +672,24 @@ async fn cli_command_tree_golden_path_live() {
     .await;
     assert_eq!(code, 0, "search --limit 1 failed: {stderr}");
     assert!(stdout.contains("Next: --offset 1"), "{stdout}");
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["search", "--query", "golden", "--limit", "1", "--json"],
+    )
+    .await;
+    assert_eq!(code, 0, "search --limit 1 --json failed: {stderr}");
+    let page: serde_json::Value = serde_json::from_str(&stdout).expect("search JSON");
+    assert_eq!(page["next_offset"], 1, "{stdout}");
+    // --all reads both pages.
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["search", "--query", "golden", "--all", "--json"],
+    )
+    .await;
+    assert_eq!(code, 0, "search --all failed: {stderr}");
+    let all: serde_json::Value = serde_json::from_str(&stdout).expect("search JSON");
+    assert_eq!(all["items"].as_array().map(Vec::len), Some(2), "{stdout}");
+    assert!(all["next_offset"].is_null(), "{stdout}");
 
     // A search flag beside --query-json is refused, and named; before,
     // --updated-after was dropped without a word.
@@ -788,7 +870,21 @@ async fn cli_command_tree_golden_path_live() {
         assert_eq!(code, 0, "{noun} list of the last page failed: {stderr}");
         assert!(!stdout.contains("Next:"), "{noun}: {stdout}");
     }
-    // The lookup by slug still finds a definition.
+    // --all reads each page of a list of the server.
+    for noun in ["metadata", "templates"] {
+        let (code, stdout, stderr) =
+            run_cli(config_dir.path(), &[noun, "list", "--all", "--json"]).await;
+        assert_eq!(code, 0, "{noun} list --all failed: {stderr}");
+        let envelope: serde_json::Value = serde_json::from_str(&stdout).expect("envelope JSON");
+        assert_eq!(
+            envelope["items"].as_array().map(|a| a.len() as i64),
+            envelope["total"].as_i64(),
+            "{noun}: {stdout}"
+        );
+        assert!(envelope["next_offset"].is_null(), "{noun}: {stdout}");
+    }
+    // The server finds a definition and a template by the slug
+    // (KAIROS-T-0644): update and delete are one call each.
     let (code, stdout, stderr) = run_cli(
         config_dir.path(),
         &["metadata", "update", "paging-two", "--name", "Paging two"],
@@ -796,6 +892,35 @@ async fn cli_command_tree_golden_path_live() {
     .await;
     assert_eq!(code, 0, "metadata update by slug failed: {stderr}");
     assert!(stdout.contains("paging-two"), "{stdout}");
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["templates", "update", "paging-two", "--name", "Paging two"],
+    )
+    .await;
+    assert_eq!(code, 0, "templates update by slug failed: {stderr}");
+    assert!(stdout.contains("paging-two"), "{stdout}");
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["templates", "delete", "paging-one", "--confirm"],
+    )
+    .await;
+    assert_eq!(code, 0, "templates delete by slug failed: {stderr}");
+    assert!(stdout.contains("paging-one"), "{stdout}");
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["metadata", "delete", "paging-one", "--confirm"],
+    )
+    .await;
+    assert_eq!(code, 0, "metadata delete by slug failed: {stderr}");
+    assert!(stdout.contains("paging-one"), "{stdout}");
+    // An unknown slug: exit 1, and the message names it.
+    let (code, _, stderr) = run_cli(
+        config_dir.path(),
+        &["metadata", "update", "no-such-field", "--name", "x"],
+    )
+    .await;
+    assert_eq!(code, 1, "an unknown slug: {stderr}");
+    assert!(stderr.contains("no-such-field"), "{stderr}");
 
     // --- repos create / list / get / bind / unbind (KAIROS-T-0107) ---------------
     let (code, stdout, stderr) = run_cli(
