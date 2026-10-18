@@ -318,14 +318,28 @@ reason. The mark is a row of its own
 in one column, and the queries of the task do not change.
 
 **Delete** is the delete for good: a purge. It is the answer to the open
-question of erasure below, for a task only. Only a person who manages the board
-of the task can do it, and the GUI asks the person to type the code of the
-task first. The purge removes the task and the rows that are about the task
-only: its history, its metadata, its edges, its forge links and its claim. The
-activity log keeps its rows, because the log is the audit of the organization,
-and the purge adds one row that names the code and the title. The retention
-sweeper does not remove items, so this is the one path that does, and a later
-sweep of archived items can call it.
+question of erasure below, for a task only. The GUI asks the person to type the
+code of the task first. The purge removes the task and the rows that are about
+the task only: its history, its metadata, its edges, its forge links, its
+external references, its forge intake row and its claim. The activity log
+keeps its rows, because the log is the audit of the organization, and the
+purge adds one row that names the code and the title. The retention sweeper
+does not remove items, so this is the one path that does, and a later sweep of
+archived items can call it.
+
+A purge has two gates (KAIROS-T-0570). The first gate is the archive. Kairos
+refuses the purge of a live task with `TASK_LIVE`: archive it first. The
+archive is the step that a restore can undo. It ends the claim, and it frees
+the items that the task blocks. Thus a purge only removes work that is put away
+already. The second gate is the capability `purge`. Team membership gives
+`manage_tasks`, and `manage_tasks` lets a person archive a task. That right is
+safe, because a restore undoes an archive. No restore undoes a purge. Thus
+`purge` is a separate grant, and team membership does not give it. An
+organization admin has it. The decision is in KAIROS-A-0052.
+
+The purge also removes the forge intake row of the task. Kairos makes one task
+for each issue of a forge, and it makes nothing for an issue that has a row.
+With the row kept, the issue of a purged task could never come in again.
 
 **Reopen** is the way back from done, for a finished task and for a
 cancelled one (KAIROS-T-0564). A default board has no transition out of
@@ -405,8 +419,8 @@ surface will reasonably assume the others agree, so a partial implementation
 would have been worse than none — which is why the decision was implemented
 across the API, MCP, the CLI and the GUI together rather than incrementally.
 
-And the open question is erasure, not visibility. For a task, a board manager
-can now delete it for good (see above). For the other item types, nothing in
+And the open question is erasure, not visibility. For a task, a holder of
+`purge` can now delete it for good, after the archive (see above). For the other item types, nothing in
 Kairos destroys archived content: the retention sweeper purges history and
 activity rows, not the archived records themselves. So archived content is permanent, and this
 decision makes that permanent *by design* rather than by accident. A tenant
@@ -414,6 +428,35 @@ with a regulatory erasure requirement sits directly against the rule that
 archiving is not a permission boundary, and would force a real deletion path
 rather than a visibility flag. That is a review trigger on the decision, not a
 promise about it.
+
+## What the retention pass removes
+
+An archive removes no row. The retention pass removes old rows from some
+tables. This table gives each table and its rule.
+[Configuration → Retention](../../reference/configuration/#retention) gives
+the variables that change the defaults.
+
+| Table | Rule | Default | Archive first |
+|---|---|---|---|
+| `item_history` | Past the hot window, keep the first and the last version of an item in each month. Always keep the newest versions of an item. | 90 days, 5 versions | Yes, in the mode `archive` |
+| `team_page_history` | The rule of `item_history`, for each team page. | 90 days, 5 versions | Yes, in the mode `archive` |
+| `activity_log` | Remove the rows that are older than the window. | 365 days | Yes, in the mode `archive` |
+| `notifications` | Remove a read notification after the read window. Remove an unread notification after the unread window. | 30 days read, 180 days unread | No |
+| `code_indexes` | Keep the newest indexes of each repository and ref. | 5 indexes | No |
+| `code_index_summaries` | Remove a summary that no stored index uses, after the pool window. | 30 days | No |
+| `webhook_deliveries` | Remove a delivery that finished before the window, with its tries. A `pending` delivery stays. | 30 days | No |
+| `local_sessions` | Remove a password session after it expires. | None | No |
+| `auth_failures` | Remove a row of the login throttle after its window and its lockout end. | None | No |
+
+The mode `off` stops the first three rules. The other rules apply in each
+mode. Their rows are caches, or copies of facts that other rows keep. The
+value `0` keeps each row of that kind.
+
+In the mode `archive` with no target, the first three rules remove nothing.
+The pass then reads no row of those tables.
+
+A relationship row of `activity_log` names the source of the edge as its
+entity. So the activity of an item shows the edges that start at the item.
 
 ## Where this comes from
 

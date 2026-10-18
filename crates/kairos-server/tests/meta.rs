@@ -1305,10 +1305,19 @@ async fn meta_endpoints_against_live_stack() {
         .expect("entity_id filter");
     // KAIROS-T-0359: the move into Active claims the task and the move out
     // of it releases the claim, so the walk adds a claim and a release row.
-    assert_eq!(body.total, 9, "{body:?}");
-    let details: Vec<&str> = body.items[..3].iter().map(|i| i.details.as_str()).collect();
+    // KAIROS-T-0638: t1 is the source of the blocks edge to t2, so the add
+    // and the remove of that edge are rows of t1 too. KAIROS-T-0557: each
+    // changed metadata value writes one `update` row: priority set, due
+    // set, priority cleared.
+    assert_eq!(body.total, 11, "{body:?}");
+    let metadata: Vec<&str> = body
+        .items
+        .iter()
+        .filter(|i| i.details.starts_with("metadata:"))
+        .map(|i| i.details.as_str())
+        .collect();
     assert_eq!(
-        details,
+        metadata,
         [
             "metadata:priority=",
             "metadata:due=2026-08-01",
@@ -1316,28 +1325,28 @@ async fn meta_endpoints_against_live_stack() {
         ],
         "{body:?}"
     );
-    // A move and its claim or release are in one transaction: they have the
-    // same time, so each pair is compared without its order.
-    let mut actions: Vec<&str> = body.items[3..].iter().map(|i| i.action.as_str()).collect();
-    actions[0..2].sort_unstable();
-    actions[2..4].sort_unstable();
+    let rest: Vec<_> = body
+        .items
+        .iter()
+        .filter(|i| !i.details.starts_with("metadata:"))
+        .collect();
+    let actions: Vec<&str> = rest.iter().map(|i| i.action.as_str()).collect();
+    assert_eq!(actions[0], "relationship_remove", "{body:?}");
+    assert_eq!(actions[6..], ["relationship_add", "create"], "{body:?}");
+    // A claim and its transition share one time, so their order is free.
+    let mut walk = actions[1..6].to_vec();
+    walk.sort_unstable();
     assert_eq!(
-        actions,
-        [
-            "release",
-            "transition",
-            "claim",
-            "transition",
-            "transition",
-            "create"
-        ],
+        walk,
+        ["claim", "release", "transition", "transition", "transition"],
         "{body:?}"
     );
-    assert_eq!(body.items[8].entity_type.as_deref(), Some("task"));
+    assert_eq!(rest[7].entity_type.as_deref(), Some("task"));
 
     // action filter: the blocks link (svc), and the parent link, the
     // informs link (COLLIERY-T-0228: a member writes it now) and the two
-    // document supports edges (alice) are relationship_add rows.
+    // document supports edges (alice) are relationship_add rows. Each names
+    // the source of its edge (KAIROS-T-0638).
     let body = bob
         .activity(&ActivityQuery {
             action: Some("relationship_add".into()),
@@ -1349,7 +1358,7 @@ async fn meta_endpoints_against_live_stack() {
     assert!(
         body.items
             .iter()
-            .all(|item| item.entity_id.is_none() && item.details.starts_with("relationship:")),
+            .all(|item| item.entity_id.is_some() && item.details.starts_with("relationship:")),
         "{body:?}"
     );
 

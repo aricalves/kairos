@@ -13,10 +13,11 @@
 //!   a URI, a repository or a team, a create, an archive, a restore and a
 //!   rename. A kind that this module does not know is a line too
 //!   ([`describe`]): a new kind shows, with its action and its details.
-//! - Each link between two items that names the item. That row has no
-//!   `entity_id`: its details name the two codes
-//!   (`relationship:parent:ACME-I-0001->ACME-T-0002`). The match uses the
-//!   current code and each retired code of the item.
+//! - Each link between two items that names the item. Its details name
+//!   the two codes (`relationship:parent:ACME-I-0001->ACME-T-0002`). Since
+//!   KAIROS-T-0638 the `entity_id` of the row is the source, so the target
+//!   finds the row by its code; an older row has no `entity_id`. The match
+//!   uses the current code and each retired code of the item.
 //!
 //! # Names
 //!
@@ -123,9 +124,13 @@ pub fn of_item(
         for pattern in &patterns[1..] {
             condition = Box::new(condition.or(log::details.like(pattern.clone())));
         }
+        // KAIROS-T-0638: a link row names its source as the entity. The
+        // rows of the item hold the links where it is the source; this set
+        // takes the rest: the rows with no entity (before KAIROS-T-0638),
+        // and the rows of the other end.
         Box::new(
             log::entity_id
-                .is_null()
+                .is_distinct_from(item_id)
                 .and(log::action.eq_any(vec![
                     ActivityAction::RelationshipAdd,
                     ActivityAction::RelationshipRemove,

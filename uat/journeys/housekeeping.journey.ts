@@ -223,7 +223,14 @@ journey(
       const [leak] = shortCodes(made);
       ledger.add({ kind: 'task', label: leak, delete: async () => { await api.delete(`/api/tasks/${leak}`); } });
       // An archive keeps the text, which is the problem here: only a purge
-      // takes it out of the history.
+      // takes it out of the history. A purge needs the archive first
+      // (KAIROS-T-0570).
+      const live = await mcp.call('purge_task', { short_code: leak, confirm: true }).then(
+        () => '',
+        (e: Error) => e.message,
+      );
+      expect(live, 'a live task is refused').toContain('TASK_LIVE');
+      await mcp.call('delete_item', { short_code: leak, confirm: true });
       const purged = await mcp.call('purge_task', { short_code: leak, confirm: true });
       expect(purged).toContain(`Deleted ${leak}`);
       expect(purged).toContain('No restore can bring it back');

@@ -163,6 +163,12 @@ jobs:
       - name: The MCP tools page names each tool of the code
         run: python scripts/check_mcp_tools.py
 
+      # KAIROS-T-0639: a new migration takes no long lock on a large table
+      # (NOT VALID, then VALIDATE; CONCURRENTLY outside a transaction). Pure
+      # Python, no build.
+      - name: The new migrations follow the migration convention
+        run: python scripts/check_migrations.py
+
       - name: Gate 6 — GUI conventions grep
         run: angreal web lint
 
@@ -254,6 +260,7 @@ jobs:
           python -B -m unittest discover -s scripts/metis_import -t scripts
           python -B -m unittest scripts/test_check_compose_settings.py
           python -B -m unittest scripts/test_check_mcp_tools.py
+          python -B -m unittest scripts/test_check_migrations.py
 
   build-tests:
     name: build-tests

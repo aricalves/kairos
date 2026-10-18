@@ -5,8 +5,9 @@
 //! `last_used_at` (each such row was a row of a stored index); the up.sql
 //! again does not mark a new row; a summary that a build adds as it is made
 //! has none; a stored index that uses it marks it; the retention delete
-//! removes only the rows that no index used and that are older than the
-//! setting; the down.sql removes the column, and the up.sql runs after it.
+//! removes only the rows that no stored index uses and that are older than
+//! the setting (KAIROS-T-0638: also a row whose last use is older than
+//! every stored index); the down.sql removes the column, and the up.sql runs after it.
 //!
 //! Runs against the LIVE compose Postgres (`angreal services up`); owns
 //! the scratch database `kairos_code_index_pool_t0378_test`.
@@ -162,9 +163,11 @@ fn the_pool_records_which_rows_an_index_used() {
         0,
         "0 keeps them"
     );
+    // KAIROS-T-0638: "old" goes too. Its last use is older than the only
+    // stored index, and that index does not use it.
     assert_eq!(
         kairos_db::retention::delete_unused_summaries(&mut conn, &config, later).unwrap(),
-        1
+        2
     );
     conn.batch_execute("SET search_path TO org_acme, public")
         .unwrap();
@@ -173,8 +176,11 @@ fn the_pool_records_which_rows_an_index_used() {
         .into_iter()
         .map(|r| r.key)
         .collect();
-    assert_eq!(keys.len(), 2);
-    assert!(keys.contains(&"a".to_string()) && keys.contains(&"old".to_string()));
+    assert_eq!(
+        keys,
+        vec!["a".to_string()],
+        "the row that the index uses stays"
+    );
 
     // The down.sql removes the column, and the up.sql runs after it.
     conn.batch_execute(DOWN_SQL).expect("down.sql");

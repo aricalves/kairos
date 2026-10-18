@@ -398,6 +398,10 @@ pub struct RelationshipGroup {
 /// mirror of: `kairos_client::types_meta::RelatedItem` (partial).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct RelatedItem {
+    /// The id of the edge: the remove of the Relationships panel deletes
+    /// it (KAIROS-T-0580).
+    #[serde(default)]
+    pub relationship_id: String,
     pub short_code: String,
     pub entity_type: String,
     pub title: String,
@@ -652,6 +656,36 @@ pub async fn fetch_relationships(
     get_json(
         auth,
         &format!("/api/{}/{code}/relationships", family.api_family()),
+    )
+    .await
+}
+
+/// mirror of: `kairos_client::types_meta::SetParentRequest`. `parent`
+/// is always in the body: `null` removes the parent (KAIROS-T-0572).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SetParentBody {
+    pub parent: Option<String>,
+}
+
+/// mirror of: `kairos_client::types_meta::SetParentResponse`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct SetParentOutcome {
+    pub parent: Option<String>,
+    pub changed: bool,
+}
+
+/// `PUT /api/{family}/{short_code}/parent`: the reparent in one write
+/// (KAIROS-T-0572), for an initiative or a task.
+pub async fn set_parent(
+    auth: Auth,
+    family: Family,
+    code: &str,
+    parent: Option<String>,
+) -> Result<SetParentOutcome, ApiError> {
+    crate::api::put_json(
+        auth,
+        &format!("/api/{}/{code}/parent", family.api_family()),
+        &SetParentBody { parent },
     )
     .await
 }

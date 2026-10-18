@@ -416,7 +416,7 @@ pub struct LifecycleArgs {
 /// Arguments of `kairos tasks purge` (KAIROS-T-0362).
 #[derive(Args, Debug)]
 pub struct PurgeArgs {
-    /// The task's current short code (e.g. ACME-T-0001)
+    /// The current short code of an archived task (e.g. ACME-T-0001)
     pub short_code: String,
     /// Delete the task for good. You cannot undo it
     #[arg(long)]
@@ -445,8 +445,8 @@ pub fn require_purge_confirm(confirm: bool, what: &str) -> Result<(), CliError> 
         Ok(())
     } else {
         Err(CliError::Failure(format!(
-            "The purge deletes {what} for good, and you cannot undo it. Run the command again \
-             with --confirm. To archive the task, use `kairos tasks archive`."
+            "The purge deletes {what} for good, and you cannot undo it. Archive the task \
+             first with `kairos tasks archive`. Then run the command again with --confirm."
         )))
     }
 }
@@ -1576,9 +1576,9 @@ macro_rules! entity_family_cli {
                                       ": it moves to the first column that is not done, ",
                                       "and a cancel mark ends"))]
             $reopen_variant(GetArgs),
-            #[command(about = concat!("Delete a ", $noun,
+            #[command(about = concat!("Delete an archived ", $noun,
                                       " for good (requires --confirm; you cannot undo it; ",
-                                      "board managers only)"))]
+                                      "needs the purge capability)"))]
             $purge_variant(PurgeArgs),
             )?
             $(

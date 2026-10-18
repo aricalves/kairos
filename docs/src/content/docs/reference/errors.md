@@ -259,9 +259,10 @@ server refuses a value that is not an integer, with `VALIDATION`.
 | `NO_CLAIM` | 422 | A release of the claim of a task that has no claim | — |
 | `TASK_DONE` | 422 | A cancel of a task that is in a done column (KAIROS-T-0362), or a move to another board of a task that is in a done column (KAIROS-T-0564). Reopen the task first | `short_code` and `fix` for a move |
 | `NO_DONE_COLUMN` | 422 | A cancel of a task whose board has no done column | — |
+| `TASK_LIVE` | 422 | A purge of a task that is not archived (KAIROS-T-0570). Archive the task first | — |
 | `TASK_NOT_DONE` | 422 | A reopen of a task that is not in a done column (KAIROS-T-0564) | — |
 | `NO_OPEN_COLUMN` | 422 | A reopen of a task whose board has only done columns | `board_id` |
-| `AGENT_TRIAGE_OFF` | 403 | An agent (agent key or service account) triaged intake — a support-lane task in the entry column: a lane change to planned, a move out of the entry column, a move to another board, or a cancel — on a board that lets a person decide (KAIROS-T-0428) | `board_id` and `setting` (`agents_decide`) |
+| `AGENT_TRIAGE_OFF` | 403 | An agent (agent key or service account) triaged intake — a support-lane task in the entry column: a lane change to planned, a move out of the entry column, a move to another board, a cancel, an archive or a purge (KAIROS-T-0537) — on a board that lets a person decide (KAIROS-T-0428) | `board_id` and `setting` (`agents_decide`) |
 | `BLOCKED` | 422 | On a board with the policy `blockers_gate` on (KAIROS-T-0565): a move of a task with open blockers into a claims column or a done column. A transition, a reopen and a move to the board get it. A cancelled blocker is open. Complete each blocker, or remove its `blocks` link | `task`, `to_column`, `board_id`, `blockers` (each with `short_code` and `cancelled`), `policy` (`blockers_gate`) and `fix` |
 | `OWNER_REQUIRED` | 422 | On a board with the policy `owner_gate` on (KAIROS-T-0643): a move of an initiative into Active while it has no owner, or a release of the owner of an initiative in Active or Monitoring. Claim the initiative first, or hand it to a member of the board | `initiative`, `to_column`, `board_id`, `policy` (`owner_gate`) and `fix` for a move; `column`, `policy` and `fix` for a release |
 | `PARENT_NOT_ACTIVE` | 422 | A move of a task into a claims column (Active) while its parent initiative is not active, on a board with the policy `parent_gate` on (KAIROS-T-0641). A transition, a move to the board, a reopen and a create get it. Move the initiative to Active first | `initiative`, `initiative_column`, `to_column`, `board_id`, `policy` (`parent_gate`) and `fix` |
@@ -304,7 +305,6 @@ refusal is `VALIDATION` with `details.field` = `board` (MCP:
 | `RELATIONSHIP_RULE` | 422 | The edge is not legal between those two entity types. For an `impacts` link: the subject is not a document and not an ADR | `relationship`. For an `impacts` link, also `source_type` and `allowed_source_types` |
 | `ALREADY_LINKED` | 422 | That edge already exists. For an `impacts` link: the item impacts that repository already | — |
 | `PARENT_EXISTS` | 422 | A `parent` edge to an item that has a different parent. An item has one parent (KAIROS-T-0572). The message names the call that changes the parent: `PUT /api/{entity_type}/{short_code}/parent`, or MCP `set_parent` | `item`, `parent`: the short codes of the item and of its parent |
-| `PERSON_DECIDES` | 403 | The caller cannot confirm or reject an edge proposal. A person other than the proposer decides, with a login and not with an agent key (KAIROS-T-0538). The proposal stays pending | `reason`: `service_account`, `agent_key` or `proposer` |
 
 ### Tenant configuration
 

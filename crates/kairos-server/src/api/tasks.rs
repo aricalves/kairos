@@ -564,6 +564,10 @@ pub(crate) async fn update_task(
 ///
 /// The edit rule applies (COLLIERY-T-0228). The caller created the
 /// task, holds `manage_tasks` on its board, or is an organization admin.
+/// Intake is a support-lane task in the entry column, and its archive is
+/// a "won't do". Kairos refuses an agent's archive of intake with
+/// `AGENT_TRIAGE_OFF` while the board lets a person decide
+/// (KAIROS-T-0537).
 #[utoipa::path(
     delete,
     path = "/api/tasks/{short_code}",
@@ -571,7 +575,7 @@ pub(crate) async fn update_task(
     params(("short_code" = String, Path, description = "Task short code")),
     responses(
         (status = 200, description = "Archived; notes the cascade. A restore brings the task back", body = dto::DeleteResponse),
-        (status = 403, description = "Refused by the edit rule: the caller did not create the item and lacks the capability", body = dto::ErrorEnvelope),
+        (status = 403, description = "Refused by the edit rule: the caller did not create the item and lacks the capability, or AGENT_TRIAGE_OFF (an agent's archive of intake)", body = dto::ErrorEnvelope),
         (status = 404, description = "Unknown short code", body = dto::ErrorEnvelope),
     ),
 )]
@@ -588,10 +592,20 @@ pub(crate) async fn delete_task(
         .blocking
         .run(&tenant.slug, move |conn| {
             let task = load(conn, &short_code, Liveness::LiveOnly)?;
+            // KAIROS-T-0537: an archive of intake is a triage (won't do).
+            // The edit rule first, so a caller with no right gets its 403.
+            super::require_item_archive(conn, role, user, task.id, ItemType::Task)?;
+            let triaged = crate::agent_triage::check(
+                conn,
+                &auth,
+                task.id,
+                crate::agent_triage::TriageMove::Cancel,
+            )?;
             // The edit rule for the task, and then for each descendant
             // (COLLIERY-T-0234): `archive_item` does the two.
             let outcome =
                 super::cascade::archive_item(conn, &slug, role, user, task.id, ItemType::Task)?;
+            crate::agent_triage::record(conn, &auth, task.id, triaged)?;
             Ok(super::cascade::delete_response(outcome))
         })
         .await?;
@@ -1174,26 +1188,35 @@ pub(crate) async fn reopen_task(
     Ok(Json(task))
 }
 
-/// Delete a task for good (KAIROS-T-0362). Nothing can bring it back. The
-/// task can be live or archived.
+/// Delete an archived task for good (KAIROS-T-0362). Nothing can bring it
+/// back. Archive the task first (`DELETE /api/tasks/{short_code}`). Kairos
+/// refuses a live task with `TASK_LIVE` (KAIROS-T-0570).
 ///
 /// The purge removes these rows of the task:
 ///
 /// - the task, its history and its metadata;
 /// - its edges and its edge proposals;
-/// - its forge links, its embeddings and its retired codes;
+/// - its forge links, its external references and its embeddings;
+/// - its retired codes and its forge intake row;
 /// - its claim and its cancel mark.
 ///
 /// The items at the other end of the edges stay. The activity rows about
-/// the task stay. One new row (`purge`) names the code and the title.
+/// the task stay. One new row (`purge`) names the code and the title. A
+/// new import of the issue of an intake task makes a task again.
 ///
 /// This is a separate route, and not a flag of `DELETE`. `DELETE`
 /// archives. A purge must not be one query parameter away from an
 /// archive.
 ///
-/// Requires `manage_tasks` on the board of the task (an organization
-/// admin has it). The creator of the task gets no right here. Send the
-/// current code. The route does not follow a retired code.
+/// Requires `purge` on the board of the task. Team membership does not
+/// give it, and `manage_tasks` is not enough. An organization admin has
+/// it. The creator of the task gets no right here.
+///
+/// Intake is a
+/// support-lane task in the entry column. Kairos refuses an agent's purge
+/// of intake with `AGENT_TRIAGE_OFF` while the board lets a person decide
+/// (KAIROS-T-0537). Send the current code. The route does not follow a
+/// retired code.
 #[utoipa::path(
     post,
     path = "/api/tasks/{short_code}/purge",
@@ -1201,8 +1224,9 @@ pub(crate) async fn reopen_task(
     params(("short_code" = String, Path, description = "Task short code (the current code)")),
     responses(
         (status = 200, description = "Deleted for good", body = dto::PurgeTaskResponse),
-        (status = 403, description = "Missing manage_tasks on the board of the task", body = dto::ErrorEnvelope),
+        (status = 403, description = "Missing purge on the board of the task, or AGENT_TRIAGE_OFF (an agent's purge of intake)", body = dto::ErrorEnvelope),
         (status = 404, description = "Unknown short code", body = dto::ErrorEnvelope),
+        (status = 422, description = "TASK_LIVE: the task is not archived. Archive it first", body = dto::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn purge_task(
@@ -1211,43 +1235,59 @@ pub(crate) async fn purge_task(
     Extension(tenant): Extension<TenantContext>,
     Path(short_code): Path<String>,
 ) -> Result<Json<dto::PurgeTaskResponse>, ApiError> {
-    let user = auth.user_id;
     let slug = tenant.slug.clone();
     let purged = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            purge(conn, &slug, &short_code, user)
+            purge(conn, &slug, &short_code, &auth)
         })
         .await?;
     Ok(Json(purged))
 }
 
 /// The ONE purge of the server: REST `POST /api/tasks/{short_code}/purge`
-/// and MCP `purge_task`. The task by its current code (live or archived;
-/// no retired code), `manage_tasks` on its board, and the purge.
+/// and MCP `purge_task`. The task by its current code (no retired code),
+/// `purge` on its board, an archived task (KAIROS-T-0570), the triage gate
+/// of intake (KAIROS-T-0537), and the purge.
 pub(crate) fn purge(
     conn: &mut PgConnection,
     slug: &str,
     short_code: &str,
-    user: Uuid,
+    auth: &AuthContext,
 ) -> Result<dto::PurgeTaskResponse, ApiError> {
     use kairos_db::schema::tasks::dsl;
-    let found: Option<(Uuid, Uuid)> = dsl::tasks
+    let user = auth.user_id;
+    let found: Option<(Uuid, Uuid, Option<chrono::DateTime<chrono::Utc>>)> = dsl::tasks
         .filter(dsl::short_code.eq(short_code))
-        .select((dsl::id, dsl::board_id))
+        .select((dsl::id, dsl::board_id, dsl::deleted_at))
         .first(conn)
         .optional()
         .map_err(ApiError::internal)?;
-    let Some((task_id, board_id)) = found else {
+    let Some((task_id, board_id, archived_at)) = found else {
         return Err(ApiError::not_found(format!(
             "No task has the code {short_code}. Send the current code of the task."
         )));
     };
-    require_capability(conn, slug, Some(board_id), user, MANAGE)?;
+    require_capability(conn, slug, Some(board_id), user, kairos_core::abac::PURGE)?;
+    if archived_at.is_none() {
+        return Err(ApiError::unprocessable(
+            "TASK_LIVE",
+            format!(
+                "The task {short_code} is live. Archive it first, and then purge it. \
+                 A restore brings back an archived task, and no restore brings back a \
+                 purged task."
+            ),
+        ));
+    }
+    // KAIROS-T-0537: a purge of intake is a triage (won't do). An archived
+    // task keeps its column, so the gate reads it as for a live task.
+    let triaged =
+        crate::agent_triage::check(conn, auth, task_id, crate::agent_triage::TriageMove::Cancel)?;
     let purged = kairos_db::purge::purge_task(conn, task_id, user).map_err(|e| match e {
         kairos_db::purge::PurgeError::TaskNotFound(_) => ApiError::not_found(e.to_string()),
         kairos_db::purge::PurgeError::Database(db) => ApiError::internal(db),
     })?;
+    crate::agent_triage::record(conn, auth, task_id, triaged)?;
     Ok(dto::PurgeTaskResponse {
         short_code: purged.short_code,
         title: purged.title,
