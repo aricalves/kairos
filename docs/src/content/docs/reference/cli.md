@@ -910,7 +910,7 @@ kairos <noun> diff <SHORT_CODE> <VERSION> [<OTHER>] [OPTIONS]
 | `<OTHER>` | integer | the version before `<VERSION>` | A second version. The command compares `<VERSION>` with `<OTHER>`. |
 
 Compares two versions of the item. With one version, the command compares it
-with the version before it. Version 1 is compared with no content. The output
+with the version before it. The command compares version 1 with no content. The output
 names the two versions and their times. A changed title gets one line. Then a
 unified diff of the content comes, with 3 lines of context:
 
@@ -924,8 +924,8 @@ title: "Sweep old history" -> "Sweep history older than 90 days"
 +It removes history older than 90 days.
 ```
 
-When the content is the same, the command prints `The content did not
-change.` The versions are arguments, not options: `--to` names a column or a
+When the content is the same, the command prints the line `The content did not
+change.`. The versions are arguments, not options. `--to` names a column or a
 person. With `--json`, the command prints one object. It has `short_code`,
 `from` and `to` (the two versions of
 `GET /api/{family}/{short_code}/history?version=N`), and `diff` (the text).
@@ -2556,8 +2556,8 @@ printf '%s' "$OLLAMA_KEY" | kairos admin code-index-settings set --summary-provi
 ## Read tokens of the organization
 
 A read token of the organization is for one forge host, for example
-`github.com`. The builder of the code index gives it to git for a repository
-on the host that has no read token of its own. Only an organization admin can
+`github.com`. The builder of the code index gives it to git. It does this for
+each repository on the host with no read token of its own. Only an organization admin can
 read and change them. No command shows a token.
 
 ### `kairos admin read-tokens list`
@@ -2787,8 +2787,7 @@ kairos index upload --repo payments-api --ref main
 ```
 
 The index describes the tree of the checkout. So the command refuses a tree
-with changes that are not committed. It also refuses a checkout with no
-index. You must be an organization admin or a member of the owner team. The
+with changes that have no commit. It also refuses a checkout with no index. You must be an organization admin or a member of the owner team. The
 command prints the commit, the ref and the counts of the summaries. With
 `--json`, it prints the answer of the server.
 
