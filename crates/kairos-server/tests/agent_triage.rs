@@ -4,7 +4,8 @@
 //! board setting is off; it can still write its proposal as a note. A
 //! person's move works either way. With the setting on, the agent's move
 //! works and the activity log has a line for it. A task in the planned lane
-//! is not intake. REST and MCP.
+//! is not intake. An archive and a purge of intake are triage too
+//! (KAIROS-T-0537). REST and MCP.
 //!
 //! Runs against the LIVE compose stack (`angreal services up`). Owns the
 //! scratch database `kairos_agent_triage_t0428_test`.
@@ -158,6 +159,7 @@ fn support_task(board: &str, title: &str) -> CreateTaskRequest {
         team_id: None,
         repository: None,
         from_team: None,
+        parent: None,
     }
 }
 
@@ -310,6 +312,28 @@ async fn an_agent_decides_intake_only_when_the_board_allows_it() {
     // KAIROS-T-0456: a cancel and a move to another team are triage too.
     triage_off(agent.cancel_task(&intake, "won't do").await);
     triage_off(agent.move_task(&intake, "ops-delivery").await);
+    // KAIROS-T-0537: an archive and a purge of intake are triage too.
+    triage_off(agent.delete_task(&intake).await);
+    admin
+        .add_board_member(
+            &detail.board.id,
+            &kairos_client::types_org::AddBoardMemberRequest {
+                user_id: user_id(&mut conn, "alice@kairos.test").to_string(),
+                capabilities: vec!["purge".into()],
+            },
+        )
+        .await
+        .expect("alice may purge");
+    let put_away = admin
+        .create_task(&support_task(board, "Put away intake"))
+        .await
+        .expect("task")
+        .short_code;
+    admin
+        .delete_task(&put_away)
+        .await
+        .expect("a person archives");
+    triage_off(agent.purge_task(&put_away).await);
     // The agent proposes with a note.
     agent
         .append_note(
@@ -347,6 +371,15 @@ async fn an_agent_decides_intake_only_when_the_board_allows_it() {
         .transition_task(&planned, &todo)
         .await
         .expect("an agent moves planned work");
+    // KAIROS-T-0537: an archive and a purge of planned work are not triage.
+    agent
+        .delete_task(&planned)
+        .await
+        .expect("an agent archives planned work");
+    agent
+        .purge_task(&planned)
+        .await
+        .expect("an agent purges planned work");
     assert_eq!(agent_rows(&mut conn), 0);
 
     // MCP: the same refusal, and the setting needs configure_boards.
@@ -358,6 +391,29 @@ async fn an_agent_decides_intake_only_when_the_board_allows_it() {
             "AGENT_TRIAGE_OFF",
         )
         .await;
+    agent_mcp
+        .refused(
+            "delete_item",
+            json!({"short_code": intake, "confirm": true}),
+            "AGENT_TRIAGE_OFF",
+        )
+        .await;
+    agent_mcp
+        .refused(
+            "purge_task",
+            json!({"short_code": put_away, "confirm": true}),
+            "AGENT_TRIAGE_OFF",
+        )
+        .await;
+    assert!(
+        admin
+            .get_task(&intake)
+            .await
+            .expect("live")
+            .archived_at
+            .is_none(),
+        "the intake stays live"
+    );
     agent_mcp
         .refused(
             "set_agent_triage",
@@ -427,6 +483,31 @@ async fn an_agent_decides_intake_only_when_the_board_allows_it() {
         agent_rows(&mut conn),
         4,
         "a line for the cancel and the move"
+    );
+    // KAIROS-T-0537: the agent decides an archive (MCP) and a purge (REST).
+    let seventh = admin
+        .create_task(&support_task(board, "Seventh intake"))
+        .await
+        .expect("task")
+        .short_code;
+    agent_mcp
+        .ok(
+            "delete_item",
+            json!({"short_code": seventh, "confirm": true}),
+        )
+        .await;
+    agent
+        .purge_task(&seventh)
+        .await
+        .expect("the agent decides a purge");
+    agent
+        .purge_task(&put_away)
+        .await
+        .expect("the agent purges the archived intake");
+    assert_eq!(
+        agent_rows(&mut conn),
+        7,
+        "a line for the archive and the two purges"
     );
 
     // Back off over REST.

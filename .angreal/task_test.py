@@ -232,7 +232,8 @@ def unit():
     check that the Compose file passes each setting of the book
     (scripts/check_compose_settings.py, KAIROS-T-0496), then the check that
     the MCP tools page names each tool of the code
-    (scripts/check_mcp_tools.py, KAIROS-T-0563)."""
+    (scripts/check_mcp_tools.py, KAIROS-T-0563), then the check of the
+    migration convention (scripts/check_migrations.py, KAIROS-T-0639)."""
     _no_incremental()
     code = run_cargo_command(["test", "--workspace", "--lib", "--bins"])
     if code:
@@ -270,11 +271,13 @@ def unit():
     # test runs the check on the repository; the check alone prints the list.
     # A path for unittest is relative to the cwd: an absolute one does not load.
     # KAIROS-T-0563: the MCP tools page names each tool of the code.
+    # KAIROS-T-0639: the new migrations follow the migration convention.
     return subprocess.run(
         [
             sys.executable, "-B", "-m", "unittest",
             os.path.join("scripts", "test_check_compose_settings.py"),
             os.path.join("scripts", "test_check_mcp_tools.py"),
+            os.path.join("scripts", "test_check_migrations.py"),
         ],
         cwd=PROJECT_ROOT,
         check=False,

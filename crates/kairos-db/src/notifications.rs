@@ -45,6 +45,11 @@
 //!   ([`crate::task_claims::notify_stale_claims`], KAIROS-T-0531). The
 //!   holder and the owner of the initiative of the task are told, once for
 //!   each quiet period. Kairos is the actor.
+//! - `key_expiring`: a key expires within 7 days
+//!   ([`crate::api_keys::notify_expiring_keys`], KAIROS-T-0540). The person
+//!   of an agent key is told, or the organization admins for a key of a
+//!   service account. Once for each key, not for a revoked key and not for
+//!   a key that a rotation replaced. Kairos is the actor.
 //!
 //! # Who gets a notification
 //!
@@ -208,6 +213,52 @@ pub fn on_agent_key_revoked(
         None,
         &text,
         actor,
+    )?;
+    Ok(())
+}
+
+/// `key_expiring` (KAIROS-T-0540): the key expires within 7 days. The
+/// person of an agent key is told. For a key of a service account, each
+/// organization admin is told. Kairos is the actor. The text names the key
+/// and the command that rotates it.
+pub fn on_key_expiring(
+    conn: &mut PgConnection,
+    key: &crate::api_keys::ExpiringKey,
+) -> Result<(), DieselError> {
+    let at = key.expires_at.format("%Y-%m-%d %H:%M UTC");
+    let (name, prefix, id) = (&key.name, &key.prefix, key.id);
+    let (recipients, text) = if key.is_agent_key() {
+        (
+            vec![key.user_id],
+            format!(
+                "Your agent key {name} ({prefix}) expires at {at}. Then it does not work. \
+                 Rotate it before then: kairos keys rotate {id}, or Rotate on the Agent keys page."
+            ),
+        )
+    } else {
+        let admins: Vec<Recipient> = sql_query(
+            "SELECT m.user_id FROM public.organization_members m \
+               JOIN public.organizations o ON o.id = m.organization_id \
+              WHERE m.role = 'admin' AND 'org_' || o.slug = current_schema()",
+        )
+        .load(conn)?;
+        (
+            admins.into_iter().map(|r| r.user_id).collect(),
+            format!(
+                "The key {name} ({prefix}) of the service account {} expires at {at}. Then it \
+                 does not work. Rotate it before then: kairos keys rotate {id} \
+                 --service-account {}",
+                key.principal_name, key.user_id
+            ),
+        )
+    };
+    notify(
+        conn,
+        &recipients,
+        NotificationKind::KeyExpiring,
+        None,
+        &text,
+        Uuid::nil(),
     )?;
     Ok(())
 }

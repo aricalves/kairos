@@ -1,7 +1,7 @@
 //! The periodic passes as jobs (KAIROS-T-0376, COLLIERY-I-0613).
 //!
 //! A periodic pass (retention, the new-commits sweep of the code index, the
-//! report of the stale claims) is
+//! report of the stale claims, the report of the keys that expire soon) is
 //! a job of the kind `periodic` ([`crate::jobs::kinds::PERIODIC`]) with no
 //! tenant. Its dedupe key names the pass ([`key`]), so each pass has one
 //! open run at most. When a run ends, done or failed, the worker adds the
@@ -41,6 +41,9 @@ pub const CODE_INDEX_SWEEP: &str = "code-index-sweep";
 
 /// The report of the stale claims (KAIROS-T-0531).
 pub const STALE_CLAIMS: &str = "stale-claims";
+
+/// The report of the keys that expire soon (KAIROS-T-0540).
+pub const KEY_EXPIRING: &str = "key-expiring";
 
 /// The dedupe key of the runs of the pass `pass`.
 pub fn key(pass: &str) -> String {
@@ -333,5 +336,46 @@ fn stale_claims_run(database_url: &str, days: u32, handle: &JobHandle) -> Result
             JobError::retry(format!("The stale-claims pass failed: {e}"))
         })?;
     tracing::info!(days, reported, "stale claims: pass done");
+    Ok(())
+}
+
+/// How often the pass of the keys that expire soon runs (KAIROS-T-0540). A
+/// key is told 7 days before its expiry, so one hour is soon enough.
+pub const KEY_EXPIRING_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+/// The pass of the keys that expire soon (KAIROS-T-0540): on a connection
+/// of its own, [`kairos_db::api_keys::key_expiring_pass`] tells the person
+/// of each agent key, and the organization admins of each service-account
+/// key, that expires within 7 days. Once for each key. A failed pass is
+/// tried again.
+pub fn key_expiring_pass(database_url: String) -> PassFn {
+    Arc::new(move |handle: JobHandle| {
+        let url = database_url.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || key_expiring_run(&url, &handle))
+                .await
+                .map_err(|e| JobError::retry(format!("The key-expiring pass stopped: {e}")))?
+        })
+    })
+}
+
+/// One run of the pass of the keys that expire soon: connect, run the
+/// pass, log the result.
+fn key_expiring_run(database_url: &str, handle: &JobHandle) -> Result<(), JobError> {
+    let mut conn = kairos_db::establish_migration_connection(database_url).map_err(|e| {
+        tracing::error!(error = %e, "key expiring: the pass cannot connect to the database");
+        JobError::retry(format!(
+            "The key-expiring pass cannot connect to the database: {e}"
+        ))
+    })?;
+    let reported =
+        kairos_db::api_keys::key_expiring_pass(&mut conn, chrono::Utc::now(), &mut || {
+            handle.progress();
+        })
+        .map_err(|e| {
+            tracing::error!(error = %e, "key expiring: the pass failed");
+            JobError::retry(format!("The key-expiring pass failed: {e}"))
+        })?;
+    tracing::info!(reported, "key expiring: pass done");
     Ok(())
 }

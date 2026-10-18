@@ -1,4 +1,4 @@
-//! KAIROS-T-0630 — the tenant migration `2026-10-17-003000_item_notes`
+//! KAIROS-T-0630 — the tenant migration `2026-10-18-003000_item_notes`
 //! moves the `## Note` sections of each item into `item_notes` rows.
 //!
 //! The scenarios, on items that a tenant has before the migration:
@@ -41,7 +41,7 @@ use kairos_db::{CodePrefix, create_board, provision_tenant, run_public_migration
 const DEFAULT_DATABASE_URL: &str = "postgres://kairos:kairos@localhost:41432/kairos";
 
 /// The SQL of the migration, as diesel runs it.
-const MIGRATION: &str = include_str!("../migrations/tenant/2026-10-17-003000_item_notes/up.sql");
+const MIGRATION: &str = include_str!("../migrations/tenant/2026-10-18-003000_item_notes/up.sql");
 
 fn admin_database_url() -> String {
     std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())

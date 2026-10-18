@@ -510,6 +510,7 @@ async fn task_by(client: &KairosClient, board: &str, title: &str, repo: Option<&
             team_id: None,
             repository: repo.map(str::to_string),
             from_team: None,
+            parent: None,
         })
         .await
         .unwrap_or_else(|e| panic!("creating task {title:?}: {e}"))
@@ -1664,6 +1665,7 @@ async fn a_document_names_its_board_and_impacts_a_repository_against_live_stack(
             content: String::new(),
             complexity: None,
             bucket_type: None,
+            parent: None,
         })
         .await
         .expect("initiative");
@@ -2446,7 +2448,8 @@ async fn a_document_names_its_board_and_impacts_a_repository_against_live_stack(
     // KAIROS-T-0385 added the 3 tools of the dispatch rules. KAIROS-T-0434
     // added the 5 tools of the team page. KAIROS-T-0489 added my_work.
     // KAIROS-T-0555 added set_lifecycle. KAIROS-T-0556 added list_members.
-    checks.same("H1: the number of tools", tools.len(), 74);
+    // KAIROS-T-0572 added set_parent.
+    checks.same("H1: the number of tools", tools.len(), 75);
     let schema_of = |name: &str| -> Value {
         tools
             .iter()

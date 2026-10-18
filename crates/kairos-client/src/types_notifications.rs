@@ -41,6 +41,10 @@ pub struct NotificationSettings {
     /// A claim had no write and no state change for some days: your claim,
     /// or a claim on a task of an initiative that you own (KAIROS-T-0531).
     pub claim_stale: bool,
+    /// An agent key of yours, or a key of a service account of your
+    /// organization (you are an admin), expires within 7 days
+    /// (KAIROS-T-0540).
+    pub key_expiring: bool,
 }
 
 /// `PUT /api/me/notification-settings` body: the kinds to turn on (`true`)
@@ -70,6 +74,8 @@ pub struct UpdateNotificationSettingsRequest {
     pub claim_dropped: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claim_stale: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_expiring: Option<bool>,
 }
 
 /// One notification of the caller (KAIROS-T-0382).
@@ -77,7 +83,7 @@ pub struct UpdateNotificationSettingsRequest {
 pub struct Notification {
     /// The id (UUID). `POST /api/me/notifications/read` takes it.
     pub id: String,
-    /// `hand_off|blocker_cleared|blocked_again|cancelled|blocker_cancelled|mention|p0_bug|delivery_failing|agent_key_revoked|claim_dropped|claim_stale`.
+    /// `hand_off|blocker_cleared|blocked_again|cancelled|blocker_cancelled|mention|p0_bug|delivery_failing|agent_key_revoked|claim_dropped|claim_stale|key_expiring`.
     pub kind: String,
     /// The code of the item now; `null` when the item is gone.
     pub short_code: Option<String>,

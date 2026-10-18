@@ -455,6 +455,7 @@ async fn cli_login_whoami_refresh_logout_live() {
             team_id: None,
             repository: None,
             from_team: None,
+            parent: None,
         })
         .await
         .expect("creating a task");

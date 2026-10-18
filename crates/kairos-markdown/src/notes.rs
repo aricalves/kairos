@@ -7,7 +7,7 @@
 //! text for the embedding sweep.
 //!
 //! [`notes`] reads the old form: the `## Note …` sections of a content. The
-//! tenant migration `2026-10-17-003000_item_notes` moved them into rows with
+//! tenant migration `2026-10-18-003000_item_notes` moved them into rows with
 //! the same reading, and a test compares the two. The renderer of the web
 //! app still gives a note heading in a content its anchor.
 //!

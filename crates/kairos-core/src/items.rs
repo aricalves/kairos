@@ -77,9 +77,12 @@ pub struct CascadeReach {
 /// root does not bring it back. So a subtree that the principal cannot
 /// take is left whole.
 ///
-/// WHY each path. An item can have two parents. If one of them is a stop,
-/// the item is below a stop, and the rule above applies. The function
-/// archives less when the graph gives two answers.
+/// WHY each path. An item has one parent since KAIROS-T-0572: the database
+/// refuses a second one. The function still takes each path, so that a
+/// graph with two parents (data from before the migration, or a test)
+/// gets a safe answer: if one parent is a stop, the item is below a stop,
+/// and the rule above applies. The function archives less when the graph
+/// gives two answers.
 ///
 /// `may_edit` is asked one time for each descendant. The root is not
 /// asked: the caller checks the edit rule for the root before the archive.
