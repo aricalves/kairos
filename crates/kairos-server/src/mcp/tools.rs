@@ -1085,7 +1085,7 @@ pub struct GrantCapabilityParams {
     pub user: String,
     /// A board capability (manage_tasks, manage_documents, manage_adrs,
     /// manage_initiatives, manage_strategies, transition_items,
-    /// configure_boards, administer_members, pages, member,
+    /// configure_boards, administer_members, pages, purge, member,
     /// approve_proposals, or a glob: *, manage_*, configure_*,
     /// transition_*), or manage_structure.
     pub capability: String,
@@ -4738,7 +4738,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Grant a capability to a member (`user`: user id, email, user name or service account name). A board capability (manage_tasks, manage_documents, manage_adrs, manage_initiatives, manage_strategies, transition_items, configure_boards, administer_members, pages, member, approve_proposals, or a glob such as manage_*) needs `board` and `administer_members` there, or `manage_structure`. `manage_structure` (only an org admin grants it): with no `board`, the structure of the organization; with `board`, that board's columns, transitions, members and grants."
+        description = "Grant a capability to a member (`user`: user id, email, user name or service account name). A board capability (manage_tasks, manage_documents, manage_adrs, manage_initiatives, manage_strategies, transition_items, configure_boards, administer_members, pages, purge, member, approve_proposals, or a glob such as manage_*) needs `board` and `administer_members` there, or `manage_structure`. `manage_structure` (only an org admin grants it): with no `board`, the structure of the organization; with `board`, that board's columns, transitions, members and grants."
     )]
     pub async fn grant_capability(
         &self,
