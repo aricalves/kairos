@@ -13,7 +13,7 @@ use rmcp::model::Tool;
 
 /// The tools of the daily work: the default profile. Picked from the calls
 /// of the agents (2026-10-14): these make nearly all of them.
-pub(super) const WORK: [&str; 41] = [
+pub(super) const WORK: [&str; 42] = [
     "whoami",
     "my_boards",
     // KAIROS-T-0489: the work of the person, in two lanes.
@@ -44,6 +44,8 @@ pub(super) const WORK: [&str; 41] = [
     "set_team",
     "clear_team",
     "cancel_item",
+    // KAIROS-T-0564: a done task back to work.
+    "reopen_item",
     "delete_item",
     "restore_item",
     "list_repositories",

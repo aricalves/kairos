@@ -470,6 +470,9 @@ pub fn map_config_error(e: BoardError) -> ApiError {
         | BoardError::NoEntryColumn(_)
         | BoardError::ParentNotActive { .. }
         | BoardError::OwnerRequired { .. }
+        | BoardError::TaskDone { .. }
+        | BoardError::TaskNotDone { .. }
+        | BoardError::NoOpenColumn { .. }
         | BoardError::Rename(_)) => ApiError::internal(e),
         BoardError::Database(e) => ApiError::internal(e),
     }

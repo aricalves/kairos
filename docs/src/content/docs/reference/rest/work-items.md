@@ -443,6 +443,10 @@ reference to the old code in the text of the items changes to the new
 code, one time. A code in a URL or a path does not change. The response
 has the new code. Without `rename`, the task keeps its code.
 
+A task in a done column (completed or cancelled) does not move: 422
+`TASK_DONE` (KAIROS-T-0564). Reopen it first
+(`POST /api/tasks/{short_code}/reopen`), then move it.
+
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
 | `short_code` | path | yes | `string` | Task short code |
@@ -454,7 +458,7 @@ Request body (required): `application/json`, [`MoveTaskRequest`](../schemas/#mov
 | `200` | [`Task`](../schemas/#task) | Moved (new board, entry column) |
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Missing manage_tasks on either board |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown short code or board |
-| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | SAME_BOARD | NOT_DELIVERY_BOARD | NO_ENTRY_COLUMN | RENAME_NOT_NEEDED (the code has the prefix of the target board) |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | SAME_BOARD | NOT_DELIVERY_BOARD | NO_ENTRY_COLUMN | RENAME_NOT_NEEDED (the code has the prefix of the target board) | TASK_DONE (the task is in a done column: reopen it first) | PARENT_NOT_ACTIVE |
 
 ### `POST /api/tasks/{short_code}/purge`
 
@@ -508,6 +512,31 @@ The person who has the claim may release it. Any other caller needs
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The caller does not have the claim and does not have transition_items |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown short code |
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | NOT_CLAIMABLE (the task is not in Active), or NO_CLAIM (the task has no claim) |
+
+### `POST /api/tasks/{short_code}/reopen`
+
+Reopen a done task (KAIROS-T-0564): a completed task or a cancelled
+task. The task moves to the first column of its board that is not done,
+by position. On a seeded delivery board, that column is Backlog.
+
+The transition rules of the board do not apply. The board policy
+`parent_gate` applies to that column, as for a transition. The reopen
+removes the cancel mark, and the history keeps the reason. The event is
+`item_transitioned`. No body.
+
+Requires `transition_items` on the board of the task, the capability
+of a move. The creator of the task gets no right here.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `short_code` | path | yes | `string` | Task short code |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`Task`](../schemas/#task) | Reopened: the task is in the first column that is not done |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Missing capability |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown short code |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | TASK_NOT_DONE (the task is not in a done column), NO_OPEN_COLUMN (each column of the board is done), or PARENT_NOT_ACTIVE (the column holds claims and the initiative is not active) |
 
 ### `PUT /api/tasks/{short_code}/repository`
 

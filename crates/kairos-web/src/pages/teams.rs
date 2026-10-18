@@ -8,8 +8,9 @@
 //! pages render for non-admins.
 //!
 //! Data (`self::api`, the shared team data layer):
-//! - directory: one `list_teams` + `team_members` per team (member counts;
-//!   org scale is tens of teams, so the fan-out is fine at this size);
+//! - directory: one `list_teams`, then `team_members` of every team at
+//!   once (member counts; KAIROS-T-0622: together, not one after another,
+//!   so 20 teams are two round trips and not 21);
 //! - detail: team by slug from `list_teams`, roster via `team_members`,
 //!   delivery board resolved through `list_board_refs`, and stream
 //!   membership by checking each stream's `stream_teams` (no reverse
@@ -27,7 +28,7 @@ use aurora_dark::components::{
 use aurora_dark::data::RelativeTime;
 use aurora_dark::frame::Card;
 use aurora_dark::tokens::ApiError;
-use futures_util::future::join_all;
+use futures_util::future::{join_all, try_join_all};
 use futures_util::join;
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
@@ -50,6 +51,21 @@ struct DirectoryRow {
     member_count: usize,
 }
 
+/// The directory rows: each team with its member count, in the order of
+/// `list_teams`. `counts[i]` is the count of `teams[i]`. Pure, host-tested.
+fn directory_rows(teams: Vec<api::Team>, counts: Vec<usize>) -> Vec<DirectoryRow> {
+    teams
+        .into_iter()
+        .zip(counts)
+        .map(|(team, member_count)| DirectoryRow {
+            name: team.name,
+            slug: team.slug,
+            team_type: team.team_type,
+            member_count,
+        })
+        .collect()
+}
+
 /// `/teams` — every team: name, type, member count, linking to detail.
 #[component]
 pub fn TeamsPage() -> impl IntoView {
@@ -58,17 +74,11 @@ pub fn TeamsPage() -> impl IntoView {
         auth.track_session();
         async move {
             let teams = api::list_teams(auth).await?;
-            let mut rows = Vec::with_capacity(teams.len());
-            for team in teams {
-                let members = api::team_members(auth, &team.id).await?;
-                rows.push(DirectoryRow {
-                    name: team.name,
-                    slug: team.slug,
-                    team_type: team.team_type,
-                    member_count: members.len(),
-                });
-            }
-            Ok::<_, aurora_dark::tokens::ApiError>(rows)
+            // KAIROS-T-0622: the members of every team at once.
+            let members =
+                try_join_all(teams.iter().map(|team| api::team_members(auth, &team.id))).await?;
+            let counts = members.iter().map(Vec::len).collect();
+            Ok::<_, aurora_dark::tokens::ApiError>(directory_rows(teams, counts))
         }
     });
     view! {
@@ -689,5 +699,46 @@ fn AnnouncementsPanel(
                 }}
             </Stack>
         </Panel>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DirectoryRow, api, directory_rows};
+
+    fn team(slug: &str) -> api::Team {
+        serde_json::from_value(serde_json::json!({
+            "id": format!("id-{slug}"),
+            "name": slug.to_uppercase(),
+            "slug": slug,
+            "team_type": "stream_aligned",
+            "delivery_board_id": null,
+        }))
+        .expect("a team")
+    }
+
+    /// KAIROS-T-0622: the counts read together land on their own teams, in
+    /// the order of the team list.
+    #[test]
+    fn each_count_lands_on_its_own_team() {
+        let rows = directory_rows(vec![team("web"), team("platform")], vec![3, 1]);
+        assert_eq!(
+            rows,
+            [
+                DirectoryRow {
+                    name: "WEB".to_string(),
+                    slug: "web".to_string(),
+                    team_type: "stream_aligned".to_string(),
+                    member_count: 3,
+                },
+                DirectoryRow {
+                    name: "PLATFORM".to_string(),
+                    slug: "platform".to_string(),
+                    team_type: "stream_aligned".to_string(),
+                    member_count: 1,
+                },
+            ]
+        );
+        assert!(directory_rows(Vec::new(), Vec::new()).is_empty());
     }
 }

@@ -239,8 +239,8 @@ The
 transition rules of the board do not apply. You can cancel a task from each
 column that is not done. A cancel ends the [claim](#claim).
 
-A move of the task out of the done column removes the mark. The activity log
-keeps the row `cancel` with the reason. "Archive completed" archives a
+A [reopen](#reopen) of the task removes the mark, and so does a transition out
+of the done column. The activity log keeps the row `cancel` with the reason. "Archive completed" archives a
 cancelled task, as it archives a finished task. To cancel a task, a principal needs
 `transition_items` on the board: the capability of a move.
 
@@ -643,6 +643,20 @@ edges count again.
 
 The graph view shows an edge that does not count as a dashed arrow. The legend
 of the graph view names the two styles.
+
+## reopen
+
+The move of a done task back to work (KAIROS-T-0564). A reopen takes a
+completed task or a [cancelled](#cancel) task. The task moves to the first column of its board
+that is not done: Backlog on a default delivery board. The transition rules of
+the board do not apply, because a default board has no edge out of Completed.
+The policy `parent_gate` applies when that column holds claims.
+
+The reopen removes the cancel mark. The activity log gets a row `transition`,
+and the event is `item_transitioned`. A task in a done column cannot move to
+another board: reopen it first. The tools are `reopen_item`,
+`kairos tasks reopen` and `POST /api/tasks/{short_code}/reopen`. A principal
+needs `transition_items` on the board.
 
 ## repository
 

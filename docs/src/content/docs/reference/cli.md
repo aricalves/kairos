@@ -247,6 +247,7 @@ differ.
 | `hand-off` | no | no | yes | no | no |
 | `release` | no | no | yes | no | no |
 | `cancel` | no | no | yes | no | no |
+| `reopen` | no | no | yes | no | no |
 | `lane` | no | no | yes | no | no |
 | `set-parent` | no | yes | yes | no | no |
 | `archive` (alias `delete`) | yes | yes | yes | yes | yes |
@@ -482,7 +483,8 @@ kairos tasks move <SHORT_CODE> --to-board <BOARD> [OPTIONS]
 
 The task lands in the target board's entry column and follows that board's
 team. The command needs `manage_tasks` on both boards. The task keeps its
-repository.
+repository. A task in a done column does not move (`TASK_DONE`): run
+`tasks reopen` first.
 See [Move work between boards](../../how-to/move-work-between-boards/).
 
 ### `tasks claim`
@@ -551,8 +553,32 @@ kairos tasks cancel <SHORT_CODE> --reason <TEXT> [OPTIONS]
 
 [Cancels](../glossary/#cancel) a task: the team will not do it. The task moves
 to the done column of its board with the mark "cancelled" and the reason.
-`tasks get` shows the mark in the line `cancelled`. A move out of the done
-column removes the mark. You need `transition_items` on the board of the task.
+`tasks get` shows the mark in the line `cancelled`. `tasks reopen` brings the
+task back and removes the mark. You need `transition_items` on the board of the
+task.
+
+### `tasks reopen`
+
+```
+kairos tasks reopen <SHORT_CODE> [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<SHORT_CODE>` | string | required | The task's short code. The task must be in a done column. |
+
+Reopens a done task: a completed task or a cancelled one. The task moves to the
+first column of its board that is not done. On a default delivery board, that
+column is Backlog.
+
+The transition rules of the board do not apply. The policy `parent_gate`
+applies when that column holds claims. The reopen removes the cancel mark, and
+the activity log keeps the reason. You need `transition_items` on the board of
+the task.
+
+```text
+Kairos reopened ACME-T-0001. It is in the first column of its board that is not done.
+```
 
 ### `tasks lane`
 

@@ -85,8 +85,8 @@ const TENANT: &str = "acme";
 
 /// How many tools `tools/list` returns, and the word the reference pages
 /// use for that number (COLLIERY-T-0220, COLLIERY-T-0266).
-const TOOL_COUNT: usize = 72;
-const TOOL_COUNT_WORD: &str = "seventy-two";
+const TOOL_COUNT: usize = 73;
+const TOOL_COUNT_WORD: &str = "seventy-three";
 
 /// Every request carries a real `Host` header and the tenant resolves from
 /// its subdomain against the configured base domain — the S-0006 REQ-1.2
@@ -658,6 +658,8 @@ async fn mcp_endpoint_against_live_stack() {
         // good.
         "cancel_item",
         "purge_task",
+        // KAIROS-T-0564: a done task back to work.
+        "reopen_item",
         // KAIROS-T-0363: archive each task in the done columns of a board.
         "archive_completed",
         // KAIROS-T-0337: an admin agent makes a team, a board, a team
@@ -777,6 +779,7 @@ async fn mcp_endpoint_against_live_stack() {
             "set_team",
             "clear_team",
             "cancel_item",
+            "reopen_item",
             "delete_item",
             "restore_item",
             "list_repositories",

@@ -387,6 +387,18 @@ pub fn require_purge_confirm(confirm: bool, what: &str) -> Result<(), CliError> 
     }
 }
 
+/// `tasks reopen` output (KAIROS-T-0564).
+pub fn emit_reopened(common: &Common, task: &Task) -> Result<(), CliError> {
+    if common.json {
+        return print_json(task);
+    }
+    println!(
+        "Kairos reopened {}. It is in the first column of its board that is not done.",
+        task.short_code
+    );
+    Ok(())
+}
+
 /// `tasks cancel` output (KAIROS-T-0362).
 pub fn emit_cancelled(common: &Common, task: &Task) -> Result<(), CliError> {
     if common.json {
@@ -1316,7 +1328,7 @@ macro_rules! entity_family_cli {
         $(, board_move($move_variant:ident) = $move_fn:ident)?
         $(, owner_move($owner_variant:ident) = $owner_fn:ident)?
         $(, claims($claim_variant:ident = $claim_fn:ident, $hand_variant:ident = $hand_fn:ident, $release_variant:ident = $release_fn:ident))?
-        $(, task_end($cancel_variant:ident = $cancel_fn:ident, $purge_variant:ident = $purge_fn:ident))?
+        $(, task_end($cancel_variant:ident = $cancel_fn:ident, $reopen_variant:ident = $reopen_fn:ident, $purge_variant:ident = $purge_fn:ident))?
         $(, lane($lane_variant:ident = $lane_fn:ident))?
         $(, parent($parent_variant:ident))?
     ) => {
@@ -1375,6 +1387,10 @@ macro_rules! entity_family_cli {
                                       " with a reason: it moves to the done column, ",
                                       "marked cancelled"))]
             $cancel_variant(CancelArgs),
+            #[command(about = concat!("Reopen a done ", $noun,
+                                      ": it moves to the first column that is not done, ",
+                                      "and a cancel mark ends"))]
+            $reopen_variant(GetArgs),
             #[command(about = concat!("Delete a ", $noun,
                                       " for good (requires --confirm; you cannot undo it; ",
                                       "board managers only)"))]
@@ -1510,6 +1526,11 @@ macro_rules! entity_family_cli {
                         let task = client.$cancel_fn(&args.short_code, &args.reason).await?;
                         emit_cancelled(&args.common, &task)
                     }
+                    Self::$reopen_variant(args) => {
+                        let client = client(&args.common)?;
+                        let task = client.$reopen_fn(&args.short_code).await?;
+                        emit_reopened(&args.common, &task)
+                    }
                     Self::$purge_variant(args) => {
                         require_purge_confirm(args.confirm, &args.short_code)?;
                         let client = client(&args.common)?;
@@ -1600,7 +1621,11 @@ entity_family_cli!(
         HandOff = hand_off_task,
         Release = release_task
     ),
-    task_end(Cancel = cancel_task, Purge = purge_task),
+    task_end(
+        Cancel = cancel_task,
+        Reopen = reopen_task,
+        Purge = purge_task
+    ),
     lane(Lane = set_task_work_class),
     parent(SetParent)
 );

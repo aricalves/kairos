@@ -302,18 +302,18 @@ restored. The CLI verb is `archive`, with `delete` as an alias. The
 descriptions of the tool and the route say archive. The glossary is the place
 to check which sense of a word a given surface means.
 
-## Two other ways to end a task
+## Two other ways to end a task, and the way back
 
 An archive keeps everything, and a restore undoes it. Two other acts end a
-task, and neither one is an archive.
+task, and neither one is an archive. A third act undoes the end of a task.
 
 **Cancel** is a "won't do". A task that came in, and that the team will not
 do, needs an end that says so. Before the cancel, the choices were to move it
 to done, which says the work was done, or to archive it, which hides it and
 says nothing. A cancel needs a reason. It moves the task to the done column
 with the mark "cancelled" and the reason, so the board and the history both
-say what happened. A move out of the done column removes the mark, and the
-activity log keeps the reason. The mark is a row of its own
+say what happened. A reopen removes the mark, and the activity log keeps the
+reason. The mark is a row of its own
 (`task_cancellations`), as the claim of a task is: it is a fact about the task
 in one column, and the queries of the task do not change.
 
@@ -327,7 +327,22 @@ and the purge adds one row that names the code and the title. The retention
 sweeper does not remove items, so this is the one path that does, and a later
 sweep of archived items can call it.
 
-The two make the archive clearer, not weaker. Archive stays the default: it is
+**Reopen** is the way back from done, for a finished task and for a
+cancelled one (KAIROS-T-0564). A default board has no transition out of
+Completed. Before the reopen, no default board could bring a done task back,
+and the rule above about the mark had no path. The reopen moves the task to
+the first column of its board that is not done, and it removes the mark. It
+is a named act and not a seeded transition. A seeded edge works only on a
+board that keeps the seeded names, and a drag or an agent could undo a
+completion by accident. The reopen checks the board policy `parent_gate`, as
+a transition does. The decision is in KAIROS-A-0048.
+
+A move to another board is not a way back. Before the reopen, a done task
+that moved to another board landed live in the entry column of that board.
+It blocked its dependants again, and nobody was told. Now Kairos refuses the
+move of a done task (`TASK_DONE`): reopen it first, on its own board.
+
+The three make the archive clearer, not weaker. Archive stays the default: it is
 what an end of work should almost always be, because it can be undone.
 
 ## Archive completed

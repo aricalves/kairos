@@ -1057,6 +1057,19 @@ pub fn map_board_error(e: BoardError) -> ApiError {
             "policy": "owner_gate",
             "fix": format!("claim_item {initiative}"),
         })),
+        // KAIROS-T-0564: a done task moves to another board only after a
+        // reopen; a reopen takes a done task only.
+        BoardError::TaskDone { ref task, .. } => {
+            ApiError::unprocessable("TASK_DONE", e.to_string()).with_details(json!({
+                "short_code": task,
+                "fix": format!("reopen_item {task}"),
+            }))
+        }
+        BoardError::TaskNotDone { .. } => ApiError::unprocessable("TASK_NOT_DONE", e.to_string()),
+        BoardError::NoOpenColumn { board_id, .. } => {
+            ApiError::unprocessable("NO_OPEN_COLUMN", e.to_string())
+                .with_details(json!({ "board_id": board_id }))
+        }
         BoardError::ColumnNotFound(id) => {
             ApiError::validation(format!("The column {id} does not exist."))
         }
