@@ -154,6 +154,7 @@ impl Stack {
                 team_id: None,
                 repository: None,
                 from_team: None,
+                parent: None,
             })
             .await
             .unwrap_or_else(|e| panic!("task {title}: {e}"))

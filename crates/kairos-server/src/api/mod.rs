@@ -1197,6 +1197,11 @@ pub fn map_graph_error(e: GraphError) -> ApiError {
         | GraphError::CycleDetected { .. }
         | GraphError::AlreadyLinked { .. }
         | GraphError::NotLinked { .. }) => ApiError::validation(e.to_string()),
+        // KAIROS-T-0572: a create gives a new item, which has no parent;
+        // only a write at the same time can get here.
+        e @ GraphError::ParentExists { .. } => {
+            meta::relationships::parent_exists(e, "set_parent or PUT .../parent")
+        }
         GraphError::Database(e) => ApiError::internal(e),
     }
 }

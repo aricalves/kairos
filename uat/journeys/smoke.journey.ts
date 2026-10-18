@@ -9,6 +9,9 @@ journey('smoke', 'Alice reaches Kairos on every surface', { humans: ['alice'] },
 
   await step(alice, 'logs into the GUI and sees the boards page', async () => {
     const page = await alice.gui();
+    // KAIROS-T-0490: the landing page at / is For me; the boards are at
+    // /boards.
+    await page.goto('/boards');
     await expect(page.locator('.kairos-board-tile').first()).toBeVisible();
     const tiles = await page.locator('.kairos-board-tile').count();
     return { boards_on_screen: tiles };

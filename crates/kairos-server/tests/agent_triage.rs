@@ -158,6 +158,7 @@ fn support_task(board: &str, title: &str) -> CreateTaskRequest {
         team_id: None,
         repository: None,
         from_team: None,
+        parent: None,
     }
 }
 

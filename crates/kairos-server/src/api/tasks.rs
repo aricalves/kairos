@@ -391,6 +391,12 @@ pub(crate) async fn get_task(
 /// the delivery board of that team (COLLIERY-T-0217, COLLIERY-A-0023).
 /// `repository` is an optional link. It can be any live repository, and it
 /// does not choose the board.
+///
+/// `parent` (KAIROS-T-0572) is the short code of the parent initiative.
+/// Kairos writes the task and the edge in one transaction: a refused
+/// parent leaves no task. The link rule applies to the edge; the creator of the
+/// task can edit it, so it passes. In a claims column, `parent_gate`
+/// applies (KAIROS-A-0040).
 #[utoipa::path(
     post,
     path = "/api/tasks",
@@ -399,7 +405,7 @@ pub(crate) async fn get_task(
     responses(
         (status = 201, description = "Created", body = dto::Task),
         (status = 403, description = "Missing capability. For a caller without `manage_tasks` on the board: a column that is not the entry column, the work class `planned`, or a board that is not a delivery board", body = dto::ErrorEnvelope),
-        (status = 422, description = "No board and no team, a team that is not the team of the board, a team without exactly one delivery board, unknown board/column/repository, or bad enum value", body = dto::ErrorEnvelope),
+        (status = 422, description = "No board and no team, a team that is not the team of the board, a team without exactly one delivery board, unknown board/column/repository/parent, a parent that is not an initiative, PARENT_NOT_ACTIVE (a claims column under an inactive parent), or bad enum value", body = dto::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn create_task(
@@ -429,6 +435,7 @@ pub(crate) async fn create_task(
         .transpose()?;
     let user = auth.user_id;
     let slug = tenant.slug.clone();
+    let role = tenant.role;
     let created = state
         .blocking
         .run(&tenant.slug, move |conn| {
@@ -444,21 +451,50 @@ pub(crate) async fn create_task(
                 body.from_team.as_deref(),
             )?;
             let work_class = access.work_class(requested_work_class, task_type);
-            let created = items::create_task(
-                conn,
-                items::CreateTask {
-                    board_id: route.board_id,
-                    column_id,
-                    title: &body.title,
-                    content: &body.content,
-                    task_type,
-                    work_class,
-                    repository_id: route.repository_id,
-                },
-                user,
-            )
-            .map_err(map_item_error)?;
-            embed(conn, created.into_dto())
+            // KAIROS-T-0572: the parent is checked before the first write.
+            let parent = body
+                .parent
+                .as_deref()
+                .map(|code| {
+                    super::meta::relationships::parent_for_create(conn, code, ItemType::Task)
+                })
+                .transpose()?;
+            // The task and its parent edge are one transaction: a refused
+            // edge leaves no task (COLLIERY-T-0227).
+            super::atomically(conn, |conn| {
+                let created = items::create_task(
+                    conn,
+                    items::CreateTask {
+                        board_id: route.board_id,
+                        column_id,
+                        title: &body.title,
+                        content: &body.content,
+                        task_type,
+                        work_class,
+                        repository_id: route.repository_id,
+                    },
+                    user,
+                )
+                .map_err(map_item_error)?;
+                if let Some(parent) = &parent {
+                    super::meta::relationships::link_created_parent(
+                        conn,
+                        role,
+                        user,
+                        parent,
+                        (created.id, ItemType::Task),
+                    )?;
+                    // KAIROS-A-0040: a create into a claims column is a move
+                    // into it, and the task has a parent now.
+                    kairos_db::board_policy::check_active_parent(
+                        conn,
+                        created.id,
+                        created.column_id,
+                    )
+                    .map_err(map_board_error)?;
+                }
+                embed(conn, created.into_dto())
+            })
         })
         .await?;
     Ok((StatusCode::CREATED, Json(created)))

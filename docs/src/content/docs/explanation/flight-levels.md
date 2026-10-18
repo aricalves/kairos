@@ -133,6 +133,16 @@ correctness. Separate tables per entity type cost more tables and a UUID space
 shared across them; what they buy is a schema that describes itself and a
 database that can refuse bad data on its own.
 
+Each item has one parent (KAIROS-T-0572). A task under two initiatives
+counts in two rollups and in the work of two owners. The two numbers then add
+up to more work than exists. So the database refuses a second `parent` edge.
+To move a task to a different initiative, set its parent: the new edge
+replaces the old one in one transaction (`PUT /api/{entity_type}/{short_code}/parent`,
+the MCP tool `set_parent`, or `kairos tasks set-parent`). You can also give the
+parent when you create the item, and the item and the edge are then one write.
+The data from before the rule kept the oldest parent of each item. The
+migration wrote each edge that it removed to the activity log.
+
 The board shows the work in flight only when the levels agree. A task in
 Active under an initiative in Discovery says that work runs, and the initiative
 board says that nothing runs. So a delivery board has the policy `parent_gate`

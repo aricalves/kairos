@@ -205,7 +205,10 @@ journey(
     await step(alice, 'gives the vision to the board of the team web, and that team can change it', async () => {
       const cli = await alice.cli();
       const moved = await cli.ok(['documents', 'move', vision, '--to-board', OTHER_BOARD]);
-      expect(moved).toContain(`Kairos moved the document ${vision} to the owner board`);
+      // KAIROS-T-0607: the line names the owner board after the call, by its
+      // id, from the answer of the server.
+      const otherBoard = await api.boardBySlug(OTHER_BOARD);
+      expect(moved).toContain(`The owner board of the document ${vision} is ${otherBoard.id}.`);
       const mcp = await carol.mcp();
       const edited = await mcp.call('edit_item', {
         short_code: vision,

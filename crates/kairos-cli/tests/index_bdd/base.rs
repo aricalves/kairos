@@ -951,6 +951,7 @@ fn run_update(world: &mut CliWorld, command: String) {
     match command.as_str() {
         "kairos index update" => base(world).update(),
         "kairos index update --link-only" => base(world).update_args(&["--link-only"], &[]),
+        "kairos index update --json" => base(world).update_args(&["--json"], &[]),
         other => panic!("no step runs {other:?}"),
     }
 }
@@ -1091,6 +1092,62 @@ fn has_the_new_files(world: &mut CliWorld, count: usize) {
     assert!(files.iter().any(|f| f.path == "pkg/stats.py"));
     let (with, _) = w.summarized();
     assert!(with.contains("pkg/stats.py:mean"), "{with:?}");
+}
+
+/// KAIROS-T-0654: one JSON object on stdout says where the update started.
+#[then(
+    regex = r"^the output is one JSON object: the update started from the index of A, with (\d+) changed files$"
+)]
+fn json_start(world: &mut CliWorld, changed: usize) {
+    let w = base(world);
+    let out = w.output();
+    assert!(w.run.as_ref().expect("no run").status.success(), "{out}");
+    let v: serde_json::Value = serde_json::from_str(&w.stdout())
+        .unwrap_or_else(|e| panic!("stdout is not one JSON value ({e}):\n{out}"));
+    assert_eq!(v["command"], "update", "{out}");
+    assert_eq!(v["start"]["from"], "base", "{out}");
+    assert_eq!(v["start"]["base"]["commit"], w.kairos().a.as_str(), "{out}");
+    assert_eq!(v["start"]["base"]["changed"], changed, "{out}");
+    assert_eq!(v["start"]["base"]["repository"], REPOSITORY, "{out}");
+    assert_eq!(
+        v["start"]["local_changed"],
+        serde_json::Value::Null,
+        "{out}"
+    );
+    assert!(
+        v["structure"]["files"].as_u64().is_some_and(|n| n > 0),
+        "{out}"
+    );
+    assert_eq!(v["summaries"]["result"], "not_made", "{out}");
+    assert_eq!(v["summaries"]["left"]["symbols"], changed, "{out}");
+}
+
+/// KAIROS-T-0654: a refusal is the error envelope on stderr, with its text.
+#[then(
+    regex = r"^stdout is empty, and stderr has the error TOO_FAR: (\d+) changed files, the limit is (\d+)$"
+)]
+fn json_refusal(world: &mut CliWorld, changed: usize, limit: usize) {
+    let w = base(world);
+    let out = w.output();
+    let run = w.run.as_ref().expect("no run");
+    assert_eq!(run.status.code(), Some(1), "{out}");
+    assert_eq!(w.stdout(), "", "{out}");
+    assert!(!w.root().join(INDEX_DB).exists(), "{out}");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    let v: serde_json::Value = serde_json::from_str(&stderr)
+        .unwrap_or_else(|e| panic!("stderr is not one JSON value ({e}):\n{out}"));
+    let error = &v["error"];
+    assert_eq!(error["code"], "TOO_FAR", "{out}");
+    assert_eq!(error["details"]["changed"], changed, "{out}");
+    assert_eq!(error["details"]["limit"], limit, "{out}");
+    assert_eq!(error["details"]["local"], false, "{out}");
+    assert_eq!(error["details"]["branch"], "main", "{out}");
+    let message = error["message"].as_str().expect("a message");
+    assert!(
+        message.starts_with(&format!("{changed} files changed since"))
+            && message.contains(&format!("Or give `--max-changed {changed}`")),
+        "{out}"
+    );
 }
 
 #[then("it summarizes only the changed symbols")]
