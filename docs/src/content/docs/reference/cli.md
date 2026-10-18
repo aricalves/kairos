@@ -86,6 +86,9 @@ details:
 A usage error (exit code 64) is not JSON: the argument parser prints it
 before the CLI reads `--json`. Stdout stays empty on an error.
 
+A refusal of `kairos index` has a code of its own, with details. See
+[The JSON of `kairos index`](#the-json-of-kairos-index).
+
 ## Common options
 
 Every command that reaches the API accepts these three. They are omitted from
@@ -271,6 +274,7 @@ differ.
 | `cancel` | no | no | yes | no | no |
 | `reopen` | no | no | yes | no | no |
 | `lane` | no | no | yes | no | no |
+| `set-parent` | no | yes | yes | no | no |
 | `lifecycle` | no | no | no | yes | no |
 | `archive` (alias `delete`) | yes | yes | yes | yes | yes |
 | `purge` | no | no | yes | no | no |
@@ -431,11 +435,13 @@ Options specific to one noun:
 | `strategies` | `--hypothesis <HYPOTHESIS>` | string | none | The strategy's hypothesis. |
 | `initiatives` | `--complexity <COMPLEXITY>` | `xs` \| `s` \| `m` \| `l` \| `xl` | none | T-shirt sizing. |
 | `initiatives` | `--bucket-type <KIND>` | `tech_debt` \| `bug` \| `ad_hoc` | none | Marks the initiative as a bucket of this kind. |
+| `initiatives` | `--parent <STRATEGY>` | short code | none | The parent strategy. Kairos writes the initiative and the `parent` edge in one transaction: a refused parent leaves no initiative (KAIROS-T-0572). |
 | `tasks` | `--type <TASK_TYPE>` | `task` \| `bug` \| `tech_debt` \| `support` | `task` | Task type. |
 | `tasks` | `--work-class <WORK_CLASS>` | `planned` \| `support` | `support` for support-type tasks, `planned` otherwise; always `support` on a board that the caller does not manage | Planned/Support lane. On a board that the caller does not manage, `planned` is refused with 403. |
 | `tasks` | `--from-team <TEAM>` | slug or UUID | none | The team that sends the task. When it is not the team of the board, the task is a request: entry column, support lane, also for a manager of the board. With it, `planned` and a column other than the entry column are refused with 422. Kairos does not keep it on the task: name the sending team in the body. |
 | `tasks` | `--team <TEAM_ID>` | UUID | none | Team. Without `--board`, the task goes to the delivery board of this team. With `--board`, it must be the team of that board. |
 | `tasks` | `--repo <REPOSITORY>` | slug or UUID | none | Repository the task links to. It can be any repository, of any team. It does not choose the board. |
+| `tasks` | `--parent <INITIATIVE>` | short code | none | The parent initiative. Kairos writes the task and the `parent` edge in one transaction: a refused parent leaves no task (KAIROS-T-0572). In a claims column, `parent_gate` applies. |
 | `documents` | `--template <TEMPLATE_ID>` | UUID | none | Template to stamp content and metadata defaults from. |
 | `adrs` | `--decision-maker <DECISION_MAKER>` | string | none | Decision maker. |
 | `adrs` | `--decision-date <DATE>` | `YYYY-MM-DD` | none | Decision date. |
@@ -667,6 +673,29 @@ after the call:
 ACME-T-0001 is in the planned lane.
 ```
 
+### `initiatives set-parent`, `tasks set-parent`
+
+```
+kairos initiatives set-parent <SHORT_CODE> (<PARENT> | --remove) [OPTIONS]
+kairos tasks set-parent <SHORT_CODE> (<PARENT> | --remove) [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<SHORT_CODE>` | string | required | The short code of the initiative or the task. |
+| `<PARENT>` | string | required unless `--remove` | The new parent: a strategy for an initiative, an initiative for a task. |
+| `--remove` | flag | off | Remove the parent. |
+
+An item has one parent (KAIROS-T-0572). The new parent replaces the old one
+in one transaction. The link rule applies to each edge that changes: you can
+edit the item, or the parent at that end. A parent that the item has already
+changes nothing. A change of parent is not a move, so `parent_gate` does not
+apply. The command prints the parent after the call:
+
+```text
+The parent of ACME-T-0001 is ACME-I-0002 (was ACME-I-0001).
+```
+
 ### `state`
 
 ```
@@ -785,13 +814,15 @@ kairos tasks purge <SHORT_CODE> --confirm [OPTIONS]
 
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
-| `<SHORT_CODE>` | string | required | The task's current short code. |
+| `<SHORT_CODE>` | string | required | The current short code of an archived task. |
 | `--confirm` | flag | off | Required for the purge to happen. Without it, nothing is deleted. |
 
-Deletes a task for good (a [purge](../glossary/#purge)). **You cannot undo
-this.** No `restore` brings the task back. The task can be live or archived.
-You need `manage_tasks` on the board of the task. To keep a copy that you can
-restore, use `tasks archive`.
+Deletes an archived task for good (a [purge](../glossary/#purge)). **You
+cannot undo this.** No `restore` brings the task back. Archive the task first
+with `tasks archive`. Kairos refuses a live task with `TASK_LIVE`.
+
+You need the `purge` capability on the board of the task. Team membership does
+not give it, and an organization admin has it.
 
 ### `<noun> restore`
 
@@ -2266,16 +2297,18 @@ tools to an agent. The index is the file `.kairos/index.db` in the checkout.
 A build adds it to `.git/info/exclude`, so git does not track it.
 
 Each `index` command takes `--root`. Only `index update` takes `--url` and
-`--tenant`. No `index` command takes `--json`.
+`--tenant`. Each `index` command except `index mcp` takes `--json`. See
+[The JSON of `kairos index`](#the-json-of-kairos-index).
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--root <ROOT>` | path | the root of the git repository of the current folder | The root of the checkout. |
+| `--json` | flag | off | Print one JSON object with the result, in place of the text. |
 
 ### `kairos index`
 
 ```
-kairos index --full [--root <ROOT>]
+kairos index --full [--root <ROOT>] [--json]
 ```
 
 | Option | Type | Default | Description |
@@ -2287,7 +2320,7 @@ With no subcommand and no `--full`, the command prints its help.
 ### `kairos index build`
 
 ```
-kairos index build [--root <ROOT>]
+kairos index build [--root <ROOT>] [--json]
 ```
 
 Builds the index of the checkout: the structure, the call edges and the
@@ -2297,7 +2330,7 @@ says why it made no summaries.
 ### `kairos index update`
 
 ```
-kairos index update [--root <ROOT>] [--rust-edges] [--link-only] [--max-changed <MAX_CHANGED>] [--repository <REPOSITORY>] [--url <URL>] [--tenant <TENANT>]
+kairos index update [--root <ROOT>] [--rust-edges] [--link-only] [--max-changed <MAX_CHANGED>] [--repository <REPOSITORY>] [--url <URL>] [--tenant <TENANT>] [--json]
 ```
 
 | Option | Type | Default | Description |
@@ -2317,7 +2350,7 @@ in Kairos. See
 ### `kairos index status`
 
 ```
-kairos index status [--root <ROOT>]
+kairos index status [--root <ROOT>] [--json]
 ```
 
 Shows the counts of the index: files, symbols, edges and summaries.
@@ -2325,7 +2358,7 @@ Shows the counts of the index: files, symbols, edges and summaries.
 ### `kairos index duplicates`
 
 ```
-kairos index duplicates [--root <ROOT>] [--kind <KIND>] [--min-lines <MIN_LINES>] [--tests] [--under <UNDER>] [--limit <LIMIT>]
+kairos index duplicates [--root <ROOT>] [--kind <KIND>] [--min-lines <MIN_LINES>] [--tests] [--under <UNDER>] [--limit <LIMIT>] [--json]
 ```
 
 | Option | Type | Default | Description |
@@ -2342,7 +2375,7 @@ code. The text is that of the MCP tool `duplicates`.
 ### `kairos index references`
 
 ```
-kairos index references <SYMBOL> [--root <ROOT>] [--file <FILE>] [--line <LINE>] [--possible] [--limit <LIMIT>]
+kairos index references <SYMBOL> [--root <ROOT>] [--file <FILE>] [--line <LINE>] [--possible] [--limit <LIMIT>] [--json]
 ```
 
 | Argument / Option | Type | Default | Description |
@@ -2364,6 +2397,74 @@ kairos index mcp [--root <ROOT>]
 
 Serves the code tools of the index to an agent: MCP over standard input and
 output. The Claude Code plugin starts this command.
+
+### The JSON of `kairos index`
+
+With `--json`, an `index` command prints one JSON object on stdout, and no
+text. A refusal is the error envelope on stderr (see
+[Errors with `--json`](#errors-with---json)). Stdout then stays empty.
+
+`index build`, `index --full` and `index update` print what the run did:
+
+```json
+{
+  "command": "update",
+  "index": "/work/app/.kairos/index.db",
+  "git_exclude": null,
+  "start": {
+    "from": "base",
+    "base": { "repository": "app", "branch": "main", "commit": "9f2c…", "changed": 3, … },
+    "local_changed": null,
+    "no_base": null,
+    "summaries_taken": null
+  },
+  "structure": { "files": 120, "parsed_files": 98, "symbols": 840, "edges": { "total": 2210, … }, … },
+  "summaries": { "result": "not_made", "linked": 830, "left": { "symbols": 10, … }, "reason": "…", … },
+  "warnings": []
+}
+```
+
+| Key | Description |
+|---|---|
+| `command` | `build` or `update`. `index --full` gives `build`. |
+| `index` | The path of the index file. |
+| `git_exclude` | The exclude file of git, when the run added the line of the index. Else `null`. |
+| `start` | Where the update started. It is `null` for a build. |
+| `start.from` | `base`: the update downloaded the base index of Kairos. `local`: the update changed the local index. |
+| `start.base` | The base index that Kairos gave: the repository, the branch, the commit, the changed files and the count of its summaries. The update can keep the local index and not use it. |
+| `start.local_changed` | The files of the tree that differ from the local index. It is `null` when the checkout has no local index. |
+| `start.no_base` | Why Kairos gave no base index. |
+| `start.summaries_taken` | What the update did with the summaries of the base index, when the local index is as near to the tree. |
+| `structure` | The counts of the files, the symbols, the edges, the SCIP runs and the token vectors, and the time in seconds. |
+| `summaries` | `result` is `linked`, `not_made` or `made`. The object also has the counts by level, and why no model made the missing summaries. |
+| `warnings` | The warnings of the run. |
+
+`index status` prints the counts of the index: `files`, `symbols`, `edges`
+and `summaries`, with the models.
+
+`index duplicates` and `index references` print the list envelope:
+`items`, `total` and `next_offset` (see [The JSON of a list](#the-json-of-a-list)). `total` is the count of
+the rows that the index found. `items` has the first `--limit` rows. These
+commands have no `--offset`, so `next_offset` is `null`. To get more rows,
+give a larger `--limit`.
+
+- `index duplicates`: each item is a group, with its `kind`, its `score` and
+  its `symbols`. The object also has `compared`, `tests`, `min_lines` and
+  `summary_vectors`.
+- `index references`: each item is a use, with its `file`, `line`, `kind` and
+  the `enclosing` symbol. The object also has the `symbol`, the `coverage` of
+  its language and `possible_not_shown`.
+
+A refusal of `index` has one of these codes in the error envelope:
+
+| Code | Description |
+|---|---|
+| `NO_INDEX` | The checkout has no index. The details give the `path`. |
+| `NO_START` | The update has no index to start from. The details give the `path` and the reason. |
+| `TOO_FAR` | More files than the limit changed since the base index. The details give `changed`, `limit`, `commit`, `branch` and `behind`. `local` is `true` when the count is that of the local index. |
+| `NO_ROOT` | The folder of `--root` is not there. |
+| `NOT_FOUND`, `AMBIGUOUS` | `index references` found no symbol, or more than one. The details of `AMBIGUOUS` give the `candidates`. |
+| `CLI_ERROR` | Any other failure. |
 
 ## The CLI itself
 

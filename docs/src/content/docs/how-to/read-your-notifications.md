@@ -18,6 +18,10 @@ You get a notification when one of these events occurs:
 - A bug with the priority P0 lands on the board of your team.
 - Kairos turns off a webhook target that you own, after failed deliveries.
 - An organization admin revokes an agent key of yours. The text names the key.
+- An agent key of yours expires in 7 days or less. An organization admin
+  also gets this notification for a key of a service account. The text
+  names the key and the command `kairos keys rotate`. Kairos sends it one
+  time for each key.
 
 You get no notification for a change that you made.
 

@@ -466,15 +466,125 @@ fn an_index_with_two_callers(world: &mut CliWorld) {
 
 // --- When ---------------------------------------------------------------------
 
+/// Two commands, one after the other. The outputs are kept in `build_out`
+/// and `status_out`.
 #[when(expr = "I run {string} and then {string}")]
-fn run_build_and_status(world: &mut CliWorld, build: String, status: String) {
-    assert_eq!(
-        (build.as_str(), status.as_str()),
-        ("kairos index build", "kairos index status")
+fn run_build_and_status(world: &mut CliWorld, first: String, second: String) {
+    assert!(
+        [
+            ("kairos index build", "kairos index status"),
+            ("kairos index build --json", "kairos index status --json"),
+            (
+                "kairos index duplicates --json",
+                "kairos index references Queue --file src/queue.rs --json"
+            ),
+        ]
+        .contains(&(first.as_str(), second.as_str())),
+        "no step runs {first:?} and {second:?}"
     );
     let root = world.root().to_path_buf();
-    world.build_out = kairos(&["index", "build"], &root);
-    world.status_out = kairos(&["index", "status"], &root);
+    let args = |command: &str| -> Vec<String> {
+        command
+            .strip_prefix("kairos ")
+            .expect("a kairos command")
+            .split(' ')
+            .map(str::to_string)
+            .collect()
+    };
+    let first = args(&first);
+    let second = args(&second);
+    world.build_out = kairos(&first.iter().map(String::as_str).collect::<Vec<_>>(), &root);
+    world.status_out = kairos(
+        &second.iter().map(String::as_str).collect::<Vec<_>>(),
+        &root,
+    );
+}
+
+/// The output of a command: one JSON object, and nothing else.
+fn one_object(out: &str) -> Value {
+    let value: Value = serde_json::from_str(out)
+        .unwrap_or_else(|e| panic!("the output is not one JSON value ({e}):\n{out}"));
+    assert!(value.is_object(), "{out}");
+    value
+}
+
+/// KAIROS-T-0654.
+#[then("each output is one JSON object with the counts of the index")]
+fn json_counts(world: &mut CliWorld) {
+    let index = world.index();
+    let files = index.files().expect("files").len();
+    let symbols = index.symbols().expect("symbols").len();
+    let edges = index.edges().expect("edges").len();
+    let build = one_object(&world.build_out);
+    let out = &world.build_out;
+    assert_eq!(build["command"], "build", "{out}");
+    assert_eq!(build["start"], Value::Null, "{out}");
+    assert!(
+        build["index"]
+            .as_str()
+            .is_some_and(|p| p.ends_with(INDEX_DB)),
+        "{out}"
+    );
+    assert!(
+        build["git_exclude"]
+            .as_str()
+            .is_some_and(|p| p.ends_with("info/exclude")),
+        "{out}"
+    );
+    assert_eq!(build["structure"]["files"], files, "{out}");
+    assert_eq!(build["structure"]["symbols"], symbols, "{out}");
+    assert_eq!(build["structure"]["edges"]["total"], edges, "{out}");
+    // This binary has no summarizer: the object says so and why.
+    assert_eq!(build["summaries"]["result"], "not_made", "{out}");
+    assert!(
+        build["summaries"]["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("This kairos binary has no summarizer.")),
+        "{out}"
+    );
+    let status = one_object(&world.status_out);
+    let out = &world.status_out;
+    assert_eq!(status["index"], build["index"], "{out}");
+    assert_eq!(status["files"], files, "{out}");
+    assert_eq!(status["symbols"], symbols, "{out}");
+    assert_eq!(status["edges"]["total"], edges, "{out}");
+}
+
+/// KAIROS-T-0654: the envelope of KAIROS-A-0057, with the rows of the text.
+#[then("each output is the list envelope, with the rows of the text")]
+fn json_lists(world: &mut CliWorld) {
+    let root = world.root().to_path_buf();
+    let groups = one_object(&world.build_out);
+    let out = &world.build_out;
+    let text = kairos(&["index", "duplicates"], &root);
+    let items = groups["items"].as_array().expect("items");
+    assert_eq!(items.len(), numbered(&text).len(), "{out}\n{text}");
+    assert_eq!(groups["total"], items.len(), "{out}");
+    assert_eq!(groups["next_offset"], Value::Null, "{out}");
+    assert!(
+        items.iter().any(|g| g["kind"] == "exact"
+            && g["symbols"]
+                .as_array()
+                .is_some_and(|s| s.iter().any(|s| s["name"] == "checksum"))),
+        "no exact copy of checksum: {out}"
+    );
+    let uses = one_object(&world.status_out);
+    let out = &world.status_out;
+    let items = uses["items"].as_array().expect("items");
+    assert_eq!(items.len(), 8, "{out}");
+    assert_eq!(uses["total"], 8, "{out}");
+    assert_eq!(uses["next_offset"], Value::Null, "{out}");
+    assert_eq!(uses["symbol"]["qualified"], "Queue", "{out}");
+    assert_eq!(uses["symbol"]["file"], "src/queue.rs", "{out}");
+    let kinds = |kind: &str| items.iter().filter(|u| u["kind"] == kind).count();
+    assert_eq!(
+        (kinds("type"), kinds("field"), kinds("import")),
+        (4, 3, 1),
+        "{out}"
+    );
+    assert_eq!(items[0]["file"], "src/lib.rs", "{out}");
+    assert_eq!(items[0]["enclosing"], Value::Null, "{out}");
+    assert_eq!(items[1]["enclosing"]["name"], "enqueue_all", "{out}");
 }
 
 #[when("an agent calls code_search with a description of a Rust function")]

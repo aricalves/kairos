@@ -145,6 +145,7 @@ async fn cascade_preview_matches_actual_cascade() {
             content: "# Initiative".into(),
             complexity: None,
             bucket_type: None,
+            parent: None,
         })
         .await
         .expect("creating initiative");
@@ -159,6 +160,7 @@ async fn cascade_preview_matches_actual_cascade() {
             work_class: None,
             team_id: None,
             from_team: None,
+            parent: None,
         })
         .await
         .expect("creating task");

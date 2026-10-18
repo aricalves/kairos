@@ -985,8 +985,9 @@ async fn warm_start(state: &AppState) {
 }
 
 /// The background work of `serve` for the role of the server
-/// (KAIROS-T-0394): the embedding refresher, retention and the report of
-/// the stale claims (KAIROS-T-0531) where the API runs, the code index builder where the builds run, and the job worker
+/// (KAIROS-T-0394): the embedding refresher, retention, the report of
+/// the stale claims (KAIROS-T-0531) and the report of the keys that expire
+/// soon (KAIROS-T-0540) where the API runs, the code index builder where the builds run, and the job worker
 /// on each server. The job worker of `state` registers only the kinds of
 /// its role.
 async fn start_background(state: &AppState, retention: kairos_core::retention::RetentionConfig) {
@@ -1040,6 +1041,19 @@ async fn start_background(state: &AppState, retention: kairos_core::retention::R
             .await
     {
         tracing::error!(error = ?e, "stale claims: the first run of the pass was not added");
+    }
+    // KAIROS-T-0540: the report of the keys that expire soon.
+    if role.runs_pass(crate::periodic::KEY_EXPIRING)
+        && let Err(e) = state
+            .jobs
+            .add_periodic(
+                crate::periodic::KEY_EXPIRING,
+                crate::periodic::KEY_EXPIRING_INTERVAL,
+                crate::periodic::key_expiring_pass(state.config.database_url.clone()),
+            )
+            .await
+    {
+        tracing::error!(error = ?e, "key expiring: the first run of the pass was not added");
     }
     // KAIROS-T-0366, KAIROS-T-0376: retention is a periodic job. The queue
     // gives each run to one server, and each run adds the next.

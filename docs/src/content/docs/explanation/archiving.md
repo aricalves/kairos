@@ -188,9 +188,10 @@ explain it. A restore of the strategy would not bring the task back, because
 the caller cannot take is left whole. The caller can archive the task with a
 separate call, which is then a decision about the task.
 
-An item can have two parents. If one parent is archived and the other is a
-stop, the item is below a stop, and it stays. When the graph gives two answers,
-the cascade archives less.
+An item has one parent (KAIROS-T-0572), so each item has one path to the
+root. The cascade still reads each path. If a graph had two parents, and one
+parent was a stop, the item would be below a stop, and it would stay. When the
+graph gives two answers, the cascade archives less.
 
 ### What stays, stays linked
 
@@ -317,14 +318,28 @@ reason. The mark is a row of its own
 in one column, and the queries of the task do not change.
 
 **Delete** is the delete for good: a purge. It is the answer to the open
-question of erasure below, for a task only. Only a person who manages the board
-of the task can do it, and the GUI asks the person to type the code of the
-task first. The purge removes the task and the rows that are about the task
-only: its history, its metadata, its edges, its forge links and its claim. The
-activity log keeps its rows, because the log is the audit of the organization,
-and the purge adds one row that names the code and the title. The retention
-sweeper does not remove items, so this is the one path that does, and a later
-sweep of archived items can call it.
+question of erasure below, for a task only. The GUI asks the person to type the
+code of the task first. The purge removes the task and the rows that are about
+the task only: its history, its metadata, its edges, its forge links, its
+external references, its forge intake row and its claim. The activity log
+keeps its rows, because the log is the audit of the organization, and the
+purge adds one row that names the code and the title. The retention sweeper
+does not remove items, so this is the one path that does, and a later sweep of
+archived items can call it.
+
+A purge has two gates (KAIROS-T-0570). The first gate is the archive. Kairos
+refuses the purge of a live task with `TASK_LIVE`: archive it first. The
+archive is the step that a restore can undo. It ends the claim, and it frees
+the items that the task blocks. Thus a purge only removes work that is put away
+already. The second gate is the capability `purge`. Team membership gives
+`manage_tasks`, and `manage_tasks` lets a person archive a task. That right is
+safe, because a restore undoes an archive. No restore undoes a purge. Thus
+`purge` is a separate grant, and team membership does not give it. An
+organization admin has it. The decision is in KAIROS-A-0052.
+
+The purge also removes the forge intake row of the task. Kairos makes one task
+for each issue of a forge, and it makes nothing for an issue that has a row.
+With the row kept, the issue of a purged task could never come in again.
 
 **Reopen** is the way back from done, for a finished task and for a
 cancelled one (KAIROS-T-0564). A default board has no transition out of
@@ -404,8 +419,8 @@ surface will reasonably assume the others agree, so a partial implementation
 would have been worse than none — which is why the decision was implemented
 across the API, MCP, the CLI and the GUI together rather than incrementally.
 
-And the open question is erasure, not visibility. For a task, a board manager
-can now delete it for good (see above). For the other item types, nothing in
+And the open question is erasure, not visibility. For a task, a holder of
+`purge` can now delete it for good, after the archive (see above). For the other item types, nothing in
 Kairos destroys archived content: the retention sweeper purges history and
 activity rows, not the archived records themselves. So archived content is permanent, and this
 decision makes that permanent *by design* rather than by accident. A tenant

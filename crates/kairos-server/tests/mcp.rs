@@ -87,8 +87,8 @@ const TENANT: &str = "acme";
 
 /// How many tools `tools/list` returns, and the word the reference pages
 /// use for that number (COLLIERY-T-0220, COLLIERY-T-0266).
-const TOOL_COUNT: usize = 74;
-const TOOL_COUNT_WORD: &str = "seventy-four";
+const TOOL_COUNT: usize = 75;
+const TOOL_COUNT_WORD: &str = "seventy-five";
 
 /// Every request carries a real `Host` header and the tenant resolves from
 /// its subdomain against the configured base domain — the S-0006 REQ-1.2
@@ -632,6 +632,8 @@ async fn mcp_endpoint_against_live_stack() {
         // COLLIERY-T-0220 (COLLIERY-A-0023): set or clear the repository of
         // a task. A tool of its own, not an argument of `update_item`.
         "set_repository",
+        // KAIROS-T-0572: set or remove the parent of an item in one call.
+        "set_parent",
         // KAIROS-T-0433: change the lane of a task. A tool of its own, as
         // set_repository.
         "set_work_class",
@@ -780,6 +782,7 @@ async fn mcp_endpoint_against_live_stack() {
             "set_state",
             "set_metadata",
             "set_repository",
+            "set_parent",
             "set_work_class",
             "set_team",
             "clear_team",
@@ -891,6 +894,7 @@ async fn mcp_endpoint_against_live_stack() {
             "thirty-nine",
             "forty-one",
             "seventy-two",
+            "seventy-three",
             "forty-four",
             "forty-five",
             "forty-six",
@@ -900,7 +904,7 @@ async fn mcp_endpoint_against_live_stack() {
             "sixty-three",
             "fifty-eight",
             "sixty-seven",
-            "seventy-three",
+            "seventy-four",
         ] {
             assert!(
                 !reference.contains(stale),
