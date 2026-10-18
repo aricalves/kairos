@@ -38,6 +38,10 @@ GET /ws/events            # WebSocket upgrade
   Each organization member can read tenant-wide (A-0006), so each
   organization member may subscribe. The server delivers only the events
   of that tenant.
+- The server checks the credential of the connection again every 5
+  minutes. A session can end, an admin can revoke a key, and a token can
+  expire. Then the server closes the connection with the close code
+  `1008`. Connect again with a valid credential.
 
 ## Server → client: thin events
 
@@ -148,7 +152,8 @@ a different person never gets them.
 | `notifications_read` | You marked one or more of your notifications as read with your login. A read with an agent key sends no event, because your bell does not change. `short_code` is empty |
 
 For the two events, `entity_type` is `notification` and `board_id` is `null`.
-Thus a connection with a board filter does not get them. The text of the
+Each filter lets them through: a board filter too (see
+[Client → server: filters](#client--server-filters)). The text of the
 notification is not in the event: read your notifications through the REST
 API.
 
@@ -177,15 +182,23 @@ Kairos does not end a stale claim. It sends `claim_stale` once for each quiet
 period. A write to the task or to its state starts a new period. The
 [MCP tools reference](../mcp-tools/#your-notifications) lists each kind.
 
-## Client → server: board filter
+## Client → server: filters
 
-Optionally filter the stream to one board
+Optionally filter the stream
 (`kairos_client::types_events::SubscribeRequest`):
 
 ```json
-{"subscribe": {"board_id": "6f1a1f9e-..."}}   // only this board's events
+{"subscribe": {"board_id": "6f1a1f9e-..."}}   // this board, and your events
+{"subscribe": {"person_only": true}}           // only your events
 {"subscribe": {}}                              // clear the filter
 ```
+
+- `board_id` lets through the events of one board. It also lets through
+  [the events of a person](#the-events-of-a-person). Thus one connection
+  serves the bell and the board view of a browser tab.
+- `person_only` lets through only the events of the person. The bell of a
+  page with no live view uses it. With `person_only`, the server ignores
+  `board_id`.
 
 ### Events from a different board
 
@@ -212,10 +225,16 @@ shows no event that the member cannot get without it.
 
 - Events are UI-freshness **hints**, not a durable stream: no replay, no
   ordering guarantee beyond per-connection FIFO.
-- A socket that falls behind the server's broadcast buffer silently
-  skips the lagged events.
+- A socket that falls behind the server's broadcast buffer skips the
+  lagged events. The server then sends one frame `{"event":"lagged"}`.
+  That frame is not a thin event: it names no item. Read again what you
+  show.
 - Clients reconcile by re-fetching through the REST API after any
-  (re)connect.
+  (re)connect, and after the frame `lagged`.
+- Reconnect with a backoff and a random jitter. The Kairos GUI waits 1
+  second to 15 seconds, and adds or removes up to 50 % of that time. Thus
+  the clients do not all connect again in the same second after a restart
+  of the server.
 - Fan-out is PostgreSQL `LISTEN/NOTIFY` on the `kairos_events` channel,
   emitted inside the mutating transaction, so PostgreSQL delivers the
   notification on commit and drops it on rollback.
