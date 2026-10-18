@@ -45,10 +45,12 @@
 //! - [`resolve_entity`] types the endpoints of a WRITE. Linking or
 //!   unlinking archived work is a mutation of frozen material, so it stays
 //!   [`GraphError::ItemNotFound`].
+//! - [`blocks_summary`] is a *rollup*: ADR-20 rule 5 says archived work
+//!   is not live work, so an archived item blocks nothing.
 //! - [`children_progress`] / [`page_children_progress`] (through
-//!   [`CHILD_COLUMNS_SQL`]) and [`blocks_summary`] are *rollups*: ADR-20
-//!   rule 5 says archived work is not live work, so counting it would
-//!   report progress that nobody is making.
+//!   [`CHILD_COLUMNS_SQL`]) read archived children too (KAIROS-T-0571):
+//!   a child archived from a done column is done work, and a child
+//!   archived from another column is `removed`, not open work.
 //! - [`team_work_documents`], [`team_link_rollup`] and
 //!   [`repository_link_rollup`] are default listings, which ADR-20 rule 3
 //!   keeps unchanged.
@@ -968,33 +970,50 @@ pub struct ChildColumnCount {
     /// The cancelled tasks among `count` (KAIROS-T-0567).
     #[diesel(sql_type = diesel::sql_types::BigInt)]
     pub cancelled: i64,
+    /// The archived children of the column that do not count: the column
+    /// is not done (KAIROS-T-0571). Not in `count`.
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    pub removed: i64,
 }
 
-/// The live workflow-item id → column_id union the progress queries join
-/// children through: documents never appear (no board position), and
-/// off-board ADRs are excluded. Only `parent` edges are followed, so
-/// supports/informs material never counts.
+/// The workflow-item id → column_id union the progress queries join
+/// children through, with `archived` (`deleted_at IS NOT NULL`):
+/// documents never appear (no board position), and off-board ADRs are
+/// excluded. Only `parent` edges are followed, so supports/informs
+/// material never counts.
 ///
-/// **Live-only, and deliberately so** (KAIROS-A-0020 rule 5, confirmed by
-/// KAIROS-T-0158). Every branch spells `deleted_at IS NULL` in its own
-/// body, so this does not depend on the filter `entity_directory` used to
-/// apply. Archived work is not live work: a rollup that counted it would
-/// report progress nobody is making, and would make an initiative look
-/// less finished the more of its work had been put away. This is the
-/// opposite call from [`neighbors_of`], for the opposite reason —
-/// *containment* is a fact about the record, *progress* is a fact about
-/// live work.
-const CHILD_COLUMNS_SQL: &str = "SELECT id, column_id FROM strategies WHERE deleted_at IS NULL \
-     UNION ALL SELECT id, column_id FROM initiatives WHERE deleted_at IS NULL \
-     UNION ALL SELECT id, column_id FROM tasks WHERE deleted_at IS NULL \
-     UNION ALL SELECT id, column_id FROM adrs \
-         WHERE deleted_at IS NULL AND column_id IS NOT NULL";
+/// **Archived children count by the column they were archived from**
+/// (KAIROS-T-0571, an amendment of the KAIROS-T-0158 reading of ADR-20
+/// rule 5). "Archive completed" is the way to clean a board. A rollup
+/// that dropped the archived children made an initiative look less
+/// finished the more of its finished work was put away. So:
+///
+/// - an archived child in a done column counts as done (or as cancelled,
+///   with the cancel mark): it is finished work, not live work;
+/// - an archived child in another column is `removed`: not open work, and
+///   not in the total.
+///
+/// The relationship LIST names each archived child ([`neighbors_of`]).
+const CHILD_COLUMNS_SQL: &str = "SELECT id, column_id, deleted_at IS NOT NULL AS archived \
+         FROM strategies \
+     UNION ALL SELECT id, column_id, deleted_at IS NOT NULL FROM initiatives \
+     UNION ALL SELECT id, column_id, deleted_at IS NOT NULL FROM tasks \
+     UNION ALL SELECT id, column_id, deleted_at IS NOT NULL FROM adrs \
+         WHERE column_id IS NOT NULL";
+
+/// The SQL of the three counts of a group of children (KAIROS-T-0571):
+/// `count` (the children that count), `cancelled` (the cancelled tasks
+/// among them) and `removed` (archived from a column that is not done).
+const CHILD_COUNTS_SQL: &str = "COUNT(*) FILTER (WHERE NOT c.archived OR bc.is_done) AS count, \
+     COUNT(*) FILTER (WHERE (NOT c.archived OR bc.is_done) \
+                        AND EXISTS (SELECT 1 FROM task_cancellations k \
+                                    WHERE k.task_id = c.id)) AS cancelled, \
+     COUNT(*) FILTER (WHERE c.archived AND NOT bc.is_done) AS removed";
 
 /// Direct `parent`-edge children of `parent_id`, grouped by their board
 /// column — ONE query, column order within each board (KAIROS-T-0080).
-/// Live children only, through [`CHILD_COLUMNS_SQL`] (ADR-20 rule 5): the
-/// item's relationship LIST names its archived children
-/// ([`relationships_for`]), its progress rollup does not count them.
+/// Archived children count by their column ([`CHILD_COLUMNS_SQL`]): a
+/// column that has only removed children has `count` 0.
 pub fn children_progress(
     conn: &mut PgConnection,
     parent_id: Uuid,
@@ -1005,9 +1024,7 @@ pub fn children_progress(
                 EXISTS(SELECT 1 FROM board_columns d \
                        WHERE d.board_id = bc.board_id AND d.is_done \
                          AND d.deleted_at IS NULL) AS board_has_done, \
-                COUNT(*) AS count, \
-                COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM task_cancellations k \
-                                                WHERE k.task_id = c.id)) AS cancelled \
+                {CHILD_COUNTS_SQL} \
          FROM item_relationships r \
          JOIN ({CHILD_COLUMNS_SQL}) c ON c.id = r.target_id \
          JOIN board_columns bc ON bc.id = c.column_id \
@@ -1031,19 +1048,24 @@ struct BoardProgressRow {
     count: i64,
     #[diesel(sql_type = diesel::sql_types::BigInt)]
     cancelled: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    removed: i64,
 }
 
 /// A parent's `(done, cancelled, total, has_done_semantics)` children
 /// rollup. `has_done` is false when NO board hosting the children has a
 /// done-flagged column — clients then show composition only.
 /// KAIROS-T-0567: `done` does not count a cancelled task; `cancelled`
-/// does, and `total - done - cancelled` is open.
+/// does, and `total - done - cancelled` is open. KAIROS-T-0571: an
+/// archived child in a done column counts; one from another column is in
+/// `removed`, not in `total`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ProgressCounts {
     pub done: i64,
     pub cancelled: i64,
     pub total: i64,
     pub has_done: bool,
+    pub removed: i64,
 }
 
 impl ProgressCounts {
@@ -1059,12 +1081,11 @@ impl ProgressCounts {
 /// forbids). KAIROS-T-0627: the query reads the edges of the page's items
 /// only, not of the whole board.
 ///
-/// Live-only on BOTH ends and says so in the SQL: the parents come from a
-/// per-family union filtered `deleted_at IS NULL`, the children from
-/// [`CHILD_COLUMNS_SQL`]. Neither predicate is inherited from a view
-/// (KAIROS-T-0156 moved them here), and neither is widened: ADR-20 rule 5,
-/// archived work is not live work. An archived item of the page has no
-/// rollup.
+/// The parents are live: they come from a per-family union filtered
+/// `deleted_at IS NULL`, so an archived item of the page has no rollup.
+/// The children come from [`CHILD_COLUMNS_SQL`], archived ones by their
+/// column (KAIROS-T-0571). A parent has an entry when it has a child that
+/// counts (`total > 0`).
 pub fn page_children_progress(
     conn: &mut PgConnection,
     board_id: Uuid,
@@ -1079,9 +1100,7 @@ pub fn page_children_progress(
                 EXISTS(SELECT 1 FROM board_columns d \
                        WHERE d.board_id = bc.board_id AND d.is_done \
                          AND d.deleted_at IS NULL) AS board_has_done, \
-                COUNT(*) AS count, \
-                COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM task_cancellations k \
-                                                WHERE k.task_id = c.id)) AS cancelled \
+                {CHILD_COUNTS_SQL} \
          FROM (SELECT id FROM strategies {parents} \
                UNION ALL SELECT id FROM initiatives {parents} \
                UNION ALL SELECT id FROM tasks {parents} \
@@ -1102,10 +1121,12 @@ pub fn page_children_progress(
         entry.total += row.count;
         entry.has_done |= row.board_has_done;
         entry.cancelled += row.cancelled;
+        entry.removed += row.removed;
         if row.is_done {
             entry.done += row.count - row.cancelled;
         }
     }
+    progress.retain(|_, counts| counts.total > 0);
     Ok(progress)
 }
 

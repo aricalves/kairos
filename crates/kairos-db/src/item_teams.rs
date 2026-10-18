@@ -31,9 +31,8 @@
 //!
 //! # Liveness
 //!
-//! A team from tasks comes from LIVE work only, as the progress rollup of
-//! [`crate::graph::children_progress`]: an archived task or initiative
-//! gives no team. An archived team, and a task on an archived board, give
+//! A team from tasks comes from LIVE work only: an archived task or
+//! initiative gives no team. An archived team, and a task on an archived board, give
 //! no team, from tasks or by hand. A link to an archived team stays in
 //! the table, so a restore of the team needs no repair, and it can be
 //! removed.

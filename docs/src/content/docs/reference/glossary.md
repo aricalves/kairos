@@ -365,7 +365,8 @@ Completed. The default ADR board sets it on Decided and on Superseded.
 
 Two results follow from the flag:
 
-- The children-progress rollup counts a child in a done column as done.
+- The children-progress rollup counts a child in a done column as done. An
+  archived child in a done column counts as done too.
 - A `blocks` edge does not count when the item at either end is in a done
   column. See [relationship](#relationship).
 
