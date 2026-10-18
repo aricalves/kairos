@@ -630,7 +630,9 @@ delivery log. Needs `configure_boards` on the board.
 ### `POST /api/boards/{id}/webhook-targets/{target_id}/enable`
 
 Turn a webhook target on again, with its failed tries in a row at 0.
-Needs `configure_boards` on the board.
+Kairos queues the `skipped` deliveries of the last 30 days again, oldest
+first (KAIROS-T-0577); `redelivered` counts them. Needs
+`configure_boards` on the board.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
@@ -639,9 +641,32 @@ Needs `configure_boards` on the board.
 
 | Response | Body | Meaning |
 |---|---|---|
-| `200` | [`WebhookTarget`](../schemas/#webhooktarget) | The target, on |
+| `200` | [`WebhookTarget`](../schemas/#webhooktarget) | The target, on, with the count of the skipped deliveries queued again |
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Missing configure_boards |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown board or target |
+
+### `POST /api/boards/{id}/webhook-targets/{target_id}/redeliver`
+
+Queue the `skipped` deliveries of a webhook target again
+(KAIROS-T-0577). Kairos takes each one of the last 30 days, oldest
+first. With `since`, it takes only the events at or after that time.
+Each delivery keeps its id. The target must be on. Needs
+`configure_boards` on the board, as `enable`.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `id` | path | yes | `string` | The slug or the id (UUID) of the board |
+| `target_id` | path | yes | `string` | The id (UUID) of the target |
+| `since` | query | no | `string` | Only the deliveries of events at or after this time (RFC 3339). With no value: each skipped delivery of the last 30 days. |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`WebhookTarget`](../schemas/#webhooktarget) | The target, with the count of the skipped deliveries queued again |
+| `400` | [`ErrorEnvelope`](../schemas/#errorenvelope) | VALIDATION: an unknown query parameter |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Missing configure_boards |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown board or target |
+| `409` | [`ErrorEnvelope`](../schemas/#errorenvelope) | CONFLICT: the target is off; turn it on with enable |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | VALIDATION: since is not an RFC 3339 timestamp |
 
 ### `POST /api/boards/{id}/webhook-targets/{target_id}/test`
 

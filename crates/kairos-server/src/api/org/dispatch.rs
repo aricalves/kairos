@@ -3,7 +3,8 @@
 //!
 //! - A board manager (`configure_boards` on the board, an organization
 //!   admin, or `manage_structure`) makes, removes, turns on and tests the
-//!   targets, and makes and removes the rules.
+//!   targets, sends their `skipped` deliveries again (KAIROS-T-0577), and
+//!   makes and removes the rules.
 //! - A person who belongs to the board ([`kairos_db::dispatch::may_read`]:
 //!   an organization admin, a grant on the board, a member of its team, or
 //!   `manage_structure`) reads the targets, the rules and the delivery log.
@@ -63,6 +64,10 @@ pub(crate) fn router() -> Router<AppState> {
             post(test_webhook_target),
         )
         .route(
+            "/api/boards/{id}/webhook-targets/{target_id}/redeliver",
+            post(redeliver_webhook_target),
+        )
+        .route(
             "/api/boards/{id}/dispatch-rules",
             get(list_dispatch_rules).post(create_dispatch_rule),
         )
@@ -115,6 +120,7 @@ pub fn target_view(target: &db::Target, full_url: bool) -> dto::WebhookTarget {
         disabled_reason: target.disabled_reason.clone(),
         created_by: target.created_by.to_string(),
         created_at: rfc3339(target.created_at),
+        redelivered: None,
     }
 }
 
@@ -324,7 +330,8 @@ pub fn delete_target_as(
     Ok(target_view(&target, true))
 }
 
-/// Turn a target on again, with its failures in a row at 0.
+/// Turn a target on again, with its failures in a row at 0, and queue its
+/// `skipped` deliveries again (KAIROS-T-0577).
 pub fn enable_target_as(
     conn: &mut PgConnection,
     slug: &str,
@@ -334,10 +341,56 @@ pub fn enable_target_as(
 ) -> Result<dto::WebhookTarget, ApiError> {
     let board = configurable(conn, slug, user, board_ref)?;
     let target = target_of(conn, &board, target_id)?;
-    let target = db::enable_target(conn, target.id)
+    let (target, redelivered) = db::enable_target(conn, target.id)
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found("The webhook target is gone."))?;
-    Ok(target_view(&target, true))
+    let mut view = target_view(&target, true);
+    view.redelivered = Some(redelivered.len() as i64);
+    Ok(view)
+}
+
+/// Queue the `skipped` deliveries of a target that is on again
+/// (KAIROS-T-0577): each one of the last [`db::KEEP_DAYS`] days, and with
+/// `since`, only the events at or after it. Needs `configure_boards`, as
+/// [`enable_target_as`].
+pub fn redeliver_target_as(
+    conn: &mut PgConnection,
+    slug: &str,
+    user: Uuid,
+    board_ref: &str,
+    target_id: &str,
+    query: &dto::RedeliverQuery,
+) -> Result<dto::WebhookTarget, ApiError> {
+    let board = configurable(conn, slug, user, board_ref)?;
+    let since: Option<DateTime<Utc>> = query
+        .since
+        .as_deref()
+        .map(|value| {
+            DateTime::parse_from_rfc3339(value)
+                .map(|parsed| parsed.with_timezone(&Utc))
+                .map_err(|_| {
+                    ApiError::validation(format!(
+                        "The value {value:?} of since is not a timestamp. Send an RFC 3339 \
+                         timestamp, for example 2026-10-17T09:00:00Z."
+                    ))
+                    .with_details(json!({ "field": "since" }))
+                })
+        })
+        .transpose()?;
+    let target = target_of(conn, &board, target_id)?;
+    if !target.enabled {
+        return Err(ApiError::conflict(format!(
+            "The webhook target {} is off, so Kairos skips its deliveries again. Turn it on \
+             with POST /api/boards/{}/webhook-targets/{}/enable: that sends its skipped \
+             deliveries too.",
+            target.name, board.slug, target.id
+        ))
+        .with_details(json!({ "target_id": target.id, "enabled": false })));
+    }
+    let redelivered = db::redeliver_skipped(conn, target.id, since).map_err(ApiError::internal)?;
+    let mut view = target_view(&target, true);
+    view.redelivered = Some(redelivered.len() as i64);
+    Ok(view)
 }
 
 /// Queue a `ping` delivery to a target.
@@ -693,7 +746,9 @@ pub(crate) async fn delete_webhook_target(
 }
 
 /// Turn a webhook target on again, with its failed tries in a row at 0.
-/// Needs `configure_boards` on the board.
+/// Kairos queues the `skipped` deliveries of the last 30 days again, oldest
+/// first (KAIROS-T-0577); `redelivered` counts them. Needs
+/// `configure_boards` on the board.
 #[utoipa::path(
     post,
     path = "/api/boards/{id}/webhook-targets/{target_id}/enable",
@@ -703,7 +758,7 @@ pub(crate) async fn delete_webhook_target(
         ("target_id" = String, Path, description = "The id (UUID) of the target"),
     ),
     responses(
-        (status = 200, description = "The target, on", body = dto::WebhookTarget),
+        (status = 200, description = "The target, on, with the count of the skipped deliveries queued again", body = dto::WebhookTarget),
         (status = 403, description = "Missing configure_boards", body = kairos_client::types::ErrorEnvelope),
         (status = 404, description = "Unknown board or target", body = kairos_client::types::ErrorEnvelope),
     ),
@@ -721,6 +776,48 @@ pub(crate) async fn enable_webhook_target(
             enable_target_as(conn, &slug, user, &id, &target_id)
         })
         .await?;
+    state.jobs.wake();
+    Ok(Json(target))
+}
+
+/// Queue the `skipped` deliveries of a webhook target again
+/// (KAIROS-T-0577). Kairos takes each one of the last 30 days, oldest
+/// first. With `since`, it takes only the events at or after that time.
+/// Each delivery keeps its id. The target must be on. Needs
+/// `configure_boards` on the board, as `enable`.
+#[utoipa::path(
+    post,
+    path = "/api/boards/{id}/webhook-targets/{target_id}/redeliver",
+    tag = "boards",
+    params(
+        ("id" = String, Path, description = "The slug or the id (UUID) of the board"),
+        ("target_id" = String, Path, description = "The id (UUID) of the target"),
+        dto::RedeliverQuery,
+    ),
+    responses(
+        (status = 200, description = "The target, with the count of the skipped deliveries queued again", body = dto::WebhookTarget),
+        (status = 403, description = "Missing configure_boards", body = kairos_client::types::ErrorEnvelope),
+        (status = 404, description = "Unknown board or target", body = kairos_client::types::ErrorEnvelope),
+        (status = 409, description = "CONFLICT: the target is off; turn it on with enable", body = kairos_client::types::ErrorEnvelope),
+        (status = 400, description = "VALIDATION: an unknown query parameter", body = kairos_client::types::ErrorEnvelope),
+        (status = 422, description = "VALIDATION: since is not an RFC 3339 timestamp", body = kairos_client::types::ErrorEnvelope),
+    ),
+)]
+pub(crate) async fn redeliver_webhook_target(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Extension(tenant): Extension<TenantContext>,
+    Path((id, target_id)): Path<(String, String)>,
+    ApiQuery(query): ApiQuery<dto::RedeliverQuery>,
+) -> Result<Json<dto::WebhookTarget>, ApiError> {
+    let (slug, user) = (tenant.slug.clone(), auth.user_id);
+    let target = state
+        .blocking
+        .run(&tenant.slug, move |conn| {
+            redeliver_target_as(conn, &slug, user, &id, &target_id, &query)
+        })
+        .await?;
+    state.jobs.wake();
     Ok(Json(target))
 }
 

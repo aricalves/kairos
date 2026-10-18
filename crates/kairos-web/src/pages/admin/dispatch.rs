@@ -437,12 +437,26 @@ fn TargetRows(
                     }
                 });
             };
-            let (on_test, on_enable, on_remove) = {
-                let (a, b, c) = (name.clone(), name.clone(), name.clone());
+            let (on_test, on_enable, on_redeliver, on_remove) = {
+                let (a, b, c, d) = (name.clone(), name.clone(), name.clone(), name.clone());
                 (
                     move |_| action("/test", format!("Kairos queued a test delivery to {a}.")),
-                    move |_| action("/enable", format!("Kairos turned on {b}.")),
-                    move |_| action("", format!("Kairos removed {c}, with its rules.")),
+                    // KAIROS-T-0577: turning on sends the skipped deliveries.
+                    move |_| {
+                        action(
+                            "/enable",
+                            format!(
+                                "Kairos turned on {b}, and queued its skipped deliveries again."
+                            ),
+                        )
+                    },
+                    move |_| {
+                        action(
+                            "/redeliver",
+                            format!("Kairos queued the skipped deliveries of {c} again."),
+                        )
+                    },
+                    move |_| action("", format!("Kairos removed {d}, with its rules.")),
                 )
             };
             let state = if target.enabled {
@@ -470,6 +484,12 @@ fn TargetRows(
                         {(!target.enabled).then(|| view! {
                             <Button variant="default" size="xs" on_click=Callback::new(on_enable)>
                                 "Turn on"
+                            </Button>
+                        })}
+                        {target.enabled.then(|| view! {
+                            <Button variant="default" size="xs"
+                                on_click=Callback::new(on_redeliver)>
+                                "Send skipped again"
                             </Button>
                         })}
                         <Button variant="default" size="xs" bad=true

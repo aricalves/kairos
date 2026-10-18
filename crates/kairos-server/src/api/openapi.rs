@@ -171,6 +171,7 @@ use crate::app::AppState;
         crate::api::org::dispatch::create_webhook_target,
         crate::api::org::dispatch::delete_webhook_target,
         crate::api::org::dispatch::enable_webhook_target,
+        crate::api::org::dispatch::redeliver_webhook_target,
         crate::api::org::dispatch::test_webhook_target,
         crate::api::org::dispatch::list_dispatch_rules,
         crate::api::org::dispatch::get_agent_triage,

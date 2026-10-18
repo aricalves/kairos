@@ -871,6 +871,17 @@ mod tests {
             &["kairos", "boards", "dispatch", "remove-rule", "web", "r1"][..],
             &["kairos", "boards", "dispatch", "remove-target", "web", "t1"][..],
             &["kairos", "boards", "dispatch", "enable-target", "web", "t1"][..],
+            &["kairos", "boards", "dispatch", "redeliver", "web", "t1"][..],
+            &[
+                "kairos",
+                "boards",
+                "dispatch",
+                "redeliver",
+                "web",
+                "t1",
+                "--since",
+                "2026-10-17T09:00:00Z",
+            ][..],
             &["kairos", "boards", "dispatch", "test-target", "web", "t1"][..],
             &["kairos", "boards", "dispatch", "log", "web", "--limit", "5"][..],
         ] {

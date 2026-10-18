@@ -3185,9 +3185,10 @@ A webhook target of a board: a URL. Kairos sends signed deliveries to it. The se
 | `created_by` | `string` | yes |  |
 | `disabled_at` | `string`, nullable | no |  |
 | `disabled_reason` | `string`, nullable | no |  |
-| `enabled` | `boolean` | yes | False: Kairos turned the target off after failed tries, and sends nothing to it until a board manager turns it on again. |
+| `enabled` | `boolean` | yes | False: Kairos turned the target off after failed tries, and sends nothing to it until a board manager turns it on again. Then Kairos sends the deliveries that it skipped (KAIROS-T-0577). |
 | `id` | `string` | yes |  |
 | `name` | `string` | yes |  |
+| `redelivered` | `integer`, nullable | no | Only in the answer of `enable` and `redeliver` (KAIROS-T-0577): the number of `skipped` deliveries that Kairos queued again. |
 | `url` | `string` | yes | The URL. A person who cannot configure the board gets it with no query and no fragment. |
 
 ## WorkBlocker
