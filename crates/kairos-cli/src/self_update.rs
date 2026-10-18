@@ -6,9 +6,10 @@
 //!
 //! The trust rule (KAIROS-T-0595, KAIROS-A-0058): the `.sha256` of a
 //! tarball always comes from the published release (GitHub, or
-//! `KAIROS_RELEASES_URL`), never from the server. The server can name a mirror for the tarball, but a tarball
-//! that is not the published one does not match. A version older than this
-//! CLI needs `--version` or `--allow-downgrade`.
+//! `KAIROS_RELEASES_URL`), never from the server. The server can name a
+//! mirror for the tarball, but a tarball that is not the published one does
+//! not match. A version older than this CLI needs `--version` or
+//! `--allow-downgrade`.
 //!
 //! The swap writes the new binary to a new file next to the old one and
 //! renames it over the old path. Writing over the old file in place gets
