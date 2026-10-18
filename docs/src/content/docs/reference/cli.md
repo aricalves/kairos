@@ -2414,8 +2414,8 @@ text. A refusal is the error envelope on stderr (see
 `index status` prints the counts of the index: `files`, `symbols`, `edges`
 and `summaries`, with the models.
 
-`index duplicates` and `index references` print the list envelope of
-KAIROS-A-0057: `items`, `total` and `next_offset`. `total` is the count of
+`index duplicates` and `index references` print the list envelope:
+`items`, `total` and `next_offset` (see [The JSON of a list](#the-json-of-a-list)). `total` is the count of
 the rows that the index found. `items` has the first `--limit` rows. These
 commands have no `--offset`, so `next_offset` is `null`. To get more rows,
 give a larger `--limit`.

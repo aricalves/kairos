@@ -30,6 +30,7 @@ use super::base::Base;
 use super::summaries::Outcome;
 use crate::context::print_json;
 use crate::error::CliError;
+use crate::listing::ListJson;
 
 /// What a build or an update did. With `json` false, each part is printed
 /// as text when it comes. With `json` true, the parts are kept, and
@@ -265,17 +266,20 @@ pub(super) fn symbol(s: &SymbolInfo) -> Value {
     })
 }
 
-/// The list envelope of KAIROS-A-0057, for a list with no `--offset`:
-/// `items` is the first `limit` rows, and `next_offset` is null.
+/// The list envelope of KAIROS-A-0057 ([`ListJson`]), for a list with no
+/// `--offset`: `items` is the first `limit` rows, and `next_offset` is null.
+/// The caller adds the keys of its command.
 fn envelope(items: Vec<Value>, total: usize, limit: usize) -> serde_json::Map<String, Value> {
-    let mut out = serde_json::Map::new();
-    out.insert(
-        "items".into(),
-        Value::Array(items.into_iter().take(limit).collect()),
-    );
-    out.insert("total".into(), json!(total));
-    out.insert("next_offset".into(), Value::Null);
-    out
+    let items: Vec<Value> = items.into_iter().take(limit).collect();
+    let list = ListJson {
+        items: &items,
+        total: i64::try_from(total).unwrap_or(i64::MAX),
+        next_offset: None,
+    };
+    match serde_json::to_value(&list) {
+        Ok(Value::Object(out)) => out,
+        _ => serde_json::Map::new(),
+    }
 }
 
 /// The `--json` object of `duplicates`: the envelope of the groups, and
