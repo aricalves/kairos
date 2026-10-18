@@ -30,6 +30,17 @@
 //! and the measurement says a median document has 9 sections — so an append must
 //! re-embed **one chunk**, not the document. A modified-time comparison cannot
 //! tell which section moved; a per-chunk hash can.
+//!
+//! # The marks (KAIROS-T-0636)
+//!
+//! The hash decides what goes to the model. A mark in `embedding_dirty`
+//! decides which items the background sweep looks at. The write transaction
+//! of an item marks it ([`mark_dirty`], through the item event of the
+//! write), and a write that changes the text of other items marks them too
+//! ([`mark_children_dirty`], [`mark_repository_dirty`],
+//! [`mark_definition_dirty`]). The sweep reads the oldest marks
+//! ([`dirty_page`]) and deletes a mark when it is still the mark that it read
+//! ([`clear_dirty`]). With no mark, a run reads nothing else.
 
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
@@ -186,7 +197,9 @@ fn check_dimension(vector: &[f32], declared: usize) -> Result<(), EmbeddingError
 /// paging the rest. Both halves of that ordering are load-bearing, and the
 /// second was added after a bug that only a full-scale run could find.
 ///
-/// A background sweep takes one page per tick. Ordered by `short_code` alone and
+/// `embed-backfill` walks these pages; the background sweep reads the marks
+/// of [`dirty_page`] (KAIROS-T-0636). A sweep took one page per tick before
+/// the marks. Ordered by `short_code` alone and
 /// always from offset 0, it took *the same* page every time — so once the first
 /// 25 items were current it did no work for ever, and item 26 was never embedded
 /// at all. The caller pages through and wraps; putting never-embedded rows first
@@ -206,19 +219,36 @@ pub fn pending_primary(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<PendingItem>, EmbeddingError> {
-    // The 1:1 structural inputs rule 4 asks for. `repository` is a task-level
-    // attribute, so it LEFT JOINs through `tasks` and is NULL for every other
-    // type — which is correct rather than missing: a document has no
-    // repository, and composing a blank `repository:` line for it would put the
-    // same token into every document in the tenant. The team is not read
-    // (COLLIERY-T-1840): see `kairos_core::primary`.
-    //
-    // The parent comes from `item_relationships`, where the edge points
-    // parent -> child, so the item is the TARGET and the parent is the source.
-    // An archived parent counts (COLLIERY-T-1840): `entity_directory` has
-    // archived rows, and the join no longer filters them out.
-    let rows = sql_query(
-        "SELECT s.id, s.entity_type, s.short_code, s.title, s.content, \
+    let rows = sql_query(format!(
+        "{PENDING_SELECT} \
+         ORDER BY (e.item_id IS NULL) DESC, s.short_code \
+         LIMIT $4 OFFSET $5"
+    ))
+    .bind::<Text, _>(&model.provider)
+    .bind::<Text, _>(&model.model)
+    .bind::<Integer, _>(model.dimension as i32)
+    .bind::<BigInt, _>(limit)
+    .bind::<BigInt, _>(offset)
+    .load::<PendingItem>(conn)?;
+    Ok(rows)
+}
+
+/// The columns of a [`PendingItem`] and their joins: the one text of what
+/// [`pending_primary`] and [`pending_items`] read, so the backfill and the
+/// sweep compose the same text. `$1`, `$2` and `$3` are the model.
+///
+/// The 1:1 structural inputs rule 4 asks for. `repository` is a task-level
+/// attribute, so it LEFT JOINs through `tasks` and is NULL for every other
+/// type — which is correct rather than missing: a document has no
+/// repository, and composing a blank `repository:` line for it would put the
+/// same token into every document in the tenant. The team is not read
+/// (COLLIERY-T-1840): see `kairos_core::primary`.
+///
+/// The parent comes from `item_relationships`, where the edge points
+/// parent -> child, so the item is the TARGET and the parent is the source.
+/// An archived parent counts (COLLIERY-T-1840): `entity_directory` has
+/// archived rows, and the join no longer filters them out.
+const PENDING_SELECT: &str = "SELECT s.id, s.entity_type, s.short_code, s.title, s.content, \
                 r.slug AS repository, p.title AS parent_title, \
                 e.content_hash AS stored_hash \
          FROM searchable_items s \
@@ -230,17 +260,164 @@ pub fn pending_primary(
          LEFT JOIN item_relationships rel \
            ON rel.target_id = s.id AND rel.relationship = 'parent' \
          LEFT JOIN entity_directory p \
-           ON p.id = rel.source_id \
-         ORDER BY (e.item_id IS NULL) DESC, s.short_code \
-         LIMIT $4 OFFSET $5",
+           ON p.id = rel.source_id";
+
+/// The items `ids`, with what [`pending_primary`] reads for each
+/// (KAIROS-T-0636: the items of one page of [`dirty_page`]). An id of no
+/// item gives no row. No order.
+pub fn pending_items(
+    conn: &mut PgConnection,
+    model: &StoredModel,
+    ids: &[Uuid],
+) -> Result<Vec<PendingItem>, EmbeddingError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = sql_query(format!("{PENDING_SELECT} WHERE s.id = ANY($4)"))
+        .bind::<Text, _>(&model.provider)
+        .bind::<Text, _>(&model.model)
+        .bind::<Integer, _>(model.dimension as i32)
+        .bind::<diesel::sql_types::Array<SqlUuid>, _>(ids)
+        .load::<PendingItem>(conn)?;
+    Ok(rows)
+}
+
+// ---------------------------------------------------------------------------
+// The marks of the sweep (KAIROS-T-0636)
+// ---------------------------------------------------------------------------
+
+/// The mark of an item whose vectors can be behind its text: a row of
+/// `embedding_dirty`. `mark` is new at each write, so the sweep can tell
+/// that the item changed after it read it ([`clear_dirty`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, QueryableByName)]
+pub struct DirtyMark {
+    /// The item.
+    #[diesel(sql_type = SqlUuid)]
+    pub item_id: Uuid,
+    /// The mark that the last write gave.
+    #[diesel(sql_type = BigInt)]
+    pub mark: i64,
+}
+
+/// Mark the items that `select` gives (one column of item ids, with `$1`
+/// bound to `id`). A marked item gets a new mark and keeps its place in
+/// the order. The ids go in in their order, so two writes lock the rows in
+/// one order.
+fn mark_selected(
+    conn: &mut PgConnection,
+    select: &str,
+    id: Uuid,
+) -> Result<usize, diesel::result::Error> {
+    sql_query(format!(
+        "INSERT INTO embedding_dirty (item_id) \
+         SELECT DISTINCT ids.item_id FROM ({select}) AS ids(item_id) ORDER BY 1 \
+         ON CONFLICT (item_id) DO UPDATE SET mark = greatest( \
+             (extract(epoch FROM clock_timestamp()) * 1000000)::bigint, \
+             embedding_dirty.mark + 1)"
+    ))
+    .bind::<SqlUuid, _>(id)
+    .execute(conn)
+}
+
+/// Mark the item `item_id`: its text, its metadata or its parent changed
+/// (KAIROS-T-0636). [`crate::events::emit_item_change_by_id`] calls it for
+/// each item event that can change the text, in the transaction of the
+/// write.
+pub fn mark_dirty(conn: &mut PgConnection, item_id: Uuid) -> Result<(), diesel::result::Error> {
+    mark_selected(conn, "SELECT $1::uuid", item_id).map(|_| ())
+}
+
+/// Mark the children of `parent_id`: the title of the parent is part of the
+/// text of each child (COLLIERY-T-1840). The number marked.
+pub fn mark_children_dirty(
+    conn: &mut PgConnection,
+    parent_id: Uuid,
+) -> Result<usize, diesel::result::Error> {
+    mark_selected(
+        conn,
+        "SELECT target_id FROM item_relationships \
+         WHERE source_id = $1 AND relationship = 'parent'",
+        parent_id,
+    )
+}
+
+/// Mark the tasks of the repository `repository_id`: its slug is part of
+/// the text of each task. The number marked.
+pub fn mark_repository_dirty(
+    conn: &mut PgConnection,
+    repository_id: Uuid,
+) -> Result<usize, diesel::result::Error> {
+    mark_selected(
+        conn,
+        "SELECT id FROM tasks WHERE repository_id = $1",
+        repository_id,
+    )
+}
+
+/// Mark the items with a value of the metadata definition `definition_id`:
+/// its name is a label in the text of each ([`metadata_for`]). The number
+/// marked.
+pub fn mark_definition_dirty(
+    conn: &mut PgConnection,
+    definition_id: Uuid,
+) -> Result<usize, diesel::result::Error> {
+    mark_selected(
+        conn,
+        "SELECT item_id FROM item_metadata WHERE metadata_definition_id = $1",
+        definition_id,
+    )
+}
+
+/// Mark each item that has no primary vector of `model`: a new model, or an
+/// item that a write outside the write path made (KAIROS-T-0636). The sweep
+/// runs it once for each tenant when its server starts. One read of each
+/// item; the number marked.
+pub fn mark_missing(conn: &mut PgConnection, model: &StoredModel) -> Result<usize, EmbeddingError> {
+    Ok(sql_query(
+        "INSERT INTO embedding_dirty (item_id) \
+         SELECT s.id FROM searchable_items s \
+         WHERE NOT EXISTS ( \
+             SELECT 1 FROM item_embeddings e \
+             WHERE e.item_id = s.id \
+               AND e.provider = $1 AND e.model = $2 AND e.dimension = $3) \
+         ORDER BY 1 \
+         ON CONFLICT (item_id) DO NOTHING",
     )
     .bind::<Text, _>(&model.provider)
     .bind::<Text, _>(&model.model)
     .bind::<Integer, _>(model.dimension as i32)
-    .bind::<BigInt, _>(limit)
-    .bind::<BigInt, _>(offset)
-    .load::<PendingItem>(conn)?;
-    Ok(rows)
+    .execute(conn)?)
+}
+
+/// The oldest `limit` marks (KAIROS-T-0636): the page of one run of the
+/// sweep. One read of `embedding_dirty`, and of nothing else, so a run with
+/// no mark costs one small statement.
+pub fn dirty_page(conn: &mut PgConnection, limit: i64) -> Result<Vec<DirtyMark>, EmbeddingError> {
+    Ok(
+        sql_query("SELECT item_id, mark FROM embedding_dirty ORDER BY dirty_at, item_id LIMIT $1")
+            .bind::<BigInt, _>(limit)
+            .load(conn)?,
+    )
+}
+
+/// Delete each of `marks` that is still the mark of its item
+/// (KAIROS-T-0636). A write after the read gave the item a new mark, so the
+/// item stays dirty, and the next run reads its new text. The number
+/// deleted.
+pub fn clear_dirty(conn: &mut PgConnection, marks: &[DirtyMark]) -> Result<usize, EmbeddingError> {
+    if marks.is_empty() {
+        return Ok(0);
+    }
+    let ids: Vec<Uuid> = marks.iter().map(|m| m.item_id).collect();
+    let values: Vec<i64> = marks.iter().map(|m| m.mark).collect();
+    Ok(sql_query(
+        "DELETE FROM embedding_dirty d \
+         USING unnest($1::uuid[], $2::bigint[]) AS m(item_id, mark) \
+         WHERE d.item_id = m.item_id AND d.mark = m.mark",
+    )
+    .bind::<diesel::sql_types::Array<SqlUuid>, _>(ids)
+    .bind::<diesel::sql_types::Array<BigInt>, _>(values)
+    .execute(conn)?)
 }
 
 /// How many items a sweep has to walk to cover a tenant once.
@@ -478,6 +655,9 @@ pub fn forget_item(conn: &mut PgConnection, item_id: Uuid) -> Result<(), Embeddi
             .bind::<SqlUuid, _>(item_id)
             .execute(conn)?;
         sql_query("DELETE FROM item_embeddings WHERE item_id = $1")
+            .bind::<SqlUuid, _>(item_id)
+            .execute(conn)?;
+        sql_query("DELETE FROM embedding_dirty WHERE item_id = $1")
             .bind::<SqlUuid, _>(item_id)
             .execute(conn)?;
         Ok::<_, diesel::result::Error>(())

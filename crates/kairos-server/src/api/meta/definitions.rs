@@ -648,6 +648,11 @@ pub(crate) fn update_definition_in(
             if let Some(entity_types) = &entity_types {
                 replace_scopes(conn, id, entity_types)?;
             }
+            // KAIROS-T-0636: the name is a label in the embedded text of
+            // each item with a value of the definition.
+            if updated.name != existing.name {
+                kairos_db::embeddings::mark_definition_dirty(conn, id)?;
+            }
             super::log_meta_activity(
                 conn,
                 user,

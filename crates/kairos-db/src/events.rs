@@ -194,6 +194,21 @@ impl EventKind {
         )
     }
 
+    /// Whether this kind can change the text that the vectors of the item
+    /// are made of (KAIROS-T-0636): its title or content (a create, an edit,
+    /// a note), its parent, or its metadata. [`emit_item_change_by_id`]
+    /// marks the item for the embedding sweep
+    /// ([`crate::embeddings::mark_dirty`]).
+    pub fn changes_embedded_text(self) -> bool {
+        matches!(
+            self,
+            EventKind::ItemCreated
+                | EventKind::ItemUpdated
+                | EventKind::RelationshipChanged
+                | EventKind::MetadataChanged
+        )
+    }
+
     /// The wire name (`event` field).
     pub fn as_str(self) -> &'static str {
         match self {
@@ -440,6 +455,11 @@ pub fn emit_item_event_by_id(
 }
 
 /// [`emit_item_event_by_id`] with the field `change` (KAIROS-T-0574).
+///
+/// KAIROS-T-0636: a kind that can change the embedded text
+/// ([`EventKind::changes_embedded_text`]) also marks the item for the
+/// embedding sweep, in the same transaction. Each item write emits its event
+/// here, so each write path marks its item without a call of its own.
 pub fn emit_item_change_by_id(
     conn: &mut PgConnection,
     event: EventKind,
@@ -448,6 +468,9 @@ pub fn emit_item_change_by_id(
     actor: Uuid,
     change: Option<&str>,
 ) -> Result<(), DieselError> {
+    if event.changes_embedded_text() {
+        crate::embeddings::mark_dirty(conn, item_id)?;
+    }
     if let Some((short_code, board_id, column_id)) = item_placement(conn, entity_type, item_id)? {
         emit_event_with_change(
             conn,

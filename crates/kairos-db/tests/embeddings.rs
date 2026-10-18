@@ -630,3 +630,319 @@ fn embedding_store_lifecycle() {
         "and it says how to fix it: {err}"
     );
 }
+
+// ===========================================================================
+// KAIROS-T-0636: the marks of the embedding sweep
+// ===========================================================================
+
+static MARKS_DB: scratch::ScratchName = scratch::ScratchName::new("kairos_embedding_marks_t0636");
+
+/// The marked items, oldest first.
+fn marked(conn: &mut PgConnection) -> Vec<kairos_db::embeddings::DirtyMark> {
+    kairos_db::embeddings::dirty_page(conn, 1000).expect("the marks")
+}
+
+fn marked_ids(conn: &mut PgConnection) -> Vec<Uuid> {
+    marked(conn).iter().map(|m| m.item_id).collect()
+}
+
+/// Clear every mark, as a run that read them all.
+fn clear_all(conn: &mut PgConnection) {
+    let marks = marked(conn);
+    kairos_db::embeddings::clear_dirty(conn, &marks).expect("clear");
+    assert!(marked(conn).is_empty());
+}
+
+/// Each write that changes the text of an item marks it in its transaction:
+/// a create, an edit, a parent, a repository, a title of the parent, a new
+/// repository slug. A clear deletes a mark only when no write came after
+/// the read. `mark_missing` marks the items with no vector of the model.
+#[test]
+fn writes_mark_their_items_and_a_clear_keeps_a_newer_mark() {
+    use kairos_core::short_code::ItemType;
+    use kairos_db::embeddings::{
+        DirtyMark, clear_dirty, mark_definition_dirty, mark_missing, mark_repository_dirty,
+    };
+    use kairos_db::models::Forge;
+    use kairos_db::models::repositories::{NewRepository, RepositoryChangeset};
+
+    let admin_url = admin_database_url();
+    let mut admin = PgConnection::establish(&admin_url).unwrap_or_else(|e| {
+        panic!("cannot connect to compose postgres at {admin_url}: {e} (is the stack up?)")
+    });
+    sql_query(format!("DROP DATABASE IF EXISTS {MARKS_DB} WITH (FORCE)"))
+        .execute(&mut admin)
+        .expect("dropping scratch database");
+    sql_query(format!("CREATE DATABASE {MARKS_DB}"))
+        .execute(&mut admin)
+        .expect("creating scratch database");
+    let _scratch_guard = scratch::ScratchGuard::new(&MARKS_DB);
+    let url = with_database(&admin_url, &MARKS_DB);
+    let mut conn = PgConnection::establish(&url).expect("connecting to scratch database");
+    run_public_migrations(&mut conn).expect("public migrations");
+    provision_tenant(&mut conn, "acme", "Acme Inc").expect("provisioning acme");
+    sql_query("SET search_path TO org_acme, public")
+        .execute(&mut conn)
+        .expect("pinning search_path");
+    let robin = diesel::insert_into(schema::users::table)
+        .values(NewUser {
+            external_id: "dex|robin".into(),
+            user_name: "dex|robin".into(),
+            email: "robin@acme.test".into(),
+            display_name: "Robin".into(),
+        })
+        .returning(schema::users::id)
+        .get_result::<Uuid>(&mut conn)
+        .expect("robin");
+    let team = seed_board_team(&mut conn, "Delivery Team", "delivery-team");
+    let board = create_board(
+        &mut conn,
+        BoardLevel::Delivery,
+        "Delivery",
+        "delivery",
+        kairos_db::CodePrefix::FromSlug,
+        Some(team),
+        Some(robin),
+    )
+    .expect("board")
+    .id;
+    let initiatives = create_board(
+        &mut conn,
+        BoardLevel::Initiative,
+        "Initiatives of the marks",
+        "initiatives-marks",
+        kairos_db::CodePrefix::FromSlug,
+        None,
+        Some(robin),
+    )
+    .expect("initiative board")
+    .id;
+
+    // ---- a create marks the new item; the order is the order of the writes
+    let parent = items::create_initiative(
+        &mut conn,
+        CreateInitiative {
+            board_id: initiatives,
+            column_id: None,
+            title: "Billing correctness",
+            content: "The umbrella.",
+            complexity: None,
+            bucket_type: None,
+        },
+        robin,
+    )
+    .expect("parent");
+    let make_task = |conn: &mut PgConnection, title: &str| {
+        items::create_task(
+            conn,
+            CreateTask {
+                board_id: board,
+                column_id: None,
+                title,
+                content: "## Objective\n\nThe work.\n",
+                task_type: TaskType::Task,
+                work_class: WorkClass::Planned,
+                repository_id: None,
+            },
+            robin,
+        )
+        .expect("task")
+    };
+    let one = make_task(&mut conn, "Refund rounding");
+    let two = make_task(&mut conn, "Dark mode toggle");
+    assert_eq!(
+        marked_ids(&mut conn),
+        vec![parent.id, one.id, two.id],
+        "each create marks its item, oldest first"
+    );
+    let first = marked(&mut conn);
+    assert_eq!(
+        clear_dirty(&mut conn, &first).expect("clear"),
+        3,
+        "a clear with the marks that it read deletes them"
+    );
+    assert!(marked(&mut conn).is_empty());
+
+    // ---- a parent marks both ends ------------------------------------------
+    graph::link_items(
+        &mut conn,
+        parent.id,
+        one.id,
+        RelationshipType::Parent,
+        robin,
+    )
+    .expect("parent link");
+    let mut ids = marked_ids(&mut conn);
+    ids.sort();
+    let mut both = vec![parent.id, one.id];
+    both.sort();
+    assert_eq!(ids, both, "the edge marks the parent and the child");
+    clear_all(&mut conn);
+
+    // ---- a new title of the parent marks its child, and only it ------------
+    items::update_item_content(
+        &mut conn,
+        ItemType::Initiative,
+        parent.id,
+        items::ContentUpdate {
+            new_title: Some("Billing correctness, the second phase"),
+            new_content: "The umbrella.",
+            expected_version: 1,
+        },
+        robin,
+    )
+    .expect("new title");
+    let mut ids = marked_ids(&mut conn);
+    ids.sort();
+    assert_eq!(ids, both, "the parent and its child; not the other task");
+    clear_all(&mut conn);
+
+    // ---- an edit of the content marks the item only ------------------------
+    items::update_item_content(
+        &mut conn,
+        ItemType::Task,
+        two.id,
+        items::ContentUpdate {
+            new_title: None,
+            new_content: "## Objective\n\nThe toggle.\n",
+            expected_version: 1,
+        },
+        robin,
+    )
+    .expect("edit");
+    let read = marked(&mut conn);
+    assert_eq!(
+        read.iter().map(|m| m.item_id).collect::<Vec<_>>(),
+        vec![two.id]
+    );
+
+    // ---- a write after the read: the clear keeps the newer mark ------------
+    items::update_item_content(
+        &mut conn,
+        ItemType::Task,
+        two.id,
+        items::ContentUpdate {
+            new_title: None,
+            new_content: "## Objective\n\nThe toggle, again.\n",
+            expected_version: 2,
+        },
+        robin,
+    )
+    .expect("second edit");
+    assert_eq!(
+        clear_dirty(&mut conn, &read).expect("clear"),
+        0,
+        "the mark that the clear read is not the mark of the item now"
+    );
+    let now: Vec<DirtyMark> = marked(&mut conn);
+    assert_eq!(now.len(), 1, "the item stays dirty");
+    assert_eq!(now[0].item_id, two.id);
+    assert_ne!(now[0].mark, read[0].mark, "the write gave a new mark");
+    clear_all(&mut conn);
+
+    // ---- a repository: the link marks the task, a new slug marks its tasks
+    let repository = kairos_db::repositories::create(
+        &mut conn,
+        NewRepository {
+            slug: "payments-api".to_string(),
+            forge: Forge::Github,
+            repo_full_name: "acme/payments-api".to_string(),
+            repo_url: "https://github.com/acme/payments-api".to_string(),
+            default_branch: "main".to_string(),
+            team_id: team,
+            description: String::new(),
+            created_by: robin,
+            updated_by: robin,
+        },
+    )
+    .expect("repository");
+    items::set_task_repository(&mut conn, one.id, Some(repository.id), robin).expect("the link");
+    assert_eq!(
+        marked_ids(&mut conn),
+        vec![one.id],
+        "the link marks the task"
+    );
+    clear_all(&mut conn);
+    kairos_db::repositories::update(
+        &mut conn,
+        repository.id,
+        RepositoryChangeset {
+            description: Some("Same slug.".to_string()),
+            ..Default::default()
+        },
+        robin,
+    )
+    .expect("a change with the same slug");
+    assert!(
+        marked(&mut conn).is_empty(),
+        "the slug did not change: no mark"
+    );
+    kairos_db::repositories::update(
+        &mut conn,
+        repository.id,
+        RepositoryChangeset {
+            slug: Some("payments".to_string()),
+            ..Default::default()
+        },
+        robin,
+    )
+    .expect("a new slug");
+    assert_eq!(
+        marked_ids(&mut conn),
+        vec![one.id],
+        "a new slug marks the tasks of the repository"
+    );
+    clear_all(&mut conn);
+    assert_eq!(
+        mark_repository_dirty(&mut conn, repository.id).expect("mark"),
+        1
+    );
+    clear_all(&mut conn);
+
+    // ---- the items with a value of a definition ----------------------------
+    let definition = schema::metadata_definitions::table
+        .filter(schema::metadata_definitions::slug.eq("priority"))
+        .select(MetadataDefinition::as_select())
+        .first(&mut conn)
+        .expect("the seeded priority definition")
+        .id;
+    diesel::insert_into(schema::item_metadata::table)
+        .values(NewItemMetadata {
+            item_id: two.id,
+            metadata_definition_id: definition,
+            value: "high".into(),
+        })
+        .execute(&mut conn)
+        .expect("stamping metadata");
+    assert_eq!(
+        mark_definition_dirty(&mut conn, definition).expect("mark"),
+        1
+    );
+    assert_eq!(marked_ids(&mut conn), vec![two.id]);
+    clear_all(&mut conn);
+
+    // ---- the items with no vector of the model ----------------------------
+    let m = model();
+    assert_eq!(mark_missing(&mut conn, &m).expect("missing"), 3);
+    clear_all(&mut conn);
+    store_primary(&mut conn, one.id, "task", &unit(1), &m, "hash-one").expect("store");
+    assert_eq!(
+        mark_missing(&mut conn, &m).expect("missing"),
+        2,
+        "the item with a vector of the model gets no mark"
+    );
+    let other = StoredModel {
+        model: "another-model".into(),
+        ..model()
+    };
+    clear_all(&mut conn);
+    assert_eq!(
+        mark_missing(&mut conn, &other).expect("missing"),
+        3,
+        "a vector of another model counts as none"
+    );
+
+    // ---- forget_item takes the mark too ------------------------------------
+    forget_item(&mut conn, two.id).expect("forget");
+    assert!(!marked_ids(&mut conn).contains(&two.id));
+}

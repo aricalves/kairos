@@ -34,6 +34,14 @@
 //! next worker that looks ([`kairos_db::jobs::fail_expired`]); the
 //! [`JobHandler::failed`] of its kind then runs.
 //!
+//! # A job that runs again as the same row
+//!
+//! A job that calls [`JobHandle::rearm_in`] and ends well is not `done`: the
+//! worker queues the same row again after the wait, with its tries at 0
+//! ([`kairos_db::jobs::rearm`], KAIROS-T-0636). The embedding sweep of an
+//! organization is one such row. A try that ends with an error is released
+//! or failed as any try.
+//!
 //! # A kind that is not run again after a stop
 //!
 //! A kind whose [`JobHandler::retry_stopped`] is false (the code index
@@ -304,6 +312,9 @@ struct HandleInner {
     yieldable: AtomicBool,
     /// A job of a higher priority waits for the slot of this job.
     yield_now: AtomicBool,
+    /// When the job ends well: queue the same row again after this wait
+    /// ([`JobHandle::rearm_in`]).
+    rearm: Mutex<Option<Duration>>,
 }
 
 impl std::fmt::Debug for JobHandle {
@@ -326,6 +337,7 @@ impl JobHandle {
                 cancelled: AtomicBool::new(false),
                 yieldable: AtomicBool::new(false),
                 yield_now: AtomicBool::new(false),
+                rearm: Mutex::new(None),
             }),
         }
     }
@@ -365,6 +377,18 @@ impl JobHandle {
     /// ends with [`JobError::yielded`].
     pub fn should_yield(&self) -> bool {
         self.inner.yield_now.load(Ordering::Relaxed)
+    }
+
+    /// When the job ends well, the worker queues the same row again, to run
+    /// after `wait`, with its tries at 0 (KAIROS-T-0636): a job that runs for
+    /// ever as one row, not a new row for each run. A job that ends with an
+    /// error is released or failed as any job. The last call wins.
+    pub fn rearm_in(&self, wait: Duration) {
+        *self.inner.rearm.lock().unwrap_or_else(|e| e.into_inner()) = Some(wait);
+    }
+
+    fn rearm(&self) -> Option<Duration> {
+        *self.inner.rearm.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn yieldable(&self) -> bool {
@@ -419,6 +443,8 @@ impl std::fmt::Debug for Worker {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Ended {
     Done,
+    /// Ended well, and queued again as the same row ([`JobHandle::rearm_in`]).
+    Rearmed,
     Requeued,
     /// Queued again with no try counted: it gave its slot.
     Yielded,
@@ -791,7 +817,7 @@ impl Worker {
                         Err(e) if e.is_panic() => Err(JobError::retry(format!("The job stopped with a panic: {e}"))),
                         Err(e) => Err(JobError::retry(format!("The job stopped: {e}"))),
                     };
-                    return self.finish(&job, &handler, result, false).await;
+                    return self.finish(&job, &handler, result, false, handle.rearm()).await;
                 }
                 _ = ticker.tick() => {
                     if handle.since_progress() >= self.settings.kill_after() {
@@ -811,7 +837,7 @@ impl Worker {
                         } else {
                             JobError::fail(reason)
                         };
-                        return self.finish(&job, &handler, Err(error), true).await;
+                        return self.finish(&job, &handler, Err(error), true, None).await;
                     }
                     // The database did not take a heartbeat for the lease
                     // time: the lease is about to run out, and another server
@@ -861,13 +887,16 @@ impl Worker {
     /// Write the end of `job`, and add the job that follows it
     /// ([`JobHandler::next`]) in the same transaction when the job ended.
     /// `stopped`: the watchdog killed the job; when it fails,
-    /// [`JobHandler::stopped`] runs before [`JobHandler::failed`].
+    /// [`JobHandler::stopped`] runs before [`JobHandler::failed`]. `rearm`:
+    /// the job asked to run again ([`JobHandle::rearm_in`]); when it ends
+    /// well, the row is queued again, and no job follows it.
     async fn finish(
         &self,
         job: &Job,
         handler: &Arc<dyn JobHandler>,
         result: Result<(), JobError>,
         stopped: bool,
+        rearm: Option<Duration>,
     ) -> Ended {
         let (id, instance) = (job.id, self.instance);
         let deferred_after = self.settings.retry_after.as_secs_f64();
@@ -887,13 +916,22 @@ impl Worker {
             .run_public(move |conn| {
                 conn.transaction::<_, diesel::result::Error, _>(|conn| {
                     let ended = match result {
-                        Ok(()) => {
-                            if db::complete(conn, id, instance)? {
-                                Ended::Done
-                            } else {
-                                Ended::Lost
+                        Ok(()) => match rearm {
+                            Some(wait) => {
+                                if db::rearm(conn, id, instance, wait.as_secs_f64())? {
+                                    Ended::Rearmed
+                                } else {
+                                    Ended::Lost
+                                }
                             }
-                        }
+                            None => {
+                                if db::complete(conn, id, instance)? {
+                                    Ended::Done
+                                } else {
+                                    Ended::Lost
+                                }
+                            }
+                        },
                         Err(JobError { yielded: true, .. }) => {
                             if db::requeue(conn, id, instance)? {
                                 Ended::Yielded

@@ -995,8 +995,9 @@ async fn start_background(state: &AppState, retention: kairos_core::retention::R
     let refresh_secs = state.config.embed_refresh_secs;
 
     // The background refresher (KAIROS-T-0190): embedding happens off the write
-    // path, so a create never waits on a model. Its pages are jobs of the queue
-    // (KAIROS-T-0375), so 2 servers do not embed one page twice. Detached
+    // path, so a create never waits on a model. Each organization has one job
+    // row of the queue (KAIROS-T-0375, KAIROS-T-0636), so 2 servers do not
+    // embed one item twice. Detached
     // deliberately — it is not part of graceful shutdown, because there is
     // nothing to drain: a batch interrupted mid-page keeps its lease until it
     // runs out, and a server takes it again.

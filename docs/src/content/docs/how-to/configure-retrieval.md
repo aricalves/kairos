@@ -25,10 +25,34 @@ curl -H "Authorization: Bearer $TOKEN" \
 answered from text alone — see [When it answers from text
 only](#when-it-answers-from-text-only).
 
+## How new work gets its vectors
+
+A background sweep makes the vectors. It does not slow down a write.
+
+1. A write marks its item. A create, an edit, a note, a new parent and new
+   metadata all mark the item.
+2. Some writes also mark other items. A new title marks the children of the
+   item. A new repository slug marks the tasks of the repository. A new
+   name of a metadata field marks each item with a value of that field.
+3. The sweep reads the marked items, the oldest first. It reads no other item.
+4. The sweep compares the hash of each text with the stored hash. It sends
+   only changed text to the model.
+5. The sweep writes the vectors and removes the marks. If a write changes an
+   item during this step, the item keeps its mark. The next run reads the new
+   text.
+
+Each organization has one job for the sweep. After each run, the job starts
+again. It waits `KAIROS_EMBED_REFRESH_SECS` (10 by default), or it starts
+immediately when the run had a full page. Thus a new item gets its vector in
+about 10 seconds. `KAIROS_EMBED_REFRESH_SECS=0` stops the sweep.
+
+When a server starts, the sweep marks each item that has no vector of the
+configured model. Thus the sweep also fills in items after a new model.
+
 ## Fill in the work you already have
 
-New work is embedded within seconds by a background sweep. Work that existed
-*before* you enabled retrieval is not, so run the backfill once:
+The sweep fills in old work too, but slowly, one page at a time. To fill in
+old work faster, run the backfill once:
 
 ```sh
 kairos-server embed-backfill
@@ -81,9 +105,11 @@ Or as environment variables: `KAIROS_EMBED_URL`, `KAIROS_EMBED_MODEL`,
 `KAIROS_EMBED_API_KEY`. Setting the URL selects the remote provider on its own; a
 local Ollama needs no key.
 
-**Changing model invalidates every stored vector.** Vectors from two models are
-not comparable, even at the same width, so Kairos treats them as missing rather
-than silently comparing across them. After any change:
+**A new model makes every stored vector old.** You cannot compare vectors from
+two models, also at the same width. Thus Kairos ignores the vectors of the old
+model. It does not compare across models. After a change of the model, the
+sweep marks every item when the server starts. To go faster, run these
+commands:
 
 ```sh
 kairos-server embed-backfill   # re-embed everything under the new model
@@ -109,7 +135,8 @@ because an empty list would read as "nothing is related".
 `"vector": false`, or a note saying *"Text only"*. Three causes, in the order
 worth checking:
 
-1. **Nothing has been embedded yet** — run the backfill above.
+1. **The sweep made no vector yet.** Wait for the sweep, or run the backfill
+   above.
 2. **The model changed** and the stored vectors are from the old one. The
    backfill fixes it; `embed-backfill` prints `N from another model` when this is
    the cause.

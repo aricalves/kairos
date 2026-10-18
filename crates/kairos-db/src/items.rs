@@ -1480,6 +1480,11 @@ pub fn update_item_content(
         match apply_content_update(conn, item_type, item_id, &update, actor)? {
             Some((new_version, title, content)) => {
                 insert_history(conn, item_id, new_version, &title, &content, actor)?;
+                // KAIROS-T-0636: the title of a parent is in the text of
+                // each child. The event below marks the item itself.
+                if update.new_title.is_some() {
+                    crate::embeddings::mark_children_dirty(conn, item_id)?;
+                }
                 if let Some(before) = before {
                     let names = kairos_core::notifications::new_mentions(&before, &content);
                     crate::notifications::on_mentions(conn, item_id, &names, actor)?;
