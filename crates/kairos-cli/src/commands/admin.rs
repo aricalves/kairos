@@ -15,7 +15,8 @@ use kairos_client::types_service_accounts::OrgAgentKeysQuery;
 use crate::commands::entities::{ListArgs, require_confirm};
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
-use crate::table::{Table, print_page_footer};
+use crate::listing::fetch;
+use crate::table::Table;
 
 /// Deployment-administration operations.
 #[derive(clap::Subcommand, Debug)]
@@ -63,16 +64,18 @@ impl AgentKeysCommand {
         match self {
             Self::List { user, list } => {
                 let client = client(&list.common)?;
-                let page = list.page();
-                let envelope = client
-                    .list_org_agent_keys(&OrgAgentKeysQuery {
-                        user,
+                let envelope = fetch(list.paging(), |page| {
+                    let query = OrgAgentKeysQuery {
+                        user: user.clone(),
                         limit: page.limit,
                         offset: page.offset,
-                    })
-                    .await?;
+                    };
+                    let client = &client;
+                    async move { client.list_org_agent_keys(&query).await }
+                })
+                .await?;
                 if list.common.json {
-                    return print_json(&envelope);
+                    return envelope.print_json();
                 }
                 if envelope.items.is_empty() {
                     println!("(none)");
@@ -102,12 +105,7 @@ impl AgentKeysCommand {
                     }
                     print!("{}", table.render());
                 }
-                print_page_footer(
-                    envelope.total,
-                    envelope.limit,
-                    envelope.offset,
-                    envelope.items.len(),
-                );
+                envelope.print_footer();
                 Ok(())
             }
             Self::Revoke {
@@ -411,9 +409,9 @@ impl TenantsCommand {
         match self {
             Self::List(args) => {
                 let client = client(&args.common)?;
-                let envelope = client.list_tenants(args.page()).await?;
+                let envelope = fetch(args.paging(), |page| client.list_tenants(page)).await?;
                 if args.common.json {
-                    return print_json(&envelope);
+                    return envelope.print_json();
                 }
                 if envelope.items.is_empty() {
                     println!("(none)");
@@ -432,12 +430,7 @@ impl TenantsCommand {
                     }
                     print!("{}", table.render());
                 }
-                print_page_footer(
-                    envelope.total,
-                    envelope.limit,
-                    envelope.offset,
-                    envelope.items.len(),
-                );
+                envelope.print_footer();
                 Ok(())
             }
             Self::Create {

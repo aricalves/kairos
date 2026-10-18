@@ -2529,7 +2529,8 @@ impl KairosClient {
         .await
     }
 
-    /// `GET /api/metadata-definitions/{id}`.
+    /// `GET /api/metadata-definitions/{id}`. `id` is the slug or the id
+    /// (KAIROS-T-0644), as on `update` and `delete`.
     pub async fn get_metadata_definition(&self, id: &str) -> Result<MetadataDefinition, Error> {
         self.get(&format!("/api/metadata-definitions/{id}")).await
     }
@@ -2567,7 +2568,8 @@ impl KairosClient {
         self.get_query("/api/templates", &page).await
     }
 
-    /// `GET /api/templates/{id}` — template + metadata associations.
+    /// `GET /api/templates/{id}` — template + metadata associations. `id`
+    /// is the slug or the id (KAIROS-T-0644), as on `update` and `delete`.
     pub async fn get_template(&self, id: &str) -> Result<TemplateDetail, Error> {
         self.get(&format!("/api/templates/{id}")).await
     }

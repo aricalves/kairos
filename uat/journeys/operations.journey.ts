@@ -227,8 +227,8 @@ journey(
       const cli = await alice.cli();
       const search = (extra: string[]) =>
         cli.json(['search', '--type', 'task', '--board', board.id, '--limit', '100', ...extra]);
-      const visible = ((await search([])).results?.tasks ?? []).map((t: any) => t.short_code);
-      const withDeleted = ((await search(['--include-deleted'])).results?.tasks ?? []).map((t: any) => t.short_code);
+      const visible = ((await search([])).items.filter((h: any) => h.entity_type === 'task')).map((t: any) => t.short_code);
+      const withDeleted = ((await search(['--include-deleted'])).items.filter((h: any) => h.entity_type === 'task')).map((t: any) => t.short_code);
       for (const code of tasks) {
         expect(visible, `${code} is gone from the ordinary view`).not.toContain(code);
         expect(withDeleted, `${code} is still there to recover`).toContain(code);
@@ -241,8 +241,8 @@ journey(
       // and the search answered "no matches" rather than "not allowed".
       const byText = (extra: string[]) =>
         cli.json(['search', '--query', 'decommission', '--type', 'task', '--limit', '100', ...extra]);
-      const textLive = ((await byText([])).results?.tasks ?? []).map((t: any) => t.short_code);
-      const textArchived = ((await byText(['--include-deleted'])).results?.tasks ?? []);
+      const textLive = ((await byText([])).items.filter((h: any) => h.entity_type === 'task')).map((t: any) => t.short_code);
+      const textArchived = ((await byText(['--include-deleted'])).items.filter((h: any) => h.entity_type === 'task'));
       const decommission = tasks[2];
       expect(textLive, 'the ordinary text search still hides archived work').not.toContain(decommission);
       expect(textArchived.map((t: any) => t.short_code), 'asked for, it is findable by name').toContain(decommission);

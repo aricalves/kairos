@@ -145,7 +145,7 @@ journey(
       const traverse = await cli.json([
         'search', '--from', lead, '--relationships', 'parent', '--direction', 'outbound', '--depth', '1', '--limit', '100',
       ]);
-      for (const task of traverse.results?.tasks ?? []) children.add(task.short_code);
+      for (const task of traverse.items.filter((h: any) => h.entity_type === 'task')) children.add(task.short_code);
       expect(children.size, 'the traverse found the children').toBe(rollup.total);
       let done = 0;
       const seen = new Set<string>();
@@ -232,8 +232,8 @@ journey(
         'search', '--from', strategy, '--relationships', 'parent', '--direction', 'outbound', '--depth', '2', '--limit', '100',
       ]);
       const reached = {
-        initiatives: (walked.results?.initiatives ?? []).map((i: any) => i.short_code),
-        tasks: (walked.results?.tasks ?? []).map((t: any) => t.short_code),
+        initiatives: (walked.items.filter((h: any) => h.entity_type === 'initiative')).map((i: any) => i.short_code),
+        tasks: (walked.items.filter((h: any) => h.entity_type === 'task')).map((t: any) => t.short_code),
       };
       for (const code of initiatives) {
         expect(reached.initiatives, `${code} is under ${strategy}`).toContain(code);
@@ -242,7 +242,7 @@ journey(
       // buckets (bugs, tech debt) hang off no bet, so their work never
       // appears in this walk. Worth seeing on the page, not discovering in
       // the meeting.
-      const allTasks = (await cli.json(['search', '--type', 'task', '--limit', '100'])).results?.tasks ?? [];
+      const allTasks = (await cli.json(['search', '--type', 'task', '--limit', '100'])).items.filter((h: any) => h.entity_type === 'task');
       const unaccounted = allTasks
         .map((t: any) => t.short_code)
         .filter((c: string) => !reached.tasks.includes(c));
