@@ -58,7 +58,9 @@ pub struct ThinEvent {
 }
 
 /// Client → server message: `{"subscribe": {"board_id": "uuid"}}` filters
-/// subsequent events to one board; `{"subscribe": {}}` clears the filter.
+/// subsequent events to one board; `{"subscribe": {"person_only": true}}`
+/// to the events of the person (KAIROS-T-0621); `{"subscribe": {}}` clears
+/// the filter.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct SubscribeRequest {
     /// The filter to apply from this message on.
@@ -68,8 +70,13 @@ pub struct SubscribeRequest {
 /// The [`SubscribeRequest`] filter body.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct SubscribeFilter {
-    /// Only deliver events for this board (UUID); absent/`null` delivers
-    /// every event of the connection's tenant.
+    /// Only deliver events for this board (UUID), and the events of the
+    /// person; absent/`null` delivers every event of the connection's
+    /// tenant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub board_id: Option<String>,
+    /// Only deliver the events of the person of the connection
+    /// (KAIROS-T-0621). The server then ignores `board_id`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub person_only: bool,
 }

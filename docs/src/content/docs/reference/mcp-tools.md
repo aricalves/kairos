@@ -3,8 +3,8 @@ title: "MCP tools"
 ---
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-seventy-four tools. A drift gate in the test suite
-asserts that `tools/list` returns these seventy-four and no others. The same
+seventy-five tools. A drift gate in the test suite
+asserts that `tools/list` returns these seventy-five and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -22,7 +22,7 @@ organization.
 
 | URL | Profile | Tools |
 |---|---|---|
-| `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory, the members, claims, notifications, the scales and templates, team pages to read: 43 tools. |
+| `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory, the members, claims, notifications, the scales and templates, team pages to read: 44 tools. |
 | `/mcp?profile=admin` | admin | Teams, boards, columns and transitions, grants, metadata definitions and templates, dispatch rules and agent triage, the writes of team pages, org read tokens, delete and rebuild of repositories, board flow, purge: the other 31 tools. |
 | `/mcp?profile=all` | all | Each tool. |
 
@@ -36,7 +36,7 @@ The work tools:
   `transition_item`, `move_item`, `append_note`, `promote_note`,
   `set_lifecycle`, `set_state`, `set_metadata`;
 - links and fields: `link_items`, `unlink_items`, `propose_edge`,
-  `set_repository`, `set_work_class`, `set_team`, `clear_team`;
+  `set_repository`, `set_parent`, `set_work_class`, `set_team`, `clear_team`;
 - the end of an item: `cancel_item`, `reopen_item`, `delete_item`,
   `restore_item`, `archive_completed`;
 - repositories: `list_repositories`, `get_repository`, `add_repository`,
@@ -1284,6 +1284,35 @@ Refuses: `NOT_FOUND` for an unknown short code or an archived task.
 `VALIDATION` when the item is not a task, and for an unknown `repository`.
 `FORBIDDEN` when the edit rule refuses the caller.
 
+### `set_parent`
+
+Sets the parent of an initiative or a task, or removes it (KAIROS-T-0572).
+An item has one parent. The new parent replaces the old one in one
+transaction, so no reader sees two parents or none.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `short_code` | string | yes | — | The short code of the initiative or the task. |
+| `parent` | string or null | yes | — | The short code of the new parent: a strategy for an initiative, an initiative for a task. Send null to remove the parent. A retired code finds its item. |
+
+The [link rule](../capabilities/#who-can-write-relationships) applies to each
+edge that changes. The caller can edit the item, or the parent at that end.
+So the creator of a task can move it to a different initiative.
+
+The same parent again changes nothing, and the answer says so. A change of
+parent is not a move: the board rules and `parent_gate` do not apply. The
+`get_item` answer then shows the new parent chain.
+
+The tool refuses with these codes:
+
+| Code | When |
+|---|---|
+| `VALIDATION` | The call has no `parent` argument. The item is a strategy, a document or an ADR: they have no parent. The parent is unknown or archived. |
+| `NOT_FOUND` | The item is unknown or archived, or the call names it by a retired code. |
+| `RELATIONSHIP_RULE` | The parent has the wrong type. |
+| `FORBIDDEN` | The link rule refuses the caller. |
+| `PARENT_EXISTS` | A write at the same time gave the item a parent. |
+
 ### `set_work_class`
 
 Changes the lane of a task: planned or support. Moving a support request to
@@ -1786,6 +1815,7 @@ The tool refuses with these codes:
 | `RELATIONSHIP_RULE` | That relationship is not possible between those two item types. |
 | `CYCLE_DETECTED` | The edge makes a cycle. |
 | `ALREADY_LINKED` | The edge is there. |
+| `PARENT_EXISTS` | A `parent` edge to an item that has a different parent. An item has one parent (KAIROS-T-0572). `details` names the item and its parent. Use [`set_parent`](#set_parent) to change the parent. |
 
 #### The relationship `external`
 
@@ -2531,6 +2561,7 @@ A notification tells a person about an event of their work (KAIROS-T-0381):
 | `agent_key_revoked` | An organization admin revokes an agent key of yours. The text names the key and its prefix. |
 | `claim_dropped` | A person leaves the organization, and their claim on a task of the board of your team ends. The task stays in its column, free. |
 | `claim_stale` | A claim has no write and no state change for `KAIROS_STALE_CLAIM_DAYS` days (default 14). You get it for your claim, or for a claim on a task of an initiative that you own. The claim stays. Kairos sends it once for each quiet period. |
+| `key_expiring` | An agent key of yours expires in 7 days or less. An organization admin also gets it for a key of a service account. Kairos sends it one time for each key. The text names the key and the `kairos keys rotate` command. |
 
 You get no notification for a change that you made. You can turn a kind off
 with `PUT /api/me/notification-settings` or on the Notifications page of the

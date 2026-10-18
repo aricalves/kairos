@@ -199,6 +199,7 @@ async fn meta_endpoints_against_live_stack() {
             content: "scope".into(),
             complexity: None,
             bucket_type: None,
+            parent: None,
         })
         .await
         .expect("creating initiative");
@@ -217,6 +218,7 @@ async fn meta_endpoints_against_live_stack() {
                 work_class: None,
                 team_id: None,
                 from_team: None,
+                parent: None,
             })
             .await
             .expect("creating task");

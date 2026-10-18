@@ -158,6 +158,10 @@ pub(crate) async fn get_initiative(
 
 /// Create an initiative (requires `manage_initiatives` on the target
 /// board). `bucket_type` set marks it as a bucket (`is_bucket` derived).
+///
+/// `parent` (KAIROS-T-0572) is the short code of the parent strategy.
+/// Kairos writes the initiative and the edge in one transaction: a refused
+/// parent leaves no initiative.
 #[utoipa::path(
     post,
     path = "/api/initiatives",
@@ -166,7 +170,7 @@ pub(crate) async fn get_initiative(
     responses(
         (status = 201, description = "Created", body = dto::Initiative),
         (status = 403, description = "Missing capability", body = dto::ErrorEnvelope),
-        (status = 422, description = "Unknown board/column, a column that is not the entry column of the board, or bad enum value", body = dto::ErrorEnvelope),
+        (status = 422, description = "Unknown board/column/parent, a column that is not the entry column of the board, a parent that is not a strategy, or bad enum value", body = dto::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn create_initiative(
@@ -189,6 +193,7 @@ pub(crate) async fn create_initiative(
         .transpose()?;
     let user = auth.user_id;
     let slug = tenant.slug.clone();
+    let role = tenant.role;
     let created = state
         .blocking
         .run(&tenant.slug, move |conn| {
@@ -209,20 +214,41 @@ pub(crate) async fn create_initiative(
                     .with_details(json!({ "field": "column_id" })));
                 }
             }
-            let created = items::create_initiative(
-                conn,
-                items::CreateInitiative {
-                    board_id,
-                    column_id,
-                    title: &body.title,
-                    content: &body.content,
-                    complexity,
-                    bucket_type,
-                },
-                user,
-            )
-            .map_err(map_item_error)?;
-            Ok(created.into_dto())
+            // KAIROS-T-0572: the parent is checked before the first write.
+            let parent = body
+                .parent
+                .as_deref()
+                .map(|code| {
+                    super::meta::relationships::parent_for_create(conn, code, ItemType::Initiative)
+                })
+                .transpose()?;
+            // The initiative and its parent edge are one transaction: a
+            // refused edge leaves no initiative (COLLIERY-T-0227).
+            super::atomically(conn, |conn| {
+                let created = items::create_initiative(
+                    conn,
+                    items::CreateInitiative {
+                        board_id,
+                        column_id,
+                        title: &body.title,
+                        content: &body.content,
+                        complexity,
+                        bucket_type,
+                    },
+                    user,
+                )
+                .map_err(map_item_error)?;
+                if let Some(parent) = &parent {
+                    super::meta::relationships::link_created_parent(
+                        conn,
+                        role,
+                        user,
+                        parent,
+                        (created.id, ItemType::Initiative),
+                    )?;
+                }
+                Ok(created.into_dto())
+            })
         })
         .await?;
     Ok((StatusCode::CREATED, Json(created)))
