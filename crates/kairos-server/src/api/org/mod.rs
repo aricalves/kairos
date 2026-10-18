@@ -30,6 +30,7 @@ pub mod code_indexes;
 pub mod dispatch;
 pub mod flow;
 pub mod forge;
+pub mod jobs;
 pub mod members;
 pub mod org_read_tokens;
 pub mod repositories;
@@ -70,6 +71,8 @@ pub fn router() -> Router<AppState> {
         .merge(code_index_settings::router())
         // KAIROS-T-0631: the retention settings and the last pass.
         .merge(retention::router())
+        // KAIROS-T-0576: the job queue for an organization admin.
+        .merge(jobs::router())
         .merge(code_index_query::router())
         .merge(repository_credentials::router())
         // KAIROS-T-0431: the read token of the organization for each host.

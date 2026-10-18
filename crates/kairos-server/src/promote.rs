@@ -77,6 +77,7 @@ pub(crate) fn parse_kind(kind: &str, wording: CreateWording) -> Result<ItemType,
 pub(crate) fn promote_note(
     conn: &mut PgConnection,
     slug: &str,
+    role: kairos_db::models::OrgRole,
     user: Uuid,
     input: PromoteInput<'_>,
     wording: CreateWording,
@@ -91,7 +92,7 @@ pub(crate) fn promote_note(
         .with_details(serde_json::json!({ wording.details_key: "board" })));
     }
     // The trailing line on the note is an edit of the source item.
-    require_item_edit(conn, slug, user, source_id, source_type)?;
+    require_item_edit(conn, role, user, source_id, source_type)?;
     let (version, content) =
         items::lock_item_content(conn, source_type, source_id).map_err(map_item_error)?;
     let notes = kairos_core::items::notes(&content);
@@ -146,7 +147,7 @@ pub(crate) fn promote_note(
             if supports {
                 require_edge_write(
                     conn,
-                    slug,
+                    role,
                     user,
                     RelationshipType::Supports.as_str(),
                     (source_id, source_type),
@@ -167,6 +168,7 @@ pub(crate) fn promote_note(
             let created = documents::create(
                 conn,
                 slug,
+                role,
                 user,
                 NewDocument {
                     title: &title,

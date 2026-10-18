@@ -253,12 +253,12 @@ pub(crate) async fn update_initiative(
     ApiJson(body): ApiJson<dto::UpdateContentRequest>,
 ) -> Result<Json<dto::Initiative>, ApiError> {
     let user = auth.user_id;
-    let slug = tenant.slug.clone();
+    let role = tenant.role;
     let updated = state
         .blocking
         .run(&tenant.slug, move |conn| {
             let initiative = load(conn, &short_code, Liveness::LiveOnly)?;
-            require_item_edit(conn, &slug, user, initiative.id, ItemType::Initiative)?;
+            require_item_edit(conn, role, user, initiative.id, ItemType::Initiative)?;
             let update = items::ContentUpdate {
                 new_title: body.title.as_deref(),
                 new_content: &body.content,
@@ -324,6 +324,7 @@ pub(crate) async fn delete_initiative(
 ) -> Result<Json<dto::DeleteResponse>, ApiError> {
     let user = auth.user_id;
     let slug = tenant.slug.clone();
+    let role = tenant.role;
     let outcome = state
         .blocking
         .run(&tenant.slug, move |conn| {
@@ -333,6 +334,7 @@ pub(crate) async fn delete_initiative(
             let outcome = super::cascade::archive_item(
                 conn,
                 &slug,
+                role,
                 user,
                 initiative.id,
                 ItemType::Initiative,

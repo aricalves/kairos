@@ -24,7 +24,6 @@
 //! `get` (alias `show`) prints the status of the token, never the token.
 
 use kairos_client::EntityKind;
-use kairos_client::types::Pagination;
 use kairos_client::types_repositories::{
     CreateRepositoryRequest, ImpactingItem, Repository, UpdateRepositoryRequest,
 };
@@ -32,7 +31,8 @@ use kairos_client::types_repositories::{
 use crate::commands::entities::require_confirm;
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
-use crate::table::{Table, print_page_footer};
+use crate::listing::{Paging, fetch};
+use crate::table::Table;
 
 /// Operations on repositories.
 #[derive(clap::Subcommand, Debug)]
@@ -48,6 +48,10 @@ pub enum ReposCommand {
         /// Rows to skip
         #[arg(long)]
         offset: Option<i64>,
+        /// Read each page: the CLI asks for one page after the other, and
+        /// prints each row. Not with --limit or --offset
+        #[arg(long, conflicts_with_all = ["limit", "offset"])]
+        all: bool,
         #[command(flatten)]
         common: Common,
     },
@@ -564,26 +568,24 @@ impl ReposCommand {
                 team,
                 limit,
                 offset,
+                all,
                 common,
             } => {
                 let client = client(&common)?;
-                let envelope = client
-                    .list_repositories_page(team.as_deref(), Pagination { limit, offset })
-                    .await?;
+                let paging = Paging { limit, offset, all };
+                let envelope = fetch(paging, |page| {
+                    client.list_repositories_page(team.as_deref(), page)
+                })
+                .await?;
                 if common.json {
-                    return print_json(&envelope);
+                    return envelope.print_json();
                 }
                 if envelope.items.is_empty() {
                     println!("(none)");
                 } else {
                     print!("{}", repo_table(&envelope.items).render());
                 }
-                print_page_footer(
-                    envelope.total,
-                    envelope.limit,
-                    envelope.offset,
-                    envelope.items.len(),
-                );
+                envelope.print_footer();
                 Ok(())
             }
             Self::Get {

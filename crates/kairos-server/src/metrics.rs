@@ -26,6 +26,15 @@
 //!   tenant middleware stamps onto the response.
 //! - `kairos_auth_lockouts_total` — authentication lockouts by subject kind
 //!   (`subject="identity"|"source"`, KAIROS-T-0202).
+//! - `kairos_jobs` — the jobs of the queue by `kind` and `state`
+//!   (`queued`, `leased`, `done`, `failed`), of all the organizations
+//!   (KAIROS-T-0576). One grouped query reads them, at most once each
+//!   [`JOB_GAUGE_REFRESH`]: a frequent scrape does not query each time.
+//! - `kairos_job_failures_total` — the jobs that this server wrote as
+//!   `failed`, by `kind` (KAIROS-T-0576).
+//! - `kairos_job_lease_kills_total` — the jobs that the watchdog of this
+//!   server killed because they made no progress for the lease time, by
+//!   `kind` (KAIROS-T-0576).
 //!
 //! `/metrics` and `/readyz` sit OUTSIDE the auth stack (mounted beside
 //! `/healthz` in [`crate::app::router`]): Prometheus scrapers and
@@ -35,7 +44,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::extract::{MatchedPath, Request, State};
 use axum::http::StatusCode;
@@ -81,21 +90,173 @@ impl Histogram {
 /// The label triple for an HTTP histogram series.
 type HttpKey = (String, String, String); // (method, route, status)
 
+/// The time for which `/metrics` keeps the `kairos_jobs` gauges before it
+/// reads the queue again (KAIROS-T-0576).
+pub const JOB_GAUGE_REFRESH: Duration = Duration::from_secs(15);
+
+/// The `kairos_jobs` gauges and the time of their last read.
+#[derive(Debug, Default)]
+struct JobGauges {
+    read_at: Option<Instant>,
+    /// (kind, state) → the number of jobs. A kind that was seen once keeps
+    /// its series, at 0 when it has no job in a state.
+    counts: BTreeMap<(String, String), i64>,
+}
+
 /// A per-router metrics registry (held as `Arc<Metrics>` in
 /// [`crate::app::AppState`]). Cheap to share; interior-mutable behind
 /// `Mutex`es because recording happens on the request path.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Metrics {
     http: Mutex<BTreeMap<HttpKey, Histogram>>,
     tenants: Mutex<BTreeMap<String, u64>>,
     /// Authentication lockouts, keyed by subject kind (KAIROS-T-0202).
     lockouts: Mutex<BTreeMap<String, u64>>,
+    /// The jobs that this server wrote as failed, by kind (KAIROS-T-0576).
+    job_failures: Mutex<BTreeMap<String, u64>>,
+    /// The jobs that the watchdog of this server killed, by kind
+    /// (KAIROS-T-0576).
+    job_lease_kills: Mutex<BTreeMap<String, u64>>,
+    job_gauges: Mutex<JobGauges>,
+    /// The time for which the job gauges stay ([`JOB_GAUGE_REFRESH`]).
+    job_refresh: Duration,
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Self::with_job_refresh(JOB_GAUGE_REFRESH)
+    }
 }
 
 impl Metrics {
     /// Fresh, empty registry.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A fresh registry whose job gauges stay for `refresh`. A test sets
+    /// [`Duration::ZERO`], so that each scrape reads the queue.
+    pub fn with_job_refresh(refresh: Duration) -> Self {
+        Metrics {
+            http: Mutex::default(),
+            tenants: Mutex::default(),
+            lockouts: Mutex::default(),
+            job_failures: Mutex::default(),
+            job_lease_kills: Mutex::default(),
+            job_gauges: Mutex::default(),
+            job_refresh: refresh,
+        }
+    }
+
+    /// Count a job of `kind` that this server wrote as `failed`
+    /// (KAIROS-T-0576).
+    pub fn record_job_failure(&self, kind: &str) {
+        *self
+            .job_failures
+            .lock()
+            .expect("metrics.job_failures mutex")
+            .entry(kind.to_string())
+            .or_insert(0) += 1;
+    }
+
+    /// Count a job of `kind` that the watchdog of this server killed
+    /// because it made no progress (KAIROS-T-0576).
+    pub fn record_job_lease_kill(&self, kind: &str) {
+        *self
+            .job_lease_kills
+            .lock()
+            .expect("metrics.job_lease_kills mutex")
+            .entry(kind.to_string())
+            .or_insert(0) += 1;
+    }
+
+    /// The value of `kairos_job_failures_total{kind}`.
+    pub fn job_failures(&self, kind: &str) -> u64 {
+        self.job_failures
+            .lock()
+            .expect("metrics.job_failures mutex")
+            .get(kind)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// The value of `kairos_job_lease_kills_total{kind}`.
+    pub fn job_lease_kills(&self, kind: &str) -> u64 {
+        self.job_lease_kills
+            .lock()
+            .expect("metrics.job_lease_kills mutex")
+            .get(kind)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// True when the job gauges are older than their refresh time. It
+    /// marks them as read now, so that the scrapes that come at the same
+    /// time do not each query the queue.
+    fn job_gauges_due(&self) -> bool {
+        let mut gauges = self.job_gauges.lock().expect("metrics.job_gauges mutex");
+        if gauges
+            .read_at
+            .is_some_and(|at| at.elapsed() < self.job_refresh)
+        {
+            return false;
+        }
+        gauges.read_at = Some(Instant::now());
+        true
+    }
+
+    /// Set the job gauges from one read of the queue. Each kind that was
+    /// seen has a series for each state, at 0 when no job of the kind is in
+    /// the state.
+    fn set_job_counts(&self, rows: &[kairos_db::jobs::KindStateCount]) {
+        let mut gauges = self.job_gauges.lock().expect("metrics.job_gauges mutex");
+        let mut kinds: Vec<String> = gauges.counts.keys().map(|(kind, _)| kind.clone()).collect();
+        kinds.extend(rows.iter().map(|row| row.kind.clone()));
+        let mut counts = BTreeMap::new();
+        for kind in kinds {
+            for state in kairos_db::jobs::STATES {
+                counts.insert((kind.clone(), state.to_string()), 0);
+            }
+        }
+        for row in rows {
+            counts.insert((row.kind.clone(), row.state.clone()), row.count);
+        }
+        gauges.counts = counts;
+    }
+
+    /// Render the job gauges and counters (KAIROS-T-0576).
+    fn render_jobs(&self, out: &mut String) {
+        out.push_str(
+            "# HELP kairos_jobs The jobs of the queue, by kind and state.\n\
+             # TYPE kairos_jobs gauge\n",
+        );
+        let gauges = self.job_gauges.lock().expect("metrics.job_gauges mutex");
+        for ((kind, state), count) in gauges.counts.iter() {
+            writeln!(
+                out,
+                "kairos_jobs{{kind=\"{kind}\",state=\"{state}\"}} {count}"
+            )
+            .expect("write metrics");
+        }
+        drop(gauges);
+        for (name, help, counter) in [
+            (
+                "kairos_job_failures_total",
+                "The jobs that this server wrote as failed, by kind.",
+                &self.job_failures,
+            ),
+            (
+                "kairos_job_lease_kills_total",
+                "The jobs that the watchdog of this server killed for no progress, by kind.",
+                &self.job_lease_kills,
+            ),
+        ] {
+            writeln!(out, "# HELP {name} {help}\n# TYPE {name} counter").expect("write metrics");
+            let counter = counter.lock().expect("metrics job counter mutex");
+            for (kind, count) in counter.iter() {
+                writeln!(out, "{name}{{kind=\"{kind}\"}} {count}").expect("write metrics");
+            }
+        }
     }
 
     /// Record one completed HTTP request into the duration histogram.
@@ -284,6 +445,20 @@ pub async fn metrics_handler(State(state): State<AppState>) -> Response {
     let mut body = String::with_capacity(4096);
     state.metrics.render_http_and_tenants(&mut body);
 
+    // KAIROS-T-0576: the job gauges, read again when they are older than
+    // their refresh time. A failed read keeps the last values.
+    if state.metrics.job_gauges_due() {
+        match state
+            .blocking
+            .run_public(|conn| kairos_db::jobs::counts(conn, None).map_err(ApiError::internal))
+            .await
+        {
+            Ok(rows) => state.metrics.set_job_counts(&rows),
+            Err(e) => tracing::warn!(error = ?e, "metrics: the job gauges were not read"),
+        }
+    }
+    state.metrics.render_jobs(&mut body);
+
     // Live pool gauges (point-in-time; A-0013 pool-stability signal).
     body.push_str(
         "# HELP kairos_db_pool_connections Current database connection-pool occupancy.\n\
@@ -389,6 +564,75 @@ mod tests {
             ..RetentionConfig::default()
         };
         assert_eq!(ready_body(&with_target), "ready");
+    }
+
+    fn count(kind: &str, state: &str, count: i64) -> kairos_db::jobs::KindStateCount {
+        kairos_db::jobs::KindStateCount {
+            kind: kind.to_string(),
+            state: state.to_string(),
+            count,
+        }
+    }
+
+    /// KAIROS-T-0576: each kind has a series for each state, and a kind
+    /// with no job left keeps its series at 0.
+    #[test]
+    fn the_job_gauges_keep_each_kind_and_state() {
+        let metrics = Metrics::new();
+        metrics.set_job_counts(&[count("periodic", "queued", 2)]);
+        let mut out = String::new();
+        metrics.render_jobs(&mut out);
+        assert!(
+            out.contains("kairos_jobs{kind=\"periodic\",state=\"queued\"} 2\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("kairos_jobs{kind=\"periodic\",state=\"failed\"} 0\n"),
+            "{out}"
+        );
+        metrics.set_job_counts(&[]);
+        let mut out = String::new();
+        metrics.render_jobs(&mut out);
+        assert!(
+            out.contains("kairos_jobs{kind=\"periodic\",state=\"queued\"} 0\n"),
+            "{out}"
+        );
+    }
+
+    /// KAIROS-T-0576: the counters render by kind.
+    #[test]
+    fn the_job_counters_render_by_kind() {
+        let metrics = Metrics::new();
+        metrics.record_job_failure("hosted_build");
+        metrics.record_job_failure("hosted_build");
+        metrics.record_job_lease_kill("embedded_build");
+        let mut out = String::new();
+        metrics.render_jobs(&mut out);
+        assert!(
+            out.contains("# TYPE kairos_job_failures_total counter\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("kairos_job_failures_total{kind=\"hosted_build\"} 2\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("kairos_job_lease_kills_total{kind=\"embedded_build\"} 1\n"),
+            "{out}"
+        );
+        assert_eq!(metrics.job_failures("embedded_build"), 0);
+    }
+
+    /// KAIROS-T-0576: inside the refresh time, a scrape does not read the
+    /// queue again.
+    #[test]
+    fn the_job_gauges_are_due_once_in_the_refresh_time() {
+        let metrics = Metrics::new();
+        assert!(metrics.job_gauges_due());
+        assert!(!metrics.job_gauges_due());
+        let each = Metrics::with_job_refresh(Duration::ZERO);
+        assert!(each.job_gauges_due());
+        assert!(each.job_gauges_due());
     }
 
     #[test]

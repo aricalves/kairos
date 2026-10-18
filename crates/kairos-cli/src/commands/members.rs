@@ -6,7 +6,8 @@ use kairos_client::types_org::{AddOrgMemberRequest, OrgMember, UpdateOrgMemberRe
 use crate::commands::entities::{ListArgs, require_confirm};
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
-use crate::table::{Table, print_page_footer};
+use crate::listing::fetch;
+use crate::table::Table;
 
 /// Organization membership (org-admin operations).
 #[derive(clap::Subcommand, Debug)]
@@ -68,21 +69,16 @@ impl MembersCommand {
         match self {
             Self::List(args) => {
                 let client = client(&args.common)?;
-                let envelope = client.list_org_members(args.page()).await?;
+                let envelope = fetch(args.paging(), |page| client.list_org_members(page)).await?;
                 if args.common.json {
-                    return print_json(&envelope);
+                    return envelope.print_json();
                 }
                 if envelope.items.is_empty() {
                     println!("(none)");
                 } else {
                     print!("{}", member_table(&envelope.items).render());
                 }
-                print_page_footer(
-                    envelope.total,
-                    envelope.limit,
-                    envelope.offset,
-                    envelope.items.len(),
-                );
+                envelope.print_footer();
                 Ok(())
             }
             Self::Add {
