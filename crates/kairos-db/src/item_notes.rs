@@ -17,7 +17,7 @@
 //! # The author
 //!
 //! `author_id` is the user that wrote the note. The tenant migration
-//! `2026-10-17-003000_item_notes` gave a moved note `author_name` when its
+//! `2026-10-18-003000_item_notes` gave a moved note `author_name` when its
 //! name resolved to no user. The name that each answer shows is the display
 //! name of the user, else `author_name`, else the id ([`NOTE_SELECT`]).
 //!
