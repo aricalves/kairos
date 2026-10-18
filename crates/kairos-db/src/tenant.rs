@@ -26,16 +26,19 @@
 //! `public.system_board_defaults` so that later step needs no extra data.
 //! (Interpretation recorded in KAIROS-T-0008.)
 
+use std::collections::BTreeSet;
+
 use diesel::connection::SimpleConnection;
-use diesel::pg::PgConnection;
+use diesel::migration::{Migration, MigrationSource};
+use diesel::pg::{Pg, PgConnection};
 use diesel::prelude::*;
 use diesel::result::{DatabaseErrorKind, Error as DieselError};
 use diesel::sql_query;
-use diesel::sql_types::{Bool, Text};
+use diesel::sql_types::{Array, BigInt, Bool, Text};
 use diesel_migrations::MigrationHarness;
 
 use crate::boards::{BoardError, CodePrefix, create_board};
-use crate::migrations::TENANT_MIGRATIONS;
+use crate::migrations::{TENANT_MIGRATIONS, TENANT_NO_TRANSACTION_SQL, without_concurrently};
 use crate::models::enums::BoardLevel;
 
 /// Errors from tenant provisioning, fleet migration, or teardown.
@@ -311,10 +314,33 @@ pub fn seed_system_defaults(conn: &mut PgConnection) -> Result<(), TenantError> 
 ///
 /// All of it runs in a single transaction: on any failure (including
 /// [`TenantError::AlreadyExists`]) nothing is left behind.
+///
+/// KAIROS-T-0639: a migration with `run_in_transaction = false` runs its
+/// SQL from [`TENANT_NO_TRANSACTION_SQL`] without `CONCURRENTLY`, in the
+/// same transaction. The schema is new, so no other session waits for it.
 pub fn provision_tenant(
     conn: &mut PgConnection,
     slug: &str,
     name: &str,
+) -> Result<TenantProvisionReport, TenantError> {
+    provision_tenant_from(
+        conn,
+        slug,
+        name,
+        &TENANT_MIGRATIONS,
+        TENANT_NO_TRANSACTION_SQL,
+    )
+}
+
+/// [`provision_tenant`] with a given migration tree and no-transaction SQL
+/// list. For tests of the tree runner (KAIROS-T-0639).
+#[doc(hidden)]
+pub fn provision_tenant_from(
+    conn: &mut PgConnection,
+    slug: &str,
+    name: &str,
+    source: &dyn MigrationSource<Pg>,
+    no_transaction_sql: &[(&str, &str)],
 ) -> Result<TenantProvisionReport, TenantError> {
     validated_slug(slug)?;
     let schema = tenant_schema_name(slug);
@@ -343,15 +369,11 @@ pub fn provision_tenant(
         // the connection's default search_path is untouched afterwards.
         sql_query(format!("SET LOCAL search_path TO \"{schema}\"")).execute(conn)?;
 
-        let migrations_applied = conn
-            .run_pending_migrations(TENANT_MIGRATIONS)
-            .map_err(|e| TenantError::Migration {
+        let migrations_applied = run_tree_in_transaction(conn, source, no_transaction_sql)
+            .map_err(|message| TenantError::Migration {
                 slug: slug.to_string(),
-                message: e.to_string(),
-            })?
-            .iter()
-            .map(|v| v.to_string())
-            .collect();
+                message,
+            })?;
 
         // KAIROS-A-0003: copy system defaults into the tenant schema
         // (unqualified names resolve to the tenant schema via search_path).
@@ -580,16 +602,48 @@ pub struct TenantMigrationReport {
 /// runs each migration in its own transaction, so a failed migration leaves
 /// the schema at the last migration that worked.
 ///
+/// KAIROS-T-0639: one query finds the stale schemas first
+/// ([`stale_tenants`]). A current tenant gets `Ok` with no versions, and
+/// no other statement. When that query fails, each tenant migrates as
+/// before, and the log has the reason.
+///
 /// The error is only for a failure to list the tenants.
 pub fn migrate_each_tenant(
     conn: &mut PgConnection,
 ) -> Result<Vec<TenantMigrationReport>, TenantError> {
+    migrate_each_tenant_from(conn, &TENANT_MIGRATIONS)
+}
+
+/// [`migrate_each_tenant`] with a given migration tree. For tests of the
+/// tree runner (KAIROS-T-0639).
+#[doc(hidden)]
+pub fn migrate_each_tenant_from(
+    conn: &mut PgConnection,
+    source: &dyn MigrationSource<Pg>,
+) -> Result<Vec<TenantMigrationReport>, TenantError> {
     let tenants = list_tenants(conn)?;
+    let stale = match stale_slugs(conn, &tenants, source) {
+        Ok(stale) => Some(stale),
+        Err(reason) => {
+            // stderr, not tracing: at boot this runs before tracing starts.
+            eprintln!(
+                "The check for stale tenant schemas did not complete: {reason}. \
+                 Each tenant migrates."
+            );
+            None
+        }
+    };
     let mut reports = Vec::with_capacity(tenants.len());
     for tenant in tenants {
         let schema = tenant_schema_name(&tenant.slug);
-        let result = if tenant.schema_exists {
-            migrate_schema(conn, &schema)
+        let current = tenant.schema_exists
+            && stale
+                .as_ref()
+                .is_some_and(|stale| !stale.contains(&tenant.slug));
+        let result = if current {
+            Ok(Vec::new())
+        } else if tenant.schema_exists {
+            migrate_schema(conn, &schema, source)
         } else {
             Err(format!(
                 "schema \"{schema}\" does not exist (organization row present without schema)"
@@ -604,14 +658,135 @@ pub fn migrate_each_tenant(
     Ok(reports)
 }
 
+/// A [`MigrationSource`] by reference: the harness of diesel takes its
+/// source by value.
+struct SourceRef<'a>(&'a dyn MigrationSource<Pg>);
+
+impl MigrationSource<Pg> for SourceRef<'_> {
+    fn migrations(&self) -> diesel::migration::Result<Vec<Box<dyn Migration<Pg>>>> {
+        self.0.migrations()
+    }
+}
+
+#[derive(QueryableByName)]
+struct AppliedRow {
+    #[diesel(sql_type = Text)]
+    slug: String,
+    #[diesel(sql_type = BigInt)]
+    applied: i64,
+}
+
+/// The slugs of the tenants whose schema does not have each migration of
+/// `source` (KAIROS-T-0639). One query reads the bookkeeping table of
+/// each schema. A tenant without a schema is not in the set:
+/// [`migrate_each_tenant`] reports it on its own.
+///
+/// The query counts the versions of `source` that each schema has. A
+/// compare of the newest version alone is not enough: a migration can
+/// merge after a migration with a later version, and diesel runs it.
+#[doc(hidden)]
+pub fn stale_tenants(
+    conn: &mut PgConnection,
+    source: &dyn MigrationSource<Pg>,
+) -> Result<BTreeSet<String>, String> {
+    let tenants = list_tenants(conn).map_err(|e| e.to_string())?;
+    stale_slugs(conn, &tenants, source)
+}
+
+fn stale_slugs(
+    conn: &mut PgConnection,
+    tenants: &[TenantInfo],
+    source: &dyn MigrationSource<Pg>,
+) -> Result<BTreeSet<String>, String> {
+    let versions: Vec<String> = source
+        .migrations()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .map(|m| m.name().version().to_string())
+        .collect();
+    let mut stale = BTreeSet::new();
+    let mut parts = Vec::new();
+    for tenant in tenants.iter().filter(|t| t.schema_exists) {
+        // A validated slug has no quote, so it can go into the SQL text.
+        if !is_valid_tenant_slug(&tenant.slug) {
+            stale.insert(tenant.slug.clone());
+            continue;
+        }
+        parts.push(format!(
+            "SELECT '{slug}'::text AS slug, \
+             (SELECT count(*) FROM \"{schema}\".__diesel_schema_migrations \
+              WHERE version = ANY($1)) AS applied",
+            slug = tenant.slug,
+            schema = tenant_schema_name(&tenant.slug),
+        ));
+    }
+    if parts.is_empty() {
+        return Ok(stale);
+    }
+    let rows: Vec<AppliedRow> = sql_query(parts.join(" UNION ALL "))
+        .bind::<Array<Text>, _>(&versions)
+        .load(conn)
+        .map_err(|e| e.to_string())?;
+    let expected = versions.len() as i64;
+    stale.extend(
+        rows.into_iter()
+            .filter(|row| row.applied < expected)
+            .map(|row| row.slug),
+    );
+    Ok(stale)
+}
+
+/// Run the pending migrations of `source` in the current transaction
+/// (KAIROS-T-0639). A migration that runs in a transaction runs as diesel
+/// runs it, as a savepoint. A no-transaction migration runs its SQL from
+/// `no_transaction_sql` without `CONCURRENTLY`, and its version goes into
+/// the bookkeeping table. Returns the versions applied.
+fn run_tree_in_transaction(
+    conn: &mut PgConnection,
+    source: &dyn MigrationSource<Pg>,
+    no_transaction_sql: &[(&str, &str)],
+) -> Result<Vec<String>, String> {
+    let pending = conn
+        .pending_migrations(SourceRef(source))
+        .map_err(|e| e.to_string())?;
+    let mut applied = Vec::with_capacity(pending.len());
+    for migration in pending {
+        let version = migration.name().version().to_string();
+        if migration.metadata().run_in_transaction() {
+            conn.run_migration(migration.as_ref())
+                .map_err(|e| e.to_string())?;
+        } else {
+            let Some((_, sql)) = no_transaction_sql.iter().find(|(v, _)| *v == version) else {
+                return Err(format!(
+                    "the migration {} runs outside a transaction, and \
+                     TENANT_NO_TRANSACTION_SQL has no SQL for it",
+                    migration.name()
+                ));
+            };
+            conn.batch_execute(&without_concurrently(sql))
+                .map_err(|e| format!("the migration {}: {e}", migration.name()))?;
+            sql_query("INSERT INTO __diesel_schema_migrations (version) VALUES ($1)")
+                .bind::<Text, _>(&version)
+                .execute(conn)
+                .map_err(|e| e.to_string())?;
+        }
+        applied.push(version);
+    }
+    Ok(applied)
+}
+
 /// The pending tenant migrations of one schema, with the default
 /// `search_path` restored afterwards.
-fn migrate_schema(conn: &mut PgConnection, schema: &str) -> Result<Vec<String>, String> {
+fn migrate_schema(
+    conn: &mut PgConnection,
+    schema: &str,
+    source: &dyn MigrationSource<Pg>,
+) -> Result<Vec<String>, String> {
     sql_query(format!("SET search_path TO \"{schema}\""))
         .execute(conn)
         .map_err(|e| e.to_string())?;
     let applied = conn
-        .run_pending_migrations(TENANT_MIGRATIONS)
+        .run_pending_migrations(SourceRef(source))
         .map(|versions| versions.iter().map(|v| v.to_string()).collect())
         .map_err(|e| e.to_string());
     let reset = sql_query("SET search_path TO DEFAULT")

@@ -54,6 +54,7 @@ pub(crate) const COLUMNS: &[(&str, &str)] = &[
     ("configure_boards", "Configure"),
     ("administer_members", "Members"),
     ("pages", "Sites"),
+    ("purge", "Purge"),
     ("member", "Member"),
     ("approve_proposals", "Proposals"),
 ];
