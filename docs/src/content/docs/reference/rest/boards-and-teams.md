@@ -158,8 +158,8 @@ A `slug` that a different live board has is a 409 `CONFLICT`, and the
 update writes nothing (COLLIERY-T-0255). The refusal names the slug and
 the board that has it. A board can keep its slug in an update.
 
-The body has the fields `name`, `slug`, `team_id`, `parent_gate` and
-`owner_gate` only. A different field of the board (`id`, `board_level`) is a 422
+The body has the fields `name`, `slug`, `team_id`, `parent_gate`,
+`owner_gate` and `blockers_gate` only. A different field of the board (`id`, `board_level`) is a 422
 `VALIDATION` that names the field (COLLIERY-T-0249).
 
 `parent_gate` sets a board policy of a delivery board (KAIROS-T-0641).
@@ -171,6 +171,11 @@ is a 422 `VALIDATION`.
 With the policy on, an initiative moves into its Active column only with
 an owner. On a board of a different level, the field is a 422
 `VALIDATION`.
+
+`blockers_gate` sets a board policy of a delivery board (KAIROS-T-0565).
+With the policy on, a blocked task does not move into a claims column
+or a done column. On a board of a different level, the
+field is a 422 `VALIDATION`.
 
 The short-code prefix of a board does not change (COLLIERY-T-3099). A
 body with `code_prefix` is a 422 `CODE_PREFIX_IS_FIXED` that says so

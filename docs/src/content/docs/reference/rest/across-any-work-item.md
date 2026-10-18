@@ -603,9 +603,10 @@ reader expects.
 
 Confirm a proposal, creating the edge.
 
-The caller is a person. The link rule applies (COLLIERY-T-0234): the
-caller can edit the item at one end of the edge. A refused confirm
-leaves the proposal pending.
+The caller is a person, not an agent key, and not the proposer
+(KAIROS-T-0538). The link rule applies (COLLIERY-T-0234): the caller can
+edit the item at one end of the edge. A refused confirm leaves the
+proposal pending.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
@@ -615,13 +616,16 @@ leaves the proposal pending.
 |---|---|---|
 | `200` | [`EdgeProposalDto`](../schemas/#edgeproposaldto) | Confirmed; the relationship now exists |
 | `400` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The edge was refused by the graph's own rules — a cycle, or a shape the rule matrix forbids |
-| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | A service account may propose but not decide. A person needs the link rule: the caller can edit the item at one end; details.any_of names the two capabilities |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | PERSON_DECIDES: a service account, an agent key or the proposer cannot confirm; details.reason names which. FORBIDDEN: the link rule, the caller can edit the item at one end; details.any_of names the two capabilities |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | No such proposal |
-| `409` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Already decided |
+| `409` | [`ErrorEnvelope`](../schemas/#errorenvelope) | CONFLICT: the proposal is decided already, also by a decision at the same time |
 
 ### `POST /api/proposals/{id}/reject`
 
 Reject a proposal. Recorded, not erased.
+
+The caller is a person, not an agent key, and not the proposer
+(KAIROS-T-0538). The link rule does not apply: a reject writes no edge.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
@@ -630,9 +634,9 @@ Reject a proposal. Recorded, not erased.
 | Response | Body | Meaning |
 |---|---|---|
 | `200` | [`EdgeProposalDto`](../schemas/#edgeproposaldto) | Rejected, and kept — a repeatedly rejected pair is the clearest signal that retrieval is wrong about something |
-| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | A service account may propose but not decide |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | PERSON_DECIDES: a service account, an agent key or the proposer cannot reject; details.reason names which |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | No such proposal |
-| `409` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Already decided |
+| `409` | [`ErrorEnvelope`](../schemas/#errorenvelope) | CONFLICT: the proposal is decided already, also by a decision at the same time |
 
 ### `POST /api/search`
 

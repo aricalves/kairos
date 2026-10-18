@@ -46,6 +46,21 @@
 //! - MCP: `Warning: the column Active has 4 items, over its WIP limit of 3.
 //!   Your move of KAIROS-T-0001 is recorded.`
 //!
+//! # The warning of open blockers (KAIROS-T-0565)
+//!
+//! A move of a task with open blockers into a claims column or a done
+//! column is allowed while the board policy `blockers_gate` is off
+//! (`kairos_db::board_policy`). The answer has a warning in the same
+//! places ([`note_blockers`]):
+//!
+//! - REST: `Kairos-Warning: KAIROS-T-0001 moved into Active, blocked by
+//!   KAIROS-T-0012 (open)`.
+//! - MCP: `Warning: KAIROS-T-0001 is blocked by KAIROS-T-0012 (open). Your
+//!   move into Active is recorded.`
+//!
+//! A cancelled blocker is open (KAIROS-A-0038). The text names it
+//! `(cancelled)`.
+//!
 //! [`note`] puts the warning in a SINK of the request: a tokio task-local
 //! ([`collect`]) that the tenant middleware and the MCP tool call open.
 //! `BlockingTenantPool::run` reads the sink in the task of the request and
@@ -141,11 +156,47 @@ impl WipWarning {
     }
 }
 
-/// One warning of a request: a claim, or a WIP limit.
+/// A move of a task with open blockers into a claims column or a done
+/// column (KAIROS-T-0565).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockerWarning {
+    pub short_code: String,
+    pub column: String,
+    pub blockers: Vec<kairos_db::board_policy::OpenBlocker>,
+}
+
+impl BlockerWarning {
+    fn blockers_text(&self) -> String {
+        kairos_db::board_policy::blockers_text(&self.blockers)
+    }
+
+    /// The value of the header [`WARNING_HEADER`].
+    pub fn header_text(&self) -> String {
+        format!(
+            "{} moved into {}, blocked by {}",
+            self.short_code,
+            self.column,
+            self.blockers_text()
+        )
+    }
+
+    /// The line at the end of the text of an MCP tool.
+    pub fn mcp_text(&self) -> String {
+        format!(
+            "Warning: {} is blocked by {}. Your move into {} is recorded.",
+            self.short_code,
+            self.blockers_text(),
+            self.column
+        )
+    }
+}
+
+/// One warning of a request: a claim, a WIP limit, or open blockers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Warning {
     Claim(ClaimWarning),
     Wip(WipWarning),
+    Blockers(BlockerWarning),
 }
 
 impl Warning {
@@ -154,6 +205,7 @@ impl Warning {
         match self {
             Self::Claim(w) => w.header_text(),
             Self::Wip(w) => w.header_text(),
+            Self::Blockers(w) => w.header_text(),
         }
     }
 
@@ -162,6 +214,7 @@ impl Warning {
         match self {
             Self::Claim(w) => w.mcp_text(),
             Self::Wip(w) => w.mcp_text(),
+            Self::Blockers(w) => w.mcp_text(),
         }
     }
 }
@@ -282,6 +335,57 @@ pub fn note_wip(
             limit,
         }));
     Ok(())
+}
+
+/// Note a move of the task `task_id` (code `short_code`) into the column
+/// `column_id` (KAIROS-T-0565): when the column has the `claims` flag or
+/// the `is_done` flag and the task has open blockers, the response gets a
+/// warning (module docs). Call it after the move: with the board policy
+/// `blockers_gate` on, the move was refused. Nothing outside of a request.
+pub fn note_blockers(
+    conn: &mut PgConnection,
+    task_id: Uuid,
+    column_id: Uuid,
+    short_code: &str,
+) -> Result<(), ApiError> {
+    let Some(sink) = BLOCKING_SINK.with(|cell| cell.borrow().clone()) else {
+        return Ok(());
+    };
+    let blockers = kairos_db::board_policy::blockers_of_move(conn, task_id, column_id)
+        .map_err(ApiError::internal)?;
+    if blockers.is_empty() {
+        return Ok(());
+    }
+    let column: String = {
+        use kairos_db::schema::board_columns;
+        board_columns::table
+            .filter(board_columns::id.eq(column_id))
+            .select(board_columns::name)
+            .first(conn)
+            .map_err(ApiError::internal)?
+    };
+    sink.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(Warning::Blockers(BlockerWarning {
+            short_code: short_code.to_string(),
+            column,
+            blockers,
+        }));
+    Ok(())
+}
+
+/// Note a move of the task `task_id` into the column `column_id`: the WIP
+/// limit ([`note_wip`]) and the open blockers ([`note_blockers`]). Each
+/// path that moves a task calls it after the move: a transition, a reopen
+/// and a board move.
+pub fn note_task_move(
+    conn: &mut PgConnection,
+    task_id: Uuid,
+    column_id: Uuid,
+    short_code: &str,
+) -> Result<(), ApiError> {
+    note_wip(conn, column_id, short_code)?;
+    note_blockers(conn, task_id, column_id, short_code)
 }
 
 /// Add the header [`WARNING_HEADER`] to a response, one value for each
@@ -693,6 +797,35 @@ mod tests {
         w.holder = "Zoë".to_string();
         add_header(&mut headers, &[Warning::Claim(w)]);
         assert_eq!(headers.get_all(WARNING_HEADER).iter().count(), 1);
+    }
+
+    /// KAIROS-T-0565: the warning of open blockers.
+    #[test]
+    fn the_blocker_warning_names_the_column_and_each_blocker() {
+        let w = BlockerWarning {
+            short_code: "KAIROS-T-0001".into(),
+            column: "Active".into(),
+            blockers: vec![
+                kairos_db::board_policy::OpenBlocker {
+                    short_code: "KAIROS-T-0012".into(),
+                    cancelled: false,
+                },
+                kairos_db::board_policy::OpenBlocker {
+                    short_code: "KAIROS-T-0013".into(),
+                    cancelled: true,
+                },
+            ],
+        };
+        assert_eq!(
+            w.header_text(),
+            "KAIROS-T-0001 moved into Active, blocked by KAIROS-T-0012 (open), KAIROS-T-0013 \
+             (cancelled)"
+        );
+        assert_eq!(
+            w.mcp_text(),
+            "Warning: KAIROS-T-0001 is blocked by KAIROS-T-0012 (open), KAIROS-T-0013 \
+             (cancelled). Your move into Active is recorded."
+        );
     }
 
     /// KAIROS-T-0371: the warning of a WIP limit.

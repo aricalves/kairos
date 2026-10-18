@@ -56,7 +56,10 @@ list, get, create, update, delete — and the same optimistic-concurrency
 contract on update (KAIROS-A-0004): submit the `version` you read, and a
 concurrent edit gets 409 with the current entity in `details.current`. A
 write to a claimed task by a different person gets the header
-`Kairos-Warning: <code> claimed by <name> since <time>` (KAIROS-T-0359).""",
+`Kairos-Warning: <code> claimed by <name> since <time>` (KAIROS-T-0359).
+A task with open blockers can move into a claims column or a done column.
+That answer gets the header `Kairos-Warning: <code> moved into <column>,
+blocked by <blocker> (open)` (KAIROS-T-0565).""",
      ["strategies", "initiatives", "tasks", "documents", "adrs"]),
 
     ("Across any work item", """Operations addressed by `{entity_type}` and a

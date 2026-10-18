@@ -14,7 +14,8 @@ use crate::error::ApiError;
 pub const CAPABILITY: &str = "transition_items";
 
 /// Reopen the task: the capability check ([`CAPABILITY`] on the board of
-/// the task), the reopen, and the WIP note of the column it goes to.
+/// the task), the reopen, and the notes of the column it goes to: the WIP
+/// limit and the open blockers (KAIROS-T-0565).
 pub fn reopen(
     conn: &mut PgConnection,
     slug: &str,
@@ -24,8 +25,8 @@ pub fn reopen(
 ) -> Result<Reopened, ApiError> {
     crate::api::require_capability(conn, slug, Some(board_id), user, CAPABILITY)?;
     let reopened = boards::reopen_task(conn, task_id, user).map_err(crate::api::map_board_error)?;
-    // KAIROS-T-0371: a move into a column over its WIP limit.
-    crate::claims::note_wip(conn, reopened.to_column_id, &reopened.short_code)?;
+    // KAIROS-T-0371, KAIROS-T-0565: the WIP limit and the open blockers.
+    crate::claims::note_task_move(conn, task_id, reopened.to_column_id, &reopened.short_code)?;
     Ok(reopened)
 }
 

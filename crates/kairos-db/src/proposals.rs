@@ -75,6 +75,19 @@ pub enum ProposalError {
          proposal."
     )]
     NotHuman,
+    /// A request with an agent key tried to rule on a proposal (KAIROS-T-0538).
+    /// The key is the person, but an agent uses it.
+    #[error(
+        "An agent key can propose an edge. It cannot confirm or reject a proposal. A person \
+         other than the proposer decides, in the web interface or with a login token."
+    )]
+    AgentKey,
+    /// The proposer tried to rule on their own proposal (KAIROS-T-0538).
+    #[error(
+        "You proposed this edge. A person other than the proposer confirms or rejects the \
+         proposal."
+    )]
+    Proposer,
     /// Only `parent` and `blocks` may be proposed.
     #[error("You can propose only a parent edge or a blocks edge. {0:?} is not one of them.")]
     NotProposable(String),
@@ -286,7 +299,8 @@ fn load(conn: &mut PgConnection, id: Uuid) -> Result<EdgeProposal, ProposalError
 ///
 /// Public since COLLIERY-T-0234, so that the server can give this refusal
 /// before the refusal of the link rule, as the order was. [`confirm`] and
-/// [`reject`] still make the check themselves.
+/// [`reject`] still make the check themselves, with the agent-key and
+/// proposer checks of KAIROS-T-0538.
 pub fn is_human(conn: &mut PgConnection, actor: Uuid) -> Result<bool, ProposalError> {
     #[derive(QueryableByName)]
     struct Kind {
@@ -299,23 +313,86 @@ pub fn is_human(conn: &mut PgConnection, actor: Uuid) -> Result<bool, ProposalEr
     Ok(kind.kind != crate::models::public::USER_KIND_SERVICE_ACCOUNT)
 }
 
+/// Who decides a proposal, and how the request came (KAIROS-T-0538).
+///
+/// The service needs both. A person's agent key authenticates as the
+/// person, so the user id alone cannot tell an agent from its person.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Decider {
+    /// `public.users.id` of the caller.
+    pub user_id: Uuid,
+    /// True when the request authenticated with the agent key of a person.
+    pub agent_key: bool,
+}
+
+/// The rule of who may decide (KAIROS-T-0538): a person, not through an
+/// agent key, and not the proposer.
+///
+/// The first two checks need no proposal, so they come before the load:
+/// a caller who may never decide learns nothing about a proposal.
+fn require_decider(conn: &mut PgConnection, decider: Decider) -> Result<(), ProposalError> {
+    if !is_human(conn, decider.user_id)? {
+        return Err(ProposalError::NotHuman);
+    }
+    if decider.agent_key {
+        return Err(ProposalError::AgentKey);
+    }
+    Ok(())
+}
+
+/// Load the proposal to decide: it exists, waits, and is not the
+/// decider's own.
+fn load_pending(
+    conn: &mut PgConnection,
+    id: Uuid,
+    decider: Decider,
+) -> Result<EdgeProposal, ProposalError> {
+    let proposal = load(conn, id)?;
+    if proposal.state != "pending" {
+        return Err(ProposalError::AlreadyDecided {
+            id,
+            state: proposal.state,
+        });
+    }
+    if proposal.proposed_by == decider.user_id {
+        return Err(ProposalError::Proposer);
+    }
+    Ok(proposal)
+}
+
+/// Write the decision. The `state = 'pending'` condition is in the UPDATE
+/// itself (KAIROS-T-0538): of two decisions at the same time, the row lock
+/// lets one change the row, and the other changes no row and gets
+/// [`ProposalError::AlreadyDecided`]. A check before the UPDATE alone let
+/// both succeed.
 fn decide(
     conn: &mut PgConnection,
     id: Uuid,
     state: &str,
     actor: Uuid,
 ) -> Result<EdgeProposal, ProposalError> {
-    Ok(sql_query(
+    let decided = sql_query(
         "UPDATE edge_proposals \
             SET state = $2, decided_by = $3, decided_at = now() \
-          WHERE id = $1 \
+          WHERE id = $1 AND state = 'pending' \
          RETURNING id, source_id, target_id, relationship, state, claim, why, score, \
                    proposed_by, decided_by, decided_at, created_at",
     )
     .bind::<SqlUuid, _>(id)
     .bind::<Text, _>(state)
     .bind::<SqlUuid, _>(actor)
-    .get_result::<EdgeProposal>(conn)?)
+    .get_result::<EdgeProposal>(conn)
+    .optional()?;
+    match decided {
+        Some(p) => Ok(p),
+        None => {
+            let now = load(conn, id)?;
+            Err(ProposalError::AlreadyDecided {
+                id,
+                state: now.state,
+            })
+        }
+    }
 }
 
 /// Confirm a proposal, creating the real edge.
@@ -328,31 +405,29 @@ fn decide(
 ///
 /// Transactional: the edge and the state change land together or not at all.
 ///
-/// WHO may confirm is not decided here, but for "a person". The link rule
-/// is the rule of the server (`require_edge_write`), and the REST handler
-/// applies it before this call (COLLIERY-T-0234).
+/// WHO may confirm is decided here only in part: a person, not through an
+/// agent key, and not the proposer (KAIROS-T-0538). The link rule is the
+/// rule of the server (`require_edge_write`), and the REST handler applies
+/// it before this call (COLLIERY-T-0234).
 pub fn confirm(
     conn: &mut PgConnection,
     id: Uuid,
-    actor: Uuid,
+    decider: Decider,
 ) -> Result<EdgeProposal, ProposalError> {
-    if !is_human(conn, actor)? {
-        return Err(ProposalError::NotHuman);
-    }
-    let proposal = load(conn, id)?;
-    if proposal.state != "pending" {
-        return Err(ProposalError::AlreadyDecided {
-            id,
-            state: proposal.state,
-        });
-    }
+    require_decider(conn, decider)?;
+    let proposal = load_pending(conn, id, decider)?;
+    let actor = decider.user_id;
     let relationship = match proposal.relationship.as_str() {
         "parent" => RelationshipType::Parent,
         "blocks" => RelationshipType::Blocks,
         other => return Err(ProposalError::NotProposable(other.to_string())),
     };
 
+    // The decision first, then the edge: the UPDATE takes the row lock, so a
+    // second confirm at the same time waits, changes no row, and gets the
+    // 409 before it tries to write the same edge (KAIROS-T-0538).
     conn.transaction(|conn| {
+        let decided = decide(conn, id, "confirmed", actor)?;
         graph::link_items(
             conn,
             proposal.source_id,
@@ -360,7 +435,7 @@ pub fn confirm(
             relationship,
             actor,
         )?;
-        decide(conn, id, "confirmed", actor)
+        Ok(decided)
     })
 }
 
@@ -370,22 +445,16 @@ pub fn confirm(
 /// rejected is the clearest signal available that retrieval is wrong about
 /// something, and [`stats`] is where that shows up. Deleting rejections would
 /// delete the only honest measurement this feature has.
+///
+/// The rule of who may decide is the rule of [`confirm`] (KAIROS-T-0538).
 pub fn reject(
     conn: &mut PgConnection,
     id: Uuid,
-    actor: Uuid,
+    decider: Decider,
 ) -> Result<EdgeProposal, ProposalError> {
-    if !is_human(conn, actor)? {
-        return Err(ProposalError::NotHuman);
-    }
-    let proposal = load(conn, id)?;
-    if proposal.state != "pending" {
-        return Err(ProposalError::AlreadyDecided {
-            id,
-            state: proposal.state,
-        });
-    }
-    decide(conn, id, "rejected", actor)
+    require_decider(conn, decider)?;
+    load_pending(conn, id, decider)?;
+    decide(conn, id, "rejected", decider.user_id)
 }
 
 /// How the proposals are going.
