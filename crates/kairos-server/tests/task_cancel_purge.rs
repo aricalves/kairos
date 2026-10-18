@@ -16,13 +16,18 @@
 //! 7. A person with no `transition_items` gets a 403.
 //!
 //! Purge:
-//! 1. A board manager deletes a task for good: REST get is a 404, the
-//!    board and the search do not have it, and no row of it stays.
-//! 2. A person who does not manage the board gets a 403, and the task
-//!    stays.
+//! 1. A holder of `purge` deletes an archived task for good: REST get is a
+//!    404, the board and the search do not have it, and no row of it
+//!    stays: no external reference and no forge intake row
+//!    (KAIROS-T-0570).
+//! 2. A person with no `purge` gets a 403 that names `purge`, and the
+//!    task stays. Team membership (`manage_tasks`) does not give it
+//!    (KAIROS-T-0570).
 //! 3. The activity has one row `purge` that names the code and the title.
-//! 4. An archived task can be purged too, and MCP `purge_task` needs
-//!    confirm=true.
+//! 4. A live task is refused with 422 `TASK_LIVE` ("Archive it first"),
+//!    on REST and MCP (KAIROS-T-0570).
+//! 5. MCP `purge_task` needs confirm=true, and an organization admin
+//!    purges with no grant (KAIROS-T-0570).
 //!
 //! Runs against the LIVE compose stack (`angreal services up`). Owns the
 //! scratch database `kairos_task_cancel_purge_t0362_server_test`.
@@ -271,6 +276,7 @@ async fn a_task_can_be_cancelled_and_purged() {
         team_id: None,
         repository: None,
         from_team: None,
+        parent: None,
     };
 
     // =======================================================================
@@ -473,22 +479,99 @@ async fn a_task_can_be_cancelled_and_purged() {
         )
         .await;
     let doomed_id: Uuid = doomed.id.parse().expect("id");
-
-    // 2. carol does not manage the board.
-    let err = carol
-        .purge_task(&doomed.short_code)
+    // KAIROS-T-0570: an external reference and a forge intake row.
+    alice_mcp
+        .call_ok(
+            "link_items",
+            json!({"source": doomed.short_code, "target": "https://example.com/rfc/1",
+                   "relationship": "external", "label": "An RFC"}),
+        )
+        .await;
+    let repository = admin
+        .create_repository(
+            &kairos_client::types_repositories::CreateRepositoryRequest {
+                slug: Some("web-app".into()),
+                forge: "github".into(),
+                repo_full_name: "acme/web-app".into(),
+                repo_url: "https://example.com/acme/web-app".into(),
+                default_branch: None,
+                team: team.id.clone(),
+                description: None,
+            },
+        )
         .await
-        .expect_err("carol cannot purge");
-    assert!(
-        matches!(&err, Error::Forbidden { capability: Some(c), .. } if c == "manage_tasks"),
-        "{err}"
+        .expect("repository");
+    diesel::sql_query(
+        "INSERT INTO org_acme.forge_issue_intake (repository_id, issue_id, number, item_id, url, source) \
+         VALUES ($1, 'I-1', 1, $2, 'https://example.com/acme/web-app/issues/1', 'webhook')",
+    )
+    .bind::<diesel::sql_types::Uuid, _>(repository.id.parse::<Uuid>().expect("repository id"))
+    .bind::<diesel::sql_types::Uuid, _>(doomed_id)
+    .execute(&mut conn)
+    .expect("an intake row");
+    assert_eq!(
+        rows(&mut conn, "item_external_refs", "item_id", doomed_id),
+        1
     );
+    assert_eq!(
+        rows(&mut conn, "forge_issue_intake", "item_id", doomed_id),
+        1
+    );
+
+    // 2. carol is not in the team, and bob is: neither holds `purge`.
+    for (who, client) in [("carol", &carol), ("bob", &bob)] {
+        let err = client
+            .purge_task(&doomed.short_code)
+            .await
+            .expect_err("no purge capability");
+        assert!(
+            matches!(&err, Error::Forbidden { capability: Some(c), .. } if c == "purge"),
+            "{who}: {err}"
+        );
+    }
     alice
         .get_task(&doomed.short_code)
         .await
         .expect("the task stays");
 
-    // 1. bob manages the board (the team gives him `manage_tasks`).
+    // bob gets a grant of `purge` on the board.
+    admin
+        .add_board_member(
+            &board,
+            &kairos_client::types_org::AddBoardMemberRequest {
+                user_id: bob_id.to_string(),
+                capabilities: vec!["purge".into()],
+            },
+        )
+        .await
+        .expect("a grant of purge");
+
+    // 4. A live task is refused: archive it first.
+    let err = bob
+        .purge_task(&doomed.short_code)
+        .await
+        .expect_err("a live task");
+    assert!(
+        matches!(&err, Error::Other { status: 422, code, message, .. }
+            if code == "TASK_LIVE" && message.contains("Archive it first")),
+        "{err}"
+    );
+    let (text, error) = bob_mcp
+        .call(
+            "purge_task",
+            json!({"short_code": doomed.short_code, "confirm": true}),
+        )
+        .await;
+    assert!(
+        error && text.contains("TASK_LIVE") && text.contains("Archive it first"),
+        "{text}"
+    );
+    alice
+        .delete_task(&doomed.short_code)
+        .await
+        .expect("archive");
+
+    // 1. bob holds `purge`, and the task is archived.
     let purged = bob
         .purge_task(&doomed.short_code)
         .await
@@ -528,6 +611,8 @@ async fn a_task_can_be_cancelled_and_purged() {
         ("item_history", "item_id"),
         ("item_relationships", "source_id"),
         ("item_relationships", "target_id"),
+        ("item_external_refs", "item_id"),
+        ("forge_issue_intake", "item_id"),
     ] {
         assert_eq!(
             rows(&mut conn, table, column, doomed_id),
@@ -560,7 +645,7 @@ async fn a_task_can_be_cancelled_and_purged() {
     );
     assert_eq!(activity[0].actor_id, bob_id.to_string());
 
-    // 4. An archived task, by MCP: confirm is required.
+    // 5. An archived task, by MCP: confirm is required.
     let archived = alice
         .create_task(&new_task("Archived then purged"))
         .await
@@ -592,4 +677,22 @@ async fn a_task_can_be_cancelled_and_purged() {
         rows(&mut conn, "tasks", "id", archived.id.parse().expect("id")),
         0
     );
+
+    // 5. An organization admin holds `purge` with no grant.
+    let by_admin = alice
+        .create_task(&new_task("Purged by the admin"))
+        .await
+        .expect("a task");
+    alice
+        .delete_task(&by_admin.short_code)
+        .await
+        .expect("archive");
+    let mut admin_mcp = Mcp::connect(&server.base_url, &svc_token).await;
+    let text = admin_mcp
+        .call_ok(
+            "purge_task",
+            json!({"short_code": by_admin.short_code, "confirm": true}),
+        )
+        .await;
+    assert!(text.contains("for good"), "{text}");
 }

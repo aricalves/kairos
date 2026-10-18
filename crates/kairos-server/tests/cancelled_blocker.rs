@@ -129,6 +129,7 @@ async fn task(client: &KairosClient, board: &str, title: &str) -> String {
             team_id: None,
             repository: None,
             from_team: None,
+            parent: None,
         })
         .await
         .expect("task")
@@ -438,6 +439,7 @@ async fn a_cancelled_blocker_still_blocks() {
             content: String::new(),
             complexity: None,
             bucket_type: None,
+            parent: None,
         })
         .await
         .expect("initiative")
