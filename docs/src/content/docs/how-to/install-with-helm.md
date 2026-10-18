@@ -177,6 +177,34 @@ log has the error. Repair the
 schema and run `kubectl exec deploy/kairos -- kairos-server migrate-tenants`;
 the organization serves again within 30 seconds.
 
+One query finds the organizations with a pending tenant migration. The
+server migrates only those organizations. A restart with no new migration
+thus waits for one query, not one for each organization.
+
+A migration waits for a table lock for 5 seconds at most. Then it fails,
+and the log names the migration. Run `migrate-tenants` again when the
+database is less busy. A migration with `CONCURRENTLY` can fail after it
+starts the index. Postgres then keeps an INVALID index, and the next run
+stops at that index. Drop it with `DROP INDEX CONCURRENTLY org_<slug>.<index>`,
+then run `migrate-tenants`.
+
+### The upgrade notes of a release
+
+Each section below has the same form. Copy this form for a new release:
+
+```md
+### From 0.X to 0.Y
+
+These changes of 0.Y show after the upgrade. They apply to Compose too.
+
+- N migrations run: `name` (what it does), `name` (what it does).
+- Locks: each migration that locks a large table, with the table, the lock
+  and the time. Write "No migration locks a large table" when none does.
+- Scans: each VALIDATE CONSTRAINT and each CONCURRENTLY index, with its
+  table. Writes to the table continue during the scan.
+- Each other change that an operator sees after the upgrade.
+```
+
 ### From 0.12 to 0.13
 
 Three changes of 0.13 show after the upgrade. They apply to Compose too.
