@@ -662,18 +662,21 @@ pub fn set_parent(
             // 0: a write at the same time removed the edge first. That
             // write has its own row.
             if deleted > 0 {
+                let old_type = old.item_type.map(|t| t.entity_type().to_string());
                 log_relationship_activity(
                     conn,
                     actor,
                     ActivityAction::RelationshipRemove,
                     RelationshipType::Parent,
+                    old.id,
+                    old_type,
                     &old.short_code,
                     &item_code,
                 )?;
             }
         }
 
-        if let Some((new_id, _, new_code)) = &new_parent {
+        if let Some((new_id, new_type, new_code)) = &new_parent {
             let edges = load_edges(conn, RelationshipType::Parent)?;
             if rules::would_create_cycle(&edges, *new_id, item_id) {
                 return Err(GraphError::CycleDetected {
@@ -688,6 +691,8 @@ pub fn set_parent(
                 actor,
                 ActivityAction::RelationshipAdd,
                 RelationshipType::Parent,
+                *new_id,
+                Some(new_type.entity_type().to_string()),
                 new_code,
                 &item_code,
             )?;
