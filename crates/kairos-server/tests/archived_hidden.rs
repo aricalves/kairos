@@ -286,6 +286,7 @@ async fn archived_work_is_absent_from_every_default_listing() {
                 content: format!("# {MARKER}"),
                 decision_maker: None,
                 decision_date: None,
+                parent: None,
             })
             .await
             .expect("creating adr");

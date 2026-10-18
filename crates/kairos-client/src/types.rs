@@ -654,6 +654,14 @@ pub struct CreateAdrRequest {
     /// `YYYY-MM-DD`.
     #[serde(default)]
     pub decision_date: Option<String>,
+    /// The short code of the item that the ADR supports: a strategy, an
+    /// initiative or a task (KAIROS-T-0591). The server writes the
+    /// `supports` edge in the transaction of the create: a refused parent
+    /// leaves no ADR. A retired code finds its item.
+    // Sent only with a value, so that an older server gets the body that it
+    // knows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
 }
 
 /// Body of `PATCH /api/{family}/{short_code}` â the KAIROS-A-0004
