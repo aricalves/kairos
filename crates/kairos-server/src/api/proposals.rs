@@ -138,8 +138,8 @@ pub(crate) async fn list(
 /// Confirm a proposal, creating the edge.
 ///
 /// The caller holds `approve_proposals` on the board of one end, or is an
-/// org admin (KAIROS-T-0659). A refused confirm leaves the proposal
-/// pending.
+/// organization admin (KAIROS-T-0659). A refused confirm leaves the
+/// proposal pending.
 #[utoipa::path(
     post,
     path = "/api/proposals/{id}/confirm",
@@ -148,7 +148,7 @@ pub(crate) async fn list(
     responses(
         (status = 200, description = "Confirmed; the relationship now exists", body = dto_search::EdgeProposalDto),
         (status = 400, description = "The edge was refused by the graph's own rules — a cycle, or a shape the rule matrix forbids", body = kairos_client::types::ErrorEnvelope),
-        (status = 403, description = "FORBIDDEN: the caller holds approve_proposals on neither board and is not an org admin; details.any_of names the board of each end", body = kairos_client::types::ErrorEnvelope),
+        (status = 403, description = "FORBIDDEN: the caller holds approve_proposals on neither board and is not an organization admin; details.any_of names the board of each end", body = kairos_client::types::ErrorEnvelope),
         (status = 404, description = "No such proposal", body = kairos_client::types::ErrorEnvelope),
         (status = 409, description = "CONFLICT: the proposal is decided already, also by a decision at the same time", body = kairos_client::types::ErrorEnvelope),
     ),
@@ -172,7 +172,7 @@ pub(crate) async fn confirm(
     params(("id" = String, Path, description = "The proposal")),
     responses(
         (status = 200, description = "Rejected, and kept — a repeatedly rejected pair is the clearest signal that retrieval is wrong about something", body = dto_search::EdgeProposalDto),
-        (status = 403, description = "FORBIDDEN: the caller holds approve_proposals on neither board and is not an org admin; details.any_of names the board of each end", body = kairos_client::types::ErrorEnvelope),
+        (status = 403, description = "FORBIDDEN: the caller holds approve_proposals on neither board and is not an organization admin; details.any_of names the board of each end", body = kairos_client::types::ErrorEnvelope),
         (status = 404, description = "No such proposal", body = kairos_client::types::ErrorEnvelope),
         (status = 409, description = "CONFLICT: the proposal is decided already, also by a decision at the same time", body = kairos_client::types::ErrorEnvelope),
     ),

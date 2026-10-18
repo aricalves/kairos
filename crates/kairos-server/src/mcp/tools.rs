@@ -2767,7 +2767,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Propose a `parent` or `blocks` edge between two items. The proposal is not an edge until someone confirms it. Use it when `related_work` shows a real dependency, and say why: the reason is shown to who decides. A holder of `approve_proposals` on the board of one of the two items confirms or rejects it, or an org admin. The holder can be you, your agent key or a service account. The answer names the two boards."
+        description = "Propose a `parent` or `blocks` edge between two items. The proposal is not an edge until someone confirms it. Use it when `related_work` shows a real dependency, and say why: the reason is shown to who decides. A holder of `approve_proposals` on the board of one of the two items confirms or rejects it, or an organization admin. The holder can be you, your agent key or a service account. The answer names the two boards."
     )]
     pub async fn propose_edge(
         &self,
