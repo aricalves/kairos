@@ -76,6 +76,14 @@ pub const ADMINISTER_MEMBERS: &str = "administer_members";
 /// usually to the service account of a repository's CI. Not implied by team
 /// membership, and no glob but `*` covers it.
 pub const PAGES: &str = "pages";
+/// Membership of a strategy or an initiative board (KAIROS-T-0541,
+/// amending KAIROS-A-0025 decision 1). A grant of it gives the edit and the
+/// move of each item on the board ([`STRATEGY_BOARD_MEMBER_CAPABILITIES`],
+/// [`INITIATIVE_BOARD_MEMBER_CAPABILITIES`]). It applies on those two
+/// levels only. No glob but `*` covers it. Until KAIROS-T-0541, ANY grant on
+/// the board made a member, so a grant of `transition_items` or
+/// `configure_boards` alone also edited each item.
+pub const MEMBER: &str = "member";
 
 /// Glob: all capabilities on the board (full access).
 pub const GLOB_ALL: &str = "*";
@@ -104,6 +112,7 @@ pub const CAPABILITIES: &[&str] = &[
     CONFIGURE_BOARDS,
     ADMINISTER_MEMBERS,
     PAGES,
+    MEMBER,
 ];
 
 /// Every sanctioned glob form (trailing-`*` only, per A-0006).
@@ -119,7 +128,8 @@ pub const GLOBS: &[&str] = &[GLOB_ALL, GLOB_MANAGE, GLOB_CONFIGURE, GLOB_TRANSIT
 /// the edit and the move of its items
 /// ([`STRATEGY_BOARD_MEMBER_CAPABILITIES`], KAIROS-T-0410). Since
 /// KAIROS-T-0440 such a board has a team too, and the members of that team
-/// get the same ([`team_capabilities`]).
+/// get the same ([`team_capabilities`]). Since KAIROS-T-0541 the board
+/// membership is the grant of [`MEMBER`], not any grant.
 pub const TEAM_IMPLIED_CAPABILITIES: &[&str] = &[MANAGE_TASKS, MANAGE_DOCUMENTS, TRANSITION_ITEMS];
 
 /// Does membership of the board's owning team satisfy `required` on its
@@ -182,10 +192,13 @@ pub fn team_capabilities(board_level: &str) -> &'static [&'static str] {
 }
 
 /// The capabilities implied by MEMBERSHIP of a strategy board
-/// (KAIROS-T-0410, KAIROS-A-0025 decision 1): a principal who holds any
-/// grant on the board may edit and move every strategy on it. Computed at
-/// check time from the rows of `board_member_capabilities`, never stored, so
-/// the revoke of the last grant on the board is the revocation.
+/// (KAIROS-T-0410, KAIROS-A-0025 decision 1): a principal who holds the
+/// [`MEMBER`] grant on the board (KAIROS-T-0541; `member` or `*`) may edit
+/// and move every strategy on it. No other grant makes a member: a grant of
+/// `transition_items` moves and does not edit, and `configure_boards` or
+/// `administer_members` give neither. Computed at check time from the rows
+/// of `board_member_capabilities`, never stored, so the revoke of the
+/// member grant is the revocation.
 ///
 /// Archive and restore are NOT given by this set (decision 8). They are
 /// edits by the edit rule, and `manage_<type>` is the capability of both,
@@ -198,14 +211,14 @@ pub const STRATEGY_BOARD_MEMBER_CAPABILITIES: &[&str] = &[MANAGE_STRATEGIES, TRA
 /// [`STRATEGY_BOARD_MEMBER_CAPABILITIES`], for initiatives.
 pub const INITIATIVE_BOARD_MEMBER_CAPABILITIES: &[&str] = &[MANAGE_INITIATIVES, TRANSITION_ITEMS];
 
-/// Does membership of a STRATEGY board (any grant on it) satisfy
+/// Does membership of a STRATEGY board (the [`MEMBER`] grant) satisfy
 /// `required` on that board (KAIROS-T-0410)? Exact vocabulary membership,
 /// as for [`team_implies`].
 pub fn member_implies_on_strategy_board(required: &str) -> bool {
     STRATEGY_BOARD_MEMBER_CAPABILITIES.contains(&required)
 }
 
-/// Does membership of an INITIATIVE board (any grant on it) satisfy
+/// Does membership of an INITIATIVE board (the [`MEMBER`] grant) satisfy
 /// `required` on that board (KAIROS-T-0410)? Exact vocabulary membership,
 /// as for [`team_implies`].
 pub fn member_implies_on_initiative_board(required: &str) -> bool {
@@ -220,6 +233,31 @@ pub fn board_member_capabilities(board_level: &str) -> &'static [&'static str] {
         "strategy" => STRATEGY_BOARD_MEMBER_CAPABILITIES,
         "initiative" => INITIATIVE_BOARD_MEMBER_CAPABILITIES,
         _ => &[],
+    }
+}
+
+/// Do these stored grants of one principal on one board make it a member
+/// of the board (KAIROS-T-0541)? Only a grant that matches [`MEMBER`] does:
+/// `member` itself, or `*`. The pure mirror of the third arm of the SQL
+/// check in `kairos-db::abac`.
+pub fn grants_membership<S: AsRef<str>>(grants: &[S]) -> bool {
+    grants
+        .iter()
+        .any(|grant| capability_matches(grant.as_ref(), MEMBER))
+}
+
+/// The capabilities that these stored grants of one principal give by
+/// membership on a board of the level `board_level` (KAIROS-T-0541): the
+/// set of [`board_member_capabilities`] when the grants hold [`MEMBER`]
+/// ([`grants_membership`]), else none. `whoami` reports this set.
+pub fn member_capabilities_of_grants<S: AsRef<str>>(
+    board_level: &str,
+    grants: &[S],
+) -> &'static [&'static str] {
+    if grants_membership(grants) {
+        board_member_capabilities(board_level)
+    } else {
+        &[]
     }
 }
 
@@ -245,6 +283,7 @@ pub fn capabilities_of_level(board_level: &str) -> &'static [&'static str] {
         TRANSITION_ITEMS,
         CONFIGURE_BOARDS,
         ADMINISTER_MEMBERS,
+        MEMBER,
     ];
     const INITIATIVE: &[&str] = &[
         MANAGE_INITIATIVES,
@@ -252,6 +291,7 @@ pub fn capabilities_of_level(board_level: &str) -> &'static [&'static str] {
         TRANSITION_ITEMS,
         CONFIGURE_BOARDS,
         ADMINISTER_MEMBERS,
+        MEMBER,
     ];
     const DELIVERY: &[&str] = &[
         MANAGE_TASKS,
@@ -865,6 +905,43 @@ mod tests {
         assert!(board_member_capabilities("adr").is_empty());
     }
 
+    /// KAIROS-T-0541: only the member grant (`member` or `*`) makes a
+    /// member. `pages`, `transition_items`, `configure_boards`,
+    /// `administer_members`, `manage_*` and `transition_*` do not.
+    #[test]
+    fn only_the_member_grant_makes_a_member() {
+        assert!(grants_membership(&[MEMBER]));
+        assert!(grants_membership(&[GLOB_ALL]));
+        assert!(grants_membership(&[TRANSITION_ITEMS, MEMBER]));
+        assert!(!grants_membership::<&str>(&[]));
+        for grant in [
+            PAGES,
+            TRANSITION_ITEMS,
+            CONFIGURE_BOARDS,
+            ADMINISTER_MEMBERS,
+            MANAGE_STRATEGIES,
+            MANAGE_INITIATIVES,
+            MANAGE_DOCUMENTS,
+            GLOB_MANAGE,
+            GLOB_CONFIGURE,
+            GLOB_TRANSITION,
+        ] {
+            assert!(!grants_membership(&[grant]), "{grant}");
+        }
+        assert_eq!(
+            member_capabilities_of_grants("initiative", &[MEMBER]),
+            INITIATIVE_BOARD_MEMBER_CAPABILITIES
+        );
+        assert_eq!(
+            member_capabilities_of_grants("strategy", &["*".to_string()]),
+            STRATEGY_BOARD_MEMBER_CAPABILITIES
+        );
+        assert!(member_capabilities_of_grants("initiative", &[PAGES]).is_empty());
+        assert!(member_capabilities_of_grants("strategy", &[TRANSITION_ITEMS]).is_empty());
+        assert!(member_capabilities_of_grants("delivery", &[MEMBER]).is_empty());
+        assert!(member_capabilities_of_grants("adr", &[MEMBER]).is_empty());
+    }
+
     /// KAIROS-T-0413: each level has the `manage_<type>` of its item type
     /// and the four capabilities that each board has. Each applicable
     /// capability is grantable, and each grantable capability applies on
@@ -888,7 +965,9 @@ mod tests {
             for capability in common {
                 assert!(applies.contains(&capability), "{level} {capability}");
             }
-            let extra = usize::from(level == "delivery");
+            // KAIROS-T-0406: `pages` on delivery boards; KAIROS-T-0541:
+            // `member` on strategy and initiative boards.
+            let extra = usize::from(matches!(level, "delivery" | "strategy" | "initiative"));
             assert_eq!(applies.len(), 5 + extra, "{level}");
             assert!(applies.iter().all(|c| CAPABILITIES.contains(c)));
         }
@@ -897,6 +976,12 @@ mod tests {
         // KAIROS-T-0406: sites are published from the team's delivery board.
         assert!(capabilities_of_level("delivery").contains(&PAGES));
         assert!(!capabilities_of_level("initiative").contains(&PAGES));
+        // KAIROS-T-0541: the member grant applies on strategy and
+        // initiative boards only.
+        assert!(capabilities_of_level("strategy").contains(&MEMBER));
+        assert!(capabilities_of_level("initiative").contains(&MEMBER));
+        assert!(!capabilities_of_level("delivery").contains(&MEMBER));
+        assert!(!capabilities_of_level("adr").contains(&MEMBER));
         assert!(capabilities_of_level("team").is_empty());
         for capability in CAPABILITIES {
             assert!(

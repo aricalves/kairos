@@ -469,6 +469,7 @@ The answer to `GET /api/repositories/{slug}/code-indexes/builds`.
 | `disk` | [`CodeIndexDiskUse`](#codeindexdiskuse), nullable | no |  |
 | `items` | array of [`CodeIndexBuild`](#codeindexbuild) | yes | The runs, newest first. |
 | `limit` | `integer` | yes | The limit that the answer used. |
+| `offset` | `integer` | no | The runs before the page, newest first (KAIROS-T-0584). |
 | `total` | `integer` | yes | The runs of the repository, with those not in `items`. |
 
 ## CodeIndexCacheUse
@@ -2207,6 +2208,22 @@ Response of `POST /api/{entity_type}/{short_code}/restore` (KAIROS-T-0160, KAIRO
 | `short_code` | `string` | yes | The restored item's short code. |
 | `still_archived_count` | `integer` | yes | How many of its descendants are still archived. |
 | `still_archived_short_codes` | array of `string` | yes | Their short codes, sorted â restore them with further calls. |
+
+## RetentionStatus
+
+`GET /api/org/retention`: the retention settings of the deployment and the last retention pass. Never the path of the archive target.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `activity_retention_days` | `integer` | yes |  |
+| `archive_target` | `string`, nullable | no | The kind of `KAIROS_ARCHIVE_TARGET`: `filesystem` or `s3`. Absent when no target is set. |
+| `history_hot_days` | `integer` | yes |  |
+| `history_keep_latest` | `integer` | yes |  |
+| `last_result` | `string`, nullable | no | The record of the last pass that ended: `skipped: no target`, `off` or the counts. Absent before the first pass. |
+| `last_run_at` | `string`, nullable | no | When the last pass ended, RFC 3339. |
+| `mode` | `string` | yes | `archive`, `discard` or `off` (`KAIROS_RETENTION_MODE`). |
+| `status` | `string` | yes | What a pass does: `prunes`, `off`, `no_target` (it removes no row) or `target_not_implemented` (each pass fails). |
+| `warning` | `string`, nullable | no | The text for an operator when the pass removes nothing or fails. |
 
 ## ScimTokenCreatedResponse
 

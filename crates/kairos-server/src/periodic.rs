@@ -210,6 +210,11 @@ pub const RETENTION_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 /// `activity_log` of each tenant by the retention settings, and deletes the
 /// expired password sessions. A failed pass is tried again, and the next
 /// run is due one interval later all the same.
+///
+/// KAIROS-T-0631: the run writes its record in the field `result` of the
+/// payload of its job ([`kairos_db::retention::RetentionPass::result`]):
+/// `skipped: no target` when `archive` mode has no target, else the
+/// counts.
 pub fn retention_pass(
     database_url: String,
     config: kairos_core::retention::RetentionConfig,
@@ -260,7 +265,26 @@ fn retention_run(
             "retention: tenant swept"
         );
     }
+    let result = pass.result();
+    if let Some(warning) = config.warning() {
+        tracing::warn!(%result, %warning, "retention: the pass removed no history or activity");
+    }
+    let job = handle.job();
+    let patch = serde_json::json!({ "result": result });
+    match kairos_db::jobs::merge_payload(
+        &mut conn,
+        job.id,
+        job.leased_by.unwrap_or_default(),
+        &patch,
+    ) {
+        Ok(true) => {}
+        Ok(false) => tracing::warn!(job = %job.id, "retention: the run lost its lease; no record"),
+        Err(e) => {
+            tracing::warn!(job = %job.id, error = %e, "retention: the record of the run was not written")
+        }
+    }
     tracing::info!(
+        %result,
         tenants = pass.tenants.len(),
         expired_sessions_deleted = pass.expired_sessions_deleted,
         expired_auth_failures_deleted = pass.expired_auth_failures_deleted,

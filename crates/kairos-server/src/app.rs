@@ -73,6 +73,11 @@ pub struct AppState {
     /// `KAIROS_PAGES_STORE` is set. `None`: a publish is refused; the
     /// rendered sites still work.
     pub site_store: Option<crate::site_store::SiteStore>,
+    /// The retention settings of this server (KAIROS-A-0004,
+    /// KAIROS-T-0366). `serve` sets them from the environment; a state of
+    /// [`build_state`] or [`state_with`] has the defaults. `/readyz` and
+    /// `GET /api/org/retention` read them (KAIROS-T-0631).
+    pub retention: Arc<kairos_core::retention::RetentionConfig>,
 }
 
 /// Why [`build_state`] failed (startup-time, fail-fast).
@@ -175,6 +180,7 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
         tenant_readiness: Arc::new(crate::tenant_readiness::TenantReadiness::default()),
         jobs,
         site_store,
+        retention: Arc::new(kairos_core::retention::RetentionConfig::default()),
     })
 }
 
@@ -385,6 +391,7 @@ pub fn state_with(config: AppConfig, pool: TenantPool, auth: Arc<Authenticator>)
         tenant_readiness: Arc::new(crate::tenant_readiness::TenantReadiness::default()),
         jobs,
         site_store,
+        retention: Arc::new(kairos_core::retention::RetentionConfig::default()),
     }
 }
 
@@ -650,8 +657,9 @@ pub struct WhoamiBoardCapabilities {
     /// The capability strings granted to the caller on this board (may
     /// include globs like `*`, `manage_*`, `configure_*`), sorted.
     pub grants: Vec<String>,
-    /// The capabilities that membership of this board gives with no grant
-    /// (KAIROS-T-0410, KAIROS-A-0025): on a strategy board
+    /// The capabilities that membership of this board gives
+    /// (KAIROS-T-0410, KAIROS-A-0025). Only the `member` grant (or `*`)
+    /// makes a member (KAIROS-T-0541). Then, on a strategy board
     /// `manage_strategies` and `transition_items`, on an initiative board
     /// `manage_initiatives` and `transition_items`. Empty on other boards.
     /// Not archive or restore: those need a grant.
@@ -799,8 +807,14 @@ async fn whoami(
                 board_id,
                 board_slug,
                 grants: vec![capability],
-                implied: kairos_core::abac::board_member_capabilities(level.as_str()).to_vec(),
+                implied: Vec::new(),
             }),
+        }
+        // KAIROS-T-0541: only the `member` grant (or `*`) makes a member.
+        if let Some(last) = capabilities.last_mut() {
+            last.implied =
+                kairos_core::abac::member_capabilities_of_grants(level.as_str(), &last.grants)
+                    .to_vec();
         }
     }
 
@@ -882,6 +896,12 @@ pub async fn serve(
     let retention = kairos_core::retention::RetentionConfig::from_env()
         .map_err(|e| format!("retention configuration: {e}"))?;
     let mut state = build_state(config).await.map_err(|e| e.to_string())?;
+    state.retention = Arc::new(retention.clone());
+    // KAIROS-T-0631: a pass that removes nothing, or fails by its config,
+    // says so at the start too.
+    if let Some(warning) = retention.warning() {
+        tracing::warn!(%warning, "retention");
+    }
     // KAIROS-T-0330: the tenants that did not migrate at startup.
     state.tenant_readiness = Arc::new(readiness);
     let role = state.config.role;

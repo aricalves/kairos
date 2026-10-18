@@ -886,6 +886,85 @@ pub fn lexical_neighbours(
     Ok(rows)
 }
 
+/// A neighbour by text with its text score (KAIROS-T-0562).
+#[derive(Debug, Clone, QueryableByName)]
+pub struct ScoredNeighbour {
+    /// The item.
+    #[diesel(embed)]
+    pub neighbour: Neighbour,
+    /// The share of the title's word weight that the item matches, 0 to 1.
+    #[diesel(sql_type = diesel::sql_types::Double)]
+    pub text_score: f64,
+}
+
+/// The nearest items by text, each with a text score, for an answer with no
+/// vectors (KAIROS-T-0562).
+///
+/// The words are the lexemes of `title`. Each word weighs by how rare it is
+/// in the tenant: `ln((N + 1) / (df + 0.5))`, where `N` counts the items and
+/// `df` the items that have the word. A word in most items weighs almost
+/// nothing. An item gets the full weight of a word in its title (weight A of
+/// `item_search.tsv`) and half the weight of a word only in its other text.
+/// The score is the sum of these, divided by the weight of all the words. So
+/// a match on common words alone gives a low score, and the same title gives
+/// 1.
+///
+/// An item is a candidate when it has any of the words. The rows come best
+/// first, then by short code. The caller applies the floor and the limit
+/// (`kairos_core::retrieval::propose`). Archived items are included, as in
+/// [`lexical_neighbours`].
+pub fn text_neighbours(
+    conn: &mut PgConnection,
+    item_id: Uuid,
+    title: &str,
+    limit: i64,
+) -> Result<Vec<ScoredNeighbour>, EmbeddingError> {
+    // A lexeme goes into a tsquery as a quoted literal. A lexeme with a quote
+    // or a backslash is left out, so that no lexeme acts as tsquery syntax.
+    let rows = sql_query(
+        "WITH words AS ( \
+             SELECT DISTINCT w \
+               FROM unnest(tsvector_to_array(to_tsvector('english', $2))) AS w \
+              WHERE w !~ '[''\\\\]' \
+         ), \
+         total AS (SELECT count(*)::float8 AS n FROM item_search), \
+         weighted AS ( \
+             SELECT quote_literal(w)::tsquery AS q, \
+                    (quote_literal(w) || ':A')::tsquery AS qa, \
+                    ln(((SELECT n FROM total) + 1) / \
+                       ((SELECT count(*) FROM item_search s \
+                          WHERE s.tsv @@ quote_literal(w)::tsquery) + 0.5)) AS idf \
+               FROM words \
+         ), \
+         any_word AS ( \
+             SELECT string_agg(quote_literal(w), ' | ')::tsquery AS q FROM words \
+         ), \
+         scored AS ( \
+             SELECT s.item_id, \
+                    sum(CASE WHEN s.tsv @@ x.qa THEN x.idf \
+                             WHEN s.tsv @@ x.q THEN x.idf * 0.5 \
+                             ELSE 0 END) \
+                    / NULLIF((SELECT sum(idf) FROM weighted), 0) AS score \
+               FROM item_search s CROSS JOIN weighted x \
+              WHERE s.item_id <> $1 \
+                AND s.tsv @@ (SELECT q FROM any_word) \
+              GROUP BY s.item_id \
+         ) \
+         SELECT d.id, d.short_code, d.entity_type, d.title, \
+                (d.deleted_at IS NOT NULL) AS archived, NULL::text AS heading, \
+                COALESCE(sc.score, 0)::float8 AS text_score \
+           FROM scored sc \
+           JOIN entity_directory d ON d.id = sc.item_id \
+          ORDER BY sc.score DESC NULLS LAST, d.short_code \
+          LIMIT $3",
+    )
+    .bind::<SqlUuid, _>(item_id)
+    .bind::<Text, _>(title)
+    .bind::<BigInt, _>(limit)
+    .load::<ScoredNeighbour>(conn)?;
+    Ok(rows)
+}
+
 /// A `websearch_to_tsquery` query that matches any word of `title`.
 ///
 /// The words are the runs of letters and digits, joined by `OR`. So nothing of

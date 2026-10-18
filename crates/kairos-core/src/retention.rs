@@ -71,8 +71,10 @@ pub enum RetentionConfigError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetentionMode {
     /// Offload candidates as NDJSON to the archive target, then prune. With
-    /// NO target configured, nothing is pruned — a warning is logged and
-    /// counted instead (data is never destroyed without an offload copy).
+    /// NO target configured, nothing is pruned — the sweep reads no row, and
+    /// a warning is logged, counted and recorded as [`SKIPPED_NO_TARGET`]
+    /// instead (data is never destroyed without an offload copy,
+    /// KAIROS-T-0631).
     Archive,
     /// Prune candidates WITHOUT archiving (explicit operator opt-in to data
     /// destruction).
@@ -237,6 +239,71 @@ impl RetentionConfig {
     /// [`RetentionConfig::from_lookup`] over the process environment.
     pub fn from_env() -> Result<Self, RetentionConfigError> {
         Self::from_lookup(|name| std::env::var(name).ok())
+    }
+}
+
+/// The record of a sweep that `archive` mode with no target skipped
+/// (KAIROS-T-0631): the audit row of each tenant and the job of the pass
+/// carry it.
+pub const SKIPPED_NO_TARGET: &str = "skipped: no target";
+
+/// What a retention pass with a config does (KAIROS-T-0631).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetentionStatus {
+    /// The pass archives (or discards) the candidates and prunes them.
+    Prunes,
+    /// `off`: the sweeper does not run.
+    Off,
+    /// `archive` with no target: the pass reads no row of `item_history`
+    /// and `activity_log`, and prunes nothing.
+    NoTarget,
+    /// `archive` with an `s3://` target: each pass fails, because this
+    /// version has only the filesystem target.
+    TargetNotImplemented,
+}
+
+impl RetentionStatus {
+    /// The wire name of the status.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RetentionStatus::Prunes => "prunes",
+            RetentionStatus::Off => "off",
+            RetentionStatus::NoTarget => "no_target",
+            RetentionStatus::TargetNotImplemented => "target_not_implemented",
+        }
+    }
+}
+
+impl RetentionConfig {
+    /// What a pass with this config does.
+    pub fn status(&self) -> RetentionStatus {
+        match (self.mode, &self.archive_target) {
+            (RetentionMode::Off, _) => RetentionStatus::Off,
+            (RetentionMode::Discard, _) => RetentionStatus::Prunes,
+            (RetentionMode::Archive, None) => RetentionStatus::NoTarget,
+            (RetentionMode::Archive, Some(ArchiveTarget::S3(_))) => {
+                RetentionStatus::TargetNotImplemented
+            }
+            (RetentionMode::Archive, Some(ArchiveTarget::Filesystem(_))) => RetentionStatus::Prunes,
+        }
+    }
+
+    /// The warning for an operator when the pass prunes nothing or fails
+    /// by its config (KAIROS-T-0631): `/readyz` and the Admin overview
+    /// show it. `None`: the config is in order.
+    pub fn warning(&self) -> Option<String> {
+        match self.status() {
+            RetentionStatus::Prunes | RetentionStatus::Off => None,
+            RetentionStatus::NoTarget => Some(format!(
+                "{ENV_RETENTION_MODE} is archive and {ENV_ARCHIVE_TARGET} is not set. \
+                 The retention pass removes no rows from item_history and activity_log. \
+                 Set {ENV_ARCHIVE_TARGET} to a directory, or set {ENV_RETENTION_MODE} to discard."
+            )),
+            RetentionStatus::TargetNotImplemented => Some(format!(
+                "{ENV_ARCHIVE_TARGET} is an s3:// URL. This version has only the filesystem \
+                 target, so each retention pass fails. Set {ENV_ARCHIVE_TARGET} to a directory."
+            )),
+        }
     }
 }
 
@@ -467,6 +534,43 @@ mod tests {
         );
         assert_eq!(ArchiveTarget::parse(""), None);
         assert_eq!(ArchiveTarget::parse("   "), None);
+    }
+
+    #[test]
+    fn status_and_warning_follow_the_mode_and_the_target() {
+        let default = RetentionConfig::default();
+        assert_eq!(default.status(), RetentionStatus::NoTarget);
+        let warning = default.warning().expect("no target warns");
+        assert!(warning.contains(ENV_ARCHIVE_TARGET), "{warning}");
+
+        let fs = RetentionConfig {
+            archive_target: ArchiveTarget::parse("/var/archive"),
+            ..RetentionConfig::default()
+        };
+        assert_eq!(fs.status(), RetentionStatus::Prunes);
+        assert_eq!(fs.warning(), None);
+
+        let s3 = RetentionConfig {
+            archive_target: ArchiveTarget::parse("s3://bucket"),
+            ..RetentionConfig::default()
+        };
+        assert_eq!(s3.status(), RetentionStatus::TargetNotImplemented);
+        assert!(s3.warning().expect("s3 warns").contains("s3://"));
+
+        let discard = RetentionConfig {
+            mode: RetentionMode::Discard,
+            ..RetentionConfig::default()
+        };
+        assert_eq!(discard.status(), RetentionStatus::Prunes);
+        assert_eq!(discard.warning(), None);
+
+        let off = RetentionConfig {
+            mode: RetentionMode::Off,
+            ..RetentionConfig::default()
+        };
+        assert_eq!(off.status(), RetentionStatus::Off);
+        assert_eq!(off.warning(), None);
+        assert_eq!(RetentionStatus::NoTarget.as_str(), "no_target");
     }
 
     // ---- planner ---------------------------------------------------------
