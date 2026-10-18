@@ -77,7 +77,8 @@ pub(super) fn reads_for(event: Option<&ThinEvent>, code: &str) -> Reads {
         },
         // item_updated, item_transitioned, item_moved, claim_changed,
         // task_state_changed, task_cancelled, item_deleted, item_restored,
-        // relationship_changed, and each kind that comes later.
+        // relationship_changed, note_appended, note_promoted, and each kind
+        // that comes later.
         _ => Reads {
             item: true,
             ..Reads::default()
@@ -142,6 +143,8 @@ pub(super) fn changed_parts(shown: &ItemDetail, read: &ItemDetail) -> Vec<&'stat
     note(read.impacts != shown.impacts, "the impacts");
     note(read.lifecycle != shown.lifecycle, "the lifecycle");
     note(read.archived_at != shown.archived_at, "the archive state");
+    // KAIROS-T-0630: a note is not part of the content.
+    note(read.notes != shown.notes, "the notes");
     parts
 }
 
@@ -187,6 +190,8 @@ mod tests {
             "item_deleted",
             "item_restored",
             "relationship_changed",
+            "note_appended",
+            "note_promoted",
             "a_kind_from_a_newer_server",
         ] {
             assert_eq!(
@@ -300,6 +305,20 @@ mod tests {
         let mut moved = item(5);
         moved.short_code = "B-T-9".to_string();
         assert_eq!(changed_parts(&shown, &moved), vec!["the code"]);
+        // KAIROS-T-0630: a new note of the same version is a change of the
+        // notes.
+        let noted: ItemDetail = serde_json::from_value(serde_json::json!({
+            "short_code": "A-T-1",
+            "title": "t",
+            "content": "c",
+            "version": 4,
+            "id": "i",
+            "updated_at": "2026-10-17T00:00:00Z",
+            "notes": [{"id": "n-1", "author": "Robin", "created_at": "2026-10-17T00:00:00Z", "text": "One."}],
+        }))
+        .expect("item decodes");
+        assert!(is_newer_copy(&shown, &noted));
+        assert_eq!(changed_parts(&shown, &noted), vec!["the notes"]);
     }
 
     fn value(slug: &str, value: &str) -> MetadataValue {

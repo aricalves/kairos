@@ -2546,7 +2546,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "One item by short code: type, board and column, version, markdown content, metadata, relationships (parent chain, children, blockers and blocked, supporting documents; a done end is marked [done], a cancelled one [cancelled]), and as it applies: the claim of a task in Active, the owner and teams of a strategy or initiative, the owner board and impacted repositories of a document or ADR, the cancel mark of a task, the external references (URIs with a label) of any item. A retired code finds the item and names the current code."
+        description = "One item by short code: type, board and column, version, markdown content and then its notes (each one under `## Note n-3 (date, name)`), metadata, relationships (parent chain, children, blockers and blocked, supporting documents; a done end is marked [done], a cancelled one [cancelled]), and as it applies: the claim of a task in Active, the owner and teams of a strategy or initiative, the owner board and impacted repositories of a document or ADR, the cancel mark of a task, the external references (URIs with a label) of any item. A retired code finds the item and names the current code."
     )]
     pub async fn get_item(
         &self,

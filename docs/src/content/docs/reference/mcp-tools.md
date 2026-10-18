@@ -607,7 +607,7 @@ Refuses: `NOT_FOUND` for an unknown board; `VALIDATION` for a date that is not
 ### `get_item`
 
 Full detail of one item: type, board and column, version, full markdown
-content, metadata values, and relationships — parent chain, children, blockers,
+content and its notes, metadata values, and relationships — parent chain, children, blockers,
 supporting documents.
 
 | Argument | Type | Required | Default | Description |
