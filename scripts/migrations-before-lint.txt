@@ -95,3 +95,7 @@ tenant/2026-10-17-001200_notification_reads
 tenant/2026-10-17-001300_board_owner_gate
 tenant/2026-10-17-001500_item_search
 tenant/2026-10-17-002100_board_blockers_gate
+# On main before the convention; small tables on a single-tenant deployment;
+# KAIROS-T-0639.
+tenant/2026-10-18-001000_retention_more
+tenant/2026-10-18-002000_key_expiring

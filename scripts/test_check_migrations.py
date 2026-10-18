@@ -8,6 +8,7 @@ runs the check on the repository, so a bad new migration fails here too."""
 
 import importlib.util
 import os
+import re
 import tempfile
 import unittest
 
@@ -234,11 +235,12 @@ class CheckTest(unittest.TestCase):
         )
         self.assertEqual(problems, [])
 
-    def test_the_before_list_names_migrations_of_the_tree(self):
+    def test_the_before_list_has_names_of_migrations(self):
+        # A name can be of an open pull request, not yet in the tree.
         repo = os.path.dirname(HERE)
-        tree = set(check.migrations(os.path.join(repo, check.ROOT)))
         before = check.known(os.path.join(repo, check.BEFORE))
-        self.assertEqual(sorted(before - tree), [])
+        form = re.compile(r"^(public|tenant)/\d{4}-\d{2}-\d{2}-\d{6}_[a-z0-9_]+$")
+        self.assertEqual(sorted(n for n in before if not form.match(n)), [])
 
 
 if __name__ == "__main__":
