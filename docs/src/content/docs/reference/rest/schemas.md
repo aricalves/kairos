@@ -793,7 +793,7 @@ Body of `POST /api/tasks`.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `board_id` | `string`, nullable | no | Board to create the task on — SLUG or UUID (KAIROS-T-0150). Optional when `team_id` is given: the task then goes to the delivery board of that team. A request with no board and no team is a 422, with or without a `repository` (COLLIERY-T-0217, COLLIERY-A-0023). Until then a `repository` alone chose the board (KAIROS-T-0104). |
-| `column_id` | `string`, nullable | no | Column to place it in (UUID); defaults to the board's first column. |
+| `column_id` | `string`, nullable | no | The entry column of the board (UUID), the default (KAIROS-T-0566). A task starts there, for every caller: any other column is a 422 that names the entry column. Create the task, then move it. |
 | `content` | `string` | no | Markdown content; defaults to empty. |
 | `from_team` | `string`, nullable | no | The team that sends the task, by slug or UUID (KAIROS-T-0426). When it is not the team of the board, the task is a request whoever sends it: entry column, support lane. Omit it for today's rule. Kairos does not keep it on the task: name the sending team in the body. |
 | `parent` | `string`, nullable | no | The short code of the parent initiative (KAIROS-T-0572). The server writes the `parent` edge in the transaction of the create: a refused parent leaves no task. A retired code finds its item. In a claims column, `parent_gate` applies (KAIROS-A-0040). |
