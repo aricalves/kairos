@@ -432,8 +432,8 @@ pub(crate) async fn get_relationships(
 /// The link rule applies (COLLIERY-T-0228). The caller can edit the source
 /// or the target. A `blocks` edge needs the target, the blocked item
 /// (KAIROS-T-0569). A caller who can edit the source only gets a proposal
-/// of the edge: the answer is 202 with the proposal, and the message says
-/// who can confirm it (KAIROS-A-0060).
+/// of the edge. The answer is 202 with the proposal. The message says who
+/// can confirm it (KAIROS-A-0060).
 ///
 /// The T-0013 graph
 /// service enforces the A-0001 type-rule matrix, cycle prevention for
