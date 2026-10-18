@@ -38,7 +38,7 @@ use crate::types_auth::{DeploymentConfig, LoginRequest, LoginResponse};
 use crate::types_meta::{
     ActivityEntry, ActivityQuery, ChildrenProgressResponse, CreateMetadataDefinitionRequest,
     CreateRelationshipRequest, CreateTemplateRequest, DeletedResponse, HistoryQuery,
-    HistorySnapshot, HistoryVersion, ItemMetadataResponse, ItemRelationshipsResponse,
+    HistorySnapshot, HistoryVersion, ItemActivityEntry, ItemActivityQuery, ItemMetadataResponse, ItemRelationshipsResponse,
     MetadataDefinition, Relationship, Template, TemplateDetail, UpdateMetadataDefinitionRequest,
     UpdateMetadataRequest, UpdateTemplateRequest,
 };
@@ -2631,6 +2631,22 @@ impl KairosClient {
                 limit: None,
                 offset: None,
             },
+        )
+        .await
+    }
+
+    /// `GET /api/{family}/{short_code}/activity` — the activity of the
+    /// item, newest first, with names (KAIROS-T-0557).
+    pub async fn item_activity(
+        &self,
+        kind: EntityKind,
+        short_code: &str,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> Result<ListEnvelope<ItemActivityEntry>, Error> {
+        self.get_query(
+            &format!("/api/{kind}/{short_code}/activity"),
+            &ItemActivityQuery { limit, offset },
         )
         .await
     }

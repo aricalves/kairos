@@ -237,6 +237,7 @@ differ.
 |---|---|---|---|---|---|
 | `list` | yes | yes | yes | yes | yes |
 | `get` | yes | yes | yes | yes | yes |
+| `history` | yes | yes | yes | yes | yes |
 | `create` | yes | yes | yes | yes | yes |
 | `edit` | yes | yes | yes | yes | yes |
 | `note` | yes | yes | yes | yes | yes |
@@ -328,6 +329,40 @@ board of the document.
 `documents get` and `adrs get` print the line `impacts`. It has the slugs of
 the repositories that the item impacts, or `-`. The mark `[archived]` shows a
 repository that is not live.
+
+### `<noun> history`
+
+```
+kairos <noun> history <SHORT_CODE> [--limit <LIMIT>] [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<SHORT_CODE>` | string | required | The item's short code. A retired code finds the item. |
+| `--limit <LIMIT>` | integer | 20, maximum 200 | Maximum rows of each list: the versions and the activity. |
+
+Prints the history of the item, newest first. The output has the same lines
+as the MCP tool [`get_history`](../mcp-tools/#get_history). First come the
+content versions, with the time and the editor. Then the section
+`## Activity` comes. Each line tells what changed, the time, and who did it.
+The activity has moves, claims, hand-offs, releases, the lane, metadata
+values, state writes, links and more:
+
+```text
+# History of ACME-T-0001
+- v2 — 2026-10-17T09:00:00Z by Robin
+
+## Activity
+- claim handed off: Robin -> Sam — 2026-10-17T10:05:00Z by Robin
+- claim taken: Robin — 2026-10-17T10:00:00Z by Robin
+- moved from Todo to Active — 2026-10-17T10:00:00Z by Robin
+- 3 older rows are not shown. Use a larger --limit to see them.
+```
+
+With `--json`, the command prints one object with two keys. `versions` has
+the envelope of `GET /api/{entity_type}/{short_code}/history`. `activity` has
+the envelope of `GET /api/{entity_type}/{short_code}/activity`. Each envelope
+has `items`, `total`, `limit` and `offset`.
 
 ### `<noun> create`
 

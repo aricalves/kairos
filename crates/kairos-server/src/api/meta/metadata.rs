@@ -8,8 +8,9 @@
 //! admin. Values are validated against the
 //! referenced `metadata_definitions` row — enum membership, date parse,
 //! string passthrough — then upserted into `item_metadata` (`null`
-//! clears). Per A-0004, metadata writes are NOT versioned and write no
-//! history/activity rows.
+//! clears). Per A-0004, metadata writes are NOT versioned. A value that
+//! changes writes one activity row (KAIROS-T-0557), so the activity of the
+//! item says who changed it and when.
 
 use axum::extract::{Extension, Path, State};
 use axum::routing::get;
@@ -17,9 +18,10 @@ use axum::{Json, Router};
 use diesel::prelude::*;
 use diesel::result::Error as DieselError;
 use kairos_client::types_meta as dto;
-use kairos_db::models::templates::NewItemMetadata;
 
-use super::{item_metadata_response, resolve_family_item, validated_metadata_ops};
+use super::{
+    apply_metadata_ops, item_metadata_response, resolve_family_item, validated_metadata_ops,
+};
 use crate::api::Liveness;
 use crate::api::require_item_edit;
 use crate::app::AppState;
@@ -72,7 +74,8 @@ pub(crate) async fn get_metadata(
 ///
 /// Every entry is
 /// validated BEFORE anything is written (A-0003: unknown slug and invalid
-/// values are 422 `VALIDATION`); the writes then apply atomically.
+/// values are 422 `VALIDATION`); the writes then apply atomically. Each
+/// value that changes writes one activity row (KAIROS-T-0557).
 #[utoipa::path(
     patch,
     path = "/api/{entity_type}/{short_code}/metadata",
@@ -114,37 +117,8 @@ pub(crate) async fn update_metadata(
                 kairos_db::notifications::is_p0_bug(conn, item_id).map_err(ApiError::internal)?;
 
             // Phase 2 — apply all upserts/deletes in one transaction.
-            use kairos_db::schema::item_metadata;
             conn.transaction::<_, DieselError, _>(|conn| {
-                for (definition_id, value) in &ops {
-                    match value {
-                        Some(value) => {
-                            diesel::insert_into(item_metadata::table)
-                                .values(NewItemMetadata {
-                                    item_id,
-                                    metadata_definition_id: *definition_id,
-                                    value: value.clone(),
-                                })
-                                .on_conflict((
-                                    item_metadata::item_id,
-                                    item_metadata::metadata_definition_id,
-                                ))
-                                .do_update()
-                                .set(item_metadata::value.eq(value))
-                                .execute(conn)?;
-                        }
-                        None => {
-                            diesel::delete(
-                                item_metadata::table
-                                    .filter(item_metadata::item_id.eq(item_id))
-                                    .filter(
-                                        item_metadata::metadata_definition_id.eq(*definition_id),
-                                    ),
-                            )
-                            .execute(conn)?;
-                        }
-                    }
-                }
+                apply_metadata_ops(conn, item_id, item_type.entity_type(), &ops, user)?;
                 if !was_p0 {
                     kairos_db::notifications::on_p0_bug(conn, item_id, user)?;
                 }

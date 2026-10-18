@@ -401,6 +401,10 @@ pub struct HistoryVersion {
     pub version: i32,
     /// Editor user id (UUID).
     pub edited_by: String,
+    /// The display name of the editor (KAIROS-T-0557). Null for an editor
+    /// that Kairos does not know.
+    #[serde(default)]
+    pub edited_by_name: Option<String>,
     /// RFC 3339.
     pub edited_at: String,
     /// The agent key (UUID) of the request that made this change, when an
@@ -448,6 +452,48 @@ pub struct HistoryQuery {
     /// Rows to skip (default 0).
     #[serde(default)]
     pub offset: Option<i64>,
+}
+
+/// Query of `GET /api/{entity_type}/{short_code}/activity` (KAIROS-T-0557).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+#[serde(deny_unknown_fields)]
+pub struct ItemActivityQuery {
+    /// Page size (default 50, max 200).
+    #[serde(default)]
+    pub limit: Option<i64>,
+    /// Rows to skip (default 0).
+    #[serde(default)]
+    pub offset: Option<i64>,
+}
+
+/// One row of the activity of one item, as returned by
+/// `GET /api/{entity_type}/{short_code}/activity` (KAIROS-T-0557).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ItemActivityEntry {
+    /// Row id (UUID).
+    pub id: String,
+    /// The action of the row, as in [`ActivityEntry::action`].
+    pub action: String,
+    /// The details of the row, as they are stored.
+    pub details: String,
+    /// The row as one line of text, with the names of the people, the
+    /// boards, the columns and the repositories instead of their ids, for
+    /// example `moved from Todo to Active` or `claim taken: Alice`.
+    pub text: String,
+    /// Who did it (user UUID).
+    pub actor_id: String,
+    /// The display name of the actor. Null for an actor that Kairos does
+    /// not know.
+    #[serde(default)]
+    pub actor_name: Option<String>,
+    /// The agent key (UUID) of the request, when an agent made the change
+    /// with the agent key of a person (KAIROS-T-0359). Show
+    /// "Alice (agent)".
+    #[serde(default)]
+    pub agent_key_id: Option<String>,
+    /// RFC 3339.
+    pub occurred_at: String,
 }
 
 // ---------------------------------------------------------------------------

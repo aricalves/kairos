@@ -28,6 +28,7 @@ pub mod forge_actor;
 pub mod forge_filters;
 pub mod graph;
 pub mod impacts;
+pub mod item_activity;
 pub mod item_owners;
 pub mod item_teams;
 pub mod items;

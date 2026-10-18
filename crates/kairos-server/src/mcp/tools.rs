@@ -66,7 +66,7 @@ use kairos_db::models::templates::Template;
 use kairos_db::search::{SearchError, SearchResults};
 use kairos_db::{GraphError, abac, boards, graph, items, repositories, search};
 
-use crate::api::meta::{manage_capability, validated_metadata_ops};
+use crate::api::meta::{apply_metadata_ops, manage_capability, validated_metadata_ops};
 use crate::api::{
     Liveness, atomically, map_board_error, map_graph_error, map_item_error, parse_enum,
     require_capability, require_edge_write, require_item_edit, resolve_short_code,
@@ -318,7 +318,8 @@ pub struct GetItemParams {
 pub struct GetHistoryParams {
     /// The item's short code.
     pub short_code: String,
-    /// Max versions to list (default 20, newest first).
+    /// Max rows of each list, the versions and the activity (default 20,
+    /// newest first).
     pub limit: Option<i64>,
     /// Return this version's full title + content instead of the list.
     pub version: Option<i32>,
@@ -2559,7 +2560,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "An item's content version history (version, editor, timestamp; newest first). Pass `version` to fetch that snapshot's full title + content instead."
+        description = "An item's history, newest first: the content versions (version, editor, time), then the activity (moves, claims, hand-offs, releases, lane, metadata, state, links and more, with who and when). `limit` caps each list. Pass `version` to fetch that snapshot's full title + content instead."
     )]
     pub async fn get_history(
         &self,
@@ -2643,6 +2644,7 @@ impl KairosMcp {
                 ));
             }
             out.push_str(&rename_history(conn, item.id)?);
+            out.push_str(&activity_section(conn, item.id, &item.short_code, limit)?);
             Ok(out)
         })
         .await
@@ -4056,9 +4058,6 @@ impl KairosMcp {
         let user = auth.user_id;
         let slug = tenant.slug.clone();
         self.run_tool(&tenant, move |conn| {
-            use kairos_db::models::templates::NewItemMetadata;
-            use kairos_db::schema::item_metadata;
-
             let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
             require_item_edit(conn, &slug, user, item.id, item.item_type)?;
 
@@ -4072,37 +4071,9 @@ impl KairosMcp {
             let was_p0 =
                 kairos_db::notifications::is_p0_bug(conn, item.id).map_err(ApiError::internal)?;
 
-            // Phase 2 — apply atomically (same shape as the API handler).
+            // Phase 2 — apply atomically (the same function as the API handler).
             conn.transaction::<_, diesel::result::Error, _>(|conn| {
-                for (definition_id, value) in &ops {
-                    match value {
-                        Some(value) => {
-                            diesel::insert_into(item_metadata::table)
-                                .values(NewItemMetadata {
-                                    item_id: item.id,
-                                    metadata_definition_id: *definition_id,
-                                    value: value.clone(),
-                                })
-                                .on_conflict((
-                                    item_metadata::item_id,
-                                    item_metadata::metadata_definition_id,
-                                ))
-                                .do_update()
-                                .set(item_metadata::value.eq(value))
-                                .execute(conn)?;
-                        }
-                        None => {
-                            diesel::delete(
-                                item_metadata::table
-                                    .filter(item_metadata::item_id.eq(item.id))
-                                    .filter(
-                                        item_metadata::metadata_definition_id.eq(*definition_id),
-                                    ),
-                            )
-                            .execute(conn)?;
-                        }
-                    }
-                }
+                apply_metadata_ops(conn, item.id, item.item_type.entity_type(), &ops, user)?;
                 if !was_p0 {
                     kairos_db::notifications::on_p0_bug(conn, item.id, user)?;
                 }
@@ -7004,6 +6975,46 @@ fn rename_history(conn: &mut PgConnection, item_id: Uuid) -> Result<String, ApiE
                 agent_key
             )
         ));
+    }
+    Ok(out)
+}
+
+/// The activity of an item for `get_history` (KAIROS-T-0557): at most
+/// `limit` rows, newest first, each with what changed, the time and who
+/// did it ([`kairos_db::item_activity`]). A last line says how many older
+/// rows the list does not show.
+fn activity_section(
+    conn: &mut PgConnection,
+    item_id: Uuid,
+    short_code: &str,
+    limit: i64,
+) -> Result<String, ApiError> {
+    let page = kairos_db::item_activity::of_item(conn, item_id, short_code, limit, 0)
+        .map_err(ApiError::internal)?;
+    let mut out = "\n## Activity\n".to_string();
+    if page.rows.is_empty() {
+        out.push_str("No activity is recorded for this item.\n");
+        return Ok(out);
+    }
+    for row in &page.rows {
+        out.push_str(&format!(
+            "- {} — {} by {}\n",
+            row.text,
+            row.occurred_at.format("%Y-%m-%dT%H:%M:%SZ"),
+            actor_text(
+                row.actor_name.as_deref().unwrap_or("unknown"),
+                row.agent_key_id
+            )
+        ));
+    }
+    let shown = i64::try_from(page.rows.len()).unwrap_or(i64::MAX);
+    let older = page.total.saturating_sub(shown);
+    match older {
+        ..=0 => {}
+        1 => out.push_str("- 1 older row is not shown. Send a larger `limit` to see it.\n"),
+        _ => out.push_str(&format!(
+            "- {older} older rows are not shown. Send a larger `limit` to see them.\n"
+        )),
     }
     Ok(out)
 }
