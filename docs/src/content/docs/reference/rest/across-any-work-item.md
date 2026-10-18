@@ -62,17 +62,16 @@ activity row is written.
 ### `GET /api/{entity_type}/{short_code}/children-progress`
 
 Direct-children progress rollup for one item (KAIROS-T-0080): the
-live `parent`-edge children grouped by their board column, plus the
+`parent`-edge children grouped by their board column, plus the
 `(done, total)` summary. Supports/informs material never counts;
 resolution 404s exactly like the relationships GET.
 
-**Archived children are excluded, deliberately** (ADR-20 rule 5,
-re-confirmed by KAIROS-T-0158): archived work is not live work, so a
-progress bar must not count it — an initiative would otherwise look
-less finished the more of its work had been put away. This is the
-opposite call from the sibling relationships GET, which now names
-archived children, and the pair is the whole distinction: containment
-is a fact about the record, progress is a fact about live work.
+**An archived child counts by the column that it was archived from**
+(KAIROS-T-0571). A child archived from a done column counts as done,
+or as cancelled with the cancel mark. So "Archive completed" keeps the
+progress of an initiative. A child archived from another column is in
+`removed`. It is not open work, and it is not in `total` or in
+`by_column`.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|

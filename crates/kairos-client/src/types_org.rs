@@ -1178,9 +1178,9 @@ pub struct BoardFlowQuery {
 }
 
 /// The flow metrics of a board for a range (KAIROS-T-0372), from the
-/// history of the moves (`activity_log`). The items of the board count,
-/// and an archived item counts until its archive (KAIROS-T-0571). A
-/// cancelled task counts apart from the done items.
+/// history of the moves (`activity_log`). An archived item counts until
+/// its archive (KAIROS-T-0571), and a cancelled task apart from the done
+/// items.
 ///
 /// The start of an item is its first entry into a start column. A start
 /// column has `claims` (Active). With no such column, the column named
