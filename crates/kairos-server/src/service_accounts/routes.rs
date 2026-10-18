@@ -104,7 +104,7 @@ pub(crate) struct CreateApiKeyRequest {
 }
 
 /// The scope of a new agent key (KAIROS-T-0536). A scope never adds a
-/// right: the key can do an action when the person can do it AND the scope
+/// right. The key does an action when the person can do it and the scope
 /// has it.
 #[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]

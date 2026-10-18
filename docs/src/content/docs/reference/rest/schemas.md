@@ -1520,7 +1520,7 @@ One board of a [`KeyScopeView`].
 
 ## KeyScopeRequest
 
-The scope of a new agent key (KAIROS-T-0536). A scope never adds a right: the key can do an action when the person can do it AND the scope has it.
+The scope of a new agent key (KAIROS-T-0536). A scope never adds a right. The key does an action when the person can do it and the scope has it.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
