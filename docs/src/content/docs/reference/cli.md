@@ -784,8 +784,8 @@ kairos state <SHORT_CODE> [--branch <BRANCH>] [--commit <COMMIT>] [--pushed | --
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
 | `<SHORT_CODE>` | string | required | The task's short code. |
-| `--branch <BRANCH>` | string | none | The branch of the work. |
-| `--commit <COMMIT>` | string | none | The last commit (a hash or a short hash). |
+| `--branch <BRANCH>` | string | kept | The branch of the work. |
+| `--commit <COMMIT>` | string | kept | The last commit (a hash or a short hash). |
 | `--pushed` | flag | kept | The last commit is pushed. |
 | `--not-pushed` | flag | kept | The last commit is not pushed. |
 | `--pr <URL>` | string | kept | The URL of the PR. |
