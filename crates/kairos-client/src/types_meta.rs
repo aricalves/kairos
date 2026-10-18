@@ -170,6 +170,27 @@ pub struct Relationship {
     pub created_at: String,
 }
 
+/// The answer of `POST /api/relationships` when the call made a proposal
+/// and no edge (202, KAIROS-T-0569). A `blocks` edge needs the right to
+/// edit the target. A caller who can edit the source only gets this.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ProposedRelationship {
+    /// What the call did, and who can confirm the proposal.
+    pub message: String,
+    /// The proposal. Confirm it with `POST /api/proposals/{id}/confirm`.
+    pub proposal: crate::types_search::EdgeProposalDto,
+}
+
+/// What `POST /api/relationships` did (KAIROS-T-0569): the edge (201), or
+/// a proposal of it (202).
+#[derive(Debug, Clone, PartialEq)]
+pub enum RelationshipOutcome {
+    /// 201: the edge exists.
+    Linked(Relationship),
+    /// 202: a proposal waits for a decision.
+    Proposed(ProposedRelationship),
+}
+
 // ---------------------------------------------------------------------------
 // Item metadata (KAIROS-A-0003)
 // ---------------------------------------------------------------------------

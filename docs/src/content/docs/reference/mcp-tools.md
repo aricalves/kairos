@@ -1718,8 +1718,17 @@ Creates a relationship edge between two items.
 | `label` | string | no | — | For `external` only: the label of the reference, at most 200 characters. |
 
 The [link rule](../capabilities/#who-can-write-relationships) applies. The
-caller can edit the source or the target. One end is sufficient. The rule is
-the same for each relationship type, and no type needs the admin role.
+caller can edit the source or the target. One end is sufficient. No type needs
+the admin role.
+
+The create of a `blocks` edge needs the target, the blocked item
+(KAIROS-T-0569). With the source only, the call makes a proposal and no edge.
+The answer names the proposal and says who can confirm it. See
+[A `blocks` edge needs the blocked item](../capabilities/#a-blocks-edge-needs-the-blocked-item).
+
+```text
+Proposed ACME-T-0012 -[blocks]-> ACME-T-0031 (proposal 4f1c2a8e-0000-4000-8000-000000000001). It is NOT an edge yet. A blocks edge needs the right to edit the blocked item ACME-T-0031. You can edit only ACME-T-0012, so the call made a proposal. A holder of "approve_proposals" on the board web-delivery or on the board platform-delivery can confirm or reject it. An organization admin can too.
+```
 
 The caller can edit an item that the caller created. So a request that the
 caller sent to a different team can block an item of the caller. The caller
@@ -1744,7 +1753,8 @@ The tool refuses with these codes:
 | Code | When |
 |---|---|
 | `VALIDATION` | The `relationship` is not in the vocabulary. The `source` or the `target` does not name a live item. The `source` and the `target` are the same item. |
-| `FORBIDDEN` | The caller can edit neither end. The message names the capability for each end. |
+| `FORBIDDEN` | The caller can edit neither end. The message names the capability for each end. For `blocks`, it names the target first. |
+| `CONFLICT` | For `blocks` with the source only: the same proposal is pending, or the item has 10 pending proposals. |
 | `RELATIONSHIP_RULE` | That relationship is not possible between those two item types. |
 | `CYCLE_DETECTED` | The edge makes a cycle. |
 | `ALREADY_LINKED` | The edge is there. |

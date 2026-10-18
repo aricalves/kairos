@@ -3,7 +3,8 @@
 //!
 //! Reads are open tenant-wide; POST/DELETE take the link rule
 //! (COLLIERY-T-0228): the caller may edit the item at either end, for each
-//! relationship type. COLLIERY-T-0235 narrows it for the remove of the
+//! relationship type. The POST of a `blocks` edge needs the target, and
+//! the source alone gives a proposal (202, KAIROS-T-0569). COLLIERY-T-0235 narrows it for the remove of the
 //! `supports` edge of a document: see [`crate::api::require_edge_remove`].
 //! The T-0013 typed link
 //! errors map to 422 with a machine-readable reason:
@@ -16,6 +17,7 @@ use std::collections::HashMap;
 
 use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use kairos_client::types_meta as dto;
@@ -28,7 +30,10 @@ use diesel::prelude::*;
 
 use super::resolve_family_item;
 use crate::api::convert_meta::{relationship_dto, timestamp};
-use crate::api::{Liveness, parse_enum, parse_uuid, require_edge_write, resolve_live_ref};
+use crate::api::{
+    LinkOutcome, Liveness, link_or_propose, link_proposal_text, parse_enum, parse_uuid,
+    resolve_live_ref,
+};
 use crate::app::AppState;
 use crate::body::ApiJson;
 use crate::error::ApiError;
@@ -399,13 +404,13 @@ pub(crate) async fn get_relationships(
     Ok(Json(response))
 }
 
-/// Create a relationship edge.
+/// Create a relationship edge, or a proposal of a `blocks` edge.
 ///
 /// The link rule applies (COLLIERY-T-0228). The caller can edit the source
-/// or the target. The rule is the same for each relationship type.
-///
-/// One exception (COLLIERY-T-0235) is a `supports` edge to a document
-/// that has no parent. The caller must be able to edit the document.
+/// or the target. A `blocks` edge needs the target, the blocked item
+/// (KAIROS-T-0569). A caller who can edit the source only gets a proposal
+/// of the edge: the answer is 202 with the proposal, and the message says
+/// who can confirm it (KAIROS-A-0060).
 ///
 /// The T-0013 graph
 /// service enforces the A-0001 type-rule matrix, cycle prevention for
@@ -418,7 +423,9 @@ pub(crate) async fn get_relationships(
     request_body = dto::CreateRelationshipRequest,
     responses(
         (status = 201, description = "Edge created (relationship_add activity row written)", body = dto::Relationship),
-        (status = 403, description = "The caller may edit neither the source nor the target. For a supports edge to a document with no parent: the caller may not edit the document", body = kairos_client::types::ErrorEnvelope),
+        (status = 202, description = "No edge: a proposal of a blocks edge. The caller can edit the source only. The message says who can confirm it", body = dto::ProposedRelationship),
+        (status = 403, description = "The caller may edit neither the source nor the target", body = kairos_client::types::ErrorEnvelope),
+        (status = 409, description = "CONFLICT: the same proposal is pending, or the item has too many pending proposals", body = kairos_client::types::ErrorEnvelope),
         (status = 422, description = "Rule violation, cycle, duplicate edge, or unknown endpoint", body = kairos_client::types::ErrorEnvelope),
     ),
 )]
@@ -427,32 +434,50 @@ pub(crate) async fn create_relationship(
     Extension(auth): Extension<AuthContext>,
     Extension(tenant): Extension<TenantContext>,
     ApiJson(body): ApiJson<dto::CreateRelationshipRequest>,
-) -> Result<(StatusCode, Json<dto::Relationship>), ApiError> {
+) -> Result<Response, ApiError> {
     let relationship = parse_enum(&body.relationship, "relationship", RelationshipType::ALL)?;
     let user = auth.user_id;
     let tenant_ctx = tenant.clone();
-    let created = state
+    state
         .blocking
         .run(&tenant.slug, move |conn| {
             // KAIROS-T-0560: a retired code follows to its item, and the
             // answer has the current codes.
             let source = resolve_live_ref(conn, &body.source_short_code, "source_short_code")?;
             let target = resolve_live_ref(conn, &body.target_short_code, "target_short_code")?;
-            // COLLIERY-T-0228: the link rule, for each relationship type.
-            require_edge_write(
+            // COLLIERY-T-0228, KAIROS-T-0569: the link rule and the write,
+            // by the ONE function that MCP `link_items` calls.
+            match link_or_propose(
                 conn,
                 tenant_ctx.role,
                 user,
-                relationship.as_str(),
+                relationship,
                 source.typed(),
                 target.typed(),
-            )?;
-            let created = graph::link_items(conn, source.id, target.id, relationship, user)
-                .map_err(map_link_error)?;
-            Ok(relationship_dto(created, source.code, target.code))
+            )? {
+                LinkOutcome::Linked(created) => Ok((
+                    StatusCode::CREATED,
+                    Json(relationship_dto(created, source.code, target.code)),
+                )
+                    .into_response()),
+                LinkOutcome::Proposed { proposal, boards } => {
+                    let message = link_proposal_text(
+                        &source.code,
+                        &target.code,
+                        relationship.as_str(),
+                        &proposal,
+                        &boards,
+                    );
+                    let proposal = crate::api::proposals::to_dto(conn, *proposal)?;
+                    Ok((
+                        StatusCode::ACCEPTED,
+                        Json(dto::ProposedRelationship { message, proposal }),
+                    )
+                        .into_response())
+                }
+            }
         })
-        .await?;
-    Ok((StatusCode::CREATED, Json(created)))
+        .await
 }
 
 /// Remove a relationship edge by id.

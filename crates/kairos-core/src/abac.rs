@@ -483,8 +483,48 @@ pub fn manage_capability(item_type: crate::short_code::ItemType) -> &'static str
 /// The rule decides WHO. It does not decide WHICH edges can exist: the
 /// type rules (`graph::check_link`), the cycle check and the duplicate
 /// check do not change.
+///
+/// One exception since KAIROS-T-0569: the CREATE of a `blocks` edge needs
+/// the target ([`edge_create`]).
 pub fn may_write_edge(may_edit_source: bool, may_edit_target: bool) -> bool {
     may_edit_source || may_edit_target
+}
+
+/// What the create of an edge does (KAIROS-T-0569): the answer of
+/// [`edge_create`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgeCreate {
+    /// The principal writes the edge.
+    Link,
+    /// The principal may not write the edge, and the call records a
+    /// proposal of it. A decider confirms it (KAIROS-A-0060).
+    Propose,
+    /// The principal may not write the edge, nor propose it by this call.
+    Refuse,
+}
+
+/// THE LINK RULE FOR THE CREATE OF AN EDGE (KAIROS-T-0569).
+///
+/// A `blocks` edge changes the work of the TARGET: its card shows it
+/// blocked, and its claimant gets the events. So the principal must be
+/// able to edit the target. A principal who can edit the source only
+/// gets a proposal, which a decider confirms or rejects. Each other type
+/// keeps the rule of [`may_write_edge`]: either end.
+///
+/// The remove of an edge keeps [`may_write_edge`] for each type, `blocks`
+/// too. To remove a blocker is not to block the work of a different team.
+pub fn edge_create(
+    relationship: crate::graph::Relationship,
+    may_edit_source: bool,
+    may_edit_target: bool,
+) -> EdgeCreate {
+    match relationship {
+        crate::graph::Relationship::Blocks if may_edit_target => EdgeCreate::Link,
+        crate::graph::Relationship::Blocks if may_edit_source => EdgeCreate::Propose,
+        crate::graph::Relationship::Blocks => EdgeCreate::Refuse,
+        _ if may_write_edge(may_edit_source, may_edit_target) => EdgeCreate::Link,
+        _ => EdgeCreate::Refuse,
+    }
 }
 
 /// May this principal REMOVE a `supports` edge that points at a document
@@ -1111,6 +1151,39 @@ mod tests {
         assert!(may_write_edge(true, false));
         assert!(may_write_edge(false, true));
         assert!(!may_write_edge(false, false));
+    }
+
+    /// KAIROS-T-0569: a `blocks` edge needs the target. The source alone
+    /// gives a proposal. Each other type needs one end.
+    #[test]
+    fn a_blocks_edge_needs_the_target() {
+        use crate::graph::Relationship;
+        assert_eq!(
+            edge_create(Relationship::Blocks, true, true),
+            EdgeCreate::Link
+        );
+        assert_eq!(
+            edge_create(Relationship::Blocks, false, true),
+            EdgeCreate::Link
+        );
+        assert_eq!(
+            edge_create(Relationship::Blocks, true, false),
+            EdgeCreate::Propose
+        );
+        assert_eq!(
+            edge_create(Relationship::Blocks, false, false),
+            EdgeCreate::Refuse
+        );
+        for relationship in [
+            Relationship::Parent,
+            Relationship::Supports,
+            Relationship::Informs,
+            Relationship::Supersedes,
+        ] {
+            assert_eq!(edge_create(relationship, true, false), EdgeCreate::Link);
+            assert_eq!(edge_create(relationship, false, true), EdgeCreate::Link);
+            assert_eq!(edge_create(relationship, false, false), EdgeCreate::Refuse);
+        }
     }
 
     /// COLLIERY-T-0228: creation is not a capability. It is not in the

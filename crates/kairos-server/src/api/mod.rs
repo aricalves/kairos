@@ -52,6 +52,8 @@ use diesel::prelude::*;
 use diesel::sql_query;
 use diesel::sql_types::{Text, Uuid as SqlUuid};
 use kairos_client::types as dto;
+/// What the create of an edge does (KAIROS-T-0569).
+pub use kairos_core::abac::EdgeCreate;
 use kairos_core::abac::EditUse;
 use kairos_core::board::TransitionError;
 use kairos_core::short_code::ItemType;
@@ -478,12 +480,17 @@ fn note_claim(
 /// authorization board of the source or of the target, or an admin of the
 /// organization.
 ///
-/// The rule is the same for each relationship type: `parent`, `blocks`,
-/// `supports`, `informs`, `supersedes`. No relationship type needs the
-/// admin role. Until COLLIERY-T-0228 `supports`, `informs` and
-/// `supersedes` did, and `parent` and `blocks` looked at the creator of
-/// the source only (KAIROS-T-0111). Each edge that the old rule allowed,
-/// this rule allows.
+/// ONE EXCEPTION (KAIROS-T-0569): the CREATE of a `blocks` edge needs the
+/// TARGET, the blocked item. A `blocks` edge changes the work of the
+/// target: its card shows it blocked, and its claimant gets the events.
+/// So team A cannot block the work of team B unasked. A principal who can
+/// edit the source only gets a proposal from [`link_or_propose`]. This
+/// function refuses that case: no other path writes a `blocks` edge. The
+/// remove keeps either end ([`require_edge_remove`]).
+///
+/// Until COLLIERY-T-0228 `supports`, `informs` and `supersedes` needed
+/// the admin role, and `parent` and `blocks` looked at the creator of the
+/// source only (KAIROS-T-0111).
 ///
 /// WHY either end. An edge is a statement about two items, and the two are
 /// frequently on the boards of two teams. If the rule needed the two ends,
@@ -495,26 +502,85 @@ fn note_claim(
 /// caller who may edit the two ends of an impossible edge gets
 /// `RELATIONSHIP_RULE`, not `FORBIDDEN`.
 ///
-/// One function for REST `POST /api/relationships` and
+/// One rule for REST `POST /api/relationships` and
 /// `DELETE /api/relationships/{id}`, for MCP `link_items` and
 /// `unlink_items`, and for the edge that MCP `create_item` writes for
 /// `parent`. They cannot give different answers.
 ///
-/// The refusal names the two capabilities, one for each end, of which the
-/// principal needs one. `details.required_capability` and
-/// `details.board_id` are those of the source. `details.any_of` has the
-/// two ends.
+/// The refusal names the two capabilities, one for each end.
+/// `details.any_of` has the two ends. `details.required_capability` and
+/// `details.board_id` are those of the source, and for a `blocks` edge
+/// those of the target.
 ///
 /// COLLIERY-T-0235 had one exception: a `supports` edge to a document
 /// with no board and no parent needed the right to edit the document,
 /// because the first parent gave such a document its authority. Each
 /// document has an owner board now (COLLIERY-T-3109), and no `supports`
 /// edge changes who answers for it, so the exception is gone.
-///
-/// This function is the rule for the CREATE of an edge. The remove is
-/// [`require_edge_remove`], which is this rule for each edge but the
-/// `supports` edge of a document.
 pub fn require_edge_write(
+    conn: &mut PgConnection,
+    role: OrgRole,
+    user_id: Uuid,
+    relationship: &str,
+    source: EdgeEnd,
+    target: EdgeEnd,
+) -> Result<(), ApiError> {
+    match edge_create_rule(conn, role, user_id, relationship, source, target)? {
+        EdgeCreate::Link => Ok(()),
+        EdgeCreate::Propose | EdgeCreate::Refuse => Err(edge_refusal(
+            conn,
+            role,
+            user_id,
+            relationship,
+            source,
+            target,
+            true,
+        )?),
+    }
+}
+
+/// The link rule for the CREATE of an edge, as a value (KAIROS-T-0569):
+/// `Link`, `Propose` (a `blocks` edge, and the principal can edit the
+/// source only) or `Refuse`. A `Link` notes the claim of each end that is
+/// a task ([`crate::claims::note`]).
+pub fn edge_create_rule(
+    conn: &mut PgConnection,
+    role: OrgRole,
+    user_id: Uuid,
+    relationship: &str,
+    (source_id, source_type): EdgeEnd,
+    (target_id, target_type): EdgeEnd,
+) -> Result<EdgeCreate, ApiError> {
+    let kind = relationship_type_of(relationship)?;
+    let source = missing_edit(conn, role, user_id, source_id, source_type, EditUse::Edit)?;
+    let target = missing_edit(conn, role, user_id, target_id, target_type, EditUse::Edit)?;
+    let outcome = kairos_core::abac::edge_create(
+        kairos_db::graph::core_relationship(kind),
+        source.is_none(),
+        target.is_none(),
+    );
+    if outcome == EdgeCreate::Link {
+        note_claim(conn, user_id, (source_id, source_type))?;
+        note_claim(conn, user_id, (target_id, target_type))?;
+    }
+    Ok(outcome)
+}
+
+/// The relationship type of a name, for the link rule. Each caller sends
+/// the name of a type; any other name is a 400.
+fn relationship_type_of(relationship: &str) -> Result<RelationshipType, ApiError> {
+    RelationshipType::ALL
+        .iter()
+        .copied()
+        .find(|kind| kind.as_str() == relationship)
+        .ok_or_else(|| {
+            ApiError::validation(format!("{relationship:?} is not a relationship type."))
+        })
+}
+
+/// The link rule with EITHER end, for each relationship type: the rule of
+/// the remove of an edge ([`require_edge_remove`]), `blocks` too.
+fn require_edge_either_end(
     conn: &mut PgConnection,
     role: OrgRole,
     user_id: Uuid,
@@ -528,38 +594,229 @@ pub fn require_edge_write(
         note_claim(conn, user_id, (source_id, source_type))?;
         return note_claim(conn, user_id, (target_id, target_type));
     }
-    // From here the answer is a refusal, whatever follows: the text below
-    // only says what is missing.
+    Err(edge_refusal(
+        conn,
+        role,
+        user_id,
+        relationship,
+        (source_id, source_type),
+        (target_id, target_type),
+        false,
+    )?)
+}
+
+/// The 403 of the link rule. `create` = the refusal is for the create of
+/// an edge: a `blocks` edge then names the target first, and says that
+/// the source gives a proposal (KAIROS-T-0569).
+fn edge_refusal(
+    conn: &mut PgConnection,
+    role: OrgRole,
+    user_id: Uuid,
+    relationship: &str,
+    (source_id, source_type): EdgeEnd,
+    (target_id, target_type): EdgeEnd,
+    create: bool,
+) -> Result<ApiError, ApiError> {
+    let source = missing_edit(conn, role, user_id, source_id, source_type, EditUse::Edit)?;
+    let target = missing_edit(conn, role, user_id, target_id, target_type, EditUse::Edit)?;
     let source_capability = meta::manage_capability(source_type);
     let target_capability = meta::manage_capability(target_type);
-    let source_board = source.and_then(|missing| missing.board_id);
-    let target_board = target.and_then(|missing| missing.board_id);
+    let source_board = source.as_ref().and_then(|missing| missing.board_id);
+    let target_board = target.as_ref().and_then(|missing| missing.board_id);
     let need = |capability: &str, board: Option<Uuid>, end: &str| match board {
         Some(_) => format!("{capability:?} on the board of the {end}"),
         None => format!("the organization admin role for the {end}"),
     };
-    Err(ApiError::forbidden(format!(
-        "A {relationship} edge needs {}, or {}.",
-        need(source_capability, source_board, "source"),
+    let blocks = create && relationship == RelationshipType::Blocks.as_str();
+    if !blocks {
+        return Ok(ApiError::forbidden(format!(
+            "A {relationship} edge needs {}, or {}.",
+            need(source_capability, source_board, "source"),
+            need(target_capability, target_board, "target"),
+        ))
+        .with_details(json!({
+            "relationship": relationship,
+            "required_capability": source_capability,
+            "board_id": source_board,
+            "any_of": [
+                {
+                    "end": "source",
+                    "required_capability": source_capability,
+                    "board_id": source_board,
+                },
+                {
+                    "end": "target",
+                    "required_capability": target_capability,
+                    "board_id": target_board,
+                },
+            ],
+        })));
+    }
+    // A `blocks` edge: the target links, the source alone proposes.
+    let tail = if source.is_none() {
+        "You can edit the source only. Use link_items or POST /api/relationships: they make a          proposal of the edge."
+            .to_string()
+    } else {
+        format!(
+            "With {}, the call makes a proposal of the edge.",
+            need(source_capability, source_board, "source")
+        )
+    };
+    Ok(ApiError::forbidden(format!(
+        "A blocks edge needs {}, the blocked item. {tail}",
         need(target_capability, target_board, "target"),
     ))
     .with_details(json!({
         "relationship": relationship,
-        "required_capability": source_capability,
-        "board_id": source_board,
+        "required_capability": target_capability,
+        "board_id": target_board,
         "any_of": [
-            {
-                "end": "source",
-                "required_capability": source_capability,
-                "board_id": source_board,
-            },
             {
                 "end": "target",
                 "required_capability": target_capability,
                 "board_id": target_board,
+                "gives": "edge",
+            },
+            {
+                "end": "source",
+                "required_capability": source_capability,
+                "board_id": source_board,
+                "gives": "proposal",
             },
         ],
     })))
+}
+
+/// What the create of an edge did (KAIROS-T-0569).
+pub enum LinkOutcome {
+    /// The edge exists.
+    Linked(kairos_db::models::graph::ItemRelationship),
+    /// The call recorded a proposal of the edge. `boards` decide it
+    /// (KAIROS-A-0060).
+    Proposed {
+        proposal: Box<kairos_db::proposals::EdgeProposal>,
+        boards: kairos_db::proposals::ApprovalBoards,
+    },
+}
+
+/// The claim of a proposal that the link rule makes (KAIROS-T-0569).
+pub const LINK_PROPOSAL_CLAIM: &str = "a blocks edge from a caller who can edit the source only";
+
+/// The reason of a proposal that the link rule makes, for the decider.
+const LINK_PROPOSAL_WHY: &str = "The caller asked for this blocks edge. The caller can edit the \
+                                 blocker and not the blocked item, so the edge waits for a \
+                                 decision.";
+
+/// Create an edge, or record a proposal of it (KAIROS-T-0569): the link
+/// rule ([`edge_create_rule`]) and the write, in ONE transaction.
+///
+/// One function for REST `POST /api/relationships` and MCP `link_items`.
+/// A `blocks` edge from a principal who can edit the source only becomes
+/// a proposal ([`kairos_db::proposals::propose`]). The proposal first
+/// passes the type rule and the duplicate check of the edge, so a
+/// proposal that cannot become an edge is not recorded. The confirm does
+/// the cycle check ([`kairos_db::graph::link_items`]).
+pub fn link_or_propose(
+    conn: &mut PgConnection,
+    role: OrgRole,
+    user_id: Uuid,
+    relationship: RelationshipType,
+    source: EdgeEnd,
+    target: EdgeEnd,
+) -> Result<LinkOutcome, ApiError> {
+    atomically(conn, |conn| {
+        match edge_create_rule(conn, role, user_id, relationship.as_str(), source, target)? {
+            EdgeCreate::Link => {
+                kairos_db::graph::link_items(conn, source.0, target.0, relationship, user_id)
+                    .map(LinkOutcome::Linked)
+                    .map_err(meta::relationships::map_link_error)
+            }
+            EdgeCreate::Refuse => Err(edge_refusal(
+                conn,
+                role,
+                user_id,
+                relationship.as_str(),
+                source,
+                target,
+                true,
+            )?),
+            EdgeCreate::Propose => {
+                propose_edge_of_link(conn, user_id, relationship, source, target)
+            }
+        }
+    })
+}
+
+/// The proposal of [`link_or_propose`]: the type rule, the duplicate
+/// check, then the proposal and the boards that decide it.
+fn propose_edge_of_link(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+    relationship: RelationshipType,
+    (source_id, source_type): EdgeEnd,
+    (target_id, target_type): EdgeEnd,
+) -> Result<LinkOutcome, ApiError> {
+    use kairos_db::schema::item_relationships as edges;
+    kairos_core::graph::check_link(
+        kairos_db::graph::core_relationship(relationship),
+        source_type,
+        target_type,
+    )
+    .map_err(|rule| meta::relationships::map_link_error(GraphError::Rule(rule)))?;
+    let linked: bool = diesel::select(diesel::dsl::exists(
+        edges::table
+            .filter(edges::source_id.eq(source_id))
+            .filter(edges::target_id.eq(target_id))
+            .filter(edges::relationship.eq(relationship.as_str())),
+    ))
+    .get_result(conn)
+    .map_err(ApiError::internal)?;
+    if linked {
+        return Err(meta::relationships::map_link_error(
+            GraphError::AlreadyLinked {
+                relationship,
+                source_id,
+                target_id,
+            },
+        ));
+    }
+    let proposal = kairos_db::proposals::propose(
+        conn,
+        kairos_db::proposals::NewProposal {
+            source_id,
+            target_id,
+            relationship,
+            claim: LINK_PROPOSAL_CLAIM,
+            why: LINK_PROPOSAL_WHY,
+            score: 0.0,
+        },
+        user_id,
+    )
+    .map_err(proposals::map_proposal_error)?;
+    let boards = kairos_db::proposals::approval_boards(conn, source_id, target_id)
+        .map_err(proposals::map_proposal_error)?;
+    Ok(LinkOutcome::Proposed {
+        proposal: Box::new(proposal),
+        boards,
+    })
+}
+
+/// The text of a proposal that the link rule made (KAIROS-T-0569), for
+/// the answer of MCP `link_items` and of REST `POST /api/relationships`.
+pub fn link_proposal_text(
+    source_code: &str,
+    target_code: &str,
+    relationship: &str,
+    proposal: &kairos_db::proposals::EdgeProposal,
+    boards: &kairos_db::proposals::ApprovalBoards,
+) -> String {
+    format!(
+        "Proposed {source_code} -[{relationship}]-> {target_code} (proposal {}). It is NOT an \
+         edge yet. A blocks edge needs the right to edit the blocked item {target_code}. You \
+         can edit only {source_code}, so the call made a proposal. {}",
+        proposal.id,
+        boards.deciders()
+    )
 }
 
 /// Is this the edge that gives a document a parent: `supports`, to a
@@ -588,12 +845,12 @@ pub(crate) fn short_code_of(conn: &mut PgConnection, id: Uuid) -> Result<String,
 /// THE RULE FOR THE REMOVE OF AN EDGE (COLLIERY-T-0235): may this
 /// principal remove this edge?
 ///
-/// For each edge but one, the rule is the link rule
-/// ([`require_edge_write`]): the principal may edit the item at either
-/// end. The one is the `supports` edge that points at a DOCUMENT: the
-/// principal must be able to edit the DOCUMENT (its creator,
-/// `manage_documents` on its owner board, or an admin of the
-/// organization). The right to edit the parent is not sufficient. The
+/// For each edge but one, the rule is the link rule with either end: the
+/// principal may edit the item at either end. A `blocks` edge too: the
+/// create needs the target (KAIROS-T-0569), the remove does not. The one
+/// is the `supports` edge that points at a DOCUMENT: the principal must
+/// be able to edit the DOCUMENT (its creator, `manage_documents` on its
+/// owner board, or an admin of the organization). The right to edit the parent is not sufficient. The
 /// refusal is 403 `FORBIDDEN`. THIS NARROWS THE LINK RULE.
 ///
 /// Until COLLIERY-T-3109 a document could have no board, and two more
@@ -612,7 +869,7 @@ pub fn require_edge_remove(
 ) -> Result<(), ApiError> {
     let (document_id, target_type) = target;
     if !is_document_parent_edge(relationship, target_type) {
-        return require_edge_write(conn, role, user_id, relationship, source, target);
+        return require_edge_either_end(conn, role, user_id, relationship, source, target);
     }
 
     let missing = missing_edit(conn, role, user_id, document_id, target_type, EditUse::Edit)?;

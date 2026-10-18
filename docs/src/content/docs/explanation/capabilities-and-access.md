@@ -245,10 +245,28 @@ tenant-wide configuration and reserved to organisation admins; two types were
 later carved out for members. The result was that someone who could rewrite an
 ADR entirely could not record which ADR it superseded. Consistent behaviour is
 the better experience, and nothing about `supports` or `supersedes` makes them
-more dangerous to write than `blocks`.
+more dangerous to write than `parent`.
 
 The rule decides who may write an edge. Which edges can exist at all — the
 type rules, the cycle check — is a property of the graph and is unchanged.
+
+### A blocks edge is asked, not imposed
+
+One edge needs more than one end. A `blocks` edge changes the work of its
+target. The card of the target shows it blocked, and its claimant gets the
+events. With "either end", team A could block the work of team B. Team B did
+not agree, and possibly did not know.
+
+So the create of a `blocks` edge needs the right to edit the target, the
+blocked item (KAIROS-T-0569). The team of the blocked work agrees to wait.
+
+A caller who can edit only the blocker can still have a good reason. So the
+call does not fail: it makes a proposal of the edge. A holder of
+`approve_proposals` on the board of either end confirms it, or an organization
+admin. The answer names the proposal and says who can confirm it.
+
+The remove of a `blocks` edge keeps "either end". To remove a blocker gives no
+work to a different team. A wrong remove is visible, and a new link undoes it.
 
 ### The one edge that carries authority
 
@@ -412,6 +430,8 @@ mean.
 - The edit rule and the link rule (COLLIERY-T-0228): creation is the primary
   mechanism of ownership, a link follows the same rule as an edit, and movement
   stays with the team of the board.
+- A `blocks` edge needs the right to edit the blocked item (KAIROS-T-0569).
+  The source alone gives a proposal. The remove keeps either end.
 - A document always has a parent, and its `supports` edge is written by whoever
   may edit the document (COLLIERY-T-0235).
 - A document names its board, and impacts a repository (COLLIERY-T-0269): the
