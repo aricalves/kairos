@@ -179,8 +179,20 @@ The claim kinds (KAIROS-T-0531):
 | `claim_stale` | A claim has no write and no state change for `KAIROS_STALE_CLAIM_DAYS` days (default 14). The holder gets it, and the owner of the initiative of the task |
 
 Kairos does not end a stale claim. It sends `claim_stale` once for each quiet
-period. A write to the task or to its state starts a new period. The
-[MCP tools reference](../mcp-tools/#your-notifications) lists each kind.
+period. A write to the task or to its state starts a new period.
+
+The key kind (KAIROS-T-0540):
+
+| `kind` | Kairos makes it when |
+|---|---|
+| `key_expiring` | A key expires in 7 days or less. The person of an agent key gets it. For a key of a service account, each organization admin gets it |
+
+Each hour, a periodic pass finds these keys. Kairos sends `key_expiring` one
+time for each key. It sends none for a revoked key or a key with no expiry.
+It sends none for the old key of a rotation.
+
+The text names the key and `kairos keys rotate`. The notification has no item, so `short_code` is empty.
+The [MCP tools reference](../mcp-tools/#your-notifications) lists each kind.
 
 ## Client → server: filters
 
