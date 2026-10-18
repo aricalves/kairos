@@ -231,8 +231,42 @@ refuses a delivery to a private address that another server sends.
 
 ## What to watch
 
-The table is the record of the background work. These queries need a
-connection to the database with read access to `public.jobs`.
+The table is the record of the background work. Kairos shows it in three
+places: the metrics, an endpoint, and the Admin overview.
+
+**The metrics.** `GET /metrics` gives these families:
+
+| Metric | Type | Labels | What it counts |
+|---|---|---|---|
+| `kairos_jobs` | gauge | `kind`, `state` | The jobs in the table now, of all the organizations. |
+| `kairos_job_failures_total` | counter | `kind` | The jobs that this server wrote as `failed`. |
+| `kairos_job_lease_kills_total` | counter | `kind` | The jobs that the watchdog of this server stopped for no progress. |
+
+The `state` label is `queued`, `leased`, `done` or `failed`. One grouped
+query reads the gauges. A server keeps the result for 15 seconds, so a
+frequent scrape does not load the database. The counters are for each server.
+They start at 0 when the server starts. Add the counters of all the servers.
+
+Alert on these conditions:
+
+- `kairos_jobs{state="queued"}` grows for a kind: the servers have too
+  little capacity for that kind.
+- `rate(kairos_job_failures_total[1h])` is above 0: read the errors.
+- `rate(kairos_job_lease_kills_total[1h])` is above 0: a job stalls, or a
+  server is too slow.
+
+**The endpoint.** `GET /api/admin/jobs` gives the jobs by kind and state.
+It also gives the last 20 failed jobs, newest first, with their error. Kairos
+cuts each error to 500 characters. Only an organization admin can read it.
+It shows the jobs of the organization and the jobs of the deployment, such
+as the periodic passes. It does not show the jobs of other organizations.
+`kairos admin jobs` prints the same data. The Admin overview of the GUI
+shows it in the panel "Job queue".
+
+A finished job stays in the table for 7 days. Then the worker removes it.
+
+**The table.** These queries need a connection to the database with read
+access to `public.jobs`. They show all the organizations.
 
 **Failed jobs.** A failed job does not run again. Its reason is in
 `last_error`:

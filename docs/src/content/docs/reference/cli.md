@@ -33,6 +33,7 @@ Command groups, each detailed below:
 | Published sites | `pages` |
 | Machine access | `service-accounts`, `keys`, `admin agent-keys` |
 | Code index settings | `admin code-index-settings` |
+| The job queue | `admin jobs` |
 | Deployment administration | `admin tenants` |
 | The code index of a checkout | `index` |
 | The CLI itself | `self-update` |
@@ -94,7 +95,7 @@ the per-command tables below.
 |---|---|---|---|
 | `--url <URL>` | string | `KAIROS_URL`, then the only cached deployment | Deployment base URL. Required when more than one deployment is cached and `KAIROS_URL` is not set. |
 | `--tenant <TENANT>` | string | the tenant cached at login (none with a key) | Tenant slug, sent as the `X-Tenant` header. Used by deployments that resolve tenants by header rather than by host subdomain. |
-| `--json` | flag | off | Print the raw JSON DTO instead of the human-readable table. |
+| `--json` | flag | off | Print JSON instead of the human-readable table. A list prints one envelope: see [the JSON of a list](#the-json-of-a-list). |
 
 `--url` values are normalized by trimming whitespace and trailing slashes, so
 `https://kairos.example/` and `https://kairos.example` address the same cached
@@ -115,8 +116,8 @@ A command can also use a key in place of the login.
 | `KAIROS_QUIET` | `1` stops the warning of a key that hides a login. |
 | `KAIROS_TIMEOUT` | The time in seconds that a command waits for an answer. The default is 60. A connection gets 5 seconds. A value that is not a positive integer stops the command with exit code 1. |
 | `KAIROS_UPDATE_CHECK` | `0` turns off the daily version check (see [`kairos self-update`](#kairos-self-update)). |
-| `KAIROS_AUTO_UPDATE` | `1` makes the daily check install the newer version of the server instead of printing a line. |
-| `KAIROS_RELEASES_URL` | The base URL of the release tarballs for `self-update --version` and `--latest`, for a mirror. The default is the GitHub releases. |
+| `KAIROS_AUTO_UPDATE` | `1` makes the daily check install the newer version of the server instead of printing a line. It does not install from an `http://` deployment. |
+| `KAIROS_RELEASES_URL` | The base URL of the published releases, for a mirror. `self-update` takes each checksum from it, and the tarballs of `--version` and `--latest`. The default is the GitHub releases. |
 
 A key carries its tenant, so it needs no `--tenant`. A 401 for a key names the
 variable that holds it.
@@ -293,6 +294,7 @@ kairos <noun> list [OPTIONS]
 |---|---|---|---|
 | `--limit <LIMIT>` | integer | server default 50, maximum 200 | Page size. |
 | `--offset <OFFSET>` | integer | 0 | Rows to skip. |
+| `--all` | flag | off | Read each page. The CLI asks for one page after the other and prints each row. Not with `--limit` or `--offset`. |
 | `--include-deleted` | flag | off | Also list archived (put-away) items, marked `[archived]` in the `CODE` column. Without the flag, only live items are returned. |
 
 `documents list` and `adrs list` have one more option:
@@ -318,13 +320,57 @@ Next: --offset 200
 
 The `Next:` line is there only when more rows follow the page. To read the
 next page, run the command again with that option. The last page has no
-`Next:` line. With `--json`, the command prints the envelope of the server
-as it is: `items`, `total`, `limit` and `offset`.
+`Next:` line.
+
+`--all` reads each page. The CLI asks for one page after the other, with the
+maximum page size of the server. It prints each row, and then `total: N`.
+`--all` with `--limit` or `--offset` is a usage error (exit 64).
 
 These verbs page so: `<noun> list`, `boards list`,
 `members list`, `teams list`, `streams list`, `repos list`, `metadata list`,
 `templates list`, `admin agent-keys list`, `admin tenants list` and
 `kairos search`.
+
+#### The JSON of a list
+
+With `--json`, each `list` verb and `kairos search` print one envelope
+(KAIROS-A-0057):
+
+```json
+{
+  "items": [ ... ],
+  "total": 340,
+  "next_offset": 200
+}
+```
+
+| Key | Description |
+|---|---|
+| `items` | The rows of the page. With `--all`, each row. |
+| `total` | The count of the rows that match, before the page. |
+| `next_offset` | The `--offset` of the next page. It is `null` on the last page and with `--all`. |
+
+A list that the server does not page has the same envelope. Its `total` is
+the count of the rows, and `next_offset` is `null`. These lists are
+`grants list`, `keys list`, `service-accounts list`,
+`boards columns list`, `boards transitions list`, `teams members list`,
+`teams pages list` and `streams teams list`.
+
+`kairos search` gives the hits in one `items` list, in the order of the
+groups: strategies, initiatives, tasks, documents, ADRs. Each hit has an
+`entity_type` key: `strategy`, `initiative`, `task`, `document` or `adr`.
+
+`dispatch list` gives two lists, and keeps its shape:
+`{"rules": [...], "targets": [...]}`.
+
+A script must accept a key that it does not know: a new key can come later.
+
+This envelope changes the `--json` shape of the lists (KAIROS-T-0644).
+Before, a paged list printed the envelope of the server (`items`, `total`,
+`limit`, `offset`). `search` printed the groups in `results`. Some lists
+printed a bare array. A script that reads `results.tasks`, a bare array,
+`limit` or `offset` must change. Read `items`, and use `next_offset` for the
+next page.
 
 ### `<noun> get`
 
@@ -887,6 +933,7 @@ Ordering and paging:
 | `--order <ORDER>` | `asc` \| `desc` | `desc` | Sort order. |
 | `--limit <LIMIT>` | integer | server default 25, maximum 100 | Page size. |
 | `--offset <OFFSET>` | integer | 0 | Offset into the combined result set. |
+| `--all` | flag | off | Read each page of hits. Not with `--limit`, `--offset` or `--query-json`. |
 
 Raw body:
 
@@ -915,6 +962,7 @@ kairos boards list [OPTIONS]
 |---|---|---|---|
 | `--limit <LIMIT>` | integer | server default 50, maximum 200 | Page size. |
 | `--offset <OFFSET>` | integer | 0 | Rows to skip. |
+| `--all` | flag | off | Read each page. The CLI asks for one page after the other and prints each row. Not with `--limit` or `--offset`. |
 
 ### `kairos boards show`
 
@@ -1160,6 +1208,7 @@ kairos members list [OPTIONS]
 |---|---|---|---|
 | `--limit <LIMIT>` | integer | server default 50, maximum 200 | Page size. |
 | `--offset <OFFSET>` | integer | 0 | Rows to skip. |
+| `--all` | flag | off | Read each page. The CLI asks for one page after the other and prints each row. Not with `--limit` or `--offset`. |
 
 ### `kairos members add`
 
@@ -1210,6 +1259,7 @@ kairos teams list [OPTIONS]
 |---|---|---|---|
 | `--limit <LIMIT>` | integer | server default 50, maximum 200 | Page size. |
 | `--offset <OFFSET>` | integer | 0 | Rows to skip. |
+| `--all` | flag | off | Read each page. The CLI asks for one page after the other and prints each row. Not with `--limit` or `--offset`. |
 
 ### `kairos teams get`
 
@@ -1370,6 +1420,7 @@ kairos streams list [OPTIONS]
 |---|---|---|---|
 | `--limit <LIMIT>` | integer | server default 50, maximum 200 | Page size. |
 | `--offset <OFFSET>` | integer | 0 | Rows to skip. |
+| `--all` | flag | off | Read each page. The CLI asks for one page after the other and prints each row. Not with `--limit` or `--offset`. |
 
 ### `kairos streams get`
 
@@ -1443,6 +1494,7 @@ kairos repos list [OPTIONS]
 | `--team <TEAM>` | slug or UUID | all teams | Only this team's repositories. |
 | `--limit <LIMIT>` | integer | server default 50, maximum 200 | Page size. |
 | `--offset <OFFSET>` | integer | 0 | Rows to skip. |
+| `--all` | flag | off | Read each page. The CLI asks for one page after the other and prints each row. Not with `--limit` or `--offset`. |
 
 After the table, the command prints the count of the repositories and the
 page: `total: 12 (limit 50, offset 0)`. See
@@ -1846,6 +1898,7 @@ kairos metadata delete <DEFINITION> --confirm [OPTIONS]
 | `<DEFINITION>` | slug or UUID | required on `update` and `delete` | The metadata definition. |
 | `--limit <LIMIT>` | integer | server default 50, maximum 200 | On `list`: the page size. |
 | `--offset <OFFSET>` | integer | 0 | On `list`: the rows to skip. |
+| `--all` | flag | off | On `list`: read each page. Not with `--limit` or `--offset`. |
 | `--name <NAME>` | string | required on `create` | The name. |
 | `--slug <SLUG>` | string | required on `create` | The slug. |
 | `--type <TYPE>` | string | required on `create` | `string`, `enum` or `date`. It does not change later. |
@@ -1854,8 +1907,8 @@ kairos metadata delete <DEFINITION> --confirm [OPTIONS]
 | `--confirm` | flag | off | Required on `delete` for the deletion to happen. Without it, the command exits 1. |
 
 `list` shows one page of the metadata definitions. See
-[the pages of a list](#the-pages-of-a-list). `update` and `delete` find the
-slug on each page. Only an organization admin can create, update or delete a
+[the pages of a list](#the-pages-of-a-list). `update` and `delete` send the
+slug or the id to the server. The server finds the definition in one call. Only an organization admin can create, update or delete a
 definition. `delete` refuses a definition that an item or a
 template uses, and the message names them.
 
@@ -1873,6 +1926,7 @@ kairos templates delete <TEMPLATE> --confirm [OPTIONS]
 | `<TEMPLATE>` | slug or UUID | required on `update` and `delete` | The template. |
 | `--limit <LIMIT>` | integer | server default 50, maximum 200 | On `list`: the page size. |
 | `--offset <OFFSET>` | integer | 0 | On `list`: the rows to skip. |
+| `--all` | flag | off | On `list`: read each page. Not with `--limit` or `--offset`. |
 | `--name <NAME>` | string | required on `create` | The name. |
 | `--slug <SLUG>` | string | required on `create` | The slug. |
 | `--content <TEXT>` | string | empty | The markdown of a new item of the template. |
@@ -1880,8 +1934,8 @@ kairos templates delete <TEMPLATE> --confirm [OPTIONS]
 | `--confirm` | flag | off | Required on `delete` for the deletion to happen. Without it, the command exits 1. |
 
 `list` shows one page of the templates. See
-[the pages of a list](#the-pages-of-a-list). `update` and `delete` find the
-slug on each page. Only an organization admin can create, update or delete a
+[the pages of a list](#the-pages-of-a-list). `update` and `delete` send the
+slug or the id to the server. The server finds the template in one call. Only an organization admin can create, update or delete a
 template. Items from a deleted template keep their content and their
 metadata.
 
@@ -2070,6 +2124,7 @@ kairos admin agent-keys list [--user <USER>] [OPTIONS]
 | `--user <USER>` | UUID or email | none | Only the keys of this person. A value that names no person gets `422`. |
 | `--limit <LIMIT>` | integer | server default 50, maximum 200 | Page size. |
 | `--offset <OFFSET>` | integer | 0 | Rows to skip. |
+| `--all` | flag | off | Read each page. The CLI asks for one page after the other and prints each row. Not with `--limit` or `--offset`. |
 
 The newest key is first. Each row shows the id, the owner, the name and the
 prefix. It also shows the dates of creation, expiry, last use and revocation.
@@ -2137,6 +2192,28 @@ input, never from an argument:
 printf '%s' "$OLLAMA_KEY" | kairos admin code-index-settings set --summary-provider ollama-cloud --summary-url https://ollama.com/v1 --summary-model gemma4:31b --summary-secret-stdin
 ```
 
+## The job queue
+
+An organization admin reads the job queue. Another person gets `403`. See
+[The job queue](../../explanation/job-queue/#what-to-watch).
+
+### `kairos admin jobs`
+
+```
+kairos admin jobs [OPTIONS]
+```
+
+Shows a table with one row for each kind of job. The columns are the counts of
+the jobs in each state: `QUEUED`, `LEASED`, `DONE` and `FAILED`. Below the
+table, it shows the last 20 failed jobs, newest first. Each failure has a line
+with the time, the kind, the organization, the try and the job id. The error
+is on the next line, at most 500 characters. A job of the deployment shows
+`(deployment)` in place of the organization.
+
+The command shows the jobs of your organization and the jobs of the
+deployment. It does not show the jobs of other organizations. `--json` prints
+the response of `GET /api/admin/jobs`.
+
 ## Deployment administration
 
 `admin tenants` is cross-tenant tenant provisioning, restricted to deployment
@@ -2153,6 +2230,7 @@ kairos admin tenants list [OPTIONS]
 |---|---|---|---|
 | `--limit <LIMIT>` | integer | server default 50, maximum 200 | Page size. |
 | `--offset <OFFSET>` | integer | 0 | Rows to skip. |
+| `--all` | flag | off | Read each page. The CLI asks for one page after the other and prints each row. Not with `--limit` or `--offset`. |
 
 ### `kairos admin tenants create`
 
@@ -2226,7 +2304,7 @@ kairos index update [--root <ROOT>] [--rust-edges] [--link-only] [--max-changed 
 |---|---|---|---|
 | `--rust-edges` (alias `--scip`) | flag | off | Run the SCIP indexers again for the precise edges of the changed code: rust-analyzer, scip-go, scip-typescript and scip-python. |
 | `--link-only` | flag | off | Run no model. Link the summaries of the pool, and make no new summaries. |
-| `--max-changed <MAX_CHANGED>` | integer | 200 | The most files that can change since the base index. Above it, the CLI builds nothing. |
+| `--max-changed <MAX_CHANGED>` | integer | 200 when a model runs, else no limit | The most files that can change since the base index. Above it, the CLI builds nothing. With `--link-only` or on a hosted repository, no model runs. |
 | `--repository <REPOSITORY>` | slug or UUID | `repository` in `.claude/kairos.local.md`, else the repository of the `origin` remote | The repository in Kairos. |
 | `--url <URL>` | string | `KAIROS_URL`, else `deployment_url` in `.claude/kairos.local.md`, else the only deployment of `kairos login` | The deployment. |
 | `--tenant <TENANT>` | string | `tenant` in `.claude/kairos.local.md`, else the tenant of the login | The tenant, for a token from `kairos login`. A key carries its tenant. |
@@ -2292,36 +2370,70 @@ output. The Claude Code plugin starts this command.
 ### `kairos self-update`
 
 ```
-kairos self-update [--url <URL>] [--version <VERSION> | --latest | --check]
+kairos self-update [--url <URL>] [--version <VERSION> | --latest | --check] [--allow-downgrade] [--json]
 ```
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--url <URL>` | string | `KAIROS_URL`, then the only cached deployment | The deployment whose version to install. |
-| `--version <VERSION>` | string | the version of the server | Install this version (e.g. `0.12.0`). |
+| `--version <VERSION>` | string | the version of the server | Install this version (e.g. `0.12.0`). It can be older than the CLI. |
 | `--latest` | flag | off | Install the latest release on GitHub. |
 | `--check` | flag | off | Print the version of the CLI and of the server, and change nothing. The exit code is 3 when the server is newer, else 0. |
+| `--allow-downgrade` | flag | off | Install the version of the server or of `--latest` also when it is older than the CLI. |
+| `--json` | flag | off | Print one JSON object: the versions and the action. |
 
 Installs the version of the server in place of the running binary. The server
-tells its version at `GET /version` (open). It also gives the links of the
-tarball of the CLI and its `.sha256` for each platform. `KAIROS_CLI_DOWNLOAD_URL`
-on the server sets these links; the default is the GitHub releases.
+tells its version at `GET /version` (open). It also gives the link of the
+tarball of the CLI for each platform. `KAIROS_CLI_DOWNLOAD_URL` on the server
+sets these links; the default is the GitHub releases.
 
 The CLI downloads the tarball of its platform,
-`kairos-<version>-<target>.tar.gz`, and checks it against the `.sha256`. It
-writes the new binary to a new file next to the old one. It keeps the old
-binary as `kairos.bak` and renames the new file over the old path. A failed
-download or a bad checksum changes nothing. With `--version` or `--latest`,
-the CLI takes the tarball from the GitHub releases; `KAIROS_RELEASES_URL`
-replaces that URL, for a mirror.
+`kairos-<version>-<target>.tar.gz`. It checks the tarball against the
+`.sha256` of the published release. The CLI always takes the `.sha256` from
+the GitHub releases, also when the server names a mirror for the tarball. The
+CLI does not use the `.sha256` of the server. A server cannot give a tarball that is
+not a published release. `KAIROS_RELEASES_URL` replaces the GitHub releases,
+for a mirror that you trust.
+
+The CLI writes the new binary to a new file next to the old one. It keeps
+the old binary as `kairos.bak` and renames the new file over the old path. A
+failed download or a bad checksum changes nothing.
+
+A version older than the CLI is a downgrade. The command refuses the version
+of the server or of `--latest` when it is older. The refusal names
+`--allow-downgrade` and `--version`, and nothing changes. The exit code is 1.
+`--version` installs the version that it names, older or newer.
 
 `--check` is for a script: `kairos self-update --check || kairos self-update`
 updates the CLI only when the server is newer.
 
+With `--json`, the command prints one object on stdout:
+
+```json
+{
+  "cli_version": "0.14.0",
+  "server_version": "0.13.0",
+  "deployment": "https://kairos.example.com",
+  "version": "0.13.0",
+  "action": "refused",
+  "message": "The version 0.13.0 is older than this CLI (0.14.0). Nothing changed. To install it, use --allow-downgrade or --version 0.13.0.",
+  "binary": null,
+  "backup": null
+}
+```
+
+`action` is `checked` (`--check`), `unchanged` (the same version),
+`updated` (a newer version), `installed` (an older version) or `refused`.
+`server_version` and `deployment` are `null` with `--version` and
+`--latest`. `binary` and `backup` are the paths after a swap. The exit codes
+do not change. An error that is not a refusal is the JSON error envelope on
+stderr.
+
 A server older than this command does not tell its version: name one with
 `--version`, or use `--latest`. The CLI refuses a server whose links
 (`KAIROS_CLI_DOWNLOAD_URL`) have no tarball for this platform. The message
-names the platforms that the server lists.
+names the platforms that the server lists. The CLI also refuses a version
+that is not a release version, such as `1.2.3` or `1.2.3-rc.1`.
 
 The command writes the binary that runs, wherever it is: a `cargo install`
 binary in `~/.cargo/bin` too. A folder the CLI cannot write refuses the
@@ -2335,17 +2447,26 @@ code tools are off until you run `kairos self-update`.
 
 #### The daily check
 
-After a command that succeeded, the CLI asks the default deployment for its
-version. That is `KAIROS_URL`, then the only cached deployment, not the
-`--url` of the command. It does this once a day, with a 2 second limit. The
-commands `login`, `logout`, `index` and `self-update` make no check.
-`KAIROS_UPDATE_CHECK=0` turns the check off, for a script or CI.
+After a command that succeeded, the CLI asks the deployment of that command
+for its version. That is the `--url` of the command, else `KAIROS_URL`, the
+checkout settings of `index` or the only cached deployment. A command that
+uses no deployment asks the default deployment. The check runs once a day
+for each deployment, with a 2 second limit.
 
-When the server is newer, the CLI prints one line on stderr that names
-`kairos self-update`. With `KAIROS_AUTO_UPDATE=1`, the CLI updates itself
-instead of printing the line. It says so on stderr, and the output of the
-command stays what it is. The check keeps its state in `version-check.json`
-in the config directory. A server that does not answer counts as a check.
+The commands `login`, `logout`,
+`index mcp` and `self-update` make no check. The other `index` commands make
+the check. `KAIROS_UPDATE_CHECK=0` turns the check off, for a script or CI.
+
+When the server is newer, the CLI prints one line on stderr. The line names
+`kairos self-update` and `kairos self-update --check`. With
+`KAIROS_AUTO_UPDATE=1`, the CLI updates itself instead of printing the line.
+It says so on stderr, and the output of the command stays what it is.
+`KAIROS_AUTO_UPDATE` does not update from an `http://` deployment: the CLI
+prints the line, and it says why.
+
+The check keeps its state in `version-check.json` in the config directory.
+The CLI records only an answer. When a server does not answer, the next
+command asks it again.
 
 ## Operator subcommands (`kairos-server`)
 
@@ -2442,7 +2563,7 @@ plaintext password never has to be written into a manifest.
 | `credentials.json` inside it | `0600` | The credential cache, keyed by normalized deployment URL. Holds issuer tokens and local sessions. |
 | `credentials.json.lock` inside it | `0600` | The lock of the cache. A token refresh, `login` and `logout` hold it while they change the cache. The lock is an advisory lock of the operating system. Another process waits for it, and then reads the new token. |
 | `credentials.json.<PID>.tmp` inside it | `0600` | The temporary file of a write to the cache. The rename to `credentials.json` removes it. |
-| `version-check.json` inside it | default | The last daily version check: the deployment, the time and the version of the server. |
+| `version-check.json` inside it | default | The last daily version check of each deployment: the time and the version of the server. |
 
 [Configuration](../configuration/#cli-configuration) is the canonical entry for
 the resolution order, the file's full shape, and the refresh behaviour.

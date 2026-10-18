@@ -74,17 +74,10 @@ impl Table {
 /// number of rows on the page. Pure.
 pub fn page_footer(total: i64, limit: i64, offset: i64, shown: usize) -> String {
     let mut out = format!("total: {total} (limit {limit}, offset {offset})\n");
-    let shown = i64::try_from(shown).unwrap_or(i64::MAX);
-    let next = offset.saturating_add(shown);
-    if shown > 0 && next < total {
+    if let Some(next) = crate::listing::next_offset(total, offset, shown) {
         out.push_str(&format!("Next: --offset {next}\n"));
     }
     out
-}
-
-/// Print [`page_footer`].
-pub fn print_page_footer(total: i64, limit: i64, offset: i64, shown: usize) {
-    print!("{}", page_footer(total, limit, offset, shown));
 }
 
 #[cfg(test)]

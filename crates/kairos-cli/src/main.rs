@@ -42,6 +42,7 @@ mod context;
 mod credentials;
 mod error;
 mod index;
+mod listing;
 mod oidc;
 mod password;
 mod provider;
@@ -266,14 +267,23 @@ fn json_requested(args: impl IntoIterator<Item = String>) -> bool {
         .any(|arg| arg == "--json")
 }
 
+/// Whether the daily version check runs after the command (KAIROS-T-0432,
+/// KAIROS-T-0595). Not for the commands that set up the CLI. Not for
+/// `index mcp`: it is a long stdio session with a check of its own at the
+/// start. The other `index` commands make the check.
+fn makes_daily_check(command: &Command) -> bool {
+    match command {
+        Command::Login { .. } | Command::Logout { .. } | Command::SelfUpdate(_) => false,
+        Command::Index(args) => !args.serves_mcp(),
+        _ => true,
+    }
+}
+
 async fn run(command: Command) -> Result<ExitCode, CliError> {
     // KAIROS-T-0432: one line a day when the server is newer, after a
-    // command that succeeded. Not for the commands that set up the CLI, and
-    // not for `index`: its MCP server is a long stdio session.
-    let check = !matches!(
-        command,
-        Command::Login { .. } | Command::Logout { .. } | Command::Index(_) | Command::SelfUpdate(_)
-    );
+    // command that succeeded. The check asks the deployment of the command
+    // (KAIROS-T-0595).
+    let check = makes_daily_check(&command);
     // `self-update --check` has an exit code of its own (KAIROS-T-0588).
     if let Command::SelfUpdate(args) = command {
         return args.run().await;
@@ -766,6 +776,40 @@ mod tests {
         assert_eq!(
             kind(&["kairos"]),
             ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        );
+    }
+
+    /// KAIROS-T-0595: the daily check runs for `index` too, but not for
+    /// its MCP server and not for the commands that set up the CLI.
+    #[test]
+    fn the_daily_check_runs_for_index_but_not_for_its_mcp_server() {
+        let check = |argv: &[&str]| {
+            let cli = Cli::try_parse_from(argv).expect("parses");
+            makes_daily_check(&cli.command)
+        };
+        assert!(check(&["kairos", "index", "status"]));
+        assert!(check(&["kairos", "index", "update"]));
+        assert!(check(&["kairos", "index", "--full"]));
+        assert!(check(&["kairos", "tasks", "get", "X-T-1"]));
+        assert!(!check(&["kairos", "index", "mcp"]));
+        assert!(!check(&["kairos", "self-update", "--check"]));
+        assert!(!check(&["kairos", "logout"]));
+        assert!(!check(&["kairos", "login", "--url", "https://k.test"]));
+    }
+
+    /// KAIROS-T-0595: `self-update` takes `--json` and `--allow-downgrade`;
+    /// `--check` excludes `--allow-downgrade`.
+    #[test]
+    fn self_update_takes_json_and_allow_downgrade() {
+        let cli = Cli::try_parse_from(["kairos", "self-update", "--allow-downgrade", "--json"])
+            .expect("parses");
+        match cli.command {
+            Command::SelfUpdate(args) => assert!(args.allow_downgrade && args.json),
+            _ => panic!("self-update"),
+        }
+        assert!(Cli::try_parse_from(["kairos", "self-update", "--check", "--json"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["kairos", "self-update", "--check", "--allow-downgrade"]).is_err()
         );
     }
 
