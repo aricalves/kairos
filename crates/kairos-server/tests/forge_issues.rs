@@ -7,7 +7,9 @@
 //! - a redelivered event makes no second task;
 //! - closed, edited and reopened events change nothing;
 //! - an excluded author makes no task;
-//! - the issue link is on the item, and not in the in-flight rollups.
+//! - the issue link is on the item, and not in the in-flight rollups;
+//! - KAIROS-T-0566: an `entered_column` dispatch rule of the entry column
+//!   fires once for each task that intake makes.
 //!
 //! The deliveries are recorded fixtures (no network). Runs against the LIVE
 //! compose stack. Owns the scratch database `kairos_forge_issues_t0482_test`.
@@ -25,6 +27,9 @@ use uuid::Uuid;
 use common::{
     AUDIENCE, ISSUER, base_config, drop_scratch_db, recreate_scratch_db, spawn_server, user_token,
     with_database,
+};
+use kairos_client::types_dispatch::{
+    CreateDispatchRuleRequest, CreateWebhookTargetRequest, WebhookDeliveriesQuery,
 };
 use kairos_client::types_forge::CreateForgeConnectionRequest;
 use kairos_db::models::{BoardLevel, NewOrganizationMember, OrgRole};
@@ -112,11 +117,12 @@ async fn issue_intake_against_live_stack() {
             .await
             .expect("OIDC discovery against live Dex"),
     );
-    let router = app::router(app::state_with(
-        base_config(&scratch_url),
-        pool.clone(),
-        auth.clone(),
-    ));
+    // KAIROS-T-0566: a webhook target needs the secrets key; the receiver
+    // is on 127.0.0.1.
+    let mut config = base_config(&scratch_url);
+    config.secrets_key = Some(kairos_server::secrets::SecretsKey::from_bytes([9u8; 32]));
+    config.webhooks.allow_private = true;
+    let router = app::router(app::state_with(config, pool.clone(), auth.clone()));
     let server = spawn_server(router).await;
     let svc = server.client(&svc_token, "acme");
     let _ = svc.whoami().await;
@@ -147,6 +153,54 @@ async fn issue_intake_against_live_stack() {
     let entry = kairos_db::boards::entry_column(&mut conn, board.id)
         .expect("entry column")
         .expect("the board has an entry column");
+
+    // KAIROS-T-0566: a rule for each task that enters the entry column.
+    let entry_name = svc
+        .get_board(&board.id.to_string())
+        .await
+        .expect("board")
+        .columns
+        .iter()
+        .find(|c| c.id == entry.to_string())
+        .expect("the entry column")
+        .name
+        .clone();
+    let target = svc
+        .create_webhook_target(
+            "payments",
+            &CreateWebhookTargetRequest {
+                name: "Runner".into(),
+                url: "http://127.0.0.1:9/hook".into(),
+            },
+        )
+        .await
+        .expect("target");
+    let rule = svc
+        .create_dispatch_rule(
+            "payments",
+            &CreateDispatchRuleRequest {
+                column: Some(entry_name),
+                target_id: target.target.id.clone(),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("rule");
+    let deliveries = || {
+        let svc = &svc;
+        let rule_id = rule.id.clone();
+        async move {
+            svc.list_webhook_deliveries(
+                "payments",
+                &WebhookDeliveriesQuery {
+                    rule_id: Some(rule_id),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("the log of the rule")
+        }
+    };
 
     // A GitHub and a GitLab repository of the team, each connected.
     let mut hooks = Vec::new();
@@ -248,6 +302,10 @@ async fn issue_intake_against_live_stack() {
     );
     assert!(task.content.contains("opened by robin"));
     assert!(task.content.contains("It crashes."));
+    // KAIROS-T-0566: the rule of the entry column fired for the task.
+    let log = deliveries().await;
+    assert_eq!(log.len(), 1, "{log:?}");
+    assert_eq!(log[0].short_code.as_deref(), Some(task.short_code.as_str()));
     // The link to the issue, on the item.
     let links = svc
         .item_links(kairos_client::EntityKind::Task, &task.short_code)
@@ -363,6 +421,16 @@ async fn issue_intake_against_live_stack() {
     .expect("count")
     .count;
     assert_eq!(taken, 3);
+    // KAIROS-T-0566: one delivery for each task taken, none for the rest.
+    let mut fired: Vec<String> = deliveries()
+        .await
+        .iter()
+        .filter_map(|d| d.short_code.clone())
+        .collect();
+    fired.sort();
+    let mut made: Vec<String> = tasks.iter().map(|t| t.short_code.clone()).collect();
+    made.sort();
+    assert_eq!(fired, made);
 
     drop_scratch_db(&mut admin_conn, SCRATCH_DB);
 }

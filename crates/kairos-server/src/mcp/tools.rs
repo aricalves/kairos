@@ -4105,7 +4105,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Create an edge between two items by short code: parent, supports, informs, supersedes or blocks (type rules and cycles are checked). `blocks`: the target waits for the source; add it when a task must wait, none between parallel tasks. You need to be able to edit one of the two: you created it, or you hold `manage_<type>` on its board. `impacts` goes from a document or an ADR (`source`) to a repository (`target`: slug or UUID): it says what the item is about and gives no right. A task links to a repository with `set_repository`. An item has one parent: `set_parent` replaces it. `external` links any item (`source`) to a URI (`target`: http, https or mailto) with an optional `label`: an RFC, a design page or an issue that Kairos does not hold; `get_item` and `related_work` show it."
+        description = "Create an edge between two items by short code: parent, supports, informs, supersedes or blocks (type rules and cycles are checked). `blocks`: the target waits for the source; add it when a task must wait, none between parallel tasks. You need to be able to edit one of the two: you created it, or you hold `manage_<type>` on its board. A `blocks` edge needs the target: if you can edit only the source, the call makes a proposal, and the answer names it and who can confirm it. `impacts` goes from a document or an ADR (`source`) to a repository (`target`: slug or UUID): it says what the item is about and gives no right. A task links to a repository with `set_repository`. An item has one parent: `set_parent` replaces it. `external` links any item (`source`) to a URI (`target`: http, https or mailto) with an optional `label`: an RFC, a design page or an issue that Kairos does not hold; `get_item` and `related_work` show it."
     )]
     pub async fn link_items(
         &self,
@@ -4161,22 +4161,34 @@ impl KairosMcp {
             let relationship = parse_relationship(&params.relationship)?;
             let source = require_live_typed(conn, &params.source, "source")?;
             let target = require_live_typed(conn, &params.target, "target")?;
-            require_edge_write(
+            // COLLIERY-T-0228, KAIROS-T-0569: the link rule and the write,
+            // by the ONE function that REST `POST /api/relationships` calls.
+            match crate::api::link_or_propose(
                 conn,
                 tenant_ctx.role,
                 user,
-                relationship.as_str(),
-                source.typed(),
-                target.typed(),
-            )?;
-            graph::link_items(conn, source.id, target.id, relationship, user)
-                .map_err(map_link_error)?;
-            Ok(format!(
-                "Linked {} -[{relationship}]-> {}.{}",
-                source.code,
-                target.code,
-                renamed_lines(&[&source, &target])
-            ))
+                relationship,
+                (source.typed(), target.typed()),
+                map_link_error,
+            )? {
+                crate::api::LinkOutcome::Linked(_) => Ok(format!(
+                    "Linked {} -[{relationship}]-> {}.{}",
+                    source.code,
+                    target.code,
+                    renamed_lines(&[&source, &target])
+                )),
+                crate::api::LinkOutcome::Proposed { proposal, boards } => Ok(format!(
+                    "{}{}",
+                    crate::api::link_proposal_text(
+                        &source.code,
+                        &target.code,
+                        relationship.as_str(),
+                        &proposal,
+                        &boards,
+                    ),
+                    renamed_lines(&[&source, &target])
+                )),
+            }
         })
         .await
     }
@@ -4398,6 +4410,10 @@ impl KairosMcp {
                 .map_err(map_item_error)?
             {
                 Ok(outcome) => {
+                    // KAIROS-T-0566: the WIP warning of a move.
+                    if let Some(column_id) = outcome.column_id {
+                        crate::claims::note_wip(conn, column_id, &outcome.short_code)?;
+                    }
                     let mut out = format!(
                         "Restored {}. It is on its board again.\n",
                         outcome.short_code
@@ -8066,7 +8082,6 @@ fn create_item_impl(
             slug,
             user,
             &route,
-            None,
             requested_work_class,
             params.from_team.as_deref(),
         )?;
@@ -8199,6 +8214,8 @@ fn create_item_impl(
                 user,
             )
             .map_err(map_item_error)?;
+            // KAIROS-T-0566: the WIP warning of the entry column.
+            crate::claims::note_wip(conn, created.column_id, &created.short_code)?;
             lane = Some(created.work_class);
             (created.short_code, created.title, created.id)
         }

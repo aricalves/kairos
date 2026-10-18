@@ -85,7 +85,8 @@ pub fn cancel_line(cancelled_at: chrono::DateTime<chrono::Utc>, by: &str, reason
 }
 
 /// Cancel the task: the capability check ([`CAPABILITY`] on the board of
-/// the task), the claim warning, and the cancel. The ONE path of REST
+/// the task), the claim warning, the cancel, and the WIP warning of the
+/// done column (KAIROS-T-0566). The ONE path of REST
 /// `POST /api/tasks/{short_code}/cancel` and MCP `cancel_item`.
 pub fn cancel(
     conn: &mut PgConnection,
@@ -101,7 +102,10 @@ pub fn cancel(
     }
     crate::api::require_capability(conn, slug, Some(board_id), user, CAPABILITY)?;
     crate::claims::note(conn, task_id, user)?;
-    task_cancellations::cancel_task(conn, task_id, reason, user).map_err(map_cancel_error)
+    let cancelled =
+        task_cancellations::cancel_task(conn, task_id, reason, user).map_err(map_cancel_error)?;
+    crate::claims::note_wip(conn, cancelled.to_column_id, &cancelled.short_code)?;
+    Ok(cancelled)
 }
 
 /// [`CancelError`] → HTTP.

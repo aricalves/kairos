@@ -13,13 +13,13 @@ Operations addressed by `{entity_type}` and a short code, so they work uniformly
 
 ### `POST /api/relationships`
 
-Create a relationship edge.
+Create a relationship edge, or a proposal of a `blocks` edge.
 
 The link rule applies (COLLIERY-T-0228). The caller can edit the source
-or the target. The rule is the same for each relationship type.
-
-One exception (COLLIERY-T-0235) is a `supports` edge to a document
-that has no parent. The caller must be able to edit the document.
+or the target. A `blocks` edge needs the target, the blocked item
+(KAIROS-T-0569). A caller who can edit the source only gets a proposal
+of the edge. The answer is 202 with the proposal. The message says who
+can confirm it (KAIROS-A-0060).
 
 The T-0013 graph
 service enforces the A-0001 type-rule matrix, cycle prevention for
@@ -31,7 +31,9 @@ Request body (required): `application/json`, [`CreateRelationshipRequest`](../sc
 | Response | Body | Meaning |
 |---|---|---|
 | `201` | [`Relationship`](../schemas/#relationship) | Edge created (relationship_add activity row written) |
-| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The caller may edit neither the source nor the target. For a supports edge to a document with no parent: the caller may not edit the document |
+| `202` | [`ProposedRelationship`](../schemas/#proposedrelationship) | No edge: a proposal of a blocks edge. The caller can edit the source only. The message says who can confirm it |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The caller may edit neither the source nor the target |
+| `409` | [`ErrorEnvelope`](../schemas/#errorenvelope) | CONFLICT: the same proposal is pending, or the item has too many pending proposals |
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Rule violation, cycle, duplicate edge, or unknown endpoint |
 
 ### `DELETE /api/relationships/{id}`
@@ -62,17 +64,16 @@ activity row is written.
 ### `GET /api/{entity_type}/{short_code}/children-progress`
 
 Direct-children progress rollup for one item (KAIROS-T-0080): the
-live `parent`-edge children grouped by their board column, plus the
+`parent`-edge children grouped by their board column, plus the
 `(done, total)` summary. Supports/informs material never counts;
 resolution 404s exactly like the relationships GET.
 
-**Archived children are excluded, deliberately** (ADR-20 rule 5,
-re-confirmed by KAIROS-T-0158): archived work is not live work, so a
-progress bar must not count it — an initiative would otherwise look
-less finished the more of its work had been put away. This is the
-opposite call from the sibling relationships GET, which now names
-archived children, and the pair is the whole distinction: containment
-is a fact about the record, progress is a fact about live work.
+**An archived child counts by the column that it was archived from**
+(KAIROS-T-0571). A child archived from a done column counts as done,
+or as cancelled with the cancel mark. So "Archive completed" keeps the
+progress of an initiative. A child archived from another column is in
+`removed`. It is not open work, and it is not in `total` or in
+`by_column`.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|

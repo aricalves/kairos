@@ -195,32 +195,53 @@ pub fn check_version(current_version: i32, expected_version: i32) -> VersionChec
 }
 
 /// The children of a parent, counted apart (KAIROS-T-0080,
-/// KAIROS-T-0567): `done + cancelled + open = total`.
+/// KAIROS-T-0567, KAIROS-T-0571): `done + cancelled + open = total`.
+/// `removed` is apart from `total`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ChildrenCounts {
-    /// In a done column, and not cancelled.
+    /// In a done column, and not cancelled. An archived child in a done
+    /// column counts here.
     pub done: i64,
     /// Cancelled tasks. A cancel is "won't do", not done.
     pub cancelled: i64,
-    /// Not in a done column.
+    /// Live, not in a done column, and not cancelled.
     pub open: i64,
     pub total: i64,
+    /// Archived from a column that is not done (KAIROS-T-0571). They are
+    /// not open work, and they are not in `total`.
+    pub removed: i64,
 }
 
-/// Sum a children-by-column rollup into [`ChildrenCounts`] (KAIROS-T-0080):
-/// each entry is one column's `(is_done, occupant count, cancelled
-/// occupants)`. `done` is the sum over done-flagged columns, less the
-/// cancelled tasks (KAIROS-T-0567). Pure — the grouping itself is the
-/// single SQL query in `kairos-db::graph::children_progress`.
-pub fn children_progress_counts(by_column: &[(bool, i64, i64)]) -> ChildrenCounts {
+/// One column of a children-by-column rollup, for
+/// [`children_progress_counts`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ColumnChildren {
+    pub is_done: bool,
+    /// The children that count: the live children, and the archived
+    /// children when the column is done.
+    pub count: i64,
+    /// The cancelled tasks among `count`.
+    pub cancelled: i64,
+    /// The archived children that do not count: the column is not done.
+    pub removed: i64,
+}
+
+/// Sum a children-by-column rollup into [`ChildrenCounts`] (KAIROS-T-0080).
+/// `done` is the sum over done-flagged columns, less the cancelled tasks
+/// (KAIROS-T-0567). An archived child counts by the column that it was
+/// archived from (KAIROS-T-0571): a done column gives done, another column
+/// gives `removed`. Pure — the grouping itself is the single SQL query in
+/// `kairos-db::graph::children_progress`.
+pub fn children_progress_counts(by_column: &[ColumnChildren]) -> ChildrenCounts {
     let mut counts = ChildrenCounts::default();
-    for (is_done, count, cancelled) in by_column {
-        counts.total += count;
-        counts.cancelled += cancelled;
-        if *is_done {
-            counts.done += count - cancelled;
+    for column in by_column {
+        counts.total += column.count;
+        counts.cancelled += column.cancelled;
+        counts.removed += column.removed;
+        if column.is_done {
+            counts.done += column.count - column.cancelled;
         } else {
-            counts.open += count - cancelled;
+            counts.open += column.count - column.cancelled;
         }
     }
     counts
@@ -364,6 +385,15 @@ mod tests {
         assert!(!result.contains(&stranger) && !result.contains(&orphan));
     }
 
+    fn column(is_done: bool, count: i64, cancelled: i64, removed: i64) -> ColumnChildren {
+        ColumnChildren {
+            is_done,
+            count,
+            cancelled,
+            removed,
+        }
+    }
+
     /// KAIROS-T-0080: the done count is exactly the occupants of
     /// done-flagged columns; no flagged columns means done = 0 (clients
     /// then show composition only, never a percentage).
@@ -374,15 +404,21 @@ mod tests {
             cancelled,
             open,
             total,
+            removed: 0,
         };
         assert_eq!(children_progress_counts(&[]), counts(0, 0, 0, 0));
         assert_eq!(
-            children_progress_counts(&[(false, 3, 0), (true, 2, 0), (false, 1, 0), (true, 1, 0)]),
+            children_progress_counts(&[
+                column(false, 3, 0, 0),
+                column(true, 2, 0, 0),
+                column(false, 1, 0, 0),
+                column(true, 1, 0, 0),
+            ]),
             counts(3, 0, 4, 7)
         );
         // Zero done-flagged columns: composition only.
         assert_eq!(
-            children_progress_counts(&[(false, 4, 0), (false, 2, 0)]),
+            children_progress_counts(&[column(false, 4, 0, 0), column(false, 2, 0, 0)]),
             counts(0, 0, 6, 6)
         );
     }
@@ -391,12 +427,37 @@ mod tests {
     #[test]
     fn children_progress_counts_cancelled_apart() {
         assert_eq!(
-            children_progress_counts(&[(false, 1, 0), (true, 4, 1)]),
+            children_progress_counts(&[column(false, 1, 0, 0), column(true, 4, 1, 0)]),
             ChildrenCounts {
                 done: 3,
                 cancelled: 1,
                 open: 1,
                 total: 5,
+                removed: 0,
+            }
+        );
+    }
+
+    /// KAIROS-T-0571: a child archived from a column that is not done is
+    /// removed. It is not open, and it is not in the total.
+    #[test]
+    fn children_progress_counts_removed_apart() {
+        assert_eq!(
+            children_progress_counts(&[column(false, 1, 0, 2), column(true, 8, 0, 0)]),
+            ChildrenCounts {
+                done: 8,
+                cancelled: 0,
+                open: 1,
+                total: 9,
+                removed: 2,
+            }
+        );
+        // Each child archived from a column that is not done: no work.
+        assert_eq!(
+            children_progress_counts(&[column(false, 0, 0, 3)]),
+            ChildrenCounts {
+                removed: 3,
+                ..ChildrenCounts::default()
             }
         );
     }

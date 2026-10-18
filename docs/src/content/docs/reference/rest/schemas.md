@@ -274,7 +274,7 @@ Board detail: the board plus its full configuration (`GET /api/boards/{id}`).
 
 ## BoardFlow
 
-The flow metrics of a board for a range (KAIROS-T-0372), from the history of the moves (`activity_log`). Only the live items of the board count; a cancelled task counts apart from the done items. The start of an item is its first entry into a start column. A start column has `claims` (Active). With no such column, the column named Active is the start. An item is done in an `is_done` column; its done time is its last entry into one.
+The flow metrics of a board for a range (KAIROS-T-0372), from the history of the moves (`activity_log`). An archived item counts until its archive (KAIROS-T-0571), and a cancelled task apart from the done items. The start of an item is its first entry into a start column. A start column has `claims` (Active). With no such column, the column named Active is the start. An item is done in an `is_done` column; its done time is its last entry into one.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -392,13 +392,14 @@ Response of `GET /api/{entity_type}/{short_code}/children-progress` (KAIROS-T-00
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `by_column` | array of [`ChildColumnProgress`](#childcolumnprogress) | yes | Per-column composition, board-then-position order. |
+| `by_column` | array of [`ChildColumnProgress`](#childcolumnprogress) | yes | Per-column composition of the children that count, board-then-position order. |
 | `cancelled` | `integer` | yes | Cancelled tasks among the children (KAIROS-T-0567). A cancel is "won't do", not done. The default is for the client only: a response of an older server has no `cancelled`. |
-| `done` | `integer` | yes | Children sitting in `is_done` columns, less the cancelled tasks (KAIROS-T-0567). |
+| `done` | `integer` | yes | Children sitting in `is_done` columns, less the cancelled tasks (KAIROS-T-0567). An archived child in a done column counts here (KAIROS-T-0571). |
 | `has_done_columns` | `boolean` | yes | False when no board hosting the children has a done-flagged column — show composition only, never a done fraction. The server sends it in each response, so the schema shows it as required (COLLIERY-T-0254). The default is for the client only: a response of an older server has no `has_done_columns`, and it reads as `false`. |
 | `open` | `integer` | yes | Children that are not done and not cancelled: `total - done - cancelled`. |
+| `removed` | `integer` | yes | Children archived from a column that is not done (KAIROS-T-0571). They are not open work, and they are not in `total`. The default is for the client only: a response of an older server has no `removed`. |
 | `short_code` | `string` | yes | The parent item's short code. |
-| `total` | `integer` | yes | Direct live children (soft-deleted excluded; supports/informs material never counts). |
+| `total` | `integer` | yes | Direct children that count: the live children, and the archived children in a done column (KAIROS-T-0571). Supports/informs material never counts. |
 
 ## ClearedItemTeamResponse
 
@@ -794,7 +795,7 @@ Body of `POST /api/tasks`.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `board_id` | `string`, nullable | no | Board to create the task on — SLUG or UUID (KAIROS-T-0150). Optional when `team_id` is given: the task then goes to the delivery board of that team. A request with no board and no team is a 422, with or without a `repository` (COLLIERY-T-0217, COLLIERY-A-0023). Until then a `repository` alone chose the board (KAIROS-T-0104). |
-| `column_id` | `string`, nullable | no | Column to place it in (UUID); defaults to the board's first column. |
+| `column_id` | `string`, nullable | no | The entry column of the board (UUID), the default (KAIROS-T-0566). A task starts there, for every caller: any other column is a 422 that names the entry column. Create the task, then move it. |
 | `content` | `string` | no | Markdown content; defaults to empty. |
 | `from_team` | `string`, nullable | no | The team that sends the task, by slug or UUID (KAIROS-T-0426). When it is not the team of the board, the task is a request whoever sends it: entry column, support lane. Omit it for today's rule. Kairos does not keep it on the task: name the sending team in the body. |
 | `parent` | `string`, nullable | no | The short code of the parent initiative (KAIROS-T-0572). The server writes the `parent` edge in the transaction of the create: a refused parent leaves no task. A retired code finds its item. In a claims column, `parent_gate` applies (KAIROS-A-0040). |
@@ -1970,7 +1971,7 @@ The server refuses a body with a field that is not in this table ([Errors](../..
 
 ## ProgressCounts
 
-A `(done, total)` children rollup (KAIROS-T-0080). `done` counts the children sitting in `is_done` columns.
+A `(done, total)` children rollup (KAIROS-T-0080). `done` counts the children sitting in `is_done` columns. An archived child counts by the column that it was archived from (KAIROS-T-0571).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -1978,6 +1979,7 @@ A `(done, total)` children rollup (KAIROS-T-0080). `done` counts the children si
 | `done` | `integer` | yes | Children in a done column, less the cancelled tasks (KAIROS-T-0567). |
 | `has_done` | `boolean` | yes | False when no board hosting the children has a done-flagged column — clients show composition only, never a done fraction. The server sends it in each response, so the schema shows it as required (COLLIERY-T-0254). The default is for the client only: a response of an older server has no `has_done`, and it reads as `false`. |
 | `open` | `integer` | yes | Children that are not done and not cancelled. |
+| `removed` | `integer` | yes | Children archived from a column that is not done (KAIROS-T-0571): not open work, and not in `total`. The default is for the client only. |
 | `total` | `integer` | yes |  |
 
 ## PromoteNoteRequest
@@ -2003,6 +2005,15 @@ Response of `POST /api/{entity_type}/{short_code}/notes/{note_id}/promote` (KAIR
 | `promoted_to` | `string` | yes | The short code of the new item. |
 | `short_code` | `string` | yes | The short code of the source item. |
 | `supports` | `boolean` | yes | True when the new item `supports` the source item. False for a note on a document or an ADR: no edge joins two attachments. |
+
+## ProposedRelationship
+
+The answer of `POST /api/relationships` when the call made a proposal and no edge (202, KAIROS-T-0569). A `blocks` edge needs the right to edit the target. A caller who can edit the source only gets this.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `message` | `string` | yes | What the call did, and who can confirm the proposal. |
+| `proposal` | [`EdgeProposalDto`](#edgeproposaldto) | yes | The proposal. Confirm it with `POST /api/proposals/{id}/confirm`. |
 
 ## PurgeTaskResponse
 
