@@ -147,9 +147,12 @@ const TOKEN_FIELDS: [&str; 1] = ["token"];
 
 /// What the write token is (KAIROS-T-0386).
 const WRITE_TOKEN_HINT: &str = "With a write token, Kairos writes one comment and the commit \
-                                status kairos on each pull request that links to an item. Use a \
-                                fine-grained token with Pull requests: write and Commit \
-                                statuses: write on this repository only.";
+                                status kairos on each GitHub pull request that links to an \
+                                item. It also comments on an issue that became a task, and \
+                                closes or opens the issue with the task. On GitHub, use a \
+                                fine-grained token with Pull requests: write, Commit statuses: \
+                                write and Issues: write on this repository only. On GitLab, use \
+                                a project access token with the scope api.";
 
 /// The rule of the read token (COLLIERY-T-3105).
 const TOKEN_HINT: &str = "Read token: the builder of the code index gives it to git to fetch a \
@@ -436,10 +439,11 @@ fn RepositoryRow(
     let has_token = repo.credential.set;
     let token_input = RwSignal::new(String::new());
     let token_refused: RwSignal<Option<api::Refusal>> = RwSignal::new(None);
-    // KAIROS-T-0386: the GitHub write-back, never the write token.
+    // KAIROS-T-0386: the write-back, never the write token. KAIROS-T-0575:
+    // a GitLab repository writes its issues back.
     let write_back_summary = repo.write_back.summary();
     let has_write_token = repo.write_back.enabled;
-    let is_github = repo.forge == "github";
+    let has_write_back = matches!(repo.forge.as_str(), "github" | "gitlab");
     let write_token_input = RwSignal::new(String::new());
     let write_token_refused: RwSignal<Option<api::Refusal>> = RwSignal::new(None);
 
@@ -755,7 +759,7 @@ fn RepositoryRow(
             <Text dimmed=true size="xs" attr:data-testid="credential-status">
                 {credential_summary}
             </Text>
-            {is_github.then(|| view! {
+            {has_write_back.then(|| view! {
                 <Text dimmed=true size="xs" attr:data-testid="write-back-status">
                     {write_back_summary}
                 </Text>
@@ -860,7 +864,7 @@ fn RepositoryRow(
                         </Group>
                         <Text dimmed=true size="xs">{FILTER_HINT}</Text>
                     </Stack>
-                    {is_github.then(|| view! {
+                    {has_write_back.then(|| view! {
                         <Group align="end" gap="sm" wrap=true attr:data-testid="write-token-form">
                             <TextInput
                                     label=if has_write_token { "Replace the write token" } else { "Write token" }

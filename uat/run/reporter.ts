@@ -20,6 +20,8 @@ export const COVERAGE = 'uat-coverage';
 interface CoverageResult {
   mcp?: { offered: number; exercised: number };
   cli?: { offered: number; exercised: number };
+  /** The GUI routes (KAIROS-T-0586): named, not gated. */
+  gui?: { routes: number; opened: number; outside: string[] };
   allowed?: string[];
   uncovered?: string[];
   stale?: string[];
@@ -148,12 +150,20 @@ export default class UatReporter implements Reporter {
         lines.push(
           `MCP ${coverage.mcp.exercised}/${coverage.mcp.offered} tools, ` +
             `CLI ${coverage.cli!.exercised}/${coverage.cli!.offered} nouns, ` +
-            `${(coverage.allowed ?? []).length} allow-listed.`,
+            `${(coverage.allowed ?? []).length} allow-listed.` +
+            (coverage.gui
+              ? ` GUI: a journey opens ${coverage.gui.opened}/${coverage.gui.routes} routes.`
+              : ''),
         );
         for (const [heading, rows] of [
           ['Allow-listed (no journey touches these yet)', coverage.allowed ?? []],
           ['UNCOVERED — needs a step or a reason', coverage.uncovered ?? []],
           ['Stale allow-list entries — delete them', coverage.stale ?? []],
+          [
+            `GUI routes that no journey opens (${coverage.gui?.outside.length ?? 0} of ` +
+              `${coverage.gui?.routes ?? 0}; the e2e tier covers the screens)`,
+            coverage.gui?.outside ?? [],
+          ],
         ] as const) {
           if (!rows.length) continue;
           lines.push('');

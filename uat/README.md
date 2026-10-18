@@ -133,7 +133,13 @@ a coverage it does not measure:
   `set-password`, `hash-password`, …). Nothing counts these. KAIROS-T-0204 added two and
   the gate's numbers did not move: it read **MCP 20/20, CLI 16/16, 0 allow-listed**
   before that work and after it, because neither new verb is a `kairos` noun.
-- **GUI screens.** Covered by the Playwright e2e tier.
+- **GUI screens.** Covered by the Playwright e2e tier. The gate does not gate them, but
+  it names them (KAIROS-T-0586): it reads the routes of the app from
+  `crates/kairos-web/src/app.rs`, takes away the routes that a journey opened
+  (`Persona.gui()` records the path of each page), and lists each route that is left
+  with the e2e specs that open it (the `goto` paths of `e2e/tests`), or "none". The
+  list is in the report, under the numbers of the gate. A panel inside a page (the
+  State panel, the external references) is not a route: the e2e specs name those.
 
 Extending the gate to operator subcommands would be a reasonable next step; it is
 recorded here rather than assumed.
