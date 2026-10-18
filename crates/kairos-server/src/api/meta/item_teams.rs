@@ -98,11 +98,11 @@ pub(crate) fn require_subject(item_type: ItemType, short_code: &str) -> Result<(
 /// Rule 2: the edit rule, with a text that says what the link needs.
 fn require_edit(
     conn: &mut PgConnection,
-    slug: &str,
+    role: kairos_db::models::OrgRole,
     user: Uuid,
     (item_id, item_type): (Uuid, ItemType),
 ) -> Result<(), ApiError> {
-    let Some(board_id) = missing_item_edit(conn, slug, user, item_id, item_type)? else {
+    let Some(board_id) = missing_item_edit(conn, role, user, item_id, item_type)? else {
         return Ok(());
     };
     let short_code = short_code_of(conn, item_id)?;
@@ -214,14 +214,14 @@ fn linked_team(
 /// rules. The activity row and the event come from [`item_teams::link`].
 pub(crate) fn add(
     conn: &mut PgConnection,
-    slug: &str,
+    role: kairos_db::models::OrgRole,
     user: Uuid,
     (item_id, item_type): (Uuid, ItemType),
     team: &str,
 ) -> Result<ItemTeam, ApiError> {
     let short_code = short_code_of(conn, item_id)?;
     require_subject(item_type, &short_code)?;
-    require_edit(conn, slug, user, (item_id, item_type))?;
+    require_edit(conn, role, user, (item_id, item_type))?;
     let team = crate::api::org::repositories::resolve_team(conn, team)?;
     item_teams::link(conn, item_id, team.id, user).map_err(map_item_team_error)
 }
@@ -230,14 +230,14 @@ pub(crate) fn add(
 /// docs for the rules. The result is the slug of the team.
 pub(crate) fn remove(
     conn: &mut PgConnection,
-    slug: &str,
+    role: kairos_db::models::OrgRole,
     user: Uuid,
     (item_id, item_type): (Uuid, ItemType),
     team: &str,
 ) -> Result<String, ApiError> {
     let short_code = short_code_of(conn, item_id)?;
     require_subject(item_type, &short_code)?;
-    require_edit(conn, slug, user, (item_id, item_type))?;
+    require_edit(conn, role, user, (item_id, item_type))?;
     let Some(team_id) = linked_team(conn, item_id, team)? else {
         let from_tasks = item_teams::teams_of(conn, item_id)
             .map_err(ApiError::internal)?
@@ -333,12 +333,12 @@ pub(crate) async fn set_team(
     ApiJson(body): ApiJson<dto::SetItemTeamRequest>,
 ) -> Result<(StatusCode, Json<dto::ItemTeam>), ApiError> {
     let user = auth.user_id;
-    let slug = tenant.slug.clone();
+    let role = tenant.role;
     let created = state
         .blocking
         .run(&tenant.slug, move |conn| {
             let item = resolve_family_item(conn, &family, &short_code, Liveness::LiveOnly)?;
-            add(conn, &slug, user, item, &body.team).map(team_dto)
+            add(conn, role, user, item, &body.team).map(team_dto)
         })
         .await?;
     Ok((StatusCode::CREATED, Json(created)))
@@ -371,12 +371,12 @@ pub(crate) async fn clear_team(
     Path((family, short_code, team)): Path<(String, String, String)>,
 ) -> Result<Json<dto::ClearedItemTeamResponse>, ApiError> {
     let user = auth.user_id;
-    let slug = tenant.slug.clone();
+    let role = tenant.role;
     let cleared = state
         .blocking
         .run(&tenant.slug, move |conn| {
             let item = resolve_family_item(conn, &family, &short_code, Liveness::LiveOnly)?;
-            let team = remove(conn, &slug, user, item, &team)?;
+            let team = remove(conn, role, user, item, &team)?;
             Ok(dto::ClearedItemTeamResponse { short_code, team })
         })
         .await?;

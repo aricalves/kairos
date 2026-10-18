@@ -332,6 +332,22 @@ async fn an_item_links_to_a_uri_with_a_label_against_live_stack() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
+    // KAIROS-T-0625: the text and the details of the refusal.
+    assert_eq!(answer["error"]["code"], "FORBIDDEN", "{answer}");
+    assert!(
+        answer["error"]["message"]
+            .as_str()
+            .expect("message")
+            .starts_with(&format!(
+                "To change an external reference of {code}, you must be able to edit {code}. \
+                 You need \"manage_tasks\" on the board of {code}."
+            )),
+        "{answer}"
+    );
+    assert_eq!(
+        answer["error"]["details"]["required_capability"], "manage_tasks",
+        "{answer}"
+    );
     let (status, answer) = send(
         Method::POST,
         external.clone(),
