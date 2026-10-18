@@ -516,9 +516,12 @@ history. Also called a *work item*.
 The rule that decides who can write a [relationship](#relationship). A
 principal can create or remove an edge when the principal can edit the item at
 one end. The [edit rule](#edit-rule) decides each end. The rule is the same
-for each relationship type. The confirm of an edge proposal writes an edge, so
-the rule applies to the confirm also. See
+for each relationship type. See
 [Capabilities](../capabilities/#who-can-write-relationships).
+
+The confirm of an edge proposal does not take this rule. The grant
+`approve_proposals` on the board of one end decides it: see
+[Capabilities](../capabilities/#the-decision-of-an-edge-proposal).
 
 The `supports` edge of a document is the one exception: the principal must be
 able to edit the document.

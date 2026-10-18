@@ -296,6 +296,20 @@ carries authority over a document, and the interim rules for a document with
 no board are gone. One rule stays: to remove a `supports` edge of a document,
 you must be able to edit the document.
 
+### A proposal is decided by a grant
+
+An agent can propose a `parent` or a `blocks` edge with `propose_edge`. The
+proposal is not an edge. The grant `approve_proposals` decides who confirms or
+rejects it (KAIROS-T-0659). A holder on the board of one end decides, as the
+link rule needs one end. An organization admin decides each proposal.
+
+The grant does not look at who the caller is. An agent key acts as its person,
+so an identity rule cannot tell an agent from the person. An earlier rule
+refused agent keys and the proposer. Then a team of one person could not
+confirm the proposals of its own agents. A grant puts the choice with the
+organization: a person, an agent key, or a service account that automates the
+approval. At first only organization admins decide.
+
 ## Things that have no board of their own
 
 Not everything sits on a board, and each case is resolved by asking what board
@@ -393,6 +407,8 @@ mean.
   KAIROS-T-0410, KAIROS-T-0541): the `member` grant on a strategy or
   initiative board makes a person a member, and a member edits and moves every
   item on it.
+- The grant `approve_proposals` decides an edge proposal (KAIROS-T-0659): a
+  holder on the board of one end, or an organization admin.
 - The edit rule and the link rule (COLLIERY-T-0228): creation is the primary
   mechanism of ownership, a link follows the same rule as an edit, and movement
   stays with the team of the board.

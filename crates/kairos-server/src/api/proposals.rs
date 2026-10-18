@@ -1,30 +1,25 @@
 //! Edge proposals over REST (KAIROS-A-0021 rule 6, KAIROS-T-0192).
 //!
 //! Three endpoints, and the asymmetry between them is the point: an agent
-//! **proposes** through MCP, and a human **decides** here. Confirming and
-//! rejecting are refused to service accounts by
-//! [`kairos_db::proposals`] itself rather than by a check in this file, so a
-//! future fourth surface inherits the rule instead of having to remember it.
+//! **proposes** through MCP, and a holder of the grant **decides** here.
+//! [`kairos_db::proposals`] itself makes the check of who decides, rather
+//! than a check in this file, so a future fourth surface inherits the rule
+//! instead of having to remember it.
 //!
-//! # Who may confirm (COLLIERY-T-0234)
+//! # Who may decide (KAIROS-T-0659)
 //!
-//! A confirm writes an edge, so it takes THE LINK RULE, from the function
-//! that each other edge write calls ([`crate::api::require_edge_write`]):
-//! the caller may edit the item at one end. Until COLLIERY-T-0234 the
-//! confirm asked only for a person. A member who could edit neither end
-//! could propose a `parent` edge, confirm it, and so put the task of a
-//! different team below an item.
+//! A holder of `approve_proposals` on the board of the source or of the
+//! target confirms or rejects. An org admin decides each proposal. The
+//! holder may use an agent key, may be a service account, and may be the
+//! proposer. A refusal is 403 `FORBIDDEN`. `details.required_capability` is
+//! `approve_proposals`, and `details.any_of` names the board of each end.
 //!
-//! A reject writes no edge and changes no item, so it keeps its rule: a
-//! person. A proposal is a suggestion, and each member can make one.
-//!
-//! # Who may decide (KAIROS-T-0538)
-//!
-//! A person decides, and not through an agent key: the key is the person,
-//! but an agent uses it. The proposer does not decide their own proposal.
-//! Each refusal is 403 `PERSON_DECIDES`, and `details.reason` names the
-//! cause. [`kairos_db::proposals`] makes these checks, so each surface has
-//! them.
+//! The grant replaces two older rules. KAIROS-T-0538 refused a service
+//! account, an agent key and the proposer (403 `PERSON_DECIDES`).
+//! COLLIERY-T-0234 gave the confirm the link rule: the caller could edit the
+//! item at one end. The grant on the board of one end is that rule for a
+//! proposal now. A member with no grant cannot confirm an edge that they
+//! proposed, so a proposal is still no way around the link rule.
 //!
 //! Listing is on the item, not in a queue. A separate review inbox is a second
 //! product with its own notifications and its own backlog of things nobody
@@ -57,13 +52,31 @@ pub(crate) fn map_proposal_error(e: kairos_db::proposals::ProposalError) -> ApiE
         P::AlreadyPending => ApiError::conflict(e.to_string()),
         P::AlreadyDecided { .. } => ApiError::conflict(e.to_string()),
         P::TooManyPending { .. } => ApiError::conflict(e.to_string()),
-        P::NotHuman => ApiError::person_decides(e.to_string(), "service_account"),
-        P::AgentKey => ApiError::person_decides(e.to_string(), "agent_key"),
-        P::Proposer => ApiError::person_decides(e.to_string(), "proposer"),
+        P::NotApprover { ref boards } => not_approver(&e.to_string(), boards),
         P::NotProposable(_) => ApiError::validation(e.to_string()),
         P::Graph(inner) => ApiError::validation(inner.to_string()),
         P::Database(inner) => ApiError::internal(inner),
+        P::Abac(inner) => ApiError::internal(inner),
     }
+}
+
+/// 403 `FORBIDDEN` for a decision without the grant (KAIROS-T-0659). The
+/// details have the shape of each other edge refusal: one entry in `any_of`
+/// for each end, with its board.
+fn not_approver(message: &str, boards: &kairos_db::proposals::ApprovalBoards) -> ApiError {
+    let capability = kairos_core::abac::APPROVE_PROPOSALS;
+    let end = |name: &str, board: &Option<kairos_db::proposals::EndBoard>| {
+        serde_json::json!({
+            "end": name,
+            "required_capability": capability,
+            "board_id": board.as_ref().map(|b| b.id),
+            "board": board.as_ref().map(|b| b.slug.clone()),
+        })
+    };
+    ApiError::forbidden(message.to_string()).with_details(serde_json::json!({
+        "required_capability": capability,
+        "any_of": [end("source", &boards.source), end("target", &boards.target)],
+    }))
 }
 
 /// Map a stored proposal to its DTO, resolving both ends to short codes.
@@ -124,10 +137,9 @@ pub(crate) async fn list(
 
 /// Confirm a proposal, creating the edge.
 ///
-/// The caller is a person, not an agent key, and not the proposer
-/// (KAIROS-T-0538). The link rule applies (COLLIERY-T-0234): the caller can
-/// edit the item at one end of the edge. A refused confirm leaves the
-/// proposal pending.
+/// The caller holds `approve_proposals` on the board of one end, or is an
+/// org admin (KAIROS-T-0659). A refused confirm leaves the proposal
+/// pending.
 #[utoipa::path(
     post,
     path = "/api/proposals/{id}/confirm",
@@ -136,7 +148,7 @@ pub(crate) async fn list(
     responses(
         (status = 200, description = "Confirmed; the relationship now exists", body = dto_search::EdgeProposalDto),
         (status = 400, description = "The edge was refused by the graph's own rules — a cycle, or a shape the rule matrix forbids", body = kairos_client::types::ErrorEnvelope),
-        (status = 403, description = "PERSON_DECIDES: a service account, an agent key or the proposer cannot confirm; details.reason names which. FORBIDDEN: the link rule, the caller can edit the item at one end; details.any_of names the two capabilities", body = kairos_client::types::ErrorEnvelope),
+        (status = 403, description = "FORBIDDEN: the caller holds approve_proposals on neither board and is not an org admin; details.any_of names the board of each end", body = kairos_client::types::ErrorEnvelope),
         (status = 404, description = "No such proposal", body = kairos_client::types::ErrorEnvelope),
         (status = 409, description = "CONFLICT: the proposal is decided already, also by a decision at the same time", body = kairos_client::types::ErrorEnvelope),
     ),
@@ -147,13 +159,12 @@ pub(crate) async fn confirm(
     Extension(auth): Extension<crate::middleware::auth::AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<dto_search::EdgeProposalDto>, ApiError> {
-    decide(state, tenant, decider(&auth), id, true).await
+    decide(state, tenant, auth.user_id, id, true).await
 }
 
 /// Reject a proposal. Recorded, not erased.
 ///
-/// The caller is a person, not an agent key, and not the proposer
-/// (KAIROS-T-0538). The link rule does not apply: a reject writes no edge.
+/// The rule of who decides is the rule of the confirm (KAIROS-T-0659).
 #[utoipa::path(
     post,
     path = "/api/proposals/{id}/reject",
@@ -161,7 +172,7 @@ pub(crate) async fn confirm(
     params(("id" = String, Path, description = "The proposal")),
     responses(
         (status = 200, description = "Rejected, and kept — a repeatedly rejected pair is the clearest signal that retrieval is wrong about something", body = dto_search::EdgeProposalDto),
-        (status = 403, description = "PERSON_DECIDES: a service account, an agent key or the proposer cannot reject; details.reason names which", body = kairos_client::types::ErrorEnvelope),
+        (status = 403, description = "FORBIDDEN: the caller holds approve_proposals on neither board and is not an org admin; details.any_of names the board of each end", body = kairos_client::types::ErrorEnvelope),
         (status = 404, description = "No such proposal", body = kairos_client::types::ErrorEnvelope),
         (status = 409, description = "CONFLICT: the proposal is decided already, also by a decision at the same time", body = kairos_client::types::ErrorEnvelope),
     ),
@@ -172,81 +183,13 @@ pub(crate) async fn reject(
     Extension(auth): Extension<crate::middleware::auth::AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<dto_search::EdgeProposalDto>, ApiError> {
-    decide(state, tenant, decider(&auth), id, false).await
-}
-
-/// The decider of a request: the person, and whether an agent key made the
-/// request (KAIROS-T-0538).
-fn decider(auth: &crate::middleware::auth::AuthContext) -> kairos_db::proposals::Decider {
-    kairos_db::proposals::Decider {
-        user_id: auth.user_id,
-        agent_key: auth.agent_key.is_some(),
-    }
-}
-
-/// The item type at one end of a proposal, archived or not: the edit rule
-/// reads archived items too (KAIROS-A-0020).
-fn end_type(
-    conn: &mut diesel::pg::PgConnection,
-    item_id: Uuid,
-) -> Result<kairos_core::short_code::ItemType, ApiError> {
-    let item = kairos_db::embeddings::item_by_id(conn, item_id).map_err(ApiError::internal)?;
-    kairos_core::short_code::ItemType::ALL
-        .iter()
-        .copied()
-        .find(|item_type| item_type.entity_type() == item.entity_type)
-        .ok_or_else(|| {
-            ApiError::internal(format!(
-                "entity_directory returned unknown entity_type {:?}",
-                item.entity_type
-            ))
-        })
-}
-
-/// THE LINK RULE for the edge that a confirm is about to write
-/// (COLLIERY-T-0234).
-///
-/// THE ATTACK that it stops. A member who can edit NEITHER end proposes a
-/// `parent` edge, which needs no right, and confirms it. The confirm asked
-/// only for a person, so the member wrote an edge that `POST
-/// /api/relationships` refuses.
-///
-/// The order of the refusals: a service account or an agent key (403
-/// `PERSON_DECIDES`), no such proposal (404), already decided (409), the
-/// link rule (403 `FORBIDDEN`), and then the proposer (403
-/// `PERSON_DECIDES`, from [`kairos_db::proposals::confirm`]). So a caller
-/// who may never decide learns nothing about a proposal.
-fn require_confirm(
-    conn: &mut diesel::pg::PgConnection,
-    slug: &str,
-    decider: kairos_db::proposals::Decider,
-    id: Uuid,
-) -> Result<(), ApiError> {
-    use kairos_db::proposals::{self, ProposalError};
-
-    let actor = decider.user_id;
-    if !proposals::is_human(conn, actor).map_err(map_proposal_error)? {
-        return Err(map_proposal_error(ProposalError::NotHuman));
-    }
-    if decider.agent_key {
-        return Err(map_proposal_error(ProposalError::AgentKey));
-    }
-    let proposal = proposals::get(conn, id).map_err(map_proposal_error)?;
-    if proposal.state != "pending" {
-        return Err(map_proposal_error(ProposalError::AlreadyDecided {
-            id,
-            state: proposal.state,
-        }));
-    }
-    let source = (proposal.source_id, end_type(conn, proposal.source_id)?);
-    let target = (proposal.target_id, end_type(conn, proposal.target_id)?);
-    crate::api::require_edge_write(conn, slug, actor, &proposal.relationship, source, target)
+    decide(state, tenant, auth.user_id, id, false).await
 }
 
 async fn decide(
     state: AppState,
     tenant: TenantContext,
-    decider: kairos_db::proposals::Decider,
+    actor: Uuid,
     id: Uuid,
     confirming: bool,
 ) -> Result<Json<dto_search::EdgeProposalDto>, ApiError> {
@@ -258,10 +201,9 @@ async fn decide(
             // a refusal leaves the proposal pending and writes no edge.
             crate::api::atomically(conn, |conn| {
                 let decided = if confirming {
-                    require_confirm(conn, &slug, decider, id)?;
-                    kairos_db::proposals::confirm(conn, id, decider)
+                    kairos_db::proposals::confirm(conn, &slug, id, actor)
                 } else {
-                    kairos_db::proposals::reject(conn, id, decider)
+                    kairos_db::proposals::reject(conn, &slug, id, actor)
                 }
                 .map_err(map_proposal_error)?;
                 to_dto(conn, decided)

@@ -1858,8 +1858,8 @@ Returns a plain note, not an error, when the deployment has embeddings disabled.
 
 ### `propose_edge`
 
-Proposes a `parent` or `blocks` edge for a **human** to confirm. It does not
-create the edge.
+Proposes a `parent` or `blocks` edge for a holder of `approve_proposals` to
+confirm. It does not create the edge.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
@@ -1868,25 +1868,24 @@ create the edge.
 | `relationship` | string | yes | — | `parent` or `blocks`. Nothing else may be proposed. |
 | `why` | string | yes | — | Your reasoning, in your own words. Kept verbatim and shown to whoever decides. |
 
-There is deliberately **no confirm or reject tool**. Deciding is a person's, and
-an agent cannot rule on its own suggestion — a wrong `parent` edge re-parents
-work onto a board that reports to people who will believe it, and nobody
-re-reads an edge once it exists.
+There is deliberately **no confirm or reject tool**. A decision is a separate
+step, in the web interface or over REST. A wrong `parent` edge moves work to a
+board that reports to people who believe it. Nobody reads an edge again once it
+exists.
 
 The proposal appears on both items in the interface, with your reasoning, for
 someone to accept or decline. Confirming creates the real edge, and is refused by
 the same cycle and rule checks that refuse any other edge.
 
 To propose, a caller needs no capability: a proposal writes no edge and changes
-no item. The confirm takes the
-[link rule](../capabilities/#who-can-write-relationships). The person who
-confirms must be able to edit the item at one end. A refused confirm leaves the
-proposal pending.
+no item.
 
-A person other than the proposer confirms or rejects. The server refuses
-a decision with an agent key and a decision by the proposer
-(`PERSON_DECIDES`). An agent key proposes as its person. So a different
-person decides the proposals of your agent.
+A holder of `approve_proposals` on the board of the source or of the target
+confirms or rejects. An organization admin can also decide. The agent key of a
+holder, a service account that holds the grant, and the proposer can decide.
+The answer of `propose_edge` names the two boards. A caller with no grant gets
+403 `FORBIDDEN`, and the proposal stays pending. See
+[The decision of an edge proposal](../capabilities/#the-decision-of-an-edge-proposal).
 
 Refuses: `VALIDATION` for a relationship outside `parent`/`blocks`;
 `NOT_FOUND` for a short code that names no live item; `CONFLICT` when an

@@ -84,6 +84,13 @@ pub const PAGES: &str = "pages";
 /// the board made a member, so a grant of `transition_items` or
 /// `configure_boards` alone also edited each item.
 pub const MEMBER: &str = "member";
+/// Confirm or reject an edge proposal (KAIROS-T-0659, superseding the
+/// decider rule of KAIROS-A-0056). A holder on the board of either end of
+/// the proposed edge decides; an org admin decides each proposal. The
+/// holder may be a person, the agent key of that person, or a service
+/// account, and may be the proposer. It applies on each level. No glob but
+/// `*` covers it, and no team or board membership implies it.
+pub const APPROVE_PROPOSALS: &str = "approve_proposals";
 
 /// Glob: all capabilities on the board (full access).
 pub const GLOB_ALL: &str = "*";
@@ -113,6 +120,7 @@ pub const CAPABILITIES: &[&str] = &[
     ADMINISTER_MEMBERS,
     PAGES,
     MEMBER,
+    APPROVE_PROPOSALS,
 ];
 
 /// Every sanctioned glob form (trailing-`*` only, per A-0006).
@@ -270,7 +278,8 @@ pub const BOARD_LEVELS: &[&str] = &["strategy", "initiative", "delivery", "adr"]
 /// that a board of that level can have. A board holds one item type and
 /// documents (`types_of_level` of the server), so each level has one
 /// `manage_<type>`, and `manage_documents`, `transition_items`,
-/// `configure_boards` and `administer_members`. An unknown level has none.
+/// `configure_boards`, `administer_members` and `approve_proposals`
+/// (KAIROS-T-0659). An unknown level has none.
 ///
 /// The ONE map of levels to capabilities: the server refuses a grant of a
 /// different capability in the change of the grants of one person over
@@ -284,6 +293,7 @@ pub fn capabilities_of_level(board_level: &str) -> &'static [&'static str] {
         CONFIGURE_BOARDS,
         ADMINISTER_MEMBERS,
         MEMBER,
+        APPROVE_PROPOSALS,
     ];
     const INITIATIVE: &[&str] = &[
         MANAGE_INITIATIVES,
@@ -292,6 +302,7 @@ pub fn capabilities_of_level(board_level: &str) -> &'static [&'static str] {
         CONFIGURE_BOARDS,
         ADMINISTER_MEMBERS,
         MEMBER,
+        APPROVE_PROPOSALS,
     ];
     const DELIVERY: &[&str] = &[
         MANAGE_TASKS,
@@ -300,6 +311,7 @@ pub fn capabilities_of_level(board_level: &str) -> &'static [&'static str] {
         CONFIGURE_BOARDS,
         ADMINISTER_MEMBERS,
         PAGES,
+        APPROVE_PROPOSALS,
     ];
     const ADR: &[&str] = &[
         MANAGE_ADRS,
@@ -307,6 +319,7 @@ pub fn capabilities_of_level(board_level: &str) -> &'static [&'static str] {
         TRANSITION_ITEMS,
         CONFIGURE_BOARDS,
         ADMINISTER_MEMBERS,
+        APPROVE_PROPOSALS,
     ];
     match board_level {
         "strategy" => STRATEGY,
@@ -562,6 +575,14 @@ fn glob_match(pattern: &str, text: &str) -> bool {
         }
     }
     remaining.ends_with(last)
+}
+
+/// Who decides an edge proposal (KAIROS-T-0659): an org admin, or a holder
+/// of [`APPROVE_PROPOSALS`] on the board of the source or of the target.
+/// One end is sufficient. Who the caller is does not count: a person, an
+/// agent key, a service account and the proposer all take this rule.
+pub fn may_decide_proposal(is_org_admin: bool, on_source: bool, on_target: bool) -> bool {
+    is_org_admin || on_source || on_target
 }
 
 /// The A-0006 decision over a user's loaded grants for one board: allowed
@@ -943,7 +964,7 @@ mod tests {
     }
 
     /// KAIROS-T-0413: each level has the `manage_<type>` of its item type
-    /// and the four capabilities that each board has. Each applicable
+    /// and the five capabilities that each board has. Each applicable
     /// capability is grantable, and each grantable capability applies on
     /// some level.
     #[test]
@@ -953,6 +974,7 @@ mod tests {
             TRANSITION_ITEMS,
             CONFIGURE_BOARDS,
             ADMINISTER_MEMBERS,
+            APPROVE_PROPOSALS,
         ];
         for (level, own) in [
             ("strategy", MANAGE_STRATEGIES),
@@ -968,7 +990,8 @@ mod tests {
             // KAIROS-T-0406: `pages` on delivery boards; KAIROS-T-0541:
             // `member` on strategy and initiative boards.
             let extra = usize::from(matches!(level, "delivery" | "strategy" | "initiative"));
-            assert_eq!(applies.len(), 5 + extra, "{level}");
+            // KAIROS-T-0659: `approve_proposals` on each level.
+            assert_eq!(applies.len(), 6 + extra, "{level}");
             assert!(applies.iter().all(|c| CAPABILITIES.contains(c)));
         }
         assert!(!capabilities_of_level("delivery").contains(&MANAGE_STRATEGIES));
@@ -1037,6 +1060,48 @@ mod tests {
             is_org_admin: false,
             holds_claim: true,
         }));
+    }
+
+    /// KAIROS-T-0659: the grant on one end is sufficient, and an org admin
+    /// decides with no grant. With none of the three, the decision is
+    /// refused.
+    #[test]
+    fn a_proposal_needs_the_grant_on_one_end_or_an_org_admin() {
+        for is_org_admin in [false, true] {
+            for on_source in [false, true] {
+                for on_target in [false, true] {
+                    assert_eq!(
+                        may_decide_proposal(is_org_admin, on_source, on_target),
+                        is_org_admin || on_source || on_target,
+                        "{is_org_admin} {on_source} {on_target}"
+                    );
+                }
+            }
+        }
+        assert!(!may_decide_proposal(false, false, false));
+    }
+
+    /// KAIROS-T-0659: only its own grant and `*` give `approve_proposals`.
+    /// No family glob, no team and no board membership gives it.
+    #[test]
+    fn only_its_grant_or_star_approves_proposals() {
+        assert!(is_authorized(
+            &[APPROVE_PROPOSALS.to_string()],
+            APPROVE_PROPOSALS
+        ));
+        assert!(is_authorized(&[GLOB_ALL.to_string()], APPROVE_PROPOSALS));
+        for glob in GLOBS.iter().filter(|g| **g != GLOB_ALL) {
+            assert!(!capability_matches(glob, APPROVE_PROPOSALS), "{glob}");
+        }
+        for level in BOARD_LEVELS {
+            assert!(!team_capabilities(level).contains(&APPROVE_PROPOSALS));
+            assert!(!board_member_capabilities(level).contains(&APPROVE_PROPOSALS));
+            assert!(capabilities_of_level(level).contains(&APPROVE_PROPOSALS));
+        }
+        assert!(!is_authorized(
+            &[MANAGE_TASKS.to_string(), MEMBER.to_string()],
+            APPROVE_PROPOSALS
+        ));
     }
 
     /// COLLIERY-T-0228: one end is sufficient; neither end is a refusal.
