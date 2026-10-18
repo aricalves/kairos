@@ -247,16 +247,23 @@ the capability that archives each task of the board. The creator of a
 task can archive that task one at a time. A board that is not a
 delivery board holds no tasks: 422 `NOT_DELIVERY_BOARD`.
 
+`?older_than_days=N` archives only the done tasks that entered their
+done column at least N days ago (KAIROS-T-0649). The time of entry is
+the last move of the task, or its creation. N is a whole number from 1
+to 36500. Another value is a 422 `VALIDATION` with `details.field` =
+`older_than_days`.
+
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
 | `id` | path | yes | `string` | The slug or the id (UUID) of the board |
+| `older_than_days` | query | no | `integer` | Archive only the done tasks that entered their done column at least this many days ago: a whole number from 1 to 36500. With no value, the call archives each done task. |
 
 | Response | Body | Meaning |
 |---|---|---|
 | `200` | [`ArchiveCompletedResponse`](../schemas/#archivecompletedresponse) | The archived tasks: the count and the codes. A count of 0 when the done columns are empty |
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Missing manage_tasks on the board |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown board |
-| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | NOT_DELIVERY_BOARD |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | NOT_DELIVERY_BOARD, or VALIDATION for an `older_than_days` out of range |
 
 ### `PUT /api/boards/{id}/code-sequences/{item_type}`
 
@@ -491,6 +498,18 @@ page then has that card, or no card when no card of the board has the
 code. The columns, their counts and the maps are as for a page. A live
 board reads one card in this way after an event of that item.
 
+Each card has `entered_column_at` and `notes_count` (KAIROS-T-0649).
+`entered_column_at` is the time of the last move of the card, or the
+time of its creation. `notes_count` is the number of its notes. The
+page query reads the two for the cards of the page only.
+
+`?done_limit=N` keeps the last N cards of each done column, by
+`entered_column_at` (KAIROS-T-0649). The other columns keep each card.
+`item_count` stays the count of the full column, and `total` counts
+the cards after the limit. `?code=` applies after the limit. N must be
+at least 1. Another value is a 422 `VALIDATION` with `details.field` =
+`done_limit`.
+
 The path takes the slug or the id of the board (COLLIERY-T-0265). An
 unknown slug and an unknown id are a 404.
 
@@ -506,6 +525,7 @@ unknown slug and an unknown id are a 404.
 | `with_metadata` | query | no | `boolean` | Add `item_metadata` to the response: the metadata values of each item of the page (KAIROS-T-0368). Default false. |
 | `fields` | query | no | `string` (`card`, `full`) | `card` (the default): the cards have no `content`, `created_by` or `updated_by`. `full`: the cards have them, as before cards (KAIROS-T-0602). An other value is refused. |
 | `code` | query | no | `string` | Only the card with this short code (KAIROS-T-0615). The page then has one card, or no card when the board has no such card. A live board reads one card with it after an event of that item. |
+| `done_limit` | query | no | `integer` | Only the last N cards of each done column, by the time that each card entered the column (KAIROS-T-0649). The other columns keep each card. `item_count` stays the count of the full column. At least 1. |
 
 | Response | Body | Meaning |
 |---|---|---|
