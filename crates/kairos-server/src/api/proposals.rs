@@ -193,7 +193,7 @@ fn end_type(
 /// So a caller learns no more from a proposal than before.
 fn require_confirm(
     conn: &mut diesel::pg::PgConnection,
-    slug: &str,
+    role: kairos_db::models::OrgRole,
     actor: Uuid,
     id: Uuid,
 ) -> Result<(), ApiError> {
@@ -211,7 +211,7 @@ fn require_confirm(
     }
     let source = (proposal.source_id, end_type(conn, proposal.source_id)?);
     let target = (proposal.target_id, end_type(conn, proposal.target_id)?);
-    crate::api::require_edge_write(conn, slug, actor, &proposal.relationship, source, target)
+    crate::api::require_edge_write(conn, role, actor, &proposal.relationship, source, target)
 }
 
 async fn decide(
@@ -221,7 +221,7 @@ async fn decide(
     id: Uuid,
     confirming: bool,
 ) -> Result<Json<dto_search::EdgeProposalDto>, ApiError> {
-    let slug = tenant.slug.clone();
+    let role = tenant.role;
     let out = state
         .blocking
         .run(&tenant.slug, move |conn| {
@@ -229,7 +229,7 @@ async fn decide(
             // a refusal leaves the proposal pending and writes no edge.
             crate::api::atomically(conn, |conn| {
                 let decided = if confirming {
-                    require_confirm(conn, &slug, actor, id)?;
+                    require_confirm(conn, role, actor, id)?;
                     kairos_db::proposals::confirm(conn, id, actor)
                 } else {
                     kairos_db::proposals::reject(conn, id, actor)

@@ -2828,10 +2828,10 @@ impl KairosMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let (auth, tenant) = Self::caller(&context)?;
         let user = auth.user_id;
-        let slug = tenant.slug.clone();
+        let role = tenant.role;
         self.run_tool(&tenant, move |conn| {
             let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
-            require_item_edit(conn, &slug, user, item.id, item.item_type)?;
+            require_item_edit(conn, role, user, item.id, item.item_type)?;
             let update = items::ContentUpdate {
                 new_title: params.title.as_deref(),
                 new_content: &params.content,
@@ -2858,7 +2858,7 @@ impl KairosMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let (auth, tenant) = Self::caller(&context)?;
         let user = auth.user_id;
-        let slug = tenant.slug.clone();
+        let role = tenant.role;
         self.run_tool(&tenant, move |conn| {
             if params.search.is_empty() {
                 return Err(ApiError::validation(
@@ -2869,7 +2869,7 @@ impl KairosMcp {
             // the read-modify-write below re-reads on the second attempt.
             for attempt in 0..2 {
                 let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
-                require_item_edit(conn, &slug, user, item.id, item.item_type)?;
+                require_item_edit(conn, role, user, item.id, item.item_type)?;
                 let occurrences = item.content.matches(&params.search).count();
                 if occurrences == 0 {
                     return Err(ApiError::validation(format!(
@@ -2923,10 +2923,10 @@ impl KairosMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let (auth, tenant) = Self::caller(&context)?;
         let user = auth.user_id;
-        let slug = tenant.slug.clone();
+        let role = tenant.role;
         self.run_tool(&tenant, move |conn| {
             let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
-            require_item_edit(conn, &slug, user, item.id, item.item_type)?;
+            require_item_edit(conn, role, user, item.id, item.item_type)?;
             let appended = items::append_note(
                 conn,
                 item.item_type,
@@ -3137,7 +3137,7 @@ impl KairosMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let (auth, tenant) = Self::caller(&context)?;
         let user = auth.user_id;
-        let slug = tenant.slug.clone();
+        let role = tenant.role;
         self.run_tool(&tenant, move |conn| {
             let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
             if item.item_type != ItemType::Task {
@@ -3152,7 +3152,7 @@ impl KairosMcp {
             // repositories exist. The gate is the edit rule
             // (COLLIERY-T-0228): the repository is a fact about the task,
             // and it moves nothing.
-            require_item_edit(conn, &slug, user, item.id, item.item_type)?;
+            require_item_edit(conn, role, user, item.id, item.item_type)?;
             // An agent that builds its arguments from a template sends ""
             // for "none" as often as it sends null. Both clear the link, as
             // an absent argument does. The shared function decides that, for
@@ -3234,12 +3234,14 @@ impl KairosMcp {
         let (auth, tenant) = Self::caller(&context)?;
         let user = auth.user_id;
         let slug = tenant.slug.clone();
+        let role = tenant.role;
         self.run_tool(&tenant, move |conn| {
             let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
             let promoted = atomically(conn, |conn| {
                 crate::promote::promote_note(
                     conn,
                     &slug,
+                    role,
                     user,
                     crate::promote::PromoteInput {
                         source: (item.id, item.item_type, &item.short_code),
@@ -3294,7 +3296,7 @@ impl KairosMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let (auth, tenant) = Self::caller(&context)?;
         let user = auth.user_id;
-        let slug = tenant.slug.clone();
+        let role = tenant.role;
         self.run_tool(&tenant, move |conn| {
             let lifecycle = crate::api::documents::parse_lifecycle(&params.lifecycle)?;
             let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
@@ -3306,7 +3308,7 @@ impl KairosMcp {
             }
             let (before, updated) = crate::api::documents::change_lifecycle(
                 conn,
-                &slug,
+                role,
                 user,
                 &item.short_code,
                 lifecycle,
@@ -3337,7 +3339,7 @@ impl KairosMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let (auth, tenant) = Self::caller(&context)?;
         let user = auth.user_id;
-        let slug = tenant.slug.clone();
+        let role = tenant.role;
         self.run_tool(&tenant, move |conn| {
             let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
             if item.item_type != ItemType::Task {
@@ -3354,7 +3356,7 @@ impl KairosMcp {
                 next_step: params.next_step,
                 expected_updated_at: params.expected_updated_at,
             };
-            let state = crate::task_state::write_state(conn, &slug, user, item.id, &body)?;
+            let state = crate::task_state::write_state(conn, role, user, item.id, &body)?;
             Ok(format!(
                 "State of {}: {}",
                 item.short_code,
@@ -3379,12 +3381,12 @@ impl KairosMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let (auth, tenant) = Self::caller(&context)?;
         let user = auth.user_id;
-        let slug = tenant.slug.clone();
+        let role = tenant.role;
         self.run_tool(&tenant, move |conn| {
             let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
             let team = crate::api::meta::item_teams::add(
                 conn,
-                &slug,
+                role,
                 user,
                 (item.id, item.item_type),
                 &params.team,
@@ -3407,12 +3409,12 @@ impl KairosMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let (auth, tenant) = Self::caller(&context)?;
         let user = auth.user_id;
-        let slug = tenant.slug.clone();
+        let role = tenant.role;
         self.run_tool(&tenant, move |conn| {
             let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
             let team = crate::api::meta::item_teams::remove(
                 conn,
-                &slug,
+                role,
                 user,
                 (item.id, item.item_type),
                 &params.team,
@@ -3913,7 +3915,7 @@ impl KairosMcp {
                 let source = require_live_typed(conn, &params.source, "source")?;
                 let made = crate::api::meta::external::add(
                     conn,
-                    &tenant_ctx.slug,
+                    tenant_ctx.role,
                     user,
                     source.typed(),
                     &params.target,
@@ -3937,7 +3939,7 @@ impl KairosMcp {
                 let source = require_live_typed(conn, &params.source, "source")?;
                 let linked = crate::api::meta::impacts::add(
                     conn,
-                    &tenant_ctx.slug,
+                    tenant_ctx.role,
                     user,
                     source.typed(),
                     &params.target,
@@ -3955,7 +3957,7 @@ impl KairosMcp {
             let target = require_live_typed(conn, &params.target, "target")?;
             require_edge_write(
                 conn,
-                &tenant_ctx.slug,
+                tenant_ctx.role,
                 user,
                 relationship.as_str(),
                 source.typed(),
@@ -3990,7 +3992,7 @@ impl KairosMcp {
                 let source = require_live_typed(conn, &params.source, "source")?;
                 let removed = crate::api::meta::external::remove(
                     conn,
-                    &tenant_ctx.slug,
+                    tenant_ctx.role,
                     user,
                     source.typed(),
                     &params.target,
@@ -4007,7 +4009,7 @@ impl KairosMcp {
                 let source = require_live_typed(conn, &params.source, "source")?;
                 let removed = crate::api::meta::impacts::remove(
                     conn,
-                    &tenant_ctx.slug,
+                    tenant_ctx.role,
                     user,
                     source.typed(),
                     &params.target,
@@ -4028,7 +4030,7 @@ impl KairosMcp {
             // `DELETE /api/relationships/{id}` calls.
             crate::api::remove_edge(
                 conn,
-                &tenant_ctx.slug,
+                tenant_ctx.role,
                 user,
                 relationship,
                 source.typed(),
@@ -4054,13 +4056,13 @@ impl KairosMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let (auth, tenant) = Self::caller(&context)?;
         let user = auth.user_id;
-        let slug = tenant.slug.clone();
+        let role = tenant.role;
         self.run_tool(&tenant, move |conn| {
             use kairos_db::models::templates::NewItemMetadata;
             use kairos_db::schema::item_metadata;
 
             let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
-            require_item_edit(conn, &slug, user, item.id, item.item_type)?;
+            require_item_edit(conn, role, user, item.id, item.item_type)?;
 
             // Phase 1 — resolve + validate every entry (no writes yet); a bad
             // entry rejects the whole call (A-0003). The SAME function the REST
@@ -4144,6 +4146,7 @@ impl KairosMcp {
         let (auth, tenant) = Self::caller(&context)?;
         let user = auth.user_id;
         let slug = tenant.slug.clone();
+        let role = tenant.role;
         self.run_tool(&tenant, move |conn| {
             if !params.confirm {
                 return Err(ApiError::validation(
@@ -4155,8 +4158,14 @@ impl KairosMcp {
             let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
             // The same archive as REST `DELETE` (COLLIERY-T-0234): the edit
             // rule for the item, and then for each descendant.
-            let outcome =
-                crate::api::cascade::archive_item(conn, &slug, user, item.id, item.item_type)?;
+            let outcome = crate::api::cascade::archive_item(
+                conn,
+                &slug,
+                role,
+                user,
+                item.id,
+                item.item_type,
+            )?;
             let mut out = format!("Archived {}.\n", outcome.root_short_code);
             if outcome.cascaded_short_codes.is_empty() {
                 out.push_str("Cascade: none.\n");
@@ -4186,7 +4195,7 @@ impl KairosMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let (auth, tenant) = Self::caller(&context)?;
         let user = auth.user_id;
-        let slug = tenant.slug.clone();
+        let role = tenant.role;
         self.run_tool(&tenant, move |conn| {
             let item = load_item(conn, &params.short_code, Liveness::IncludeArchived)?;
             if item.archived_at.is_none() {
@@ -4195,7 +4204,7 @@ impl KairosMcp {
                     item.short_code
                 )));
             }
-            crate::api::require_item_archive(conn, &slug, user, item.id, item.item_type)?;
+            crate::api::require_item_archive(conn, role, user, item.id, item.item_type)?;
             match items::restore_item(conn, item.item_type, item.id, user)
                 .map_err(map_item_error)?
             {
@@ -4338,6 +4347,7 @@ impl KairosMcp {
         let (auth, tenant) = Self::caller(&context)?;
         let user = auth.user_id;
         let slug = tenant.slug.clone();
+        let role = tenant.role;
         self.run_tool(&tenant, move |conn| {
             if !params.confirm {
                 return Err(ApiError::validation(
@@ -4348,7 +4358,7 @@ impl KairosMcp {
             }
             let board = board_by_ref(conn, &params.board)?;
             let response =
-                crate::api::org::boards::archive_completed_tasks(conn, &slug, &board, user)?;
+                crate::api::org::boards::archive_completed_tasks(conn, &slug, role, &board, user)?;
             Ok(if response.count == 0 {
                 format!(
                     "The done columns of {} have no tasks. Kairos archived nothing.",
@@ -7457,6 +7467,7 @@ fn create_item_impl(
     params: &CreateItemParams,
 ) -> Result<String, ApiError> {
     let slug = tenant.slug.as_str();
+    let role = tenant.role;
     let item_type = match params.item_type.as_str() {
         "strategy" => ItemType::Strategy,
         "initiative" => ItemType::Initiative,
@@ -7540,6 +7551,7 @@ fn create_item_impl(
         let created = crate::api::documents::create(
             conn,
             slug,
+            role,
             user,
             crate::api::documents::NewDocument {
                 title: &params.title,
@@ -7809,7 +7821,7 @@ fn create_item_impl(
         // (COLLIERY-T-0227), so a refusal here leaves no item.
         require_edge_write(
             conn,
-            slug,
+            role,
             user,
             relationship.as_str(),
             parent.typed(),

@@ -29,6 +29,7 @@ use diesel::sql_query;
 use uuid::Uuid;
 
 use kairos_core::abac as rules;
+use kairos_core::short_code::ItemType;
 use kairos_db::abac::{self, AbacError};
 use kairos_db::models::{
     ActivityAction, NewAdr, NewDocument, NewInitiative, NewItemRelationship, NewOrganizationMember,
@@ -123,6 +124,25 @@ fn assert_check(
         pure, expected,
         "core matcher disagrees with SQL for grant {granted:?}, required {required:?}"
     );
+}
+
+/// The number of queries that `f` sends on `conn` (KAIROS-T-0625): diesel
+/// instrumentation counts each `StartQuery`.
+fn count_queries<T>(conn: &mut PgConnection, f: impl FnOnce(&mut PgConnection) -> T) -> (T, usize) {
+    use diesel::connection::InstrumentationEvent;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let count = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&count);
+    conn.set_instrumentation(move |event: InstrumentationEvent<'_>| {
+        if matches!(event, InstrumentationEvent::StartQuery { .. }) {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+    let out = f(conn);
+    conn.set_instrumentation(|_: InstrumentationEvent<'_>| {});
+    (out, count.load(Ordering::SeqCst))
 }
 
 #[test]
@@ -566,6 +586,33 @@ fn abac_capability_lifecycle() {
         None
     );
 
+    // KAIROS-T-0625: the one query of the edit rule gives what the probes
+    // of each table gave, for each type, and nothing for an id of a
+    // different type or an unknown id.
+    for (item_type, id) in [
+        (ItemType::Document, document_id),
+        (ItemType::Initiative, initiative_id),
+        (ItemType::Strategy, strategy_id),
+        (ItemType::Adr, off_board_adr),
+    ] {
+        let creator = abac::item_created_by(&mut conn, id).expect("created_by");
+        let board = abac::resolve_authorization_board(&mut conn, id).expect("resolve");
+        assert_eq!(
+            abac::creator_and_board(&mut conn, item_type, id).expect("creator and board"),
+            creator.map(|creator| (creator, board)),
+            "{item_type:?}: one query gives the creator and the board"
+        );
+    }
+    assert_eq!(
+        abac::creator_and_board(&mut conn, ItemType::Task, document_id).expect("wrong type"),
+        None,
+        "an id of a different type is not found"
+    );
+    assert_eq!(
+        abac::creator_and_board(&mut conn, ItemType::Document, Uuid::new_v4()).expect("unknown"),
+        None
+    );
+
     // ---- revoke flow: removes access, writes activity, typed on missing -------
     abac::revoke_capability(
         &mut conn,
@@ -906,6 +953,67 @@ fn archived_items_resolve_the_same_capabilities_as_live_ones() {
         Some(member)
     );
 
+    // KAIROS-T-0625: the queries of one edit of a task. Before, the facts
+    // probed the five entity tables for the creator, re-joined the org for
+    // the admin role, and probed the tables again for the board.
+    let (_, before) = count_queries(&mut conn, |conn| {
+        let created = abac::item_created_by(conn, task_id).expect("created_by") == Some(member);
+        let admin = abac::is_org_admin(conn, "archco", member).expect("is_org_admin");
+        let board = abac::resolve_authorization_board(conn, task_id)
+            .expect("resolve")
+            .expect("board");
+        let manage =
+            abac::check_capability(conn, board, member, rules::MANAGE_TASKS).expect("check");
+        (created, admin, manage)
+    });
+    let ((facts, board), after) = count_queries(&mut conn, |conn| {
+        abac::edit_facts(
+            conn,
+            member,
+            false,
+            ItemType::Task,
+            task_id,
+            rules::EditUse::Edit,
+        )
+        .expect("edit facts")
+    });
+    eprintln!("KAIROS-T-0625: one edit of a task: {before} queries before, {after} after");
+    assert_eq!(before, 8, "the old facts of one edit of a task");
+    assert_eq!(
+        after, 2,
+        "one edit: the row of the item, and the capability"
+    );
+    assert_eq!(board, Some(team_board));
+    assert!(facts.created_item && facts.holds_manage && !facts.is_org_admin);
+    // A refusal reads the claim too: one query more.
+    let ((facts, _), refused) = count_queries(&mut conn, |conn| {
+        abac::edit_facts(
+            conn,
+            outsider,
+            false,
+            ItemType::Task,
+            task_id,
+            rules::EditUse::Edit,
+        )
+        .expect("edit facts")
+    });
+    assert_eq!(refused, 3, "a refused edit of a task also reads the claim");
+    assert!(!rules::may_edit_item(facts));
+    // The admin role is the caller's: it is not read again.
+    let ((facts, _), admin) = count_queries(&mut conn, |conn| {
+        abac::edit_facts(
+            conn,
+            outsider,
+            true,
+            ItemType::Task,
+            task_id,
+            rules::EditUse::Edit,
+        )
+        .expect("edit facts")
+    });
+    assert_eq!(admin, 2);
+    assert!(rules::may_edit_item(facts));
+
     // Put it away.
     diesel::update(schema::tasks::table.filter(schema::tasks::id.eq(task_id)))
         .set(schema::tasks::deleted_at.eq(diesel::dsl::now))
@@ -1126,10 +1234,10 @@ fn board_membership_gives_edit_and_move_on_strategy_and_initiative_boards() {
     // Through the edit rule: an edit passes, an archive does not.
     let (edit, board) = abac::edit_facts(
         &mut conn,
-        "memberco",
         member,
+        false,
+        ItemType::Initiative,
         initiative,
-        rules::MANAGE_INITIATIVES,
         EditUse::Edit,
     )
     .expect("edit facts");
@@ -1137,10 +1245,10 @@ fn board_membership_gives_edit_and_move_on_strategy_and_initiative_boards() {
     assert!(rules::may_edit_item(edit));
     let (archive, _) = abac::edit_facts(
         &mut conn,
-        "memberco",
         member,
+        false,
+        ItemType::Initiative,
         initiative,
-        rules::MANAGE_INITIATIVES,
         EditUse::Archive,
     )
     .expect("archive facts");
@@ -1247,10 +1355,10 @@ fn board_membership_gives_edit_and_move_on_strategy_and_initiative_boards() {
     ));
     let (edit, _) = abac::edit_facts(
         &mut conn,
-        "memberco",
         member,
+        false,
+        ItemType::Initiative,
         initiative,
-        rules::MANAGE_INITIATIVES,
         EditUse::Edit,
     )
     .expect("edit facts");
