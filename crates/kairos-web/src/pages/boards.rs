@@ -4265,6 +4265,30 @@ mod tests {
         assert_eq!(orgwide, BoardPowers::default());
     }
 
+    /// KAIROS-T-0570 client mirror: team membership does not give `purge`.
+    /// A grant of `purge` or of `*` gives it, and an organization admin
+    /// has it.
+    #[test]
+    fn purge_is_not_implied_by_the_team() {
+        let bob = me("member", &["t1"], &[]);
+        assert!(holds_capability(
+            &bob,
+            Some("d"),
+            Some("t1"),
+            "manage_tasks"
+        ));
+        assert!(!holds_capability(&bob, Some("d"), Some("t1"), "purge"));
+        assert!(!holds_capability(&bob, None, None, "purge"));
+        let manager = me("member", &["t1"], &[("d", &["manage_*"])]);
+        assert!(!holds_capability(&manager, Some("d"), Some("t1"), "purge"));
+        let granted = me("member", &[], &[("d", &["purge"])]);
+        assert!(holds_capability(&granted, Some("d"), Some("t1"), "purge"));
+        let full = me("member", &[], &[("d", &["*"])]);
+        assert!(holds_capability(&full, Some("d"), None, "purge"));
+        let admin = me("admin", &[], &[]);
+        assert!(holds_capability(&admin, Some("d"), None, "purge"));
+    }
+
     /// KAIROS-T-0410 client mirror: on a strategy or initiative board, the
     /// `implied` list of the server (membership: any grant on the board)
     /// gives the move and the create of the board's items. It does not give

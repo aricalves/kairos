@@ -20,12 +20,19 @@ else is refused at grant time.
 |---|---|
 | `manage_strategies` | Create, edit and delete strategies on the board |
 | `manage_initiatives` | Create, edit and delete initiatives on the board |
-| `manage_tasks` | Create, edit and archive tasks on the board; delete a task for good (purge) |
+| `manage_tasks` | Create, edit and archive tasks on the board |
 | `manage_documents` | Create, edit and delete documents that have the board as their owner |
 | `manage_adrs` | Create, edit and delete ADRs on the board |
 | `transition_items` | Move items between the board's columns, and between the Planned and Support lanes; cancel a task |
 | `configure_boards` | Add, rename, reorder and remove columns and transitions |
 | `administer_members` | Add and remove board members, and grant and revoke their capabilities |
+| `pages` | Publish and unpublish the sites of the repositories of the team of the board |
+| `purge` | Delete an archived task of the board for good (KAIROS-T-0570) |
+
+Team membership does not give `pages` or `purge`. No glob covers them except
+`*`. An organization admin has each capability. `manage_tasks` lets a person
+archive a task, and a restore undoes an archive. No restore undoes a purge, so
+`purge` is a separate grant.
 
 A `manage_<type>` capability gates the create of an item on the board. For an
 edit or a delete, the capability is one of three ways in: see
@@ -40,7 +47,7 @@ on each board. These capabilities apply:
 |---|---|
 | `strategy` | `manage_strategies`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members` |
 | `initiative` | `manage_initiatives`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members` |
-| `delivery` | `manage_tasks`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members`, `pages` |
+| `delivery` | `manage_tasks`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members`, `pages`, `purge` |
 | `adr` | `manage_adrs`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members` |
 
 The grants page of a person uses this table (see below). A change on that page
@@ -350,7 +357,7 @@ creator of the item gets no right there:
 | Move to a different board | `POST /api/tasks/{short_code}/move` | `move_item` | `manage_tasks` on the two boards |
 | Change the owner board of a document | `PATCH /api/documents/{short_code}/board` | `move_item` | `manage_documents` on the two boards |
 | Cancel a task | `POST /api/tasks/{short_code}/cancel` | `cancel_item` | `transition_items` on the board |
-| Delete a task for good | `POST /api/tasks/{short_code}/purge` | `purge_task` | `manage_tasks` on the board |
+| Delete an archived task for good | `POST /api/tasks/{short_code}/purge` | `purge_task` | `purge` on the board |
 | Archive the tasks of the done columns | `POST /api/boards/{id}/archive-completed` | `archive_completed` | `manage_tasks` on the board |
 
 A team controls its own plan. A person who sends a request to a different

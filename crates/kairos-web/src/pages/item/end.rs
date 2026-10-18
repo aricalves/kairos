@@ -128,8 +128,8 @@ pub fn CancelDialog(
     }
 }
 
-/// The delete dialog of a task: the dialog names the task, and the person
-/// types its code to confirm. After the delete the page goes to the board
+/// The delete dialog of an archived task (KAIROS-T-0570): the dialog names
+/// the task, and the person types its code to confirm. After the delete the page goes to the board
 /// list: the item page has nothing to show.
 #[component]
 pub fn PurgeDialog(
@@ -182,9 +182,9 @@ pub fn PurgeDialog(
             notice=std::sync::Arc::new(|| view! {
                 <Alert title="You cannot undo this" color=token::BAD>
                     <Text size="sm" dimmed=true>
-                        "Kairos deletes the task, its history, its metadata and its links. \
-                         No restore can bring it back. To keep a copy that you can restore, \
-                         archive the task."
+                        "Kairos deletes the archived task, its history, its metadata, its \
+                         links and its external references. No restore can bring it back. \
+                         The issue of an intake task can be imported again."
                     </Text>
                 </Alert>
             }.into_any())

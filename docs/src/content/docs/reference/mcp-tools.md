@@ -96,6 +96,7 @@ Codes an agent can receive, and what each means.
 | `NO_OWNER` | A `release_item` of a strategy or an initiative that has no owner. |
 | `NOT_BOARD_MEMBER` | A `hand_off_item` of a strategy or an initiative to a person who is not a member of the board of the item. |
 | `TASK_DONE` | A `cancel_item` or a `move_item` of a task that is in a done column. Reopen the task first: `reopen_item`. |
+| `TASK_LIVE` | A `purge_task` of a task that is not archived. Archive the task first: `delete_item`. |
 | `TASK_NOT_DONE` | A `reopen_item` of a task that is not in a done column. |
 | `NO_OPEN_COLUMN` | A `reopen_item` of a task whose board has only done columns. |
 | `NO_DONE_COLUMN` | A `cancel_item` of a task whose board has no done column. |
@@ -1933,30 +1934,35 @@ that is not a delivery board.
 
 ### `purge_task`
 
-Deletes a task for good. **You cannot undo this.** No restore brings the task
-back. To archive a task, which a restore can undo, use `delete_item`.
+Deletes an archived task for good. **You cannot undo this.** No restore brings
+the task back. Archive the task first with `delete_item`, which a restore can
+undo.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `short_code` | string | yes | — | The task's current short code. A retired code is not followed. |
 | `confirm` | boolean | yes | — | Must be `true`. |
 
-The task can be live or archived. The purge removes these rows of the task:
+The task must be archived (KAIROS-T-0570). The purge removes these rows of the
+task:
 
 - the task, its content history and its metadata values;
 - its edges and its edge proposals;
-- its forge links, its embeddings and its retired codes;
+- its forge links, its external references and its embeddings;
+- its retired codes and its forge intake row. Thus a new import of the issue
+  makes a task again;
 - its claim and its cancel mark.
 
 The items at the other end of the edges stay. The rows of the activity log
 about the task stay. The purge adds one row `purge` with the code and the
 title: `short_code:ACME-T-0012 title:Old task`.
 
-Needs `manage_tasks` on the board of the task: board managers and organization
-admins only. The creator of the task gets no right here.
+Needs the capability `purge` on the board of the task. Team membership does not
+give it, and `manage_tasks` is not enough. Organization admins have it. The
+creator of the task gets no right here.
 
 Refuses: `VALIDATION` when `confirm` is `false`; `NOT_FOUND` for an unknown
-short code; `FORBIDDEN` without `manage_tasks`.
+short code; `FORBIDDEN` without `purge`; `TASK_LIVE` for a live task.
 
 ## The structure of the organization
 

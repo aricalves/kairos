@@ -258,6 +258,7 @@ server refuses a value that is not an integer, with `VALIDATION`.
 | `NO_CLAIM` | 422 | A release of the claim of a task that has no claim | — |
 | `TASK_DONE` | 422 | A cancel of a task that is in a done column (KAIROS-T-0362), or a move to another board of a task that is in a done column (KAIROS-T-0564). Reopen the task first | `short_code` and `fix` for a move |
 | `NO_DONE_COLUMN` | 422 | A cancel of a task whose board has no done column | — |
+| `TASK_LIVE` | 422 | A purge of a task that is not archived (KAIROS-T-0570). Archive the task first | — |
 | `TASK_NOT_DONE` | 422 | A reopen of a task that is not in a done column (KAIROS-T-0564) | — |
 | `NO_OPEN_COLUMN` | 422 | A reopen of a task whose board has only done columns | `board_id` |
 | `AGENT_TRIAGE_OFF` | 403 | An agent (agent key or service account) triaged intake — a support-lane task in the entry column: a lane change to planned, a move out of the entry column, a move to another board, or a cancel — on a board that lets a person decide (KAIROS-T-0428) | `board_id` and `setting` (`agents_decide`) |

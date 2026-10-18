@@ -76,6 +76,12 @@ pub const ADMINISTER_MEMBERS: &str = "administer_members";
 /// usually to the service account of a repository's CI. Not implied by team
 /// membership, and no glob but `*` covers it.
 pub const PAGES: &str = "pages";
+/// Delete an archived task for good: a purge (KAIROS-T-0570). Granted on a
+/// delivery board. Team membership does not imply it, and no glob but `*`
+/// covers it. An organization admin holds it by the admin bypass. A purge
+/// cannot be undone, so the right to archive (`manage_tasks`) is not the
+/// right to purge.
+pub const PURGE: &str = "purge";
 
 /// Glob: all capabilities on the board (full access).
 pub const GLOB_ALL: &str = "*";
@@ -104,6 +110,7 @@ pub const CAPABILITIES: &[&str] = &[
     CONFIGURE_BOARDS,
     ADMINISTER_MEMBERS,
     PAGES,
+    PURGE,
 ];
 
 /// Every sanctioned glob form (trailing-`*` only, per A-0006).
@@ -260,6 +267,7 @@ pub fn capabilities_of_level(board_level: &str) -> &'static [&'static str] {
         CONFIGURE_BOARDS,
         ADMINISTER_MEMBERS,
         PAGES,
+        PURGE,
     ];
     const ADR: &[&str] = &[
         MANAGE_ADRS,
@@ -888,7 +896,7 @@ mod tests {
             for capability in common {
                 assert!(applies.contains(&capability), "{level} {capability}");
             }
-            let extra = usize::from(level == "delivery");
+            let extra = 2 * usize::from(level == "delivery");
             assert_eq!(applies.len(), 5 + extra, "{level}");
             assert!(applies.iter().all(|c| CAPABILITIES.contains(c)));
         }
@@ -897,6 +905,9 @@ mod tests {
         // KAIROS-T-0406: sites are published from the team's delivery board.
         assert!(capabilities_of_level("delivery").contains(&PAGES));
         assert!(!capabilities_of_level("initiative").contains(&PAGES));
+        // KAIROS-T-0570: a task is purged on its delivery board.
+        assert!(capabilities_of_level("delivery").contains(&PURGE));
+        assert!(!capabilities_of_level("adr").contains(&PURGE));
         assert!(capabilities_of_level("team").is_empty());
         for capability in CAPABILITIES {
             assert!(
@@ -993,5 +1004,29 @@ mod tests {
         for capability in CAPABILITIES {
             assert!(!COMPUTED_CAPABILITIES.contains(capability));
         }
+    }
+
+    /// KAIROS-T-0570: `purge` is a grant of its own. No team, ADR,
+    /// strategy or initiative set implies it, no family glob covers it,
+    /// and `*` does.
+    #[test]
+    fn purge_is_an_explicit_grant_that_membership_does_not_imply() {
+        assert!(CAPABILITIES.contains(&PURGE));
+        assert!(!team_implies(PURGE));
+        assert!(!team_implies_on_adr_board(PURGE));
+        for level in BOARD_LEVELS {
+            assert!(!team_capabilities(level).contains(&PURGE), "{level}");
+            assert!(
+                !board_member_capabilities(level).contains(&PURGE),
+                "{level}"
+            );
+        }
+        assert!(!structure_covers(PURGE));
+        for glob in GLOBS.iter().filter(|g| **g != GLOB_ALL) {
+            assert!(!capability_matches(glob, PURGE), "{glob}");
+        }
+        assert!(!is_authorized(&[MANAGE_TASKS.to_string()], PURGE));
+        assert!(is_authorized(&[PURGE.to_string()], PURGE));
+        assert!(is_authorized(&[GLOB_ALL.to_string()], PURGE));
     }
 }

@@ -447,7 +447,8 @@ fn ItemLoaded(item: ItemDetail, family: Family) -> impl IntoView {
                     </Button>
                 })}
                 // KAIROS-T-0362: a task can be cancelled (not when it is
-                // done) and deleted for good (board managers only).
+                // done) and deleted for good. KAIROS-T-0570: the delete is
+                // for an archived task, and needs `purge` on the board.
                 {move || (task_powers.get().cancel && !archived.get() && !cancelled.get()).then(|| view! {
                     <Button variant="default" size="xs"
                         on_click=Callback::new(move |_| cancel_open.set(true))>
@@ -460,7 +461,7 @@ fn ItemLoaded(item: ItemDetail, family: Family) -> impl IntoView {
                         "Archive"
                     </Button>
                 })}
-                {move || task_powers.get().purge.then(|| view! {
+                {move || (task_powers.get().purge && archived.get()).then(|| view! {
                     <Button variant="default" size="xs" bad=true
                         on_click=Callback::new(move |_| purge_open.set(true))>
                         "Delete"
@@ -651,7 +652,9 @@ struct TaskEndPowers {
     /// Cancel: `transition_items` on the board (the capability of a move),
     /// and the task is not in a done column.
     cancel: bool,
-    /// Delete for good: `manage_tasks` on the board.
+    /// Delete for good: `purge` on the board (KAIROS-T-0570). Team
+    /// membership does not give it. The page shows the control on an
+    /// archived task only.
     purge: bool,
 }
 
@@ -690,7 +693,7 @@ fn task_end_powers(
                 &me,
                 Some(&board.slug),
                 board.team_id.as_deref(),
-                "manage_tasks",
+                "purge",
             ),
         }
     })

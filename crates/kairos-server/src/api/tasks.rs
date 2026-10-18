@@ -1132,26 +1132,30 @@ pub(crate) async fn reopen_task(
     Ok(Json(task))
 }
 
-/// Delete a task for good (KAIROS-T-0362). Nothing can bring it back. The
-/// task can be live or archived.
+/// Delete an archived task for good (KAIROS-T-0362). Nothing can bring it
+/// back. Archive the task first (`DELETE /api/tasks/{short_code}`): a live
+/// task is refused with `TASK_LIVE` (KAIROS-T-0570).
 ///
 /// The purge removes these rows of the task:
 ///
 /// - the task, its history and its metadata;
 /// - its edges and its edge proposals;
-/// - its forge links, its embeddings and its retired codes;
+/// - its forge links, its external references and its embeddings;
+/// - its retired codes and its forge intake row;
 /// - its claim and its cancel mark.
 ///
 /// The items at the other end of the edges stay. The activity rows about
-/// the task stay. One new row (`purge`) names the code and the title.
+/// the task stay. One new row (`purge`) names the code and the title. The
+/// issue of an intake task can be imported again.
 ///
 /// This is a separate route, and not a flag of `DELETE`. `DELETE`
 /// archives. A purge must not be one query parameter away from an
 /// archive.
 ///
-/// Requires `manage_tasks` on the board of the task (an organization
-/// admin has it). The creator of the task gets no right here. Send the
-/// current code. The route does not follow a retired code.
+/// Requires `purge` on the board of the task. Team membership does not
+/// give it, and `manage_tasks` is not enough. An organization admin has
+/// it. The creator of the task gets no right here. Send the current code.
+/// The route does not follow a retired code.
 #[utoipa::path(
     post,
     path = "/api/tasks/{short_code}/purge",
@@ -1159,8 +1163,9 @@ pub(crate) async fn reopen_task(
     params(("short_code" = String, Path, description = "Task short code (the current code)")),
     responses(
         (status = 200, description = "Deleted for good", body = dto::PurgeTaskResponse),
-        (status = 403, description = "Missing manage_tasks on the board of the task", body = dto::ErrorEnvelope),
+        (status = 403, description = "Missing purge on the board of the task", body = dto::ErrorEnvelope),
         (status = 404, description = "Unknown short code", body = dto::ErrorEnvelope),
+        (status = 422, description = "TASK_LIVE: the task is not archived. Archive it first", body = dto::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn purge_task(
@@ -1169,39 +1174,49 @@ pub(crate) async fn purge_task(
     Extension(tenant): Extension<TenantContext>,
     Path(short_code): Path<String>,
 ) -> Result<Json<dto::PurgeTaskResponse>, ApiError> {
-    let user = auth.user_id;
     let slug = tenant.slug.clone();
     let purged = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            purge(conn, &slug, &short_code, user)
+            purge(conn, &slug, &short_code, &auth)
         })
         .await?;
     Ok(Json(purged))
 }
 
 /// The ONE purge of the server: REST `POST /api/tasks/{short_code}/purge`
-/// and MCP `purge_task`. The task by its current code (live or archived;
-/// no retired code), `manage_tasks` on its board, and the purge.
+/// and MCP `purge_task`. The task by its current code (no retired code),
+/// `purge` on its board, an archived task (KAIROS-T-0570), and the purge.
 pub(crate) fn purge(
     conn: &mut PgConnection,
     slug: &str,
     short_code: &str,
-    user: Uuid,
+    auth: &AuthContext,
 ) -> Result<dto::PurgeTaskResponse, ApiError> {
     use kairos_db::schema::tasks::dsl;
-    let found: Option<(Uuid, Uuid)> = dsl::tasks
+    let user = auth.user_id;
+    let found: Option<(Uuid, Uuid, Option<chrono::DateTime<chrono::Utc>>)> = dsl::tasks
         .filter(dsl::short_code.eq(short_code))
-        .select((dsl::id, dsl::board_id))
+        .select((dsl::id, dsl::board_id, dsl::deleted_at))
         .first(conn)
         .optional()
         .map_err(ApiError::internal)?;
-    let Some((task_id, board_id)) = found else {
+    let Some((task_id, board_id, archived_at)) = found else {
         return Err(ApiError::not_found(format!(
             "No task has the code {short_code}. Send the current code of the task."
         )));
     };
-    require_capability(conn, slug, Some(board_id), user, MANAGE)?;
+    require_capability(conn, slug, Some(board_id), user, kairos_core::abac::PURGE)?;
+    if archived_at.is_none() {
+        return Err(ApiError::unprocessable(
+            "TASK_LIVE",
+            format!(
+                "The task {short_code} is live. Archive it first, and then purge it. \
+                 A restore brings back an archived task, and no restore brings back a \
+                 purged task."
+            ),
+        ));
+    }
     let purged = kairos_db::purge::purge_task(conn, task_id, user).map_err(|e| match e {
         kairos_db::purge::PurgeError::TaskNotFound(_) => ApiError::not_found(e.to_string()),
         kairos_db::purge::PurgeError::Database(db) => ApiError::internal(db),

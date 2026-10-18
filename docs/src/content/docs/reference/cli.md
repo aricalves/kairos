@@ -690,13 +690,15 @@ kairos tasks purge <SHORT_CODE> --confirm [OPTIONS]
 
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
-| `<SHORT_CODE>` | string | required | The task's current short code. |
+| `<SHORT_CODE>` | string | required | The current short code of an archived task. |
 | `--confirm` | flag | off | Required for the purge to happen. Without it, nothing is deleted. |
 
-Deletes a task for good (a [purge](../glossary/#purge)). **You cannot undo
-this.** No `restore` brings the task back. The task can be live or archived.
-You need `manage_tasks` on the board of the task. To keep a copy that you can
-restore, use `tasks archive`.
+Deletes an archived task for good (a [purge](../glossary/#purge)). **You
+cannot undo this.** No `restore` brings the task back. Archive the task first
+with `tasks archive`. Kairos refuses a live task with `TASK_LIVE`.
+
+You need the `purge` capability on the board of the task. Team membership does
+not give it, and an organization admin has it.
 
 ### `<noun> restore`
 
