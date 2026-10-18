@@ -784,6 +784,57 @@ fn calls_fetch_index(world: &mut CliWorld) {
     world.result = Some(result);
 }
 
+/// KAIROS-T-0515: `fetch_index` takes `max_changed`.
+#[when("the agent calls fetch_index with the path of the checkout and max_changed 10")]
+fn calls_fetch_index_with_a_limit(world: &mut CliWorld) {
+    let root = world.base.root().to_path_buf();
+    let result = world.agent.as_mut().expect("no server").call(
+        "fetch_index",
+        serde_json::json!({"root": root, "repository": REPOSITORY, "max_changed": 10}),
+    );
+    world.result = Some(result);
+}
+
+/// KAIROS-T-0517: the refusal of the tool names `max_changed`.
+#[then("the server refuses: 250 files changed, the limit is 10, give max_changed 250")]
+fn refuses_with_the_limit(world: &mut CliWorld) {
+    let r = world.result.as_ref().expect("no result");
+    assert!(r.is_error, "{}", r.text);
+    assert!(
+        r.text.starts_with("INDEX: 250 files changed since "),
+        "{}",
+        r.text
+    );
+    assert!(
+        r.text
+            .contains("The limit is 10, so the server did not change the index."),
+        "{}",
+        r.text
+    );
+    assert!(r.text.contains("Rebase on main"), "{}", r.text);
+    assert!(
+        r.text
+            .contains("Or give `max_changed` 250 to update from this index."),
+        "{}",
+        r.text
+    );
+    assert!(!world.base.root().join(INDEX_DB).exists(), "{}", r.text);
+}
+
+/// KAIROS-T-0517: a failed fetch opened nothing, and says so.
+#[then("the server says that no checkout is open")]
+fn says_no_checkout_is_open(world: &mut CliWorld) {
+    let r = world.result.as_ref().expect("no result");
+    assert!(
+        r.text.contains(
+            "The server has no open checkout, so the other tools refuse until `fetch_index` \
+             succeeds."
+        ),
+        "{}",
+        r.text
+    );
+}
+
 #[then(regex = r"^the server says that the index of A is open, with (\d+) changed files$")]
 fn says_open(world: &mut CliWorld, changed: usize) {
     let r = world.result.as_ref().expect("no result");
@@ -1077,6 +1128,11 @@ fn tells_to_rebase(world: &mut CliWorld, command: String) {
     let out = base(world).output();
     assert!(out.contains("Rebase on main"), "{out}");
     assert!(out.contains(&format!("run `{command}`")), "{out}");
+    // KAIROS-T-0517: and the limit that lets the update start.
+    assert!(
+        out.contains("Or give `--max-changed 250` to update from this index."),
+        "{out}"
+    );
 }
 
 #[then("it gives the time of a full build")]

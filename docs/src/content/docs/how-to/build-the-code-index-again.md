@@ -110,6 +110,23 @@ tool `rebuild_code_index`. The REST route is
 | `CODE_INDEX_BUILDER_OFF` | The deployment has no builder. A server with `KAIROS_ROLE=api` gives this never: it queues the build for a worker. | An operator sets `KAIROS_CODE_INDEX_DIR`. See [Configuration](../../reference/configuration/). |
 | `FORBIDDEN` | You cannot change the repository. | Ask an organization admin, or a member of the owner team. |
 
+## When a checkout does not update
+
+`kairos index update` and the tool `fetch_index` start from the nearest
+index in Kairos. When more files changed since that index than the limit,
+they refuse and change nothing. The text says what to do:
+
+| The text says | What to do |
+|---|---|
+| `The checkout is N commits behind origin/main.` | Run `git pull --ff-only`, or open a worktree at `origin/main`. |
+| `Rebase on main, or run kairos index --full.` | Rebase your branch, or build the index again on this machine. |
+| `Or give --max-changed N` (the tool: `max_changed`) | Update from this index with a higher limit. |
+
+An update that runs no model (`--link-only`, a hosted repository, or
+`fetch_index`) has no default limit. After a refusal of `fetch_index`, the
+tools still answer for the previous checkout. See
+[kairos index update and the base index](../../reference/configuration/#kairos-index-update-and-the-base-index).
+
 ## Stop the builds of a repository
 
 A build can use much memory and processor time. To stop the builds of one

@@ -32,7 +32,7 @@ use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt, tool, tool_handler,
 use serde::Deserialize;
 
 use super::arguments::{Parameters, tool_error_of};
-use super::error::{Choose, IndexCommandError, Place, SymbolArguments, ToolError};
+use super::error::{Choose, IndexCommandError, Place, StillOpen, SymbolArguments, ToolError};
 use super::query::{QuerySource, ROUTE_TIMEOUT, RouteFailure};
 
 /// The results of `code_search` when the call gives no `limit`.
@@ -318,7 +318,15 @@ impl CodeTools {
                 if let Some(limit) = limit
                     && n > limit
                 {
-                    return Err(super::too_far(&root, &b, n, limit).into());
+                    return Err(super::too_far(
+                        &root,
+                        &b,
+                        n,
+                        limit,
+                        true,
+                        super::error::Caller::Tool,
+                    )
+                    .into());
                 }
                 lines.push(format!(
                     "Repository {}: the local index is nearer to the tree than the index of \
@@ -337,7 +345,15 @@ impl CodeTools {
                 if let Some(limit) = limit
                     && b.changed > limit
                 {
-                    return Err(super::too_far(&root, &b, b.changed, limit).into());
+                    return Err(super::too_far(
+                        &root,
+                        &b,
+                        b.changed,
+                        limit,
+                        false,
+                        super::error::Caller::Tool,
+                    )
+                    .into());
                 }
                 let bytes = b.download().await.map_err(|why| ToolError::Download {
                     commit: b.short().to_string(),
@@ -569,6 +585,16 @@ fn error(e: ToolError) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(e.text())])
 }
 
+/// The text of a failed `fetch_index`: the error, then the checkout that the
+/// tools still answer for (KAIROS-T-0517).
+fn fetch_error(e: &ToolError, previous: Option<&Path>) -> String {
+    let still = match previous {
+        Some(root) => StillOpen::Root(display(root)),
+        None => StillOpen::Nothing,
+    };
+    e.text_with(Some(&still))
+}
+
 fn result(r: Result<String, ToolError>) -> Result<CallToolResult, ErrorData> {
     Ok(match r {
         Ok(t) => text(t),
@@ -782,13 +808,22 @@ pub(super) fn plural(count: usize, one: &str, many: &str) -> String {
 #[tool_router]
 impl CodeTools {
     #[tool(
-        description = "Open the index of a checkout. Give `root`, the path of the checkout. The server takes the nearest index of its repository from Kairos, updates it for the files that differ, and the other tools answer for this checkout. Give `repository`, the slug in Kairos, when the origin remote of the checkout is not a repository of Kairos. It runs no model, so it has no limit of changed files. Give `max_changed` for a limit. Call it first when the session did not start inside a checkout."
+        description = "Open the index of a checkout. Give `root`, the path of the checkout. The server takes the nearest index of its repository from Kairos, updates it for the files that differ, and the other tools answer for this checkout. Give `repository`, the slug in Kairos, when the origin remote of the checkout is not a repository of Kairos. It runs no model, so it has no limit of changed files. Give `max_changed` for a limit. A call that fails does not change the open checkout. Call it first when the session did not start inside a checkout."
     )]
     async fn fetch_index(
         &self,
         Parameters(params): Parameters<FetchIndexParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        result(self.fetch(params).await)
+        // KAIROS-T-0517: a failed fetch does not change the open checkout.
+        // The error says which one the tools still answer for.
+        let previous = self.root();
+        Ok(match self.fetch(params).await {
+            Ok(t) => text(t),
+            Err(e) => CallToolResult::error(vec![ContentBlock::text(fetch_error(
+                &e,
+                previous.as_deref(),
+            ))]),
+        })
     }
 
     #[tool(

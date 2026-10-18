@@ -438,7 +438,7 @@ async fn update(
             if let Some(limit) = limit
                 && *n > limit
             {
-                return Err(too_far(root, &b, *n, limit));
+                return Err(too_far(root, &b, *n, limit, true, error::Caller::Cli));
             }
             println!(
                 "Kairos: the local index is nearer to the tree than the index of {} \
@@ -454,7 +454,14 @@ async fn update(
             if let Some(limit) = limit
                 && b.changed > limit
             {
-                return Err(too_far(root, &b, b.changed, limit));
+                return Err(too_far(
+                    root,
+                    &b,
+                    b.changed,
+                    limit,
+                    false,
+                    error::Caller::Cli,
+                ));
             }
             download = Some(b);
         }
@@ -573,22 +580,53 @@ pub(super) fn reason(found: &base::Found) -> String {
     }
 }
 
-/// The rebase answer: `changed` files, more than `limit`, changed since the
+/// The refusal: `changed` files, more than `limit`, changed since the
 /// index that the update starts from: the base, or the local index when it
-/// is nearer (KAIROS-T-0515).
+/// is nearer (`local`, KAIROS-T-0515). The text says what to do
+/// (KAIROS-T-0517): pull when the checkout is only behind, else rebase or
+/// build again; and the limit to give.
 pub(super) fn too_far(
     root: &Path,
     b: &base::Base,
     changed: usize,
     limit: usize,
+    local: bool,
+    caller: error::Caller,
 ) -> IndexCommandError {
-    IndexCommandError::TooFar {
-        changed,
-        commit: b.short().to_string(),
-        limit,
-        branch: b.branch.clone(),
-        estimate: base::full_build_estimate(base::file_count(root), b.summaries),
-    }
+    let commit = b.short().to_string();
+    let since = if local {
+        error::Since::Local { changed, commit }
+    } else if b.distance > 0 {
+        error::Since::Below {
+            changed,
+            commit,
+            distance: b.distance,
+            from: base::short(&b.from).to_string(),
+        }
+    } else {
+        error::Since::Base { changed, commit }
+    };
+    let (stop, raise) = match caller {
+        error::Caller::Cli => (error::Stop::Cli(limit), error::Raise::Cli(changed)),
+        error::Caller::Tool => (error::Stop::Tool(limit), error::Raise::Tool(changed)),
+    };
+    let advice = match b.behind {
+        Some(commits) => error::Advice::Behind {
+            commits,
+            branch: b.branch.clone(),
+            raise,
+        },
+        None => error::Advice::Rebase {
+            branch: b.branch.clone(),
+            estimate: base::full_build_estimate(base::file_count(root), b.summaries),
+            raise,
+        },
+    };
+    IndexCommandError::TooFar(Box::new(error::TooFar {
+        since,
+        stop,
+        advice,
+    }))
 }
 
 /// Put the downloaded index at `db`. With `keep_pool`, the summaries of the

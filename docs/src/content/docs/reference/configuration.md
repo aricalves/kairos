@@ -1112,18 +1112,37 @@ Kairos. They run the model of the machine when it has one.
 
 The base is the nearest indexed commit at or below the merge base of `HEAD`
 and the default branch. The CLI also asks for the nearest indexed commit at
-or below `origin/<default branch>`, and it takes the base with fewer changed
+or below `origin/<default branch>`. It takes the base with fewer changed
 files. A clone that is only behind the default branch then starts from the
-index of its tip. If more files than the limit changed since that
-commit, the CLI builds nothing. An update that runs no model has no default
-limit. It parses the changed files, about 0.1 s for each file, and links the
+index of its tip.
+
+If more files than the limit changed since the base, the CLI builds
+nothing. An update that runs no model has no default limit. It parses the changed files, about 0.1 s for each file, and links the
 summaries of the pool.
 
 The tool `fetch_index` runs no model, so it has no limit either. Give it
 `max_changed` to set a limit. Above the limit, the tool does not change the
-index. It tells you to rebase on the default branch,
-or to run `kairos index --full`. It also gives the time of a full build. If
-the CLI cannot reach Kairos, it updates the local index and says so.
+index.
+
+The refusal gives the count of changed files. It names the index that it
+counted from: the base, or the local index when it is nearer. Kairos can
+have no index of the commit that the CLI asked for. Then the refusal also
+gives the distance in commits from the base to that commit. Then it tells
+you what to do:
+
+- The checkout is only behind the default branch (`HEAD` is an ancestor of
+  `origin/<default branch>`): run `git pull --ff-only`, or open a worktree
+  at `origin/<default branch>`.
+- Else: rebase on the default branch, or run `kairos index --full`. The
+  text gives the time of a full build.
+- In each case: give `--max-changed <N>` (the tool: `max_changed`) with the
+  count, to update from this base.
+
+After a refusal of `fetch_index`, the tools still answer for the previous
+checkout, and the error names it. With no previous checkout, the error says
+that the other tools refuse until `fetch_index` succeeds.
+
+If the CLI cannot reach Kairos, it updates the local index and says so.
 
 ### The code tools: choose one symbol
 

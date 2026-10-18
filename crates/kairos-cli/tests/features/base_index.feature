@@ -50,6 +50,16 @@ Feature: Start from the base index
     Then the server says that the index of A is open, with 500 changed files
     And the index of the checkout has the 500 new files
 
+  # KAIROS-T-0517: the agent gives a limit. The refusal names it, and says
+  # that no checkout is open.
+  Scenario: fetch_index with max_changed refuses a far branch
+    Given Kairos has an index of commit A of main
+    And a checkout of a branch from A with 250 changed files and no local index
+    And a kairos-code server started in a folder that is not a checkout
+    When the agent calls fetch_index with the path of the checkout and max_changed 10
+    Then the server refuses: 250 files changed, the limit is 10, give max_changed 250
+    And the server says that no checkout is open
+
   Scenario: A machine with no model shows the summaries of the base index
     Given Kairos has a summarized index of commit A of main
     And a kairos binary with no summarizer

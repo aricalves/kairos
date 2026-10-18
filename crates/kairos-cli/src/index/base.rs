@@ -69,6 +69,14 @@ pub struct Base {
     /// The repository makes its summaries on Kairos, with a hosted
     /// provider (KAIROS-T-0343): the CLI links the pool and makes none.
     pub hosted: bool,
+    /// The commit that the CLI asked for: the indexed commit is at or
+    /// below it (KAIROS-T-0517).
+    pub from: String,
+    /// The commits from the indexed commit to `from`, as Kairos gave them.
+    pub distance: usize,
+    /// The commits from HEAD to `origin/<default>`, when HEAD is an
+    /// ancestor of it and not the same commit (KAIROS-T-0517).
+    pub behind: Option<usize>,
 }
 
 impl Base {
@@ -179,6 +187,7 @@ pub async fn find(root: &Path, args: &RemoteArgs) -> Found {
             ),
         ],
     );
+    let behind = tip.as_deref().and_then(|tip| behind_by(root, tip));
     let second = match (&first, tip) {
         (Asked::Unreachable(_), _) => None,
         (Asked::Found(n), _) if n.changed == 0 => None,
@@ -200,6 +209,9 @@ pub async fn find(root: &Path, args: &RemoteArgs) -> Found {
         commit: nearest.commit,
         changed: nearest.changed,
         summaries: nearest.summaries,
+        from: nearest.from,
+        distance: nearest.distance,
+        behind,
         // KAIROS-T-0358: the value that the server resolved (a repository
         // can follow the organization). A server from before it sends no
         // resolved value, so its own `hosted` counts too.
@@ -218,6 +230,8 @@ struct Nearest {
     commit: String,
     changed: usize,
     summaries: usize,
+    from: String,
+    distance: usize,
 }
 
 /// The answer of Kairos to one request of the nearest index.
@@ -251,7 +265,17 @@ async fn nearest_of(client: &KairosClient, slug: &str, root: &Path, from: &str) 
         commit: nearest.index.commit,
         changed,
         summaries: usize::try_from(nearest.index.summary_keys).unwrap_or(0),
+        from: from.to_string(),
+        distance: nearest.distance,
     })
+}
+
+/// The commits from HEAD to `tip`, when HEAD is an ancestor of `tip` and
+/// not the same commit: the checkout is only behind (KAIROS-T-0517).
+fn behind_by(root: &Path, tip: &str) -> Option<usize> {
+    git_output(root, &["merge-base", "--is-ancestor", "HEAD", tip])?;
+    let count = git_output(root, &["rev-list", "--count", &format!("HEAD..{tip}")])?;
+    count.parse().ok().filter(|n| *n > 0)
 }
 
 /// The base with the smaller diff (KAIROS-T-0516): `of_point`, the index of
@@ -510,6 +534,8 @@ mod tests {
             commit: commit.into(),
             changed,
             summaries: 0,
+            from: commit.into(),
+            distance: 0,
         };
         assert_eq!(choose(of("a", 250), of("b", 1)).commit, "b");
         assert_eq!(choose(of("a", 3), of("b", 40)).commit, "a");
