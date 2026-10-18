@@ -93,5 +93,6 @@ pub use seed::{DroppedDemo, SeedDemoReport, SeedError, seed_demo};
 pub use tenant::{
     MIGRATION_LOCK_KEY, TenantError, TenantInfo, TenantMigrationOutcome, TenantMigrationReport,
     TenantProvisionReport, drop_tenant, list_tenants, migrate_all_tenants, migrate_each_tenant,
-    provision_tenant, tenant_schema_is_current, with_migration_lock,
+    migrate_each_tenant_from, provision_tenant, provision_tenant_from, stale_tenants,
+    tenant_schema_is_current, with_migration_lock,
 };

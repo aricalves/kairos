@@ -806,9 +806,12 @@ fn relationship_graph_service() {
             i1.id
         ),
     );
+    // For `parent` the planner may pick the partial unique index of the
+    // one-parent rule (KAIROS-T-0572): it is also keyed on the target.
     assert!(
-        target_plan.contains("idx_item_relationships_target"),
-        "target+relationship lookup must use idx_item_relationships_target:\n{target_plan}"
+        target_plan.contains("idx_item_relationships_target")
+            || target_plan.contains("item_relationships_one_parent"),
+        "target+relationship lookup must use a target index:\n{target_plan}"
     );
     println!("EXPLAIN source+relationship:\n{source_plan}\n");
     println!("EXPLAIN target+relationship:\n{target_plan}\n");

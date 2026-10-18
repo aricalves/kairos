@@ -376,6 +376,7 @@ fn task_on(board: &str, title: &str) -> CreateTaskRequest {
         team_id: None,
         repository: None,
         from_team: None,
+        parent: None,
     }
 }
 
@@ -529,6 +530,7 @@ async fn edit_rule_and_link_rule_against_live_stack() {
             content: "original content".into(),
             complexity: None,
             bucket_type: None,
+            parent: None,
         })
         .await
         .expect("initiative");
@@ -775,6 +777,7 @@ async fn edit_rule_and_link_rule_against_live_stack() {
             content: "original content".into(),
             complexity: None,
             bucket_type: None,
+            parent: None,
         })
         .await
         .expect("alice creates her initiative");
@@ -790,6 +793,7 @@ async fn edit_rule_and_link_rule_against_live_stack() {
                 content: String::new(),
                 complexity: None,
                 bucket_type: None,
+                parent: None,
             })
             .await,
         "alice holds no grant on the initiative board now",
@@ -1699,6 +1703,7 @@ async fn edit_rule_and_link_rule_against_live_stack() {
                 content: String::new(),
                 complexity: None,
                 bucket_type: None,
+                parent: None,
             })
             .await,
     );

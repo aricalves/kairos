@@ -13,7 +13,7 @@ use rmcp::model::Tool;
 
 /// The tools of the daily work: the default profile. Picked from the calls
 /// of the agents (2026-10-14): these make nearly all of them.
-pub(super) const WORK: [&str; 43] = [
+pub(super) const WORK: [&str; 44] = [
     "whoami",
     "my_boards",
     // KAIROS-T-0489: the work of the person, in two lanes.
@@ -40,6 +40,8 @@ pub(super) const WORK: [&str; 43] = [
     "set_state",
     "set_metadata",
     "set_repository",
+    // KAIROS-T-0572: one parent per item, changed in one call.
+    "set_parent",
     "set_work_class",
     "set_team",
     "clear_team",

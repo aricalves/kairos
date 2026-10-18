@@ -255,3 +255,99 @@ pub fn revoke_person_keys(conn: &mut PgConnection, user_id: Uuid) -> QueryResult
     rows.sort_by_key(|k| (k.created_at, k.id));
     Ok(rows)
 }
+
+/// One key that [`notify_expiring_keys`] reports (KAIROS-T-0540).
+#[derive(Debug, Clone, PartialEq, Eq, QueryableByName)]
+pub struct ExpiringKey {
+    #[diesel(sql_type = diesel::sql_types::Uuid)]
+    pub id: Uuid,
+    /// The principal: a person (an agent key) or a service account.
+    #[diesel(sql_type = diesel::sql_types::Uuid)]
+    pub user_id: Uuid,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub name: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub prefix: String,
+    #[diesel(sql_type = diesel::sql_types::Timestamptz)]
+    pub expires_at: DateTime<Utc>,
+    /// `users.kind` of the principal.
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub principal_kind: String,
+    /// The display name of the principal.
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub principal_name: String,
+}
+
+impl ExpiringKey {
+    /// True for an agent key: the principal is a person.
+    pub fn is_agent_key(&self) -> bool {
+        self.principal_kind == crate::models::public::USER_KIND_HUMAN
+    }
+}
+
+/// Report each key of the tenant of the current `search_path` that expires
+/// within [`KEY_EXPIRING_DAYS`] days after `now` (KAIROS-T-0540): the
+/// notification `key_expiring`, as Kairos (no actor). The person of an
+/// agent key is told; for a key of a service account, the organization
+/// admins are told ([`crate::notifications::on_key_expiring`]).
+///
+/// Each key is told once: the update sets `expiring_notified_at`, and a key
+/// with the column set is not told again. Not a revoked key, not a key that
+/// a rotation replaced (its new key is told in its turn), not a key with no
+/// expiry, not a key that expired already. Returns the keys reported, by
+/// expiry.
+///
+/// [`KEY_EXPIRING_DAYS`]: kairos_core::notifications::KEY_EXPIRING_DAYS
+pub fn notify_expiring_keys(
+    conn: &mut PgConnection,
+    now: DateTime<Utc>,
+) -> QueryResult<Vec<ExpiringKey>> {
+    use diesel::sql_types::Timestamptz;
+    let until = now + chrono::Duration::days(kairos_core::notifications::KEY_EXPIRING_DAYS);
+    conn.transaction(|conn| {
+        let mut keys: Vec<ExpiringKey> = diesel::sql_query(
+            "UPDATE api_keys k SET expiring_notified_at = $1 \
+               FROM public.users u \
+              WHERE u.id = k.user_id \
+                AND k.expiring_notified_at IS NULL \
+                AND k.revoked_at IS NULL \
+                AND k.replaced_by IS NULL \
+                AND k.expires_at > $1 \
+                AND k.expires_at <= $2 \
+             RETURNING k.id, k.user_id, k.name, k.prefix, k.expires_at, \
+                       u.kind AS principal_kind, u.display_name AS principal_name",
+        )
+        .bind::<Timestamptz, _>(now)
+        .bind::<Timestamptz, _>(until)
+        .load(conn)?;
+        keys.sort_by_key(|k| (k.expires_at, k.id));
+        for key in &keys {
+            crate::notifications::on_key_expiring(conn, key)?;
+        }
+        Ok(keys)
+    })
+}
+
+/// [`notify_expiring_keys`] in each tenant (KAIROS-T-0540): the work of the
+/// periodic pass `key-expiring`. `progress` is called before each tenant.
+/// Returns the count of the keys reported.
+pub fn key_expiring_pass(
+    conn: &mut PgConnection,
+    now: DateTime<Utc>,
+    progress: &mut dyn FnMut(),
+) -> Result<u64, crate::tenant::TenantError> {
+    let mut reported = 0u64;
+    for tenant_info in crate::tenant::list_tenants(conn)? {
+        progress();
+        if !tenant_info.schema_exists {
+            continue;
+        }
+        let schema = crate::tenant::tenant_schema_name(&tenant_info.slug);
+        diesel::sql_query(format!("SET search_path TO \"{schema}\"")).execute(conn)?;
+        let result = notify_expiring_keys(conn, now);
+        let reset = diesel::sql_query("SET search_path TO DEFAULT").execute(conn);
+        reported += result?.len() as u64;
+        reset?;
+    }
+    Ok(reported)
+}
