@@ -1096,7 +1096,7 @@ index. The output says so. The tool `fetch_index` of the code tools does the sam
 | `--url`, then `KAIROS_URL`, then `deployment_url` in `.claude/kairos.local.md` | The Kairos deployment. With none of them, the CLI uses the deployment of `kairos login`. |
 | `KAIROS_KEY`, then `KAIROS_MCP_KEY` | An agent key or a service-account key, sent as the bearer, as for each other command ([CLI → Authentication](../cli/#authentication)). With neither, the CLI uses the credentials of `kairos login`. |
 | `--repository`, then `repository` in `.claude/kairos.local.md` | The repository in Kairos. With neither, the CLI uses the repository whose `repo_url` is the `origin` remote of the checkout. |
-| `--max-changed` | The most files that can change since the base index. The default is 200. |
+| `--max-changed` | The most files that can change since the base index. When the update runs a model, the default is 200. With `--link-only` or on a hosted repository, there is no default limit. |
 | `--link-only` | Do not run the summary model. The update links the summaries that are in the pool of the index, and it does not make new summaries. The background update of the Claude Code plugin uses this option. |
 
 A repository can opt in to the hosted provider of its organization
@@ -1112,7 +1112,13 @@ Kairos. They run the model of the machine when it has one.
 
 The base is the nearest indexed commit at or below the merge base of `HEAD`
 and the default branch. If more files than the limit changed since that
-commit, the CLI builds nothing. It tells you to rebase on the default branch,
+commit, the CLI builds nothing. An update that runs no model has no default
+limit. It parses the changed files, about 0.1 s for each file, and links the
+summaries of the pool.
+
+The tool `fetch_index` runs no model, so it has no limit either. Give it
+`max_changed` to set a limit. Above the limit, the tool does not change the
+index. It tells you to rebase on the default branch,
 or to run `kairos index --full`. It also gives the time of a full build. If
 the CLI cannot reach Kairos, it updates the local index and says so.
 

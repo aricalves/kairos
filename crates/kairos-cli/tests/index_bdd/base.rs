@@ -737,8 +737,8 @@ fn calls_fetch_index(world: &mut CliWorld) {
     world.result = Some(result);
 }
 
-#[then("the server says that the index of A is open, with 3 changed files")]
-fn says_open(world: &mut CliWorld) {
+#[then(regex = r"^the server says that the index of A is open, with (\d+) changed files$")]
+fn says_open(world: &mut CliWorld, changed: usize) {
     let r = world.result.as_ref().expect("no result");
     assert!(!r.is_error, "{}", r.text);
     let a = &world.base.kairos().a[..12];
@@ -749,7 +749,7 @@ fn says_open(world: &mut CliWorld) {
     );
     assert!(
         r.text.contains(&format!(
-            "the index of commit {a} from Kairos, 3 files changed since it."
+            "the index of commit {a} from Kairos, {changed} files changed since it."
         )),
         "{}",
         r.text
@@ -946,6 +946,38 @@ fn downloads_a(world: &mut CliWorld) {
             .content_hash
     };
     assert_ne!(stats.content_hash, in_a, "the index is the index of A");
+}
+
+/// KAIROS-T-0515: the base of a far branch, with no limit.
+#[then(regex = r"^the CLI downloads the index of A, with (\d+) changed files$")]
+fn downloads_a_far(world: &mut CliWorld, changed: usize) {
+    let w = base(world);
+    let out = w.output();
+    assert!(w.run.as_ref().expect("no run").status.success(), "{out}");
+    let a = &w.kairos().a;
+    assert!(
+        w.stdout().contains(&format!(
+            "Kairos: downloaded the index of {}, {changed} files changed since it.",
+            &a[..12]
+        )),
+        "{out}"
+    );
+}
+
+/// KAIROS-T-0515: the generated files of the branch are in the index.
+#[then(regex = r"^the index of the checkout has the (\d+) new files$")]
+fn has_the_new_files(world: &mut CliWorld, count: usize) {
+    let w = &world.base;
+    let files = w.index().files().expect("files");
+    let new = files
+        .iter()
+        .filter(|f| f.path.starts_with("pkg/generated/"))
+        .count();
+    assert_eq!(new, count);
+    // The files of A are there too, with the summaries of the base.
+    assert!(files.iter().any(|f| f.path == "pkg/stats.py"));
+    let (with, _) = w.summarized();
+    assert!(with.contains("pkg/stats.py:mean"), "{with:?}");
 }
 
 #[then("it summarizes only the changed symbols")]

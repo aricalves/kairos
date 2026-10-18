@@ -91,6 +91,8 @@ pub struct FetchIndexParams {
     pub root: String,
     /// The repository in Kairos, by its slug. Default: the repository whose URL is the `origin` remote of the checkout.
     pub repository: Option<String>,
+    /// The most files that can change since the index that the server starts from. Above it, the server does not change the index. Default: no limit, because `fetch_index` runs no model.
+    pub max_changed: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -274,6 +276,9 @@ impl CodeTools {
             ..Default::default()
         };
         let found = super::base::find(&root, &remote).await;
+        // KAIROS-T-0515: this path runs no model, so it has no limit unless
+        // the agent gives one.
+        let limit = super::limit_of(params.max_changed, false);
         // KAIROS-T-0526: this server is the `kairos` binary of the session
         // start. Say so when the deployment is newer.
         let behind = crate::self_update::behind_server_line().await;
@@ -310,8 +315,10 @@ impl CodeTools {
             // base has more (KAIROS-T-0355), as `kairos index update` does.
             super::base::Found::Base(b) if local_changed.is_some_and(|n| n <= b.changed) => {
                 let n = local_changed.unwrap_or_default();
-                if n > super::DEFAULT_MAX_CHANGED {
-                    return Err(super::too_far(&root, &b, super::DEFAULT_MAX_CHANGED).into());
+                if let Some(limit) = limit
+                    && n > limit
+                {
+                    return Err(super::too_far(&root, &b, n, limit).into());
                 }
                 lines.push(format!(
                     "Repository {}: the local index is nearer to the tree than the index of \
@@ -327,8 +334,10 @@ impl CodeTools {
                 hosted = b.hosted;
             }
             super::base::Found::Base(b) => {
-                if b.changed > super::DEFAULT_MAX_CHANGED {
-                    return Err(super::too_far(&root, &b, super::DEFAULT_MAX_CHANGED).into());
+                if let Some(limit) = limit
+                    && b.changed > limit
+                {
+                    return Err(super::too_far(&root, &b, b.changed, limit).into());
                 }
                 let bytes = b.download().await.map_err(|why| ToolError::Download {
                     commit: b.short().to_string(),
@@ -773,7 +782,7 @@ pub(super) fn plural(count: usize, one: &str, many: &str) -> String {
 #[tool_router]
 impl CodeTools {
     #[tool(
-        description = "Open the index of a checkout. Give `root`, the path of the checkout. The server takes the nearest index of its repository from Kairos, updates it for the files that differ, and the other tools answer for this checkout. Give `repository`, the slug in Kairos, when the origin remote of the checkout is not a repository of Kairos. Call it first when the session did not start inside a checkout."
+        description = "Open the index of a checkout. Give `root`, the path of the checkout. The server takes the nearest index of its repository from Kairos, updates it for the files that differ, and the other tools answer for this checkout. Give `repository`, the slug in Kairos, when the origin remote of the checkout is not a repository of Kairos. It runs no model, so it has no limit of changed files. Give `max_changed` for a limit. Call it first when the session did not start inside a checkout."
     )]
     async fn fetch_index(
         &self,

@@ -2172,7 +2172,7 @@ kairos index update [--root <ROOT>] [--rust-edges] [--link-only] [--max-changed 
 |---|---|---|---|
 | `--rust-edges` (alias `--scip`) | flag | off | Run the SCIP indexers again for the precise edges of the changed code: rust-analyzer, scip-go, scip-typescript and scip-python. |
 | `--link-only` | flag | off | Run no model. Link the summaries of the pool, and make no new summaries. |
-| `--max-changed <MAX_CHANGED>` | integer | 200 | The most files that can change since the base index. Above it, the CLI builds nothing. |
+| `--max-changed <MAX_CHANGED>` | integer | 200 when a model runs, else no limit | The most files that can change since the base index. Above it, the CLI builds nothing. With `--link-only` or on a hosted repository, no model runs. |
 | `--repository <REPOSITORY>` | slug or UUID | `repository` in `.claude/kairos.local.md`, else the repository of the `origin` remote | The repository in Kairos. |
 | `--url <URL>` | string | `KAIROS_URL`, else `deployment_url` in `.claude/kairos.local.md`, else the only deployment of `kairos login` | The deployment. |
 | `--tenant <TENANT>` | string | the tenant of the login | The tenant, for a token from `kairos login`. |
