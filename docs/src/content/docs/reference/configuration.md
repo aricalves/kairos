@@ -1153,6 +1153,11 @@ index. The output says so. The tool `fetch_index` of the code tools does the sam
 | `--max-changed` | The most files that can change since the base index. When the update runs a model, the default is 200. With `--link-only` or on a hosted repository, there is no default limit. |
 | `--link-only` | Do not run the summary model. The update links the summaries that are in the pool of the index, and it does not make new summaries. The background update of the Claude Code plugin uses this option. |
 
+Git excludes `.claude/kairos.local.md`, so a worktree has no such file. In
+a worktree, the CLI reads the file of the main clone. The main clone is the
+folder above `git rev-parse --git-common-dir`. The plugin hooks use the same
+rule.
+
 A repository can opt in to the hosted provider of its organization
 (`code_index_summaries = hosted`). On such a repository, the update makes
 no summary, whatever `KAIROS_INDEX_SUMMARIZE` says. It links the summaries
