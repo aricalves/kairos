@@ -428,10 +428,11 @@ token.
 
 ### `PUT /api/repositories/{slug}/write-token`
 
-Set or replace the write token of a GitHub repository. An organization
-admin or a member of the owner team can do it. Kairos encrypts the
-token, and writes each open pull request that links to an item. The
-response is the status, with no token.
+Set or replace the write token of a GitHub or GitLab repository. An
+organization admin or a member of the owner team can do it. Kairos
+encrypts the token, and writes each open pull request that links to an
+item and each issue whose task changed. The response is the status,
+with no token.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
@@ -444,7 +445,7 @@ Request body (required): `application/json`, [`SetRepositoryCredentialRequest`](
 | `200` | [`RepositoryWriteBack`](../schemas/#repositorywriteback) | The token is set |
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Not an organization admin, and not a member of the owner team |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown repository |
-| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Not a GitHub repository, an unknown field, or a token that is empty, too long or has a space |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Not a GitHub or GitLab repository, an unknown field, or a token that is empty, too long or has a space |
 | `501` | [`ErrorEnvelope`](../schemas/#errorenvelope) | This deployment has no KAIROS_SECRETS_KEY |
 
 ### `DELETE /api/repositories/{slug}/write-token`
