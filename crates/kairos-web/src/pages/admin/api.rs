@@ -43,6 +43,10 @@ pub struct Board {
     /// `None` on each other level.
     #[serde(default)]
     pub owner_gate: Option<bool>,
+    /// The board policy `blockers_gate` of a delivery board (KAIROS-T-0565);
+    /// `None` on each other level.
+    #[serde(default)]
+    pub blockers_gate: Option<bool>,
 }
 
 /// mirror of: `kairos_client::types_org::BoardColumn` (partial).
@@ -118,43 +122,56 @@ pub async fn set_column_flag(
     .await
 }
 
-/// A policy of a board (KAIROS-A-0040, KAIROS-A-0042). Each level has one
-/// policy or none.
+/// A policy of a board (KAIROS-A-0040, KAIROS-A-0042, KAIROS-A-0053).
+/// A delivery board has two policies, an initiative board one, each other
+/// level none.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BoardPolicy {
     /// Delivery boards: a task moves into a claims column only while its
     /// initiative is active.
-    ParentGate,
+    Parent,
     /// Initiative boards: an initiative moves to Active only with an owner.
-    OwnerGate,
+    Owner,
+    /// Delivery boards: a task with an open blocker does not move into a
+    /// claims column or a done column (KAIROS-T-0565).
+    Blockers,
 }
 
 impl BoardPolicy {
-    /// The policy of a board of `level`, or `None`. Pure, host-tested.
-    pub fn for_level(level: &str) -> Option<BoardPolicy> {
+    /// The policies of a board of `level`, in the order of the page; empty
+    /// for a level with no policy. Pure, host-tested.
+    pub fn for_level(level: &str) -> &'static [BoardPolicy] {
         match level {
-            "delivery" => Some(BoardPolicy::ParentGate),
-            "initiative" => Some(BoardPolicy::OwnerGate),
-            _ => None,
+            "delivery" => &[BoardPolicy::Parent, BoardPolicy::Blockers],
+            "initiative" => &[BoardPolicy::Owner],
+            _ => &[],
         }
+    }
+
+    /// The value of the policy on a new board: `blockers_gate` is off
+    /// (KAIROS-A-0053), the other two are on.
+    pub fn default_on(self) -> bool {
+        !matches!(self, BoardPolicy::Blockers)
     }
 
     /// The field of the policy in the board and in `UpdateBoardRequest`.
     pub fn field(self) -> &'static str {
         match self {
-            BoardPolicy::ParentGate => "parent_gate",
-            BoardPolicy::OwnerGate => "owner_gate",
+            BoardPolicy::Parent => "parent_gate",
+            BoardPolicy::Owner => "owner_gate",
+            BoardPolicy::Blockers => "blockers_gate",
         }
     }
 
     /// The value on `board`. The server sends it for the level of the
-    /// policy; a board with no value reads as on (the default).
+    /// policy; a board with no value reads as the default of the policy.
     pub fn of(self, board: &Board) -> bool {
         match self {
-            BoardPolicy::ParentGate => board.parent_gate,
-            BoardPolicy::OwnerGate => board.owner_gate,
+            BoardPolicy::Parent => board.parent_gate,
+            BoardPolicy::Owner => board.owner_gate,
+            BoardPolicy::Blockers => board.blockers_gate,
         }
-        .unwrap_or(true)
+        .unwrap_or(self.default_on())
     }
 }
 
@@ -1244,28 +1261,29 @@ mod flag_and_policy_tests {
     }
 
     #[test]
-    fn each_level_has_its_policy_or_none() {
+    fn each_level_has_its_policies_or_none() {
         assert_eq!(
             BoardPolicy::for_level("delivery"),
-            Some(BoardPolicy::ParentGate)
+            &[BoardPolicy::Parent, BoardPolicy::Blockers]
         );
-        assert_eq!(
-            BoardPolicy::for_level("initiative"),
-            Some(BoardPolicy::OwnerGate)
-        );
-        assert_eq!(BoardPolicy::for_level("strategy"), None);
-        assert_eq!(BoardPolicy::for_level("adr"), None);
+        assert_eq!(BoardPolicy::for_level("initiative"), &[BoardPolicy::Owner]);
+        assert!(BoardPolicy::for_level("strategy").is_empty());
+        assert!(BoardPolicy::for_level("adr").is_empty());
     }
 
     #[test]
     fn a_policy_body_sets_one_policy_only() {
         assert_eq!(
-            board_policy_body(BoardPolicy::ParentGate, false),
+            board_policy_body(BoardPolicy::Parent, false),
             json!({ "parent_gate": false })
         );
         assert_eq!(
-            board_policy_body(BoardPolicy::OwnerGate, true),
+            board_policy_body(BoardPolicy::Owner, true),
             json!({ "owner_gate": true })
+        );
+        assert_eq!(
+            board_policy_body(BoardPolicy::Blockers, true),
+            json!({ "blockers_gate": true })
         );
     }
 
@@ -1276,8 +1294,19 @@ mod flag_and_policy_tests {
             "team_id": "t", "code_prefix": "DEL", "parent_gate": false, "owner_gate": null
         });
         let board: Board = serde_json::from_value(wire).expect("parses");
-        assert!(!BoardPolicy::ParentGate.of(&board));
+        assert!(!BoardPolicy::Parent.of(&board));
         // No value reads as on, the default of the server.
-        assert!(BoardPolicy::OwnerGate.of(&board));
+        assert!(BoardPolicy::Owner.of(&board));
+        // An older server sends no blockers_gate: it reads as off, its default.
+        assert!(!BoardPolicy::Blockers.of(&board));
+
+        let wire = json!({
+            "id": "b", "name": "Delivery", "slug": "delivery", "board_level": "delivery",
+            "team_id": "t", "code_prefix": "DEL", "parent_gate": true, "owner_gate": null,
+            "blockers_gate": true
+        });
+        let board: Board = serde_json::from_value(wire).expect("parses");
+        assert!(BoardPolicy::Blockers.of(&board));
+        assert!(BoardPolicy::Parent.of(&board));
     }
 }
