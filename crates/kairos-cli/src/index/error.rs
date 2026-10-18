@@ -140,9 +140,76 @@ pub enum StillOpen {
     Nothing,
 }
 
+impl IndexCommandError {
+    /// The code of the error for `--json` (KAIROS-T-0654). A symbol that is
+    /// not found, or is not one symbol, has the code of the code tools.
+    pub fn code(&self) -> &str {
+        match self {
+            IndexCommandError::NoIndex(_) => "NO_INDEX",
+            IndexCommandError::NoStart { .. } => "NO_START",
+            IndexCommandError::TooFar(_) => "TOO_FAR",
+            IndexCommandError::NoRoot(_) => "NO_ROOT",
+            IndexCommandError::Symbol(e) => e.code(),
+            IndexCommandError::Git { .. }
+            | IndexCommandError::Write { .. }
+            | IndexCommandError::Index(_)
+            | IndexCommandError::Server(_) => crate::error::CODE_CLI_ERROR,
+        }
+    }
+
+    /// The details of the error for `--json`, else null.
+    pub fn details(&self) -> Value {
+        match self {
+            IndexCommandError::NoIndex(path) | IndexCommandError::NoRoot(path) => {
+                json!({ "path": path })
+            }
+            IndexCommandError::NoStart { path, why } => json!({ "path": path, "why": why }),
+            IndexCommandError::TooFar(far) => far.details(),
+            IndexCommandError::Symbol(e) => e.details().unwrap_or(Value::Null),
+            _ => Value::Null,
+        }
+    }
+}
+
+impl TooFar {
+    /// The counts of the refusal: the changed files, the limit, the commit
+    /// of the base, and whether the count is that of the local index.
+    pub fn details(&self) -> Value {
+        let (changed, commit, local) = match &self.since {
+            Since::Base { changed, commit }
+            | Since::Below {
+                changed, commit, ..
+            } => (changed, commit, false),
+            Since::Local { changed, commit } => (changed, commit, true),
+        };
+        let (Stop::Cli(limit) | Stop::Tool(limit)) = self.stop;
+        let (branch, behind) = match &self.advice {
+            Advice::Behind {
+                commits, branch, ..
+            } => (branch, Some(*commits)),
+            Advice::Rebase { branch, .. } => (branch, None),
+        };
+        json!({
+            "changed": changed,
+            "limit": limit,
+            "commit": commit,
+            "local": local,
+            "branch": branch,
+            "behind": behind,
+        })
+    }
+}
+
 impl From<IndexCommandError> for CliError {
+    /// The error keeps its text, and exits 1. With `--json`, the envelope
+    /// has the code and the details of the error (KAIROS-T-0654).
     fn from(e: IndexCommandError) -> Self {
-        CliError::Failure(e.to_string())
+        CliError::Coded {
+            auth: false,
+            code: e.code().to_string(),
+            text: e.to_string(),
+            details: e.details(),
+        }
     }
 }
 
@@ -305,7 +372,7 @@ impl ToolError {
         }
     }
 
-    fn details(&self) -> Option<Value> {
+    pub(super) fn details(&self) -> Option<Value> {
         match self {
             ToolError::Ambiguous { candidates, .. } => Some(json!({ "candidates": candidates })),
             ToolError::UnknownArgument {
@@ -346,6 +413,48 @@ mod tests {
             advice,
         }))
         .to_string()
+    }
+
+    /// KAIROS-T-0654: with `--json`, the refusal has a code and its counts.
+    #[test]
+    fn the_refusal_has_a_code_and_its_counts() {
+        let e = CliError::from(IndexCommandError::TooFar(Box::new(TooFar {
+            since: Since::Local {
+                changed: 250,
+                commit: "abc123".into(),
+            },
+            stop: Stop::Cli(200),
+            advice: Advice::Behind {
+                commits: 12,
+                branch: "main".into(),
+                raise: Raise::Cli(250),
+            },
+        })));
+        assert_eq!(e.exit_code(), crate::error::EXIT_FAILURE);
+        let envelope = e.to_json();
+        assert_eq!(envelope["error"]["code"], "TOO_FAR");
+        assert!(
+            envelope["error"]["message"]
+                .as_str()
+                .is_some_and(|m| m.starts_with("250 files changed since the local index.")),
+            "{envelope}"
+        );
+        assert_eq!(
+            envelope["error"]["details"],
+            json!({"changed": 250, "limit": 200, "commit": "abc123", "local": true,
+                   "branch": "main", "behind": 12})
+        );
+        let e = CliError::from(IndexCommandError::NoIndex(PathBuf::from(
+            "/r/.kairos/index.db",
+        )));
+        assert_eq!(e.code(), "NO_INDEX");
+        assert_eq!(e.details()["path"], "/r/.kairos/index.db");
+        let e = CliError::from(IndexCommandError::Symbol(Box::new(ToolError::NoSymbol {
+            name: "pop".into(),
+            place: Place::Anywhere,
+        })));
+        assert_eq!(e.code(), "NOT_FOUND");
+        assert_eq!(e.to_string(), "No symbol has the name \"pop\".");
     }
 
     /// KAIROS-T-0517: a checkout that is only behind is told to pull.

@@ -45,11 +45,12 @@ mod base;
 mod error;
 mod mcp;
 mod query;
+mod report;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use clap::Subcommand;
 use kairos_index::{
@@ -58,6 +59,7 @@ use kairos_index::{
 
 pub use error::IndexCommandError;
 
+use crate::context::print_json;
 use crate::error::CliError;
 
 /// The default limit of the files changed since the base index, when a
@@ -81,6 +83,9 @@ pub struct IndexArgs {
     full: bool,
     #[command(flatten)]
     root: RootArg,
+    /// Print one JSON object with the result of the build, in place of the text
+    #[arg(long)]
+    json: bool,
     #[command(subcommand)]
     command: Option<IndexCommand>,
 }
@@ -89,7 +94,7 @@ impl IndexArgs {
     pub async fn run(self) -> Result<(), CliError> {
         match self.command {
             Some(command) => command.run().await,
-            None if self.full => Ok(resolve_root(self.root).and_then(|root| build(&root))?),
+            None if self.full => build(&resolve_root(self.root)?, self.json),
             None => Err(CliError::Failure(
                 "Give a subcommand of `kairos index`, or `--full`. See `kairos index --help`."
                     .into(),
@@ -104,6 +109,9 @@ pub enum IndexCommand {
     Build {
         #[command(flatten)]
         root: RootArg,
+        /// Print one JSON object with the result, in place of the text
+        #[arg(long)]
+        json: bool,
     },
     /// Update the index for the changes in the checkout, also those not committed. With no index, start from the nearest base index in Kairos
     Update {
@@ -120,11 +128,17 @@ pub enum IndexCommand {
         max_changed: Option<usize>,
         #[command(flatten)]
         remote: base::RemoteArgs,
+        /// Print one JSON object with the result, in place of the text
+        #[arg(long)]
+        json: bool,
     },
     /// Show the counts of the index: files, symbols, edges and summaries
     Status {
         #[command(flatten)]
         root: RootArg,
+        /// Print one JSON object with the result, in place of the text
+        #[arg(long)]
+        json: bool,
     },
     /// Find repeated code: exact copies, near copies and the same idea in other code
     Duplicates {
@@ -145,6 +159,9 @@ pub enum IndexCommand {
         /// The most groups to show, from 1 to 200
         #[arg(long, default_value_t = mcp::DEFAULT_GROUPS as u64, value_parser = clap::value_parser!(u64).range(1..=mcp::MAX_GROUPS as u64))]
         limit: u64,
+        /// Print the groups as the JSON list envelope (items, total, next_offset), in place of the text
+        #[arg(long)]
+        json: bool,
     },
     /// Show each use of a symbol: in Rust, the uses as a type, a field, an import and a call; in the other languages, the calls
     References {
@@ -164,6 +181,9 @@ pub enum IndexCommand {
         /// The most uses to show, from 1 to 1000
         #[arg(long, default_value_t = mcp::DEFAULT_USES as u64, value_parser = clap::value_parser!(u64).range(1..=mcp::MAX_USES as u64))]
         limit: u64,
+        /// Print the uses as the JSON list envelope (items, total, next_offset), in place of the text
+        #[arg(long)]
+        json: bool,
     },
     /// Serve the code tools of the index to an agent: MCP over stdio
     Mcp {
@@ -189,19 +209,22 @@ pub struct RootArg {
 
 impl IndexCommand {
     pub async fn run(self) -> Result<(), CliError> {
-        let result = match self {
-            IndexCommand::Build { root } => resolve_root(root).and_then(|root| build(&root)),
+        match self {
+            IndexCommand::Build { root, json } => build(&resolve_root(root)?, json),
             IndexCommand::Update {
                 root,
                 rust_edges,
                 link_only,
                 max_changed,
                 remote,
-            } => match resolve_root(root) {
-                Ok(root) => update(&root, rust_edges, link_only, max_changed, &remote).await,
-                Err(e) => Err(e),
-            },
-            IndexCommand::Status { root } => resolve_root(root).and_then(|root| status(&root)),
+                json,
+            } => {
+                let root = resolve_root(root)?;
+                let mut run = report::Run::new("update", json);
+                update(&root, rust_edges, link_only, max_changed, &remote, &mut run).await?;
+                run.finish()
+            }
+            IndexCommand::Status { root, json } => status(&resolve_root(root)?, json),
             IndexCommand::Duplicates {
                 root,
                 kind,
@@ -209,7 +232,9 @@ impl IndexCommand {
                 tests,
                 under,
                 limit,
-            } => resolve_root(root).and_then(|root| {
+                json,
+            } => {
+                let root = resolve_root(root)?;
                 let kinds = match kind {
                     Some(KindArg::Exact) => vec![DuplicateKind::Exact],
                     Some(KindArg::Near) => vec![DuplicateKind::Near],
@@ -223,8 +248,8 @@ impl IndexCommand {
                     under,
                     ..DuplicateOptions::default()
                 };
-                duplicates(&root, &options, limit as usize)
-            }),
+                duplicates(&root, &options, limit as usize, json)
+            }
             IndexCommand::References {
                 root,
                 symbol,
@@ -232,22 +257,18 @@ impl IndexCommand {
                 line,
                 possible,
                 limit,
-            } => resolve_root(root).and_then(|root| {
-                references(
-                    &root,
-                    &symbol,
-                    file.as_deref(),
-                    line,
-                    possible,
-                    limit as usize,
-                )
-            }),
-            IndexCommand::Mcp { root } => match resolve_root(root) {
-                Ok(root) => mcp::serve(root).await,
-                Err(e) => Err(e),
-            },
-        };
-        Ok(result?)
+                json,
+            } => references(
+                &resolve_root(root)?,
+                &symbol,
+                file.as_deref(),
+                line,
+                possible,
+                limit as usize,
+                json,
+            ),
+            IndexCommand::Mcp { root } => Ok(mcp::serve(resolve_root(root)?).await?),
+        }
     }
 }
 
@@ -329,18 +350,6 @@ fn ensure_ignored(root: &Path) -> Result<Option<PathBuf>, IndexCommandError> {
     Ok(Some(exclude))
 }
 
-fn prepare(root: &Path) -> Result<PathBuf, IndexCommandError> {
-    let (db, exclude) = prepare_quiet(root)?;
-    if let Some(exclude) = exclude {
-        println!(
-            "Git ignores {} now: the CLI added it to {}.",
-            kairos_index::INDEX_FILE,
-            exclude.display()
-        );
-    }
-    Ok(db)
-}
-
 /// The path of the index file, with its folder made and `.kairos/` ignored
 /// by git. The exclude file is given back when this call added the line,
 /// so that the caller can say so: the MCP server must not print
@@ -382,15 +391,20 @@ pub(super) fn lock_index(db: &Path) -> Result<std::fs::File, IndexCommandError> 
     Ok(file)
 }
 
-fn build(root: &Path) -> Result<(), IndexCommandError> {
-    let db = prepare(root)?;
+/// `kairos index build` and `kairos index --full`: the text as the build
+/// goes, or one JSON object at its end (KAIROS-T-0654).
+fn build(root: &Path, json: bool) -> Result<(), CliError> {
+    let mut run = report::Run::new("build", json);
+    let (db, exclude) = prepare_quiet(root)?;
+    run.excluded(exclude);
     let _lock = lock_index(&db)?;
-    println!("Index: {}", db.display());
+    run.index(&db);
     let started = Instant::now();
-    let report = kairos_index::build_structure_with(root, &db, &BuildOptions::default())?;
-    print_structure(&report, started);
-    print_summaries(summaries::run(root, &db, None)?);
-    Ok(())
+    let report = kairos_index::build_structure_with(root, &db, &BuildOptions::default())
+        .map_err(IndexCommandError::from)?;
+    run.structure(&report, started.elapsed());
+    run.summaries(summaries::run(root, &db, None)?);
+    run.finish()
 }
 
 /// The local index of the checkout, before an update.
@@ -408,12 +422,14 @@ async fn update(
     link_only: bool,
     max_changed: Option<usize>,
     remote: &base::RemoteArgs,
+    run: &mut report::Run,
 ) -> Result<(), IndexCommandError> {
     let db = db_path(root);
     // The exclude line before the lock file: else git counts the lock file
     // as a change of the tree when the CLI compares it with a base index
     // (KAIROS-T-0357).
-    prepare(root)?;
+    let (_, exclude) = prepare_quiet(root)?;
+    run.excluded(exclude);
     let _lock = lock_index(&db)?;
     let local = if !db.is_file() {
         Local::Missing
@@ -422,6 +438,10 @@ async fn update(
             Ok(changed) => Local::Current(changed.len()),
             Err(_) => Local::Old,
         }
+    };
+    let local_changed = match local {
+        Local::Current(n) => Some(n),
+        Local::Missing | Local::Old => None,
     };
 
     // Where the update starts: the local index, or the base from Kairos.
@@ -440,15 +460,23 @@ async fn update(
             {
                 return Err(too_far(root, &b, *n, limit, true, error::Caller::Cli));
             }
-            println!(
+            run.say(&format!(
                 "Kairos: the local index is nearer to the tree than the index of {} \
                  ({n} changed files, against {}). The CLI updates the local index.",
                 b.short(),
                 b.changed
-            );
-            if let Some(line) = take_base_summaries(&db, &b).await {
-                println!("{line}");
+            ));
+            let taken = take_base_summaries(&db, &b).await;
+            if let Some(line) = &taken {
+                run.say(line);
             }
+            run.start(report::Start {
+                from: "local",
+                base: Some(report::base(&b)),
+                local_changed,
+                no_base: None,
+                summaries_taken: taken,
+            });
         }
         (base::Found::Base(b), _) => {
             if let Some(limit) = limit
@@ -465,10 +493,19 @@ async fn update(
             }
             download = Some(b);
         }
-        (found, Local::Current(_)) => println!(
-            "Kairos: no base index, because {}. The CLI updates the local index.",
-            reason(&found)
-        ),
+        (found, Local::Current(_)) => {
+            let why = reason(&found);
+            run.say(&format!(
+                "Kairos: no base index, because {why}. The CLI updates the local index."
+            ));
+            run.start(report::Start {
+                from: "local",
+                base: None,
+                local_changed,
+                no_base: Some(why),
+                summaries_taken: None,
+            });
+        }
         (found, Local::Missing | Local::Old) => {
             return Err(IndexCommandError::NoStart {
                 path: db,
@@ -485,21 +522,30 @@ async fn update(
                 path: db.clone(),
                 why: format!("the download of the index of {} failed ({why})", b.short()),
             })?;
-        install(&db, &bytes, matches!(local, Local::Current(_)))?;
-        println!(
+        if let Some(warning) = install_quiet(&db, &bytes, local_changed.is_some())? {
+            run.warn(warning);
+        }
+        run.say(&format!(
             "Kairos: downloaded the index of {}, {} files changed since it.",
             b.short(),
             b.changed
-        );
+        ));
+        run.start(report::Start {
+            from: "base",
+            base: Some(report::base(&b)),
+            local_changed,
+            no_base: None,
+            summaries_taken: None,
+        });
     }
-    println!("Index: {}", db.display());
+    run.index(&db);
     let started = Instant::now();
     let options = UpdateOptions {
         rust_edges,
         ..UpdateOptions::default()
     };
     let report = kairos_index::update_structure(root, &db, &options)?;
-    print_structure(&report, started);
+    run.structure(&report, started.elapsed());
     let no_model = if hosted {
         Some(summaries::HOSTED)
     } else if link_only {
@@ -507,7 +553,7 @@ async fn update(
     } else {
         None
     };
-    print_summaries(summaries::run(root, &db, no_model)?);
+    run.summaries(summaries::run(root, &db, no_model)?);
     Ok(())
 }
 
@@ -630,16 +676,8 @@ pub(super) fn too_far(
 }
 
 /// Put the downloaded index at `db`. With `keep_pool`, the summaries of the
-/// local index go into it first, so that none is lost.
-fn install(db: &Path, bytes: &[u8], keep_pool: bool) -> Result<(), IndexCommandError> {
-    if let Some(warning) = install_quiet(db, bytes, keep_pool)? {
-        println!("{warning}");
-    }
-    Ok(())
-}
-
-/// [`install`] with its warning given back in place of printed
-/// (KAIROS-T-0348).
+/// local index go into it first, so that none is lost. The warning is given
+/// back, not printed (KAIROS-T-0348): the MCP server must not print.
 pub(super) fn install_quiet(
     db: &Path,
     bytes: &[u8],
@@ -668,7 +706,7 @@ pub(super) fn install_quiet(
     Ok(warning)
 }
 
-fn print_structure(report: &BuildReport, started: Instant) {
+fn print_structure(report: &BuildReport, elapsed: Duration) {
     let e = &report.edges;
     let kept = if e.kept_scip > 0 {
         format!(" ({} kept from the index)", e.kept_scip)
@@ -686,7 +724,7 @@ fn print_structure(report: &BuildReport, started: Instant) {
         report.parsed_files,
         report.symbols,
         e.total(),
-        started.elapsed().as_secs_f64()
+        elapsed.as_secs_f64()
     );
     match &report.scip {
         Some(scip) => println!(
@@ -760,12 +798,17 @@ fn print_summaries(outcome: summaries::Outcome) {
     }
 }
 
-fn status(root: &Path) -> Result<(), IndexCommandError> {
+fn status(root: &Path, json: bool) -> Result<(), CliError> {
     let db = db_path(root);
     if !db.is_file() {
-        return Err(IndexCommandError::NoIndex(db));
+        return Err(IndexCommandError::NoIndex(db).into());
     }
-    let c = Index::open(&db)?.counts()?;
+    let c = Index::open(&db)
+        .and_then(|index| index.counts())
+        .map_err(IndexCommandError::from)?;
+    if json {
+        return print_json(&report::status(&db, &c));
+    }
     println!("Index: {}", db.display());
     println!("Files: {} ({} parsed)", c.files, c.parsed_files);
     println!("Symbols: {}", c.symbols);
@@ -795,14 +838,25 @@ fn duplicates(
     root: &Path,
     options: &DuplicateOptions,
     limit: usize,
-) -> Result<(), IndexCommandError> {
+    json: bool,
+) -> Result<(), CliError> {
+    let index = open(root)?;
+    if json {
+        let found = index.duplicates(options).map_err(IndexCommandError::from)?;
+        return print_json(&report::duplicates(&found, options, limit));
+    }
+    let text = mcp::duplicates_text(&index, options, limit).map_err(IndexCommandError::from)?;
+    println!("{text}");
+    Ok(())
+}
+
+/// The index of the checkout, or the error that no index is there.
+fn open(root: &Path) -> Result<Index, IndexCommandError> {
     let db = db_path(root);
     if !db.is_file() {
         return Err(IndexCommandError::NoIndex(db));
     }
-    let index = Index::open(&db)?;
-    println!("{}", mcp::duplicates_text(&index, options, limit)?);
-    Ok(())
+    Ok(Index::open(&db)?)
 }
 
 /// `kairos index references` (KAIROS-T-0419): the text of the MCP tool.
@@ -813,15 +867,19 @@ fn references(
     line: Option<u32>,
     possible: bool,
     limit: usize,
-) -> Result<(), IndexCommandError> {
-    let db = db_path(root);
-    if !db.is_file() {
-        return Err(IndexCommandError::NoIndex(db));
-    }
-    let index = Index::open(&db)?;
+    json: bool,
+) -> Result<(), CliError> {
+    let index = open(root)?;
     let s = mcp::find(&index, symbol, file, line, mcp::SYMBOL)
         .map_err(|e| IndexCommandError::Symbol(Box::new(e)))?;
-    println!("{}", mcp::references_text(&index, &s, possible, limit)?);
+    if json {
+        let found =
+            report::references(&index, &s, possible, limit).map_err(IndexCommandError::from)?;
+        return print_json(&found);
+    }
+    let text =
+        mcp::references_text(&index, &s, possible, limit).map_err(IndexCommandError::from)?;
+    println!("{text}");
     Ok(())
 }
 
@@ -995,6 +1053,36 @@ mod tests {
         assert!(parse(&["kairos", "index", "update", "--depth", "3"]).is_err());
     }
 
+    /// KAIROS-T-0654: each command that prints a result takes `--json`.
+    #[test]
+    fn json_is_a_flag_of_each_command_with_a_result() {
+        let args = parse(&["kairos", "index", "--full", "--json"]).expect("--full --json");
+        assert!(args.full && args.json);
+        for command in [
+            &["build"][..],
+            &["update"],
+            &["status"],
+            &["duplicates"],
+            &["references", "Queue"],
+        ] {
+            let mut argv = vec!["kairos", "index"];
+            argv.extend_from_slice(command);
+            argv.push("--json");
+            let args = parse(&argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
+            let json = match args.command {
+                Some(IndexCommand::Build { json, .. })
+                | Some(IndexCommand::Update { json, .. })
+                | Some(IndexCommand::Status { json, .. })
+                | Some(IndexCommand::Duplicates { json, .. })
+                | Some(IndexCommand::References { json, .. }) => json,
+                _ => panic!("{argv:?}: another command"),
+            };
+            assert!(json, "{argv:?}");
+        }
+        assert!(parse(&["kairos", "index", "mcp", "--json"]).is_err());
+        assert!(parse(&["kairos", "index", "--json", "status"]).is_err());
+    }
+
     /// KAIROS-T-0515: an update that runs no model has no default limit.
     #[test]
     fn the_default_limit_applies_only_when_a_model_runs() {
@@ -1077,7 +1165,7 @@ mod tests {
         let builds: Vec<_> = (0..8)
             .map(|_| {
                 let root = root.clone();
-                std::thread::spawn(move || build(&root).map_err(|e| e.to_string()))
+                std::thread::spawn(move || build(&root, false).map_err(|e| e.to_string()))
             })
             .collect();
         for b in builds {
