@@ -3279,7 +3279,7 @@ impl KairosMcp {
     // `transition_item` cannot move it. REST and this tool call one
     // function (`crate::api::documents::change_lifecycle`).
     #[tool(
-        description = "Set the lifecycle of a DOCUMENT: `lifecycle` is draft, review, published or archived. Any move is allowed. A document is not on a board, so `transition_item` does not move it. A value that the document already has changes nothing. The edit rule applies: the creator of the document, or `manage_documents` on its owner board. `promote_note` makes a draft: publish it with this tool."
+        description = "Set the lifecycle of a DOCUMENT: `lifecycle` is draft, review, published or archived. You can move a document from each value to each other value. A document is not on a board, so `transition_item` does not move it. A value that the document already has changes nothing. The edit rule applies: the creator of the document, or `manage_documents` on its owner board. `promote_note` makes a draft: publish it with this tool."
     )]
     pub async fn set_lifecycle(
         &self,

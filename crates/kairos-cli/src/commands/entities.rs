@@ -331,7 +331,7 @@ pub struct LaneArgs {
 pub struct LifecycleArgs {
     /// The document's short code (e.g. ACME-D-0001)
     pub short_code: String,
-    /// The lifecycle of the document after the call. Any move is allowed
+    /// The lifecycle of the document after the call. Each move is possible
     #[arg(
         long = "to",
         value_name = "STATE",
@@ -1757,8 +1757,9 @@ mod tests {
             lifecycle_line("ACME-D-0001", "published"),
             "The document ACME-D-0001 is published."
         );
-        let parsed = Cli::try_parse_from(["documents", "lifecycle", "ACME-D-0001", "--to", "review"])
-            .expect("parses");
+        let parsed =
+            Cli::try_parse_from(["documents", "lifecycle", "ACME-D-0001", "--to", "review"])
+                .expect("parses");
         match parsed.command {
             DocumentsCommand::Lifecycle(args) => {
                 assert_eq!(args.short_code, "ACME-D-0001");
@@ -1766,8 +1767,9 @@ mod tests {
             }
             other => panic!("not the lifecycle verb: {other:?}"),
         }
-        let refused = Cli::try_parse_from(["documents", "lifecycle", "ACME-D-0001", "--to", "final"])
-            .expect_err("an unknown state is refused");
+        let refused =
+            Cli::try_parse_from(["documents", "lifecycle", "ACME-D-0001", "--to", "final"])
+                .expect_err("an unknown state is refused");
         let text = refused.to_string();
         assert!(
             text.contains("final") && text.contains("published"),

@@ -672,10 +672,11 @@ kairos documents lifecycle <SHORT_CODE> --to <STATE> [OPTIONS]
 | `<SHORT_CODE>` | string | required | The short code of the document. |
 | `--to <STATE>` | `draft`, `review`, `published` or `archived` | required | The lifecycle of the document after the call. |
 
-The command sets the editorial lifecycle of a document (KAIROS-A-0018). Any
-move is allowed. A value that the document already has changes nothing. The
-edit rule applies: the creator of the document, or `manage_documents` on its
-owner board. The CLI refuses another value and lists the four values.
+The command sets the editorial lifecycle of a document (KAIROS-A-0018). You
+can move a document from each value to each other value. A value that the
+document already has changes nothing. The edit rule applies: the creator of
+the document, or `manage_documents` on its owner board. The CLI refuses
+another value and lists the four values.
 
 The `archived` lifecycle is a label: the document stays live. To put the
 document away, use `documents archive`.

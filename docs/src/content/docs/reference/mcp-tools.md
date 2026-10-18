@@ -1123,8 +1123,9 @@ by the edit rule, or without the capability on the board.
 ### `set_lifecycle`
 
 Sets the lifecycle of a document: `draft`, `review`, `published` or
-`archived` (KAIROS-A-0018). Any move is allowed. A document is not on a
-board, so `transition_item` does not move it. `promote_note` makes a draft;
+`archived` (KAIROS-A-0018). You can move a document from each value to
+each other value. A document is not on a board, so `transition_item` does
+not move it. `promote_note` makes a draft;
 this tool publishes it.
 
 | Argument | Type | Required | Default | Description |
@@ -1333,14 +1334,14 @@ the agent key of a person. Then the claim names the person and has the mark
 leaves Active.
 
 Refuses: `NOT_FOUND` for an unknown short code or an archived item;
-`ITEM_NOT_ON_BOARD` for an item with no placement — documents always (the
-refusal names `set_lifecycle`);
+`ITEM_NOT_ON_BOARD` for an item with no placement — documents always;
 `VALIDATION` for a column that is not on that board, listing the board's
 columns; `FORBIDDEN` without `transition_items`; `INVALID_TRANSITION` for a
 target outside the board's transition graph, enumerating the allowed targets;
 `AGENT_TRIAGE_OFF` for an agent's move of intake (a support-lane task in the
 entry column) while the board lets a person decide the triage. A task a
-person triaged out of the entry column moves as any other.
+person triaged out of the entry column moves as any other. The
+`ITEM_NOT_ON_BOARD` refusal for a document names `set_lifecycle`.
 
 Kairos also refuses `PARENT_NOT_ACTIVE` for a task that goes into a claims
 column under an inactive initiative. The board policy `parent_gate` sets this

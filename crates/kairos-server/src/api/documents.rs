@@ -155,8 +155,8 @@ pub(crate) fn change_lifecycle(
     let document = load(conn, short_code, Liveness::LiveOnly)?;
     require_item_edit(conn, slug, user, document.id, ItemType::Document)?;
     let before = document.lifecycle;
-    let updated =
-        items::set_document_lifecycle(conn, document.id, lifecycle, user).map_err(map_item_error)?;
+    let updated = items::set_document_lifecycle(conn, document.id, lifecycle, user)
+        .map_err(map_item_error)?;
     Ok((before, render(conn, updated)?))
 }
 
