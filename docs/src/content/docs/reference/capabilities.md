@@ -417,6 +417,12 @@ must be able to edit the item at one end of the proposed edge. A refused
 confirm leaves the proposal pending. To propose an edge, and to reject a proposal,
 the link rule is not necessary: they write no edge.
 
+A person other than the proposer confirms or rejects a proposal
+(KAIROS-T-0538). The server refuses a service account, an agent key and
+the proposer with `PERSON_DECIDES`. An agent key is the person, but an
+agent uses it. So a proposal that your agent made needs a different
+person. A proposal has one decision. A second decision gets `CONFLICT`.
+
 ## The owner of a document
 
 A board owns a document. A repository does not own a document. A document has

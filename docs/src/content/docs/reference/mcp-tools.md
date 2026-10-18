@@ -1817,6 +1817,11 @@ no item. The confirm takes the
 confirms must be able to edit the item at one end. A refused confirm leaves the
 proposal pending.
 
+A person other than the proposer confirms or rejects. The server refuses
+a decision with an agent key and a decision by the proposer
+(`PERSON_DECIDES`). An agent key proposes as its person. So a different
+person decides the proposals of your agent.
+
 Refuses: `VALIDATION` for a relationship outside `parent`/`blocks`;
 `NOT_FOUND` for a short code that names no live item; `CONFLICT` when an
 identical proposal is already waiting, or when the item already holds ten
