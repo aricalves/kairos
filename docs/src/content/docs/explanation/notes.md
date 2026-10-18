@@ -92,7 +92,7 @@ The decision is KAIROS-A-0054.
 
 ## The move of the old notes
 
-The tenant migration `2026-10-17-003000_item_notes` moved each old note into
+The tenant migration `2026-10-18-003000_item_notes` moved each old note into
 a row, one time. The migration read the content as Kairos read it before:
 
 - A note kept its id when no earlier note of the item had that id.

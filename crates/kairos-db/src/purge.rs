@@ -18,14 +18,21 @@
 //! - each edge to or from it (`item_relationships`), and each edge
 //!   proposal to or from it (`edge_proposals`);
 //! - its forge links (`item_links`), its `impacts` rows (`item_impacts`),
-//!   its embeddings (`item_embeddings`, `item_chunks`) and its retired
-//!   codes (`retired_codes`);
+//!   its external references (`item_external_refs`, KAIROS-T-0570), its
+//!   embeddings (`item_embeddings`, `item_chunks`) and its retired codes
+//!   (`retired_codes`);
+//! - its forge intake row (`forge_issue_intake`, KAIROS-T-0570). Intake
+//!   makes nothing for an issue that has a row, so with the row kept, the
+//!   issue of a purged task could never be imported again;
 //! - the notifications about it (`notifications`, KAIROS-T-0381).
 //!
 //! A purge of a task that blocks (live, and not done) frees the items that
 //! it blocks (KAIROS-T-0568): each one gets `blocker_cleared` and, with no
 //! open blocker left, fires the `unblocked` dispatch rules
-//! ([`crate::notifications::on_blocks_removed`]).
+//! ([`crate::notifications::on_blocks_removed`]). The step reads the
+//! dependants before the delete of the edges. The server purges an
+//! archived task only (KAIROS-T-0570), and an archived task blocks
+//! nothing: the archive freed its dependants.
 //!
 //! # What a purge keeps
 //!
@@ -39,8 +46,9 @@
 //! and `activity_log` by age. This is the one path that removes an item,
 //! and a later sweep of archived items can call it.
 //!
-//! Who may purge is the rule of the server (`manage_tasks` on the board
-//! of the task); this module does the delete only.
+//! Who may purge, and when, is the rule of the server: `purge` on the
+//! board of the task, and an archived task (KAIROS-T-0570). This module
+//! does the delete only.
 
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
@@ -78,8 +86,9 @@ pub fn purge_task(
 ) -> Result<Purged, PurgeError> {
     conn.transaction::<_, PurgeError, _>(|conn| {
         use crate::schema::{
-            edge_proposals, item_chunks, item_embeddings, item_history, item_impacts, item_links,
-            item_metadata, item_relationships, retired_codes, tasks,
+            edge_proposals, forge_issue_intake, item_chunks, item_embeddings, item_external_refs,
+            item_history, item_impacts, item_links, item_metadata, item_relationships,
+            retired_codes, tasks,
         };
         let found: Option<(String, String)> = tasks::table
             .filter(tasks::id.eq(task_id))
@@ -121,6 +130,10 @@ pub fn purge_task(
         crate::notifications::delete_for_item(conn, task_id)?;
         diesel::delete(item_links::table.filter(item_links::item_id.eq(task_id))).execute(conn)?;
         diesel::delete(item_impacts::table.filter(item_impacts::item_id.eq(task_id)))
+            .execute(conn)?;
+        diesel::delete(item_external_refs::table.filter(item_external_refs::item_id.eq(task_id)))
+            .execute(conn)?;
+        diesel::delete(forge_issue_intake::table.filter(forge_issue_intake::item_id.eq(task_id)))
             .execute(conn)?;
         diesel::delete(item_history::table.filter(item_history::item_id.eq(task_id)))
             .execute(conn)?;
