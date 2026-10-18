@@ -205,7 +205,8 @@ pub fn flow_of_board(
     to: NaiveDate,
     now: DateTime<Utc>,
 ) -> Result<Flow, ApiError> {
-    let board = flow::load_board(conn, board_id).map_err(ApiError::internal)?;
+    let board =
+        flow::load_board(conn, board_id, flow::start_of(from)).map_err(ApiError::internal)?;
     let key = (board_id, from, to, board.stamp);
     if let Some(mut flow) = cached(&key) {
         flow.age_at(now);

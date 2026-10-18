@@ -63,17 +63,16 @@ pub fn router() -> Router<AppState> {
 }
 
 /// Direct-children progress rollup for one item (KAIROS-T-0080): the
-/// live `parent`-edge children grouped by their board column, plus the
+/// `parent`-edge children grouped by their board column, plus the
 /// `(done, total)` summary. Supports/informs material never counts;
 /// resolution 404s exactly like the relationships GET.
 ///
-/// **Archived children are excluded, deliberately** (ADR-20 rule 5,
-/// re-confirmed by KAIROS-T-0158): archived work is not live work, so a
-/// progress bar must not count it — an initiative would otherwise look
-/// less finished the more of its work had been put away. This is the
-/// opposite call from the sibling relationships GET, which now names
-/// archived children, and the pair is the whole distinction: containment
-/// is a fact about the record, progress is a fact about live work.
+/// **An archived child counts by the column that it was archived from**
+/// (KAIROS-T-0571). A child archived from a done column counts as done,
+/// or as cancelled with the cancel mark. So "Archive completed" keeps the
+/// progress of an initiative. A child archived from another column is in
+/// `removed`. It is not open work, and it is not in `total` or in
+/// `by_column`.
 #[utoipa::path(
     get,
     path = "/api/{entity_type}/{short_code}/children-progress",
@@ -101,7 +100,12 @@ pub(crate) async fn get_children_progress(
             let counts = kairos_core::items::children_progress_counts(
                 &rows
                     .iter()
-                    .map(|row| (row.is_done, row.count, row.cancelled))
+                    .map(|row| kairos_core::items::ColumnChildren {
+                        is_done: row.is_done,
+                        count: row.count,
+                        cancelled: row.cancelled,
+                        removed: row.removed,
+                    })
                     .collect::<Vec<_>>(),
             );
             let has_done_columns = rows.iter().any(|row| row.board_has_done);
@@ -111,9 +115,11 @@ pub(crate) async fn get_children_progress(
                 done: counts.done,
                 cancelled: counts.cancelled,
                 open: counts.open,
+                removed: counts.removed,
                 has_done_columns,
                 by_column: rows
                     .into_iter()
+                    .filter(|row| row.count > 0)
                     .map(|row| dto::ChildColumnProgress {
                         column_id: row.column_id.to_string(),
                         column_name: row.column_name,

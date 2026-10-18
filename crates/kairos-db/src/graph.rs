@@ -4,13 +4,12 @@
 //! both-direction neighbor query.
 //!
 //! The pure decisions live in [`kairos_core::graph`] — the type-rule matrix
-//! ([`kairos_core::graph::check_link`]) and cycle detection over loaded
-//! edges ([`kairos_core::graph::would_create_cycle`]). This module is the
+//! ([`kairos_core::graph::check_link`]). This module is the
 //! SQL side of the same contract: it resolves both UUIDs to entity types
 //! through the `entity_directory` view under an explicit `deleted_at IS
 //! NULL` (so soft-deleted items are typed [`GraphError::ItemNotFound`]),
-//! loads the relationship's existing edges for the cycle check (`parent`
-//! and `blocks` only), inserts, and writes `activity_log`.
+//! runs the cycle check in the database (`parent` and `blocks` only,
+//! [`check_acyclic`]), inserts, and writes `activity_log`.
 //!
 //! Every public function operates in the CURRENT `search_path` tenant
 //! schema and runs in its own transaction (same conventions as
@@ -46,10 +45,12 @@
 //! - [`resolve_entity`] types the endpoints of a WRITE. Linking or
 //!   unlinking archived work is a mutation of frozen material, so it stays
 //!   [`GraphError::ItemNotFound`].
+//! - [`blocks_summary`] is a *rollup*: ADR-20 rule 5 says archived work
+//!   is not live work, so an archived item blocks nothing.
 //! - [`children_progress`] / [`page_children_progress`] (through
-//!   [`CHILD_COLUMNS_SQL`]) and [`blocks_summary`] are *rollups*: ADR-20
-//!   rule 5 says archived work is not live work, so counting it would
-//!   report progress that nobody is making.
+//!   [`CHILD_COLUMNS_SQL`]) read archived children too (KAIROS-T-0571):
+//!   a child archived from a done column is done work, and a child
+//!   archived from another column is `removed`, not open work.
 //! - [`team_work_documents`], [`team_link_rollup`] and
 //!   [`repository_link_rollup`] are default listings, which ADR-20 rule 3
 //!   keeps unchanged.
@@ -275,24 +276,60 @@ fn log_relationship_activity(
     Ok(())
 }
 
-/// All existing edges of ONE relationship type in the current tenant
-/// schema, as pure [`rules::Edge`]s for the cycle check.
-fn load_edges(
+#[derive(QueryableByName)]
+struct Reached {
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    reached: bool,
+}
+
+/// Refuse a `relationship` edge from `source_id` to `target_id` that makes
+/// a directed cycle (KAIROS-T-0634). Call it in the transaction of the
+/// insert, before the insert.
+///
+/// 1. The lock: `pg_advisory_xact_lock` on the tenant schema and the
+///    relationship. Two links of one relationship in one tenant take the
+///    check and the insert in turn. Without the lock, the links A→B and
+///    B→A at the same time each do not see the edge of the other, and both
+///    commit: a cycle. The second link waits until the first commits; its
+///    check is a new statement, so it sees the edge of the first. The lock
+///    stays until the transaction ends.
+/// 2. The check: a recursive CTE walks the edges of the relationship from
+///    `target_id`, and stops at the first row that is `source_id`
+///    (`LIMIT 1`). The database does the walk, on the index
+///    `(source_id, relationship)`: the server does not load each edge of
+///    the tenant. `UNION` (not `UNION ALL`) keeps the walk finite on bad
+///    data that has a loop already.
+fn check_acyclic(
     conn: &mut PgConnection,
     relationship: RelationshipType,
-) -> Result<Vec<rules::Edge>, DieselError> {
-    use crate::schema::item_relationships;
-
-    Ok(item_relationships::table
-        .filter(item_relationships::relationship.eq(relationship))
-        .select((item_relationships::source_id, item_relationships::target_id))
-        .load::<(Uuid, Uuid)>(conn)?
-        .into_iter()
-        .map(|(source_id, target_id)| rules::Edge {
+    source_id: Uuid,
+    target_id: Uuid,
+) -> Result<(), GraphError> {
+    let edges = format!("edges:{relationship}");
+    sql_query("SELECT pg_advisory_xact_lock(hashtext(current_schema()), hashtext($1))")
+        .bind::<Text, _>(&edges)
+        .execute(conn)?;
+    let cycle: Reached = sql_query(
+        "WITH RECURSIVE reach(id) AS ( \
+             SELECT $1::uuid \
+             UNION \
+             SELECT r.target_id FROM item_relationships r \
+               JOIN reach ON r.source_id = reach.id \
+              WHERE r.relationship = $3) \
+         SELECT EXISTS (SELECT 1 FROM reach WHERE id = $2 LIMIT 1) AS reached",
+    )
+    .bind::<SqlUuid, _>(target_id)
+    .bind::<SqlUuid, _>(source_id)
+    .bind::<Text, _>(relationship.to_string())
+    .get_result(conn)?;
+    if cycle.reached {
+        return Err(GraphError::CycleDetected {
+            relationship,
             source_id,
             target_id,
-        })
-        .collect())
+        });
+    }
+    Ok(())
 }
 
 /// The name of the unique index that holds one parent per item
@@ -418,8 +455,7 @@ fn insert_edge(
 ///    ([`kairos_core::graph::check_link`] → [`GraphError::Rule`]);
 /// 3. for the acyclic relationships (`parent`/`blocks`) the edge must not
 ///    close a directed cycle over the relationship's existing edges
-///    ([`kairos_core::graph::would_create_cycle`] →
-///    [`GraphError::CycleDetected`]);
+///    ([`check_acyclic`], under a lock → [`GraphError::CycleDetected`]);
 /// 4. a `parent` edge to an item that has a different parent is
 ///    [`GraphError::ParentExists`] (KAIROS-T-0572, module docs);
 /// 5. insert (duplicate → [`GraphError::AlreadyLinked`], module docs) and
@@ -444,14 +480,7 @@ pub fn link_items(
         rules::check_link(rel, source_type, target_type)?;
 
         if rel.requires_acyclicity() {
-            let edges = load_edges(conn, relationship)?;
-            if rules::would_create_cycle(&edges, source_id, target_id) {
-                return Err(GraphError::CycleDetected {
-                    relationship,
-                    source_id,
-                    target_id,
-                });
-            }
+            check_acyclic(conn, relationship, source_id, target_id)?;
         }
 
         // KAIROS-T-0572: an item has one parent. The same parent again is
@@ -603,13 +632,17 @@ pub struct ParentChange {
 /// 2. The type rules admit the edge ([`GraphError::Rule`]).
 /// 3. The same parent again, or `None` for an item with no parent, writes
 ///    nothing: `changed` is false.
-/// 4. The old edge goes, with its `relationship_remove` row. The old
+/// 4. The cycle check of the new edge ([`check_acyclic`]). It takes its
+///    lock before the delete, in the order of [`link_items`]: the lock
+///    first, then the rows. The old edge goes into the item, so it is not
+///    on a path from the item, and the check gives the same answer.
+/// 5. The old edge goes, with its `relationship_remove` row. The old
 ///    parent can be archived: the edge to it goes all the same.
-/// 5. The cycle check and the insert of the new edge, with its
+/// 6. The insert of the new edge, with its
 ///    `relationship_add` row. A second parent that a write at the same
 ///    time made is [`GraphError::ParentExists`]; the transaction then
 ///    removes nothing.
-/// 6. One `relationship_changed` event for each live item of the three.
+/// 7. One `relationship_changed` event for each live item of the three.
 ///
 /// WHO may do it is not decided here: the server asks the link rule for
 /// each edge that changes.
@@ -650,6 +683,10 @@ pub fn set_parent(
             });
         }
 
+        if let Some((new_id, _, _)) = &new_parent {
+            check_acyclic(conn, RelationshipType::Parent, *new_id, item_id)?;
+        }
+
         if let Some(old) = &previous {
             use crate::schema::item_relationships::dsl;
             let deleted = diesel::delete(
@@ -677,14 +714,6 @@ pub fn set_parent(
         }
 
         if let Some((new_id, new_type, new_code)) = &new_parent {
-            let edges = load_edges(conn, RelationshipType::Parent)?;
-            if rules::would_create_cycle(&edges, *new_id, item_id) {
-                return Err(GraphError::CycleDetected {
-                    relationship: RelationshipType::Parent,
-                    source_id: *new_id,
-                    target_id: item_id,
-                });
-            }
             insert_edge(conn, *new_id, item_id, RelationshipType::Parent)?;
             log_relationship_activity(
                 conn,
@@ -941,33 +970,50 @@ pub struct ChildColumnCount {
     /// The cancelled tasks among `count` (KAIROS-T-0567).
     #[diesel(sql_type = diesel::sql_types::BigInt)]
     pub cancelled: i64,
+    /// The archived children of the column that do not count: the column
+    /// is not done (KAIROS-T-0571). Not in `count`.
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    pub removed: i64,
 }
 
-/// The live workflow-item id → column_id union the progress queries join
-/// children through: documents never appear (no board position), and
-/// off-board ADRs are excluded. Only `parent` edges are followed, so
-/// supports/informs material never counts.
+/// The workflow-item id → column_id union the progress queries join
+/// children through, with `archived` (`deleted_at IS NOT NULL`):
+/// documents never appear (no board position), and off-board ADRs are
+/// excluded. Only `parent` edges are followed, so supports/informs
+/// material never counts.
 ///
-/// **Live-only, and deliberately so** (KAIROS-A-0020 rule 5, confirmed by
-/// KAIROS-T-0158). Every branch spells `deleted_at IS NULL` in its own
-/// body, so this does not depend on the filter `entity_directory` used to
-/// apply. Archived work is not live work: a rollup that counted it would
-/// report progress nobody is making, and would make an initiative look
-/// less finished the more of its work had been put away. This is the
-/// opposite call from [`neighbors_of`], for the opposite reason —
-/// *containment* is a fact about the record, *progress* is a fact about
-/// live work.
-const CHILD_COLUMNS_SQL: &str = "SELECT id, column_id FROM strategies WHERE deleted_at IS NULL \
-     UNION ALL SELECT id, column_id FROM initiatives WHERE deleted_at IS NULL \
-     UNION ALL SELECT id, column_id FROM tasks WHERE deleted_at IS NULL \
-     UNION ALL SELECT id, column_id FROM adrs \
-         WHERE deleted_at IS NULL AND column_id IS NOT NULL";
+/// **Archived children count by the column they were archived from**
+/// (KAIROS-T-0571, an amendment of the KAIROS-T-0158 reading of ADR-20
+/// rule 5). "Archive completed" is the way to clean a board. A rollup
+/// that dropped the archived children made an initiative look less
+/// finished the more of its finished work was put away. So:
+///
+/// - an archived child in a done column counts as done (or as cancelled,
+///   with the cancel mark): it is finished work, not live work;
+/// - an archived child in another column is `removed`: not open work, and
+///   not in the total.
+///
+/// The relationship LIST names each archived child ([`neighbors_of`]).
+const CHILD_COLUMNS_SQL: &str = "SELECT id, column_id, deleted_at IS NOT NULL AS archived \
+         FROM strategies \
+     UNION ALL SELECT id, column_id, deleted_at IS NOT NULL FROM initiatives \
+     UNION ALL SELECT id, column_id, deleted_at IS NOT NULL FROM tasks \
+     UNION ALL SELECT id, column_id, deleted_at IS NOT NULL FROM adrs \
+         WHERE column_id IS NOT NULL";
+
+/// The SQL of the three counts of a group of children (KAIROS-T-0571):
+/// `count` (the children that count), `cancelled` (the cancelled tasks
+/// among them) and `removed` (archived from a column that is not done).
+const CHILD_COUNTS_SQL: &str = "COUNT(*) FILTER (WHERE NOT c.archived OR bc.is_done) AS count, \
+     COUNT(*) FILTER (WHERE (NOT c.archived OR bc.is_done) \
+                        AND EXISTS (SELECT 1 FROM task_cancellations k \
+                                    WHERE k.task_id = c.id)) AS cancelled, \
+     COUNT(*) FILTER (WHERE c.archived AND NOT bc.is_done) AS removed";
 
 /// Direct `parent`-edge children of `parent_id`, grouped by their board
 /// column — ONE query, column order within each board (KAIROS-T-0080).
-/// Live children only, through [`CHILD_COLUMNS_SQL`] (ADR-20 rule 5): the
-/// item's relationship LIST names its archived children
-/// ([`relationships_for`]), its progress rollup does not count them.
+/// Archived children count by their column ([`CHILD_COLUMNS_SQL`]): a
+/// column that has only removed children has `count` 0.
 pub fn children_progress(
     conn: &mut PgConnection,
     parent_id: Uuid,
@@ -978,9 +1024,7 @@ pub fn children_progress(
                 EXISTS(SELECT 1 FROM board_columns d \
                        WHERE d.board_id = bc.board_id AND d.is_done \
                          AND d.deleted_at IS NULL) AS board_has_done, \
-                COUNT(*) AS count, \
-                COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM task_cancellations k \
-                                                WHERE k.task_id = c.id)) AS cancelled \
+                {CHILD_COUNTS_SQL} \
          FROM item_relationships r \
          JOIN ({CHILD_COLUMNS_SQL}) c ON c.id = r.target_id \
          JOIN board_columns bc ON bc.id = c.column_id \
@@ -1004,19 +1048,24 @@ struct BoardProgressRow {
     count: i64,
     #[diesel(sql_type = diesel::sql_types::BigInt)]
     cancelled: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    removed: i64,
 }
 
 /// A parent's `(done, cancelled, total, has_done_semantics)` children
 /// rollup. `has_done` is false when NO board hosting the children has a
 /// done-flagged column — clients then show composition only.
 /// KAIROS-T-0567: `done` does not count a cancelled task; `cancelled`
-/// does, and `total - done - cancelled` is open.
+/// does, and `total - done - cancelled` is open. KAIROS-T-0571: an
+/// archived child in a done column counts; one from another column is in
+/// `removed`, not in `total`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ProgressCounts {
     pub done: i64,
     pub cancelled: i64,
     pub total: i64,
     pub has_done: bool,
+    pub removed: i64,
 }
 
 impl ProgressCounts {
@@ -1032,12 +1081,11 @@ impl ProgressCounts {
 /// forbids). KAIROS-T-0627: the query reads the edges of the page's items
 /// only, not of the whole board.
 ///
-/// Live-only on BOTH ends and says so in the SQL: the parents come from a
-/// per-family union filtered `deleted_at IS NULL`, the children from
-/// [`CHILD_COLUMNS_SQL`]. Neither predicate is inherited from a view
-/// (KAIROS-T-0156 moved them here), and neither is widened: ADR-20 rule 5,
-/// archived work is not live work. An archived item of the page has no
-/// rollup.
+/// The parents are live: they come from a per-family union filtered
+/// `deleted_at IS NULL`, so an archived item of the page has no rollup.
+/// The children come from [`CHILD_COLUMNS_SQL`], archived ones by their
+/// column (KAIROS-T-0571). A parent has an entry when it has a child that
+/// counts (`total > 0`).
 pub fn page_children_progress(
     conn: &mut PgConnection,
     board_id: Uuid,
@@ -1052,9 +1100,7 @@ pub fn page_children_progress(
                 EXISTS(SELECT 1 FROM board_columns d \
                        WHERE d.board_id = bc.board_id AND d.is_done \
                          AND d.deleted_at IS NULL) AS board_has_done, \
-                COUNT(*) AS count, \
-                COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM task_cancellations k \
-                                                WHERE k.task_id = c.id)) AS cancelled \
+                {CHILD_COUNTS_SQL} \
          FROM (SELECT id FROM strategies {parents} \
                UNION ALL SELECT id FROM initiatives {parents} \
                UNION ALL SELECT id FROM tasks {parents} \
@@ -1075,10 +1121,12 @@ pub fn page_children_progress(
         entry.total += row.count;
         entry.has_done |= row.board_has_done;
         entry.cancelled += row.cancelled;
+        entry.removed += row.removed;
         if row.is_done {
             entry.done += row.count - row.cancelled;
         }
     }
+    progress.retain(|_, counts| counts.total > 0);
     Ok(progress)
 }
 
