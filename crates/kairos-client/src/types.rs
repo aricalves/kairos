@@ -908,7 +908,7 @@ pub struct NotReached {
 }
 
 /// Body of `POST /api/{entity_type}/{short_code}/notes` (KAIROS-T-0367):
-/// the text of a note to append to the item (a row of its own, KAIROS-T-0630).
+/// the text of a note. A note is a row of its own (KAIROS-T-0630).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AppendNoteRequest {
