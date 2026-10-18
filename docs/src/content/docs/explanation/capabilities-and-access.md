@@ -115,14 +115,19 @@ implication means leaving the team *is* the revocation, and explicit grants
 keep their own audit story untouched.
 
 **Membership of a strategy or initiative board implies the edit and the move
-of every item on it.** A person who holds any grant on such a board is a member
-of it — there is no read grant to count, because reading is open. A member
-holds `manage_strategies` (on a strategy board) or `manage_initiatives` (on an
-initiative board), and `transition_items`, with no further grant. So one grant
-per person, once, is enough for the person to work the shared initiative
-board: `configure_boards` alone would do. Each strategy and initiative board
-also has a team (KAIROS-T-0440), and a member of that team gets the same with
-no grant: joining the team is the other way in.
+of every item on it.** A person who holds the `member` grant on such a board
+is a member of it. A member holds `manage_strategies` (on a strategy board) or
+`manage_initiatives` (on an initiative board), and `transition_items`, with no
+further grant. So one grant per person, once, is enough for the person to work
+the shared initiative board. Each strategy and initiative board also has a
+team (KAIROS-T-0440), and a member of that team gets the same with no grant:
+joining the team is the other way in.
+
+Only the `member` grant (or `*`) makes a member (KAIROS-T-0541). At first,
+each grant on the board made a member. Then a person with only `pages` or
+`transition_items` could edit each strategy on the board. A grant must give
+what it names and no more. So `transition_items` alone moves items and does
+not edit them, and `pages` or `configure_boards` alone does neither.
 
 The reason is who works at these levels. A team may shape an initiative
 together, but people, not teams, answer for strategies and initiatives
@@ -136,16 +141,17 @@ and `administer_members` stay explicit grants: membership lets a person change
 what an item says and where it is, not remove it from view or change the board
 or its members. Delivery and ADR boards are not affected; there a grant gives
 exactly what it names. The implication is computed, like the team rule, so the
-revoke of the last grant on the board *is* the revocation.
+revoke of the `member` grant *is* the revocation.
 
-Membership also lets a person **claim** a strategy or an initiative that has no
+A grant on the board also lets a person **claim** a strategy or an initiative
+that has no
 [owner](../../reference/glossary/#owner): the one person who answers for it.
 The owner is a label of responsibility, not a capability. It gives nothing
-beyond membership, so the owner who has no grant on the board cannot edit the
+beyond the grants, so an owner without the `member` grant cannot edit the
 item, and a member who is not the owner can still edit and move it. Only the
 owner (by a hand-off or a release) or an organisation admin changes the owner.
-A hand-off goes only to a member of the board, so the owner is a member when
-the item gets them; a later revoke of the grant does not end the ownership. A
+A hand-off goes only to a person with a grant on the board. A later revoke of
+the grant does not end the ownership. A
 person who leaves the organisation stops being the owner of anything.
 
 **Every member may send a request to any team.** A member who does not manage
@@ -384,8 +390,9 @@ mean.
   boundary](https://github.com/colliery-io/kairos/blob/main/.metis/adrs/KAIROS-A-0020.md)
   (KAIROS-A-0020).
 - People, not teams, work strategies and initiatives (KAIROS-A-0025,
-  KAIROS-T-0410): a grant on a strategy or initiative board makes a person a
-  member, and a member edits and moves every item on it.
+  KAIROS-T-0410, KAIROS-T-0541): the `member` grant on a strategy or
+  initiative board makes a person a member, and a member edits and moves every
+  item on it.
 - The edit rule and the link rule (COLLIERY-T-0228): creation is the primary
   mechanism of ownership, a link follows the same rule as an edit, and movement
   stays with the team of the board.

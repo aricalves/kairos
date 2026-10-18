@@ -650,8 +650,9 @@ pub struct WhoamiBoardCapabilities {
     /// The capability strings granted to the caller on this board (may
     /// include globs like `*`, `manage_*`, `configure_*`), sorted.
     pub grants: Vec<String>,
-    /// The capabilities that membership of this board gives with no grant
-    /// (KAIROS-T-0410, KAIROS-A-0025): on a strategy board
+    /// The capabilities that membership of this board gives
+    /// (KAIROS-T-0410, KAIROS-A-0025). Only the `member` grant (or `*`)
+    /// makes a member (KAIROS-T-0541). Then, on a strategy board
     /// `manage_strategies` and `transition_items`, on an initiative board
     /// `manage_initiatives` and `transition_items`. Empty on other boards.
     /// Not archive or restore: those need a grant.
@@ -799,8 +800,14 @@ async fn whoami(
                 board_id,
                 board_slug,
                 grants: vec![capability],
-                implied: kairos_core::abac::board_member_capabilities(level.as_str()).to_vec(),
+                implied: Vec::new(),
             }),
+        }
+        // KAIROS-T-0541: only the `member` grant (or `*`) makes a member.
+        if let Some(last) = capabilities.last_mut() {
+            last.implied =
+                kairos_core::abac::member_capabilities_of_grants(level.as_str(), &last.grants)
+                    .to_vec();
         }
     }
 
