@@ -126,6 +126,12 @@ onto a board that then reports the wrong thing to the wrong people, and nobody
 re-reads an edge once it exists. A proposal costs a click; a wrong edge costs a
 conversation.
 
+An agent key is the person who owns it. So the server cannot tell the agent
+from the person by the user alone. It refuses a decision with an agent key.
+It also refuses the proposer. Thus a proposal that your agent made needs a
+second person. So a second person checks each edge that comes from a
+proposal.
+
 The person who confirms must be able to edit the item at one end of the edge.
 That is the [link rule](../../reference/capabilities/#who-can-write-relationships),
 and it is the rule for each other edge. The reason is that a confirm is not a

@@ -2649,7 +2649,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Propose a `parent` or `blocks` edge between two items for a person to confirm; you cannot create or confirm it yourself. Use it when `related_work` shows a real dependency, and say why: the reason is shown to who decides. The person who confirms must be able to edit one of the two items."
+        description = "Propose a `parent` or `blocks` edge between two items for a person to confirm; you cannot create or confirm it yourself. Use it when `related_work` shows a real dependency, and say why: the reason is shown to who decides. A person other than the proposer confirms or rejects it, and not with an agent key. That person must be able to edit one of the two items."
     )]
     pub async fn propose_edge(
         &self,
@@ -2685,7 +2685,8 @@ impl KairosMcp {
             )
             .map_err(crate::api::proposals::map_proposal_error)?;
             Ok(format!(
-                "Proposed {} -[{}]-> {} ({}). It is NOT an edge yet. A person must confirm it.",
+                "Proposed {} -[{}]-> {} ({}). It is NOT an edge yet. A person other than the \
+                 proposer must confirm it, and not with an agent key.",
                 source.short_code, params.relationship, target.short_code, proposal.id
             ))
         })
