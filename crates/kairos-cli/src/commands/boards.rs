@@ -108,7 +108,8 @@ pub enum BoardsCommand {
     /// Setting needs configure_boards. parent_gate (a delivery board): a task
     /// moves to a claims column only while its parent initiative is active.
     /// owner_gate (an initiative board): an initiative moves to Active only
-    /// with an owner
+    /// with an owner. blockers_gate (a delivery board, KAIROS-T-0565): a task
+    /// with an open blocker cannot move to a claims or done column
     Policy {
         /// Board slug or id (UUID)
         #[arg(value_name = "BOARD")]
@@ -119,6 +120,9 @@ pub enum BoardsCommand {
         /// on or off
         #[arg(long, value_name = "on|off", value_parser = ["on", "off"])]
         owner_gate: Option<String>,
+        /// on or off
+        #[arg(long, value_name = "on|off", value_parser = ["on", "off"])]
+        blockers_gate: Option<String>,
         #[command(flatten)]
         common: Common,
     },
@@ -340,19 +344,22 @@ impl BoardsCommand {
                 board,
                 parent_gate,
                 owner_gate,
+                blockers_gate,
                 common,
             } => {
                 let client = client(&common)?;
                 let mut current = client.get_board(&board).await?.board;
                 let parent_gate = parent_gate.map(|v| v == "on");
                 let owner_gate = owner_gate.map(|v| v == "on");
-                if parent_gate.is_some() || owner_gate.is_some() {
+                let blockers_gate = blockers_gate.map(|v| v == "on");
+                if parent_gate.is_some() || owner_gate.is_some() || blockers_gate.is_some() {
                     current = client
                         .update_board(
                             &current.id,
                             &UpdateBoardRequest {
                                 parent_gate,
                                 owner_gate,
+                                blockers_gate,
                                 ..UpdateBoardRequest::default()
                             },
                         )
@@ -395,6 +402,13 @@ fn policy_text(board: &kairos_client::types_org::Board) -> String {
         lines.push(format!(
             "parent_gate: {} (a task moves to a claims column only while its initiative is \
              active)",
+            on_off(on)
+        ));
+    }
+    if let Some(on) = board.blockers_gate {
+        lines.push(format!(
+            "blockers_gate: {} (on: a task with an open blocker cannot move to a claims or done \
+             column; off: the move gets a warning)",
             on_off(on)
         ));
     }
@@ -721,5 +735,36 @@ mod wip_tests {
         assert!(text.contains("2026-09-28"), "{text}");
         assert!(text.contains("WEB-T-0002"), "{text}");
         assert!(text.contains("2026-10-11"), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::policy_text;
+
+    /// KAIROS-T-0565: a delivery board shows parent_gate and blockers_gate.
+    #[test]
+    fn the_policy_text_shows_each_policy_of_the_board() {
+        let board = kairos_client::types_org::Board {
+            id: "b".into(),
+            name: "Web".into(),
+            slug: "web-delivery".into(),
+            board_level: "delivery".into(),
+            team_id: None,
+            code_prefix: "WEB".into(),
+            parent_gate: Some(true),
+            owner_gate: None,
+            blockers_gate: Some(false),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let text = policy_text(&board);
+        assert!(text.starts_with("Policies of web-delivery:"), "{text}");
+        assert!(text.contains("parent_gate: on"), "{text}");
+        assert!(
+            text.contains("blockers_gate: off (on: a task with an open blocker"),
+            "{text}"
+        );
+        assert!(!text.contains("owner_gate"), "{text}");
     }
 }

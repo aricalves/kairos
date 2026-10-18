@@ -85,6 +85,13 @@ deployment has no vectors yet, or has just changed models. The answer is real bu
 thinner — it will have missed work phrased differently — and it tells you so
 rather than letting you assume otherwise.
 
+A text-only answer is also shorter. The rank of a text match is not enough,
+because common words match most items. So each word of the title weighs by how
+rare it is. The tool proposes an item only when it matches a large share of
+that weight. It gives 3 proposals at most, and often none. "None found" from
+text is a fair answer. Five matches on common words look like findings, but
+they are not.
+
 ## How the text half is stored
 
 The text half of retrieval is PostgreSQL full-text search. The `q` of
