@@ -53,6 +53,14 @@ pub struct Board {
     #[serde(default)]
     #[schema(required = true)]
     pub owner_gate: Option<bool>,
+    /// The board policy `blockers_gate` of a delivery board (KAIROS-T-0565):
+    /// when true, a task with an open blocker does not move into a claims
+    /// column or a done column. The refusal is a 422 `BLOCKED`. When false,
+    /// the move goes on with a `Kairos-Warning`. False by default. `null` on
+    /// each other level.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub blockers_gate: Option<bool>,
     /// RFC 3339.
     pub created_at: String,
     /// RFC 3339.
@@ -207,6 +215,11 @@ pub struct UpdateBoardRequest {
     /// the field is a 422 `VALIDATION`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_gate: Option<bool>,
+    /// The board policy `blockers_gate` (KAIROS-T-0565), for a delivery
+    /// board only: true turns it on, false turns it off. On each other level
+    /// the field is a 422 `VALIDATION`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blockers_gate: Option<bool>,
 }
 
 /// Body of `PUT /api/boards/{id}/code-sequences/{item_type}`
@@ -1538,4 +1551,36 @@ mod tests {
             .expect("counts with no `has_done` deserialize");
         assert!(!counts.has_done);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Retention (KAIROS-T-0631)
+// ---------------------------------------------------------------------------
+
+/// `GET /api/org/retention`: the retention settings of the deployment and
+/// the last retention pass. Never the path of the archive target.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RetentionStatus {
+    /// `archive`, `discard` or `off` (`KAIROS_RETENTION_MODE`).
+    pub mode: String,
+    /// The kind of `KAIROS_ARCHIVE_TARGET`: `filesystem` or `s3`. Absent
+    /// when no target is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_target: Option<String>,
+    /// What a pass does: `prunes`, `off`, `no_target` (it removes no row)
+    /// or `target_not_implemented` (each pass fails).
+    pub status: String,
+    /// The text for an operator when the pass removes nothing or fails.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+    pub history_hot_days: u32,
+    pub history_keep_latest: u32,
+    pub activity_retention_days: u32,
+    /// The record of the last pass that ended: `skipped: no target`, `off`
+    /// or the counts. Absent before the first pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_result: Option<String>,
+    /// When the last pass ended, RFC 3339.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_run_at: Option<String>,
 }

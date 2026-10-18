@@ -42,6 +42,20 @@
 //! confidently, which is worse than being told nothing. At the measured
 //! precision — roughly half, at the top of the distribution — the honest verb is
 //! *might*. [`Proposal::why`] carries the evidence so a reader can disagree.
+//!
+//! # Text only: fewer proposals, and a bar (KAIROS-T-0562)
+//!
+//! With no vectors, the rank of a text match is not enough. A title of common
+//! words matches most of the tenant, and the first five of those read like
+//! findings. So a text-only answer uses a text score: the share of the title's
+//! word weight that a candidate matches, where a rare word weighs more than a
+//! common one ([`Candidate::text_score`]). A candidate under
+//! [`RetrievalConfig::text_floor`] is not proposed, and the answer has at most
+//! [`TEXT_ONLY_LIMIT`] proposals. No proposal over the bar gives no proposal.
+//!
+//! This bar is not a threshold on a similarity, which the measurements above
+//! rule out. It is a share of the title's words, and it applies only when no
+//! similarity exists. With vectors, nothing here changes.
 
 use std::fmt;
 
@@ -114,6 +128,12 @@ pub struct Candidate {
     pub finished: bool,
     /// The literal heading the best-matching chunk sat under, if any.
     pub heading: Option<String>,
+    /// The text score, 0 to 1, for a text-only answer: the share of the
+    /// title's word weight that this candidate matches. A word weighs by how
+    /// rare it is in the tenant. A word in the candidate's title counts in
+    /// full, a word only in its content counts half. `None` when the answer
+    /// has vectors, and then nothing reads it.
+    pub text_score: Option<f32>,
 }
 
 /// A bounded, cited claim about one item.
@@ -158,7 +178,19 @@ pub struct RetrievalConfig {
     /// Added for a shared board. Half the repository weight, for the same
     /// reason: a board is a weaker signal of coupling than a codebase.
     pub board_weight: f32,
+    /// Text only: the lowest [`Candidate::text_score`] that is proposed. A
+    /// match on common words alone stays under it.
+    pub text_floor: f32,
+    /// Text only: added to the text score for a shared repository. It orders
+    /// the candidates over the floor; it does not lift one over the floor.
+    pub text_repository_weight: f32,
+    /// Text only: added to the text score for a shared board. Half the
+    /// repository weight, as for the hybrid answer.
+    pub text_board_weight: f32,
 }
+
+/// The most proposals that a text-only answer gives, whatever the limit.
+pub const TEXT_ONLY_LIMIT: usize = 3;
 
 impl Default for RetrievalConfig {
     fn default() -> Self {
@@ -167,6 +199,9 @@ impl Default for RetrievalConfig {
             rrf_k: 60.0,
             repository_weight: 0.000_1,
             board_weight: 0.000_05,
+            text_floor: 0.4,
+            text_repository_weight: 0.1,
+            text_board_weight: 0.05,
         }
     }
 }
@@ -195,8 +230,9 @@ impl Sources {
         match (self.lexical, self.vector) {
             (true, true) => "Ranked across text and meaning.",
             (true, false) => {
-                "Text only — no usable vectors for this tenant, so items phrased \
-                 differently will have been missed."
+                "Text only: this tenant has no usable vectors. So the search gives at \
+                 most 3 proposals, and each matches the rare words of the title. The \
+                 search misses items that use different words."
             }
             (false, true) => "Meaning only — no text query was given.",
             (false, false) => "Nothing was searched.",
@@ -209,28 +245,26 @@ impl Sources {
 /// Candidates already joined by an edge are dropped: there is no edge to propose
 /// and no discovery to report, and spending one of a handful of slots restating
 /// a link the caller can already see is the opposite of useful.
+///
+/// With no vectors (`sources.degraded()`), the order is the text score plus the
+/// text weights, a candidate under the floor is dropped, and at most
+/// [`TEXT_ONLY_LIMIT`] are returned (KAIROS-T-0562).
 pub fn propose(
     candidates: &[Candidate],
     sources: Sources,
     config: &RetrievalConfig,
 ) -> Vec<Proposal> {
+    let text_only = sources.degraded();
     let mut scored: Vec<Proposal> = candidates
         .iter()
         .filter(|c| !c.graph.directly_linked)
+        .filter(|c| !text_only || c.text_score.is_some_and(|s| s >= config.text_floor))
         .map(|c| {
-            let mut score = 0.0;
-            if let Some(r) = c.lexical_rank {
-                score += 1.0 / (config.rrf_k + r as f32);
-            }
-            if let Some(r) = c.vector_rank {
-                score += 1.0 / (config.rrf_k + r as f32);
-            }
-            if c.graph.same_repository {
-                score += config.repository_weight;
-            }
-            if c.graph.same_board {
-                score += config.board_weight;
-            }
+            let score = if text_only {
+                text_only_score(c, config)
+            } else {
+                fused_score(c, config)
+            };
             let claim = classify(c);
             Proposal {
                 short_code: c.short_code.clone(),
@@ -238,7 +272,7 @@ pub fn propose(
                 entity_type: c.entity_type.clone(),
                 claim,
                 score,
-                why: explain(c, claim, sources),
+                why: explain(c, claim),
             }
         })
         .collect();
@@ -250,8 +284,44 @@ pub fn propose(
             .total_cmp(&a.score)
             .then_with(|| a.short_code.cmp(&b.short_code))
     });
-    scored.truncate(config.limit);
+    let limit = if text_only {
+        config.limit.min(TEXT_ONLY_LIMIT)
+    } else {
+        config.limit
+    };
+    scored.truncate(limit);
     scored
+}
+
+/// The reciprocal-rank score of a candidate, with the two priors.
+fn fused_score(c: &Candidate, config: &RetrievalConfig) -> f32 {
+    let mut score = 0.0;
+    if let Some(r) = c.lexical_rank {
+        score += 1.0 / (config.rrf_k + r as f32);
+    }
+    if let Some(r) = c.vector_rank {
+        score += 1.0 / (config.rrf_k + r as f32);
+    }
+    if c.graph.same_repository {
+        score += config.repository_weight;
+    }
+    if c.graph.same_board {
+        score += config.board_weight;
+    }
+    score
+}
+
+/// The text score of a candidate, with the text weights for the same
+/// repository and the same board.
+fn text_only_score(c: &Candidate, config: &RetrievalConfig) -> f32 {
+    let mut score = c.text_score.unwrap_or(0.0);
+    if c.graph.same_repository {
+        score += config.text_repository_weight;
+    }
+    if c.graph.same_board {
+        score += config.text_board_weight;
+    }
+    score
 }
 
 /// Which claim a candidate supports.
@@ -275,7 +345,10 @@ fn classify(c: &Candidate) -> Claim {
 /// the graph check actually was. "Nothing links them" would imply a traversal;
 /// what was really checked is a direct edge and a shared parent, in a graph
 /// sparse enough that absence is weak evidence.
-fn explain(c: &Candidate, claim: Claim, sources: Sources) -> String {
+///
+/// It does not say "Text only". The response says that once, at the top
+/// (KAIROS-T-0562): five copies of one warning read as five findings.
+fn explain(c: &Candidate, claim: Claim) -> String {
     let mut why = String::new();
     match (c.lexical_rank.is_some(), c.vector_rank.is_some()) {
         (true, true) => why.push_str("Matches both the words and the meaning"),
@@ -299,10 +372,6 @@ fn explain(c: &Candidate, claim: Claim, sources: Sources) -> String {
         why.push_str(". Same repository");
     }
     why.push('.');
-    if sources.degraded() {
-        why.push(' ');
-        why.push_str(sources.note());
-    }
     why
 }
 
@@ -337,6 +406,23 @@ mod tests {
             graph: GraphRelation::default(),
             finished: false,
             heading: None,
+            text_score: None,
+        }
+    }
+
+    fn text_only() -> Sources {
+        Sources {
+            lexical: true,
+            vector: false,
+        }
+    }
+
+    /// A text-only candidate with a text score, at a lexical rank.
+    fn text(code: &str, rank: usize, score: f32) -> Candidate {
+        Candidate {
+            lexical_rank: Some(rank),
+            text_score: Some(score),
+            ..candidate(code)
         }
     }
 
@@ -509,25 +595,140 @@ mod tests {
         assert_eq!(out[0].short_code, "A-1");
     }
 
-    /// Rule 7: a lexical-only answer says so, in the result itself.
+    /// Rule 7: a lexical-only answer says so, ONCE, in the note of the
+    /// response, and not in each reason (KAIROS-T-0562).
     #[test]
-    fn a_degraded_answer_admits_it() {
-        let lexical_only = Sources {
-            lexical: true,
-            vector: false,
-        };
-        assert!(lexical_only.degraded());
-        let c = Candidate {
-            lexical_rank: Some(0),
-            ..candidate("A-1")
-        };
-        let out = propose(&[c], lexical_only, &RetrievalConfig::default());
-        assert!(
-            out[0].why.contains("Text only"),
-            "the caller must be able to tell a thin answer from a complete one: {}",
-            out[0].why
-        );
+    fn a_degraded_answer_admits_it_once() {
+        assert!(text_only().degraded());
         assert!(!both().degraded());
+        let note = text_only().note();
+        assert!(note.starts_with("Text only"), "{note}");
+        assert!(
+            note.contains(&format!("at most {TEXT_ONLY_LIMIT} proposals")),
+            "the note names the limit that applies: {note}"
+        );
+        let out = propose(
+            &[text("A-1", 0, 0.9), text("A-2", 1, 0.8)],
+            text_only(),
+            &RetrievalConfig::default(),
+        );
+        assert_eq!(out.len(), 2);
+        for p in &out {
+            assert!(!p.why.contains("Text only"), "{}", p.why);
+            assert!(!p.why.contains(note), "{}", p.why);
+        }
+    }
+
+    /// Text only: a match on common words scores low, and under the floor it is
+    /// not proposed. No candidate over the floor gives no proposal.
+    #[test]
+    fn text_only_drops_candidates_under_the_floor() {
+        let config = RetrievalConfig::default();
+        let weak = [
+            text("A-1", 0, config.text_floor - 0.01),
+            text("A-2", 1, 0.05),
+            // No text score at all: nothing to hold it to, so it is dropped.
+            Candidate {
+                lexical_rank: Some(2),
+                ..candidate("A-3")
+            },
+        ];
+        assert!(propose(&weak, text_only(), &config).is_empty());
+
+        let out = propose(
+            &[text("A-1", 1, config.text_floor), text("A-2", 0, 0.1)],
+            text_only(),
+            &config,
+        );
+        let codes: Vec<&str> = out.iter().map(|p| p.short_code.as_str()).collect();
+        assert_eq!(codes, ["A-1"], "the floor itself is enough");
+    }
+
+    /// Text only: the same repository or board does not lift a candidate over
+    /// the floor. It is a weight on the order, not a reason to propose.
+    #[test]
+    fn text_only_locality_does_not_lift_a_candidate_over_the_floor() {
+        let config = RetrievalConfig::default();
+        let near_but_weak = Candidate {
+            graph: GraphRelation {
+                same_repository: true,
+                same_board: true,
+                ..Default::default()
+            },
+            ..text("A-1", 0, config.text_floor - 0.05)
+        };
+        assert!(propose(&[near_but_weak], text_only(), &config).is_empty());
+    }
+
+    /// Text only: the order is the text score, and the same board or
+    /// repository orders the candidates that are close. A lexical rank does
+    /// not decide the order.
+    #[test]
+    fn text_only_orders_by_text_score_then_locality() {
+        let config = RetrievalConfig::default();
+        let same_board = Candidate {
+            graph: GraphRelation {
+                same_board: true,
+                ..Default::default()
+            },
+            ..text("A-2", 3, 0.7)
+        };
+        let out = propose(
+            &[text("A-1", 0, 0.72), same_board, text("A-3", 1, 0.95)],
+            text_only(),
+            &config,
+        );
+        let codes: Vec<&str> = out.iter().map(|p| p.short_code.as_str()).collect();
+        assert_eq!(codes, ["A-3", "A-2", "A-1"]);
+        assert!(out[0].score > out[1].score);
+    }
+
+    /// Text only: at most three proposals, whatever the limit.
+    #[test]
+    fn text_only_gives_at_most_three() {
+        let many: Vec<Candidate> = (0..20)
+            .map(|i| text(&format!("A-{i:04}"), i, 0.99 - i as f32 * 0.01))
+            .collect();
+        for limit in [5, 10] {
+            let config = RetrievalConfig {
+                limit,
+                ..RetrievalConfig::default()
+            };
+            assert_eq!(propose(&many, text_only(), &config).len(), TEXT_ONLY_LIMIT);
+        }
+        let one = RetrievalConfig {
+            limit: 1,
+            ..RetrievalConfig::default()
+        };
+        assert_eq!(propose(&many, text_only(), &one).len(), 1);
+    }
+
+    /// With vectors, the text score is not read: no floor, the fused rank and
+    /// the old limit, and the reason is the same as before.
+    #[test]
+    fn with_vectors_the_text_score_changes_nothing() {
+        let config = RetrievalConfig::default();
+        let many: Vec<Candidate> = (0..10)
+            .map(|i| Candidate {
+                vector_rank: Some(i),
+                ..text(&format!("A-{i:04}"), 9 - i, 0.01)
+            })
+            .collect();
+        let without: Vec<Candidate> = many
+            .iter()
+            .cloned()
+            .map(|c| Candidate {
+                text_score: None,
+                ..c
+            })
+            .collect();
+        let out = propose(&many, both(), &config);
+        assert_eq!(out.len(), config.limit, "no floor and no text limit");
+        assert_eq!(out, propose(&without, both(), &config));
+        assert_eq!(
+            out[0].why,
+            "Matches both the words and the meaning, and nothing in the graph joins them."
+        );
     }
 
     /// The honesty requirement: "no edge" must not read as "the graph was

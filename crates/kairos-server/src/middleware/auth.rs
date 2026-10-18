@@ -261,7 +261,7 @@ pub struct Authenticator {
     /// Stampede guard: concurrent unknown-kid requests serialize here and
     /// re-check the cache before fetching.
     refresh: Mutex<()>,
-    /// [`JWKS_REFETCH_INTERVAL`]; shorter in the tests.
+    /// [`JWKS_REFETCH_INTERVAL`].
     refetch_interval: Duration,
     /// The JWKS fetches of this instance, for the tests (KAIROS-T-0613).
     fetches: std::sync::atomic::AtomicU64,
@@ -496,11 +496,17 @@ impl Authenticator {
         }
     }
 
-    /// A shorter refetch interval, for the tests.
+    /// Move the last fetch one refetch interval back, as if the interval
+    /// had passed. The tests set the time of the last fetch and do not wait
+    /// on the clock (KAIROS-T-0653).
     #[cfg(test)]
-    fn with_refetch_interval(mut self, interval: Duration) -> Self {
-        self.refetch_interval = interval;
-        self
+    async fn end_refetch_interval(&self) {
+        let mut set = self.keys.write().await;
+        let at = set.fetched_at.expect("a fetch to move back");
+        set.fetched_at = Some(
+            at.checked_sub(self.refetch_interval)
+                .expect("an instant one interval back"),
+        );
     }
 
     /// The decoding key for `kid`, refreshing the JWKS once (behind the
@@ -1207,7 +1213,9 @@ BWKiTzkt91ge2HS8jjYZyPRxuojSqlQMbhlcJWYXEWjfEcHgo1Z8Iw/4TxU7oDzj
 
     // ---------------------------------------------------------------------
     // KAIROS-T-0613: one JWKS fetch per interval, and the unknown kid.
-    // A stub issuer on a local port counts the fetches of its JWKS.
+    // A stub issuer on a local port counts the fetches of its JWKS. The
+    // interval is the 60 s of production, and a test ends it with
+    // `end_refetch_interval`, not a sleep (KAIROS-T-0653).
 
     /// The modulus of [`TEST_RSA_PUBLIC_PEM`], base64url, for a JWKS.
     const TEST_RSA_N: &str = "2gKQdTOnMPT8zyKzbjydl3l9htFHvo09akZTYRCNGV_x0HrOH27OiVbcvL_1ZOKIv63bfgnGYxKmp74MNvNqg6K-HrTl5nccTgsCaN_TL6ISf3xasICBz451XwjM8qezSek1zwGzW0OzC7l7xcQzupHuF9VhqzpY9LgqV8-2KQy_8rwH5-r3n4le0gzuDZgbvBH_GFjWF55LJrmMJvt61iSdLn7mEq4YwF1UkRajp_sR1iaaDnTJuR3R2S46iD3DFMbrZPgyu-sC4qcWurEQBWKiTzkt91ge2HS8jjYZyPRxuojSqlQMbhlcJWYXEWjfEcHgo1Z8Iw_4TxU7oDzj6Q";
@@ -1292,8 +1300,7 @@ BWKiTzkt91ge2HS8jjYZyPRxuojSqlQMbhlcJWYXEWjfEcHgo1Z8Iw/4TxU7oDzj
         let stub = stub_issuer(&[KID]).await;
         let auth = Authenticator::discover(&stub.url, AUDIENCE)
             .await
-            .expect("discovery against the stub")
-            .with_refetch_interval(Duration::from_millis(300));
+            .expect("discovery against the stub");
         assert_eq!(stub.hits(), 1, "the startup fetches the JWKS once");
 
         // In the interval after the startup fetch: no fetch at all.
@@ -1301,7 +1308,7 @@ BWKiTzkt91ge2HS8jjYZyPRxuojSqlQMbhlcJWYXEWjfEcHgo1Z8Iw/4TxU7oDzj
         assert_eq!(stub.hits(), 1, "no fetch in the interval");
 
         // After the interval: the flood makes one fetch, not fifty.
-        tokio::time::sleep(Duration::from_millis(400)).await;
+        auth.end_refetch_interval().await;
         flood(&auth, &stub.url, 50).await;
         assert_eq!(stub.hits(), 2, "one fetch for the whole flood");
         assert_eq!(auth.jwks_fetches(), 2);
@@ -1318,8 +1325,7 @@ BWKiTzkt91ge2HS8jjYZyPRxuojSqlQMbhlcJWYXEWjfEcHgo1Z8Iw/4TxU7oDzj
         let stub = stub_issuer(&[KID]).await;
         let auth = Authenticator::discover(&stub.url, AUDIENCE)
             .await
-            .expect("discovery against the stub")
-            .with_refetch_interval(Duration::from_millis(300));
+            .expect("discovery against the stub");
         let rotated = mint(&stub.url, AUDIENCE, future_exp(), Some("rotated-in"));
 
         // The issuer rotates a key in after the startup fetch. In the
@@ -1342,7 +1348,7 @@ BWKiTzkt91ge2HS8jjYZyPRxuojSqlQMbhlcJWYXEWjfEcHgo1Z8Iw/4TxU7oDzj
         );
 
         // After the interval, one fetch finds the new key.
-        tokio::time::sleep(Duration::from_millis(400)).await;
+        auth.end_refetch_interval().await;
         auth.verify(&rotated)
             .await
             .expect("the rotated key is found after the interval");

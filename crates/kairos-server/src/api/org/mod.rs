@@ -35,6 +35,7 @@ pub mod org_read_tokens;
 pub mod repositories;
 pub mod repository_credentials;
 pub mod repository_write_tokens;
+pub mod retention;
 pub mod sites;
 pub mod streams;
 pub mod structure_grants;
@@ -67,6 +68,8 @@ pub fn router() -> Router<AppState> {
         // KAIROS-T-0406: the published site of a repository.
         .merge(sites::router())
         .merge(code_index_settings::router())
+        // KAIROS-T-0631: the retention settings and the last pass.
+        .merge(retention::router())
         .merge(code_index_query::router())
         .merge(repository_credentials::router())
         // KAIROS-T-0431: the read token of the organization for each host.
@@ -470,6 +473,7 @@ pub fn map_config_error(e: BoardError) -> ApiError {
         | BoardError::NoEntryColumn(_)
         | BoardError::ParentNotActive { .. }
         | BoardError::OwnerRequired { .. }
+        | BoardError::Blocked { .. }
         | BoardError::TaskDone { .. }
         | BoardError::TaskNotDone { .. }
         | BoardError::NoOpenColumn { .. }

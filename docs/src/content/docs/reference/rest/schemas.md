@@ -224,6 +224,7 @@ A board (`/api/boards` list element).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `blockers_gate` | `boolean`, nullable | yes | The board policy `blockers_gate` of a delivery board (KAIROS-T-0565): when true, a task with an open blocker does not move into a claims column or a done column. The refusal is a 422 `BLOCKED`. When false, the move goes on with a `Kairos-Warning`. False by default. `null` on each other level. |
 | `board_level` | `string` | yes | `strategy|initiative|delivery|adr`. |
 | `code_prefix` | `string` | yes | The short-code prefix of the board (COLLIERY-T-3099): an item on the board gets a code `{code_prefix}-{type letter}-{number}`. It is set when the board is created and never changes. The default is for the client only: a response of an older server has no prefix. |
 | `created_at` | `string` | yes | RFC 3339. |
@@ -467,6 +468,7 @@ The answer to `GET /api/repositories/{slug}/code-indexes/builds`.
 | `disk` | [`CodeIndexDiskUse`](#codeindexdiskuse), nullable | no |  |
 | `items` | array of [`CodeIndexBuild`](#codeindexbuild) | yes | The runs, newest first. |
 | `limit` | `integer` | yes | The limit that the answer used. |
+| `offset` | `integer` | no | The runs before the page, newest first (KAIROS-T-0584). |
 | `total` | `integer` | yes | The runs of the repository, with those not in `items`. |
 
 ## CodeIndexCacheUse
@@ -2191,6 +2193,22 @@ Response of `POST /api/{entity_type}/{short_code}/restore` (KAIROS-T-0160, KAIRO
 | `still_archived_count` | `integer` | yes | How many of its descendants are still archived. |
 | `still_archived_short_codes` | array of `string` | yes | Their short codes, sorted â restore them with further calls. |
 
+## RetentionStatus
+
+`GET /api/org/retention`: the retention settings of the deployment and the last retention pass. Never the path of the archive target.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `activity_retention_days` | `integer` | yes |  |
+| `archive_target` | `string`, nullable | no | The kind of `KAIROS_ARCHIVE_TARGET`: `filesystem` or `s3`. Absent when no target is set. |
+| `history_hot_days` | `integer` | yes |  |
+| `history_keep_latest` | `integer` | yes |  |
+| `last_result` | `string`, nullable | no | The record of the last pass that ended: `skipped: no target`, `off` or the counts. Absent before the first pass. |
+| `last_run_at` | `string`, nullable | no | When the last pass ended, RFC 3339. |
+| `mode` | `string` | yes | `archive`, `discard` or `off` (`KAIROS_RETENTION_MODE`). |
+| `status` | `string` | yes | What a pass does: `prunes`, `off`, `no_target` (it removes no row) or `target_not_implemented` (each pass fails). |
+| `warning` | `string`, nullable | no | The text for an operator when the pass removes nothing or fails. |
+
 ## ScimTokenCreatedResponse
 
 `POST /api/scim-tokens` response — the ONLY place the secret appears.
@@ -2923,6 +2941,7 @@ Body of `PATCH /api/boards/{id}` (board settings).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `blockers_gate` | `boolean`, nullable | no | The board policy `blockers_gate` (KAIROS-T-0565), for a delivery board only: true turns it on, false turns it off. On each other level the field is a 422 `VALIDATION`. |
 | `name` | `string`, nullable | no |  |
 | `owner_gate` | `boolean`, nullable | no | The board policy `owner_gate` (KAIROS-T-0643), for an initiative board only: true turns it on, false turns it off. On each other level the field is a 422 `VALIDATION`. |
 | `parent_gate` | `boolean`, nullable | no | The board policy `parent_gate` (KAIROS-T-0641), for a delivery board only: true turns it on, false turns it off. On each other level the field is a 422 `VALIDATION`. |

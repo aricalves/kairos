@@ -3,7 +3,7 @@
 //! (KAIROS-I-0012), `restore_item` (KAIROS-A-0020), `related_work`
 //! (KAIROS-T-0191), `propose_edge` (KAIROS-T-0192), `set_repository`
 //! (COLLIERY-T-0220), and `add_repository` and `update_repository`
-//! (COLLIERY-T-0266); later tasks added more (72 in all, in the profiles
+//! (COLLIERY-T-0266); later tasks added more (73 in all, in the profiles
 //! of `profiles.rs`, KAIROS-T-0454) — each a
 //! thin wrapper over the same `kairos-core`/`kairos-db` services the REST
 //! handlers call — through [`crate::blocking::BlockingTenantPool`], never
@@ -210,6 +210,10 @@ pub struct SetBoardPolicyParams {
     /// column only with an owner, and its owner cannot release it in Active
     /// or Monitoring. False: no check.
     pub owner_gate: Option<bool>,
+    /// A delivery board only. True: a task with an open blocker does not
+    /// move into a claims column or a done column (BLOCKED). False: the
+    /// move goes on with a warning.
+    pub blockers_gate: Option<bool>,
 }
 
 /// `delete_dispatch_rule` (KAIROS-T-0385).
@@ -636,6 +640,17 @@ pub struct SetWorkClassParams {
     pub work_class: String,
 }
 
+/// Parameters for `set_lifecycle` (KAIROS-T-0555).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct SetLifecycleParams {
+    /// The short code of the document (e.g. "ACME-D-0012").
+    pub short_code: String,
+    /// The lifecycle: draft | review | published | archived.
+    pub lifecycle: String,
+}
+
 /// Parameters for `promote_note` (KAIROS-T-0505).
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -1028,8 +1043,8 @@ pub struct GrantCapabilityParams {
     pub user: String,
     /// A board capability (manage_tasks, manage_documents, manage_adrs,
     /// manage_initiatives, manage_strategies, transition_items,
-    /// configure_boards, administer_members, pages, or a glob: *, manage_*,
-    /// configure_*, transition_*), or manage_structure.
+    /// configure_boards, administer_members, pages, member, or a glob: *,
+    /// manage_*, configure_*, transition_*), or manage_structure.
     pub capability: String,
     /// The board, by slug or UUID. A board capability needs it. For
     /// manage_structure, omit it for a grant at the organization.
@@ -1309,7 +1324,7 @@ pub struct SaveTemplateParams {
 }
 
 // ---------------------------------------------------------------------------
-// The tools (72; the list of each profile is asserted in tests/mcp.rs)
+// The tools (73; the list of each profile is asserted in tests/mcp.rs)
 // ---------------------------------------------------------------------------
 
 #[tool_router(vis = "pub(super)")]
@@ -1425,10 +1440,10 @@ impl KairosMcp {
             }
             for ((slug, name), (level, capabilities)) in by_board {
                 out.push_str(&format!("- {slug} ({name}): {}\n", capabilities.join(", ")));
-                // KAIROS-T-0410: a grant on a strategy or initiative board
-                // makes me a member of it, and membership gives the edit
-                // and the move of each item on it, with no grant.
-                let member = member_capabilities(level);
+                // KAIROS-T-0410: the `member` grant on a strategy or
+                // initiative board (KAIROS-T-0541) gives the edit and the
+                // move of each item on it. No other grant does.
+                let member = member_capabilities(level, &capabilities);
                 if !member.is_empty() {
                     out.push_str(&format!(
                         "- {slug} ({name}): {} (board member, no grant)\n",
@@ -1748,12 +1763,23 @@ impl KairosMcp {
                 .select(team_members::team_id)
                 .load(conn)
                 .map_err(ApiError::internal)?;
-            let my_grant_boards: Vec<Uuid> = caps::table
+            let my_grants: Vec<(Uuid, String)> = caps::table
                 .filter(caps::user_id.eq(user_id))
-                .select(caps::board_id)
-                .distinct()
+                .select((caps::board_id, caps::capability))
                 .load(conn)
                 .map_err(ApiError::internal)?;
+            let mut my_grant_boards: Vec<Uuid> = my_grants.iter().map(|(b, _)| *b).collect();
+            my_grant_boards.sort_unstable();
+            my_grant_boards.dedup();
+            // KAIROS-T-0541: the grants of each board, to tell a member
+            // (the `member` grant) from a holder of other grants.
+            let grants_on = |board_id: Uuid| -> Vec<&str> {
+                my_grants
+                    .iter()
+                    .filter(|(b, _)| *b == board_id)
+                    .map(|(_, c)| c.as_str())
+                    .collect()
+            };
 
             let is_mine = |board: &Board| {
                 board.board_level == BoardLevel::Delivery
@@ -1856,9 +1882,9 @@ impl KairosMcp {
                     ));
                 }
                 // KAIROS-T-0410: what membership of a strategy or initiative
-                // board (any grant on it) gives me, with no grant.
-                let member = member_capabilities(board.board_level);
-                if !member.is_empty() && my_grant_boards.contains(&board.id) {
+                // board (the `member` grant, KAIROS-T-0541) gives me.
+                let member = member_capabilities(board.board_level, &grants_on(board.id));
+                if !member.is_empty() {
                     out.push_str(&format!("  member capabilities: {}\n", member.join(", ")));
                 }
             }
@@ -2272,7 +2298,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Set the policies of a board. `parent_gate` (a delivery board): when true (the default), a task moves into a claims column (Active) by a transition, a board move or a create only while its parent initiative is in Active or Monitoring, or is a bucket; else PARENT_NOT_ACTIVE. A task with no parent initiative moves freely. `owner_gate` (an initiative board): when true (the default), an initiative moves into Active only with an owner, and the owner of an initiative in Active or Monitoring cannot release it (hand_off_item changes it); else OWNER_REQUIRED. Send at least one policy; a policy of a different level is VALIDATION. Needs configure_boards; `my_boards` shows the policies."
+        description = "Set the policies of a board. `parent_gate` (a delivery board): when true (the default), a task moves into a claims column (Active) by a transition, a board move or a create only while its parent initiative is in Active or Monitoring, or is a bucket; else PARENT_NOT_ACTIVE. A task with no parent initiative moves freely. `owner_gate` (an initiative board): when true (the default), an initiative moves into Active only with an owner, and the owner of an initiative in Active or Monitoring cannot release it (hand_off_item changes it); else OWNER_REQUIRED. `blockers_gate` (a delivery board): when true, a task with an open blocker (a cancelled blocker is open) does not move into a claims column or a done column by a transition, a reopen or a board move; else BLOCKED, with the blockers. When false (the default), the move goes on with a warning that names each open blocker. Send at least one policy; a policy of a different level is VALIDATION. Needs configure_boards; `my_boards` shows the policies."
     )]
     pub async fn set_board_policy(
         &self,
@@ -2290,6 +2316,7 @@ impl KairosMcp {
                 crate::api::org::boards::PolicyChange {
                     parent_gate: params.parent_gate,
                     owner_gate: params.owner_gate,
+                    blockers_gate: params.blockers_gate,
                 },
             )?;
             Ok(format!(
@@ -2633,7 +2660,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Propose a `parent` or `blocks` edge between two items for a person to confirm; you cannot create or confirm it yourself. Use it when `related_work` shows a real dependency, and say why: the reason is shown to who decides. The person who confirms must be able to edit one of the two items."
+        description = "Propose a `parent` or `blocks` edge between two items for a person to confirm; you cannot create or confirm it yourself. Use it when `related_work` shows a real dependency, and say why: the reason is shown to who decides. A person other than the proposer confirms or rejects it, and not with an agent key. That person must be able to edit one of the two items."
     )]
     pub async fn propose_edge(
         &self,
@@ -2669,7 +2696,8 @@ impl KairosMcp {
             )
             .map_err(crate::api::proposals::map_proposal_error)?;
             Ok(format!(
-                "Proposed {} -[{}]-> {} ({}). It is NOT an edge yet. A person must confirm it.",
+                "Proposed {} -[{}]-> {} ({}). It is NOT an edge yet. A person other than the \
+                 proposer must confirm it, and not with an agent key.",
                 source.short_code, params.relationship, target.short_code, proposal.id
             ))
         })
@@ -2961,7 +2989,7 @@ impl KairosMcp {
         self.run_tool(&tenant, move |conn| {
             let reader = crate::api::notifications::reader_for(conn, user, key)?;
             let before = params.before.as_deref();
-            let (items, unread) = crate::api::notifications::list_for(conn, &reader, before)?;
+            let (items, unread) = crate::api::notifications::list_for(conn, &reader, before, None)?;
             Ok(events_text(&items, unread, before.is_some()))
         })
         .await
@@ -3084,7 +3112,8 @@ impl KairosMcp {
                 .rename
                 .as_ref()
                 .map_or(item.short_code.clone(), |rename| rename.new_code.clone());
-            crate::claims::note_wip(conn, moved.column_id, &moved_code)?;
+            // KAIROS-T-0565: and the open blockers.
+            crate::claims::note_task_move(conn, item.id, moved.column_id, &moved_code)?;
             let column = board_columns(conn, target.id)?
                 .into_iter()
                 .find(|c| c.id == moved.column_id)
@@ -3259,6 +3288,52 @@ impl KairosMcp {
                 promoted.created_code
             ));
             Ok(out)
+        })
+        .await
+    }
+
+    // KAIROS-T-0555: a document moves between draft, review, published
+    // and archived. A document is not on a board (KAIROS-A-0018), so
+    // `transition_item` cannot move it. REST and this tool call one
+    // function (`crate::api::documents::change_lifecycle`).
+    #[tool(
+        description = "Set the lifecycle of a DOCUMENT: `lifecycle` is draft, review, published or archived. You can move a document from each value to each other value. A document is not on a board, so `transition_item` does not move it. A value that the document already has changes nothing. The edit rule applies: the creator of the document, or `manage_documents` on its owner board. `promote_note` makes a draft: publish it with this tool."
+    )]
+    pub async fn set_lifecycle(
+        &self,
+        Parameters(params): Parameters<SetLifecycleParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            let lifecycle = crate::api::documents::parse_lifecycle(&params.lifecycle)?;
+            let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
+            if item.item_type != ItemType::Document {
+                return Err(ApiError::validation(format!(
+                    "The {} {} is not a document. set_lifecycle applies to documents only.",
+                    item.item_type, item.short_code
+                )));
+            }
+            let (before, updated) = crate::api::documents::change_lifecycle(
+                conn,
+                &slug,
+                user,
+                &item.short_code,
+                lifecycle,
+            )?;
+            Ok(if before == lifecycle {
+                format!(
+                    "{} is already {}: nothing changed.",
+                    updated.short_code, updated.lifecycle
+                )
+            } else {
+                format!(
+                    "Set the lifecycle of {} to {} (was {}).",
+                    updated.short_code, updated.lifecycle, before
+                )
+            })
         })
         .await
     }
@@ -3603,10 +3678,19 @@ impl KairosMcp {
                 _ => {
                     return Err(ApiError::unprocessable(
                         "ITEM_NOT_ON_BOARD",
-                        format!(
-                            "The {} {} is not on a board, so it cannot move between columns.",
-                            item.item_type, item.short_code
-                        ),
+                        if item.item_type == ItemType::Document {
+                            format!(
+                                "The document {} is not on a board, so it cannot move between \
+                                 columns. Use set_lifecycle to move it between draft, review, \
+                                 published and archived.",
+                                item.short_code
+                            )
+                        } else {
+                            format!(
+                                "The {} {} is not on a board, so it cannot move between columns.",
+                                item.item_type, item.short_code
+                            )
+                        },
                     ));
                 }
             };
@@ -3649,7 +3733,12 @@ impl KairosMcp {
             .map_err(map_board_error)?;
             crate::agent_triage::record(conn, &auth, item.id, triaged)?;
             // KAIROS-T-0371: a move into a column over its WIP limit.
-            crate::claims::note_wip(conn, to_column_id, &item.short_code)?;
+            // KAIROS-T-0565: the open blockers of a task.
+            if item.item_type == ItemType::Task {
+                crate::claims::note_task_move(conn, item.id, to_column_id, &item.short_code)?;
+            } else {
+                crate::claims::note_wip(conn, to_column_id, &item.short_code)?;
+            }
 
             let name_of = |id: Uuid| {
                 columns
@@ -4435,7 +4524,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Grant a capability to a member (`user`: user id, email, user name or service account name). A board capability (manage_tasks, manage_documents, manage_adrs, manage_initiatives, manage_strategies, transition_items, configure_boards, administer_members, pages, or a glob such as manage_*) needs `board` and `administer_members` there, or `manage_structure`. `manage_structure` (only an org admin grants it): with no `board`, the structure of the organization; with `board`, that board's columns, transitions, members and grants."
+        description = "Grant a capability to a member (`user`: user id, email, user name or service account name). A board capability (manage_tasks, manage_documents, manage_adrs, manage_initiatives, manage_strategies, transition_items, configure_boards, administer_members, pages, member, or a glob such as manage_*) needs `board` and `administer_members` there, or `manage_structure`. `manage_structure` (only an org admin grants it): with no `board`, the structure of the organization; with `board`, that board's columns, transitions, members and grants."
     )]
     pub async fn grant_capability(
         &self,
@@ -7261,8 +7350,10 @@ fn policy_text(board: &Board) -> Option<String> {
     match board.board_level {
         BoardLevel::Delivery => Some(format!(
             "parent_gate {} (a task moves to a claims column only while its initiative is \
-             active)",
-            if board.parent_gate { "on" } else { "off" }
+             active); blockers_gate {} (on: a task with an open blocker cannot move to a claims \
+             or done column; off: the move gets a warning)",
+            if board.parent_gate { "on" } else { "off" },
+            if board.blockers_gate { "on" } else { "off" }
         )),
         BoardLevel::Initiative => Some(format!(
             "owner_gate {} (an initiative moves to Active only with an owner)",
@@ -7276,12 +7367,12 @@ fn team_capabilities(level: BoardLevel) -> &'static [&'static str] {
     kairos_core::abac::team_capabilities(level.as_str())
 }
 
-/// The capabilities that membership of a board of `level` gives with no
-/// grant (KAIROS-T-0410): on a strategy or initiative board, a member (any
-/// grant on it) edits and moves each item. The vocabulary is
-/// `kairos_core::abac`.
-fn member_capabilities(level: BoardLevel) -> &'static [&'static str] {
-    kairos_core::abac::board_member_capabilities(level.as_str())
+/// The capabilities that membership of a board of `level` gives
+/// (KAIROS-T-0410): on a strategy or initiative board, a member edits and
+/// moves each item. Since KAIROS-T-0541 only the `member` grant (or `*`)
+/// in `grants` makes a member. The vocabulary is `kairos_core::abac`.
+fn member_capabilities<S: AsRef<str>>(level: BoardLevel, grants: &[S]) -> &'static [&'static str] {
+    kairos_core::abac::member_capabilities_of_grants(level.as_str(), grants)
 }
 
 /// The board level whose boards host this item type.
@@ -7839,7 +7930,13 @@ fn render_related_work(
 ) -> String {
     let mut out = format!("# Possibly related to {}\n\n", found.short_code);
     if found.proposals.is_empty() {
-        out.push_str("The search found no related work. ");
+        if found.sources.degraded() {
+            // KAIROS-T-0562: no item clears the text bar. Say that, not five
+            // weak matches.
+            out.push_str("None found. No item matches enough of the rare words of the title. ");
+        } else {
+            out.push_str("The search found no related work. ");
+        }
         out.push_str(found.sources.note());
         out.push_str("\n\nThis is one search. It does not prove that no related work exists.\n");
         out.push_str(&render_external_refs(external));
@@ -8478,5 +8575,98 @@ mod moves_line_tests {
             "Backlog [entry] → Todo | Todo → Active | Active [claims, WIP 3] → Todo, Completed | Completed [done]"
         );
         assert_eq!(moves_line(&[], &[]), "");
+    }
+}
+
+#[cfg(test)]
+mod related_work_render_tests {
+    //! KAIROS-T-0562: the text of `related_work`. A text-only answer says
+    //! "Text only" one time, at the top, and "None found" when no item is over
+    //! the bar. The text of an answer with vectors does not change.
+    use super::render_related_work;
+    use crate::embedding::RelatedWork;
+    use kairos_core::retrieval::{Candidate, GraphRelation, RetrievalConfig, Sources, propose};
+
+    fn candidate(code: &str, lexical: usize, vector: Option<usize>, text: f32) -> Candidate {
+        Candidate {
+            short_code: code.into(),
+            title: format!("Title of {code}"),
+            entity_type: "task".into(),
+            lexical_rank: Some(lexical),
+            vector_rank: vector,
+            graph: GraphRelation::default(),
+            finished: false,
+            heading: None,
+            text_score: Some(text),
+        }
+    }
+
+    fn answer(sources: Sources, candidates: &[Candidate]) -> RelatedWork {
+        RelatedWork {
+            short_code: "ACME-T-0001".into(),
+            proposals: propose(candidates, sources, &RetrievalConfig::default()),
+            sources,
+        }
+    }
+
+    const TEXT_ONLY: Sources = Sources {
+        lexical: true,
+        vector: false,
+    };
+    const BOTH: Sources = Sources {
+        lexical: true,
+        vector: true,
+    };
+
+    #[test]
+    fn a_text_only_answer_says_text_only_once_at_the_top() {
+        let candidates: Vec<Candidate> = (0..6)
+            .map(|i| candidate(&format!("ACME-T-{:04}", i + 2), i, None, 0.9))
+            .collect();
+        let text = render_related_work(&answer(TEXT_ONLY, &candidates), &[]);
+        assert_eq!(text.matches("Text only").count(), 1, "{text}");
+        let note = text.find("Text only").expect("the note");
+        let first = text.find("- **").expect("a proposal");
+        assert!(
+            note < first,
+            "the warning comes before the proposals: {text}"
+        );
+        assert_eq!(text.matches("- **").count(), 3, "at most 3: {text}");
+    }
+
+    #[test]
+    fn a_text_only_answer_under_the_bar_is_none_found() {
+        let weak = [candidate("ACME-T-0002", 0, None, 0.1)];
+        let text = render_related_work(&answer(TEXT_ONLY, &weak), &[]);
+        assert!(
+            text.starts_with("# Possibly related to ACME-T-0001\n\nNone found."),
+            "{text}"
+        );
+        assert_eq!(text.matches("Text only").count(), 1, "{text}");
+        assert!(!text.contains("- **"), "{text}");
+    }
+
+    /// The text of an answer with vectors, word for word as before
+    /// KAIROS-T-0562. A low text score changes nothing here.
+    #[test]
+    fn an_answer_with_vectors_reads_as_before() {
+        let found = answer(BOTH, &[candidate("ACME-T-0002", 0, Some(0), 0.01)]);
+        assert_eq!(
+            render_related_work(&found, &[]),
+            "# Possibly related to ACME-T-0001\n\n\
+             Ranked across text and meaning. \"Nothing joins them\" means no direct edge and \
+             no shared parent — not that a path was searched for and missed. The graph is \
+             sparse, so absence is weak evidence.\n\n\
+             These are PROPOSALS, not findings. Examine a proposal before you use it.\n\n\
+             - **ACME-T-0002** — Title of ACME-T-0002 (possible dependency)\n  \
+             Matches both the words and the meaning, and nothing in the graph joins them.\n"
+        );
+        let none = answer(BOTH, &[]);
+        assert_eq!(
+            render_related_work(&none, &[]),
+            "# Possibly related to ACME-T-0001\n\n\
+             The search found no related work. Ranked across text and meaning.\n\n\
+             This is one search. It does not prove that no related work exists.\n"
+        );
     }
 }

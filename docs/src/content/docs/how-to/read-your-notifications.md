@@ -54,6 +54,23 @@ stays unread in your bell. See
 Kairos makes no notification of a kind that you turned off. The page also
 lists your notifications, with **Mark all read**.
 
+## 4. Read older notifications
+
+The drawer and the **Notifications** page show up to 100 unread
+notifications and the 20 newest read ones. To see more, open the
+**Notifications** page:
+
+1. Select **Show older** below the list. Kairos adds the next page.
+2. Do this again until the button goes away. Then the page shows each
+   notification.
+
+The older unread notifications come first, then the older read ones. When
+you mark a notification read, the page shows the first page again.
+
+With REST, `GET /api/me/notifications?before=<id>` gives the unread
+notifications older than `<id>`. `?read_before=<id>` gives the read
+notifications that you read before `<id>`, 100 at most.
+
 You can do the same with REST: `GET` and `PUT /api/me/notification-settings`.
 
 ## How long a notification stays

@@ -161,6 +161,10 @@ pub struct WebhookDeliveriesQuery {
     /// The newest deliveries to give, 1 to 200 (50).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<i64>,
+    /// The id of a delivery of the log: the page has the deliveries older
+    /// than it (KAIROS-T-0584).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
 }
 
 /// Who decides the triage of intake on a board (KAIROS-T-0428). Intake is a
