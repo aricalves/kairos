@@ -30,7 +30,9 @@ use chrono::{DateTime, Utc};
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::sql_query;
-use diesel::sql_types::{Array, Double, Integer, Nullable, Text, Timestamptz, Uuid as SqlUuid};
+use diesel::sql_types::{
+    Array, BigInt, Double, Integer, Nullable, Text, Timestamptz, Uuid as SqlUuid,
+};
 use uuid::Uuid;
 
 /// The states of a job.
@@ -530,4 +532,47 @@ pub fn set_max_tries(
     .bind::<Integer, _>(max_tries)
     .execute(conn)?;
     Ok(n == 1)
+}
+
+/// The number of jobs of one kind in one state ([`counts`]).
+#[derive(Debug, Clone, PartialEq, Eq, QueryableByName)]
+pub struct KindStateCount {
+    #[diesel(sql_type = Text)]
+    pub kind: String,
+    #[diesel(sql_type = Text)]
+    pub state: String,
+    #[diesel(sql_type = BigInt)]
+    pub count: i64,
+}
+
+/// The number of jobs of each kind in each state, by kind and then state
+/// (KAIROS-T-0576). One grouped query. `tenant`: only the jobs of that
+/// organization and the jobs of the deployment (no tenant); `None`: all
+/// the jobs.
+pub fn counts(conn: &mut PgConnection, tenant: Option<&str>) -> QueryResult<Vec<KindStateCount>> {
+    sql_query(
+        "SELECT kind, state, count(*) AS count FROM public.jobs \
+         WHERE $1::text IS NULL OR tenant = $1 OR tenant IS NULL \
+         GROUP BY kind, state ORDER BY kind, state",
+    )
+    .bind::<Nullable<Text>, _>(tenant)
+    .load(conn)
+}
+
+/// The `failed` jobs that ended last, newest first, at most `limit`
+/// (KAIROS-T-0576). `tenant` as in [`counts`].
+pub fn last_failures(
+    conn: &mut PgConnection,
+    tenant: Option<&str>,
+    limit: i64,
+) -> QueryResult<Vec<Job>> {
+    sql_query(format!(
+        "SELECT {COLUMNS} FROM public.jobs \
+         WHERE state = 'failed' AND ($1::text IS NULL OR tenant = $1 OR tenant IS NULL) \
+         ORDER BY finished_at DESC NULLS LAST, created_at DESC, id \
+         LIMIT $2"
+    ))
+    .bind::<Nullable<Text>, _>(tenant)
+    .bind::<BigInt, _>(limit)
+    .load(conn)
 }

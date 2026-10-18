@@ -45,12 +45,12 @@ Get one definition with its enum options (open tenant-wide).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Definition id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the definition |
 
 | Response | Body | Meaning |
 |---|---|---|
 | `200` | [`MetadataDefinition`](../schemas/#metadatadefinition) | The definition |
-| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown id |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown slug or id |
 
 ### `DELETE /api/metadata-definitions/{id}`
 
@@ -61,13 +61,13 @@ carrying work and templates, archived carriers marked (KAIROS-T-0162).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Definition id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the definition |
 
 | Response | Body | Meaning |
 |---|---|---|
 | `200` | [`DeletedResponse`](../schemas/#deletedresponse) | Deleted |
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Caller is not an org admin |
-| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown id |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown slug or id |
 | `409` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Definition is in use; the message names the carrying items and templates |
 
 ### `PATCH /api/metadata-definitions/{id}`
@@ -82,7 +82,7 @@ A real change makes an activity entry (KAIROS-T-0268).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Definition id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the definition |
 
 Request body (required): `application/json`, [`UpdateMetadataDefinitionRequest`](../schemas/#updatemetadatadefinitionrequest)
 
@@ -90,7 +90,7 @@ Request body (required): `application/json`, [`UpdateMetadataDefinitionRequest`]
 |---|---|---|
 | `200` | [`MetadataDefinition`](../schemas/#metadatadefinition) | Updated |
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Caller is not an org admin |
-| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown id |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown slug or id |
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | No field to change, option rules, or duplicate slug |
 
 ## templates
@@ -129,12 +129,12 @@ with defaults/required flags (open tenant-wide).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Template id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the template |
 
 | Response | Body | Meaning |
 |---|---|---|
 | `200` | [`TemplateDetail`](../schemas/#templatedetail) | The template with its metadata fields |
-| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown id |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown slug or id |
 
 ### `DELETE /api/templates/{id}`
 
@@ -144,13 +144,13 @@ set NULL by the DDL).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Template id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the template |
 
 | Response | Body | Meaning |
 |---|---|---|
 | `200` | [`DeletedResponse`](../schemas/#deletedresponse) | Deleted |
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Caller is not an org admin |
-| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown id |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown slug or id |
 
 ### `PATCH /api/templates/{id}`
 
@@ -164,7 +164,7 @@ A real change makes an activity entry (KAIROS-T-0268).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `id` | path | yes | `string` | Template id (UUID) |
+| `id` | path | yes | `string` | The slug or the id (UUID) of the template |
 
 Request body (required): `application/json`, [`UpdateTemplateRequest`](../schemas/#updatetemplaterequest)
 
@@ -172,10 +172,19 @@ Request body (required): `application/json`, [`UpdateTemplateRequest`](../schema
 |---|---|---|
 | `200` | [`TemplateDetail`](../schemas/#templatedetail) | Updated |
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Caller is not an org admin |
-| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown id |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown slug or id |
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | No field to change, unknown definition slug, invalid default, or duplicate slug |
 
 ## organization
+
+### `GET /api/admin/jobs`
+
+The job queue of the organization and of the deployment.
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`JobQueueStatus`](../schemas/#jobqueuestatus) | The jobs by kind and state, and the last failures |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The caller is not an organization admin |
 
 ### `GET /api/org/code-index-settings`
 

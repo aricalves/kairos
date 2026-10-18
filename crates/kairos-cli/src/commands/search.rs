@@ -7,13 +7,16 @@ use std::io::Read;
 
 use clap::Args;
 
+use kairos_client::types_cards::{AdrCard, DocumentCard, InitiativeCard, StrategyCard, TaskCard};
 use kairos_client::types_search::{
-    SearchFilter, SearchRequest, SearchResponse, SearchSort, SearchTraverse, SearchTraverseFrom,
+    SearchFilter, SearchRequest, SearchResultGroups, SearchSort, SearchTraverse, SearchTraverseFrom,
 };
+use serde::Serialize;
 
-use crate::context::{Common, client, print_json};
+use crate::context::{Common, client};
 use crate::error::CliError;
-use crate::table::{Table, print_page_footer};
+use crate::listing::{ALL_PAGE, Listing, read_each_page};
+use crate::table::Table;
 
 /// Search and traverse all entity types (POST /api/search).
 #[derive(Args, Debug, Default)]
@@ -117,6 +120,10 @@ pub struct SearchArgs {
     /// Offset into the combined result set
     #[arg(long)]
     pub offset: Option<i64>,
+    /// Read each page: the CLI asks for one page after the other, and
+    /// prints each hit. Not with --limit, --offset or --query-json
+    #[arg(long, conflicts_with_all = ["limit", "offset"])]
+    pub all: bool,
     /// The full S-0005 search body as raw JSON (`@FILE` reads a file, `-`
     /// reads stdin); cannot be combined with the other search flags
     #[arg(long, value_name = "JSON")]
@@ -159,6 +166,7 @@ impl SearchArgs {
             (self.order.is_some(), "--order"),
             (self.limit.is_some(), "--limit"),
             (self.offset.is_some(), "--offset"),
+            (self.all, "--all"),
         ]
         .into_iter()
         .filter_map(|(given, name)| given.then_some(name))
@@ -337,16 +345,116 @@ impl SearchArgs {
     pub async fn run(self) -> Result<(), CliError> {
         let body = self.build_body()?;
         let client = client(&self.common)?;
-        let response = match &body {
-            SearchBody::Flags(request) => client.search(request).await?,
-            SearchBody::Raw(body) => client.search_raw(body).await?,
+        let listing = match (&body, self.all) {
+            // `--all` beside `--query-json` is refused in `build_body`.
+            (SearchBody::Flags(request), true) => {
+                let (items, total) = read_each_page(|offset| {
+                    let page = SearchRequest {
+                        limit: Some(ALL_PAGE),
+                        offset: Some(offset),
+                        ..(**request).clone()
+                    };
+                    let client = &client;
+                    async move {
+                        let response = client.search(&page).await?;
+                        Ok::<_, CliError>((hits(response.results), response.total))
+                    }
+                })
+                .await?;
+                Listing {
+                    items,
+                    total,
+                    limit: ALL_PAGE,
+                    offset: 0,
+                    all: true,
+                }
+            }
+            (body, _) => {
+                let response = match body {
+                    SearchBody::Flags(request) => client.search(request).await?,
+                    SearchBody::Raw(body) => client.search_raw(body).await?,
+                };
+                Listing {
+                    items: hits(response.results),
+                    total: response.total,
+                    limit: response.limit,
+                    offset: response.offset,
+                    all: false,
+                }
+            }
         };
         if self.common.json {
-            return print_json(&response);
+            return listing.print_json();
         }
-        print_results(&response);
+        print_results(&listing);
         Ok(())
     }
+}
+
+/// One hit of a search in the `--json` list (KAIROS-A-0057): the card,
+/// with its `entity_type`. A box serializes as its card.
+#[derive(Debug, Serialize)]
+#[serde(tag = "entity_type", rename_all = "lowercase")]
+pub enum Hit {
+    Strategy(Box<StrategyCard>),
+    Initiative(Box<InitiativeCard>),
+    Task(Box<TaskCard>),
+    Document(Box<DocumentCard>),
+    Adr(Box<AdrCard>),
+}
+
+impl Hit {
+    /// The fields of the table.
+    fn row(&self) -> &dyn HitRow {
+        match self {
+            Self::Strategy(card) => card.as_ref(),
+            Self::Initiative(card) => card.as_ref(),
+            Self::Task(card) => card.as_ref(),
+            Self::Document(card) => card.as_ref(),
+            Self::Adr(card) => card.as_ref(),
+        }
+    }
+
+    /// The group of the hit, in the order of the groups.
+    fn group(&self) -> usize {
+        match self {
+            Self::Strategy(_) => 0,
+            Self::Initiative(_) => 1,
+            Self::Task(_) => 2,
+            Self::Document(_) => 3,
+            Self::Adr(_) => 4,
+        }
+    }
+}
+
+/// The labels of the groups, in the order of [`Hit::group`].
+const GROUPS: [&str; 5] = ["strategies", "initiatives", "tasks", "documents", "adrs"];
+
+/// The hits of one page as one list, in the order of the groups. Pure.
+pub fn hits(results: SearchResultGroups) -> Vec<Hit> {
+    let SearchResultGroups {
+        strategies,
+        initiatives,
+        tasks,
+        documents,
+        adrs,
+    } = results;
+    strategies
+        .into_iter()
+        .map(|card| Hit::Strategy(Box::new(card)))
+        .chain(
+            initiatives
+                .into_iter()
+                .map(|card| Hit::Initiative(Box::new(card))),
+        )
+        .chain(tasks.into_iter().map(|card| Hit::Task(Box::new(card))))
+        .chain(
+            documents
+                .into_iter()
+                .map(|card| Hit::Document(Box::new(card))),
+        )
+        .chain(adrs.into_iter().map(|card| Hit::Adr(Box::new(card))))
+        .collect()
 }
 
 /// The body of a search: composed from the flags, or `--query-json` as it
@@ -402,14 +510,29 @@ hit_row!(
 /// (KAIROS-A-0020, KAIROS-T-0157): `--include-deleted` mixes put-away work
 /// in with live work, and a reader who cannot tell them apart will act on
 /// the wrong one.
-fn print_results(response: &SearchResponse) {
-    fn section<T: HitRow>(label: &str, items: &[T]) {
-        if items.is_empty() {
-            return;
+fn print_results(listing: &Listing<Hit>) {
+    print!("{}", render_results(listing));
+}
+
+/// [`print_results`] as text. Pure.
+fn render_results(listing: &Listing<Hit>) -> String {
+    let mut out = String::new();
+    if listing.total == 0 {
+        out.push_str("(no matches)\n");
+    }
+    for (group, label) in GROUPS.iter().enumerate() {
+        let rows: Vec<&dyn HitRow> = listing
+            .items
+            .iter()
+            .filter(|hit| hit.group() == group)
+            .map(Hit::row)
+            .collect();
+        if rows.is_empty() {
+            continue;
         }
-        println!("{label}:");
+        out.push_str(&format!("{label}:\n"));
         let mut table = Table::new(&["  CODE", "TITLE", "VER"]);
-        for item in items {
+        for item in rows {
             let title = match item.archived_at() {
                 Some(_) => format!("{} [archived]", item.title()),
                 None => item.title().to_string(),
@@ -420,30 +543,126 @@ fn print_results(response: &SearchResponse) {
                 item.version().to_string(),
             ]);
         }
-        print!("{}", table.render());
+        out.push_str(&table.render());
     }
-
-    if response.total == 0 {
-        println!("(no matches)");
-    } else {
-        section("strategies", &response.results.strategies);
-        section("initiatives", &response.results.initiatives);
-        section("tasks", &response.results.tasks);
-        section("documents", &response.results.documents);
-        section("adrs", &response.results.adrs);
-    }
-    let groups = &response.results;
-    let shown = groups.strategies.len()
-        + groups.initiatives.len()
-        + groups.tasks.len()
-        + groups.documents.len()
-        + groups.adrs.len();
-    print_page_footer(response.total, response.limit, response.offset, shown);
+    out.push_str(&listing.footer());
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A page of search results with one strategy and two tasks.
+    fn groups() -> SearchResultGroups {
+        let card = |code: &str, archived: bool| {
+            serde_json::json!({
+                "id": format!("id-{code}"),
+                "short_code": code,
+                "title": format!("Title {code}"),
+                "board_id": "b",
+                "column_id": "c",
+                "task_type": "task",
+                "work_class": "planned",
+                "team_id": null,
+                "version": 1,
+                "created_at": "2026-10-18T00:00:00Z",
+                "updated_at": "2026-10-18T00:00:00Z",
+                "archived_at": archived.then_some("2026-10-18T00:00:00Z"),
+            })
+        };
+        serde_json::from_value(serde_json::json!({
+            "tasks": [card("ACME-T-0001", false), card("ACME-T-0002", true)],
+            "strategies": [card("ACME-S-0001", false)],
+        }))
+        .expect("search groups")
+    }
+
+    /// KAIROS-A-0057: the hits are one list in the order of the groups,
+    /// and each hit names its entity type.
+    #[test]
+    fn the_hits_are_one_list_with_the_entity_type() {
+        let hits = hits(groups());
+        let json = serde_json::to_value(&hits).unwrap();
+        let rows: Vec<(String, String)> = json
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|hit| {
+                (
+                    hit["entity_type"].as_str().unwrap().to_string(),
+                    hit["short_code"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("strategy".to_string(), "ACME-S-0001".to_string()),
+                ("task".to_string(), "ACME-T-0001".to_string()),
+                ("task".to_string(), "ACME-T-0002".to_string()),
+            ]
+        );
+        let listing = Listing {
+            items: hits,
+            total: 5,
+            limit: 3,
+            offset: 0,
+            all: false,
+        };
+        let envelope = serde_json::to_value(listing.json()).unwrap();
+        assert_eq!(envelope["total"], 5);
+        assert_eq!(envelope["next_offset"], 3);
+    }
+
+    /// The text groups the flat list again, marks an archived hit, and ends
+    /// with the footer.
+    #[test]
+    fn the_text_groups_the_hits() {
+        let listing = Listing {
+            items: hits(groups()),
+            total: 3,
+            limit: ALL_PAGE,
+            offset: 0,
+            all: true,
+        };
+        let text = render_results(&listing);
+        assert!(text.starts_with("strategies:\n"), "{text}");
+        assert!(text.contains("tasks:\n"), "{text}");
+        assert!(text.contains("Title ACME-T-0002 [archived]"), "{text}");
+        assert!(text.ends_with("total: 3\n"), "{text}");
+        let none = Listing::<Hit> {
+            items: vec![],
+            total: 0,
+            limit: 25,
+            offset: 0,
+            all: false,
+        };
+        assert_eq!(
+            render_results(&none),
+            "(no matches)\ntotal: 0 (limit 25, offset 0)\n"
+        );
+    }
+
+    /// `--all` is a usage error beside `--limit` or `--offset`, and is
+    /// refused beside `--query-json`.
+    #[test]
+    fn all_is_not_with_limit_offset_or_query_json() {
+        use clap::Parser;
+
+        #[derive(Parser, Debug)]
+        struct Harness {
+            #[command(flatten)]
+            search: SearchArgs,
+        }
+        for extra in [["--limit", "5"], ["--offset", "5"]] {
+            let argv = ["search", "--query", "x", "--all", extra[0], extra[1]];
+            assert!(Harness::try_parse_from(argv).is_err(), "{argv:?}");
+        }
+        let parsed = Harness::try_parse_from(["search", "--query-json", "{}", "--all"]).unwrap();
+        let err = parsed.search.build_body().unwrap_err();
+        assert!(err.to_string().contains("--all"), "{err}");
+    }
 
     /// The filter flags compose the S-0005 body: metadata k=v parsing,
     /// repeated --type/--task-type, timestamps, sort defaults.

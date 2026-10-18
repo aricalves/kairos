@@ -2161,6 +2161,13 @@ impl KairosClient {
         .await
     }
 
+    /// `GET /api/admin/jobs` — the job queue of the organization and of
+    /// the deployment: the jobs by kind and state, and the last failures
+    /// (KAIROS-T-0576, an organization admin).
+    pub async fn admin_jobs(&self) -> Result<crate::types_org::JobQueueStatus, Error> {
+        self.get("/api/admin/jobs").await
+    }
+
     /// `GET /api/org/code-index-settings` — the provider settings of the
     /// code index of the tenant (KAIROS-T-0339); the secrets as a status.
     pub async fn code_index_settings(
@@ -2574,7 +2581,8 @@ impl KairosClient {
         .await
     }
 
-    /// `GET /api/metadata-definitions/{id}`.
+    /// `GET /api/metadata-definitions/{id}`. `id` is the slug or the id
+    /// (KAIROS-T-0644), as on `update` and `delete`.
     pub async fn get_metadata_definition(&self, id: &str) -> Result<MetadataDefinition, Error> {
         self.get(&format!("/api/metadata-definitions/{id}")).await
     }
@@ -2612,7 +2620,8 @@ impl KairosClient {
         self.get_query("/api/templates", &page).await
     }
 
-    /// `GET /api/templates/{id}` — template + metadata associations.
+    /// `GET /api/templates/{id}` — template + metadata associations. `id`
+    /// is the slug or the id (KAIROS-T-0644), as on `update` and `delete`.
     pub async fn get_template(&self, id: &str) -> Result<TemplateDetail, Error> {
         self.get(&format!("/api/templates/{id}")).await
     }
