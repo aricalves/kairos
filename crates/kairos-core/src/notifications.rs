@@ -38,11 +38,19 @@ pub enum NotificationKind {
     /// your claim, or a claim on a task of an initiative that you own
     /// (KAIROS-T-0531).
     ClaimStale,
+    /// An agent key of yours, or a key of a service account of your
+    /// organization (you are an admin), expires within
+    /// [`KEY_EXPIRING_DAYS`] days (KAIROS-T-0540).
+    KeyExpiring,
 }
+
+/// A key that expires within this many days gets one `key_expiring`
+/// notification (KAIROS-T-0540).
+pub const KEY_EXPIRING_DAYS: i64 = 7;
 
 impl NotificationKind {
     /// Each kind, in the order of the settings.
-    pub const ALL: [NotificationKind; 11] = [
+    pub const ALL: [NotificationKind; 12] = [
         NotificationKind::HandOff,
         NotificationKind::BlockerCleared,
         NotificationKind::BlockedAgain,
@@ -54,6 +62,7 @@ impl NotificationKind {
         NotificationKind::AgentKeyRevoked,
         NotificationKind::ClaimDropped,
         NotificationKind::ClaimStale,
+        NotificationKind::KeyExpiring,
     ];
 
     /// The wire name (`kind` column and API field).
@@ -70,6 +79,7 @@ impl NotificationKind {
             NotificationKind::AgentKeyRevoked => "agent_key_revoked",
             NotificationKind::ClaimDropped => "claim_dropped",
             NotificationKind::ClaimStale => "claim_stale",
+            NotificationKind::KeyExpiring => "key_expiring",
         }
     }
 

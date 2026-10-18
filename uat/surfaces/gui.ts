@@ -2,7 +2,7 @@
 // Leptos app, named as they would name them. Selectors prefer roles and
 // visible text; the stable `.kairos-*` / `.cl-*` classes are used only
 // where text alone is ambiguous (a board column, a card).
-import { expect, type BrowserContext, type Locator, type Page } from '@playwright/test';
+import { expect, type BrowserContext, type Locator, type Page, type Request } from '@playwright/test';
 import type { Credentials } from '../personas/credentials';
 
 /** Log in through the real Dex form and land on the boards page. */
@@ -74,8 +74,9 @@ export function laneCard(page: Page, lane: Lane, columnName: string, code: strin
  * mouse is driven by hand rather than through `dragTo`). */
 export async function dragInLane(page: Page, code: string, lane: Lane, toColumn: string): Promise<void> {
   const target = laneColumn(page, lane, toColumn);
-  await dragToTarget(page, card(page, code).first(), target, `card ${code}`, `${lane}/${toColumn}`);
-  await expect(laneCard(page, lane, toColumn, code)).toBeVisible({ timeout: 15_000 });
+  await settledDrop(page, code, laneCard(page, lane, toColumn, code), () =>
+    dragToTarget(page, card(page, code).first(), target, `card ${code}`, `${lane}/${toColumn}`),
+  );
 }
 
 /**
@@ -93,8 +94,55 @@ export async function dragInLane(page: Page, code: string, lane: Lane, toColumn:
  */
 export async function dragCard(page: Page, code: string, toColumn: string): Promise<void> {
   const target = column(page, toColumn);
-  await dragToTarget(page, card(page, code).first(), target, `card ${code}`, `column ${toColumn}`);
-  await expect(cardIn(page, toColumn, code)).toBeVisible({ timeout: 15_000 });
+  await settledDrop(page, code, cardIn(page, toColumn, code), () =>
+    dragToTarget(page, card(page, code).first(), target, `card ${code}`, `column ${toColumn}`),
+  );
+}
+
+/**
+ * Run a drag and wait until the server has taken the move (KAIROS-T-0619).
+ * The card moves on the screen at once, before the transition (and then the
+ * lane write) reaches the server. A second drag of the card before that
+ * ends is refused: "This card moves now. Wait for the move to end, then try
+ * again." So the drag ends when the card is in the target, each request of
+ * the drop has ended, none has started for 250 ms, and the card is still in
+ * the target (a refusal moves it back).
+ */
+async function settledDrop(page: Page, code: string, landed: Locator, drag: () => Promise<void>): Promise<void> {
+  const path = new RegExp(`^/api/[a-z-]+/${code}/(transition|work-class)$`);
+  const ofDrop = (request: Request) => request.method() === 'POST' && path.test(new URL(request.url()).pathname);
+  let open = 0;
+  let seen = 0;
+  let lastEnd = 0;
+  const started = (request: Request) => {
+    if (!ofDrop(request)) return;
+    open += 1;
+    seen += 1;
+  };
+  const ended = (request: Request) => {
+    if (!ofDrop(request)) return;
+    open -= 1;
+    lastEnd = Date.now();
+  };
+  page.on('request', started);
+  page.on('requestfinished', ended);
+  page.on('requestfailed', ended);
+  try {
+    await drag();
+    await expect(landed).toBeVisible({ timeout: 15_000 });
+    await expect
+      .poll(() => seen > 0 && open === 0 && Date.now() - lastEnd >= 250, {
+        message: `the move of ${code} reaches the server`,
+        timeout: 15_000,
+        intervals: [50],
+      })
+      .toBe(true);
+    await expect(landed).toBeVisible();
+  } finally {
+    page.off('request', started);
+    page.off('requestfinished', ended);
+    page.off('requestfailed', ended);
+  }
 }
 
 /**

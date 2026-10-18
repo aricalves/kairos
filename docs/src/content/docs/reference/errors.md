@@ -303,6 +303,7 @@ refusal is `VALIDATION` with `details.field` = `board` (MCP:
 | `CYCLE_DETECTED` | 422 | The edge would create a cycle | — |
 | `RELATIONSHIP_RULE` | 422 | The edge is not legal between those two entity types. For an `impacts` link: the subject is not a document and not an ADR | `relationship`. For an `impacts` link, also `source_type` and `allowed_source_types` |
 | `ALREADY_LINKED` | 422 | That edge already exists. For an `impacts` link: the item impacts that repository already | — |
+| `PARENT_EXISTS` | 422 | A `parent` edge to an item that has a different parent. An item has one parent (KAIROS-T-0572). The message names the call that changes the parent: `PUT /api/{entity_type}/{short_code}/parent`, or MCP `set_parent` | `item`, `parent`: the short codes of the item and of its parent |
 
 ### Tenant configuration
 

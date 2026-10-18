@@ -161,6 +161,7 @@ async fn run_op(
                 work_class: None,
                 team_id: None,
                 from_team: None,
+                parent: None,
             };
             if let Some(task) = record_call(
                 recorder,

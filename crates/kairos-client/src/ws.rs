@@ -80,6 +80,17 @@ impl EventStream {
     pub async fn subscribe_board(&mut self, board_id: &str) -> Result<(), Error> {
         self.send_subscribe(SubscribeFilter {
             board_id: Some(board_id.to_string()),
+            ..SubscribeFilter::default()
+        })
+        .await
+    }
+
+    /// Filter subsequent events to the events of the person of the
+    /// connection (`{"subscribe": {"person_only": true}}`, KAIROS-T-0621).
+    pub async fn subscribe_person(&mut self) -> Result<(), Error> {
+        self.send_subscribe(SubscribeFilter {
+            person_only: true,
+            ..SubscribeFilter::default()
         })
         .await
     }
@@ -105,7 +116,9 @@ impl EventStream {
     }
 
     /// The next event as a typed [`ThinEvent`], skipping ping/pong frames.
-    /// Callers own timeout policy (`tokio::time::timeout`).
+    /// Callers own timeout policy (`tokio::time::timeout`). The frame
+    /// `{"event":"lagged"}` (KAIROS-T-0621) is not a `ThinEvent`: it is a
+    /// decode error here. Read [`Self::next_event_raw`] to see it.
     pub async fn next_event(&mut self) -> Result<ThinEvent, Error> {
         let raw = self.next_event_raw().await?;
         serde_json::from_value(raw.clone()).map_err(|source| Error::Decode {

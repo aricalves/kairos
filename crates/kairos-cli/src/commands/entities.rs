@@ -16,6 +16,7 @@ use kairos_client::types::{
     Initiative, ListQuery, Pagination, PromoteNoteRequest, PromoteNoteResponse, RestoreResponse,
     Strategy, Task, UpdateContentRequest,
 };
+use kairos_client::types_meta::SetParentResponse;
 use kairos_client::types_repositories::Impact;
 
 use crate::context::{Common, client, print_json};
@@ -361,6 +362,28 @@ pub struct LaneArgs {
     pub common: Common,
 }
 
+/// Arguments of `kairos initiatives|tasks set-parent` (KAIROS-T-0572).
+/// Give the new parent, or `--remove`.
+#[derive(Args, Debug)]
+#[command(group(
+    clap::ArgGroup::new("new_parent")
+        .required(true)
+        .args(["parent", "remove"])
+))]
+pub struct SetParentArgs {
+    /// The item's short code (e.g. ACME-T-0001)
+    pub short_code: String,
+    /// The short code of the new parent: a strategy for an initiative, an
+    /// initiative for a task. It replaces the old parent
+    #[arg(value_name = "PARENT")]
+    pub parent: Option<String>,
+    /// Remove the parent
+    #[arg(long)]
+    pub remove: bool,
+    #[command(flatten)]
+    pub common: Common,
+}
+
 /// Arguments of `kairos documents lifecycle` (KAIROS-T-0555).
 #[derive(Args, Debug)]
 pub struct LifecycleArgs {
@@ -457,6 +480,32 @@ pub fn emit_lane(common: &Common, task: &Task) -> Result<(), CliError> {
 /// first, so it does not say whether the lane changed.
 fn lane_line(short_code: &str, work_class: &str) -> String {
     format!("{short_code} is in the {work_class} lane.")
+}
+
+/// `set-parent` output (KAIROS-T-0572).
+pub fn emit_parent(common: &Common, response: &SetParentResponse) -> Result<(), CliError> {
+    if common.json {
+        return print_json(response);
+    }
+    println!("{}", parent_line(response));
+    Ok(())
+}
+
+/// The line of [`emit_parent`].
+fn parent_line(response: &SetParentResponse) -> String {
+    let was = response.previous_parent.as_deref().unwrap_or("none");
+    match (&response.parent, response.changed) {
+        (Some(parent), true) => format!(
+            "The parent of {} is {parent} (was {was}).",
+            response.short_code
+        ),
+        (None, true) => format!("{} has no parent now (was {was}).", response.short_code),
+        (Some(parent), false) => format!(
+            "{} has the parent {parent} already. Nothing changed.",
+            response.short_code
+        ),
+        (None, false) => format!("{} has no parent. Nothing changed.", response.short_code),
+    }
 }
 
 /// `tasks purge` output (KAIROS-T-0362).
@@ -1153,6 +1202,10 @@ pub struct InitiativeCreateArgs {
     /// Mark as a bucket of this kind: tech_debt|bug|ad_hoc
     #[arg(long, value_name = "KIND")]
     pub bucket_type: Option<String>,
+    /// The parent strategy (short code). The initiative and the edge are
+    /// one write: a refused parent leaves no initiative
+    #[arg(long, value_name = "STRATEGY")]
+    pub parent: Option<String>,
     #[command(flatten)]
     pub common: Common,
 }
@@ -1166,6 +1219,7 @@ impl InitiativeCreateArgs {
             content: self.content.clone(),
             complexity: self.complexity.clone(),
             bucket_type: self.bucket_type.clone(),
+            parent: self.parent.clone(),
         }
     }
 }
@@ -1207,6 +1261,10 @@ pub struct TaskCreateArgs {
     /// support lane, also for a manager of the board
     #[arg(long = "from-team", value_name = "TEAM")]
     pub from_team: Option<String>,
+    /// The parent initiative (short code). The task and the edge are one
+    /// write: a refused parent leaves no task
+    #[arg(long, value_name = "INITIATIVE")]
+    pub parent: Option<String>,
     #[command(flatten)]
     pub common: Common,
 }
@@ -1223,6 +1281,7 @@ impl TaskCreateArgs {
             work_class: self.work_class.clone(),
             team_id: self.team.clone(),
             from_team: self.from_team.clone(),
+            parent: self.parent.clone(),
         }
     }
 }
@@ -1333,6 +1392,7 @@ macro_rules! entity_family_cli {
         $(, claims($claim_variant:ident = $claim_fn:ident, $hand_variant:ident = $hand_fn:ident, $release_variant:ident = $release_fn:ident))?
         $(, task_end($cancel_variant:ident = $cancel_fn:ident, $reopen_variant:ident = $reopen_fn:ident, $purge_variant:ident = $purge_fn:ident))?
         $(, lane($lane_variant:ident = $lane_fn:ident))?
+        $(, parent($parent_variant:ident))?
         $(, lifecycle($lifecycle_variant:ident = $lifecycle_fn:ident))?
     ) => {
         #[doc = concat!("Operations on ", $noun, "s.")]
@@ -1403,6 +1463,13 @@ macro_rules! entity_family_cli {
             #[command(about = concat!("Change the lane of a ", $noun,
                                       ": planned or support (needs transition_items)"))]
             $lane_variant(LaneArgs),
+            )?
+            $(
+            #[command(about = concat!("Set the parent of a ", $noun,
+                                      ", or remove it with --remove (the new parent ",
+                                      "replaces the old one)"),
+                      name = "set-parent")]
+            $parent_variant(SetParentArgs),
             )?
             $(
             #[command(about = concat!("Set the lifecycle of a ", $noun,
@@ -1551,6 +1618,15 @@ macro_rules! entity_family_cli {
                     }
                     )?
                     $(
+                    Self::$parent_variant(args) => {
+                        let client = client(&args.common)?;
+                        let response = client
+                            .set_parent($kind, &args.short_code, args.parent.as_deref())
+                            .await?;
+                        emit_parent(&args.common, &response)
+                    }
+                    )?
+                    $(
                     Self::$lifecycle_variant(args) => {
                         let client = client(&args.common)?;
                         let document = client.$lifecycle_fn(&args.short_code, &args.to).await?;
@@ -1601,7 +1677,8 @@ entity_family_cli!(
     delete = delete_initiative,
     restore = restore_initiative,
     kind = EntityKind::Initiative,
-    transition(Transition) = transition_initiative
+    transition(Transition) = transition_initiative,
+    parent(SetParent)
 );
 
 entity_family_cli!(
@@ -1628,7 +1705,8 @@ entity_family_cli!(
         Reopen = reopen_task,
         Purge = purge_task
     ),
-    lane(Lane = set_task_work_class)
+    lane(Lane = set_task_work_class),
+    parent(SetParent)
 );
 
 entity_family_cli!(
@@ -1834,6 +1912,33 @@ mod tests {
     }
 
     /// Deletes refuse to run without --confirm.
+    /// KAIROS-T-0572: the line of `set-parent` says what changed.
+    #[test]
+    fn set_parent_names_the_parent_now_and_before() {
+        let response = |parent: Option<&str>, previous: Option<&str>, changed| SetParentResponse {
+            short_code: "ACME-T-0001".into(),
+            parent: parent.map(str::to_string),
+            previous_parent: previous.map(str::to_string),
+            changed,
+        };
+        assert_eq!(
+            parent_line(&response(Some("ACME-I-0002"), Some("ACME-I-0001"), true)),
+            "The parent of ACME-T-0001 is ACME-I-0002 (was ACME-I-0001)."
+        );
+        assert_eq!(
+            parent_line(&response(None, Some("ACME-I-0001"), true)),
+            "ACME-T-0001 has no parent now (was ACME-I-0001)."
+        );
+        assert_eq!(
+            parent_line(&response(Some("ACME-I-0001"), Some("ACME-I-0001"), false)),
+            "ACME-T-0001 has the parent ACME-I-0001 already. Nothing changed."
+        );
+        assert_eq!(
+            parent_line(&response(None, None, false)),
+            "ACME-T-0001 has no parent. Nothing changed."
+        );
+    }
+
     #[test]
     fn delete_requires_confirm() {
         let err = require_confirm(false, "ACME-T-0001").expect_err("must refuse");

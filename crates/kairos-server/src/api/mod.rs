@@ -716,20 +716,23 @@ const LINK_PROPOSAL_WHY: &str = "The caller asked for this blocks edge. The call
 /// passes the type rule and the duplicate check of the edge, so a
 /// proposal that cannot become an edge is not recorded. The confirm does
 /// the cycle check ([`kairos_db::graph::link_items`]).
+///
+/// `map_graph` gives the refusal of a graph rule for the surface: each
+/// surface names its own call in `PARENT_EXISTS` (KAIROS-T-0572).
 pub fn link_or_propose(
     conn: &mut PgConnection,
     role: OrgRole,
     user_id: Uuid,
     relationship: RelationshipType,
-    source: EdgeEnd,
-    target: EdgeEnd,
+    (source, target): (EdgeEnd, EdgeEnd),
+    map_graph: fn(GraphError) -> ApiError,
 ) -> Result<LinkOutcome, ApiError> {
     atomically(conn, |conn| {
         match edge_create_rule(conn, role, user_id, relationship.as_str(), source, target)? {
             EdgeCreate::Link => {
                 kairos_db::graph::link_items(conn, source.0, target.0, relationship, user_id)
                     .map(LinkOutcome::Linked)
-                    .map_err(meta::relationships::map_link_error)
+                    .map_err(map_graph)
             }
             EdgeCreate::Refuse => Err(edge_refusal(
                 conn,
@@ -741,7 +744,7 @@ pub fn link_or_propose(
                 true,
             )?),
             EdgeCreate::Propose => {
-                propose_edge_of_link(conn, user_id, relationship, source, target)
+                propose_edge_of_link(conn, user_id, relationship, (source, target), map_graph)
             }
         }
     })
@@ -753,8 +756,8 @@ fn propose_edge_of_link(
     conn: &mut PgConnection,
     user_id: Uuid,
     relationship: RelationshipType,
-    (source_id, source_type): EdgeEnd,
-    (target_id, target_type): EdgeEnd,
+    ((source_id, source_type), (target_id, target_type)): (EdgeEnd, EdgeEnd),
+    map_graph: fn(GraphError) -> ApiError,
 ) -> Result<LinkOutcome, ApiError> {
     use kairos_db::schema::item_relationships as edges;
     kairos_core::graph::check_link(
@@ -762,7 +765,7 @@ fn propose_edge_of_link(
         source_type,
         target_type,
     )
-    .map_err(|rule| meta::relationships::map_link_error(GraphError::Rule(rule)))?;
+    .map_err(|rule| map_graph(GraphError::Rule(rule)))?;
     let linked: bool = diesel::select(diesel::dsl::exists(
         edges::table
             .filter(edges::source_id.eq(source_id))
@@ -772,13 +775,11 @@ fn propose_edge_of_link(
     .get_result(conn)
     .map_err(ApiError::internal)?;
     if linked {
-        return Err(meta::relationships::map_link_error(
-            GraphError::AlreadyLinked {
-                relationship,
-                source_id,
-                target_id,
-            },
-        ));
+        return Err(map_graph(GraphError::AlreadyLinked {
+            relationship,
+            source_id,
+            target_id,
+        }));
     }
     let proposal = kairos_db::proposals::propose(
         conn,
@@ -1442,6 +1443,11 @@ pub fn map_graph_error(e: GraphError) -> ApiError {
         | GraphError::CycleDetected { .. }
         | GraphError::AlreadyLinked { .. }
         | GraphError::NotLinked { .. }) => ApiError::validation(e.to_string()),
+        // KAIROS-T-0572: a create gives a new item, which has no parent;
+        // only a write at the same time can get here.
+        e @ GraphError::ParentExists { .. } => {
+            meta::relationships::parent_exists(e, "set_parent or PUT .../parent")
+        }
         GraphError::Database(e) => ApiError::internal(e),
     }
 }

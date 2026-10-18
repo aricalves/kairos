@@ -130,6 +130,7 @@ async fn task(client: &KairosClient, board: &str, title: &str) -> String {
             team_id: None,
             repository: None,
             from_team: None,
+            parent: None,
         })
         .await
         .expect("task")
@@ -381,6 +382,7 @@ async fn a_blocker_that_goes_away_or_comes_back_tells_the_dependant() {
             content: String::new(),
             complexity: None,
             bucket_type: None,
+            parent: None,
         })
         .await
         .expect("initiative")

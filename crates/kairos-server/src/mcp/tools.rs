@@ -3,7 +3,7 @@
 //! (KAIROS-I-0012), `restore_item` (KAIROS-A-0020), `related_work`
 //! (KAIROS-T-0191), `propose_edge` (KAIROS-T-0192), `set_repository`
 //! (COLLIERY-T-0220), and `add_repository` and `update_repository`
-//! (COLLIERY-T-0266); later tasks added more (74 in all, in the profiles
+//! (COLLIERY-T-0266); later tasks added more (75 in all, in the profiles
 //! of `profiles.rs`, KAIROS-T-0454) — each a
 //! thin wrapper over the same `kairos-core`/`kairos-db` services the REST
 //! handlers call — through [`crate::blocking::BlockingTenantPool`], never
@@ -64,7 +64,7 @@ use kairos_db::models::enums::{
 };
 use kairos_db::models::templates::Template;
 use kairos_db::search::{SearchError, SearchResults};
-use kairos_db::{abac, boards, graph, items, repositories, search};
+use kairos_db::{GraphError, abac, boards, graph, items, repositories, search};
 
 use crate::api::meta::{manage_capability, validated_metadata_ops};
 use crate::api::{
@@ -646,6 +646,29 @@ pub struct SetRepositoryParams {
     /// UUID. It can be any live repository, of any team. To clear the link,
     /// omit this argument, or send null or an empty string.
     pub repository: Option<String>,
+}
+
+/// Parameters for `set_parent` (KAIROS-T-0572).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct SetParentParams {
+    /// The short code of the initiative or the task (e.g. "ACME-T-0012").
+    pub short_code: String,
+    /// The short code of the new parent: a strategy for an initiative, an
+    /// initiative for a task. Send null to remove the parent. Required: a
+    /// call without it changes nothing and is refused.
+    #[serde(default, deserialize_with = "present_value")]
+    pub parent: Option<Option<String>>,
+}
+
+/// `Some(value)` for an argument that is in the call, also when it is null:
+/// absent is `None` (the `#[serde(default)]`), null is `Some(None)`.
+fn present_value<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(Option::<String>::deserialize(deserializer)?))
 }
 
 /// Parameters for `set_work_class` (KAIROS-T-0433).
@@ -1344,7 +1367,7 @@ pub struct SaveTemplateParams {
 }
 
 // ---------------------------------------------------------------------------
-// The tools (74; the list of each profile is asserted in tests/mcp.rs)
+// The tools (75; the list of each profile is asserted in tests/mcp.rs)
 // ---------------------------------------------------------------------------
 
 #[tool_router(vis = "pub(super)")]
@@ -3303,6 +3326,62 @@ impl KairosMcp {
         .await
     }
 
+    // KAIROS-T-0572: an item has one parent. A change of parent was an
+    // unlink and a link, two calls, with a moment of no parent between
+    // them, or of two. One tool, one transaction, by the function that
+    // PUT /api/{family}/{short_code}/parent calls.
+    #[tool(
+        description = "Set the parent of an initiative (a strategy) or a task (an initiative), or remove it with `parent: null`. An item has one parent: the new parent replaces the old one in one transaction. The same parent again changes nothing. You need to be able to edit the item, or the parent at each end that changes. A change of parent is not a move: the board rules do not apply."
+    )]
+    pub async fn set_parent(
+        &self,
+        Parameters(params): Parameters<SetParentParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let role = tenant.role;
+        self.run_tool(&tenant, move |conn| {
+            let Some(parent) = params.parent else {
+                return Err(ApiError::validation(
+                    "The argument parent is required. Send the short code of the new parent, \
+                     or null to remove the parent.",
+                )
+                .with_details(json!({ "argument": "parent" })));
+            };
+            let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
+            let (change, renamed) = crate::api::meta::relationships::change_parent(
+                conn,
+                role,
+                user,
+                (item.id, item.item_type),
+                parent.as_deref(),
+                "set_parent",
+            )?;
+            let was = change.previous_parent.as_deref().unwrap_or("none");
+            let mut out = match (&change.parent, change.changed) {
+                (Some(now), true) => format!(
+                    "Set the parent of {}: {now} (was {was}).",
+                    change.short_code
+                ),
+                (None, true) => format!(
+                    "Removed the parent of {}: the item has no parent (was {was}).",
+                    change.short_code
+                ),
+                (Some(now), false) => format!(
+                    "{} has the parent {now} already. Nothing changed.",
+                    change.short_code
+                ),
+                (None, false) => format!("{} has no parent. Nothing changed.", change.short_code),
+            };
+            if let Some(line) = renamed {
+                out.push_str(&format!("\n{line}"));
+            }
+            Ok(out)
+        })
+        .await
+    }
+
     // KAIROS-T-0433: the lane of a task could change only on the GUI and
     // REST. A tool of its own, as `set_repository`: the lane is not
     // content, and it must not fail on a stale version. REST and this tool
@@ -4024,7 +4103,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Create an edge between two items by short code: parent, supports, informs, supersedes or blocks (type rules and cycles are checked). `blocks`: the target waits for the source; add it when a task must wait, none between parallel tasks. You need to be able to edit one of the two: you created it, or you hold `manage_<type>` on its board. A `blocks` edge needs the target: if you can edit only the source, the call makes a proposal, and the answer names it and who can confirm it. `impacts` goes from a document or an ADR (`source`) to a repository (`target`: slug or UUID): it says what the item is about and gives no right. A task links to a repository with `set_repository`. `external` links any item (`source`) to a URI (`target`: http, https or mailto) with an optional `label`: an RFC, a design page or an issue that Kairos does not hold; `get_item` and `related_work` show it."
+        description = "Create an edge between two items by short code: parent, supports, informs, supersedes or blocks (type rules and cycles are checked). `blocks`: the target waits for the source; add it when a task must wait, none between parallel tasks. You need to be able to edit one of the two: you created it, or you hold `manage_<type>` on its board. A `blocks` edge needs the target: if you can edit only the source, the call makes a proposal, and the answer names it and who can confirm it. `impacts` goes from a document or an ADR (`source`) to a repository (`target`: slug or UUID): it says what the item is about and gives no right. A task links to a repository with `set_repository`. An item has one parent: `set_parent` replaces it. `external` links any item (`source`) to a URI (`target`: http, https or mailto) with an optional `label`: an RFC, a design page or an issue that Kairos does not hold; `get_item` and `related_work` show it."
     )]
     pub async fn link_items(
         &self,
@@ -4087,8 +4166,8 @@ impl KairosMcp {
                 tenant_ctx.role,
                 user,
                 relationship,
-                source.typed(),
-                target.typed(),
+                (source.typed(), target.typed()),
+                map_link_error,
             )? {
                 crate::api::LinkOutcome::Linked(_) => Ok(format!(
                     "Linked {} -[{relationship}]-> {}.{}",
@@ -7260,8 +7339,10 @@ struct ChainRow {
 /// too, hiding live grandparents along with it.
 ///
 /// One statement (KAIROS-T-0626): a recursive CTE that takes, at each
-/// step, the oldest incoming `parent` edge whose source is in
-/// `entity_directory`, as the loop before it did, to a depth of 10.
+/// step, the incoming `parent` edge whose source is in `entity_directory`,
+/// to a depth of 10. An item has one parent since KAIROS-T-0572 (a unique
+/// index), so each step has one edge; `ORDER BY ... LIMIT 1` stays as
+/// defense-in-depth.
 fn parent_chain(conn: &mut PgConnection, item_id: Uuid) -> Result<Vec<ChainRow>, ApiError> {
     sql_query(
         "WITH RECURSIVE chain (depth, id, short_code, title, deleted_at) AS ( \
@@ -7430,6 +7511,35 @@ fn map_update_error(
             })))
         }
         other => Ok(map_item_error(other)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// link/unlink error shaping (mirrors the REST relationship endpoints)
+// ---------------------------------------------------------------------------
+
+/// [`GraphError`] → the same codes the REST relationship endpoints emit:
+/// `RELATIONSHIP_RULE`, `CYCLE_DETECTED`, `ALREADY_LINKED` (422),
+/// `NOT_FOUND` for a missing edge, `VALIDATION` for self-links/unknown
+/// endpoints.
+fn map_link_error(e: GraphError) -> ApiError {
+    match e {
+        GraphError::Rule(rule) => ApiError::unprocessable("RELATIONSHIP_RULE", rule.to_string()),
+        e @ GraphError::CycleDetected { .. } => {
+            ApiError::unprocessable("CYCLE_DETECTED", e.to_string())
+        }
+        e @ GraphError::AlreadyLinked { .. } => {
+            ApiError::unprocessable("ALREADY_LINKED", e.to_string())
+        }
+        // KAIROS-T-0572: an item has one parent.
+        e @ GraphError::ParentExists { .. } => {
+            crate::api::meta::relationships::parent_exists(e, "set_parent")
+        }
+        e @ (GraphError::SelfLink(_) | GraphError::ItemNotFound(_)) => {
+            ApiError::validation(e.to_string())
+        }
+        e @ GraphError::NotLinked { .. } => ApiError::not_found(e.to_string()),
+        GraphError::Database(e) => ApiError::internal(e),
     }
 }
 
