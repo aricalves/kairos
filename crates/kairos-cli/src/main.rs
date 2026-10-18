@@ -223,9 +223,10 @@ enum Command {
     /// The templates of the organization (writes: organization admins)
     #[command(subcommand)]
     Templates(commands::meta::TemplatesCommand),
-    /// Link an item to a URI with a label (the relationship `external`)
+    /// Make a relationship: parent, blocks, informs, supports, supersedes,
+    /// impacts (a repository) or external (a URI)
     Link(commands::links::LinkArgs),
-    /// Remove the external reference of an item with a URI
+    /// Remove a relationship that `kairos link` makes
     Unlink(commands::links::UnlinkArgs),
     /// The code index of a checkout, and its code tools for an agent (COLLIERY-T-1852)
     Index(IndexArgs),

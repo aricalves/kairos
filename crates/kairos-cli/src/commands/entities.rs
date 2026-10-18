@@ -15,10 +15,14 @@ use kairos_client::types::{
     Initiative, ListQuery, Pagination, PromoteNoteRequest, PromoteNoteResponse, RestoreResponse,
     Strategy, Task, UpdateContentRequest,
 };
-use kairos_client::types_meta::SetParentResponse;
+use kairos_client::types_meta::{
+    ItemMetadataResponse, ItemRelationshipsResponse, MetadataValue, RelatedItem, SetParentResponse,
+    UpdateMetadataRequest,
+};
 use kairos_client::types_repositories::Impact;
 use kairos_client::{EntityKind, KairosClient};
 
+use crate::commands::links::reference_text;
 use crate::context::{
     Common, client, column_id, find_column, is_uuid, print_json, team_id, template_id,
 };
@@ -417,6 +421,125 @@ pub struct LifecycleArgs {
     pub common: Common,
 }
 
+/// `kairos <noun> metadata` (KAIROS-T-0591): write the metadata values of
+/// an item. The fields are the metadata definitions of the organization
+/// (`kairos metadata list`).
+#[derive(clap::Subcommand, Debug)]
+pub enum ItemMetadataCommand {
+    /// Set metadata values of an item: each value is SLUG=VALUE. The server
+    /// checks each value against its definition (an enum option, a date
+    /// YYYY-MM-DD). The edit rule applies
+    Set(MetadataSetArgs),
+    /// Remove metadata values of an item, by the slug of the field. The
+    /// edit rule applies
+    Unset(MetadataUnsetArgs),
+}
+
+/// Arguments of `kairos <noun> metadata set`.
+#[derive(Args, Debug)]
+pub struct MetadataSetArgs {
+    /// The item's short code (e.g. ACME-T-0001)
+    pub short_code: String,
+    /// One or more values, each `SLUG=VALUE` (e.g. priority=high)
+    #[arg(
+        value_name = "SLUG=VALUE",
+        required = true,
+        num_args = 1..,
+        value_parser = parse_metadata_pair
+    )]
+    pub values: Vec<(String, String)>,
+    #[command(flatten)]
+    pub common: Common,
+}
+
+/// Arguments of `kairos <noun> metadata unset`.
+#[derive(Args, Debug)]
+pub struct MetadataUnsetArgs {
+    /// The item's short code (e.g. ACME-T-0001)
+    pub short_code: String,
+    /// One or more slugs of fields (e.g. priority)
+    #[arg(value_name = "SLUG", required = true, num_args = 1..)]
+    pub slugs: Vec<String>,
+    #[command(flatten)]
+    pub common: Common,
+}
+
+/// The parser of one `SLUG=VALUE` of `metadata set`. A pair without `=`,
+/// an empty slug or an empty value is a usage error (exit 64).
+fn parse_metadata_pair(text: &str) -> Result<(String, String), String> {
+    let Some((slug, value)) = text.split_once('=') else {
+        return Err(format!(
+            "{text:?} has no `=`. Give the slug of the field, `=` and the value, for example \
+             priority=high."
+        ));
+    };
+    if slug.is_empty() {
+        return Err(format!("{text:?} has no slug before `=`."));
+    }
+    if value.is_empty() {
+        return Err(format!(
+            "{slug}= has no value. To remove the value, use `metadata unset`."
+        ));
+    }
+    Ok((slug.to_string(), value.to_string()))
+}
+
+/// The body of `metadata set` or `metadata unset`: slug to value, `None`
+/// to remove. A slug that the command gives twice is refused.
+fn metadata_request<'a>(
+    entries: impl IntoIterator<Item = (&'a str, Option<&'a str>)>,
+) -> Result<UpdateMetadataRequest, CliError> {
+    let mut values = std::collections::BTreeMap::new();
+    for (slug, value) in entries {
+        if values
+            .insert(slug.to_string(), value.map(str::to_string))
+            .is_some()
+        {
+            return Err(CliError::Failure(format!(
+                "The field {slug} is in the command more than once. Give each field once."
+            )));
+        }
+    }
+    Ok(UpdateMetadataRequest { values })
+}
+
+impl ItemMetadataCommand {
+    pub async fn run(self, kind: EntityKind) -> Result<(), CliError> {
+        let (short_code, common, request) = match &self {
+            Self::Set(args) => (
+                &args.short_code,
+                &args.common,
+                metadata_request(
+                    args.values
+                        .iter()
+                        .map(|(slug, value)| (slug.as_str(), Some(value.as_str()))),
+                )?,
+            ),
+            Self::Unset(args) => (
+                &args.short_code,
+                &args.common,
+                metadata_request(args.slugs.iter().map(|slug| (slug.as_str(), None)))?,
+            ),
+        };
+        let client = client(common)?;
+        let response = client.update_metadata(kind, short_code, &request).await?;
+        emit_metadata(common, &response)
+    }
+}
+
+/// `metadata set` and `metadata unset` output: the values of the item
+/// after the call.
+pub fn emit_metadata(common: &Common, response: &ItemMetadataResponse) -> Result<(), CliError> {
+    if common.json {
+        return print_json(response);
+    }
+    println!("Kairos changed the metadata of {}.", response.short_code);
+    for line in metadata_lines(&response.values) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
 /// Arguments of `kairos tasks purge` (KAIROS-T-0362).
 #[derive(Args, Debug)]
 pub struct PurgeArgs {
@@ -739,6 +862,15 @@ impl EntityView for Task {
             ("column", self.column_id.clone()),
             ("type", self.task_type.clone()),
             ("team", or_dash(&self.team_id)),
+            // KAIROS-T-0591: the repository by its slug.
+            (
+                "repository",
+                self.repository
+                    .as_ref()
+                    .map(|repository| repository.slug.clone())
+                    .or_else(|| self.repository_id.clone())
+                    .unwrap_or_else(|| "-".to_string()),
+            ),
             (
                 "claim",
                 self.claim.as_ref().map_or_else(
@@ -902,7 +1034,14 @@ pub fn emit_list<T: EntityView>(common: &Common, envelope: &Listing<T>) -> Resul
     Ok(())
 }
 
-pub fn emit_get<T: EntityView>(common: &Common, item: &T) -> Result<(), CliError> {
+/// `show` output: the fields, then `context` (the lines of the metadata,
+/// the relationships and the external references, KAIROS-T-0591), then the
+/// content.
+pub fn emit_get<T: EntityView>(
+    common: &Common,
+    item: &T,
+    context: &[String],
+) -> Result<(), CliError> {
     if common.json {
         return print_json(item);
     }
@@ -913,9 +1052,118 @@ pub fn emit_get<T: EntityView>(common: &Common, item: &T) -> Result<(), CliError
     for (label, value) in item.fields() {
         println!("  {label}: {value}");
     }
+    for line in context {
+        println!("{line}");
+    }
     println!();
     println!("{}", item.content());
     Ok(())
+}
+
+/// The lines of `show` for the metadata, the relationships and the
+/// external references of an item (KAIROS-T-0591). Three reads, at the
+/// same time. Each read includes an archived item.
+async fn item_context(
+    client: &KairosClient,
+    kind: EntityKind,
+    short_code: &str,
+) -> Result<Vec<String>, CliError> {
+    let (metadata, relationships, external) = tokio::try_join!(
+        client.metadata(kind, short_code),
+        client.relationships(kind, short_code),
+        client.item_external_refs(kind, short_code),
+    )?;
+    let mut lines = metadata_lines(&metadata.values);
+    lines.extend(relationship_lines(&relationships));
+    lines.extend(external_lines(&external.external));
+    Ok(lines)
+}
+
+/// A labelled list: `  label: -` when it is empty, else the label and one
+/// indented line for each entry.
+fn labelled(label: &str, entries: Vec<String>) -> Vec<String> {
+    if entries.is_empty() {
+        return vec![format!("  {label}: -")];
+    }
+    let mut lines = vec![format!("  {label}:")];
+    lines.extend(entries.into_iter().map(|entry| format!("    {entry}")));
+    lines
+}
+
+/// The lines of the metadata values: `slug: value`, by slug.
+fn metadata_lines(values: &[MetadataValue]) -> Vec<String> {
+    labelled(
+        "metadata",
+        values
+            .iter()
+            .map(|value| format!("{}: {}", value.slug, value.value))
+            .collect(),
+    )
+}
+
+/// The label of a relationship from the side of the item, and its rank
+/// in the list. `outgoing` is true when the item is the source.
+fn relationship_label(relationship: &str, outgoing: bool) -> (usize, String) {
+    let known = match (relationship, outgoing) {
+        ("parent", false) => Some((0, "parent")),
+        ("parent", true) => Some((1, "child")),
+        ("blocks", false) => Some((2, "blocked by")),
+        ("blocks", true) => Some((3, "blocks")),
+        ("supports", true) => Some((4, "supported by")),
+        ("supports", false) => Some((5, "supports")),
+        ("informs", false) => Some((6, "informed by")),
+        ("informs", true) => Some((7, "informs")),
+        ("supersedes", false) => Some((8, "superseded by")),
+        ("supersedes", true) => Some((9, "supersedes")),
+        _ => None,
+    };
+    match known {
+        Some((rank, label)) => (rank, label.to_string()),
+        None if outgoing => (10, relationship.to_string()),
+        None => (10, format!("{relationship} (from)")),
+    }
+}
+
+/// One neighbour: `CODE — title`, with the marks `[archived]`,
+/// `[cancelled]` or `[done]`.
+fn neighbour_text(item: &RelatedItem) -> String {
+    let mut text = format!("{} — {}", item.short_code, item.title);
+    if item.archived_at.is_some() {
+        text.push_str(" [archived]");
+    }
+    if item.cancelled {
+        text.push_str(" [cancelled]");
+    } else if item.done {
+        text.push_str(" [done]");
+    }
+    text
+}
+
+/// The lines of the relationships of an item, both directions: parent,
+/// children, blockers, then the documents and the ADRs.
+fn relationship_lines(relationships: &ItemRelationshipsResponse) -> Vec<String> {
+    let mut entries: Vec<(usize, String)> = Vec::new();
+    for (groups, outgoing) in [
+        (&relationships.incoming, false),
+        (&relationships.outgoing, true),
+    ] {
+        for group in groups {
+            let (rank, label) = relationship_label(&group.relationship, outgoing);
+            for item in &group.items {
+                entries.push((rank, format!("{label}: {}", neighbour_text(item))));
+            }
+        }
+    }
+    entries.sort_by_key(|(rank, _)| *rank);
+    labelled(
+        "relationships",
+        entries.into_iter().map(|(_, entry)| entry).collect(),
+    )
+}
+
+/// The lines of the external references of an item.
+fn external_lines(references: &[kairos_client::types_meta::ExternalRef]) -> Vec<String> {
+    labelled("external", references.iter().map(reference_text).collect())
 }
 
 pub fn emit_created<T: EntityView>(common: &Common, item: &T) -> Result<(), CliError> {
@@ -1513,6 +1761,11 @@ pub struct AdrCreateArgs {
     /// Decision date (YYYY-MM-DD)
     #[arg(long, value_name = "DATE")]
     pub decision_date: Option<String>,
+    /// The item that the ADR supports (short code of a strategy, an
+    /// initiative or a task). The ADR and the `supports` edge are one
+    /// write: a refused parent leaves no ADR
+    #[arg(long, value_name = "SHORT_CODE")]
+    pub parent: Option<String>,
     #[command(flatten)]
     pub common: Common,
 }
@@ -1531,6 +1784,7 @@ impl AdrCreateArgs {
             .unwrap_or_default(),
             decision_maker: self.decision_maker.clone(),
             decision_date: self.decision_date.clone(),
+            parent: self.parent.clone(),
         })
     }
 }
@@ -1657,6 +1911,9 @@ macro_rules! entity_family_cli {
                                       "(the edit rule applies)"))]
             $lifecycle_variant(LifecycleArgs),
             )?
+            #[command(about = concat!("Set or remove the metadata values of a ", $noun),
+                      subcommand)]
+            Metadata(ItemMetadataCommand),
             #[command(about = concat!("Archive a ", $noun,
                                       " and its children (requires --confirm; ",
                                       "`restore` brings it back; --preview archives nothing)"),
@@ -1689,7 +1946,15 @@ macro_rules! entity_family_cli {
                         {
                             eprintln!("{notice}");
                         }
-                        emit_get(&args.common, &item)
+                        // KAIROS-T-0591: the text gives the metadata, the
+                        // relationships and the external references too.
+                        // `--json` stays the item of the server.
+                        let context = if args.common.json {
+                            Vec::new()
+                        } else {
+                            item_context(&client, $kind, &item.short_code).await?
+                        };
+                        emit_get(&args.common, &item, &context)
                     }
                     Self::Diff(args) => {
                         let client = client(&args.common)?;
@@ -1853,6 +2118,7 @@ macro_rules! entity_family_cli {
                         emit_lifecycle(&args.common, &document)
                     }
                     )?
+                    Self::Metadata(command) => command.run($kind).await,
                     Self::Archive(args) if args.preview => {
                         let client = client(&args.common)?;
                         let preview = client.cascade_preview($kind, &args.short_code).await?;
@@ -2228,5 +2494,250 @@ mod tests {
         let err = require_purge_confirm(false, "ACME-T-0001").expect_err("must refuse");
         assert!(err.to_string().contains("cannot undo"), "{err}");
         require_purge_confirm(true, "ACME-T-0001").expect("confirmed passes");
+    }
+
+    /// A task from the JSON of the server, with `extra` fields.
+    fn task_from(extra: serde_json::Value) -> Task {
+        let mut task = serde_json::json!({
+            "id": "t-1", "short_code": "ACME-T-0001", "title": "A task", "content": "",
+            "board_id": "b-1", "column_id": "c-1", "task_type": "task",
+            "work_class": "planned", "team_id": null, "version": 1,
+            "created_by": "u-1", "updated_by": "u-1",
+            "created_at": "2026-10-18T00:00:00Z", "updated_at": "2026-10-18T00:00:00Z"
+        });
+        for (key, value) in extra.as_object().expect("an object") {
+            task[key] = value.clone();
+        }
+        serde_json::from_value(task).expect("a task")
+    }
+
+    fn field(task: &Task, label: &str) -> String {
+        task.fields()
+            .into_iter()
+            .find(|(name, _)| *name == label)
+            .map(|(_, value)| value)
+            .unwrap_or_else(|| panic!("no field {label}"))
+    }
+
+    /// KAIROS-T-0591: `tasks show` names the repository by its slug, or `-`.
+    #[test]
+    fn tasks_show_names_the_repository() {
+        assert_eq!(field(&task_from(serde_json::json!({})), "repository"), "-");
+        let bound = task_from(serde_json::json!({
+            "repository_id": "r-1",
+            "repository": {
+                "id": "r-1", "slug": "web", "forge": "github",
+                "repo_full_name": "acme/web", "team_id": "team-1"
+            }
+        }));
+        assert_eq!(field(&bound, "repository"), "web");
+        let id_only = task_from(serde_json::json!({ "repository_id": "r-1" }));
+        assert_eq!(field(&id_only, "repository"), "r-1");
+    }
+
+    fn related(code: &str, done: bool, cancelled: bool, archived: bool) -> RelatedItem {
+        RelatedItem {
+            relationship_id: format!("e-{code}"),
+            id: format!("id-{code}"),
+            short_code: code.to_string(),
+            entity_type: "task".into(),
+            title: format!("title {code}"),
+            archived_at: archived.then(|| "2026-10-01T00:00:00Z".to_string()),
+            done,
+            cancelled,
+        }
+    }
+
+    fn group(
+        relationship: &str,
+        items: Vec<RelatedItem>,
+    ) -> kairos_client::types_meta::RelationshipGroup {
+        kairos_client::types_meta::RelationshipGroup {
+            relationship: relationship.into(),
+            items,
+        }
+    }
+
+    /// KAIROS-T-0591: the relationships of `show` read from the side of the
+    /// item, parent first, with the marks of each neighbour.
+    #[test]
+    fn show_lists_the_relationships_from_the_side_of_the_item() {
+        let relationships = ItemRelationshipsResponse {
+            short_code: "ACME-T-0001".into(),
+            outgoing: vec![
+                group(
+                    "supports",
+                    vec![related("ACME-D-0005", false, false, false)],
+                ),
+                group("blocks", vec![related("ACME-T-0004", false, false, true)]),
+            ],
+            incoming: vec![
+                group(
+                    "blocks",
+                    vec![
+                        related("ACME-T-0003", true, false, false),
+                        related("ACME-T-0006", true, true, false),
+                    ],
+                ),
+                group("parent", vec![related("ACME-I-0002", false, false, false)]),
+            ],
+        };
+        assert_eq!(
+            relationship_lines(&relationships),
+            vec![
+                "  relationships:",
+                "    parent: ACME-I-0002 — title ACME-I-0002",
+                "    blocked by: ACME-T-0003 — title ACME-T-0003 [done]",
+                "    blocked by: ACME-T-0006 — title ACME-T-0006 [cancelled]",
+                "    blocks: ACME-T-0004 — title ACME-T-0004 [archived]",
+                "    supported by: ACME-D-0005 — title ACME-D-0005",
+            ]
+        );
+        let none = ItemRelationshipsResponse {
+            short_code: "ACME-T-0001".into(),
+            outgoing: vec![],
+            incoming: vec![],
+        };
+        assert_eq!(relationship_lines(&none), vec!["  relationships: -"]);
+        assert_eq!(relationship_label("parent", true).1, "child");
+        assert_eq!(relationship_label("supports", false).1, "supports");
+        assert_eq!(relationship_label("informs", false).1, "informed by");
+        assert_eq!(relationship_label("supersedes", false).1, "superseded by");
+    }
+
+    /// KAIROS-T-0591: the metadata and the external references of `show`.
+    #[test]
+    fn show_lists_the_metadata_and_the_external_references() {
+        let value = MetadataValue {
+            definition_id: "d-1".into(),
+            slug: "priority".into(),
+            name: "Priority".into(),
+            field_type: "enum".into(),
+            value: "high".into(),
+        };
+        assert_eq!(
+            metadata_lines(&[value]),
+            vec!["  metadata:", "    priority: high"]
+        );
+        assert_eq!(metadata_lines(&[]), vec!["  metadata: -"]);
+        let reference = kairos_client::types_meta::ExternalRef {
+            id: "r-1".into(),
+            relationship: "external".into(),
+            uri: "https://example.com/rfc".into(),
+            label: Some("RFC 42".into()),
+            created_by: "u-1".into(),
+            created_at: "2026-10-15T00:00:00Z".into(),
+        };
+        assert_eq!(
+            external_lines(&[reference]),
+            vec!["  external:", "    RFC 42 <https://example.com/rfc>"]
+        );
+        assert_eq!(external_lines(&[]), vec!["  external: -"]);
+    }
+
+    /// KAIROS-T-0591: `metadata set` takes SLUG=VALUE pairs; a bad pair is
+    /// a usage error that names it. `metadata unset` takes slugs.
+    #[test]
+    fn metadata_set_and_unset_parse_their_arguments() {
+        use clap::Parser;
+        #[derive(Parser, Debug)]
+        struct Cli {
+            #[command(subcommand)]
+            command: TasksCommand,
+        }
+        let parsed = Cli::try_parse_from([
+            "tasks",
+            "metadata",
+            "set",
+            "ACME-T-0001",
+            "priority=high",
+            "note=a=b",
+        ])
+        .expect("parses");
+        match parsed.command {
+            TasksCommand::Metadata(ItemMetadataCommand::Set(args)) => {
+                assert_eq!(args.short_code, "ACME-T-0001");
+                assert_eq!(
+                    args.values,
+                    vec![
+                        ("priority".to_string(), "high".to_string()),
+                        ("note".to_string(), "a=b".to_string()),
+                    ]
+                );
+            }
+            other => panic!("not metadata set: {other:?}"),
+        }
+        let parsed = Cli::try_parse_from(["tasks", "metadata", "unset", "ACME-T-0001", "priority"])
+            .expect("parses");
+        match parsed.command {
+            TasksCommand::Metadata(ItemMetadataCommand::Unset(args)) => {
+                assert_eq!(args.slugs, vec!["priority".to_string()]);
+            }
+            other => panic!("not metadata unset: {other:?}"),
+        }
+        for (bad, says) in [
+            ("priority", "has no `=`"),
+            ("=high", "has no slug"),
+            ("priority=", "has no value"),
+        ] {
+            let refused = Cli::try_parse_from(["tasks", "metadata", "set", "ACME-T-0001", bad])
+                .expect_err("a bad pair");
+            assert_eq!(refused.kind(), clap::error::ErrorKind::ValueValidation);
+            assert!(refused.to_string().contains(says), "{refused}");
+        }
+        // At least one value.
+        assert!(Cli::try_parse_from(["tasks", "metadata", "set", "ACME-T-0001"]).is_err());
+        assert!(Cli::try_parse_from(["tasks", "metadata", "unset", "ACME-T-0001"]).is_err());
+    }
+
+    /// KAIROS-T-0591: the body of `metadata set` and `unset`; a slug given
+    /// twice is refused and named.
+    #[test]
+    fn the_metadata_body_has_each_slug_once() {
+        let body = metadata_request([("priority", Some("high")), ("due", None)]).expect("body");
+        assert_eq!(body.values.get("priority"), Some(&Some("high".to_string())));
+        assert_eq!(body.values.get("due"), Some(&None));
+        let refused =
+            metadata_request([("priority", Some("high")), ("priority", None)]).expect_err("twice");
+        assert_eq!(refused.exit_code(), EXIT_FAILURE);
+        assert!(refused.to_string().contains("priority"), "{refused}");
+    }
+
+    /// KAIROS-T-0591: `adrs create --parent` sends the parent; without it
+    /// the body has no `parent` key, for an older server.
+    #[test]
+    fn adrs_create_sends_the_parent() {
+        use clap::Parser;
+        #[derive(Parser, Debug)]
+        struct Cli {
+            #[command(subcommand)]
+            command: AdrsCommand,
+        }
+        let parsed = Cli::try_parse_from([
+            "adrs",
+            "create",
+            "--title",
+            "T",
+            "--board",
+            "adrs",
+            "--parent",
+            "ACME-I-0002",
+        ])
+        .expect("parses");
+        match parsed.command {
+            AdrsCommand::Create(args) => assert_eq!(args.parent.as_deref(), Some("ACME-I-0002")),
+            other => panic!("not create: {other:?}"),
+        }
+        let body = CreateAdrRequest {
+            board_id: None,
+            column_id: None,
+            title: "T".into(),
+            content: String::new(),
+            decision_maker: None,
+            decision_date: None,
+            parent: None,
+        };
+        let json = serde_json::to_value(&body).expect("json");
+        assert!(json.get("parent").is_none(), "{json}");
     }
 }

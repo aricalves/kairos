@@ -541,6 +541,7 @@ async fn edit_rule_and_link_rule_against_live_stack() {
         content: "original content".into(),
         decision_maker: None,
         decision_date: None,
+        parent: None,
     };
     let adr_one = svc
         .create_adr(&adr_request("ADR one"))

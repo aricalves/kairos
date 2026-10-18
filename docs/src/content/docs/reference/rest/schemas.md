@@ -558,6 +558,7 @@ Body of `POST /api/adrs`. `board_id`/`column_id` follow the DDL rule: both set (
 | `content` | `string` | no | Markdown content; defaults to empty. |
 | `decision_date` | `string`, nullable | no | `YYYY-MM-DD`. |
 | `decision_maker` | `string`, nullable | no |  |
+| `parent` | `string`, nullable | no | The short code of the item that the ADR supports: a strategy, an initiative or a task (KAIROS-T-0591). The server writes the `supports` edge in the transaction of the create: a refused parent leaves no ADR. A retired code finds its item. |
 | `title` | `string` | yes |  |
 
 The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
@@ -1846,7 +1847,7 @@ One notification of the caller (KAIROS-T-0382).
 | `created_at` | `string` | yes | When Kairos made the notification (RFC 3339). |
 | `entity_type` | `string`, nullable | no | `strategy|initiative|task|document|adr`; `null` when the item is gone. |
 | `id` | `string` | yes | The id (UUID). `POST /api/me/notifications/read` takes it. |
-| `kind` | `string` | yes | `hand_off|blocker_cleared|blocked_again|cancelled|blocker_cancelled|mention|p0_bug|delivery_failing|agent_key_revoked|claim_dropped|claim_stale|key_expiring`. |
+| `kind` | `string` | yes | `hand_off|blocker_cleared|blocked_again|cancelled|blocker_cancelled|mention|p0_bug|delivery_failing|agent_key_revoked|claim_dropped|claim_stale|key_expiring|proposal_decided`. |
 | `read_at` | `string`, nullable | no | When the person read it (RFC 3339); `null` while unread. |
 | `short_code` | `string`, nullable | no | The code of the item now; `null` when the item is gone. |
 | `text` | `string` | yes | What happened, in one sentence or two. |
@@ -1879,6 +1880,7 @@ One notification of the caller (KAIROS-T-0382).
 | `key_expiring` | `boolean` | yes | An agent key of yours, or a key of a service account of your organization (you are an admin), expires within 7 days (KAIROS-T-0540). |
 | `mention` | `boolean` | yes | A person wrote `@your_user_name` in a note or in the content of an item. |
 | `p0_bug` | `boolean` | yes | A bug with the priority P0 (critical) is on the board of your team. |
+| `proposal_decided` | `boolean` | yes | A person confirmed or rejected an edge proposal that you made (KAIROS-T-0558). |
 
 ## OrgAgentKey
 
@@ -3100,6 +3102,7 @@ The server refuses a body with a field that is not in this table ([Errors](../..
 | `key_expiring` | `boolean`, nullable | no |  |
 | `mention` | `boolean`, nullable | no |  |
 | `p0_bug` | `boolean`, nullable | no |  |
+| `proposal_decided` | `boolean`, nullable | no |  |
 
 The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
 

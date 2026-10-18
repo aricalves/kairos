@@ -22,6 +22,8 @@ You get a notification when one of these events occurs:
   also gets this notification for a key of a service account. The text
   names the key and the command `kairos keys rotate`. Kairos sends it one
   time for each key.
+- A person confirms or rejects an edge proposal that you made. The text
+  names the edge and the state.
 
 You get no notification for a change that you made.
 

@@ -10,7 +10,15 @@
 //!   id that [`GithubHttp::remove_comment`] removed.
 //! - `POST /repos/{owner}/{repo}/statuses/{sha}`: 201.
 //!
-//! [`GithubHttp::fail_next`] answers 500 to the next requests.
+//! The issue write-back (KAIROS-T-0575) calls 2 more routes of GitHub, and
+//! 2 of GitLab (the GitLab API is on the host of the repository URL):
+//!
+//! - `PATCH /repos/{owner}/{repo}/issues/{number}`: 200, the issue.
+//! - `POST /api/v4/projects/{id}/issues/{iid}/notes`: 201 with a note id.
+//! - `PUT /api/v4/projects/{id}/issues/{iid}`: 200, the issue.
+//!
+//! [`GithubHttp::fail_next`] answers 500 to the next requests, and
+//! [`GithubHttp::refuse_next`] answers 403.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
@@ -20,7 +28,7 @@ use axum::Router;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, patch, post};
+use axum::routing::{get, patch, post, put};
 use serde_json::{Value, json};
 
 /// One request of the fake API.
@@ -37,6 +45,8 @@ struct Inner {
     calls: Mutex<Vec<Call>>,
     next_id: AtomicI64,
     fail_next: AtomicUsize,
+    refuse_next: AtomicUsize,
+    fail_on: Mutex<Option<(String, String, usize)>>,
     heads: Mutex<HashMap<i64, String>>,
     removed: Mutex<HashSet<i64>>,
     comments: Mutex<HashMap<i64, String>>,
@@ -61,6 +71,16 @@ impl GithubHttp {
         self.inner.fail_next.store(n, Ordering::SeqCst);
     }
 
+    /// Answer 500 to the next `n` requests of `method` on the path `path`.
+    pub fn fail_next_on(&self, method: &str, path: &str, n: usize) {
+        *self.inner.fail_on.lock().unwrap() = Some((method.to_string(), path.to_string(), n));
+    }
+
+    /// Answer 403 to the next `n` requests.
+    pub fn refuse_next(&self, n: usize) {
+        self.inner.refuse_next.store(n, Ordering::SeqCst);
+    }
+
     /// The head commit of the pull request `number`.
     pub fn set_head(&self, number: i64, sha: &str) {
         self.inner
@@ -81,7 +101,14 @@ impl GithubHttp {
     }
 }
 
-fn record(inner: &Inner, method: &Method, uri: &Uri, headers: &HeaderMap, body: &str) -> bool {
+/// Record the request. `Some`: answer it with this refusal.
+fn refusal(
+    inner: &Inner,
+    method: &Method,
+    uri: &Uri,
+    headers: &HeaderMap,
+    body: &str,
+) -> Option<Response> {
     inner.calls.lock().unwrap().push(Call {
         method: method.to_string(),
         path: uri.path().to_string(),
@@ -92,12 +119,79 @@ fn record(inner: &Inner, method: &Method, uri: &Uri, headers: &HeaderMap, body: 
             .to_string(),
         body: serde_json::from_str(body).unwrap_or(Value::Null),
     });
+    let left = inner.refuse_next.load(Ordering::SeqCst);
+    if left > 0 {
+        inner.refuse_next.store(left - 1, Ordering::SeqCst);
+        return Some(
+            (
+                StatusCode::FORBIDDEN,
+                axum::Json(json!({"message": "Resource not accessible by personal access token"})),
+            )
+                .into_response(),
+        );
+    }
     let left = inner.fail_next.load(Ordering::SeqCst);
     if left > 0 {
         inner.fail_next.store(left - 1, Ordering::SeqCst);
-        return false;
+        return Some(failed());
     }
-    true
+    let mut fail_on = inner.fail_on.lock().unwrap();
+    if let Some((failing, path, left)) = fail_on.as_mut()
+        && failing.as_str() == method.as_str()
+        && path.as_str() == uri.path()
+        && *left > 0
+    {
+        *left -= 1;
+        return Some(failed());
+    }
+    None
+}
+
+/// The private token of a GitLab request.
+fn private_token(headers: &HeaderMap) -> String {
+    headers
+        .get("private-token")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// `PATCH /repos/{owner}/{repo}/issues/{number}` (GitHub) and
+/// `PUT /api/v4/projects/{id}/issues/{iid}` (GitLab): the issue.
+async fn edit_issue(
+    State(inner): State<Arc<Inner>>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: String,
+) -> Response {
+    let mut headers = headers;
+    if !headers.contains_key("authorization") {
+        let token = private_token(&headers);
+        if let Ok(value) = format!("PRIVATE-TOKEN {token}").parse() {
+            headers.insert("authorization", value);
+        }
+    }
+    if let Some(refused) = refusal(&inner, &method, &uri, &headers, &body) {
+        return refused;
+    }
+    axum::Json(json!({ "id": 1 })).into_response()
+}
+
+/// `POST /api/v4/projects/{id}/issues/{iid}/notes` (GitLab): a new note.
+async fn create_note(
+    State(inner): State<Arc<Inner>>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: String,
+) -> Response {
+    let mut headers = headers;
+    let token = private_token(&headers);
+    if let Ok(value) = format!("PRIVATE-TOKEN {token}").parse() {
+        headers.insert("authorization", value);
+    }
+    create_comment(State(inner), method, uri, headers, body).await
 }
 
 fn failed() -> Response {
@@ -115,8 +209,8 @@ async fn pull(
     headers: HeaderMap,
     Path((_owner, _repo, number)): Path<(String, String, i64)>,
 ) -> Response {
-    if !record(&inner, &method, &uri, &headers, "") {
-        return failed();
+    if let Some(refused) = refusal(&inner, &method, &uri, &headers, "") {
+        return refused;
     }
     let sha = inner
         .heads
@@ -135,8 +229,8 @@ async fn create_comment(
     headers: HeaderMap,
     body: String,
 ) -> Response {
-    if !record(&inner, &method, &uri, &headers, &body) {
-        return failed();
+    if let Some(refused) = refusal(&inner, &method, &uri, &headers, &body) {
+        return refused;
     }
     let id = 1000 + inner.next_id.fetch_add(1, Ordering::SeqCst);
     let text = serde_json::from_str::<Value>(&body).unwrap_or(Value::Null)["body"]
@@ -155,8 +249,8 @@ async fn edit_comment(
     Path((_owner, _repo, id)): Path<(String, String, i64)>,
     body: String,
 ) -> Response {
-    if !record(&inner, &method, &uri, &headers, &body) {
-        return failed();
+    if let Some(refused) = refusal(&inner, &method, &uri, &headers, &body) {
+        return refused;
     }
     if inner.removed.lock().unwrap().contains(&id) {
         return (
@@ -180,8 +274,8 @@ async fn status(
     headers: HeaderMap,
     body: String,
 ) -> Response {
-    if !record(&inner, &method, &uri, &headers, &body) {
-        return failed();
+    if let Some(refused) = refusal(&inner, &method, &uri, &headers, &body) {
+        return refused;
     }
     (StatusCode::CREATED, axum::Json(json!({ "id": 1 }))).into_response()
 }
@@ -200,6 +294,12 @@ pub async fn serve() -> GithubHttp {
             patch(edit_comment),
         )
         .route("/repos/{owner}/{repo}/statuses/{sha}", post(status))
+        .route("/repos/{owner}/{repo}/issues/{number}", patch(edit_issue))
+        .route("/api/v4/projects/{id}/issues/{iid}", put(edit_issue))
+        .route(
+            "/api/v4/projects/{id}/issues/{iid}/notes",
+            post(create_note),
+        )
         .with_state(Arc::clone(&inner));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

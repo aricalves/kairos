@@ -315,6 +315,7 @@ differ.
 | `lane` | no | no | yes | no | no |
 | `set-parent` | no | yes | yes | no | no |
 | `lifecycle` | no | no | no | yes | no |
+| `metadata` | yes | yes | yes | yes | yes |
 | `archive` (alias `delete`) | yes | yes | yes | yes | yes |
 | `purge` | no | no | yes | no | no |
 | `restore` | yes | yes | yes | yes | yes |
@@ -434,6 +435,36 @@ stderr. The notice names the current code, for example `The code
 COLLIERY-T-0100 is retired. The current code of this item is SKADI-T-0001.`
 The output on stdout is the item, and `--json` stays clean.
 
+In the text output, the command prints three more lists before the content
+(KAIROS-T-0591):
+
+| Line | Description |
+|---|---|
+| `metadata` | Each metadata value of the item, as `slug: value`. |
+| `relationships` | Each relationship of the item, from the side of the item. |
+| `external` | Each external reference of the item, as `label <uri>`. |
+
+An empty list prints `-`. The labels of `relationships` are `parent`,
+`child`, `blocked by`, `blocks`, `supported by`, `supports`, `informed by`,
+`informs`, `superseded by` and `supersedes`. A neighbour has the marks
+`[archived]`, `[cancelled]` or `[done]`. For example:
+
+```text
+  metadata:
+    priority: high
+  relationships:
+    parent: ACME-I-0002 — Checkout redesign
+    blocked by: ACME-T-0003 — Payment API [done]
+    supported by: ACME-D-0004 — Rollout note
+  external: -
+```
+
+The command reads the three lists with three more requests. With `--json`,
+the command prints the item of the server only, and makes no more requests.
+
+`tasks show` prints the line `repository`. It has the slug of the repository
+of the task, or `-`.
+
 `documents show` prints the line `owner board`. It has the id of the owner
 board of the document.
 
@@ -487,8 +518,13 @@ Options specific to one noun:
 | `documents` | `--template <TEMPLATE>` | slug or UUID | none | Template to stamp content and metadata defaults from. |
 | `adrs` | `--decision-maker <DECISION_MAKER>` | string | none | Decision maker. |
 | `adrs` | `--decision-date <DATE>` | `YYYY-MM-DD` | none | Decision date. |
+| `adrs` | `--parent <SHORT_CODE>` | short code | none | The strategy, initiative or task that the ADR supports. Kairos writes the ADR and the `supports` edge in one transaction: a refused parent leaves no ADR (KAIROS-T-0591). |
 
 `tasks create` needs `--board` or `--team`. `--repo` does not replace them.
+
+`--parent` is on each `create` but `strategies create`. A strategy is the top
+of the hierarchy, so it has no parent. To link an item after the create, use
+[`kairos link`](#kairos-link).
 
 `documents create` needs `--board`: each document has an owner board. With
 `--parent` too, the document also supports that item. The command needs
@@ -828,6 +864,52 @@ The command prints the lifecycle of the document after the call:
 The document ACME-D-0004 is published.
 ```
 
+### `<noun> metadata set`
+
+```
+kairos <noun> metadata set <SHORT_CODE> <SLUG=VALUE>... [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<SHORT_CODE>` | string | required | The item's short code. |
+| `<SLUG=VALUE>...` | one or more pairs | required | Each pair is the slug of a field, `=` and the value. For example: `priority=high`. |
+
+The command sets metadata values of an item (KAIROS-A-0003). The fields are
+the metadata definitions of the organization. `kairos metadata list` shows
+them.
+
+The server checks each value against its definition. An enum value must
+be an option of the field. A date has the form `YYYY-MM-DD`. The server refuses
+an unknown slug with 422 `VALIDATION`.
+
+The edit rule applies: the creator of the item, or `manage_<type>` on its
+board. A pair without `=`, an empty slug or an empty value is a usage error
+(exit 64). A slug that the command gives two times gets exit code 1.
+
+The command prints the metadata of the item after the call:
+
+```text
+Kairos changed the metadata of ACME-T-0001.
+  metadata:
+    priority: high
+```
+
+### `<noun> metadata unset`
+
+```
+kairos <noun> metadata unset <SHORT_CODE> <SLUG>... [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<SHORT_CODE>` | string | required | The item's short code. |
+| `<SLUG>...` | one or more strings | required | The slugs of the fields. |
+
+The command removes metadata values of an item. The rule is that of
+`metadata set`. A field with no value stays without a value. The command
+prints the metadata of the item after the call.
+
 ### `<noun> archive`
 
 ```
@@ -950,50 +1032,79 @@ envelope with the rows of `GET /api/{family}/{short_code}/links`.
 ### `kairos link`
 
 ```
-kairos link <SHORT_CODE> external <URI> [--label <TEXT>] [OPTIONS]
+kairos link <SOURCE> <RELATIONSHIP> <TARGET> [--label <TEXT>] [OPTIONS]
 ```
 
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
-| `<SHORT_CODE>` | string | required | The item, of each type. |
-| `external` | relationship | required | The one relationship of this command. |
-| `<URI>` | string | required | The URI. The scheme is `http`, `https` or `mailto`. |
-| `--label` | string | none | The label of the reference, at most 200 characters. |
+| `<SOURCE>` | string | required | The short code of the source item. |
+| `<RELATIONSHIP>` | relationship | required | `parent`, `blocks`, `informs`, `supports`, `supersedes`, `impacts` or `external`. |
+| `<TARGET>` | string | required | The short code of the target item. For `impacts`, a repository (slug or UUID). For `external`, a URI. |
+| `--label` | string | none | The label of an external reference, at most 200 characters. Only with `external`. |
 
-The command links an item to a document outside Kairos: an
-[external reference](../glossary/#external-reference). You must be able to
-edit the item. The command prints this line:
+The command makes a relationship of an item (KAIROS-T-0591). `<SOURCE>` and
+`<TARGET>` are the two ends of the edge, as in the MCP tool `link_items`:
+
+| Relationship | Source | Target | Meaning |
+|---|---|---|---|
+| `parent` | strategy or initiative | initiative or task | The source is the parent of the target. |
+| `blocks` | strategy, initiative or task | strategy, initiative or task | The target waits for the source. |
+| `informs` | document, ADR or task | strategy, initiative or task | The source informs the target. A task informs a task only. |
+| `supports` | strategy, initiative or task | document or ADR | The target supports the source. |
+| `supersedes` | ADR | ADR | The source replaces the target. |
+| `impacts` | document or ADR | repository | The source is about the repository. It gives no right. |
+| `external` | each type | URI | The item links to a document outside Kairos. |
+
+The server checks the types of the two ends, and refuses a cycle of `parent`
+or `blocks`. You must be able to edit one of the two items. For `impacts` and
+`external`, you must be able to edit the source. An item has one parent. To
+change it, use [`set-parent`](#initiatives-set-parent-tasks-set-parent).
+
+The command prints the edge and its meaning:
 
 ```text
+Kairos made the link: ACME-T-0003 -[blocks]-> ACME-T-0004. ACME-T-0004 waits for ACME-T-0003.
 Kairos made the link: ACME-T-0012 -[external]-> RFC: zen as the policy engine <https://example.com/wiki/rfc-42>.
 ```
 
-The server refuses each other scheme with 422 `VALIDATION`, and the refusal
-names the scheme. The server refuses a URI that the item has with 422
-`ALREADY_LINKED`. To say that a document impacts a repository, use `kairos
-repos link`.
+An `external` link is an
+[external reference](../glossary/#external-reference). The scheme of the URI is
+`http`, `https` or `mailto`. The server refuses each other scheme with 422
+`VALIDATION`, and the refusal names the scheme. The server refuses a URI that
+the item has with 422 `ALREADY_LINKED`.
+
+The CLI refuses `--label` with a relationship other than `external`, and
+names the relationship (exit code 1). An unknown relationship is a usage error
+(exit 64). With `--json`, the command prints the new edge, impact or
+reference.
+
+`kairos link <CODE> impacts <REPOSITORY>` does the same as
+[`kairos repos link`](#kairos-repos-link).
 
 ### `kairos unlink`
 
 ```
-kairos unlink <SHORT_CODE> external <URI> [OPTIONS]
+kairos unlink <SOURCE> <RELATIONSHIP> <TARGET> [OPTIONS]
 ```
 
 | Argument | Type | Default | Description |
 |---|---|---|---|
-| `<SHORT_CODE>` | string | required | The item. |
-| `external` | relationship | required | The one relationship of this command. |
-| `<URI>` | string | required | The URI of the reference. |
+| `<SOURCE>` | string | required | The short code of the source item. |
+| `<RELATIONSHIP>` | relationship | required | A relationship of `kairos link`. |
+| `<TARGET>` | string | required | The short code of the target item. For `impacts`, a repository. For `external`, the URI of the reference. |
 
-The command removes an external reference. The rule is that of `kairos link`.
-The command prints this line:
+The command removes a relationship that `kairos link` makes. The ends are
+those of `kairos link`. The rule is that of `kairos link`. To remove the
+`supports` edge of a document, you must be able to edit the document. The
+command prints this line:
 
 ```text
-Kairos removed the link: ACME-T-0012 -[external]-> RFC: zen as the policy engine <https://example.com/wiki/rfc-42>.
+Kairos removed the link: ACME-T-0003 -[blocks]-> ACME-T-0004.
 ```
 
-The command fails with exit code 1 when the item has no reference with that
-URI.
+For an edge between two items, the CLI reads the relationships of the source.
+Then it removes the edge by its id. The command fails with exit code 1 when the
+source has no such edge, or no reference with that URI.
 
 ## Finding work
 
@@ -2165,15 +2276,18 @@ kairos repos write-token remove <REPOSITORY> --confirm [OPTIONS]
 kairos repos write-token status <REPOSITORY> [OPTIONS]
 ```
 
-Sets, removes or shows the write token of the GitHub write-back
-(KAIROS-T-0386). With the token, Kairos writes a comment and the status
-`kairos` on each linked pull request. You must be an organization admin or a
-member of the owner team.
+Sets, removes or shows the write token of the write-back (KAIROS-T-0386).
+With the token, Kairos writes a comment and the status `kairos` on each
+linked GitHub pull request. Kairos also comments on each issue that became a
+task. It closes or opens the issue with the task (KAIROS-T-0575). You must be
+an organization admin or a member of the owner team.
 
 `set` reads the token from standard input, as `kairos repos credential set`
-does. Then Kairos writes each open pull request that links to an item. Use a
-GitHub fine-grained token with "Pull requests: write" and "Commit statuses:
-write" on the one repository. Only a GitHub repository takes a write token.
+does. Then Kairos writes each open pull request that links to an item. On
+GitHub, use a fine-grained token with "Pull requests: write", "Commit
+statuses: write" and "Issues: write" on the one repository. On GitLab, use a
+project access token with the scope "api". Only a GitHub or a GitLab
+repository takes a write token.
 
 `remove` needs `--confirm`. Without it, the command removes nothing and
 exits 1.
@@ -2181,7 +2295,7 @@ exits 1.
 `remove` removes the token, and Kairos writes nothing more. `status` prints
 `off (no write token)`, or `on` with the last write. `kairos repos show` shows
 the same line. No command shows the token. See
-[Turn on GitHub write-back](../../how-to/turn-on-github-write-back/).
+[Turn on forge write-back](../../how-to/turn-on-github-write-back/).
 
 Repositories are the codebases that tasks link to. See
 [Repositories as execution scope](../../explanation/repositories-as-execution-scope/).
