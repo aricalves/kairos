@@ -1879,7 +1879,9 @@ The output has no such lines when the archive reached each descendant.
 Refuses: `VALIDATION` when `confirm` is `false` — checked before the short code
 is looked up, so such a call never reports an unknown item; `NOT_FOUND` for an
 unknown short code or an already-archived item; `FORBIDDEN` when the
-[edit rule](../capabilities/#the-edit-rule) refuses the caller. A call with no `confirm` gets `VALIDATION`.
+[edit rule](../capabilities/#the-edit-rule) refuses the caller;
+`AGENT_TRIAGE_OFF` for an agent's archive of intake while the board lets a
+person decide (KAIROS-T-0537). A call with no `confirm` gets `VALIDATION`.
 The text names the argument, and `details.argument` is `confirm`.
 
 ### `restore_item`
@@ -1961,8 +1963,14 @@ Needs the capability `purge` on the board of the task. Team membership does not
 give it, and `manage_tasks` is not enough. Organization admins have it. The
 creator of the task gets no right here.
 
-Refuses: `VALIDATION` when `confirm` is `false`; `NOT_FOUND` for an unknown
-short code; `FORBIDDEN` without `purge`; `TASK_LIVE` for a live task.
+Refuses:
+
+- `VALIDATION` when `confirm` is `false`.
+- `NOT_FOUND` for an unknown short code.
+- `FORBIDDEN` without `purge`.
+- `TASK_LIVE` for a live task.
+- `AGENT_TRIAGE_OFF` for an agent's purge of intake while the board lets a
+  person decide (KAIROS-T-0537).
 
 ## The structure of the organization
 
@@ -2514,10 +2522,12 @@ another column.
 
 An agent is a caller with an agent key, or a service account. Intake is a
 task in the support lane in the entry column of its board. Its triage is
-`set_work_class` to planned, `transition_item` out of the entry column,
-`move_item` to another board, or `cancel_item`. With the setting off (the
-default), Kairos refuses an agent's triage with `AGENT_TRIAGE_OFF`. The agent
-then writes its proposal with `append_note`: planned backlog, work now,
+`set_work_class` to planned, `transition_item` out of the entry column, or
+`move_item` to another board. A `cancel_item`, a `delete_item` and a
+`purge_task` are triage too (KAIROS-T-0537).
+
+With the setting off (the default), Kairos refuses an agent's triage with
+`AGENT_TRIAGE_OFF`. The agent then writes its proposal with `append_note`: planned backlog, work now,
 another team, or won't do, and why. A person moves the task.
 
 Once a person has triaged the task out of the entry column, an agent moves it

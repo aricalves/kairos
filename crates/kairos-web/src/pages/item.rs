@@ -842,12 +842,8 @@ fn task_end_powers(
                 .any(|c| Some(&c.id) == column.as_ref() && c.is_done)
         });
         let powers = boards::board_powers(&me, &board.slug, board.team_id.as_deref(), None);
-        let purge = boards::holds_capability(
-            &me,
-            Some(&board.slug),
-            board.team_id.as_deref(),
-            "purge",
-        );
+        let purge =
+            boards::holds_capability(&me, Some(&board.slug), board.team_id.as_deref(), "purge");
         TaskEndPowers::from_rule(powers.transition, purge, done)
     })
 }
