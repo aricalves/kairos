@@ -33,7 +33,7 @@ pub struct SearchArgs {
     #[arg(long, value_name = "BOARD")]
     pub board: Option<String>,
     /// Restrict to items in this column: a name (with --board) or a UUID
-    #[arg(long, value_name = "COLUMN_ID")]
+    #[arg(long, value_name = "COLUMN")]
     pub column: Option<String>,
     /// Restrict to tasks assigned to this team (slug or UUID)
     #[arg(long, value_name = "TEAM")]
@@ -42,8 +42,9 @@ pub struct SearchArgs {
     /// that link to it, and the documents and the ADRs that impact it
     #[arg(long, value_name = "REPOSITORY")]
     pub repo: Option<String>,
-    /// Task type filter, repeatable: task|bug|tech_debt|support
-    #[arg(long, value_name = "TASK_TYPE")]
+    /// The kind of a task, repeatable: task|bug|tech_debt|support. The old
+    /// name --task-type still works
+    #[arg(long = "kind", alias = "task-type", value_name = "KIND")]
     pub task_type: Vec<String>,
     /// Planned/Support lane filter, repeatable: planned|support
     /// (KAIROS-T-0077)
@@ -144,7 +145,7 @@ impl SearchArgs {
             (self.column.is_some(), "--column"),
             (self.team.is_some(), "--team"),
             (self.repo.is_some(), "--repo"),
-            (!self.task_type.is_empty(), "--task-type"),
+            (!self.task_type.is_empty(), "--kind"),
             (!self.work_class.is_empty(), "--work-class"),
             (self.is_bucket.is_some(), "--is-bucket"),
             (!self.metadata.is_empty(), "--metadata"),

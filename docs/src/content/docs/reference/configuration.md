@@ -875,6 +875,12 @@ It reads `activity_log` one page of rows at a time. It reads
 the code indexes one page of repositories at a time, with no structure. Each
 delete removes one batch of rows at most.
 
+The pass keeps each `activity_log` row that moves an item: the actions
+`transition`, `cancel` and `board_move`. It keeps them at each age, also past
+`KAIROS_ACTIVITY_RETENTION_DAYS`. The flow metrics of a board read these rows.
+Without them, a task in progress for more than the window has no start and no
+age.
+
 In the mode `archive` with no `KAIROS_ARCHIVE_TARGET`, the pass reads no row
 of `item_history`, `team_page_history` and `activity_log`, and removes none. The `retention_sweep`
 row and the record of the job then say `skipped: no target`. `/readyz` adds a
@@ -905,7 +911,7 @@ fallback to the default:
 |---|---|---|---|
 | `KAIROS_HISTORY_HOT_DAYS` | unsigned integer (days) | `90` | Hot window. `item_history` snapshots edited within this window are never touched. |
 | `KAIROS_HISTORY_KEEP_LATEST` | unsigned integer | `5` | Latest-N guard. The newest N versions of an item are never prune candidates regardless of age. |
-| `KAIROS_ACTIVITY_RETENTION_DAYS` | unsigned integer (days) | `365` | `activity_log` window. Rows older than this are archive-then-delete candidates, with no compaction tiers. |
+| `KAIROS_ACTIVITY_RETENTION_DAYS` | unsigned integer (days) | `365` | `activity_log` window. Rows older than this are archive-then-delete candidates, with no compaction tiers. The rows that move an item (`transition`, `cancel`, `board_move`) stay at each age. |
 | `KAIROS_ARCHIVE_TARGET` | filesystem path or `s3://…` URL | unset | Where prune candidates are offloaded as NDJSON. A `file://` prefix is stripped. An `s3://` value parses to a distinct S3 target that the shipped code rejects with a typed not-implemented error, rather than being misread as a directory name. Empty means no target. |
 | `KAIROS_NOTIFICATIONS_READ_DAYS` | unsigned integer (days) | `30` | The days that a read notification stays. `0` keeps read notifications. |
 | `KAIROS_NOTIFICATIONS_UNREAD_DAYS` | unsigned integer (days) | `180` | The days that an unread notification stays after the server made it. `0` keeps unread notifications. |

@@ -311,16 +311,33 @@ async fn org_and_admin_endpoints_against_live_stack() {
     }
 
     // Promote alice → two admins → demote alice again (allowed).
+    // KAIROS-T-0589: the route takes an email or a user name too.
     let body = svc
         .update_org_member(
-            &alice_id.to_string(),
+            "alice@kairos.test",
             &UpdateOrgMemberRequest {
                 role: "admin".into(),
             },
         )
         .await
-        .expect("promoting alice");
+        .expect("promoting alice by email");
     assert_eq!(body.role, "admin");
+    assert_eq!(body.user_id, alice_id.to_string());
+    let alice_user_name: String = users::table
+        .filter(users::id.eq(alice_id))
+        .select(users::user_name)
+        .first(&mut conn)
+        .expect("alice's user name");
+    let body = svc
+        .update_org_member(
+            &alice_user_name,
+            &UpdateOrgMemberRequest {
+                role: "member".into(),
+            },
+        )
+        .await
+        .expect("demoting alice by user name");
+    assert_eq!(body.role, "member");
     let body = svc
         .update_org_member(
             &alice_id.to_string(),
@@ -329,13 +346,27 @@ async fn org_and_admin_endpoints_against_live_stack() {
             },
         )
         .await
-        .expect("demoting alice");
+        .expect("the id still works");
     assert_eq!(body.role, "member");
+    // An unknown member is refused, and the refusal names it.
+    let err = rejection(
+        svc.update_org_member(
+            "nobody@kairos.test",
+            &UpdateOrgMemberRequest {
+                role: "member".into(),
+            },
+        )
+        .await,
+    );
+    assert!(err.to_string().contains("nobody@kairos.test"), "{err}");
 
-    // Remove bob → membership gone; re-add for the capability lifecycle.
-    svc.remove_org_member(&bob_id.to_string())
+    // Remove bob (by email) → membership gone; re-add for the capability
+    // lifecycle.
+    let removed = svc
+        .remove_org_member("bob@kairos.test")
         .await
-        .expect("removing bob");
+        .expect("removing bob by email");
+    assert_eq!(removed.user_id, bob_id.to_string());
     let err = rejection(bob.list_tasks(Pagination::default()).await);
     assert!(matches!(err, Error::Forbidden { .. }), "{err}");
     assert_eq!(err.code(), Some("MEMBERSHIP_REQUIRED"), "{err}");
