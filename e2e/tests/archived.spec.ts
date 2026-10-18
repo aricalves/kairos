@@ -290,12 +290,23 @@ test('an archived card still names the column it was put away in', async ({
     name: 'E2E Retired',
     position: 90,
   });
+  // KAIROS-T-0566: a task starts in the entry column. A transition of
+  // this spec's own takes it to the column, and goes again.
+  const entry = board.columns[0];
   const parked = await createTask(
     token,
     board.id,
-    retired.id,
+    entry.id,
     'E2E: parked in a column that went away',
   );
+  const edge = await api(token, 'POST', `/api/boards/${board.id}/transitions`, {
+    from_column_id: entry.id,
+    to_column_id: retired.id,
+  });
+  await api(token, 'POST', `/api/tasks/${parked.short_code}/transition`, {
+    to_column_id: retired.id,
+  });
+  await api(token, 'DELETE', `/api/boards/${board.id}/transitions/${edge.id}`);
   await api(token, 'DELETE', `/api/tasks/${parked.short_code}`);
   // Only its archived occupant remains, so the removal goes through
   // (KAIROS-T-0161) — and the column ROW survives, which is the point.

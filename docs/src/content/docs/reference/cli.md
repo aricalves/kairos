@@ -465,7 +465,7 @@ Board placement per noun:
 | `initiatives` | `--board <BOARD>` | slug or UUID | required | Board to create the initiative on. |
 | `initiatives` | `--column <COLUMN>` | name or UUID | the board's first column | Only the entry column (Discovery). An initiative starts there, and a different column is refused with `VALIDATION` (KAIROS-T-0643). |
 | `tasks` | `--board <BOARD>` | slug or UUID | required unless `--team` is given | Delivery board to create the task on. The board decides the team of the task. With `--team` and no `--board`, the task goes to the delivery board of that team. |
-| `tasks` | `--column <COLUMN>` | name or UUID | the board's first column | Column to place it in. A name is a column of `--board`, else of the delivery board of `--team`. |
+| `tasks` | `--column <COLUMN>` | name or UUID | the board's first column | Only the entry column. A name is a column of `--board`, else of the delivery board of `--team`. A task starts there, and a different column is refused with `VALIDATION`, for each caller (KAIROS-T-0566). Move the task after the create. |
 | `documents` | `--board <BOARD>` | slug or UUID | required | The owner board of the document. It gives the right to edit the document, and the code of the document gets the prefix of this board. The document is not a card of the board. |
 | `documents` | `--parent <SHORT_CODE>` | string | none | The workflow item the document supports. It does not give the document an owner board. |
 | `adrs` | `--board <BOARD>` | slug or UUID | none | ADR board. Omitting it creates an off-board ADR, which is an org-admin operation. |
@@ -497,8 +497,7 @@ Options specific to one noun:
 repository, use [`kairos repos link`](#kairos-repos-link).
 
 A caller without `manage_tasks` on the board creates a request. The request
-goes to the entry column. For that caller, a `--column` that names a different
-column gets a 403. See
+goes to the entry column, as each new task does. See
 [Send a request to a different team](../../how-to/move-work-between-boards/#send-a-request-to-a-different-team).
 
 ### `<noun> edit`
@@ -1895,6 +1894,48 @@ With `--json`, each row has the fields of
 `GET /api/repositories/{slug}/code-indexes/commits`. See
 [the pages of a list](#the-pages-of-a-list).
 
+### `kairos repos local`
+
+```text
+kairos repos local [<FOLDER>] [OPTIONS]
+```
+
+List the clones and the worktrees of a folder, with the repository of each.
+Use it in a board folder: a folder that holds the clones of a team. The
+command lists each subfolder that has a `.git`. A folder that is a checkout
+gives only that checkout. The command skips hidden folders.
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<FOLDER>` | path | the current folder | The board folder, or a checkout. |
+| `--url <URL>` | string | `KAIROS_URL`, else `deployment_url` in `.claude/kairos.local.md` of the folder, else the only deployment of `kairos login` | The deployment. |
+
+| Column | Meaning |
+|---|---|
+| `FOLDER` | The name of the subfolder, or `.` for the folder itself. |
+| `REPOSITORY` | The slug of the repository whose `repo_url` is the `origin` remote, or `-`. |
+| `KIND` | `clone`, or `worktree of <clone>/`. |
+| `BRANCH` | The branch of the checkout, or `(detached)`. |
+| `BEHIND` | The commits of the default branch that the checkout does not have, and the branch. |
+| `REMOTE` | The `origin` remote as `host/path`, or `-`. |
+
+The command compares the remotes as `kairos index update` does. It removes
+the scheme, the user, the token and the `.git` suffix. The output never
+shows a user or a token.
+
+The command runs no fetch. It counts from the local refs, as of the last
+fetch. The default branch is the branch of the repository in Kairos. When
+the checkout has no ref of that branch, the command uses `origin/HEAD`. Then
+it uses `origin/main`, then `origin/master`.
+
+With `--json`, the command prints `items`, `total` and `next_offset`. Each
+item has the fields `folder`, `path`, `worktree`, `clone`, `branch`,
+`remote`, `repository`, `default_branch` and `behind`. A field with no value
+is `null`.
+
+The session hook of the plugin runs this command in a board folder. When the
+CLI has no such command, the hook lists the clones itself.
+
 ### `kairos repos credential set`
 
 ```
@@ -2434,7 +2475,9 @@ kairos index update [--root <ROOT>] [--rust-edges] [--link-only] [--max-changed 
 | `--tenant <TENANT>` | string | `tenant` in `.claude/kairos.local.md`, else the tenant of the login | The tenant, for a token from `kairos login`. A key carries its tenant. |
 
 Updates the index for the changes in the checkout, also the changes that are
-not committed. With no index, the command starts from the nearest base index
+not committed. Git excludes `.claude/kairos.local.md`, so a worktree has no
+such file. In a worktree, the command reads the file of the main clone. The
+main clone is the folder above `git rev-parse --git-common-dir`. With no index, the command starts from the nearest base index
 in Kairos. See
 [`kairos index update` and the base index](../configuration/#kairos-index-update-and-the-base-index).
 

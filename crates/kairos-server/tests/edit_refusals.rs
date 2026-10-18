@@ -13,6 +13,7 @@
 //! 3. `require_item_archive` by a member of an initiative board, who may
 //!    edit: the grant on the board.
 //! 4. `require_edge_write`: the two ends, one on a board and one with none.
+//!    A `blocks` edge names the target first (KAIROS-T-0569).
 //! 5. `require_edge_remove` of the `supports` edge of a document.
 //!
 //! And the role: the admin role of the request lets an edit through, and a
@@ -288,15 +289,18 @@ fn each_refusal_of_the_edit_and_link_rules_is_unchanged() {
             (task, ItemType::Task),
             (adr, ItemType::Adr),
         ),
-        "A blocks edge needs \"manage_tasks\" on the board of the source, or the \
-         organization admin role for the target.",
+        "A blocks edge needs the organization admin role for the target, the blocked item. \
+         With \"manage_tasks\" on the board of the source, the call makes a proposal of the \
+         edge.",
         json!({
             "relationship": "blocks",
-            "required_capability": "manage_tasks",
-            "board_id": delivery,
+            "required_capability": "manage_adrs",
+            "board_id": null,
             "any_of": [
-                {"end": "source", "required_capability": "manage_tasks", "board_id": delivery},
-                {"end": "target", "required_capability": "manage_adrs", "board_id": null},
+                {"end": "target", "required_capability": "manage_adrs", "board_id": null,
+                 "gives": "edge"},
+                {"end": "source", "required_capability": "manage_tasks", "board_id": delivery,
+                 "gives": "proposal"},
             ],
         }),
     );

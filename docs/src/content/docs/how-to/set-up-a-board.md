@@ -188,7 +188,8 @@ The column head on the board shows the live count against the limit, for
 example **WIP 2/3**. When the column has more items than the limit, the chip
 says **over** and the head has a red line. `board_items` (REST and MCP) gives
 the same count. A move into a column over its limit succeeds. The answer has a
-warning: the header `Kairos-Warning` on REST, a line on MCP.
+warning: the header `Kairos-Warning` on REST, a line on MCP. A create (into the
+entry column), a cancel (into the done column) and a restore warn the same way.
 
 ## Set a board policy
 

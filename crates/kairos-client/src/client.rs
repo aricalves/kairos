@@ -39,8 +39,8 @@ use crate::types_meta::{
     ActivityEntry, ActivityQuery, ChildrenProgressResponse, CreateMetadataDefinitionRequest,
     CreateRelationshipRequest, CreateTemplateRequest, DeletedResponse, HistoryQuery,
     HistorySnapshot, HistoryVersion, ItemMetadataResponse, ItemRelationshipsResponse,
-    MetadataDefinition, Relationship, Template, TemplateDetail, UpdateMetadataDefinitionRequest,
-    UpdateMetadataRequest, UpdateTemplateRequest,
+    MetadataDefinition, ProposedRelationship, Relationship, RelationshipOutcome, Template,
+    TemplateDetail, UpdateMetadataDefinitionRequest, UpdateMetadataRequest, UpdateTemplateRequest,
 };
 use crate::types_org::{
     AddBoardMemberRequest, AddOrgMemberRequest, AddStreamTeamRequest, AddTeamMemberRequest,
@@ -2390,12 +2390,50 @@ impl KairosClient {
     }
 
     /// `POST /api/relationships`. The link rule applies
-    /// (COLLIERY-T-0228): the caller may edit the item at either end.
+    /// (COLLIERY-T-0228): the caller may edit the item at either end. A
+    /// `blocks` edge needs the target (KAIROS-T-0569). A 202 (a proposal)
+    /// is an [`Error::UnexpectedResponse`] here: use
+    /// [`Self::link_or_propose`] to read it.
     pub async fn create_relationship(
         &self,
         request: &CreateRelationshipRequest,
     ) -> Result<Relationship, Error> {
         self.post_created("/api/relationships", request).await
+    }
+
+    /// `POST /api/relationships`, with the two answers (KAIROS-T-0569):
+    /// 201 the edge, 202 a proposal of a `blocks` edge from a caller who
+    /// can edit the source only.
+    pub async fn link_or_propose(
+        &self,
+        request: &CreateRelationshipRequest,
+    ) -> Result<RelationshipOutcome, Error> {
+        let path = "/api/relationships";
+        let context = format!("POST {path}");
+        let builder = self
+            .authorize(self.http.post(self.url(path)).json(request))
+            .await?;
+        let response = builder.send().await?;
+        let status = response.status().as_u16();
+        let body = response.text().await?;
+        let decode = |source| Error::Decode {
+            context: context.clone(),
+            source,
+        };
+        match status {
+            201 => serde_json::from_str::<Relationship>(&body)
+                .map(RelationshipOutcome::Linked)
+                .map_err(decode),
+            202 => serde_json::from_str::<ProposedRelationship>(&body)
+                .map(RelationshipOutcome::Proposed)
+                .map_err(decode),
+            _ => match serde_json::from_str::<ErrorEnvelope>(&body) {
+                Ok(envelope) if !(200..300).contains(&status) => {
+                    Err(Error::from_envelope(status, envelope))
+                }
+                _ => Err(Error::UnexpectedResponse { status, body }),
+            },
+        }
     }
 
     /// `PUT /api/{family}/{short_code}/parent` (KAIROS-T-0572): set the
