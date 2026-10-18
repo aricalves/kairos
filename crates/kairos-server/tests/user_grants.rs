@@ -197,7 +197,9 @@ async fn the_grants_of_one_person_on_many_boards_against_live_stack() {
             "configure_boards",
             "administer_members",
             "pages",
-            "purge"
+            "purge",
+            // KAIROS-T-0659: on each level.
+            "approve_proposals"
         ]
     );
     assert!(strings(&row(&view, "strategy")["applicable"]).contains(&"manage_strategies".into()));
