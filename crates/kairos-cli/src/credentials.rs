@@ -304,7 +304,8 @@ pub fn lock(path: &Path) -> Result<CacheLock, CliError> {
 }
 
 /// Take the lock of the cache at `path` if no other holder has it. `None`
-/// when another holder has the lock.
+/// when another holder has the lock. The tests use it.
+#[cfg(test)]
 pub fn try_lock(path: &Path) -> Result<Option<CacheLock>, CliError> {
     let file = open_lock_file(path)?;
     match file.try_lock() {
