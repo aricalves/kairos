@@ -266,7 +266,7 @@ journey(
       const hits = await cli.json([
         'search', '--repo', THEIR_REPO, '--created-by', me.user.email, '--limit', '100',
       ]);
-      const row = (hits.results?.tasks ?? []).find((t: any) => t.short_code === filed);
+      const row = (hits.items.filter((h: any) => h.entity_type === 'task')).find((t: any) => t.short_code === filed);
       expect(row, `${filed} is in the search by its author`).toBeTruthy();
       expect((await (await alice.api()).task(filed)).created_by).toBe(me.user.id);
       return { task: filed, created_by: me.user.email };

@@ -285,12 +285,12 @@ journey(
       const cli = await alice.cli();
       // By board, not by repository: the request has no repository.
       const unplanned = await cli.json(['search', '--work-class', 'support', '--board', team.boardId, '--limit', '100']);
-      const unplannedCodes = (unplanned.results?.tasks ?? []).map((t: any) => t.short_code);
+      const unplannedCodes = (unplanned.items.filter((h: any) => h.entity_type === 'task')).map((t: any) => t.short_code);
       expect(unplannedCodes).toContain(request);
       expect(unplannedCodes).toContain(bug);
       expect(unplannedCodes).not.toContain(planned);
       const asPlanned = await cli.json(['search', '--work-class', 'planned', '--board', team.boardId, '--limit', '100']);
-      const plannedCodes = (asPlanned.results?.tasks ?? []).map((t: any) => t.short_code);
+      const plannedCodes = (asPlanned.items.filter((h: any) => h.entity_type === 'task')).map((t: any) => t.short_code);
       expect(plannedCodes).toContain(planned);
       expect(plannedCodes).not.toContain(request);
       return { unplanned: unplannedCodes.length, unplanned_codes: [request, bug], planned_codes: [planned] };

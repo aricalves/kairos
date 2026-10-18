@@ -180,8 +180,8 @@ journey(
       const cli = await bob.cli();
       const hits = await cli.json(['search', '--metadata', `${fieldSlug}=sev1`, '--limit', '50']);
       const codes = [
-        ...(hits.results?.documents ?? []),
-        ...(hits.results?.tasks ?? []),
+        ...(hits.items.filter((h: any) => h.entity_type === 'document')),
+        ...(hits.items.filter((h: any) => h.entity_type === 'task')),
       ].map((d: any) => d.short_code);
       expect(codes).toContain(writeUp);
       return { document: writeUp, severity: 'sev3 → sev1', found_by: `${fieldSlug}=sev1`, hits: codes.length };
@@ -238,7 +238,7 @@ journey(
       expect(shown).toContain(`${fieldSlug}: sev1`);
       const cli = await bob.cli();
       const hits = await cli.json(['search', '--metadata', `${fieldSlug}=sev1`, '--limit', '50']);
-      const codes = (hits.results?.documents ?? []).map((d: any) => d.short_code);
+      const codes = (hits.items.filter((h: any) => h.entity_type === 'document')).map((d: any) => d.short_code);
       expect(codes).toContain(writeUp);
       return {
         document: writeUp,
