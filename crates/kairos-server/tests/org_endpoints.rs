@@ -876,14 +876,16 @@ async fn org_and_admin_endpoints_against_live_stack() {
         .await
         .expect("replacing bob's capability set");
     assert_eq!(body.capabilities, ["manage_strategies"]);
-    // KAIROS-T-0410: bob still holds a grant on the strategy board, so he is
-    // a member of it, and membership gives `transition_items` with no grant.
-    // The move is not refused for a capability.
-    let moved = bob.transition_strategy(&strategy_code, &draft_col).await;
-    assert!(
-        !matches!(moved, Err(Error::Forbidden { .. })),
-        "a member of the strategy board moves its strategies: {moved:?}"
-    );
+    // KAIROS-T-0541: `manage_strategies` does not make bob a member of the
+    // board (only the `member` grant does), so the move is refused. Until
+    // KAIROS-T-0541 any grant made a member, and this move passed.
+    let err = rejection(bob.transition_strategy(&strategy_code, &draft_col).await);
+    match &err {
+        Error::Forbidden { capability, .. } => {
+            assert_eq!(capability.as_deref(), Some("transition_items"));
+        }
+        other => panic!("expected Forbidden, got {other}"),
+    }
 
     // DELETE revokes everything → the write 403s again; PATCHing a
     // non-member is 404.

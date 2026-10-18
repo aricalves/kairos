@@ -1066,8 +1066,8 @@ pub struct GrantCapabilityParams {
     pub user: String,
     /// A board capability (manage_tasks, manage_documents, manage_adrs,
     /// manage_initiatives, manage_strategies, transition_items,
-    /// configure_boards, administer_members, pages, or a glob: *, manage_*,
-    /// configure_*, transition_*), or manage_structure.
+    /// configure_boards, administer_members, pages, member, or a glob: *,
+    /// manage_*, configure_*, transition_*), or manage_structure.
     pub capability: String,
     /// The board, by slug or UUID. A board capability needs it. For
     /// manage_structure, omit it for a grant at the organization.
@@ -1463,10 +1463,10 @@ impl KairosMcp {
             }
             for ((slug, name), (level, capabilities)) in by_board {
                 out.push_str(&format!("- {slug} ({name}): {}\n", capabilities.join(", ")));
-                // KAIROS-T-0410: a grant on a strategy or initiative board
-                // makes me a member of it, and membership gives the edit
-                // and the move of each item on it, with no grant.
-                let member = member_capabilities(level);
+                // KAIROS-T-0410: the `member` grant on a strategy or
+                // initiative board (KAIROS-T-0541) gives the edit and the
+                // move of each item on it. No other grant does.
+                let member = member_capabilities(level, &capabilities);
                 if !member.is_empty() {
                     out.push_str(&format!(
                         "- {slug} ({name}): {} (board member, no grant)\n",
@@ -1786,12 +1786,23 @@ impl KairosMcp {
                 .select(team_members::team_id)
                 .load(conn)
                 .map_err(ApiError::internal)?;
-            let my_grant_boards: Vec<Uuid> = caps::table
+            let my_grants: Vec<(Uuid, String)> = caps::table
                 .filter(caps::user_id.eq(user_id))
-                .select(caps::board_id)
-                .distinct()
+                .select((caps::board_id, caps::capability))
                 .load(conn)
                 .map_err(ApiError::internal)?;
+            let mut my_grant_boards: Vec<Uuid> = my_grants.iter().map(|(b, _)| *b).collect();
+            my_grant_boards.sort_unstable();
+            my_grant_boards.dedup();
+            // KAIROS-T-0541: the grants of each board, to tell a member
+            // (the `member` grant) from a holder of other grants.
+            let grants_on = |board_id: Uuid| -> Vec<&str> {
+                my_grants
+                    .iter()
+                    .filter(|(b, _)| *b == board_id)
+                    .map(|(_, c)| c.as_str())
+                    .collect()
+            };
 
             let is_mine = |board: &Board| {
                 board.board_level == BoardLevel::Delivery
@@ -1894,9 +1905,9 @@ impl KairosMcp {
                     ));
                 }
                 // KAIROS-T-0410: what membership of a strategy or initiative
-                // board (any grant on it) gives me, with no grant.
-                let member = member_capabilities(board.board_level);
-                if !member.is_empty() && my_grant_boards.contains(&board.id) {
+                // board (the `member` grant, KAIROS-T-0541) gives me.
+                let member = member_capabilities(board.board_level, &grants_on(board.id));
+                if !member.is_empty() {
                     out.push_str(&format!("  member capabilities: {}\n", member.join(", ")));
                 }
             }
@@ -3001,7 +3012,7 @@ impl KairosMcp {
         self.run_tool(&tenant, move |conn| {
             let reader = crate::api::notifications::reader_for(conn, user, key)?;
             let before = params.before.as_deref();
-            let (items, unread) = crate::api::notifications::list_for(conn, &reader, before)?;
+            let (items, unread) = crate::api::notifications::list_for(conn, &reader, before, None)?;
             Ok(events_text(&items, unread, before.is_some()))
         })
         .await
@@ -4579,7 +4590,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Grant a capability to a member (`user`: user id, email, user name or service account name). A board capability (manage_tasks, manage_documents, manage_adrs, manage_initiatives, manage_strategies, transition_items, configure_boards, administer_members, pages, or a glob such as manage_*) needs `board` and `administer_members` there, or `manage_structure`. `manage_structure` (only an org admin grants it): with no `board`, the structure of the organization; with `board`, that board's columns, transitions, members and grants."
+        description = "Grant a capability to a member (`user`: user id, email, user name or service account name). A board capability (manage_tasks, manage_documents, manage_adrs, manage_initiatives, manage_strategies, transition_items, configure_boards, administer_members, pages, member, or a glob such as manage_*) needs `board` and `administer_members` there, or `manage_structure`. `manage_structure` (only an org admin grants it): with no `board`, the structure of the organization; with `board`, that board's columns, transitions, members and grants."
     )]
     pub async fn grant_capability(
         &self,
@@ -7428,12 +7439,12 @@ fn team_capabilities(level: BoardLevel) -> &'static [&'static str] {
     kairos_core::abac::team_capabilities(level.as_str())
 }
 
-/// The capabilities that membership of a board of `level` gives with no
-/// grant (KAIROS-T-0410): on a strategy or initiative board, a member (any
-/// grant on it) edits and moves each item. The vocabulary is
-/// `kairos_core::abac`.
-fn member_capabilities(level: BoardLevel) -> &'static [&'static str] {
-    kairos_core::abac::board_member_capabilities(level.as_str())
+/// The capabilities that membership of a board of `level` gives
+/// (KAIROS-T-0410): on a strategy or initiative board, a member edits and
+/// moves each item. Since KAIROS-T-0541 only the `member` grant (or `*`)
+/// in `grants` makes a member. The vocabulary is `kairos_core::abac`.
+fn member_capabilities<S: AsRef<str>>(level: BoardLevel, grants: &[S]) -> &'static [&'static str] {
+    kairos_core::abac::member_capabilities_of_grants(level.as_str(), grants)
 }
 
 /// The board level whose boards host this item type.

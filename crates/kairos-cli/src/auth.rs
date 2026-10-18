@@ -10,6 +10,9 @@
 //!   gives the CLI no device grant, for example Google.
 //! - **The deployment.** `--url`, else `KAIROS_URL`, else the only
 //!   deployment in the credential cache.
+//! - **The warning.** A key that hides a login for the same deployment
+//!   gives one line on stderr, unless `KAIROS_QUIET=1` (KAIROS-T-0594).
+//!   `kairos whoami` names the source of the credential.
 
 use std::fmt;
 use std::sync::OnceLock;
@@ -24,6 +27,9 @@ use crate::error::CliError;
 pub const KEY_VARS: [&str; 2] = ["KAIROS_KEY", "KAIROS_MCP_KEY"];
 /// The variable that can hold the deployment URL.
 pub const URL_VAR: &str = "KAIROS_URL";
+/// The variable that, set to `1`, stops the warning of a key that hides a
+/// login (KAIROS-T-0594).
+pub const QUIET_VAR: &str = "KAIROS_QUIET";
 
 /// The variable of the key that this process sends, when it sends one. The
 /// message of a 401 names it in place of `kairos login`.
@@ -54,6 +60,8 @@ pub struct Env {
     pub url: Option<String>,
     /// The name of the variable, and the key.
     pub key: Option<(&'static str, String)>,
+    /// True when `KAIROS_QUIET` is `1`.
+    pub quiet: bool,
 }
 
 impl fmt::Debug for Env {
@@ -61,6 +69,7 @@ impl fmt::Debug for Env {
         f.debug_struct("Env")
             .field("url", &self.url)
             .field("key", &self.key.as_ref().map(|(var, _)| (var, REDACTED)))
+            .field("quiet", &self.quiet)
             .finish()
     }
 }
@@ -79,6 +88,7 @@ impl Env {
             key: KEY_VARS
                 .iter()
                 .find_map(|var| get(var).map(|key| (*var, key.trim().to_string()))),
+            quiet: get(QUIET_VAR).is_some_and(|value| value.trim() == "1"),
         }
     }
 }
@@ -117,6 +127,47 @@ impl fmt::Debug for Source {
     }
 }
 
+impl Source {
+    /// The `credential:` line of `kairos whoami` (KAIROS-T-0594). An agent
+    /// key and a service-account key have one format, so the line says
+    /// "key".
+    pub fn credential_line(&self) -> String {
+        match self {
+            Source::Key { var, .. } => format!("credential: key from {var}"),
+            Source::Cache { deployment, .. } => {
+                format!("credential: login cached for {deployment}")
+            }
+        }
+    }
+}
+
+/// The warning of a key that hides a login (KAIROS-T-0594). `None` when
+/// the source is the cache, when `KAIROS_QUIET` is `1`, or when the cache
+/// has no login for the deployment of the key. A cache that the CLI cannot
+/// read gives no warning: the key does not need the cache.
+pub fn override_warning(
+    source: &Source,
+    env: &Env,
+    load: impl FnOnce() -> Result<CredentialStore, CliError>,
+) -> Option<String> {
+    let Source::Key {
+        deployment, var, ..
+    } = source
+    else {
+        return None;
+    };
+    if env.quiet {
+        return None;
+    }
+    let store = load().ok()?;
+    store.deployments.contains_key(deployment).then(|| {
+        format!(
+            "warning: {var} is set, so the CLI sends that key and not the login for \
+             {deployment}. Set {QUIET_VAR}=1 to hide this warning."
+        )
+    })
+}
+
 /// Choose the deployment and the bearer. `url` is the `--url` of the
 /// command; it wins over `KAIROS_URL`. `load` reads the credential cache.
 /// With a key and a URL, the CLI does not read the cache.
@@ -130,14 +181,7 @@ pub fn resolve(
         Some((var, key)) => {
             let deployment = match url {
                 Some(url) => credentials::normalize_url(&url),
-                None => load()
-                    .and_then(|store| credentials::resolve_deployment(&store, None))
-                    .map_err(|_| {
-                        CliError::Auth(format!(
-                            "{var} is set, but the CLI does not know the deployment.\n\
-                             Set {URL_VAR} or use --url."
-                        ))
-                    })?,
+                None => key_deployment(var, load)?,
             };
             Ok(Source::Key {
                 deployment,
@@ -150,6 +194,32 @@ pub fn resolve(
             let deployment = credentials::resolve_deployment(&store, url.as_deref())?;
             Ok(Source::Cache { deployment, store })
         }
+    }
+}
+
+/// The deployment of a key with no URL: the only login in the cache. The
+/// error says what is wrong with the cache (KAIROS-T-0594).
+fn key_deployment(
+    var: &str,
+    load: impl FnOnce() -> Result<CredentialStore, CliError>,
+) -> Result<String, CliError> {
+    let head =
+        format!("{var} is set, but no URL names the deployment. Set {URL_VAR} or use --url.");
+    let store = load().map_err(|err| {
+        CliError::Auth(format!(
+            "{head}\nThe CLI cannot find the deployment in the credential cache. {err}"
+        ))
+    })?;
+    let mut deployments = store.deployments.keys();
+    match (deployments.next(), deployments.next()) {
+        (Some(only), None) => Ok(only.clone()),
+        (None, _) => Err(CliError::Auth(format!(
+            "{head}\nThe credential cache has no login."
+        ))),
+        (Some(_), Some(_)) => Err(CliError::Auth(format!(
+            "{head}\nThe credential cache has logins for {} deployments.",
+            store.deployments.len()
+        ))),
     }
 }
 
@@ -263,6 +333,88 @@ mod tests {
             assert!(message.contains("KAIROS_KEY is set"), "{message}");
             assert!(message.contains("KAIROS_URL"), "{message}");
         }
+    }
+
+    /// KAIROS-T-0594: with a key and no URL, the error says what is wrong
+    /// with the cache.
+    #[test]
+    fn a_key_with_no_url_says_what_is_wrong_with_the_cache() {
+        let env = env(&[("KAIROS_MCP_KEY", "k")]);
+        let corrupted = || {
+            Err(CliError::Auth(
+                "The credential cache at /c/credentials.json is corrupted. The file is not \
+                 valid JSON: x."
+                    .into(),
+            ))
+        };
+        let message = resolve(None, &env, corrupted).unwrap_err().to_string();
+        assert!(message.contains("KAIROS_MCP_KEY is set"), "{message}");
+        assert!(
+            message.contains("is corrupted. The file is not valid JSON"),
+            "{message}"
+        );
+        assert!(!message.contains("does not know"), "{message}");
+
+        let message = resolve(None, &env, || Ok(store(&[])))
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("has no login"), "{message}");
+        let message = resolve(None, &env, || Ok(store(&["https://a", "https://b"])))
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("logins for 2 deployments"), "{message}");
+    }
+
+    /// KAIROS-T-0594: `whoami` names the source of the credential.
+    #[test]
+    fn the_credential_line_names_the_source() {
+        let key = resolve(
+            None,
+            &env(&[("KAIROS_MCP_KEY", "k"), ("KAIROS_URL", "https://x")]),
+            no_cache,
+        )
+        .unwrap();
+        assert_eq!(key.credential_line(), "credential: key from KAIROS_MCP_KEY");
+        let cache = resolve(None, &Env::default(), || Ok(store(&["https://a"]))).unwrap();
+        assert_eq!(
+            cache.credential_line(),
+            "credential: login cached for https://a"
+        );
+    }
+
+    /// KAIROS-T-0594: a key that hides a login for its deployment gives one
+    /// warning line, unless KAIROS_QUIET is 1.
+    #[test]
+    fn a_key_that_hides_a_login_gives_a_warning() {
+        let loud = env(&[("KAIROS_MCP_KEY", "k"), ("KAIROS_URL", "https://a/")]);
+        let source = resolve(None, &loud, no_cache).unwrap();
+        let warning =
+            override_warning(&source, &loud, || Ok(store(&["https://a"]))).expect("a warning");
+        assert_eq!(
+            warning,
+            "warning: KAIROS_MCP_KEY is set, so the CLI sends that key and not the login for \
+             https://a. Set KAIROS_QUIET=1 to hide this warning."
+        );
+        assert!(!warning.contains('\n'));
+
+        // No login for this deployment, no cache, a cache that cannot be read.
+        assert!(override_warning(&source, &loud, || Ok(store(&["https://b"]))).is_none());
+        assert!(override_warning(&source, &loud, || Ok(store(&[]))).is_none());
+        assert!(override_warning(&source, &loud, || Err(CliError::Auth("bad".into()))).is_none());
+
+        // KAIROS_QUIET=1 hides it; another value does not.
+        let quiet = env(&[
+            ("KAIROS_MCP_KEY", "k"),
+            ("KAIROS_URL", "https://a"),
+            ("KAIROS_QUIET", "1"),
+        ]);
+        assert!(quiet.quiet);
+        assert!(override_warning(&source, &quiet, || Ok(store(&["https://a"]))).is_none());
+        assert!(!env(&[("KAIROS_QUIET", "0")]).quiet);
+
+        // The cache is the source: no warning, and the cache is not read.
+        let cache = resolve(None, &Env::default(), || Ok(store(&["https://a"]))).unwrap();
+        assert!(override_warning(&cache, &loud, no_cache).is_none());
     }
 
     #[test]

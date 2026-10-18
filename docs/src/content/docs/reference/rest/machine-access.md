@@ -94,17 +94,20 @@ Request body (required): `application/json`, [`UpdateNotificationSettingsRequest
 
 The caller's notifications: each unread one (newest first, 100 at most),
 then the 20 newest read ones. `before` gives the next page of unread
-ones. The read state is the caller's: the person, or the agent key of
+ones. `read_before` gives the next page of read ones: 100 at most, read
+before that one (KAIROS-T-0584). The read state is the caller's: the person, or the agent key of
 the request (KAIROS-T-0550). A service account has none.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
 | `before` | query | no | `string` | The id of a notification. The page has the unread notifications older than it, and no read ones |
+| `read_before` | query | no | `string` | The id of a read notification. The page has the read notifications that the caller read before it, 100 at most, and no unread ones |
 
 | Response | Body | Meaning |
 |---|---|---|
 | `200` | [`NotificationList`](../schemas/#notificationlist) | The unread notifications, then the newest read ones |
-| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | `before` is not a notification of the caller |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | `before` or `read_before` is not a notification of the caller |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | `before` and `read_before` together, or `read_before` is unread for the caller |
 
 ### `POST /api/me/notifications/read`
 
