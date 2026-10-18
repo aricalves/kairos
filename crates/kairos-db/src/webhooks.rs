@@ -11,6 +11,10 @@
 //! transaction of the caller, so an event that is rolled back sends
 //! nothing, and the queue gives each job to one server.
 //!
+//! A delivery to a target that is off is `skipped`. It is kept for
+//! [`KEEP_DAYS`]; [`enable_target`] and [`redeliver_skipped`] queue it
+//! again (KAIROS-T-0577).
+//!
 //! [`record_try`] writes the result of a try. A failed try adds one to the
 //! failures in a row of the target; a good try sets them to 0. At the limit
 //! of the caller, the target is turned off, and its owners
@@ -296,17 +300,79 @@ pub fn delete_target(conn: &mut PgConnection, id: Uuid) -> Result<bool, DieselEr
     Ok(n == 1)
 }
 
-/// Turn the target `id` on, and set its failures in a row to 0. `None`:
-/// no such target.
-pub fn enable_target(conn: &mut PgConnection, id: Uuid) -> Result<Option<Target>, DieselError> {
-    sql_query(format!(
-        "UPDATE webhook_targets t SET enabled = true, consecutive_failures = 0, \
-             disabled_at = NULL, disabled_reason = NULL, updated_at = now() \
-         WHERE t.id = $1 RETURNING {TARGET_COLUMNS}"
-    ))
-    .bind::<SqlUuid, _>(id)
-    .get_result(conn)
-    .optional()
+/// Turn the target `id` on, set its failures in a row to 0, and queue its
+/// `skipped` deliveries again ([`redeliver_skipped`], KAIROS-T-0577), in
+/// one transaction. The second value: the deliveries queued again, oldest
+/// first. `None`: no such target.
+pub fn enable_target(
+    conn: &mut PgConnection,
+    id: Uuid,
+) -> Result<Option<(Target, Vec<Delivery>)>, DieselError> {
+    conn.transaction(|conn| {
+        let target: Option<Target> = sql_query(format!(
+            "UPDATE webhook_targets t SET enabled = true, consecutive_failures = 0, \
+                 disabled_at = NULL, disabled_reason = NULL, updated_at = now() \
+             WHERE t.id = $1 RETURNING {TARGET_COLUMNS}"
+        ))
+        .bind::<SqlUuid, _>(id)
+        .get_result(conn)
+        .optional()?;
+        let Some(target) = target else {
+            return Ok(None);
+        };
+        let redelivered = redeliver_skipped(conn, id, None)?;
+        Ok(Some((target, redelivered)))
+    })
+}
+
+/// Queue the `skipped` deliveries of the target `target_id` again
+/// (KAIROS-T-0577): each one that is at most [`KEEP_DAYS`] old, and not
+/// older than `since`. Each delivery keeps its id and its body, and becomes
+/// `pending` with a new job. The job of a delivery waits from the time of
+/// the event, so the queue takes the deliveries oldest first, and before
+/// the newer ones of the same priority. The payload of the job names the
+/// tries that the delivery had, so the log of the next try does not replace
+/// a row. The deliveries queued again, oldest first. The caller checks that
+/// the target is on.
+pub fn redeliver_skipped(
+    conn: &mut PgConnection,
+    target_id: Uuid,
+    since: Option<DateTime<Utc>>,
+) -> Result<Vec<Delivery>, DieselError> {
+    conn.transaction(|conn| {
+        let tenant = current_tenant(conn)?;
+        let mut deliveries: Vec<Delivery> = sql_query(format!(
+            "UPDATE webhook_deliveries d SET status = 'pending', last_error = NULL, \
+                 next_try_at = NULL, finished_at = NULL \
+             WHERE d.target_id = $1 AND d.status = 'skipped' \
+               AND d.created_at >= now() - make_interval(days => $2) \
+               AND ($3::timestamptz IS NULL OR d.created_at >= $3) \
+             RETURNING {DELIVERY_COLUMNS}"
+        ))
+        .bind::<SqlUuid, _>(target_id)
+        .bind::<Integer, _>(KEEP_DAYS as i32)
+        .bind::<Nullable<Timestamptz>, _>(since)
+        .load(conn)?;
+        deliveries.sort_by_key(|d| (d.created_at, d.id));
+        for delivery in &deliveries {
+            jobs::enqueue(
+                conn,
+                &NewJob {
+                    kind: JOB_KIND.to_string(),
+                    tenant: Some(tenant.clone()),
+                    payload: serde_json::json!({
+                        "delivery_id": delivery.id,
+                        "tries_before": delivery.tries,
+                    }),
+                    priority: JOB_PRIORITY,
+                    dedupe_key: Some(format!("webhook:{tenant}:{}", delivery.id)),
+                    run_after: Some(delivery.created_at),
+                    max_tries: DEFAULT_MAX_TRIES,
+                },
+            )?;
+        }
+        Ok(deliveries)
+    })
 }
 
 /// The owners of a target: the person who made it, and the persons who
@@ -375,14 +441,16 @@ pub fn queue_delivery(
         let id = Uuid::new_v4();
         let now = Utc::now();
         let body = delivery_body(id, event, &tenant, now, data);
-        let (status, error) = if target.enabled {
-            ("pending", None)
-        } else {
-            (
+        let (status, error) =
+            if target.enabled {
+                ("pending", None)
+            } else {
+                (
                 "skipped",
-                Some("The target is off. A board manager turns it on again.".to_string()),
+                Some("The target is off. Kairos sends the delivery when a board manager turns the \
+                 target on again.".to_string()),
             )
-        };
+            };
         let delivery: Delivery = sql_query(format!(
             "INSERT INTO webhook_deliveries AS d (id, target_id, event, item_id, body, status, \
                  last_error, created_at, finished_at, rule_id) \
@@ -640,7 +708,8 @@ fn turn_off(
     };
     let text = format!(
         "Kairos turned off the webhook target {} of the board {} after {} failed tries in a \
-         row. The last error: {} A board manager turns it on again in the board settings.",
+         row. The last error: {} A board manager turns it on again in the board settings. Then \
+         Kairos sends the deliveries that it skipped.",
         target.name,
         board.as_deref().unwrap_or("(removed)"),
         target.consecutive_failures,

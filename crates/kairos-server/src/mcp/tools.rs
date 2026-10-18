@@ -1085,8 +1085,9 @@ pub struct GrantCapabilityParams {
     pub user: String,
     /// A board capability (manage_tasks, manage_documents, manage_adrs,
     /// manage_initiatives, manage_strategies, transition_items,
-    /// configure_boards, administer_members, pages, member, or a glob: *,
-    /// manage_*, configure_*, transition_*), or manage_structure.
+    /// configure_boards, administer_members, pages, purge, member,
+    /// approve_proposals, or a glob: *, manage_*, configure_*,
+    /// transition_*), or manage_structure.
     pub capability: String,
     /// The board, by slug or UUID. A board capability needs it. For
     /// manage_structure, omit it for a grant at the organization.
@@ -1687,7 +1688,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "One repository: owner team and its delivery board, open task count, default branch and where it comes from, the team's `description` of how to work in it (read it before working in an unfamiliar repository), the documents and ADRs that impact it, the other ADRs of the owner team (newest first, 50 at most, none superseded; read each with `get_item` before planning), its open branches and pull requests with their items and those not linked to an item, the forge filters, and the lines read token, write-back, code index build and code index breaker (a tripped breaker stops builds until `rebuild_code_index` (admin profile)). `repository` is a slug or UUID; `include_deleted: true` adds archived documents and ADRs."
+        description = "One repository: owner team and its delivery board, open task count, default branch and where it comes from, the team's `description` of how to work in it (read it before working in an unfamiliar repository), the documents and ADRs that impact it, the other ADRs of the owner team (newest first, 50 at most, none superseded; read each with `get_item` before planning), its open branches and pull requests with their items and those not linked to an item, the forge filters, and the lines read token, write-back, code index build and code index breaker (a tripped breaker stops builds until `rebuild_code_index`). `repository` is a slug or UUID; `include_deleted: true` adds archived documents and ADRs."
     )]
     pub async fn get_repository(
         &self,
@@ -1843,7 +1844,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "The boards of the organization by level (strategy, initiative, delivery, ADR), with the columns and item counts of your delivery boards, the team of each ADR board, and the capabilities that your teams or your board memberships give you with no grant. Optional `level`."
+        description = "The boards of the organization by level (strategy, initiative, delivery, ADR), with the columns and item counts of your delivery boards, the team of each ADR board, the capabilities that your teams or your board memberships give you with no grant, and the boards where you approve edge proposals. Optional `level`."
     )]
     pub async fn my_boards(
         &self,
@@ -1998,9 +1999,23 @@ impl KairosMcp {
                 }
                 // KAIROS-T-0410: what membership of a strategy or initiative
                 // board (the `member` grant, KAIROS-T-0541) gives me.
-                let member = member_capabilities(board.board_level, &grants_on(board.id));
+                let grants = grants_on(board.id);
+                let member = member_capabilities(board.board_level, &grants);
                 if !member.is_empty() {
                     out.push_str(&format!("  member capabilities: {}\n", member.join(", ")));
+                }
+                // KAIROS-T-0659: a holder of `approve_proposals` decides the
+                // edge proposals of the items of this board.
+                if grants.iter().any(|grant| {
+                    kairos_core::abac::capability_matches(
+                        grant,
+                        kairos_core::abac::APPROVE_PROPOSALS,
+                    )
+                }) {
+                    out.push_str(
+                        "  approve_proposals: you confirm or reject the edge proposals of \
+                         its items\n",
+                    );
                 }
             }
             Ok(out)
@@ -2775,7 +2790,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Propose a `parent` or `blocks` edge between two items for a person to confirm; you cannot create or confirm it yourself. Use it when `related_work` shows a real dependency, and say why: the reason is shown to who decides. A person other than the proposer confirms or rejects it, and not with an agent key. That person must be able to edit one of the two items."
+        description = "Propose a `parent` or `blocks` edge between two items. The proposal is not an edge until someone confirms it. Use it when `related_work` shows a real dependency, and say why: the reason is shown to who decides. A holder of `approve_proposals` on the board of one of the two items confirms or rejects it, or an organization admin. The holder can be you, your agent key or a service account. The answer names the two boards."
     )]
     pub async fn propose_edge(
         &self,
@@ -2810,10 +2825,16 @@ impl KairosMcp {
                 user,
             )
             .map_err(crate::api::proposals::map_proposal_error)?;
+            // KAIROS-T-0659: the answer says who decides.
+            let boards = kairos_db::proposals::approval_boards(conn, source.id, target.id)
+                .map_err(crate::api::proposals::map_proposal_error)?;
             Ok(format!(
-                "Proposed {} -[{}]-> {} ({}). It is NOT an edge yet. A person other than the \
-                 proposer must confirm it, and not with an agent key.",
-                source.short_code, params.relationship, target.short_code, proposal.id
+                "Proposed {} -[{}]-> {} ({}). It is NOT an edge yet. {}",
+                source.short_code,
+                params.relationship,
+                target.short_code,
+                proposal.id,
+                boards.deciders()
             ))
         })
         .await
@@ -4705,7 +4726,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Grant a capability to a member (`user`: user id, email, user name or service account name). A board capability (manage_tasks, manage_documents, manage_adrs, manage_initiatives, manage_strategies, transition_items, configure_boards, administer_members, pages, member, or a glob such as manage_*) needs `board` and `administer_members` there, or `manage_structure`. `manage_structure` (only an org admin grants it): with no `board`, the structure of the organization; with `board`, that board's columns, transitions, members and grants."
+        description = "Grant a capability to a member (`user`: user id, email, user name or service account name). A board capability (manage_tasks, manage_documents, manage_adrs, manage_initiatives, manage_strategies, transition_items, configure_boards, administer_members, pages, purge, member, approve_proposals, or a glob such as manage_*) needs `board` and `administer_members` there, or `manage_structure`. `manage_structure` (only an org admin grants it): with no `board`, the structure of the organization; with `board`, that board's columns, transitions, members and grants."
     )]
     pub async fn grant_capability(
         &self,
