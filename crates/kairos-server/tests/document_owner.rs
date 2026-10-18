@@ -551,6 +551,7 @@ async fn adr_by(client: &KairosClient, board: &str, title: &str) -> Adr {
             content: "original content".into(),
             decision_maker: None,
             decision_date: None,
+            parent: None,
         })
         .await
         .unwrap_or_else(|e| panic!("creating ADR {title:?}: {e}"))
