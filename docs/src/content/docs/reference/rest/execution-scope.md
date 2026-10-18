@@ -170,9 +170,9 @@ exact.
 ### `GET /api/repositories/{slug}/code-indexes/commits`
 
 One page of the indexed commits of a repository, newest write first
-(KAIROS-T-0518). The server keeps `limit` in the range 1 to 200, with
-50 when it is not given. `offset` skips the newest rows. `total` is
-exact. Each row has the schema version of its index file.
+(KAIROS-T-0518). The server keeps `limit` in the range 1 to 200. The
+default `limit` is 50. `offset` skips the newest rows. `total` is exact.
+Each row has the schema version of its index file.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
