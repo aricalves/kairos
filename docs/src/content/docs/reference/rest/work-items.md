@@ -555,8 +555,9 @@ Request body (required): `application/json`, [`SetTaskRepositoryRequest`](../sch
 Write the live state of a task (KAIROS-T-0506): branch, last commit,
 pushed, PR, next step. One state for each task; the write replaces it.
 Kairos clears a field that you do not send. The state is not content:
-no new version of the task. The edit rule applies: the creator of the
-task, or `manage_tasks` on its board.
+no new version of the task. A write that changes a field writes one
+activity row with the names of the fields (KAIROS-T-0557). The edit
+rule applies: the creator of the task, or `manage_tasks` on its board.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|

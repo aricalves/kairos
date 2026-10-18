@@ -259,7 +259,8 @@ async fn get_history_lists_the_activity_of_the_item_newest_first() {
         json!({"short_code": code, "to": "bob@kairos.test"}),
     )
     .await;
-    mcp.call_ok("release_item", json!({"short_code": code})).await;
+    mcp.call_ok("release_item", json!({"short_code": code}))
+        .await;
     mcp.call_ok(
         "set_work_class",
         json!({"short_code": code, "work_class": other_lane}),

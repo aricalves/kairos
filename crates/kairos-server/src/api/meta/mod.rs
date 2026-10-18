@@ -341,7 +341,10 @@ pub fn apply_metadata_ops(
                         metadata_definition_id: *definition_id,
                         value: value.clone(),
                     })
-                    .on_conflict((item_metadata::item_id, item_metadata::metadata_definition_id))
+                    .on_conflict((
+                        item_metadata::item_id,
+                        item_metadata::metadata_definition_id,
+                    ))
                     .do_update()
                     .set(item_metadata::value.eq(value))
                     .execute(conn)?;

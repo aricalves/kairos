@@ -127,14 +127,14 @@ pub(crate) async fn get_history(
 
 /// The activity of one item, newest first (KAIROS-T-0557).
 ///
-/// Each row has the action, the details as they are stored, and `text`:
-/// the row as one line, with the names of the people, the boards, the
-/// columns and the repositories instead of their ids. The list has the
-/// rows about the item: moves, cancels, board moves, claims, hand-offs,
-/// releases, the lane, the repository, metadata values, state writes,
-/// links, renames, the archive and the restore. A link between two items
-/// is in the list of each of the two. An archived item has its activity
-/// too.
+/// Each row has the action, the stored details, and `text`. The text is
+/// the row as one line. It names the people, the boards, the columns and
+/// the repositories.
+///
+/// The list has moves, cancels, claims, hand-offs and releases. It also
+/// has the lane, metadata values, state writes and links. A link between
+/// two items is in the list of the two items. An archived item has its
+/// activity too.
 #[utoipa::path(
     get,
     path = "/api/{entity_type}/{short_code}/activity",

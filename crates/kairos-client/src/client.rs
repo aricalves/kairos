@@ -38,9 +38,9 @@ use crate::types_auth::{DeploymentConfig, LoginRequest, LoginResponse};
 use crate::types_meta::{
     ActivityEntry, ActivityQuery, ChildrenProgressResponse, CreateMetadataDefinitionRequest,
     CreateRelationshipRequest, CreateTemplateRequest, DeletedResponse, HistoryQuery,
-    HistorySnapshot, HistoryVersion, ItemActivityEntry, ItemActivityQuery, ItemMetadataResponse, ItemRelationshipsResponse,
-    MetadataDefinition, Relationship, Template, TemplateDetail, UpdateMetadataDefinitionRequest,
-    UpdateMetadataRequest, UpdateTemplateRequest,
+    HistorySnapshot, HistoryVersion, ItemActivityEntry, ItemActivityQuery, ItemMetadataResponse,
+    ItemRelationshipsResponse, MetadataDefinition, Relationship, Template, TemplateDetail,
+    UpdateMetadataDefinitionRequest, UpdateMetadataRequest, UpdateTemplateRequest,
 };
 use crate::types_org::{
     AddBoardMemberRequest, AddOrgMemberRequest, AddStreamTeamRequest, AddTeamMemberRequest,

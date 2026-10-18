@@ -529,11 +529,15 @@ async fn cli_command_tree_golden_path_live() {
         .skip(1)
         .collect();
     assert!(
-        activity.first().is_some_and(|line| line.starts_with("- moved from Backlog to Todo — ")),
+        activity
+            .first()
+            .is_some_and(|line| line.starts_with("- moved from Backlog to Todo — ")),
         "the newest row first: {stdout}"
     );
     assert!(
-        activity.last().is_some_and(|line| line.starts_with(&format!("- created as {task_code} — "))),
+        activity
+            .last()
+            .is_some_and(|line| line.starts_with(&format!("- created as {task_code} — "))),
         "{stdout}"
     );
     let (code, stdout, stderr) = run_cli(
@@ -545,10 +549,12 @@ async fn cli_command_tree_golden_path_live() {
     let history: serde_json::Value = serde_json::from_str(&stdout).expect("history JSON");
     assert_eq!(history["versions"]["total"], 1, "{stdout}");
     assert_eq!(history["activity"]["total"], 2, "{stdout}");
-    assert_eq!(history["activity"]["items"].as_array().map(Vec::len), Some(1));
     assert_eq!(
-        history["activity"]["items"][0]["text"],
-        "moved from Backlog to Todo",
+        history["activity"]["items"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        history["activity"]["items"][0]["text"], "moved from Backlog to Todo",
         "{stdout}"
     );
 

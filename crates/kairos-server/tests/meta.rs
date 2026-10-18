@@ -1275,8 +1275,10 @@ async fn meta_endpoints_against_live_stack() {
     // Activity log: combinable filters + pagination (S-0005)
     // ==========================================================================
     // entity_id: the task's create row plus the three children-progress
-    // walk transitions above (content edits go to item_history, metadata
-    // writes are unversioned/unlogged per A-0004). Newest first.
+    // walk transitions above (content edits go to item_history). Metadata
+    // writes are unversioned (A-0004), but each changed value writes one
+    // `update` row (KAIROS-T-0557): priority set, due set, priority
+    // cleared. Newest first.
     let body = bob
         .activity(&ActivityQuery {
             entity_id: Some(t1_id.clone()),
@@ -1286,21 +1288,35 @@ async fn meta_endpoints_against_live_stack() {
         .expect("entity_id filter");
     // KAIROS-T-0359: the move into Active claims the task and the move out
     // of it releases the claim, so the walk adds a claim and a release row.
-    assert_eq!(body.total, 6, "{body:?}");
-    let actions: Vec<&str> = body.items.iter().map(|i| i.action.as_str()).collect();
+    assert_eq!(body.total, 9, "{body:?}");
+    let details: Vec<&str> = body.items[..3].iter().map(|i| i.details.as_str()).collect();
+    assert_eq!(
+        details,
+        [
+            "metadata:priority=",
+            "metadata:due=2026-08-01",
+            "metadata:priority=high"
+        ],
+        "{body:?}"
+    );
+    // A move and its claim or release are in one transaction: they have the
+    // same time, so each pair is compared without its order.
+    let mut actions: Vec<&str> = body.items[3..].iter().map(|i| i.action.as_str()).collect();
+    actions[0..2].sort_unstable();
+    actions[2..4].sort_unstable();
     assert_eq!(
         actions,
         [
-            "transition",
             "release",
             "transition",
             "claim",
+            "transition",
             "transition",
             "create"
         ],
         "{body:?}"
     );
-    assert_eq!(body.items[5].entity_type.as_deref(), Some("task"));
+    assert_eq!(body.items[8].entity_type.as_deref(), Some("task"));
 
     // action filter: the blocks link (svc), and the parent link, the
     // informs link (COLLIERY-T-0228: a member writes it now) and the two

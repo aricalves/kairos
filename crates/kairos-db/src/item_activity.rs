@@ -372,10 +372,7 @@ pub fn describe(action: ActivityAction, details: &str, names: &Names) -> String 
                     if from == "none" {
                         format!("claim handed off: to {to}")
                     } else {
-                        format!(
-                            "claim handed off: {} -> {to}",
-                            name_in(&names.users, from)
-                        )
+                        format!("claim handed off: {} -> {to}", name_in(&names.users, from))
                     }
                 })
         }
@@ -438,9 +435,7 @@ pub fn describe(action: ActivityAction, details: &str, names: &Names) -> String 
 
 /// The value of `key` in details of the form `a:1 key:2 c:3`.
 fn field<'a>(details: &'a str, key: &str) -> Option<&'a str> {
-    details
-        .split(' ')
-        .find_map(|part| part.strip_prefix(key))
+    details.split(' ').find_map(|part| part.strip_prefix(key))
 }
 
 /// An `update` row about an item: the owner board, a metadata value, the

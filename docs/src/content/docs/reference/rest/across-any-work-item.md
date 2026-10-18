@@ -438,7 +438,8 @@ item, holds `manage_<type>` on its authorization board, or is an organization ad
 
 Every entry is
 validated BEFORE anything is written (A-0003: unknown slug and invalid
-values are 422 `VALIDATION`); the writes then apply atomically.
+values are 422 `VALIDATION`); the writes then apply atomically. Each
+value that changes writes one activity row (KAIROS-T-0557).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
@@ -455,6 +456,31 @@ Request body (required): `application/json`, [`UpdateMetadataRequest`](../schema
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown definition slug or invalid value for its type |
 
 ## history
+
+### `GET /api/{entity_type}/{short_code}/activity`
+
+The activity of one item, newest first (KAIROS-T-0557).
+
+Each row has the action, the stored details, and `text`. The text is
+the row as one line. It names the people, the boards, the columns and
+the repositories.
+
+The list has moves, cancels, claims, hand-offs and releases. It also
+has the lane, metadata values, state writes and links. A link between
+two items is in the list of the two items. An archived item has its
+activity too.
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `entity_type` | path | yes | `string` | Plural family name (strategies|initiatives|tasks|documents|adrs) |
+| `short_code` | path | yes | `string` | Item short code |
+| `limit` | query | no | `integer` | Page size (default 50, max 200). |
+| `offset` | query | no | `integer` | Rows to skip (default 0). |
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`ListEnvelope_ItemActivityEntry`](../schemas/#listenvelope_itemactivityentry) | Page of the activity of the item, newest first |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown family or short code |
 
 ### `GET /api/{entity_type}/{short_code}/history`
 
