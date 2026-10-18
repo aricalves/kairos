@@ -3,6 +3,8 @@
 //! of a repository.
 //!
 //! - `GET …/code-indexes`: each indexed commit.
+//! - `GET …/code-indexes/commits?limit=&offset=`: one page of the indexed
+//!   commits, newest first, with the total (KAIROS-T-0518).
 //! - `PUT …/code-indexes/{commit}`: send the index file of a commit. The
 //!   body is the bytes of a `kairos-index` SQLite file. Its summaries go to
 //!   the pool of the repository, which the commits share; its structure is
@@ -33,6 +35,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use diesel::pg::PgConnection;
+use kairos_client::types::{ListEnvelope, Pagination};
 use kairos_client::types_code_index as dto;
 use kairos_db::code_index_builds::{self, Build};
 use kairos_db::code_indexes::{self, CodeIndexInfo, NewCodeIndex};
@@ -64,6 +67,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/repositories/{slug}/code-indexes",
             get(list_code_indexes),
+        )
+        .route(
+            "/api/repositories/{slug}/code-indexes/commits",
+            get(code_indexes_page),
         )
         .route(
             "/api/repositories/{slug}/code-indexes/nearest",
@@ -120,13 +127,34 @@ fn check_ref(r#ref: &str) -> Result<(), ApiError> {
     .with_details(json!({ "field": "ref" })))
 }
 
-fn dto_of(info: CodeIndexInfo) -> dto::CodeIndex {
+/// The bytes at the start of a structure that give its schema version.
+const VERSION_PREFIX: i32 = kairos_index::store::VERSION_PREFIX_BYTES as i32;
+
+/// The schema version of a structure, from its first bytes (`prefix`).
+fn version_of(prefix: &[u8]) -> Option<i64> {
+    let end = prefix.len().min(kairos_index::store::VERSION_PREFIX_BYTES);
+    kairos_index::store::structure_version(&prefix[..end])
+}
+
+/// The schema version of the stored structure of one commit.
+fn stored_version(
+    conn: &mut PgConnection,
+    repository_id: Uuid,
+    commit: &str,
+) -> Result<Option<i64>, ApiError> {
+    let prefix = code_indexes::structure_prefix(conn, repository_id, commit, VERSION_PREFIX)
+        .map_err(ApiError::internal)?;
+    Ok(prefix.as_deref().and_then(version_of))
+}
+
+fn dto_of(info: CodeIndexInfo, schema_version: Option<i64>) -> dto::CodeIndex {
     dto::CodeIndex {
         commit: info.commit_sha,
         r#ref: info.ref_name,
         source: info.source,
         structure_bytes: info.structure_bytes,
         summary_keys: info.summary_keys,
+        schema_version,
         vector_model: info.vector_model,
         created_at: info.created_at.to_rfc3339(),
         updated_at: info.updated_at.to_rfc3339(),
@@ -441,10 +469,59 @@ pub(crate) async fn list_code_indexes(
         .blocking
         .run(&tenant.slug, move |conn| {
             let id = repository_id(conn, &slug)?;
-            code_indexes::list(conn, id).map_err(ApiError::internal)
+            code_indexes::page(conn, id, None, 0, VERSION_PREFIX).map_err(ApiError::internal)
         })
         .await?;
-    Ok(Json(list.into_iter().map(dto_of).collect()))
+    Ok(Json(
+        list.into_iter()
+            .map(|(info, prefix)| dto_of(info, version_of(&prefix)))
+            .collect(),
+    ))
+}
+
+/// One page of the indexed commits of a repository, newest write first
+/// (KAIROS-T-0518). The server keeps `limit` in the range 1 to 200. The
+/// default `limit` is 50. `offset` skips the newest rows. `total` is exact.
+/// Each row has the schema version of its index file.
+#[utoipa::path(
+    get,
+    path = "/api/repositories/{slug}/code-indexes/commits",
+    tag = "repositories",
+    params(
+        ("slug" = String, Path, description = "Repository slug (or UUID)"),
+        Pagination,
+    ),
+    responses(
+        (status = 200, description = "A page of the indexed commits, newest first", body = ListEnvelope<dto::CodeIndex>),
+        (status = 404, description = "Unknown repository", body = kairos_client::types::ErrorEnvelope),
+    ),
+)]
+pub(crate) async fn code_indexes_page(
+    State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Path(slug): Path<String>,
+    ApiQuery(page): ApiQuery<Pagination>,
+) -> Result<Json<ListEnvelope<dto::CodeIndex>>, ApiError> {
+    let (limit, offset) = crate::api::clamp_pagination(&page);
+    let (rows, total) = state
+        .blocking
+        .run(&tenant.slug, move |conn| {
+            let id = repository_id(conn, &slug)?;
+            let rows = code_indexes::page(conn, id, Some(limit), offset, VERSION_PREFIX)
+                .map_err(ApiError::internal)?;
+            let total = code_indexes::count(conn, id).map_err(ApiError::internal)?;
+            Ok((rows, total))
+        })
+        .await?;
+    Ok(Json(ListEnvelope {
+        items: rows
+            .into_iter()
+            .map(|(info, prefix)| dto_of(info, version_of(&prefix)))
+            .collect(),
+        total,
+        limit,
+        offset,
+    }))
 }
 
 /// Send the index file of a commit. Kairos adds its summaries to the pool
@@ -520,6 +597,7 @@ pub(crate) async fn upload_code_index(
             }
             let pool = used_rows(split.pool, &split.keys);
             let keys = split.keys;
+            let schema_version = version_of(&split.structure_gz);
             let outcome = code_indexes::put(
                 conn,
                 &NewCodeIndex {
@@ -557,7 +635,7 @@ pub(crate) async fn upload_code_index(
             Ok((
                 outcome.created,
                 dto::UploadedCodeIndex {
-                    index: dto_of(info),
+                    index: dto_of(info, schema_version),
                     new_summaries: outcome.new_summaries,
                     pool_size,
                 },
@@ -743,15 +821,22 @@ pub(crate) async fn nearest_code_index(
         .blocking
         .run(&tenant.slug, move |conn| {
             let indexed = code_indexes::list(conn, repo_id).map_err(ApiError::internal)?;
-            Ok(ancestors.iter().enumerate().find_map(|(distance, c)| {
+            let found = ancestors.iter().enumerate().find_map(|(distance, c)| {
                 indexed
                     .iter()
                     .find(|i| &i.commit_sha == c)
                     .map(|i| (distance, i.clone()))
-            }))
+            });
+            match found {
+                Some((distance, info)) => {
+                    let version = stored_version(conn, repo_id, &info.commit_sha)?;
+                    Ok(Some((distance, info, version)))
+                }
+                None => Ok(None),
+            }
         })
         .await?;
-    let Some((distance, info)) = nearest else {
+    let Some((distance, info, schema_version)) = nearest else {
         return Err(ApiError::not_found(format!(
             "No indexed commit is within {MAX_DISTANCE} commits at or below {commit}. Build \
              the index with `kairos index build`."
@@ -759,7 +844,7 @@ pub(crate) async fn nearest_code_index(
     };
     Ok(Json(dto::NearestCodeIndex {
         from: commit,
-        index: dto_of(info),
+        index: dto_of(info, schema_version),
         distance,
     }))
 }
