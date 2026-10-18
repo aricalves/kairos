@@ -518,8 +518,9 @@ kairos <noun> promote-note <SHORT_CODE> <NOTE_ID> --kind <KIND> --board <BOARD> 
 
 Turns a note into a draft ADR or document. The new item has the text of the
 note. A line names the note, its author and its date. The new item
-supports the item when the item is a strategy, an initiative or a task. The
-note gets the mark of the new item, and `get` shows it after the note. Kairos
+supports the item when the item is a strategy, an initiative or a task.
+
+The note gets the mark of the new item, and `get` shows it after the note. Kairos
 promotes a note one time only. A second promote gets 409 `CONFLICT`, which
 names the item.
 
