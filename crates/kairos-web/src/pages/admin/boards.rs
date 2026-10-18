@@ -393,6 +393,7 @@ pub fn AdminBoardPage() -> impl IntoView {
                 let column_names: Vec<String> =
                     detail.columns.iter().map(|c| c.name.clone()).collect();
                 let dispatch_board = id.clone();
+                let policy_board = detail.board.clone();
                 view! {
                     <PageHeader title=detail.board.name.clone() sub="board configuration"/>
                     <Stack gap="md">
@@ -408,6 +409,9 @@ pub fn AdminBoardPage() -> impl IntoView {
                         <MutationNotice outcome/>
                         <ColumnsPanel board_id=id.clone() columns=detail.columns.clone()
                             transitions=detail.transitions.clone() busy outcome reload/>
+                        // KAIROS-T-0587: parent_gate or owner_gate, by level.
+                        <super::board_policy::BoardPolicyPanel board=policy_board
+                            busy outcome reload/>
                         <TransitionsPanel board_id=id.clone() columns=detail.columns.clone()
                             transitions=detail.transitions.clone() busy outcome reload
                             from_name to_name/>
@@ -469,6 +473,10 @@ fn ColumnsPanel(
             let row_name = column.name.clone();
             let position = column.position;
             let is_done = column.is_done;
+            // KAIROS-T-0587: the claim flags, as switches.
+            let claims = api::ColumnFlag::Claims.of(&column);
+            let keeps_claims = api::ColumnFlag::KeepsClaims.of(&column);
+            let flag_ids = (board.get_value(), column.id.clone());
             // KAIROS-T-0371: the WIP limit, as text; empty is no limit.
             let wip_limit = column.wip_limit;
             let wip_text = RwSignal::new(wip_limit.map(|n| n.to_string()).unwrap_or_default());
@@ -594,6 +602,14 @@ fn ColumnsPanel(
                         <Button variant="default" size="xs"
                             on_click=Callback::new(on_wip_limit)>"Set limit"</Button>
                     </Group>
+                    <Group align="end" gap="xs">
+                        <super::board_policy::ColumnFlagSwitch board_id=flag_ids.0.clone()
+                            column_id=flag_ids.1.clone() flag=api::ColumnFlag::Claims on=claims
+                            busy outcome reload/>
+                        <super::board_policy::ColumnFlagSwitch board_id=flag_ids.0
+                            column_id=flag_ids.1 flag=api::ColumnFlag::KeepsClaims
+                            on=keeps_claims busy outcome reload/>
+                    </Group>
                     <Group gap="xs">
                         <Button variant="default" size="xs"
                             on_click=Callback::new(on_toggle_done)>
@@ -620,7 +636,9 @@ fn ColumnsPanel(
 
     view! {
         <Panel title="Columns" caption="The board shows the columns in this order, from \
-                                        left to right.">
+                                        left to right. A person who moves a free task into \
+                                        a column that gives claims gets its claim. A task \
+                                        keeps its claim in a column that keeps claims.">
             <Stack gap="sm">
                 {rows}
                 <Divider/>
@@ -1069,6 +1087,8 @@ mod tests {
             board_level: level.to_string(),
             team_id: team_id.map(str::to_string),
             code_prefix: id.to_uppercase(),
+            parent_gate: None,
+            owner_gate: None,
         }
     }
 

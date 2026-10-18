@@ -7,8 +7,9 @@
 //!
 //! The webhook secret is DERIVED server-side and shown exactly once at
 //! connect time (KAIROS-T-0097) — this page renders it in a notice the
-//! operator copies into the forge and never re-reads. Rotation is
-//! disconnect + connect (a new connection id = a new URL and secret).
+//! operator copies into the forge and never re-reads. Rotate (KAIROS-T-0587,
+//! `POST /api/forge-connections/{id}/rotate`) makes a new connection in place
+//! of the old one: a new URL and a new secret, shown once in the same way.
 //!
 //! COLLIERY-T-0269: each row shows the documents and the ADRs that impact
 //! the repository (its vision, its architecture, the decisions about it),
@@ -658,6 +659,34 @@ fn RepositoryRow(
             },
         );
     };
+    // KAIROS-T-0587: a new URL and secret in place of the old ones.
+    let on_rotate = move |_| {
+        let reference = slug.get_value();
+        run_mutation(
+            busy,
+            outcome,
+            reload,
+            format!(
+                "Kairos rotated the webhook of \"{reference}\". The old URL and secret stop now."
+            ),
+            async move {
+                let detail = api::repository_detail(auth, &reference).await?;
+                let Some(id) = detail.connection_id else {
+                    return Err(ApiError::Unknown(format!(
+                        "\"{reference}\" has no forge connection, so it has no webhook to \
+                         rotate."
+                    )));
+                };
+                let rotated = api::rotate_webhook(auth, &id).await?;
+                secret.set(Some(Secret {
+                    slug: reference,
+                    webhook_url: rotated.webhook_url,
+                    webhook_secret: rotated.webhook_secret,
+                }));
+                Ok(())
+            },
+        );
+    };
     let on_disconnect = move |_| {
         let reference = slug.get_value();
         run_mutation(
@@ -701,6 +730,9 @@ fn RepositoryRow(
                         </Button>
                     })}
                     {has_webhook.then(|| view! {
+                        <Button variant="default" size="xs" on_click=Callback::new(on_rotate)>
+                            "Rotate"
+                        </Button>
                         <Button variant="default" size="xs" on_click=Callback::new(on_disconnect)>
                             "Disconnect"
                         </Button>

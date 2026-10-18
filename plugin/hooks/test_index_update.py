@@ -100,6 +100,9 @@ class Harness(unittest.TestCase):
             # HOME is the temporary folder: with no bytecode cache, the
             # detached worker writes nothing there while tearDown removes it.
             "PYTHONDONTWRITEBYTECODE": "1",
+            # No debounced update after an edit (KAIROS-T-0524), so a test
+            # leaves no detached worker. DebouncedUpdate sets a number.
+            "KAIROS_INDEX_DEBOUNCE_SECONDS": "off",
         }
         env.update(extra)
         return env
@@ -203,6 +206,20 @@ class SessionStart(Harness):
         text = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
         self.assertIn("kairos index update --link-only", text)
         self.assertIn("KAIROS_INDEX_SUMMARIZE=1", text)
+
+    def test_the_text_says_when_the_update_runs_after_an_edit(self):
+        # KAIROS-T-0524: the update runs again after the edits.
+        result = self.run_hook(
+            "start",
+            {"session_id": "s1", "source": "startup"},
+            env=self.env(KAIROS_INDEX_DEBOUNCE_SECONDS="45"),
+        )
+        text = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("runs again 45 s after your last edit", text)
+        result = self.run_hook("start", {"session_id": "s1", "source": "startup"})
+        text = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("KAIROS_INDEX_DEBOUNCE_SECONDS=off", text)
+        self.assertNotIn("runs again", text)
 
     def test_no_kairos_on_path_is_a_silent_no_op(self):
         os.remove(os.path.join(self.bin, "kairos"))
@@ -412,6 +429,262 @@ class ChangedFiles(Harness):
             self.run_hook("worker", args=(self.project,))
         self.assertEqual(self.calls_text(), "")
         self.assertEqual(self.changed(), ["src/lib.rs"])
+
+
+class DebouncedUpdate(Harness):
+    """Scenario: The index is new again after edits during a session
+    (KAIROS-T-0524). An edit starts a detached worker for the checkout of
+    the file. It runs the update when no edit came for N seconds."""
+
+    QUIET = "0.3"
+
+    def setUp(self):
+        super().setUp()
+        base = os.path.dirname(self.project)
+        # A board folder: wired, not a checkout, with 2 clones below it.
+        # The clones have no wiring of their own.
+        self.board = os.path.join(base, "board")
+        self.one = self.checkout(os.path.join(self.board, "one"))
+        self.two = self.checkout(os.path.join(self.board, "two"))
+        os.makedirs(os.path.join(self.board, ".claude"))
+        with open(os.path.join(self.board, ".claude", "kairos.local.md"), "w") as handle:
+            handle.write(WIRING)
+
+    def tearDown(self):
+        # No detached worker may outlive the test.
+        for name in os.listdir(self.state) if os.path.isdir(self.state) else []:
+            for lock in ("debounce.lock", "lock"):
+                path = os.path.join(self.state, name, lock)
+                if os.path.exists(path):
+                    self.assertTrue(self.wait_for(lambda: not self.held(path), 15), path)
+        super().tearDown()
+
+    def checkout(self, path, git_file=False):
+        os.makedirs(path)
+        if git_file:  # a worktree: `.git` is a file
+            with open(os.path.join(path, ".git"), "w") as handle:
+                handle.write("gitdir: /nowhere\n")
+        else:
+            os.makedirs(os.path.join(path, ".git"))
+        return path
+
+    def folder_of(self, checkout):
+        digest = hashlib.sha256(checkout.encode("utf-8")).hexdigest()[:12]
+        return os.path.join(self.state, f"{os.path.basename(checkout)}-{digest}")
+
+    def list_of(self, checkout):
+        path = os.path.join(self.folder_of(checkout), "changed-files")
+        if not os.path.exists(path):
+            return []
+        with open(path) as handle:
+            return [line for line in handle.read().splitlines() if line]
+
+    def log_of(self, checkout):
+        path = os.path.join(self.folder_of(checkout), "update.log")
+        if not os.path.exists(path):
+            return ""
+        with open(path) as handle:
+            return handle.read()
+
+    def held(self, path):
+        with open(path, "a") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return True
+            return False
+
+    def runs(self, checkout=None):
+        """The number of runs of the fake kairos (in checkout)."""
+        lines = self.calls_text().splitlines()
+        if checkout is None:
+            return sum(1 for line in lines if line.startswith("cwd: "))
+        return lines.count(f"cwd: {checkout}")
+
+    def finished(self, checkout, count=1):
+        return self.log_of(checkout).count("=== exit code") >= count
+
+    def edit_in(self, path, session=None, quiet=None, **extra):
+        return self.run_hook(
+            "record",
+            {"session_id": "s1", "tool_name": "Edit", "tool_input": {"file_path": path}},
+            env=self.env(
+                CLAUDE_PROJECT_DIR=session or self.board,
+                KAIROS_INDEX_DEBOUNCE_SECONDS=quiet or self.QUIET,
+                **extra,
+            ),
+        )
+
+    def test_an_edit_in_a_board_folder_is_recorded_in_its_checkout(self):
+        # index_update.py:139-149 before KAIROS-T-0524: the list was kept
+        # under the board folder, with `one/` in each path, and no update ran.
+        result = self.edit_in(os.path.join(self.one, "src", "lib.rs"), quiet="off")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(self.list_of(self.one), ["src/lib.rs"])
+        self.assertFalse(os.path.exists(self.folder_of(self.board)))
+        time.sleep(0.5)
+        self.assertEqual(self.calls_text(), "", "off: no update")
+
+    def test_an_edit_in_a_board_folder_updates_its_checkout(self):
+        self.edit_in(os.path.join(self.one, "src", "lib.rs"))
+        self.assertTrue(self.wait_for(lambda: self.finished(self.one)))
+        self.assertEqual(self.runs(), 1)
+        self.assertIn(f"cwd: {self.one}", self.calls_text())
+        self.assertIn("args: index update --link-only", self.calls_text())
+        log = self.log_of(self.one)
+        self.assertIn("- src/lib.rs", log)
+        self.assertIn("=== exit code 0", log)
+        self.assertEqual(self.list_of(self.one), [])
+        # The update writes its result for the next start (KAIROS-T-0519).
+        with open(os.path.join(self.folder_of(self.one), "last-update.json")) as handle:
+            self.assertEqual(json.load(handle)["exit_code"], 0)
+
+    def test_two_checkouts_have_a_list_and_an_update_each(self):
+        self.edit_in(os.path.join(self.one, "src", "a.rs"), quiet="off")
+        self.edit_in(os.path.join(self.two, "b.py"), quiet="off")
+        self.assertEqual(self.list_of(self.one), ["src/a.rs"])
+        self.assertEqual(self.list_of(self.two), ["b.py"])
+        self.edit_in(os.path.join(self.one, "src", "c.rs"))
+        self.edit_in(os.path.join(self.two, "d.py"))
+        self.assertTrue(self.wait_for(lambda: self.finished(self.one) and self.finished(self.two)))
+        self.assertEqual(self.runs(self.one), 1)
+        self.assertEqual(self.runs(self.two), 1)
+        self.assertIn("- src/a.rs\n- src/c.rs", self.log_of(self.one))
+        self.assertIn("- b.py\n- d.py", self.log_of(self.two))
+        self.assertNotIn("b.py", self.log_of(self.one))
+
+    def test_a_worktree_inside_a_clone_is_its_own_checkout(self):
+        worktree = self.checkout(
+            os.path.join(self.one, ".claude", "worktrees", "w1"), git_file=True
+        )
+        self.edit_in(os.path.join(worktree, "src", "lib.rs"), quiet="off")
+        self.assertEqual(self.list_of(worktree), ["src/lib.rs"])
+        self.assertEqual(self.list_of(self.one), [])
+
+    def test_a_second_edit_inside_the_quiet_time_starts_no_second_update(self):
+        quiet = 1.5
+        self.edit_in(os.path.join(self.one, "a.rs"), quiet=str(quiet))
+        time.sleep(0.5)
+        last = time.monotonic()  # the second edit is at this time or later
+        self.edit_in(os.path.join(self.one, "b.rs"), quiet=str(quiet))
+        # Not sooner than the quiet time after the last edit.
+        time.sleep(1.0)
+        self.assertEqual(self.calls_text(), "", "the update ran before the quiet time")
+        self.assertTrue(self.wait_for(lambda: self.finished(self.one)))
+        self.assertGreaterEqual(time.monotonic() - last, quiet)
+        time.sleep(quiet + 0.5)
+        self.assertEqual(self.runs(), 1, self.calls_text())
+        self.assertIn("- a.rs\n- b.rs", self.log_of(self.one))
+        self.assertEqual(self.list_of(self.one), [])
+
+    def test_a_waiting_worker_starts_no_second_worker(self):
+        folder = self.folder_of(self.one)
+        os.makedirs(folder)
+        with open(os.path.join(folder, "debounce.lock"), "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.edit_in(os.path.join(self.one, "a.rs"))
+            time.sleep(1.2)
+        self.assertEqual(self.calls_text(), "")
+        self.assertEqual(self.list_of(self.one), ["a.rs"])
+
+    def test_the_worker_waits_for_an_update_that_runs(self):
+        # An update of the session start runs: the worker waits for it.
+        folder = self.folder_of(self.one)
+        os.makedirs(folder)
+        with open(os.path.join(folder, "lock"), "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.edit_in(os.path.join(self.one, "a.rs"))
+            time.sleep(1.0)
+            self.assertEqual(self.calls_text(), "")
+        self.assertTrue(self.wait_for(lambda: self.finished(self.one)))
+        self.assertEqual(self.runs(), 1)
+        self.assertEqual(self.list_of(self.one), [])
+
+    def test_an_edit_during_the_update_runs_the_update_again(self):
+        self.edit_in(os.path.join(self.one, "a.rs"), FAKE_KAIROS_SLEEP="1.5")
+        self.assertTrue(self.wait_for(lambda: self.runs() == 1))
+        self.edit_in(os.path.join(self.one, "b.rs"), FAKE_KAIROS_SLEEP="1.5")
+        self.assertTrue(self.wait_for(lambda: self.finished(self.one, 2), 15))
+        self.assertEqual(self.runs(), 2)
+        second = self.log_of(self.one).split("Edited in a session")[2]
+        self.assertIn("- b.rs", second)
+        self.assertNotIn("- a.rs", second)
+        self.assertEqual(self.list_of(self.one), [])
+
+    def test_an_edit_that_an_update_took_already_runs_no_second_update(self):
+        self.edit_in(os.path.join(self.one, "a.rs"), quiet="1")
+        # The update of the session start takes the list first.
+        self.run_hook("worker", args=(self.one,))
+        self.assertEqual(self.runs(), 1)
+        time.sleep(1.8)
+        self.assertEqual(self.runs(), 1, self.calls_text())
+
+    def test_an_edit_outside_a_checkout_records_and_starts_nothing(self):
+        self.edit_in(os.path.join(self.board, "notes.py"))
+        self.edit_in("/somewhere/else/lib.rs")
+        time.sleep(1.0)
+        self.assertFalse(os.path.exists(self.state))
+        self.assertEqual(self.calls_text(), "")
+
+    def test_an_edit_in_an_unwired_checkout_outside_the_session_records_nothing(self):
+        other = self.checkout(os.path.join(os.path.dirname(self.project), "other"))
+        self.edit_in(os.path.join(other, "lib.rs"), session=self.project)
+        time.sleep(1.0)
+        self.assertFalse(os.path.exists(self.state))
+        self.assertEqual(self.calls_text(), "")
+
+    def test_a_wired_checkout_outside_the_session_is_updated(self):
+        self.edit_in(os.path.join(self.project, "src", "lib.rs"), session=self.board)
+        self.assertTrue(self.wait_for(lambda: self.finished(self.project)))
+        self.assertIn(f"cwd: {self.project}", self.calls_text())
+
+    def test_no_kairos_on_path_records_the_edit_and_starts_nothing(self):
+        os.remove(os.path.join(self.bin, "kairos"))
+        self.edit_in(os.path.join(self.one, "a.rs"))
+        time.sleep(1.0)
+        self.assertEqual(self.list_of(self.one), ["a.rs"])
+        self.assertEqual(self.log_of(self.one), "")
+
+
+class DebounceSeconds(unittest.TestCase):
+    """The value of KAIROS_INDEX_DEBOUNCE_SECONDS."""
+
+    def seconds(self, value):
+        sys.path.insert(0, HERE)
+        try:
+            import index_update
+        finally:
+            sys.path.remove(HERE)
+        saved = os.environ.get("KAIROS_INDEX_DEBOUNCE_SECONDS")
+        try:
+            if value is None:
+                os.environ.pop("KAIROS_INDEX_DEBOUNCE_SECONDS", None)
+            else:
+                os.environ["KAIROS_INDEX_DEBOUNCE_SECONDS"] = value
+            return index_update.debounce_seconds()
+        finally:
+            if saved is None:
+                os.environ.pop("KAIROS_INDEX_DEBOUNCE_SECONDS", None)
+            else:
+                os.environ["KAIROS_INDEX_DEBOUNCE_SECONDS"] = saved
+
+    def test_the_default_is_30_seconds(self):
+        self.assertEqual(self.seconds(None), 30.0)
+        self.assertEqual(self.seconds(""), 30.0)
+
+    def test_a_number_of_seconds_is_used(self):
+        self.assertEqual(self.seconds("5"), 5.0)
+        self.assertEqual(self.seconds(" 0.5 "), 0.5)
+        self.assertEqual(self.seconds("0"), 0.0)
+
+    def test_off_stops_the_update_after_an_edit(self):
+        self.assertIsNone(self.seconds("off"))
+        self.assertIsNone(self.seconds("OFF"))
+
+    def test_a_bad_value_gives_the_default(self):
+        for value in ("-1", "soon", "nan", "inf"):
+            self.assertEqual(self.seconds(value), 30.0, value)
 
 
 REFUSAL = (
