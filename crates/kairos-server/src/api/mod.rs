@@ -436,6 +436,22 @@ pub fn require_item_archive(
     require_item_edit_for(conn, role, user_id, item_id, item_type, EditUse::Archive)
 }
 
+/// The refusal that an archive of the item by this principal would get, or
+/// `None` (KAIROS-T-0558: the preview of MCP `delete_item`). The rule of
+/// [`require_item_archive`], as a read: it notes no claim.
+pub(crate) fn archive_refusal(
+    conn: &mut PgConnection,
+    role: OrgRole,
+    user_id: Uuid,
+    item_id: Uuid,
+    item_type: ItemType,
+) -> Result<Option<ApiError>, ApiError> {
+    Ok(
+        missing_edit(conn, role, user_id, item_id, item_type, EditUse::Archive)?
+            .map(|missing| ApiError::capability_required(missing.capability, missing.board_id)),
+    )
+}
+
 fn require_item_edit_for(
     conn: &mut PgConnection,
     role: OrgRole,
