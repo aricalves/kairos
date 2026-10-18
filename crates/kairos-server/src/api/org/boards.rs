@@ -333,16 +333,22 @@ pub(crate) async fn get_board(
 /// the capability that archives each task of the board. The creator of a
 /// task can archive that task one at a time. A board that is not a
 /// delivery board holds no tasks: 422 `NOT_DELIVERY_BOARD`.
+///
+/// `?older_than_days=N` archives only the done tasks that entered their
+/// done column at least N days ago (KAIROS-T-0649). The time of entry is
+/// the last move of the task, or its creation. N is a whole number from 1
+/// to 36500. Another value is a 422 `VALIDATION` with `details.field` =
+/// `older_than_days`.
 #[utoipa::path(
     post,
     path = "/api/boards/{id}/archive-completed",
     tag = "boards",
-    params(("id" = String, Path, description = "The slug or the id (UUID) of the board")),
+    params(("id" = String, Path, description = "The slug or the id (UUID) of the board"), kairos_client::types::ArchiveCompletedQuery),
     responses(
         (status = 200, description = "The archived tasks: the count and the codes. A count of 0 when the done columns are empty", body = kairos_client::types::ArchiveCompletedResponse),
         (status = 403, description = "Missing manage_tasks on the board", body = kairos_client::types::ErrorEnvelope),
         (status = 404, description = "Unknown board", body = kairos_client::types::ErrorEnvelope),
-        (status = 422, description = "NOT_DELIVERY_BOARD", body = kairos_client::types::ErrorEnvelope),
+        (status = 422, description = "NOT_DELIVERY_BOARD, or VALIDATION for an `older_than_days` out of range", body = kairos_client::types::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn archive_completed(
@@ -350,27 +356,51 @@ pub(crate) async fn archive_completed(
     Extension(auth): Extension<AuthContext>,
     Extension(tenant): Extension<TenantContext>,
     Path(id): Path<String>,
+    ApiQuery(query): ApiQuery<kairos_client::types::ArchiveCompletedQuery>,
 ) -> Result<Json<kairos_client::types::ArchiveCompletedResponse>, ApiError> {
     let user = auth.user_id;
     let slug = tenant.slug.clone();
+    let older_than_days = older_than_days(query.older_than_days, "field")?;
     let response = state
         .blocking
         .run(&tenant.slug, move |conn| {
             let board = load_board_by_ref(conn, &id)?;
-            archive_completed_tasks(conn, &slug, &board, user)
+            archive_completed_tasks(conn, &slug, &board, user, older_than_days)
         })
         .await?;
     Ok(Json(response))
 }
 
+/// The most days of `older_than_days` (KAIROS-T-0649): 100 years.
+pub(crate) const OLDER_THAN_DAYS_MAX: i64 = 36_500;
+
+/// Check `older_than_days` of "Archive completed" (KAIROS-T-0649): a whole
+/// number from 1 to [`OLDER_THAN_DAYS_MAX`], or no value. `key` names the
+/// detail of the refusal: `field` on REST, `argument` on MCP.
+pub(crate) fn older_than_days(value: Option<i64>, key: &str) -> Result<Option<i32>, ApiError> {
+    match value {
+        None => Ok(None),
+        Some(days) if (1..=OLDER_THAN_DAYS_MAX).contains(&days) => Ok(i32::try_from(days).ok()),
+        Some(days) => Err(ApiError::validation(format!(
+            "older_than_days must be a whole number from 1 to {OLDER_THAN_DAYS_MAX}. It is {days}."
+        ))
+        .with_details(serde_json::Value::Object(serde_json::Map::from_iter([(
+            key.to_string(),
+            serde_json::Value::from("older_than_days"),
+        )])))),
+    }
+}
+
 /// The ONE "Archive completed" of the server: REST
 /// `POST /api/boards/{id}/archive-completed` and MCP `archive_completed`
-/// ([`archive_completed`] has the rule).
+/// ([`archive_completed`] has the rule). With `older_than_days`, only the
+/// done tasks that entered their column that many days ago or before.
 pub(crate) fn archive_completed_tasks(
     conn: &mut PgConnection,
     slug: &str,
     board: &Board,
     user: Uuid,
+    older_than_days: Option<i32>,
 ) -> Result<kairos_client::types::ArchiveCompletedResponse, ApiError> {
     if board.board_level != BoardLevel::Delivery {
         return Err(ApiError::unprocessable(
@@ -383,15 +413,8 @@ pub(crate) fn archive_completed_tasks(
     }
     require_capability(conn, slug, Some(board.id), user, "manage_tasks")?;
     run_in_transaction(conn, |conn| {
-        use kairos_db::schema::{board_columns, tasks};
-        let done: Vec<(Uuid, String)> = tasks::table
-            .inner_join(board_columns::table)
-            .filter(tasks::board_id.eq(board.id))
-            .filter(tasks::deleted_at.is_null())
-            .filter(board_columns::is_done.eq(true))
-            .order(tasks::short_code.asc())
-            .select((tasks::id, tasks::short_code))
-            .load(conn)
+        use kairos_db::schema::tasks;
+        let done = kairos_db::board_items::done_tasks(conn, board.id, older_than_days)
             .map_err(ApiError::internal)?;
         let mut short_codes = Vec::with_capacity(done.len());
         for (task_id, short_code) in done {
@@ -1168,6 +1191,18 @@ macro_rules! cards_by_id {
 /// code. The columns, their counts and the maps are as for a page. A live
 /// board reads one card in this way after an event of that item.
 ///
+/// Each card has `entered_column_at` and `notes_count` (KAIROS-T-0649).
+/// `entered_column_at` is the time of the last move of the card, or the
+/// time of its creation. `notes_count` is the number of its notes. The
+/// page query reads the two for the cards of the page only.
+///
+/// `?done_limit=N` keeps the last N cards of each done column, by
+/// `entered_column_at` (KAIROS-T-0649). The other columns keep each card.
+/// `item_count` stays the count of the full column, and `total` counts
+/// the cards after the limit. `?code=` applies after the limit. N must be
+/// at least 1. Another value is a 422 `VALIDATION` with `details.field` =
+/// `done_limit`.
+///
 /// The path takes the slug or the id of the board (COLLIERY-T-0265). An
 /// unknown slug and an unknown id are a 404.
 #[utoipa::path(
@@ -1187,6 +1222,14 @@ pub(crate) async fn board_items(
     ApiQuery(query): ApiQuery<dto::BoardItemsQuery>,
 ) -> Result<Json<dto::BoardItemsResponse>, ApiError> {
     let (limit, offset) = clamp_board_items_page(&query);
+    if let Some(done_limit) = query.done_limit
+        && done_limit < 1
+    {
+        return Err(ApiError::validation(format!(
+            "done_limit must be a whole number of at least 1. It is {done_limit}."
+        ))
+        .with_details(json!({ "field": "done_limit" })));
+    }
     let response = state
         .blocking
         .run(&tenant.slug, move |conn| {
@@ -1234,6 +1277,7 @@ pub(crate) async fn board_items(
                     include_archived: query.include_deleted,
                     repository_id: repository_filter,
                     team: team_filter,
+                    done_limit: query.done_limit,
                 },
                 query.code.as_deref(),
                 limit,
@@ -1348,6 +1392,32 @@ pub(crate) async fn board_items(
                             item_codes.push((*id, card.short_code.clone()));
                             groups[i].adrs.push(card);
                         }
+                    }
+                }
+            }
+            // KAIROS-T-0649: the time in the column and the notes count of
+            // each card, from the page query.
+            {
+                let marks = |id: &str| -> (Option<String>, Option<i64>) {
+                    id.parse::<Uuid>()
+                        .ok()
+                        .and_then(|id| page.marks.get(&id))
+                        .map_or((None, None), |m| {
+                            (Some(m.entered_column_at.to_rfc3339()), Some(m.notes_count))
+                        })
+                };
+                for group in groups.iter_mut() {
+                    for card in &mut group.strategies {
+                        (card.entered_column_at, card.notes_count) = marks(&card.id);
+                    }
+                    for card in &mut group.initiatives {
+                        (card.entered_column_at, card.notes_count) = marks(&card.id);
+                    }
+                    for card in &mut group.tasks {
+                        (card.entered_column_at, card.notes_count) = marks(&card.id);
+                    }
+                    for card in &mut group.adrs {
+                        (card.entered_column_at, card.notes_count) = marks(&card.id);
                     }
                 }
             }

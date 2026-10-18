@@ -971,6 +971,11 @@ pub struct ArchiveCompletedParams {
     /// Must be true: the call archives each task in the done columns of
     /// the board.
     pub confirm: bool,
+    /// Archive only the done tasks that entered their done column at
+    /// least this many days ago (1 to 36500). Omit it to archive each
+    /// done task.
+    #[serde(default)]
+    pub older_than_days: Option<i64>,
 }
 
 /// Parameters for `create_team` (KAIROS-T-0337). The names are those of the
@@ -1961,6 +1966,7 @@ impl KairosMcp {
                     include_archived: liveness == Liveness::IncludeArchived,
                     repository_id: repository,
                     team: team_filter,
+                    done_limit: None,
                 },
                 limit,
                 offset,
@@ -4339,7 +4345,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Archive each task in the done columns of one delivery board (\"Archive completed\"), cancelled tasks too. Each task is archived as by `delete_item`, and `restore_item` brings back each one. One transaction: the call archives each task, or none. Requires confirm=true, and `manage_tasks` on the board. The response gives the count and the codes."
+        description = "Archive each task in the done columns of one delivery board (\"Archive completed\"), cancelled tasks too. Each task is archived as by `delete_item`, and `restore_item` brings back each one. One transaction: the call archives each task, or none. Requires confirm=true, and `manage_tasks` on the board. Optional `older_than_days` (1 to 36500): only the done tasks that entered their done column at least that many days ago. The response gives the count and the codes."
     )]
     pub async fn archive_completed(
         &self,
@@ -4357,14 +4363,28 @@ impl KairosMcp {
                 )
                 .with_details(serde_json::json!({ "argument": "confirm" })));
             }
+            let older_than_days =
+                crate::api::org::boards::older_than_days(params.older_than_days, "argument")?;
             let board = board_by_ref(conn, &params.board)?;
-            let response =
-                crate::api::org::boards::archive_completed_tasks(conn, &slug, &board, user)?;
+            let response = crate::api::org::boards::archive_completed_tasks(
+                conn,
+                &slug,
+                &board,
+                user,
+                older_than_days,
+            )?;
             Ok(if response.count == 0 {
-                format!(
-                    "The done columns of {} have no tasks. Kairos archived nothing.",
-                    board.slug
-                )
+                match older_than_days {
+                    Some(days) => format!(
+                        "The done columns of {} have no tasks that entered them {days} days \
+                         ago or before. Kairos archived nothing.",
+                        board.slug
+                    ),
+                    None => format!(
+                        "The done columns of {} have no tasks. Kairos archived nothing.",
+                        board.slug
+                    ),
+                }
             } else {
                 format!(
                     "Archived {} completed task{} of {}: {}.\nTo get one back, restore it by its \

@@ -144,6 +144,32 @@ This browser keeps the collapsed lanes for each board and each grouping. Other
 people and other browsers do not see them. When the browser does not let a page
 keep data, the lanes collapse until you leave the page.
 
+## Read the done columns
+
+A done column shows its last 20 cards. These are the cards that entered the
+column last. The board reads only these 20 cards from the server. The count in
+the column head is the count of the full column.
+
+To see each card, click **Show all N cards**. The board then reads each done
+card. To show the last 20 cards again, click **Show the last 20 cards**.
+
+Each card shows the days in its column, for example **3 days in column**. A card
+with notes shows the number of its notes, for example **2 notes**.
+
+The REST route gives the same data. `GET /api/boards/{id}/items?done_limit=20`
+gives the last 20 cards of each done column. Each card has `entered_column_at`
+and `notes_count`.
+
+## Archive the old done tasks
+
+Click **Archive completed** on a delivery board. To keep the recent tasks, type
+a number of days in **Older than (days)**. Kairos then archives only the tasks
+that entered their done column that many days ago or before. Leave the field
+empty to archive each done task. A restore brings back each archived task.
+
+- The API: `POST /api/boards/{id}/archive-completed?older_than_days=30`.
+- The MCP tool: `archive_completed` with `"older_than_days": 30`.
+
 ## Set a WIP limit on a column
 
 A WIP limit is the most live items that a column should hold. For example, set 1

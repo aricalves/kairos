@@ -70,6 +70,13 @@ pub struct Strategy {
     /// server.
     #[serde(default)]
     pub owner: Option<ItemOwner>,
+    /// When the card entered its column, RFC 3339 (KAIROS-T-0649); `None`
+    /// from an older server.
+    #[serde(default)]
+    pub entered_column_at: Option<String>,
+    /// The number of the notes of the item (KAIROS-T-0649).
+    #[serde(default)]
+    pub notes_count: Option<i64>,
 }
 
 /// mirror of: `kairos_client::types::ItemOwner` (partial).
@@ -105,6 +112,13 @@ pub struct Initiative {
     /// server.
     #[serde(default)]
     pub owner: Option<ItemOwner>,
+    /// When the card entered its column, RFC 3339 (KAIROS-T-0649); `None`
+    /// from an older server.
+    #[serde(default)]
+    pub entered_column_at: Option<String>,
+    /// The number of the notes of the item (KAIROS-T-0649).
+    #[serde(default)]
+    pub notes_count: Option<i64>,
 }
 
 /// mirror of: `kairos_client::types_cards::TaskCard` (partial).
@@ -135,6 +149,13 @@ pub struct Task {
     /// and from an older server.
     #[serde(default)]
     pub state: Option<TaskState>,
+    /// When the card entered its column, RFC 3339 (KAIROS-T-0649); `None`
+    /// from an older server.
+    #[serde(default)]
+    pub entered_column_at: Option<String>,
+    /// The number of the notes of the item (KAIROS-T-0649).
+    #[serde(default)]
+    pub notes_count: Option<i64>,
 }
 
 /// mirror of: `kairos_client::types::TaskState` (partial — card fields).
@@ -185,6 +206,13 @@ pub struct Adr {
     pub version: i32,
     #[serde(default)]
     pub decision_date: Option<String>,
+    /// When the card entered its column, RFC 3339 (KAIROS-T-0649); `None`
+    /// from an older server.
+    #[serde(default)]
+    pub entered_column_at: Option<String>,
+    /// The number of the notes of the item (KAIROS-T-0649).
+    #[serde(default)]
+    pub notes_count: Option<i64>,
 }
 
 /// mirror of: `kairos_client::types_org::BoardColumnItems`.
@@ -424,8 +452,15 @@ pub fn board_cap_note(shown: usize, total: i64) -> Option<String> {
 /// `GET /api/boards/{id}/items?with_metadata=true&limit=&offset=`. `total`
 /// of the result is the number of cards of the board. `board` is the slug
 /// or the id of the board (COLLIERY-T-0265).
-pub async fn load_board_items(auth: Auth, board: &str) -> Result<BoardItemsResponse, ApiError> {
-    let path = board_items_path(board);
+///
+/// `done_limit` asks the server for the last cards of each done column
+/// only (KAIROS-T-0649); `None` reads each card.
+pub async fn load_board_items(
+    auth: Auth,
+    board: &str,
+    done_limit: Option<usize>,
+) -> Result<BoardItemsResponse, ApiError> {
+    let path = board_items_path(board, done_limit);
     let mut items: BoardItemsResponse =
         get_json(auth, &crate::api::page_url(&path, BOARD_PAGE_LIMIT, 0)).await?;
     let mut last_page = items.card_count();
@@ -948,12 +983,16 @@ pub fn board_path(param: &str) -> String {
 ///
 /// KAIROS-T-0615: the detail and the cards load together. The two
 /// requests run at the same time, and the view waits for the two.
-pub async fn load_board_view(auth: Auth, param: &str) -> Result<BoardView, ApiError> {
+pub async fn load_board_view(
+    auth: Auth,
+    param: &str,
+    done_limit: Option<usize>,
+) -> Result<BoardView, ApiError> {
     let path = board_path(param);
     // COLLIERY-T-0261: the items come in pages.
     let (detail, items) = futures_util::future::try_join(
         get_json::<BoardDetail>(auth, &path),
-        load_board_items(auth, param),
+        load_board_items(auth, param, done_limit),
     )
     .await?;
     Ok(BoardView { detail, items })
@@ -974,16 +1013,21 @@ pub async fn load_board_card(
 
 /// The path of the pages of [`load_board_items`], before `limit` and
 /// `offset`. The cards come with their metadata (KAIROS-T-0582: the
-/// priority on the card). Pure, host-tested.
-pub fn board_items_path(board: &str) -> String {
-    format!("{}/items?with_metadata=true", board_path(board))
+/// priority on the card), and with `done_limit` when it is set
+/// (KAIROS-T-0649). Pure, host-tested.
+pub fn board_items_path(board: &str, done_limit: Option<usize>) -> String {
+    let path = format!("{}/items?with_metadata=true", board_path(board));
+    match done_limit {
+        Some(limit) => format!("{path}&done_limit={limit}"),
+        None => path,
+    }
 }
 
 /// The path of [`load_board_card`]. Pure, host-tested.
 pub fn board_card_path(board: &str, code: &str) -> String {
     format!(
         "{}&code={}",
-        board_items_path(board),
+        board_items_path(board, None),
         crate::api::encode_component(code)
     )
 }
@@ -1004,12 +1048,23 @@ pub struct ArchiveCompletedOutcome {
 
 /// `POST /api/boards/{id}/archive-completed` — archive each task in the
 /// done columns of the board (KAIROS-T-0363). Needs `manage_tasks` on the
-/// board.
+/// board. `older_than_days` keeps the tasks that entered their column
+/// later (KAIROS-T-0649).
 pub async fn archive_completed(
     auth: Auth,
     board_id: &str,
+    older_than_days: Option<u32>,
 ) -> Result<ArchiveCompletedOutcome, ApiError> {
-    crate::api::post_empty(auth, &format!("{}/archive-completed", board_path(board_id))).await
+    crate::api::post_empty(auth, &archive_completed_path(board_id, older_than_days)).await
+}
+
+/// The path of [`archive_completed`]. Pure, host-tested.
+pub fn archive_completed_path(board_id: &str, older_than_days: Option<u32>) -> String {
+    let path = format!("{}/archive-completed", board_path(board_id));
+    match older_than_days {
+        Some(days) => format!("{path}?older_than_days={days}"),
+        None => path,
+    }
 }
 
 /// The WIP chip of a column head (KAIROS-T-0371): `WIP 2/3`, or `None`
@@ -1018,14 +1073,20 @@ pub fn wip_label(item_count: i64, wip_limit: Option<i32>) -> Option<String> {
     wip_limit.map(|limit| format!("WIP {item_count}/{limit}"))
 }
 
-/// The number of live tasks in the done columns of the view (the tasks
-/// that "Archive completed" archives). Pure, host-tested.
+/// The number of live tasks in the done columns of the board (the tasks
+/// that "Archive completed" archives). A done column can have fewer cards
+/// than its `item_count` (KAIROS-T-0649: the done limit), so the count is
+/// the larger of the two. Pure, host-tested.
 pub fn completed_task_count(items: &BoardItemsResponse) -> usize {
     items
         .columns
         .iter()
         .filter(|group| group.column.is_done)
-        .map(|group| group.tasks.len())
+        .map(|group| {
+            usize::try_from(group.item_count)
+                .unwrap_or(0)
+                .max(group.tasks.len())
+        })
         .sum()
 }
 
@@ -2319,11 +2380,11 @@ mod tests {
     #[test]
     fn the_board_reads_the_metadata() {
         assert_eq!(
-            board_items_path("demo"),
+            board_items_path("demo", None),
             "/api/boards/demo/items?with_metadata=true"
         );
         assert_eq!(
-            crate::api::page_url(&board_items_path("demo"), 1000, 0),
+            crate::api::page_url(&board_items_path("demo", None), 1000, 0),
             "/api/boards/demo/items?with_metadata=true&limit=1000&offset=0"
         );
     }
@@ -2368,5 +2429,64 @@ mod tests {
         let view = board_of(&[("D-T-1", "todo", 1)], &[], 1);
         assert_eq!(view.item_metadata, None);
         assert_eq!(view.metadata_value("D-T-1", PRIORITY_SLUG), None);
+    }
+
+    /// KAIROS-T-0649: the board asks for the last done cards, a card read
+    /// asks for one card, and the archive path takes the age.
+    #[test]
+    fn the_done_limit_and_the_age_go_in_the_paths() {
+        assert_eq!(
+            board_items_path("demo", Some(20)),
+            "/api/boards/demo/items?with_metadata=true&done_limit=20"
+        );
+        assert_eq!(
+            board_card_path("demo", "D-T-1"),
+            "/api/boards/demo/items?with_metadata=true&code=D-T-1"
+        );
+        assert_eq!(
+            archive_completed_path("demo", None),
+            "/api/boards/demo/archive-completed"
+        );
+        assert_eq!(
+            archive_completed_path("demo", Some(30)),
+            "/api/boards/demo/archive-completed?older_than_days=30"
+        );
+    }
+
+    /// KAIROS-T-0649: a card decodes its time in the column and its notes
+    /// count; a card of an older server has neither. A done column with
+    /// fewer cards than its `item_count` counts its `item_count`.
+    #[test]
+    fn a_card_decodes_its_marks_and_the_count_is_that_of_the_column() {
+        let task: Task = serde_json::from_value(serde_json::json!({
+            "short_code": "DEMO-T-0001", "title": "T", "task_type": "task", "version": 1,
+            "work_class": "planned", "entered_column_at": "2026-10-09T10:00:00+00:00",
+            "notes_count": 3
+        }))
+        .expect("mirror decodes");
+        assert_eq!(
+            task.entered_column_at.as_deref(),
+            Some("2026-10-09T10:00:00+00:00")
+        );
+        assert_eq!(task.notes_count, Some(3));
+        let old: Adr = serde_json::from_value(
+            serde_json::json!({"short_code": "DEMO-A-0001", "title": "A", "version": 1}),
+        )
+        .expect("mirror decodes");
+        assert_eq!((old.entered_column_at, old.notes_count), (None, None));
+
+        let items: BoardItemsResponse = serde_json::from_value(serde_json::json!({
+            "board": {"id": "b", "name": "B", "slug": "b", "board_level": "delivery"},
+            "columns": [{
+                "column": {"id": "c", "name": "Completed", "position": 1, "is_done": true},
+                "item_count": 40,
+                "strategies": [], "initiatives": [], "adrs": [],
+                "tasks": [{"short_code": "DEMO-T-0002", "title": "T", "task_type": "task",
+                           "version": 1, "work_class": "planned"}],
+            }],
+            "total": 1, "limit": 200, "offset": 0
+        }))
+        .expect("items decode");
+        assert_eq!(completed_task_count(&items), 40);
     }
 }
