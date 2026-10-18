@@ -14,8 +14,12 @@
 //! - hot-window rows untouched; past-window months thinned to first+last
 //!   per item per calendar month; the latest 5 versions per item retained
 //!   regardless of age; single-version items never pruned
-//! - `archive` mode + NO target: prunes NOTHING, reports a warning per
-//!   affected table (and still writes the audit row)
+//! - `archive` mode + NO target: reads and prunes NOTHING, reports a
+//!   warning per table, and the audit row records `skipped: no target`
+//!   (KAIROS-T-0631)
+//! - the sweep pages `item_history` by item and `activity_log` by row,
+//!   with a page smaller than the fixture, and prunes exactly what the
+//!   planner gives for the whole table (KAIROS-T-0631)
 //! - S3 target: typed `ArchiveTargetNotImplemented` error, nothing changed
 //! - `archive` + filesystem target: NDJSON offload
 //!   (`{target}/{tenant}/{table}/{timestamp}.ndjson`) written before the
@@ -40,12 +44,15 @@ use diesel::prelude::*;
 use diesel::sql_query;
 use uuid::Uuid;
 
-use kairos_core::retention::{ArchiveTarget, RetentionConfig, RetentionMode};
+use kairos_core::retention::{
+    ArchiveTarget, HistoryRowMeta, RetentionConfig, RetentionMode, plan_history_compaction,
+};
 use kairos_core::short_code::ItemType;
 use kairos_db::items::{self, ContentUpdate, CreateStrategy};
 use kairos_db::models::{ItemHistory, NewUser, User};
 use kairos_db::retention::{
-    RetentionError, SweepReport, TableCounts, sweep_all_tenants, sweep_tenant,
+    RetentionError, SweepPaging, SweepReport, SweepSkip, TableCounts, sweep_all_tenants,
+    sweep_tenant, sweep_tenant_with,
 };
 use kairos_db::{provision_tenant, run_public_migrations, schema};
 
@@ -346,6 +353,12 @@ fn retention_sweeper_lifecycle() {
     assert_eq!(report.item_history, counts(0, 0, 1), "warning metered");
     assert_eq!(report.activity_log, counts(0, 0, 1), "warning metered");
     assert!(report.archive_files.is_empty());
+    assert_eq!(report.skipped, Some(SweepSkip::NoTarget));
+    assert_eq!(
+        (report.history_pages, report.activity_pages),
+        (0, 0),
+        "a skipped sweep reads no page"
+    );
 
     pin(&mut conn, "org_acme");
     assert_eq!(total_history_rows(&mut conn), 21, "nothing deleted");
@@ -353,10 +366,10 @@ fn retention_sweeper_lifecycle() {
     assert_eq!(
         sweep_details(&mut conn),
         vec![
-            "mode:archive item_history:{archived:0,pruned:0,warnings:1} \
+            "mode:archive skipped: no target item_history:{archived:0,pruned:0,warnings:1} \
              activity_log:{archived:0,pruned:0,warnings:1}"
         ],
-        "the paused sweep still writes its audit row"
+        "the paused sweep still writes its audit row, with the skip"
     );
 
     // ---- S3 target: recognized, typed NOT IMPLEMENTED ----------------------
@@ -505,6 +518,9 @@ fn retention_sweeper_lifecycle() {
             item_history: counts(0, 0, 0),
             activity_log: counts(0, 0, 0),
             archive_files: vec![],
+            skipped: None,
+            history_pages: 0,
+            activity_pages: 0,
         }
     );
     pin(&mut conn, "org_acme");
@@ -705,6 +721,10 @@ fn retention_pass_removes_old_rows_and_expired_sessions() {
     assert_eq!(pass.expired_auth_failures_deleted, 1);
     assert_eq!(pass.tenants.len(), 1);
     assert_eq!(pass.tenants[0].activity_log.rows_pruned, 1);
+    assert_eq!(
+        pass.result(),
+        "swept 1 tenants: item_history archived 0 pruned 0, activity_log archived 0 pruned 1"
+    );
     assert_eq!(session_hashes(&mut conn), vec!["live"]);
     assert_eq!(activity_actions(&mut conn), vec!["new_row"]);
 
@@ -734,9 +754,202 @@ fn retention_pass_removes_old_rows_and_expired_sessions() {
     let pass = run_retention_pass(&mut conn, &off, now, &mut || {}).expect("pass");
     assert!(pass.tenants.is_empty());
     assert_eq!(pass.expired_sessions_deleted, 1);
+    assert_eq!(pass.result(), "off");
+
+    // KAIROS-T-0631: `archive` with no target skips each sweep, and the
+    // pass records it.
+    let no_target = RetentionConfig {
+        activity_retention_days: 0,
+        ..RetentionConfig::default()
+    };
+    let pass = run_retention_pass(&mut conn, &no_target, now, &mut || {}).expect("pass");
+    assert_eq!(pass.tenants.len(), 1);
+    assert_eq!(pass.tenants[0].skipped, Some(SweepSkip::NoTarget));
+    assert_eq!(pass.result(), "skipped: no target");
+    assert_eq!(
+        activity_actions(&mut conn),
+        vec!["new_row"],
+        "no row removed with no target"
+    );
 
     drop(conn);
     sql_query(format!("DROP DATABASE IF EXISTS {PASS_DB} WITH (FORCE)"))
         .execute(&mut admin_conn)
         .expect("dropping scratch database");
+}
+
+/// KAIROS-T-0631: the sweep pages. Seven items with many versions each and
+/// a page of two items, and eleven old activity rows with a page of four.
+/// The sweep reads four pages of items and three pages of activity, and
+/// prunes and archives exactly the rows that the planner gives for the
+/// whole table, in `(item_id, version)` order. The deletes go in batches
+/// of three ids.
+#[test]
+fn the_sweep_pages_by_item_and_prunes_what_the_planner_gives() {
+    static PAGED_DB: scratch::ScratchName =
+        scratch::ScratchName::new("kairos_retention_paged_test");
+    let admin_url = admin_database_url();
+    let mut admin_conn = PgConnection::establish(&admin_url).unwrap_or_else(|e| {
+        panic!("cannot connect to compose postgres at {admin_url}: {e} (`angreal services up`)")
+    });
+    sql_query(format!("DROP DATABASE IF EXISTS {PAGED_DB} WITH (FORCE)"))
+        .execute(&mut admin_conn)
+        .expect("dropping scratch database");
+    sql_query(format!("CREATE DATABASE {PAGED_DB}"))
+        .execute(&mut admin_conn)
+        .expect("creating scratch database");
+    let _scratch_guard = scratch::ScratchGuard::new(&PAGED_DB);
+    let url = with_database(&admin_url, &PAGED_DB);
+    let mut conn = PgConnection::establish(&url).expect("connecting to scratch database");
+    run_public_migrations(&mut conn).expect("running public migrations");
+    provision_tenant(&mut conn, "acme", "Acme Inc").expect("provisioning acme");
+    pin(&mut conn, "org_acme");
+    let robin = insert_user(&mut conn, "dex|robin", "robin@acme.test", "Robin");
+
+    let now = at(2026, 7, 15, 12, 0, 0);
+    // Seven items; item i has 20 + i versions, two a day from 2025-11-01,
+    // so each item has old months to thin and a latest-5 guard.
+    let mut items = Vec::new();
+    for i in 0..7_i32 {
+        let item = Uuid::new_v4();
+        items.push(item);
+        for v in 1..=(20 + i) {
+            let edited_at = at(2025, 11, 1, 0, 0, 0) + Duration::hours(12 * i64::from(v));
+            diesel::insert_into(schema::item_history::table)
+                .values((
+                    schema::item_history::item_id.eq(item),
+                    schema::item_history::version.eq(v),
+                    schema::item_history::title.eq(format!("Item {i}")),
+                    schema::item_history::content.eq(format!("item {i} content v{v}")),
+                    schema::item_history::edited_by.eq(robin),
+                    schema::item_history::edited_at.eq(edited_at),
+                ))
+                .execute(&mut conn)
+                .expect("seeding history");
+        }
+    }
+    // Eleven activity rows past the 365-day window, two with one time.
+    for i in 0..11_u32 {
+        diesel::insert_into(schema::activity_log::table)
+            .values((
+                schema::activity_log::actor_id.eq(robin),
+                schema::activity_log::action.eq("transition"),
+                schema::activity_log::details.eq(format!("old-{i}")),
+                schema::activity_log::occurred_at.eq(at(2025, 1, 1, 0, 0, i.min(9))),
+            ))
+            .execute(&mut conn)
+            .expect("seeding activity");
+    }
+
+    let archive_base = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("kairos_retention_paged");
+    if archive_base.exists() {
+        std::fs::remove_dir_all(&archive_base).expect("cleaning archive dir");
+    }
+    let config = RetentionConfig {
+        archive_target: Some(ArchiveTarget::Filesystem(archive_base.clone())),
+        ..RetentionConfig::default()
+    };
+
+    // The plan for the whole table, before the sweep.
+    let all: Vec<ItemHistory> = schema::item_history::table
+        .select(ItemHistory::as_select())
+        .load(&mut conn)
+        .expect("loading history");
+    let meta: Vec<HistoryRowMeta> = all
+        .iter()
+        .map(|r| HistoryRowMeta {
+            item_id: r.item_id,
+            version: r.version,
+            edited_at: r.edited_at,
+        })
+        .collect();
+    let expected: Vec<(Uuid, i32)> = plan_history_compaction(&meta, now, &config)
+        .into_iter()
+        .map(|k| (k.item_id, k.version))
+        .collect();
+    assert!(
+        expected.len() > 7,
+        "the fixture gives candidates on every page: {}",
+        expected.len()
+    );
+    let total = all.len();
+
+    let paging = SweepPaging {
+        items_per_page: 2,
+        activity_per_page: 4,
+        batch: 3,
+    };
+    let report = sweep_tenant_with(&mut conn, "acme", &config, now, paging).expect("paged sweep");
+    assert_eq!(report.skipped, None);
+    assert_eq!(report.history_pages, 4, "7 items in pages of 2");
+    assert_eq!(report.activity_pages, 3, "11 rows in pages of 4");
+    assert_eq!(
+        report.item_history,
+        counts(expected.len() as u64, expected.len() as u64, 0)
+    );
+    assert_eq!(report.activity_log, counts(11, 11, 0));
+
+    // The archive holds the planned rows with their content, in order.
+    let history_file = report
+        .archive_files
+        .iter()
+        .find(|p| p.to_string_lossy().contains("item_history"))
+        .expect("item_history archive");
+    let archived: Vec<(Uuid, i32)> = read_ndjson(history_file)
+        .iter()
+        .map(|v| {
+            let item: Uuid = v["item_id"].as_str().unwrap().parse().unwrap();
+            let version = v["version"].as_i64().unwrap() as i32;
+            let i = items.iter().position(|x| *x == item).unwrap();
+            assert_eq!(
+                v["content"].as_str().unwrap(),
+                format!("item {i} content v{version}"),
+                "an archived row carries its content"
+            );
+            (item, version)
+        })
+        .collect();
+    let mut sorted_expected = expected.clone();
+    sorted_expected.sort();
+    assert_eq!(
+        archived, sorted_expected,
+        "archive order is (item_id, version)"
+    );
+
+    let activity_file = report
+        .archive_files
+        .iter()
+        .find(|p| p.to_string_lossy().contains("activity_log"))
+        .expect("activity_log archive");
+    let details: Vec<String> = read_ndjson(activity_file)
+        .iter()
+        .map(|v| v["details"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(details.len(), 11, "each old row once, across the pages");
+    let mut unique = details.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), 11, "no row twice at a page boundary");
+
+    // The rows that stay are the rows the planner kept.
+    pin(&mut conn, "org_acme");
+    assert_eq!(
+        total_history_rows(&mut conn) as usize,
+        total - expected.len()
+    );
+    let left: Vec<(Uuid, i32)> = schema::item_history::table
+        .select((schema::item_history::item_id, schema::item_history::version))
+        .load(&mut conn)
+        .expect("loading history");
+    assert!(left.iter().all(|k| !expected.contains(k)));
+    assert_eq!(old_activity_count(&mut conn, now - Duration::days(365)), 0);
+
+    // A second paged sweep finds nothing.
+    let again = sweep_tenant_with(&mut conn, "acme", &config, now, paging).expect("re-sweep");
+    assert_eq!(again.item_history, counts(0, 0, 0));
+    assert_eq!(again.activity_log, counts(0, 0, 0));
+    assert!(again.archive_files.is_empty());
+
+    drop(conn);
+    std::fs::remove_dir_all(&archive_base).expect("removing archive dir");
 }

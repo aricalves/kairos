@@ -1062,11 +1062,17 @@ fn archived_items_resolve_the_same_capabilities_as_live_ones() {
 }
 
 /// KAIROS-T-0410 (KAIROS-A-0025 decisions 1 and 8): on a strategy or
-/// initiative board, a principal with ANY grant on the board is a member,
-/// and membership satisfies `manage_<type>` of the board and
+/// initiative board, a principal with the `member` grant is a member, and
+/// membership satisfies `manage_<type>` of the board and
 /// `transition_items`. Not `configure_boards`, not `administer_members`,
 /// not archive (the edit rule for an archive reads grants only), and not on
-/// delivery or ADR boards. The revoke of the last grant removes it.
+/// delivery or ADR boards. The revoke of the member grant removes it.
+///
+/// KAIROS-T-0541 changed this test. Until then ANY grant made a member, and
+/// the test showed `configure_boards` and `administer_members` alone give
+/// the edit and the move. That was the bug. Now `configure_boards`,
+/// `pages` and `administer_members` alone give neither, and
+/// `transition_items` alone moves and does not edit.
 #[test]
 fn board_membership_gives_edit_and_move_on_strategy_and_initiative_boards() {
     use kairos_core::abac::EditUse;
@@ -1179,7 +1185,44 @@ fn board_membership_gives_edit_and_move_on_strategy_and_initiative_boards() {
         rules::TRANSITION_ITEMS
     ));
 
-    // Only `configure_boards` on the initiative board: a member of it.
+    // KAIROS-T-0541: a grant other than `member` makes no member. Until
+    // then each of these grants also gave the edit and the move.
+    for (other, moves) in [
+        (rules::CONFIGURE_BOARDS, false),
+        (rules::PAGES, false),
+        (rules::ADMINISTER_MEMBERS, false),
+        (rules::TRANSITION_ITEMS, true),
+    ] {
+        abac::grant_capability(&mut conn, initiatives, member, other, author)
+            .expect("granting a grant that is not member");
+        assert!(
+            !check(&mut conn, initiatives, member, rules::MANAGE_INITIATIVES),
+            "{other:?} alone must not edit"
+        );
+        assert_eq!(
+            check(&mut conn, initiatives, member, rules::TRANSITION_ITEMS),
+            moves,
+            "{other:?} alone moves only when it is transition_items"
+        );
+        let (edit, _) = abac::edit_facts(
+            &mut conn,
+            "memberco",
+            member,
+            initiative,
+            rules::MANAGE_INITIATIVES,
+            EditUse::Edit,
+        )
+        .expect("edit facts");
+        assert!(!rules::may_edit_item(edit), "{other:?} alone must not edit");
+        abac::revoke_capability(&mut conn, initiatives, member, other, author)
+            .expect("revoking the grant");
+    }
+
+    // The member grant on the initiative board: a member of it. The member
+    // keeps `configure_boards` too, so the revoke below shows that only
+    // the member grant counts.
+    abac::grant_capability(&mut conn, initiatives, member, rules::MEMBER, author)
+        .expect("granting member");
     abac::grant_capability(
         &mut conn,
         initiatives,
@@ -1212,6 +1255,7 @@ fn board_membership_gives_edit_and_move_on_strategy_and_initiative_boards() {
         rules::MANAGE_TASKS,
         rules::MANAGE_DOCUMENTS,
         rules::MANAGE_ADRS,
+        rules::PAGES,
     ] {
         assert!(
             !check(&mut conn, initiatives, member, not_implied),
@@ -1303,6 +1347,8 @@ fn board_membership_gives_edit_and_move_on_strategy_and_initiative_boards() {
         rules::MANAGE_STRATEGIES
     ));
     assert!(!check(&mut conn, strategy, member, rules::TRANSITION_ITEMS));
+    // KAIROS-T-0541: `administer_members` makes no member of the strategy
+    // board.
     abac::grant_capability(
         &mut conn,
         strategy,
@@ -1311,6 +1357,15 @@ fn board_membership_gives_edit_and_move_on_strategy_and_initiative_boards() {
         author,
     )
     .expect("granting administer_members");
+    assert!(!check(
+        &mut conn,
+        strategy,
+        member,
+        rules::MANAGE_STRATEGIES
+    ));
+    assert!(!check(&mut conn, strategy, member, rules::TRANSITION_ITEMS));
+    abac::grant_capability(&mut conn, strategy, member, rules::MEMBER, author)
+        .expect("granting member");
     assert!(check(&mut conn, strategy, member, rules::MANAGE_STRATEGIES));
     assert!(check(&mut conn, strategy, member, rules::TRANSITION_ITEMS));
     assert!(!check(
@@ -1321,26 +1376,30 @@ fn board_membership_gives_edit_and_move_on_strategy_and_initiative_boards() {
     ));
     assert!(!check(&mut conn, strategy, member, rules::CONFIGURE_BOARDS));
 
-    // Delivery and ADR boards are unchanged: a grant is not membership there.
+    // Delivery and ADR boards are unchanged: a grant is not membership
+    // there, and the member grant is not either.
     for (board, manage) in [
         (delivery, rules::MANAGE_TASKS),
         (adr_board, rules::MANAGE_ADRS),
     ] {
-        abac::grant_capability(&mut conn, board, member, rules::CONFIGURE_BOARDS, author)
-            .expect("granting configure_boards");
+        for grant in [rules::CONFIGURE_BOARDS, rules::MEMBER] {
+            abac::grant_capability(&mut conn, board, member, grant, author)
+                .expect("granting on a delivery or ADR board");
+        }
         assert!(!check(&mut conn, board, member, manage));
         assert!(!check(&mut conn, board, member, rules::TRANSITION_ITEMS));
     }
 
-    // The revoke of the last grant on the board removes the rights.
-    abac::revoke_capability(
+    // The revoke of the member grant removes the rights, though the
+    // member keeps `configure_boards` on the board.
+    abac::revoke_capability(&mut conn, initiatives, member, rules::MEMBER, author)
+        .expect("revoking member");
+    assert!(check(
         &mut conn,
         initiatives,
         member,
-        rules::CONFIGURE_BOARDS,
-        author,
-    )
-    .expect("revoking configure_boards");
+        rules::CONFIGURE_BOARDS
+    ));
     assert!(!check(
         &mut conn,
         initiatives,

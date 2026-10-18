@@ -219,6 +219,8 @@ use crate::app::AppState;
         crate::api::org::code_indexes::rebuild_code_index,
         crate::api::org::code_index_settings::get_settings,
         crate::api::org::code_index_settings::put_settings,
+        // The retention settings and the last pass (KAIROS-T-0631).
+        crate::api::org::retention::get_retention,
         // The read tokens of the organization by host (KAIROS-T-0431).
         crate::api::org::org_read_tokens::list_org_read_tokens,
         crate::api::org::org_read_tokens::set_org_read_token,

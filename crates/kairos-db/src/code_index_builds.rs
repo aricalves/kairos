@@ -271,11 +271,22 @@ pub fn lock_repository(conn: &mut PgConnection, repository_id: Uuid) -> QueryRes
 }
 
 /// The runs of a repository, newest first, `limit` at most.
-pub fn list(conn: &mut PgConnection, repository_id: Uuid, limit: i64) -> QueryResult<Vec<Build>> {
+pub fn list(
+    conn: &mut PgConnection,
+    repository_id: Uuid,
+    limit: i64,
+    offset: i64,
+) -> QueryResult<Vec<Build>> {
+    // KAIROS-T-0584: the id breaks a tie of the time, so the pages keep one
+    // order.
     code_index_builds::table
         .filter(code_index_builds::repository_id.eq(repository_id))
-        .order(code_index_builds::started_at.desc())
+        .order((
+            code_index_builds::started_at.desc(),
+            code_index_builds::id.desc(),
+        ))
         .limit(limit)
+        .offset(offset)
         .select(Build::as_select())
         .load(conn)
 }

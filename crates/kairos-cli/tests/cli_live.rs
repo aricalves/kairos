@@ -69,13 +69,27 @@ async fn run_cli_with_key(
     key: &str,
     args: &[&str],
 ) -> (i32, String, String) {
+    run_cli_with_key_env(config_dir, url, var, key, args, &[]).await
+}
+
+/// [`run_cli_with_key`] with the variables of `env` set (KAIROS-T-0594).
+async fn run_cli_with_key_env(
+    config_dir: &std::path::Path,
+    url: &str,
+    var: &str,
+    key: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> (i32, String, String) {
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_kairos"))
         .args(args)
         .env("KAIROS_CONFIG_DIR", config_dir)
         .env_remove("KAIROS_KEY")
         .env_remove("KAIROS_MCP_KEY")
+        .env_remove("KAIROS_QUIET")
         .env("KAIROS_URL", url)
         .env(var, key)
+        .envs(env.iter().copied())
         .stdin(Stdio::null())
         .output()
         .await
@@ -98,6 +112,7 @@ async fn run_cli(config_dir: &std::path::Path, args: &[&str]) -> (i32, String, S
         .env_remove("KAIROS_KEY")
         .env_remove("KAIROS_MCP_KEY")
         .env_remove("KAIROS_URL")
+        .env_remove("KAIROS_QUIET")
         .stdin(Stdio::null())
         .output()
         .await
@@ -421,6 +436,11 @@ async fn cli_login_whoami_refresh_logout_live() {
         "{stdout}"
     );
     assert!(stdout.contains("Platform"), "{stdout}");
+    // KAIROS-T-0594: the source of the credential.
+    assert!(
+        stdout.contains(&format!("credential: login cached for {base_url}")),
+        "{stdout}"
+    );
 
     // --- phase B2: an agent key in KAIROS_KEY stands in for the login ------
     // A config dir with no cache: the key and KAIROS_URL are all there is.
@@ -448,6 +468,54 @@ async fn cli_login_whoami_refresh_logout_live() {
         !empty_dir.path().join("credentials.json").exists(),
         "a key must not write the cache"
     );
+    // KAIROS-T-0594: a key that hides the login of the same deployment.
+    // whoami names the key, and stderr has one warning line.
+    let (code, stdout, stderr) = run_cli_with_key(
+        config_dir.path(),
+        &base_url,
+        "KAIROS_MCP_KEY",
+        &key,
+        &["whoami"],
+    )
+    .await;
+    assert_eq!(code, 0, "whoami with a key and a login failed: {stderr}");
+    assert!(
+        stdout.contains("credential: key from KAIROS_MCP_KEY"),
+        "{stdout}"
+    );
+    let warning = format!(
+        "warning: KAIROS_MCP_KEY is set, so the CLI sends that key and not the login for \
+         {base_url}. Set KAIROS_QUIET=1 to hide this warning."
+    );
+    assert_eq!(
+        stderr.lines().filter(|line| *line == warning).count(),
+        1,
+        "{stderr}"
+    );
+    assert!(!stderr.contains(&key), "{stderr}");
+    let (code, _, stderr) = run_cli_with_key_env(
+        config_dir.path(),
+        &base_url,
+        "KAIROS_MCP_KEY",
+        &key,
+        &["whoami"],
+        &[("KAIROS_QUIET", "1")],
+    )
+    .await;
+    assert_eq!(code, 0, "whoami with KAIROS_QUIET failed: {stderr}");
+    assert!(!stderr.contains("warning"), "{stderr}");
+    // No login in the config dir: no warning.
+    let (code, _, stderr) = run_cli_with_key(
+        empty_dir.path(),
+        &base_url,
+        "KAIROS_MCP_KEY",
+        &key,
+        &["whoami"],
+    )
+    .await;
+    assert_eq!(code, 0, "{stderr}");
+    assert!(!stderr.contains("warning"), "{stderr}");
+
     // A key that the deployment refuses names its variable, not `kairos login`.
     let (code, _, stderr) = run_cli_with_key(
         empty_dir.path(),
