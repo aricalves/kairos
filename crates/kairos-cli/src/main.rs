@@ -1145,7 +1145,7 @@ mod tests {
             vec!["https://a.example"]
         );
         // The lock is free after the call.
-        assert!(credentials::try_lock(&path).expect("try").is_some());
+        assert!(credentials::try_lock_soon(&path).expect("try").is_some());
     }
 
     /// COLLIERY-T-0213: `--email` selects the password login, and it does
