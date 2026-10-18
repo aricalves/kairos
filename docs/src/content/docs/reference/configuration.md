@@ -1083,10 +1083,11 @@ An entry for a local session holds the session bearer in `access_token`.
 A token is refreshed when its `expires_at` is within 30 seconds of now, so a
 token never expires mid-request. The CLI does not refresh a local session. The
 CLI uses it until its `expires_at`. After that, each command fails with exit 2
-and gives the `kairos login` command. A file that does not parse is an
-authentication error (exit 2). The message names the file and the fault: the
-file is not valid JSON, the JSON stops early, or the JSON does not have the
-fields of a credential cache.
+and gives the `kairos login` command.
+
+A file that does not parse is an authentication error (exit 2). The message
+names the file and the fault. The JSON is not valid, it stops early, or it does
+not have the fields of a credential cache.
 
 ### `kairos index update` and the base index
 
