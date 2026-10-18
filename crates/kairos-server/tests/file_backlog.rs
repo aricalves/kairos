@@ -347,6 +347,7 @@ async fn file_backlog_against_live_stack() {
         team_id: None,
         repository: Some("payments-api".into()),
         from_team: None,
+        parent: None,
     };
 
     // =======================================================================
@@ -815,6 +816,7 @@ async fn file_backlog_against_live_stack() {
             content: String::new(),
             complexity: None,
             bucket_type: None,
+            parent: None,
         })
         .await
         .expect("svc creates an initiative");
@@ -829,6 +831,7 @@ async fn file_backlog_against_live_stack() {
             team_id: None,
             repository: None,
             from_team: None,
+            parent: None,
         })
         .await
         .expect("alice creates on her own team's board");
@@ -989,6 +992,7 @@ async fn file_backlog_against_live_stack() {
             content: String::new(),
             complexity: None,
             bucket_type: None,
+            parent: None,
         })
         .await
         .expect("alice creates her initiative");

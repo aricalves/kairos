@@ -308,6 +308,7 @@ async fn a_column_has_a_wip_limit_and_a_move_over_it_warns() {
                 team_id: None,
                 repository: None,
                 from_team: None,
+                parent: None,
             })
             .await
             .expect("task");

@@ -325,6 +325,10 @@ pub struct Template {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct ThinEvent {
     pub event: String,
+    /// `notification` for an event of a person (KAIROS-T-0381); empty for
+    /// the frame `lagged` (KAIROS-T-0621).
+    #[serde(default)]
+    pub entity_type: String,
     /// The item of the event; empty when the event names none.
     #[serde(default)]
     pub short_code: String,
@@ -1138,6 +1142,9 @@ pub struct NewItem {
     pub decision_maker: Option<String>,
     /// adr: optional decision date (`YYYY-MM-DD`).
     pub decision_date: Option<String>,
+    /// initiative or task: the short code of the parent (KAIROS-T-0580).
+    /// The server writes the edge in the transaction of the create.
+    pub parent: Option<String>,
 }
 
 /// mirror of: `kairos_client::types::CreateStrategyRequest`.
@@ -1163,6 +1170,9 @@ struct CreateInitiativeRequest<'a> {
     /// KAIROS-T-0587: a bucket initiative; the server derives `is_bucket`.
     #[serde(skip_serializing_if = "Option::is_none")]
     bucket_type: Option<&'a str>,
+    /// The parent strategy (KAIROS-T-0580).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent: Option<&'a str>,
 }
 
 /// mirror of: `kairos_client::types::CreateTaskRequest`.
@@ -1181,6 +1191,9 @@ struct CreateTaskRequest<'a> {
     /// Slug or UUID (KAIROS-T-0115: `repository` is THE wire name).
     #[serde(skip_serializing_if = "Option::is_none")]
     repository: Option<&'a str>,
+    /// The parent initiative (KAIROS-T-0580).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent: Option<&'a str>,
 }
 
 /// mirror of: `kairos_client::types::CreateAdrRequest`.
@@ -1244,6 +1257,7 @@ pub async fn create_item(
                     content: &item.content,
                     complexity: item.complexity.as_deref(),
                     bucket_type: item.bucket_type.as_deref(),
+                    parent: item.parent.as_deref(),
                 },
             )
             .await?
@@ -1261,6 +1275,7 @@ pub async fn create_item(
                     work_class: item.work_class.as_deref(),
                     team_id: item.team_id.as_deref(),
                     repository: item.repository.as_deref(),
+                    parent: item.parent.as_deref(),
                 },
             )
             .await?
@@ -1895,6 +1910,7 @@ mod tests {
     fn an_event_reads_its_card_or_the_board() {
         let event = |code: &str, board: Option<&str>| ThinEvent {
             event: "item_updated".to_string(),
+            entity_type: "task".to_string(),
             short_code: code.to_string(),
             board_id: board.map(str::to_string),
         };
@@ -2123,6 +2139,7 @@ mod tests {
             work_class: Some("support"),
             team_id: None,
             repository: None,
+            parent: None,
         })
         .expect("serializes");
         assert_eq!(
@@ -2143,6 +2160,7 @@ mod tests {
             work_class: None,
             team_id: Some("team-1"),
             repository: Some("payments-api"),
+            parent: None,
         })
         .expect("serializes");
         assert_eq!(
@@ -2150,6 +2168,37 @@ mod tests {
             serde_json::json!({"board_id": "b-1", "column_id": "c-1",
                                "title": "T", "content": "", "team_id": "team-1",
                                "repository": "payments-api"})
+        );
+
+        // KAIROS-T-0580: the parent rides as `parent`, on a task and on an
+        // initiative.
+        let child = serde_json::to_value(CreateTaskRequest {
+            board_id: "b-1",
+            column_id: "c-1",
+            title: "T",
+            content: "",
+            task_type: None,
+            work_class: None,
+            team_id: None,
+            repository: None,
+            parent: Some("DEMO-I-0001"),
+        })
+        .expect("serializes");
+        assert_eq!(child["parent"], "DEMO-I-0001");
+        let initiative = serde_json::to_value(CreateInitiativeRequest {
+            board_id: "b-2",
+            column_id: "c-2",
+            title: "I",
+            content: "",
+            complexity: None,
+            bucket_type: None,
+            parent: Some("DEMO-S-0001"),
+        })
+        .expect("serializes");
+        assert_eq!(
+            initiative,
+            serde_json::json!({"board_id": "b-2", "column_id": "c-2",
+                               "title": "I", "content": "", "parent": "DEMO-S-0001"})
         );
 
         let doc = serde_json::to_value(CreateDocumentRequest {

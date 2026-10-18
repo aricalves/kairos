@@ -259,6 +259,7 @@ async fn archived_work_is_absent_from_every_default_listing() {
                 content: format!("# {MARKER}"),
                 complexity: None,
                 bucket_type: None,
+                parent: None,
             })
             .await
             .expect("creating initiative");
@@ -273,6 +274,7 @@ async fn archived_work_is_absent_from_every_default_listing() {
                 work_class: None,
                 team_id: None,
                 from_team: None,
+                parent: None,
             })
             .await
             .expect("creating task");

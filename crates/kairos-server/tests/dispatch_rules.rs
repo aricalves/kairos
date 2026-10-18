@@ -189,6 +189,7 @@ async fn new_task(client: &KairosClient, board: &str, title: &str, task_type: &s
             team_id: None,
             repository: None,
             from_team: None,
+            parent: None,
         })
         .await
         .expect("task")
