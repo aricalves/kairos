@@ -33,7 +33,7 @@ pub struct KairosMcp {
     pub(super) tool_router: ToolRouter<Self>,
 }
 
-/// The router of the 73 tools, built once per process (KAIROS-T-0611): the
+/// The router of the 74 tools, built once per process (KAIROS-T-0611): the
 /// stateless `/mcp` makes a service per request, and building the router
 /// each time was 70 boxed handlers and a map per call.
 static TOOL_ROUTER: OnceLock<ToolRouter<KairosMcp>> = OnceLock::new();
@@ -149,8 +149,8 @@ impl KairosMcp {
 // error, in the form of each other tool error (`super::arguments`).
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for KairosMcp {
-    // KAIROS-T-0454: the profile of the URL chooses the list; each tool can
-    // still be called.
+    // KAIROS-T-0454: the profile of the URL chooses the list; `call_tool`
+    // runs each tool under each profile.
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
@@ -265,10 +265,12 @@ impl ServerHandler for KairosMcp {
                  versioning. Repositories: `list_repositories` and `get_repository` \
                  read the directory, `add_repository` and `update_repository` write \
                  it, and `set_repository` links a task to one. `/mcp` lists the work \
-                 profile; `/mcp?profile=admin` the administration tools (teams, boards, \
-                 grants, metadata, dispatch, team page writes, org read tokens, purge, \
-                 board flow); `/mcp?profile=all` each tool. Every tool is callable under \
-                 every profile.",
+                 profile: items, repositories, members, claims, notifications, board \
+                 flow and dispatch rules to read. `/mcp?profile=admin` lists the \
+                 administration tools: teams, boards, grants, metadata, dispatch rule \
+                 writes, team page writes, org read tokens, purge. `/mcp?profile=all` \
+                 lists each tool. The server runs a call to a tool that the profile does \
+                 not list. A client such as Claude Code calls only the listed tools.",
             )
     }
 }

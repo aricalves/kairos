@@ -22,12 +22,15 @@ organization.
 
 | URL | Profile | Tools |
 |---|---|---|
-| `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory, the members, claims, notifications, the scales and templates, team pages to read: 43 tools. |
-| `/mcp?profile=admin` | admin | Teams, boards, columns and transitions, grants, metadata definitions and templates, dispatch rules and agent triage, the writes of team pages, org read tokens, delete and rebuild of repositories, board flow, purge: the other 31 tools. |
+| `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory and code index builds, the members, claims, notifications, the scales and templates, board flow, dispatch rules and team pages to read: 46 tools. |
+| `/mcp?profile=admin` | admin | Teams, boards, columns and transitions, grants, metadata definitions and templates, the writes of dispatch rules, agent triage, the writes of team pages, org read tokens, the delete of repositories, purge: the other 28 tools. |
 | `/mcp?profile=all` | all | Each tool. |
 
-You can call each tool under each profile: the profile changes the list,
-not the rights. Kairos refuses an unknown profile, and the refusal names it.
+The profile changes the list, not the rights. Kairos runs a call to a tool
+that the profile does not list, with the usual checks of the rights. A client
+such as Claude Code calls only the tools that `tools/list` gives. Thus a
+Claude Code session needs a server with the admin profile for an admin tool.
+Kairos refuses an unknown profile, and the refusal names it.
 
 The work tools:
 
@@ -45,7 +48,10 @@ The work tools:
   `get_events`, `mark_events_read`;
 - people: `list_members`;
 - scales and templates: `list_metadata_definitions`, `list_templates`;
-- team pages, to read: `team_pages`.
+- team pages, to read: `team_pages`;
+- the flow of a board and its dispatch rules, to read: `board_flow`,
+  `list_dispatch_rules`;
+- a code index build: `rebuild_code_index`.
 
 To administer from Claude Code, add a second server with the admin profile:
 
