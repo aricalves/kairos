@@ -347,7 +347,12 @@ pub fn queue_pr(
 
 /// Queue the write-back of each pull request that links to the item (any
 /// type), in the transaction of its change. The number of jobs added.
+///
+/// It queues the write-back of the issue of a task born from an issue too
+/// ([`crate::issue_writeback::on_item_changed`], KAIROS-T-0575), so each
+/// change that writes a pull request writes the issue.
 pub fn on_item_changed(conn: &mut PgConnection, item_id: Uuid) -> Result<usize, DieselError> {
+    crate::issue_writeback::on_item_changed(conn, item_id)?;
     let prs: Vec<PrRow> = sql_query(
         "SELECT DISTINCT r.id AS repository_id, l.external_id \
            FROM item_links l \
@@ -408,12 +413,15 @@ pub struct Target {
     pub repo_full_name: String,
     #[diesel(sql_type = Text)]
     pub forge: String,
+    /// The web URL of the repository (the host of a GitLab API).
+    #[diesel(sql_type = Text)]
+    pub repo_url: String,
 }
 
 /// The repository `repository_id`, live.
 pub fn target(conn: &mut PgConnection, repository_id: Uuid) -> Result<Option<Target>, DieselError> {
     sql_query(
-        "SELECT id AS repository_id, slug, repo_full_name, forge FROM repositories \
+        "SELECT id AS repository_id, slug, repo_full_name, forge, repo_url FROM repositories \
          WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind::<SqlUuid, _>(repository_id)

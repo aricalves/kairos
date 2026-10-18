@@ -964,6 +964,7 @@ the limits and what to watch, see [The job queue](../../explanation/job-queue/).
 | `KAIROS_JOB_LIMIT_WEBHOOK_DELIVERY` | whole number | `4` | The webhook deliveries that one server sends at the same time. |
 | `KAIROS_JOB_LIMIT_GITHUB_WRITEBACK` | whole number | `2` | The GitHub write-backs that one server runs at the same time. |
 | `KAIROS_JOB_LIMIT_ISSUE_IMPORT` | whole number | `2` | The imports of open issues that one server runs at the same time. |
+| `KAIROS_JOB_LIMIT_ISSUE_WRITEBACK` | whole number | `2` | The issue write-backs that one server runs at the same time. |
 
 ### Webhook deliveries
 
@@ -1002,7 +1003,13 @@ seals the secrets of the targets again.
 
 A GitHub repository can have a write token (KAIROS-T-0386). Then Kairos writes
 a comment and the status `kairos` on each linked pull request. Each write is a job of the job queue. A failed write is
-tried again. See [Turn on GitHub write-back](../../how-to/turn-on-github-write-back/).
+tried again. See [Turn on forge write-back](../../how-to/turn-on-github-write-back/).
+
+A GitHub or GitLab repository with a write token also writes to its issues
+(KAIROS-T-0575). Kairos comments on an issue that became a task, and closes
+the issue when the task ends. The comment links to the item only when
+`KAIROS_PUBLIC_URL` has a public host. A private address or a tailnet name
+gives no link.
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
