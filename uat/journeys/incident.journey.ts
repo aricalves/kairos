@@ -193,8 +193,9 @@ journey(
         short_code: bug,
         text: 'Proposal: work now, in the support lane. Checkout is down for trial accounts and the fix is small.',
       });
-      // KAIROS-T-0504, KAIROS-T-0630: each note has an id, and the answer names it.
-      const noteId = noted.match(new RegExp(`^Appended note (n-\\d+) to ${bug}\\.`))?.[1];
+      // KAIROS-T-0504: each note has an id, and the answer names it.
+      // KAIROS-T-0630: a note writes no version of the content.
+      const noteId = noted.match(new RegExp(`^Appended note (n-\\d+) to ${bug}\\. The content stays at version \\d+\\.`))?.[1];
       expect(noteId, noted).toBeTruthy();
       const item = await mcp.call('get_item', { short_code: bug });
       expect(item).toContain(`## Note ${noteId} (`);
