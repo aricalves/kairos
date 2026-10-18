@@ -462,7 +462,7 @@ Board placement per noun:
 | `initiatives` | `--board <BOARD>` | slug or UUID | required | Board to create the initiative on. |
 | `initiatives` | `--column <COLUMN>` | name or UUID | the board's first column | Only the entry column (Discovery). An initiative starts there, and a different column is refused with `VALIDATION` (KAIROS-T-0643). |
 | `tasks` | `--board <BOARD>` | slug or UUID | required unless `--team` is given | Delivery board to create the task on. The board decides the team of the task. With `--team` and no `--board`, the task goes to the delivery board of that team. |
-| `tasks` | `--column <COLUMN>` | name or UUID | the board's first column | Column to place it in. A name is a column of `--board`, else of the delivery board of `--team`. |
+| `tasks` | `--column <COLUMN>` | name or UUID | the board's first column | Only the entry column. A name is a column of `--board`, else of the delivery board of `--team`. A task starts there, and a different column is refused with `VALIDATION`, for each caller (KAIROS-T-0566). Move the task after the create. |
 | `documents` | `--board <BOARD>` | slug or UUID | required | The owner board of the document. It gives the right to edit the document, and the code of the document gets the prefix of this board. The document is not a card of the board. |
 | `documents` | `--parent <SHORT_CODE>` | string | none | The workflow item the document supports. It does not give the document an owner board. |
 | `adrs` | `--board <BOARD>` | slug or UUID | none | ADR board. Omitting it creates an off-board ADR, which is an org-admin operation. |
@@ -494,8 +494,7 @@ Options specific to one noun:
 repository, use [`kairos repos link`](#kairos-repos-link).
 
 A caller without `manage_tasks` on the board creates a request. The request
-goes to the entry column. For that caller, a `--column` that names a different
-column gets a 403. See
+goes to the entry column, as each new task does. See
 [Send a request to a different team](../../how-to/move-work-between-boards/#send-a-request-to-a-different-team).
 
 ### `<noun> edit`

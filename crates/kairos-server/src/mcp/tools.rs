@@ -4427,6 +4427,10 @@ impl KairosMcp {
                 .map_err(map_item_error)?
             {
                 Ok(outcome) => {
+                    // KAIROS-T-0566: the WIP warning of a move.
+                    if let Some(column_id) = outcome.column_id {
+                        crate::claims::note_wip(conn, column_id, &outcome.short_code)?;
+                    }
                     let mut out = format!(
                         "Restored {}. It is on its board again.\n",
                         outcome.short_code
@@ -8055,7 +8059,6 @@ fn create_item_impl(
             slug,
             user,
             &route,
-            None,
             requested_work_class,
             params.from_team.as_deref(),
         )?;
@@ -8188,6 +8191,8 @@ fn create_item_impl(
                 user,
             )
             .map_err(map_item_error)?;
+            // KAIROS-T-0566: the WIP warning of the entry column.
+            crate::claims::note_wip(conn, created.column_id, &created.short_code)?;
             lane = Some(created.work_class);
             (created.short_code, created.title, created.id)
         }

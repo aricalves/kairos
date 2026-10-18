@@ -141,10 +141,11 @@ impl TaskCreateAccess {
 ///
 /// - the target board is a delivery board (the check inside
 ///   `abac::check_file_backlog`),
-/// - the target column is the board's ENTRY column (the default when no
-///   column is named — [`boards::entry_column`], so explicit and defaulted
-///   agree),
 /// - the caller did not ask for the work class `planned`.
+///
+/// The column is not part of the decision: since KAIROS-T-0566 every task
+/// starts in the entry column, whoever creates it ([`require_entry_column`],
+/// checked before this function).
 ///
 /// The repository is NOT part of the condition. Until COLLIERY-T-0218 it
 /// was: a create with no repository was refused, because the rule was
@@ -153,10 +154,9 @@ impl TaskCreateAccess {
 /// anything about whose board the task is on, and a request for work that
 /// has no codebase yet had no way in.
 ///
-/// An explicitly requested non-entry column by a non-manager is a 403,
-/// never silently re-routed. An explicitly requested `planned` is a 403 for
-/// the same reason and of the same shape: the request is well formed, and
-/// what the caller lacks is `manage_tasks` on that board. Shared by HTTP and
+/// An explicitly requested `planned` by a non-manager is a 403, never
+/// silently re-routed: the request is well formed, and what the caller
+/// lacks is `manage_tasks` on that board. Shared by HTTP and
 /// MCP so the two entry points cannot diverge (the KAIROS-T-0096 lesson).
 ///
 /// KAIROS-T-0426 (Dylan, 2026-10-14): `from_team` names the team that sends
@@ -170,7 +170,6 @@ pub(crate) fn require_task_create_capability(
     slug: &str,
     user: Uuid,
     route: &TaskRoute,
-    column_id: Option<Uuid>,
     requested_work_class: Option<WorkClass>,
     from_team: Option<&str>,
 ) -> Result<TaskCreateAccess, ApiError> {
@@ -187,22 +186,6 @@ pub(crate) fn require_task_create_capability(
         abac::authorize(conn, slug, route.board_id, user, MANAGE).map_err(super::map_abac_error)?;
     if manages && !from_other_team {
         return Ok(TaskCreateAccess::Manager);
-    }
-    let targets_entry = match column_id {
-        None => true,
-        Some(column) => {
-            boards::entry_column(conn, route.board_id).map_err(ApiError::internal)? == Some(column)
-        }
-    };
-    if !targets_entry {
-        if manages {
-            return Err(ApiError::validation(
-                "A task from a different team (from_team) is a request: it goes to the entry \
-                 column of the board. Remove column_id.",
-            )
-            .with_details(json!({ "field": "column_id" })));
-        }
-        return Err(ApiError::capability_required(MANAGE, Some(route.board_id)));
     }
     if requested_work_class == Some(WorkClass::Planned) && manages {
         return Err(ApiError::validation(
@@ -235,6 +218,57 @@ pub(crate) fn require_task_create_capability(
         kairos_core::abac::FILE_BACKLOG,
     )?;
     Ok(TaskCreateAccess::Request)
+}
+
+/// A task starts in the entry column of its board, for every caller
+/// (KAIROS-T-0566, the lead's choice; Dylan may reverse it). A create is
+/// not a move: it runs no claim, no WIP warning and no transition row, so a
+/// create into Active or Completed skipped them. The board rules reach a
+/// task only by a move, as for an initiative (KAIROS-T-0643).
+///
+/// `None` and the entry column pass. Any other column is a 422 on
+/// `column_id` that names the entry column. A column that is not on the
+/// board is left to the create, which names it.
+pub(crate) fn require_entry_column(
+    conn: &mut PgConnection,
+    board_id: Uuid,
+    column_id: Option<Uuid>,
+) -> Result<(), ApiError> {
+    use kairos_db::schema::board_columns;
+    let Some(column_id) = column_id else {
+        return Ok(());
+    };
+    let Some(entry) = boards::entry_column(conn, board_id).map_err(ApiError::internal)? else {
+        return Ok(());
+    };
+    if entry == column_id {
+        return Ok(());
+    }
+    let on_board: bool = diesel::select(diesel::dsl::exists(
+        board_columns::table
+            .filter(board_columns::id.eq(column_id))
+            .filter(board_columns::board_id.eq(board_id))
+            .filter(board_columns::deleted_at.is_null()),
+    ))
+    .get_result(conn)
+    .map_err(ApiError::internal)?;
+    if !on_board {
+        return Ok(());
+    }
+    let entry_name: String = board_columns::table
+        .filter(board_columns::id.eq(entry))
+        .select(board_columns::name)
+        .first(conn)
+        .map_err(ApiError::internal)?;
+    Err(ApiError::validation(format!(
+        "A task starts in the entry column of its board ({entry_name}). Leave out \
+         column_id, or send the entry column. Then move the task with a transition."
+    ))
+    .with_details(json!({
+        "field": "column_id",
+        "entry_column": entry_name,
+        "entry_column_id": entry,
+    })))
 }
 
 /// Load the task with this short code, or 404. Archived work is served only
@@ -379,11 +413,16 @@ pub(crate) async fn get_task(
 
 /// Create a task. `task_type` defaults to `task`.
 ///
-/// A caller with `manage_tasks` on the target board can use any column and
-/// any work class. Every other member of the tenant sends a request
-/// (`file_backlog`, COLLIERY-T-0218, COLLIERY-A-0023): the target is a
-/// delivery board, the task goes to the entry column, and the work class
-/// is `support`.
+/// A task starts in the entry column of its board (KAIROS-T-0566). A
+/// `column_id` of another column gives a 422. Create the task there, then
+/// move it. The move runs the claim, the WIP warning and the dispatch rules
+/// of the column. The dispatch rules of the entry column fire for the
+/// create.
+///
+/// A caller with `manage_tasks` on the target board can use any work class.
+/// Every other member of the tenant sends a request (`file_backlog`,
+/// COLLIERY-T-0218, COLLIERY-A-0023): the target is a delivery board, and
+/// the work class is `support`.
 ///
 /// Name the board with `board_id`, or name a team with `team_id` to use
 /// the delivery board of that team (COLLIERY-T-0217, COLLIERY-A-0023).
@@ -402,8 +441,8 @@ pub(crate) async fn get_task(
     request_body = dto::CreateTaskRequest,
     responses(
         (status = 201, description = "Created", body = dto::Task),
-        (status = 403, description = "Missing capability. For a caller without `manage_tasks` on the board: a column that is not the entry column, the work class `planned`, or a board that is not a delivery board", body = dto::ErrorEnvelope),
-        (status = 422, description = "No board and no team, a team that is not the team of the board, a team without exactly one delivery board, unknown board/column/repository/parent, a parent that is not an initiative, PARENT_NOT_ACTIVE (a claims column under an inactive parent), or bad enum value", body = dto::ErrorEnvelope),
+        (status = 403, description = "Missing capability. For a caller without `manage_tasks` on the board: the work class `planned`, or a board that is not a delivery board", body = dto::ErrorEnvelope),
+        (status = 422, description = "No board and no team, a team that is not the team of the board, a team without exactly one delivery board, unknown board/column/repository/parent, a column that is not the entry column of the board, a parent that is not an initiative, PARENT_NOT_ACTIVE (a claims column under an inactive parent), or bad enum value", body = dto::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn create_task(
@@ -439,12 +478,12 @@ pub(crate) async fn create_task(
         .run(&tenant.slug, move |conn| {
             let board_id = opt_board_id_by_ref(conn, body.board_id.as_deref())?;
             let route = resolve_routing(conn, board_id, team_id, repository.as_deref())?;
+            require_entry_column(conn, route.board_id, column_id)?;
             let access = require_task_create_capability(
                 conn,
                 &slug,
                 user,
                 &route,
-                column_id,
                 requested_work_class,
                 body.from_team.as_deref(),
             )?;
@@ -491,6 +530,9 @@ pub(crate) async fn create_task(
                     )
                     .map_err(map_board_error)?;
                 }
+                // KAIROS-T-0566: an entry column over its WIP limit warns,
+                // as for a move.
+                crate::claims::note_wip(conn, created.column_id, &created.short_code)?;
                 embed(conn, created.into_dto())
             })
         })

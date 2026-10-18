@@ -251,8 +251,9 @@ def create_body(doc, docs, ctx, args, state, staged):
                        % (doc["short_code"], doc["phase"], board["slug"]))
         body["board_id"] = board["id"]
         # KAIROS-T-0643 (Dylan, 2026-10-17): an initiative starts in the
-        # entry column of its board. walk_to_phase moves it to its column.
-        if kind != "initiative":
+        # entry column of its board, and so does a task (KAIROS-T-0566).
+        # walk_to_phase moves it to its column.
+        if kind not in WALKED:
             body["column_id"] = board["by_name"][column]
     if kind == "initiative":
         size = doc.get("estimated_complexity", "").lower()
@@ -312,14 +313,22 @@ def phase_column(ctx, doc):
     return ctx.board_of(kind)["by_name"][remap.COLUMN[kind][doc["phase"]]]
 
 
+# The kinds that the server creates in the entry column only, and the REST
+# family of each: the import walks them to their phase column.
+WALKED = {"initiative": "initiatives", "task": "tasks"}
+
+
 def walk_to_phase(api, ctx, doc, row, admin):
-    """KAIROS-T-0643: move an initiative from the column it is in to the
-    column of its Metis phase, one transition of the board at a time."""
-    board = ctx.board_of("initiative")
+    """KAIROS-T-0643, KAIROS-T-0566: move an initiative or a task from the
+    column it is in to the column of its Metis phase, one transition of the
+    board at a time."""
+    kind = remap.kind_of(doc)
+    family = WALKED[kind]
+    board = ctx.board_of(kind)
     target = phase_column(ctx, doc)
     if not row.get("column_id"):
         # An adopted row from the search has no placement: read the item.
-        row = api.json("GET", "/api/initiatives/%s" % row["short_code"], admin=admin)
+        row = api.json("GET", "/api/%s/%s" % (family, row["short_code"]), admin=admin)
     start = row.get("column_id")
     if start == target:
         return
@@ -344,7 +353,7 @@ def walk_to_phase(api, ctx, doc, row, admin):
         path.append(step)
         step = before[step]
     for column in reversed(path):
-        route = "/api/initiatives/%s/transition" % row["short_code"]
+        route = "/api/%s/%s/transition" % (family, row["short_code"])
         status, raw, _ = api.call("POST", route, {"to_column_id": column}, admin=admin)
         if status != 200:
             raise Stop("move of %s (%s) -> HTTP %s: %s"
@@ -419,7 +428,7 @@ def pass_create(api, ctx, docs, order, args, state, state_path, staged, use_admi
             def before_post(doc=doc, code=wanted[old]):
                 set_next_number(api, ctx, doc, docs, code, seq_admin)
         row, adopted = create(api, doc, body, admin, args, before_post)
-        if kind == "initiative":
+        if kind in WALKED:
             walk_to_phase(api, ctx, doc, row, admin)
         new = row.get("short_code")
         if old in wanted and new != wanted[old]:

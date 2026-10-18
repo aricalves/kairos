@@ -603,6 +603,9 @@ of `transition_item` or `move_item` ends with a warning line, for example
 `Warning: the column Active has 4 items, over its WIP limit of 3. Your move of
 ACME-T-0012 is recorded.`
 
+The answers of `create_item`, `cancel_item` and `restore_item` end with the
+same line.
+
 With `details: true`, each card ends with the date (UTC) of its last change
 and its metadata values, in slug order:
 

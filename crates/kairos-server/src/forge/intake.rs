@@ -132,7 +132,6 @@ pub(crate) fn take_issue(
             &route,
             None,
             None,
-            None,
         ) {
             Ok(access) => access,
             Err(e) if e.status.is_server_error() => return Err(e),

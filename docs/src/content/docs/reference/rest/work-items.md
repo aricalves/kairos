@@ -255,11 +255,16 @@ is that a listing nobody asked hides put-away work.
 
 Create a task. `task_type` defaults to `task`.
 
-A caller with `manage_tasks` on the target board can use any column and
-any work class. Every other member of the tenant sends a request
-(`file_backlog`, COLLIERY-T-0218, COLLIERY-A-0023): the target is a
-delivery board, the task goes to the entry column, and the work class
-is `support`.
+A task starts in the entry column of its board (KAIROS-T-0566). A
+`column_id` of another column gives a 422. Create the task there, then
+move it. The move runs the claim, the WIP warning and the dispatch rules
+of the column. The dispatch rules of the entry column fire for the
+create.
+
+A caller with `manage_tasks` on the target board can use any work class.
+Every other member of the tenant sends a request (`file_backlog`,
+COLLIERY-T-0218, COLLIERY-A-0023): the target is a delivery board, and
+the work class is `support`.
 
 Name the board with `board_id`, or name a team with `team_id` to use
 the delivery board of that team (COLLIERY-T-0217, COLLIERY-A-0023).
@@ -277,8 +282,8 @@ Request body (required): `application/json`, [`CreateTaskRequest`](../schemas/#c
 | Response | Body | Meaning |
 |---|---|---|
 | `201` | [`Task`](../schemas/#task) | Created |
-| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Missing capability. For a caller without `manage_tasks` on the board: a column that is not the entry column, the work class `planned`, or a board that is not a delivery board |
-| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | No board and no team, a team that is not the team of the board, a team without exactly one delivery board, unknown board/column/repository/parent, a parent that is not an initiative, PARENT_NOT_ACTIVE (a claims column under an inactive parent), or bad enum value |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Missing capability. For a caller without `manage_tasks` on the board: the work class `planned`, or a board that is not a delivery board |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | No board and no team, a team that is not the team of the board, a team without exactly one delivery board, unknown board/column/repository/parent, a column that is not the entry column of the board, a parent that is not an initiative, PARENT_NOT_ACTIVE (a claims column under an inactive parent), or bad enum value |
 
 ### `GET /api/tasks/{short_code}`
 
