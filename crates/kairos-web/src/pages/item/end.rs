@@ -4,6 +4,9 @@
 //!   asks for the reason; the task moves to the done column of its board
 //!   with the mark "cancelled". A move out of the done column removes the
 //!   mark.
+//! - Reopen ([`ReopenDialog`], KAIROS-T-0648): a done task comes back.
+//!   The server moves it to the first column of its board that is not
+//!   done, and removes the cancel mark (KAIROS-A-0048).
 //! - Delete ([`PurgeDialog`]): the task is gone for good. The dialog names
 //!   the task, and the person types its code to confirm. Only a person
 //!   who manages the board of the task sees the button.
@@ -45,8 +48,7 @@ pub fn CancelledBanner(mark: Cancellation) -> impl IntoView {
                     <Text bright=true bold=true>{heading}</Text>
                     <Text size="sm">{reason}</Text>
                     <Text size="xs" dimmed=true>
-                        "The team will not do this task. To work on it again, move it out of \
-                         the done column."
+                        "The team will not do this task. To work on it again, reopen it."
                     </Text>
                 </Stack>
             </Banner>
@@ -114,13 +116,83 @@ pub fn CancelDialog(
             notice=std::sync::Arc::new(|| view! {
                 <Text size="sm" dimmed=true>
                     "The task moves to the done column with the mark \"cancelled\" and the \
-                     reason. To work on it again, move it out of the done column."
+                     reason. To work on it again, reopen it."
                 </Text>
             }.into_any())
         >
             <Textarea label="Reason" value=reason rows=3 required=true/>
             {move || error.get().map(|message| view! {
                 <Alert title="Cancel failed" color=token::BAD>
+                    <Text size="sm" dimmed=true>{message}</Text>
+                </Alert>
+            })}
+        </ConfirmDialog>
+    }
+}
+
+/// The message of the page after a reopen. Pure, host-tested.
+pub(crate) fn reopened_message(code: &str) -> String {
+    format!("Kairos reopened {code}. It is in the first open column of its board.")
+}
+
+/// The reopen dialog of a done task (KAIROS-T-0648). The server picks the
+/// column, so the dialog asks only to confirm. A refusal shows the code
+/// and the message of the server. `on_reopened` gets the message of the
+/// page.
+#[component]
+pub fn ReopenDialog(
+    #[prop(into)] code: String,
+    #[prop(into)] title: String,
+    open: RwSignal<bool>,
+    on_reopened: Callback<String>,
+) -> impl IntoView {
+    let auth = use_auth();
+    let code = StoredValue::new(code);
+    let busy = RwSignal::new(false);
+    let error = RwSignal::new(None::<String>);
+    Effect::new(move |_| {
+        if open.get() {
+            error.set(None);
+        }
+    });
+    let confirm = Callback::new(move |_| {
+        if busy.get_untracked() {
+            return;
+        }
+        busy.set(true);
+        error.set(None);
+        leptos::task::spawn_local(async move {
+            let result = api::reopen_task(auth, &code.get_value()).await;
+            busy.set(false);
+            match result {
+                Ok(_) => {
+                    open.set(false);
+                    on_reopened.run(reopened_message(&code.get_value()));
+                }
+                Err(e) => error.set(Some(api::error_text(&e))),
+            }
+        });
+    });
+    view! {
+        <ConfirmDialog
+            open
+            title=format!("Reopen {}?", code.get_value())
+            message=title
+            confirm_label="Reopen"
+            cancel_label="Keep done"
+            danger=false
+            busy
+            size="md"
+            on_confirm=confirm
+            notice=std::sync::Arc::new(|| view! {
+                <Text size="sm" dimmed=true>
+                    "The task moves to the first column of its board that is not done. \
+                     Kairos removes the cancel mark. The history keeps the reason."
+                </Text>
+            }.into_any())
+        >
+            {move || error.get().map(|message| view! {
+                <Alert title="Reopen failed" color=token::BAD>
                     <Text size="sm" dimmed=true>{message}</Text>
                 </Alert>
             })}
@@ -217,6 +289,35 @@ mod tests {
         assert_eq!(
             cancelled_heading(&mark("")),
             "Cancelled on 2026-10-09 10:30 UTC"
+        );
+    }
+
+    /// KAIROS-T-0648: the message after a reopen names the task, and the
+    /// reopen goes to the reopen route of the task with no body.
+    #[test]
+    fn the_reopen_names_the_task_and_its_route() {
+        assert_eq!(
+            reopened_message("ACME-T-0001"),
+            "Kairos reopened ACME-T-0001. It is in the first open column of its board."
+        );
+        assert_eq!(
+            api::reopen_path("ACME-T-0001"),
+            "/api/tasks/ACME-T-0001/reopen"
+        );
+    }
+
+    /// KAIROS-T-0648: a refusal of a reopen shows the code and the message
+    /// of the server.
+    #[test]
+    fn a_reopen_refusal_shows_the_server_message() {
+        let refusal = aurora_dark::tokens::ApiError::Http {
+            status: 422,
+            message: "The initiative is not active.".into(),
+            code: Some("PARENT_NOT_ACTIVE".into()),
+        };
+        assert_eq!(
+            api::error_text(&refusal),
+            "PARENT_NOT_ACTIVE (422): The initiative is not active."
         );
     }
 
