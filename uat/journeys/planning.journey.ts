@@ -181,10 +181,10 @@ journey(
     await step(alice, 'traverses from the initiative and filters by repository with `kairos search`', async () => {
       const cli = await alice.cli();
       const children = await cli.json(['search', '--from', initiative, '--relationships', 'parent', '--direction', 'outbound', '--depth', '1']);
-      const childCodes = (children.results?.tasks ?? []).map((t: any) => t.short_code).sort();
+      const childCodes = (children.items.filter((h: any) => h.entity_type === 'task')).map((t: any) => t.short_code).sort();
       expect(childCodes).toEqual([bound, blocker].sort());
       const byRepo = await cli.json(['search', '--repo', 'payments-api', '--limit', '100']);
-      const mine = (byRepo.results?.tasks ?? []).map((t: any) => t.short_code).filter((c: string) => c === bound || c === blocker);
+      const mine = (byRepo.items.filter((h: any) => h.entity_type === 'task')).map((t: any) => t.short_code).filter((c: string) => c === bound || c === blocker);
       expect(mine).toEqual([bound]);
       return { children: childCodes, payments_api_hits_from_this_run: mine };
     });

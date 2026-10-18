@@ -1468,6 +1468,41 @@ Response of `GET /api/{entity_type}/{short_code}/teams` (KAIROS-T-0321).
 | `short_code` | `string` | yes | The short code of the item. |
 | `teams` | array of [`ItemTeam`](#itemteam) | yes | The teams of the item, by slug. Empty when the item has no team. |
 
+## JobFailure
+
+A job that failed, with its error.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `error` | `string`, nullable | no | The reason of the failure, cut to [`JOB_ERROR_LIMIT`] characters. |
+| `finished_at` | `string`, nullable | no | When the job failed, RFC 3339. |
+| `id` | `string` | yes | The id of the job (a UUID). |
+| `kind` | `string` | yes |  |
+| `max_tries` | `integer` | yes |  |
+| `tenant` | `string`, nullable | no | The slug of the organization; absent for a job of the deployment. |
+| `tries` | `integer` | yes |  |
+
+## JobKindCounts
+
+The jobs of one kind in each state.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `done` | `integer` | yes | The jobs that ended well and are kept for a time. |
+| `failed` | `integer` | yes | The jobs that failed and are kept for a time. |
+| `kind` | `string` | yes | The kind of job: `hosted_build`, `webhook_delivery`, `periodic`, and the others. |
+| `leased` | `integer` | yes | The jobs that a server runs now. |
+| `queued` | `integer` | yes | The jobs that wait for a server. |
+
+## JobQueueStatus
+
+`GET /api/admin/jobs` (KAIROS-T-0576): the job queue of the organization and of the deployment.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `failures` | array of [`JobFailure`](#jobfailure) | yes | The failed jobs, newest first, at most [`JOB_FAILURE_LIMIT`]. |
+| `kinds` | array of [`JobKindCounts`](#jobkindcounts) | yes | The jobs of each kind in each state, by kind. A finished job stays for 7 days. |
+
 ## ListEnvelope_ActivityEntry
 
 The S-0005 list envelope: `{items, total, limit, offset}`.

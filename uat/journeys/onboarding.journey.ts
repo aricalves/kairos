@@ -134,7 +134,7 @@ journey(
         label: `manage_structure for ${sa.name}`,
         delete: async () => { await api.delete(`/api/structure-grants/${grant.id}`); },
       });
-      const listed = (await cli.json(['grants', 'list'])) as any[];
+      const listed = (await cli.json(['grants', 'list'])).items as any[];
       const mine = listed.find((g) => g.id === grant.id);
       expect(mine, 'the grant is listed').toBeTruthy();
       expect(mine.scope).toBe('organization');
@@ -196,7 +196,7 @@ journey(
     await step(alice, 'takes the grant back when the work is done, and the admin agent is refused the next team', async () => {
       const cli = await alice.cli();
       await cli.ok(['grants', 'remove', structureGrant, '--confirm']);
-      const listed = (await cli.json(['grants', 'list'])) as any[];
+      const listed = (await cli.json(['grants', 'list'])).items as any[];
       expect(listed.map((g) => g.id)).not.toContain(structureGrant);
       const refused = await (await adminAgent!.mcp()).refused('create_team', {
         name: 'UAT one more team',
