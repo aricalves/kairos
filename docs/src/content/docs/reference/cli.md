@@ -1147,6 +1147,7 @@ kairos boards dispatch list <BOARD> [OPTIONS]
 kairos boards dispatch add-target <BOARD> --name <NAME> --hook-url <URL> [OPTIONS]
 kairos boards dispatch remove-target <BOARD> <TARGET> --confirm [OPTIONS]
 kairos boards dispatch enable-target <BOARD> <TARGET> [OPTIONS]
+kairos boards dispatch redeliver <BOARD> <TARGET> [--since <TIME>] [OPTIONS]
 kairos boards dispatch test-target <BOARD> <TARGET> [OPTIONS]
 kairos boards dispatch add-rule <BOARD> [--trigger entered_column|unblocked] [--column <COLUMN>] --target <TARGET> [--task-type <TYPE>] [--metadata <SLUG=VALUE>] [--repository <REPO>] [OPTIONS]
 kairos boards dispatch remove-rule <BOARD> <RULE> --confirm [OPTIONS]
@@ -1164,7 +1165,8 @@ Kairos sends one signed delivery to the target. See
 | `list` | a place on the board | Shows the rules and the targets of the board. |
 | `add-target` | `configure_boards` | Makes a target. The command shows its secret one time. |
 | `remove-target` | `configure_boards` | Removes a target, with its rules and its log. It needs `--confirm`. |
-| `enable-target` | `configure_boards` | Turns on a target that Kairos turned off. |
+| `enable-target` | `configure_boards` | Turns on a target that Kairos turned off. Kairos sends the skipped deliveries of the last 30 days again. |
+| `redeliver` | `configure_boards` | Sends the skipped deliveries of a target that is on again, oldest first. `--since` sends only the events at or after that time (RFC 3339). |
 | `test-target` | `configure_boards` | Sends the event `ping` to a target. |
 | `add-rule` | `configure_boards` | Makes a rule. |
 | `remove-rule` | `configure_boards` | Removes a rule. Its deliveries stay in the log. It needs `--confirm`. |
@@ -1803,6 +1805,38 @@ upload. Each run shows its result. `--limit` gives the most runs to show:
 | `COMMIT` | The first 12 characters of the commit, when the run has one. |
 | `SYMBOLS` | The symbols of the index that the run wrote. |
 | `DETAIL` | The text of a failure, or when the run ended. |
+
+### `kairos repos indexes`
+
+```text
+kairos repos indexes <REPOSITORY> [OPTIONS]
+```
+
+List the indexed commits of a repository, newest first. The order is the
+time of the last write of each index. Use it when `fetch_index` refuses a
+checkout. The list shows how far the nearest index is from the checkout.
+Each member can read the list.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--limit <LIMIT>` | integer | server default 50, maximum 200 | Page size. |
+| `--offset <OFFSET>` | integer | 0 | Rows to skip. |
+| `--all` | flag | off | Read each page. The CLI asks for one page after the other and prints each row. Not with `--limit` or `--offset`. |
+
+| Column | Meaning |
+|---|---|
+| `COMMIT` | The first 12 characters of the commit. |
+| `REF` | The branch, the pull request or the tag of the index, or `-`. |
+| `SCHEMA` | The schema version of the index file, or `-` when the server cannot read it. |
+| `SIZE` | The size of the structure: the index with no summaries. |
+| `SUMMARIES` | The summaries that the index uses. |
+| `CREATED` | When Kairos first stored an index of the commit, in UTC. |
+| `UPDATED` | When Kairos last stored an index of the commit, in UTC. |
+
+After the table, the command prints the count of the indexes and the page.
+With `--json`, each row has the fields of
+`GET /api/repositories/{slug}/code-indexes/commits`. See
+[the pages of a list](#the-pages-of-a-list).
 
 ### `kairos repos credential set`
 

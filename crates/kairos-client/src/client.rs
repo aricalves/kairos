@@ -926,7 +926,27 @@ impl KairosClient {
             .await
     }
 
-    /// `POST /api/boards/{id}/webhook-targets/{target_id}/enable`.
+    /// `POST /api/boards/{id}/webhook-targets/{target_id}/redeliver`
+    /// (KAIROS-T-0577): queue the `skipped` deliveries of a target that is
+    /// on again. `redelivered` of the answer counts them.
+    pub async fn redeliver_webhook_target(
+        &self,
+        board: &str,
+        target_id: &str,
+        query: &crate::types_dispatch::RedeliverQuery,
+    ) -> Result<crate::types_dispatch::WebhookTarget, Error> {
+        let path = format!("/api/boards/{board}/webhook-targets/{target_id}/redeliver");
+        self.execute(
+            format!("POST {path}"),
+            200,
+            self.http.post(self.url(&path)).query(query),
+        )
+        .await
+    }
+
+    /// `POST /api/boards/{id}/webhook-targets/{target_id}/enable`. The
+    /// answer counts the `skipped` deliveries that Kairos queued again
+    /// (`redelivered`, KAIROS-T-0577).
     pub async fn enable_webhook_target(
         &self,
         board: &str,
@@ -2107,6 +2127,20 @@ impl KairosClient {
     ) -> Result<Vec<crate::types_code_index::CodeIndex>, Error> {
         self.get(&format!("/api/repositories/{reference}/code-indexes"))
             .await
+    }
+
+    /// `GET /api/repositories/{slug}/code-indexes/commits` — one page of
+    /// the indexed commits of a repository, newest first (KAIROS-T-0518).
+    pub async fn code_indexes_page(
+        &self,
+        reference: &str,
+        page: Pagination,
+    ) -> Result<ListEnvelope<crate::types_code_index::CodeIndex>, Error> {
+        self.get_query(
+            &format!("/api/repositories/{reference}/code-indexes/commits"),
+            &page,
+        )
+        .await
     }
 
     /// `GET /api/repositories/{slug}/code-indexes/builds` — the runs of

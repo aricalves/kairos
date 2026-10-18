@@ -20,7 +20,7 @@ One `activity_log` row, as returned by `GET /api/activity`.
 | `agent_key_id` | `string`, nullable | no | The agent key (UUID) of the request that made this change, when an agent made it with the agent key of a person (KAIROS-T-0359). The actor is still the person: show "Alice (agent)". Null for a change made without an agent key, and for each change made before Kairos recorded the key. |
 | `details` | `string` | yes | Structured context, e.g. `"column:Draft->Active"`. |
 | `entity_archived_at` | `string`, nullable | no | When the item acted on was archived (RFC 3339). Null for a live item, and when `entity_short_code` is null. |
-| `entity_id` | `string`, nullable | no | The item acted on (UUID). Null for a relationship between two items: `details` names the two. For an `impacts` link it is the document or the ADR of the link (COLLIERY-T-0269). |
+| `entity_id` | `string`, nullable | no | The item acted on (UUID). For a relationship between two items it is the source of the edge, and `details` names the two (KAIROS-T-0638; null in older rows whose source is not known). For an `impacts` link it is the document or the ADR of the link (COLLIERY-T-0269). |
 | `entity_short_code` | `string`, nullable | no | The short code of the item acted on (COLLIERY-T-0262), live or archived. Null when the entry is not about an item (a board, a team, a member), and when Kairos has no item with the id. |
 | `entity_title` | `string`, nullable | no | The title of the item acted on, as it is now. Null when `entity_short_code` is null. |
 | `entity_type` | `string`, nullable | no | `strategy|initiative|task|document|adr`. Null when `entity_id` is null. |
@@ -418,6 +418,7 @@ One indexed commit of a repository.
 | `commit` | `string` | yes | The commit, 40 (or 64) lower-case hex characters. |
 | `created_at` | `string` | yes | When the index was first written, RFC 3339. |
 | `ref` | `string`, nullable | no | The branch, the pull request or the tag that the index is for, if the sender gave it. |
+| `schema_version` | `integer`, nullable | no | The schema version of the index file (KAIROS-T-0518). It is null when the stored structure gives no version. |
 | `source` | `string` | yes | `upload`, or `build` (the server built it after a push). |
 | `structure_bytes` | `integer` | yes | The size of the structure (the index with no summaries), in bytes. |
 | `summary_keys` | `integer` | yes | The summaries that the structure uses. |
@@ -1526,6 +1527,17 @@ The S-0005 list envelope: `{items, total, limit, offset}`.
 | `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
 
 ## ListEnvelope_Board
+
+The S-0005 list envelope: `{items, total, limit, offset}`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `items` | array of `object` | yes |  |
+| `limit` | `integer` | yes | The applied limit. |
+| `offset` | `integer` | yes | The applied offset. |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
+
+## ListEnvelope_CodeIndex
 
 The S-0005 list envelope: `{items, total, limit, offset}`.
 
@@ -3264,9 +3276,10 @@ A webhook target of a board: a URL. Kairos sends signed deliveries to it. The se
 | `created_by` | `string` | yes |  |
 | `disabled_at` | `string`, nullable | no |  |
 | `disabled_reason` | `string`, nullable | no |  |
-| `enabled` | `boolean` | yes | False: Kairos turned the target off after failed tries, and sends nothing to it until a board manager turns it on again. |
+| `enabled` | `boolean` | yes | False: Kairos turned the target off after failed tries, and sends nothing to it until a board manager turns it on again. Then Kairos sends the deliveries that it skipped (KAIROS-T-0577). |
 | `id` | `string` | yes |  |
 | `name` | `string` | yes |  |
+| `redelivered` | `integer`, nullable | no | Only in the answer of `enable` and `redeliver` (KAIROS-T-0577): the number of `skipped` deliveries that Kairos queued again. |
 | `url` | `string` | yes | The URL. A person who cannot configure the board gets it with no query and no fragment. |
 
 ## WorkBlocker

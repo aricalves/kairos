@@ -12,7 +12,8 @@
 //!   the rows that no index has used.
 //! - `code_indexes`: one row for each commit, with the structure as the
 //!   gzip of the SQLite index file with no summaries. A second write for a
-//!   commit replaces the row.
+//!   commit replaces the row. The retention pass keeps the newest indexes
+//!   of each repository and ref, and deletes the others (KAIROS-T-0638).
 //!
 //! The connection must be pinned to a tenant schema. This module does not
 //! check rights: the caller does.
@@ -20,6 +21,8 @@
 use chrono::{DateTime, Utc};
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
+use diesel::sql_query;
+use diesel::sql_types::{BigInt, Nullable, Timestamptz, Uuid as SqlUuid};
 use diesel::upsert::excluded;
 use uuid::Uuid;
 
@@ -243,15 +246,123 @@ pub fn add_made(
     Ok(added)
 }
 
-/// Delete the rows of the pool that no stored index has used and that were
-/// made before `before` (KAIROS-T-0378): the summaries of builds that did
-/// not end, or of code that went away before the build ended. A row that a
-/// stored index used stays. Returns the count.
-pub fn delete_unused(conn: &mut PgConnection, before: DateTime<Utc>) -> QueryResult<usize> {
+/// Delete at most `limit` rows of the pool that no stored index has used
+/// and that were made before `before` (KAIROS-T-0378): the summaries of
+/// builds that did not end, or of code that went away before the build
+/// ended. A row that a stored index used stays. Returns the count; the
+/// retention pass calls it until a page deletes fewer than `limit`
+/// (KAIROS-T-0638).
+pub fn delete_unused(
+    conn: &mut PgConnection,
+    before: DateTime<Utc>,
+    limit: i64,
+) -> QueryResult<usize> {
+    sql_query(
+        "DELETE FROM code_index_summaries WHERE (repository_id, key) IN ( \
+             SELECT repository_id, key FROM code_index_summaries \
+             WHERE last_used_at IS NULL AND created_at < $1 LIMIT $2)",
+    )
+    .bind::<Timestamptz, _>(before)
+    .bind::<BigInt, _>(limit)
+    .execute(conn)
+}
+
+/// Delete at most `limit` rows of the pool of `repository_id` whose last
+/// use is before `before` and before the last write of every stored index
+/// of the repository (KAIROS-T-0638). A stored index marks each row that
+/// it uses with the time of its write ([`put`]), so no stored index uses
+/// such a row: only indexes that retention removed used it. With no stored
+/// index, each row used before `before` goes. Returns the count.
+pub fn delete_used_by_no_stored_index(
+    conn: &mut PgConnection,
+    repository_id: Uuid,
+    before: DateTime<Utc>,
+    limit: i64,
+) -> QueryResult<usize> {
+    sql_query(
+        "DELETE FROM code_index_summaries WHERE repository_id = $1 AND key IN ( \
+             SELECT key FROM code_index_summaries \
+             WHERE repository_id = $1 AND last_used_at < $2 \
+               AND last_used_at < COALESCE( \
+                   (SELECT min(updated_at) FROM code_indexes WHERE repository_id = $1), \
+                   'infinity'::timestamptz) \
+             LIMIT $3)",
+    )
+    .bind::<SqlUuid, _>(repository_id)
+    .bind::<Timestamptz, _>(before)
+    .bind::<BigInt, _>(limit)
+    .execute(conn)
+}
+
+/// At most `limit` repositories that have rows in `code_indexes` (when
+/// `indexes`) or in `code_index_summaries`, after `after`, in id order
+/// (KAIROS-T-0638): the pages of the retention pass.
+pub fn repositories_page(
+    conn: &mut PgConnection,
+    indexes: bool,
+    after: Option<Uuid>,
+    limit: i64,
+) -> QueryResult<Vec<Uuid>> {
+    #[derive(QueryableByName)]
+    struct Row {
+        #[diesel(sql_type = SqlUuid)]
+        repository_id: Uuid,
+    }
+    let table = if indexes {
+        "code_indexes"
+    } else {
+        "code_index_summaries"
+    };
+    let rows: Vec<Row> = sql_query(format!(
+        "SELECT DISTINCT repository_id FROM {table} \
+         WHERE ($1::uuid IS NULL OR repository_id > $1) \
+         ORDER BY repository_id LIMIT $2"
+    ))
+    .bind::<Nullable<SqlUuid>, _>(after)
+    .bind::<BigInt, _>(limit)
+    .load(conn)?;
+    Ok(rows.into_iter().map(|r| r.repository_id).collect())
+}
+
+/// The key, the ref and the last write of each stored index of
+/// `repositories`, with no structure (KAIROS-T-0638).
+pub fn index_meta(
+    conn: &mut PgConnection,
+    repositories: &[Uuid],
+) -> QueryResult<Vec<kairos_core::retention::CodeIndexMeta>> {
+    let rows: Vec<(Uuid, String, Option<String>, DateTime<Utc>)> = code_indexes::table
+        .filter(code_indexes::repository_id.eq_any(repositories))
+        .select((
+            code_indexes::repository_id,
+            code_indexes::commit_sha,
+            code_indexes::ref_name,
+            code_indexes::updated_at,
+        ))
+        .load(conn)?;
+    Ok(rows
+        .into_iter()
+        .map(|(repository_id, commit_sha, ref_name, updated_at)| {
+            kairos_core::retention::CodeIndexMeta {
+                repository_id,
+                commit_sha,
+                ref_name,
+                updated_at,
+            }
+        })
+        .collect())
+}
+
+/// Delete the indexes of `repository_id` for `commits` (KAIROS-T-0638).
+/// Returns the count.
+pub fn delete_indexes(
+    conn: &mut PgConnection,
+    repository_id: Uuid,
+    commits: &[String],
+) -> QueryResult<usize> {
     diesel::delete(
-        code_index_summaries::table
-            .filter(code_index_summaries::last_used_at.is_null())
-            .filter(code_index_summaries::created_at.lt(before)),
+        code_indexes::table
+            .filter(code_indexes::repository_id.eq(repository_id))
+            .filter(code_indexes::commit_sha.eq_any(commits)),
     )
     .execute(conn)
 }
@@ -341,6 +452,44 @@ pub fn list(conn: &mut PgConnection, repository_id: Uuid) -> QueryResult<Vec<Cod
         .order(code_indexes::updated_at.desc())
         .select(CodeIndexInfo::as_select())
         .load(conn)
+}
+
+/// One page of the indexed commits of a repository, newest first: the
+/// time of the last write, then the commit (KAIROS-T-0518). Each row has
+/// the first `prefix_bytes` bytes of its structure, for the schema version.
+/// With no `limit`, the page has each row from `offset`.
+pub fn page(
+    conn: &mut PgConnection,
+    repository_id: Uuid,
+    limit: Option<i64>,
+    offset: i64,
+    prefix_bytes: i32,
+) -> QueryResult<Vec<(CodeIndexInfo, Vec<u8>)>> {
+    // `prefix_bytes` is a number, so the text of the SQL is safe.
+    let prefix = diesel::dsl::sql::<diesel::sql_types::Bytea>(&format!(
+        "substring(structure from 1 for {prefix_bytes})"
+    ));
+    let mut query = code_indexes::table
+        .filter(code_indexes::repository_id.eq(repository_id))
+        .order((
+            code_indexes::updated_at.desc(),
+            code_indexes::commit_sha.asc(),
+        ))
+        .select((CodeIndexInfo::as_select(), prefix))
+        .offset(offset)
+        .into_boxed();
+    if let Some(limit) = limit {
+        query = query.limit(limit);
+    }
+    query.load(conn)
+}
+
+/// The count of the indexed commits of a repository.
+pub fn count(conn: &mut PgConnection, repository_id: Uuid) -> QueryResult<i64> {
+    code_indexes::table
+        .filter(code_indexes::repository_id.eq(repository_id))
+        .count()
+        .get_result(conn)
 }
 
 /// One indexed commit, with no structure.
