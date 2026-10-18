@@ -52,6 +52,12 @@ pub const ENV_NOTIFICATIONS_READ_DAYS: &str = "KAIROS_NOTIFICATIONS_READ_DAYS";
 /// Env var: the days that a summary of the code-index pool that no stored
 /// index has used stays (default 30, KAIROS-T-0378); 0 keeps them.
 pub const ENV_CODE_INDEX_POOL_DAYS: &str = "KAIROS_CODE_INDEX_POOL_DAYS";
+/// Env var: the code indexes that stay per repository and ref, the newest
+/// by last write (default 5, KAIROS-T-0638); 0 keeps every index.
+pub const ENV_CODE_INDEX_KEEP: &str = "KAIROS_CODE_INDEX_KEEP";
+/// Env var: the days an unread notification stays (default 180,
+/// KAIROS-T-0638); 0 keeps unread notifications.
+pub const ENV_NOTIFICATIONS_UNREAD_DAYS: &str = "KAIROS_NOTIFICATIONS_UNREAD_DAYS";
 
 /// Errors from parsing the retention environment configuration.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -176,6 +182,14 @@ pub struct RetentionConfig {
     /// (KAIROS-T-0378). 0 keeps them. In each mode: such a summary is a
     /// cache that a build can make again.
     pub code_index_pool_days: u32,
+    /// The code indexes that stay per repository and ref, the newest by
+    /// last write (KAIROS-T-0638). 0 keeps every index. In each mode, not
+    /// archived: a build or an upload makes an index again.
+    pub code_index_keep: u32,
+    /// An unread notification is deleted this many days after it was made
+    /// (KAIROS-T-0638). 0 keeps unread notifications. In each mode, not
+    /// archived, as a read notification.
+    pub notifications_unread_days: u32,
 }
 
 impl Default for RetentionConfig {
@@ -188,6 +202,8 @@ impl Default for RetentionConfig {
             mode: RetentionMode::Archive,
             notifications_read_days: 30,
             code_index_pool_days: 30,
+            code_index_keep: 5,
+            notifications_unread_days: 180,
         }
     }
 }
@@ -233,6 +249,12 @@ impl RetentionConfig {
         if let Some(value) = lookup(ENV_CODE_INDEX_POOL_DAYS) {
             config.code_index_pool_days = parse_u32(ENV_CODE_INDEX_POOL_DAYS, &value)?;
         }
+        if let Some(value) = lookup(ENV_CODE_INDEX_KEEP) {
+            config.code_index_keep = parse_u32(ENV_CODE_INDEX_KEEP, &value)?;
+        }
+        if let Some(value) = lookup(ENV_NOTIFICATIONS_UNREAD_DAYS) {
+            config.notifications_unread_days = parse_u32(ENV_NOTIFICATIONS_UNREAD_DAYS, &value)?;
+        }
         Ok(config)
     }
 
@@ -254,8 +276,8 @@ pub enum RetentionStatus {
     Prunes,
     /// `off`: the sweeper does not run.
     Off,
-    /// `archive` with no target: the pass reads no row of `item_history`
-    /// and `activity_log`, and prunes nothing.
+    /// `archive` with no target: the pass reads no row of `item_history`,
+    /// `team_page_history` and `activity_log`, and prunes nothing.
     NoTarget,
     /// `archive` with an `s3://` target: each pass fails, because this
     /// version has only the filesystem target.
@@ -296,7 +318,8 @@ impl RetentionConfig {
             RetentionStatus::Prunes | RetentionStatus::Off => None,
             RetentionStatus::NoTarget => Some(format!(
                 "{ENV_RETENTION_MODE} is archive and {ENV_ARCHIVE_TARGET} is not set. \
-                 The retention pass removes no rows from item_history and activity_log. \
+                 The retention pass removes no rows from item_history, team_page_history \
+                 and activity_log. \
                  Set {ENV_ARCHIVE_TARGET} to a directory, or set {ENV_RETENTION_MODE} to discard."
             )),
             RetentionStatus::TargetNotImplemented => Some(format!(
@@ -392,6 +415,61 @@ pub fn plan_history_compaction(
     prune
 }
 
+/// The planner's view of one `code_indexes` row (KAIROS-T-0638): the key,
+/// the ref and the time of the last write. Never the structure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeIndexMeta {
+    pub repository_id: Uuid,
+    pub commit_sha: String,
+    pub ref_name: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// A code index that the planner selected for delete: `(repository_id,
+/// commit_sha)`, the key of `code_indexes`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CodeIndexKey {
+    pub repository_id: Uuid,
+    pub commit_sha: String,
+}
+
+/// The pure code-index planner (KAIROS-T-0638): per repository and ref
+/// (no ref is a group of its own), keep the `keep` newest indexes by last
+/// write (`updated_at`, then `commit_sha` as tiebreaker); the others are
+/// candidates. `keep` 0 keeps every index. The result is sorted.
+pub fn plan_code_index_retention(rows: &[CodeIndexMeta], keep: u32) -> Vec<CodeIndexKey> {
+    if keep == 0 {
+        return Vec::new();
+    }
+    let mut groups: BTreeMap<(Uuid, Option<&str>), Vec<&CodeIndexMeta>> = BTreeMap::new();
+    for row in rows {
+        groups
+            .entry((row.repository_id, row.ref_name.as_deref()))
+            .or_default()
+            .push(row);
+    }
+    let mut prune: Vec<CodeIndexKey> = groups
+        .into_values()
+        .flat_map(|mut group| {
+            group.sort_by(|a, b| {
+                b.updated_at
+                    .cmp(&a.updated_at)
+                    .then_with(|| b.commit_sha.cmp(&a.commit_sha))
+            });
+            group
+                .into_iter()
+                .skip(keep as usize)
+                .map(|row| CodeIndexKey {
+                    repository_id: row.repository_id,
+                    commit_sha: row.commit_sha.clone(),
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    prune.sort();
+    prune
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -447,6 +525,8 @@ mod tests {
                 mode: RetentionMode::Archive,
                 notifications_read_days: 30,
                 code_index_pool_days: 30,
+                code_index_keep: 5,
+                notifications_unread_days: 180,
             }
         );
     }
@@ -461,6 +541,8 @@ mod tests {
             (ENV_RETENTION_MODE, "discard"),
             (ENV_NOTIFICATIONS_READ_DAYS, "0"),
             (ENV_CODE_INDEX_POOL_DAYS, "7"),
+            (ENV_CODE_INDEX_KEEP, "2"),
+            (ENV_NOTIFICATIONS_UNREAD_DAYS, "0"),
         ]);
         let config =
             RetentionConfig::from_lookup(|name| vars.get(name).map(ToString::to_string)).unwrap();
@@ -476,6 +558,8 @@ mod tests {
         assert_eq!(config.mode, RetentionMode::Discard);
         assert_eq!(config.notifications_read_days, 0);
         assert_eq!(config.code_index_pool_days, 7);
+        assert_eq!(config.code_index_keep, 2);
+        assert_eq!(config.notifications_unread_days, 0);
     }
 
     #[test]
@@ -715,5 +799,80 @@ mod tests {
         ];
         let plan = plan_history_compaction(&rows, now(), &config(90, 0));
         assert_eq!(pruned_versions(&plan, item), vec![2, 5]);
+    }
+
+    // ---- code-index planner (KAIROS-T-0638) -------------------------------
+
+    fn index(
+        repo: Uuid,
+        sha: &str,
+        ref_name: Option<&str>,
+        updated_at: DateTime<Utc>,
+    ) -> CodeIndexMeta {
+        CodeIndexMeta {
+            repository_id: repo,
+            commit_sha: sha.to_string(),
+            ref_name: ref_name.map(str::to_string),
+            updated_at,
+        }
+    }
+
+    fn shas(plan: &[CodeIndexKey]) -> Vec<&str> {
+        plan.iter().map(|k| k.commit_sha.as_str()).collect()
+    }
+
+    #[test]
+    fn code_indexes_keep_the_newest_per_repository_and_ref() {
+        let repo = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let mut rows = Vec::new();
+        // main: m1 (oldest) .. m4 (newest); a PR ref with 1; no ref with 3;
+        // the other repository's main with 3.
+        for (i, sha) in ["m1", "m2", "m3", "m4"].iter().enumerate() {
+            rows.push(index(
+                repo,
+                sha,
+                Some("main"),
+                at(2026, 7, 1 + i as u32, 0, 0, 0),
+            ));
+        }
+        rows.push(index(
+            repo,
+            "p1",
+            Some("refs/pull/7/head"),
+            at(2026, 1, 1, 0, 0, 0),
+        ));
+        for (i, sha) in ["n1", "n2", "n3"].iter().enumerate() {
+            rows.push(index(repo, sha, None, at(2026, 7, 1 + i as u32, 0, 0, 0)));
+        }
+        for (i, sha) in ["o1", "o2", "o3"].iter().enumerate() {
+            rows.push(index(
+                other,
+                sha,
+                Some("main"),
+                at(2026, 7, 1 + i as u32, 0, 0, 0),
+            ));
+        }
+        let plan = plan_code_index_retention(&rows, 2);
+        let mut got = shas(&plan);
+        got.sort();
+        assert_eq!(got, vec!["m1", "m2", "n1", "o1"]);
+        let mut sorted = plan.clone();
+        sorted.sort();
+        assert_eq!(plan, sorted, "the plan is sorted");
+    }
+
+    #[test]
+    fn code_index_keep_zero_keeps_every_index_and_ties_break_by_sha() {
+        let repo = Uuid::new_v4();
+        let t = at(2026, 7, 1, 0, 0, 0);
+        let rows = vec![
+            index(repo, "a", Some("main"), t),
+            index(repo, "b", Some("main"), t),
+            index(repo, "c", Some("main"), t),
+        ];
+        assert!(plan_code_index_retention(&rows, 0).is_empty());
+        assert_eq!(shas(&plan_code_index_retention(&rows, 2)), vec!["a"]);
+        assert!(plan_code_index_retention(&rows, 3).is_empty());
     }
 }

@@ -446,7 +446,8 @@ impl WebhookService {
                 &tenant,
                 delivery_id,
                 "skipped",
-                "The target is off. A board manager turns it on again.",
+                "The target is off. Kairos sends the delivery when a board manager turns \
+                 the target on again.",
             )
             .await;
             return Ok(());
@@ -496,9 +497,16 @@ impl WebhookService {
         let started = Instant::now();
         let sent = self.send(&target.url, &secret, &delivery).await;
         handle.progress();
-        let try_number = job.tries;
-        let last = !sent.ok && try_number >= self.settings.max_tries;
-        let wait = self.settings.wait_after(try_number);
+        // KAIROS-T-0577: a delivery that is queued again keeps the rows of
+        // its earlier tries; the tries of this job follow them.
+        let tries_before = job.payload_json()["tries_before"]
+            .as_i64()
+            .and_then(|n| i32::try_from(n).ok())
+            .unwrap_or(0)
+            .max(0);
+        let try_number = tries_before.saturating_add(job.tries);
+        let last = !sent.ok && job.tries >= self.settings.max_tries;
+        let wait = self.settings.wait_after(job.tries);
         let result = TryResult {
             try_number,
             ok: sent.ok,

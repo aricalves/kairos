@@ -17,6 +17,9 @@
 //!    of a task closes (done, an archive), once for a task with two
 //!    blockers, with the code of the blocker; its column and its filter
 //!    must match. KAIROS-T-0567: a cancelled blocker does not close.
+//! 7. KAIROS-T-0577: enable sends the skipped deliveries again, with
+//!    their ids; redeliver does it on request (with `since`),
+//!    needs configure_boards, and refuses a target that is off.
 //!
 //! Runs against the LIVE compose stack (`angreal services up`), with
 //! KAIROS_WEBHOOK_ALLOW_PRIVATE on (the receiver is on 127.0.0.1). Owns the
@@ -38,7 +41,7 @@ use common::{
 };
 use kairos_client::types::CreateTaskRequest;
 use kairos_client::types_dispatch::{
-    CreateDispatchRuleRequest, CreateWebhookTargetRequest, WebhookDeliveriesQuery,
+    CreateDispatchRuleRequest, CreateWebhookTargetRequest, RedeliverQuery, WebhookDeliveriesQuery,
 };
 use kairos_client::types_meta::{CreateRelationshipRequest, UpdateMetadataRequest};
 use kairos_client::types_org::{AddBoardMemberRequest, AddTeamMemberRequest, CreateTeamRequest};
@@ -847,6 +850,150 @@ async fn a_task_that_enters_the_column_of_a_rule_fires_one_signed_delivery() {
         .await;
     assert!(!error, "{text}");
     assert!(text.contains("a task that is unblocked"), "{text}");
+
+    // --- 7. KAIROS-T-0577: the skipped deliveries go again ---------------
+    let set_on = |on: bool| {
+        diesel::sql_query(format!(
+            "UPDATE org_acme.webhook_targets SET enabled = {on} WHERE id = '{target}'"
+        ))
+        .execute(&mut PgConnection::establish(&scratch_url).expect("connect"))
+        .expect("set the target");
+    };
+    set_on(false);
+    let before_off = receiver.received().len();
+    let mut skipped = Vec::new();
+    for _ in 0..2 {
+        let ping = alice
+            .test_webhook_target(&slug, &target)
+            .await
+            .expect("ping");
+        assert_eq!(ping.status, "skipped");
+        skipped.push(ping.id);
+    }
+    deliver(&worker, &scratch_url).await;
+    assert_eq!(receiver.received().len(), before_off, "nothing while off");
+    // The capability: configure_boards, as for enable.
+    forbidden(
+        bob.redeliver_webhook_target(&slug, &target, &RedeliverQuery::default())
+            .await,
+    );
+    forbidden(
+        carol
+            .redeliver_webhook_target(&slug, &target, &RedeliverQuery::default())
+            .await,
+    );
+    forbidden(bob.enable_webhook_target(&slug, &target).await);
+    // A target that is off: redeliver is refused, and names enable.
+    let err = alice
+        .redeliver_webhook_target(&slug, &target, &RedeliverQuery::default())
+        .await
+        .expect_err("the target is off");
+    assert!(matches!(err, Error::Conflict { .. }), "{err:?}");
+    assert!(err.to_string().contains("/enable"), "{err}");
+    // An unknown parameter and a bad time are refused and named.
+    let response = http
+        .post(format!(
+            "{}/api/boards/{slug}/webhook-targets/{target}/redeliver?nope=1",
+            server.base_url
+        ))
+        .bearer_auth(&alice_token)
+        .header("x-tenant", "acme")
+        .send()
+        .await
+        .expect("POST");
+    assert_eq!(response.status(), 400);
+    assert!(response.text().await.unwrap().contains("nope"));
+    let err = alice
+        .redeliver_webhook_target(
+            &slug,
+            &target,
+            &RedeliverQuery {
+                since: Some("yesterday".into()),
+            },
+        )
+        .await
+        .expect_err("not a time");
+    assert!(matches!(err, Error::Validation { .. }), "{err:?}");
+    assert!(err.to_string().contains("since"), "{err}");
+    // Enable: the skipped deliveries go, with their ids. (The order of a
+    // worker that sends one at a time is in webhook_deliveries.rs.)
+    let on = alice
+        .enable_webhook_target(&slug, &target)
+        .await
+        .expect("enable");
+    assert!(on.enabled);
+    assert_eq!(on.redelivered, Some(2));
+    deliver(&worker, &scratch_url).await;
+    let mut sent: Vec<String> = receiver.received()[before_off..]
+        .iter()
+        .map(|r| r.headers["x-kairos-delivery"].clone())
+        .collect();
+    sent.sort();
+    skipped.sort();
+    assert_eq!(sent, skipped);
+    let log = alice
+        .list_webhook_deliveries(
+            &slug,
+            &WebhookDeliveriesQuery {
+                target_id: Some(target.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("log");
+    for id in &skipped {
+        let row = log.iter().find(|d| &d.id == id).expect("in the log");
+        assert_eq!((row.status.as_str(), row.tries), ("delivered", 1));
+    }
+    // A target that was turned on before KAIROS-T-0577 keeps its skipped
+    // deliveries: redeliver sends them, and `since` limits them.
+    set_on(false);
+    let mut old = Vec::new();
+    for _ in 0..2 {
+        old.push(
+            alice
+                .test_webhook_target(&slug, &target)
+                .await
+                .expect("ping")
+                .id,
+        );
+    }
+    diesel::sql_query(format!(
+        "UPDATE org_acme.webhook_deliveries SET created_at = now() - interval '2 hours' \
+         WHERE id = '{}'",
+        old[0]
+    ))
+    .execute(&mut conn)
+    .expect("an older event");
+    set_on(true);
+    let before = receiver.received().len();
+    let since = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+    let again = alice
+        .redeliver_webhook_target(&slug, &target, &RedeliverQuery { since: Some(since) })
+        .await
+        .expect("redeliver since");
+    assert_eq!(again.redelivered, Some(1));
+    deliver(&worker, &scratch_url).await;
+    let sent: Vec<String> = receiver.received()[before..]
+        .iter()
+        .map(|r| r.headers["x-kairos-delivery"].clone())
+        .collect();
+    assert_eq!(sent, vec![old[1].clone()]);
+    let again = alice
+        .redeliver_webhook_target(&slug, &target, &RedeliverQuery::default())
+        .await
+        .expect("redeliver");
+    assert_eq!(again.redelivered, Some(1));
+    deliver(&worker, &scratch_url).await;
+    assert_eq!(
+        receiver.received().last().unwrap().headers["x-kairos-delivery"],
+        old[0]
+    );
+    let again = alice
+        .redeliver_webhook_target(&slug, &target, &RedeliverQuery::default())
+        .await
+        .expect("nothing left");
+    assert_eq!(again.redelivered, Some(0));
 
     // A removed target takes its rules and its log.
     alice
