@@ -293,6 +293,16 @@ async fn the_teams_of_an_initiative_on_rest_and_mcp_against_live_stack() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert!(body.to_string().contains("manage_initiatives"), "{body}");
+    // KAIROS-T-0625: the text of the refusal.
+    assert_eq!(
+        body["error"]["message"],
+        format!(
+            "To set or clear a team of {i2}, you must be able to edit {i2}. You need \
+             \"manage_initiatives\" on the board of {i2}. The creator of {i2} and an \
+             organization admin can also do it. You need no right on the team."
+        ),
+        "{body}"
+    );
     let (status, body) = as_user(
         &svc,
         Method::POST,
