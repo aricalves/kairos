@@ -177,6 +177,15 @@ Request body (required): `application/json`, [`UpdateTemplateRequest`](../schema
 
 ## organization
 
+### `GET /api/admin/jobs`
+
+The job queue of the organization and of the deployment.
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`JobQueueStatus`](../schemas/#jobqueuestatus) | The jobs by kind and state, and the last failures |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The caller is not an organization admin |
+
 ### `GET /api/org/code-index-settings`
 
 The provider settings of the code index of the tenant. The secrets are

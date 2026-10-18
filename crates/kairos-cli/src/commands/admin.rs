@@ -4,12 +4,15 @@
 //!
 //! `kairos admin agent-keys` (KAIROS-T-0388): an organization admin lists
 //! the agent keys of each person and revokes any one.
+//!
+//! `kairos admin jobs` (KAIROS-T-0576): an organization admin reads the job
+//! queue (`GET /api/admin/jobs`).
 
 use kairos_client::types_auth::Secret;
 use kairos_client::types_code_index::{
     CodeIndexSettings, PutCodeIndexSettings, PutSummaryProvider, PutVectorProvider,
 };
-use kairos_client::types_org::CreateTenantRequest;
+use kairos_client::types_org::{CreateTenantRequest, JobQueueStatus};
 use kairos_client::types_service_accounts::OrgAgentKeysQuery;
 
 use crate::commands::entities::{ListArgs, require_confirm};
@@ -31,6 +34,56 @@ pub enum AdminCommand {
     /// admin lists and revokes them)
     #[command(subcommand, name = "agent-keys")]
     AgentKeys(AgentKeysCommand),
+    /// The job queue of the organization and of the deployment: the jobs
+    /// by kind and state, and the last failures with their error (an
+    /// organization admin)
+    Jobs {
+        #[command(flatten)]
+        common: Common,
+    },
+}
+
+/// The human form of `kairos admin jobs` (KAIROS-T-0576): a table of the
+/// jobs by kind and state, then the last failures, newest first, each with
+/// its error on the next line. Pure.
+fn render_jobs(status: &JobQueueStatus) -> String {
+    let mut out = String::new();
+    if status.kinds.is_empty() {
+        out.push_str("No jobs.\n");
+    } else {
+        let mut table = Table::new(&["KIND", "QUEUED", "LEASED", "DONE", "FAILED"]);
+        for kind in &status.kinds {
+            table.row(vec![
+                kind.kind.clone(),
+                kind.queued.to_string(),
+                kind.leased.to_string(),
+                kind.done.to_string(),
+                kind.failed.to_string(),
+            ]);
+        }
+        out.push_str(&table.render());
+    }
+    if status.failures.is_empty() {
+        out.push_str("\nNo failed jobs.\n");
+        return out;
+    }
+    out.push_str("\nLast failures, newest first:\n");
+    for failure in &status.failures {
+        out.push_str(&format!(
+            "{}  {}  {}  try {} of {}  {}\n",
+            failure.finished_at.as_deref().unwrap_or("-"),
+            failure.kind,
+            failure.tenant.as_deref().unwrap_or("(deployment)"),
+            failure.tries,
+            failure.max_tries,
+            failure.id,
+        ));
+        out.push_str(&format!(
+            "  {}\n",
+            failure.error.as_deref().unwrap_or("(no error recorded)")
+        ));
+    }
+    out
 }
 
 /// List and revoke the agent keys of the persons of the organization.
@@ -402,6 +455,15 @@ impl AdminCommand {
             Self::Tenants(command) => command.run().await,
             Self::CodeIndexSettings(command) => command.run().await,
             Self::AgentKeys(command) => command.run().await,
+            Self::Jobs { common } => {
+                let client = client(&common)?;
+                let status = client.admin_jobs().await?;
+                if common.json {
+                    return print_json(&status);
+                }
+                print!("{}", render_jobs(&status));
+                Ok(())
+            }
         }
     }
 }
@@ -596,5 +658,75 @@ mod code_index_settings_tests {
             Some(kairos_client::types_repositories::CodeIndexSummaries::Hosted),
             "KAIROS-T-0358: the flag goes into the body"
         );
+    }
+}
+
+#[cfg(test)]
+mod jobs_tests {
+    use super::*;
+    use clap::Parser as _;
+    use kairos_client::types_org::{JobFailure, JobKindCounts};
+
+    /// KAIROS-T-0576: the table of the kinds, then each failure with its
+    /// error.
+    #[test]
+    fn the_jobs_print_as_a_table_and_the_failures_below() {
+        let status = JobQueueStatus {
+            kinds: vec![
+                JobKindCounts {
+                    kind: "periodic".into(),
+                    queued: 2,
+                    leased: 1,
+                    done: 14,
+                    failed: 0,
+                },
+                JobKindCounts {
+                    kind: "webhook_delivery".into(),
+                    queued: 0,
+                    leased: 0,
+                    done: 3,
+                    failed: 1,
+                },
+            ],
+            failures: vec![JobFailure {
+                id: "00000000-0000-0000-0000-000000000001".into(),
+                kind: "webhook_delivery".into(),
+                tenant: Some("acme".into()),
+                tries: 5,
+                max_tries: 5,
+                error: Some("The target answered 500.".into()),
+                finished_at: Some("2026-10-17T12:00:00+00:00".into()),
+            }],
+        };
+        assert_eq!(
+            render_jobs(&status),
+            "KIND              QUEUED  LEASED  DONE  FAILED\n\
+             periodic          2       1       14    0\n\
+             webhook_delivery  0       0       3     1\n\
+             \n\
+             Last failures, newest first:\n\
+             2026-10-17T12:00:00+00:00  webhook_delivery  acme  try 5 of 5  \
+             00000000-0000-0000-0000-000000000001\n  \
+             The target answered 500.\n"
+        );
+    }
+
+    #[test]
+    fn an_empty_queue_says_so() {
+        let status = JobQueueStatus {
+            kinds: vec![],
+            failures: vec![],
+        };
+        assert_eq!(render_jobs(&status), "No jobs.\n\nNo failed jobs.\n");
+    }
+
+    #[test]
+    fn admin_jobs_parses() {
+        let cli = crate::Cli::try_parse_from(["kairos", "admin", "jobs", "--json"])
+            .expect("`kairos admin jobs --json` parses");
+        match cli.command {
+            crate::Command::Admin(AdminCommand::Jobs { common }) => assert!(common.json),
+            _ => panic!("`kairos admin jobs` is not the admin jobs command"),
+        }
     }
 }
