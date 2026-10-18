@@ -413,8 +413,8 @@ it blocked, and the claimant of the target gets the events. So the create of a
 | The source only | A proposal of the edge, and no edge. REST answers 202 with `message` and `proposal`. |
 | Neither end | 403 `FORBIDDEN`. |
 
-The answer of a proposal names the proposal. It also says who can confirm it:
-a holder of `approve_proposals` on the board of one end, or an organization
+The answer of a proposal names the proposal and who can confirm it. A holder
+of `approve_proposals` on the board of one end confirms, or an organization
 admin. See [The decision of an edge proposal](#the-decision-of-an-edge-proposal).
 
 The server records no proposal of an edge that cannot exist. The type rule
