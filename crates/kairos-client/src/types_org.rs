@@ -1552,3 +1552,35 @@ mod tests {
         assert!(!counts.has_done);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Retention (KAIROS-T-0631)
+// ---------------------------------------------------------------------------
+
+/// `GET /api/org/retention`: the retention settings of the deployment and
+/// the last retention pass. Never the path of the archive target.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RetentionStatus {
+    /// `archive`, `discard` or `off` (`KAIROS_RETENTION_MODE`).
+    pub mode: String,
+    /// The kind of `KAIROS_ARCHIVE_TARGET`: `filesystem` or `s3`. Absent
+    /// when no target is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_target: Option<String>,
+    /// What a pass does: `prunes`, `off`, `no_target` (it removes no row)
+    /// or `target_not_implemented` (each pass fails).
+    pub status: String,
+    /// The text for an operator when the pass removes nothing or fails.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+    pub history_hot_days: u32,
+    pub history_keep_latest: u32,
+    pub activity_retention_days: u32,
+    /// The record of the last pass that ended: `skipped: no target`, `off`
+    /// or the counts. Absent before the first pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_result: Option<String>,
+    /// When the last pass ended, RFC 3339.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_run_at: Option<String>,
+}

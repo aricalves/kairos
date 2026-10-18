@@ -73,6 +73,11 @@ pub struct AppState {
     /// `KAIROS_PAGES_STORE` is set. `None`: a publish is refused; the
     /// rendered sites still work.
     pub site_store: Option<crate::site_store::SiteStore>,
+    /// The retention settings of this server (KAIROS-A-0004,
+    /// KAIROS-T-0366). `serve` sets them from the environment; a state of
+    /// [`build_state`] or [`state_with`] has the defaults. `/readyz` and
+    /// `GET /api/org/retention` read them (KAIROS-T-0631).
+    pub retention: Arc<kairos_core::retention::RetentionConfig>,
 }
 
 /// Why [`build_state`] failed (startup-time, fail-fast).
@@ -175,6 +180,7 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, BuildError> {
         tenant_readiness: Arc::new(crate::tenant_readiness::TenantReadiness::default()),
         jobs,
         site_store,
+        retention: Arc::new(kairos_core::retention::RetentionConfig::default()),
     })
 }
 
@@ -385,6 +391,7 @@ pub fn state_with(config: AppConfig, pool: TenantPool, auth: Arc<Authenticator>)
         tenant_readiness: Arc::new(crate::tenant_readiness::TenantReadiness::default()),
         jobs,
         site_store,
+        retention: Arc::new(kairos_core::retention::RetentionConfig::default()),
     }
 }
 
@@ -889,6 +896,12 @@ pub async fn serve(
     let retention = kairos_core::retention::RetentionConfig::from_env()
         .map_err(|e| format!("retention configuration: {e}"))?;
     let mut state = build_state(config).await.map_err(|e| e.to_string())?;
+    state.retention = Arc::new(retention.clone());
+    // KAIROS-T-0631: a pass that removes nothing, or fails by its config,
+    // says so at the start too.
+    if let Some(warning) = retention.warning() {
+        tracing::warn!(%warning, "retention");
+    }
     // KAIROS-T-0330: the tenants that did not migrate at startup.
     state.tenant_readiness = Arc::new(readiness);
     let role = state.config.role;
