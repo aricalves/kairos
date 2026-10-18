@@ -121,8 +121,7 @@ pub fn with_full_content(
     }
     let bases = base_texts(conn, &wanted)?;
     for row in &mut rows {
-        if let (Some(base_version), Some(diff)) = (row.base_version, row.content_diff.as_deref())
-        {
+        if let (Some(base_version), Some(diff)) = (row.base_version, row.content_diff.as_deref()) {
             row.content = full_text(&bases, row.item_id, row.version, base_version, diff)?;
         }
     }
