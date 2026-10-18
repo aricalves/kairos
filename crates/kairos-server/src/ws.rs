@@ -8,11 +8,15 @@
 //! raw `tokio-postgres` — the pooled diesel connections cannot sit on a
 //! long-lived `LISTEN`) receives every `NOTIFY kairos_events` the mutating
 //! services emit (`kairos_db::events`, delivered by PostgreSQL on commit),
-//! parses the tenant-tagged payload, and forwards it into a
-//! `tokio::sync::broadcast` channel. Each connected socket subscribes to
-//! the broadcast and forwards only the events of ITS tenant (bound at
-//! upgrade time from the resolved [`TenantContext`]), optionally filtered
-//! to one board by a client `{"subscribe": {"board_id": "..."}}` message.
+//! parses the tenant-tagged payload, and forwards it into the
+//! `tokio::sync::broadcast` channel of its tenant (KAIROS-T-0621: one
+//! channel for each tenant). Each connected socket subscribes to the
+//! channel of ITS tenant (bound at upgrade time from the resolved
+//! [`TenantContext`]). A client message filters the stream:
+//! `{"subscribe": {"board_id": "..."}}` to one board, or
+//! `{"subscribe": {"person_only": true}}` to the events of the person.
+//! The message of an event is `Utf8Bytes`: each socket clones a reference,
+//! not the text.
 //! The board filter also passes an event about an item on a different
 //! board when that item has a `blocks` edge to or from a live item on the
 //! subscribed board (COLLIERY-T-0233): the event changes the counts on
@@ -23,8 +27,9 @@
 //! only when the person of the socket (the authenticated user of the
 //! upgrade request) is the recipient. [`BroadcastEvent::visible_to`] is the
 //! rule, and it comes after the tenant check. The field is stripped, as
-//! `tenant` is. The event has no board, so a socket with a board filter
-//! does not get it.
+//! `tenant` is. The event has no board. A board filter still passes it
+//! (KAIROS-T-0621): the bell and the board view of a tab share one socket.
+//! The filter `person_only` passes only these events.
 //!
 //! If the LISTEN connection drops it is re-established with exponential
 //! backoff (logged, with a reconnect counter on the [`EventHub`]).
@@ -42,24 +47,32 @@
 //! copies into the `Authorization` header ahead of the auth layer (browser
 //! clients resolve their tenant via the `Host` subdomain, A-0005 §2).
 //!
+//! The socket checks its credential again every [`SESSION_RECHECK`]
+//! (KAIROS-T-0621). When the credential is no longer valid, the server
+//! closes the socket with the code 1008. The client then connects again
+//! with its new credential.
+//!
 //! # Best-effort semantics (A-0005 §5)
 //!
 //! Events are thin UI-freshness hints, not a durable stream: NO replay, NO
 //! ordering guarantee beyond per-connection FIFO. A socket that falls
-//! behind the broadcast buffer simply skips the lagged events. Clients
-//! reconcile by re-fetching through the REST API after (re)connecting.
+//! behind the broadcast buffer skips the lagged events. The server then
+//! sends the frame [`LAGGED_FRAME`] (KAIROS-T-0621). Clients reconcile by
+//! re-fetching through the REST API after that frame and after
+//! (re)connecting.
 //! Disconnects are clean by construction: the per-socket task is the only
 //! resource, and it ends when the socket does.
 
-use std::sync::Arc;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use axum::Router;
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Extension, Request};
-use axum::http::HeaderValue;
+use axum::extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
+use axum::extract::{Extension, Request, State};
 use axum::http::header::AUTHORIZATION;
+use axum::http::{HeaderMap, HeaderValue};
 use axum::middleware::{self as axum_middleware, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -74,10 +87,22 @@ use crate::middleware::{auth, tenant};
 /// The NOTIFY channel the db services emit on (`kairos_db::events`).
 const EVENT_CHANNEL: &str = "kairos_events";
 
-/// Broadcast buffer per server process. Sockets that fall more than this
-/// many events behind skip the overwritten ones (best-effort, see module
-/// docs).
+/// Broadcast buffer per tenant. Sockets that fall more than this many
+/// events behind skip the overwritten ones and get [`LAGGED_FRAME`]
+/// (best-effort, see module docs).
 const BROADCAST_CAPACITY: usize = 1024;
+
+/// The frame that tells a client that it skipped events (KAIROS-T-0621).
+/// The client reads again what it shows.
+pub const LAGGED_FRAME: &str = r#"{"event":"lagged"}"#;
+
+/// The time between two checks of the credential of a socket
+/// (KAIROS-T-0621).
+pub const SESSION_RECHECK: Duration = Duration::from_secs(5 * 60);
+
+/// The close code when the credential of a socket is no longer valid:
+/// 1008, "policy violation" (RFC 6455 §7.4.1).
+const CLOSE_SESSION_ENDED: u16 = 1008;
 
 /// Reconnect backoff bounds for the LISTEN connection.
 const BACKOFF_INITIAL: Duration = Duration::from_millis(500);
@@ -99,7 +124,18 @@ struct BroadcastEvent {
     /// for an event of the tenant. Fan-out routing: never sent to clients.
     recipient: Option<Uuid>,
     /// The serialized S-0005 thin event forwarded to matching sockets.
-    message: String,
+    /// `Utf8Bytes` holds `Bytes`: a clone for a socket copies no text.
+    message: Utf8Bytes,
+}
+
+/// The filter of one socket, from the client subscribe message.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Filter {
+    /// Only the events of this board (and of the person).
+    board: Option<Uuid>,
+    /// Only the events of the person (KAIROS-T-0621). The server ignores
+    /// `board` when this is `true`.
+    person_only: bool,
 }
 
 impl BroadcastEvent {
@@ -123,12 +159,38 @@ impl BroadcastEvent {
     fn visible_to(&self, user: Uuid) -> bool {
         self.recipient.is_none_or(|recipient| recipient == user)
     }
+
+    /// Whether the socket of `user` with `filter` gets this event. The
+    /// authorization ([`Self::visible_to`]) comes first. The events of
+    /// the person pass each filter: one socket serves the bell and a view
+    /// (KAIROS-T-0621).
+    fn passes(&self, filter: Filter, user: Uuid) -> bool {
+        if !self.visible_to(user) {
+            return false;
+        }
+        let of_person = self.recipient == Some(user);
+        if filter.person_only {
+            return of_person;
+        }
+        match filter.board {
+            Some(board) => of_person || self.concerns_board(board),
+            None => true,
+        }
+    }
 }
 
-/// The per-process fan-out hub: LISTEN → broadcast → sockets.
+/// One broadcast channel of a tenant.
+type TenantChannel = broadcast::Sender<Arc<BroadcastEvent>>;
+
+/// The per-process fan-out hub: LISTEN → the channel of the tenant →
+/// sockets.
 #[derive(Clone)]
 pub struct EventHub {
-    tx: broadcast::Sender<Arc<BroadcastEvent>>,
+    /// One channel for each tenant with a socket (KAIROS-T-0621). A socket
+    /// thus never wakes for the events of a different tenant.
+    channels: Arc<Mutex<HashMap<String, TenantChannel>>>,
+    /// The buffer of each channel.
+    capacity: usize,
     /// How many times the LISTEN connection was (re-)established after the
     /// first attempt — the "reconnects" metric (logged on each increment).
     reconnects: Arc<AtomicU64>,
@@ -136,11 +198,40 @@ pub struct EventHub {
 
 impl EventHub {
     fn new() -> Self {
-        let (tx, _) = broadcast::channel(BROADCAST_CAPACITY);
+        Self::with_capacity(BROADCAST_CAPACITY)
+    }
+
+    fn with_capacity(capacity: usize) -> Self {
         Self {
-            tx,
+            channels: Arc::new(Mutex::new(HashMap::new())),
+            capacity,
             reconnects: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// A receiver on the channel of `tenant`. The first socket of a tenant
+    /// makes the channel.
+    fn subscribe(&self, tenant: &str) -> broadcast::Receiver<Arc<BroadcastEvent>> {
+        let mut channels = self.channels.lock().unwrap_or_else(PoisonError::into_inner);
+        channels
+            .entry(tenant.to_string())
+            .or_insert_with(|| broadcast::channel(self.capacity).0)
+            .subscribe()
+    }
+
+    /// Send `event` to the sockets of its tenant. A tenant with no socket
+    /// gets nothing, and its channel goes.
+    fn publish(&self, event: BroadcastEvent) {
+        let mut channels = self.channels.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(channel) = channels.get(&event.tenant) else {
+            return;
+        };
+        if channel.receiver_count() == 0 {
+            channels.remove(&event.tenant);
+            return;
+        }
+        // An error means that the last receiver went just now.
+        drop(channel.send(Arc::new(event)));
     }
 }
 
@@ -209,8 +300,9 @@ async fn promote_query_token(mut req: Request, next: Next) -> Response {
 // ---------------------------------------------------------------------------
 
 /// The client subscribe message (`kairos_client::types_events`):
-/// `{"subscribe": {"board_id": "uuid"}}` filters, `{"subscribe": {}}`
-/// clears.
+/// `{"subscribe": {"board_id": "uuid"}}` filters to one board,
+/// `{"subscribe": {"person_only": true}}` to the events of the person,
+/// and `{"subscribe": {}}` clears.
 #[derive(Debug, serde::Deserialize)]
 struct ClientMessage {
     subscribe: Option<SubscribeFilter>,
@@ -219,18 +311,114 @@ struct ClientMessage {
 #[derive(Debug, serde::Deserialize)]
 struct SubscribeFilter {
     board_id: Option<Uuid>,
+    #[serde(default)]
+    person_only: bool,
+}
+
+impl From<SubscribeFilter> for Filter {
+    fn from(filter: SubscribeFilter) -> Self {
+        Self {
+            board: filter.board_id,
+            person_only: filter.person_only,
+        }
+    }
+}
+
+/// The credential of the upgrade request, in the order of
+/// [`auth::require_auth`]: the bearer first, then the session cookie.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Credential {
+    Bearer(String),
+    Cookie(String),
+}
+
+impl Credential {
+    /// The credential of `headers`. [`promote_query_token`] has already
+    /// put `?access_token=` into the `Authorization` header.
+    fn of(headers: &HeaderMap) -> Option<Self> {
+        let bearer = headers
+            .get(AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .map(str::trim)
+            .filter(|token| !token.is_empty());
+        if let Some(token) = bearer {
+            return Some(Self::Bearer(token.to_string()));
+        }
+        crate::session_cookie::token(headers)
+            .filter(|token| crate::local_auth::is_session_token(token))
+            .map(Self::Cookie)
+    }
+
+    /// Whether the credential is still valid: the session is not ended,
+    /// the key is not revoked, the token is not expired.
+    async fn is_valid(&self, state: &AppState) -> bool {
+        let result = match self {
+            Self::Cookie(token) => crate::login::authenticate_session(state, token)
+                .await
+                .map(drop),
+            Self::Bearer(token) if crate::service_accounts::auth::is_api_key(token) => {
+                crate::service_accounts::auth::authenticate_api_key(state, token)
+                    .await
+                    .map(drop)
+            }
+            Self::Bearer(token) if crate::local_auth::is_session_token(token) => {
+                crate::login::authenticate_session(state, token)
+                    .await
+                    .map(drop)
+            }
+            Self::Bearer(token) => state
+                .auth
+                .verify(token)
+                .await
+                .map(drop)
+                .map_err(crate::error::ApiError::from),
+        };
+        still_valid(&result)
+    }
+}
+
+/// Whether a check of a credential keeps the socket open. A fault of the
+/// server (a 5xx) is not a refusal: the next check decides. Pure.
+fn still_valid(result: &Result<(), crate::error::ApiError>) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(error) => error.status.is_server_error(),
+    }
 }
 
 /// `GET /ws/events`: upgrade the (already authenticated, tenant-resolved)
 /// request and serve the connection until the client disconnects.
 async fn ws_events(
     ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    headers: HeaderMap,
     Extension(tenant): Extension<TenantContext>,
     Extension(auth): Extension<AuthContext>,
     Extension(hub): Extension<EventHub>,
 ) -> Response {
-    let rx = hub.tx.subscribe();
-    ws.on_upgrade(move |socket| handle_socket(socket, tenant.slug, auth.user_id, rx))
+    let rx = hub.subscribe(&tenant.slug);
+    let credential = Credential::of(&headers);
+    ws.on_upgrade(move |socket| {
+        handle_socket(
+            socket,
+            Session {
+                state,
+                credential,
+                tenant: tenant.slug,
+                user: auth.user_id,
+            },
+            rx,
+        )
+    })
+}
+
+/// Who a socket serves, and how to check it again.
+struct Session {
+    state: AppState,
+    credential: Option<Credential>,
+    tenant: String,
+    user: Uuid,
 }
 
 /// Forward this tenant's events to one socket until it closes. The task
@@ -238,25 +426,29 @@ async fn ws_events(
 /// the cleanup (no leaked tasks).
 async fn handle_socket(
     mut socket: WebSocket,
-    tenant: String,
-    user: Uuid,
+    session: Session,
     mut rx: broadcast::Receiver<Arc<BroadcastEvent>>,
 ) {
-    let mut board_filter: Option<Uuid> = None;
+    let Session {
+        state,
+        credential,
+        tenant,
+        user,
+    } = session;
+    let mut filter = Filter::default();
+    let mut recheck = tokio::time::interval_at(
+        tokio::time::Instant::now() + SESSION_RECHECK,
+        SESSION_RECHECK,
+    );
     loop {
         tokio::select! {
             event = rx.recv() => match event {
                 Ok(event) => {
-                    if event.tenant != tenant || !event.visible_to(user) {
-                        continue;
-                    }
-                    if let Some(board) = board_filter
-                        && !event.concerns_board(board)
-                    {
+                    if !event.passes(filter, user) {
                         continue;
                     }
                     if socket
-                        .send(Message::Text(event.message.clone().into()))
+                        .send(Message::Text(event.message.clone()))
                         .await
                         .is_err()
                     {
@@ -264,18 +456,41 @@ async fn handle_socket(
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    // Best-effort: the client missed `skipped` events and
-                    // will reconcile by re-fetching (module docs).
+                    // Best-effort: the client missed `skipped` events. The
+                    // frame tells it to read again (module docs).
                     tracing::debug!(tenant, skipped, "event socket lagged; events dropped");
+                    if socket
+                        .send(Message::Text(Utf8Bytes::from_static(LAGGED_FRAME)))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
+            },
+            _ = recheck.tick() => {
+                let valid = match &credential {
+                    Some(credential) => credential.is_valid(&state).await,
+                    None => false,
+                };
+                if !valid {
+                    tracing::debug!(tenant, "event socket closed: the credential is not valid");
+                    let _ = socket
+                        .send(Message::Close(Some(CloseFrame {
+                            code: CLOSE_SESSION_ENDED,
+                            reason: Utf8Bytes::from_static("The session ended."),
+                        })))
+                        .await;
+                    break;
+                }
             },
             message = socket.recv() => match message {
                 Some(Ok(Message::Text(text))) => {
                     if let Ok(parsed) = serde_json::from_str::<ClientMessage>(&text)
-                        && let Some(filter) = parsed.subscribe
+                        && let Some(subscribe) = parsed.subscribe
                     {
-                        board_filter = filter.board_id;
+                        filter = subscribe.into();
                     }
                 }
                 // Ping/pong are answered by the protocol layer while we
@@ -327,7 +542,7 @@ fn parse_payload(payload: &str) -> Option<BroadcastEvent> {
         board_id,
         blocks_boards,
         recipient,
-        message: value.to_string(),
+        message: value.to_string().into(),
     })
 }
 
@@ -392,7 +607,7 @@ async fn run_listener(
                     {
                         match parse_payload(n.payload()) {
                             // Send errors just mean no socket is connected.
-                            Some(event) => drop(hub.tx.send(Arc::new(event))),
+                            Some(event) => hub.publish(event),
                             None => tracing::warn!(
                                 payload = n.payload(),
                                 "unparseable kairos_events payload dropped"
@@ -523,6 +738,163 @@ mod tests {
             parse_payload(r#"{"tenant":"acme","recipient":7,"event":"notification_created"}"#)
                 .is_none()
         );
+    }
+
+    /// KAIROS-T-0621: `person_only` passes only the events of the person.
+    /// A board filter passes the events of its board and of the person.
+    #[test]
+    fn the_filters_of_a_socket() {
+        let (alice, bob, board, other) = (
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+        );
+        let of_alice = parse_payload(&format!(
+            r#"{{"tenant":"acme","recipient":"{alice}","event":"notification_created",
+                "entity_type":"notification","short_code":"ACME-T-0001","board_id":null}}"#
+        ))
+        .expect("payload parses");
+        let on_board = parse_payload(&format!(
+            r#"{{"tenant":"acme","event":"item_updated","entity_type":"task",
+                "short_code":"ACME-T-0001","board_id":"{board}"}}"#
+        ))
+        .expect("payload parses");
+        let person = Filter {
+            board: None,
+            person_only: true,
+        };
+        let to_board = Filter {
+            board: Some(board),
+            person_only: false,
+        };
+        let to_other = Filter {
+            board: Some(other),
+            person_only: false,
+        };
+
+        assert!(of_alice.passes(person, alice));
+        assert!(!on_board.passes(person, alice), "no event of the tenant");
+        assert!(!of_alice.passes(person, bob), "never to a different person");
+
+        assert!(on_board.passes(to_board, alice));
+        assert!(
+            of_alice.passes(to_board, alice),
+            "the bell shares the socket"
+        );
+        assert!(!of_alice.passes(to_board, bob));
+        assert!(!on_board.passes(to_other, alice));
+
+        assert!(on_board.passes(Filter::default(), bob), "no filter");
+        assert!(of_alice.passes(Filter::default(), alice));
+        assert!(!of_alice.passes(Filter::default(), bob));
+
+        // `person_only` wins over a board.
+        let both = Filter {
+            board: Some(board),
+            person_only: true,
+        };
+        assert!(!on_board.passes(both, alice));
+        assert!(of_alice.passes(both, alice));
+
+        let parsed: ClientMessage =
+            serde_json::from_str(r#"{"subscribe":{"person_only":true}}"#).expect("message");
+        assert_eq!(Filter::from(parsed.subscribe.expect("subscribe")), person);
+        let parsed: ClientMessage =
+            serde_json::from_str(&format!(r#"{{"subscribe":{{"board_id":"{board}"}}}}"#))
+                .expect("message");
+        assert_eq!(Filter::from(parsed.subscribe.expect("subscribe")), to_board);
+    }
+
+    fn event_of(tenant: &str, code: &str) -> BroadcastEvent {
+        parse_payload(&format!(
+            r#"{{"tenant":"{tenant}","event":"item_updated","entity_type":"task",
+                "short_code":"{code}","board_id":null}}"#
+        ))
+        .expect("payload parses")
+    }
+
+    /// KAIROS-T-0621: each tenant has its own channel. A tenant with no
+    /// socket loses its channel. A slow receiver gets `Lagged`.
+    #[tokio::test]
+    async fn a_channel_for_each_tenant() {
+        let hub = EventHub::with_capacity(2);
+        let mut acme = hub.subscribe("acme");
+        let mut widgets = hub.subscribe("widgets");
+        hub.publish(event_of("acme", "ACME-T-0001"));
+        hub.publish(event_of("ghost", "GHOST-T-0001"));
+        assert_eq!(
+            acme.recv().await.expect("event").message.as_str(),
+            parse_payload(
+                r#"{"tenant":"acme","event":"item_updated","entity_type":"task",
+                    "short_code":"ACME-T-0001","board_id":null}"#
+            )
+            .expect("payload parses")
+            .message
+            .as_str()
+        );
+        assert!(
+            matches!(
+                widgets.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            ),
+            "widgets gets no event of acme"
+        );
+        assert!(!hub.channels.lock().expect("lock").contains_key("ghost"));
+
+        for n in 0..4 {
+            hub.publish(event_of("acme", &format!("ACME-T-000{n}")));
+        }
+        assert!(matches!(
+            acme.recv().await,
+            Err(broadcast::error::RecvError::Lagged(2))
+        ));
+
+        drop(widgets);
+        hub.publish(event_of("widgets", "WIDGETS-T-0001"));
+        assert!(
+            !hub.channels.lock().expect("lock").contains_key("widgets"),
+            "the channel goes with its last socket"
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(LAGGED_FRAME).expect("JSON"),
+            serde_json::json!({ "event": "lagged" })
+        );
+    }
+
+    /// KAIROS-T-0621: the socket checks again the credential of its
+    /// upgrade: the bearer first, then the session cookie.
+    #[test]
+    fn the_credential_of_the_upgrade() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(Credential::of(&headers), None);
+        let session = format!("{}abc", crate::local_auth::SESSION_PREFIX);
+        let cookie = format!("{}={session}", crate::session_cookie::NAME);
+        headers.insert(
+            axum::http::header::COOKIE,
+            HeaderValue::from_str(&cookie).expect("cookie"),
+        );
+        assert_eq!(
+            Credential::of(&headers),
+            Some(Credential::Cookie(session.clone()))
+        );
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer a.b.c"));
+        assert_eq!(
+            Credential::of(&headers),
+            Some(Credential::Bearer("a.b.c".to_string()))
+        );
+    }
+
+    /// KAIROS-T-0621: a refused credential closes the socket. A fault of
+    /// the server does not.
+    #[test]
+    fn a_refusal_closes_and_a_fault_does_not() {
+        use crate::error::ApiError;
+        assert!(still_valid(&Ok(())));
+        assert!(!still_valid(&Err(ApiError::unauthorized("ended"))));
+        assert!(still_valid(&Err(ApiError::internal(
+            "the database is down"
+        ))));
     }
 
     #[test]
