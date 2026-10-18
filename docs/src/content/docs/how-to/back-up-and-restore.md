@@ -156,8 +156,26 @@ The server runs a retention pass at startup and then each 24 hours
 the defaults (`KAIROS_RETENTION_MODE=archive` and no `KAIROS_ARCHIVE_TARGET`),
 the pass removes no history and no activity. The server does not remove a row
 that it has not copied to an archive. So the pass skips the sweep of each
-tenant and reads no row of `item_history` or `activity_log`. It deletes only
-the expired password sessions and the other short-lived rows.
+tenant and reads no row of `item_history`, `team_page_history` or
+`activity_log`. It deletes only the rows in the list below.
+
+In each mode, the pass deletes these rows and does not copy them to an
+archive:
+
+- The code indexes that are not among the newest 5 of their repository and
+  ref (`KAIROS_CODE_INDEX_KEEP`). A build or an upload can make an index
+  again.
+- The summaries of the code-index pools that no stored index uses, after 30
+  days (`KAIROS_CODE_INDEX_POOL_DAYS`).
+- The unread notifications after 180 days
+  (`KAIROS_NOTIFICATIONS_UNREAD_DAYS`), and the read ones 30 days after they
+  were read (`KAIROS_NOTIFICATIONS_READ_DAYS`).
+- The webhook deliveries that finished more than 30 days ago, with their
+  tries.
+- The expired password sessions and the other short-lived rows.
+
+If you must keep these rows, take a dump before the pass deletes them. Set a
+value to `0` to keep each row of that kind.
 
 The server shows this setting in five places:
 
@@ -173,8 +191,10 @@ The server shows this setting in five places:
 To make the database smaller, set one of these:
 
 - `KAIROS_ARCHIVE_TARGET` to a directory. The pass writes the old rows to NDJSON
-  files in that directory, and then removes them from the database. Back up
-  that directory too: the rows are not in the dumps after the pass.
+  files in that directory, and then removes them from the database. There is
+  one file for each table: `item_history`, `team_page_history` and
+  `activity_log`. Back up that directory too: the rows are not in the dumps
+  after the pass.
 - `KAIROS_RETENTION_MODE=discard`. The pass removes the old rows and keeps no
   copy.
 
@@ -182,8 +202,9 @@ After you set one of these, `/readyz` gives only `ready`.
 
 The pass reads `item_history` one page of items at a time. It reads only the
 version and the time of each row. It reads the content only of the rows that
-it copies to the archive. It removes the rows in batches. So a large history
-does not fill the memory of the server.
+it copies to the archive. It reads `team_page_history` in the same way, one
+page of team pages at a time. It removes the rows of each table in batches.
+So a large history does not fill the memory of the server.
 
 The pass does not remove items. Archiving work does not make the database
 smaller either, because it is a soft delete

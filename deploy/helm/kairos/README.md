@@ -208,7 +208,9 @@ Secret loaded via `valueFrom`.
 | `config.retention.historyKeepLatest` | `KAIROS_HISTORY_KEEP_LATEST` | server `5` | Emitted only when set. |
 | `config.retention.activityRetentionDays` | `KAIROS_ACTIVITY_RETENTION_DAYS` | server `365` | Emitted only when set. |
 | `config.retention.notificationsReadDays` | `KAIROS_NOTIFICATIONS_READ_DAYS` | server `30` | Emitted only when not null; `0` keeps read notifications. |
+| `config.retention.notificationsUnreadDays` | `KAIROS_NOTIFICATIONS_UNREAD_DAYS` | server `180` | Emitted only when not null; `0` keeps unread notifications. |
 | `config.retention.codeIndexPoolDays` | `KAIROS_CODE_INDEX_POOL_DAYS` | server `30` | Emitted only when not null; `0` keeps the summaries that no index uses. |
+| `config.retention.codeIndexKeep` | `KAIROS_CODE_INDEX_KEEP` | server `5` | Emitted only when not null; `0` keeps each code index. |
 | `config.retention.archiveTarget` | `KAIROS_ARCHIVE_TARGET` | `""` | Path or `s3://…`. |
 | `config.retention.mode` | `KAIROS_RETENTION_MODE` | server `archive` | `archive` \| `discard` \| `off`. |
 | `config.devUi` | `KAIROS_DEV_UI` | `false` | Swagger UI; keep off in prod. |

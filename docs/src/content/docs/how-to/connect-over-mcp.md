@@ -74,12 +74,16 @@ codes, `key: value` lines, compact listings. It is not JSON to deserialize.
 `whoami` returning your principal is the check that the whole chain works.
 
 `tools/list` returns one profile of the seventy-five tools, frozen by name and
-shape; every tool is callable under every profile. Each one's arguments,
-defaults and refusals are in [MCP tools](../../reference/mcp-tools/).
+shape. Each one's arguments, defaults and refusals are in
+[MCP tools](../../reference/mcp-tools/).
 
-`/mcp` lists the work profile (43 tools). For the administration tools, add
+`/mcp` lists the work profile (47 tools). For the administration tools, add
 `?profile=admin` to the URL, or `?profile=all` for each tool. See
 [Profiles](../../reference/mcp-tools/#profiles).
+
+The profile changes only the list. Kairos runs a call to a tool that the
+profile does not list, with the usual checks of the rights. A client that
+calls only the listed tools needs the URL of the right profile.
 
 `uat/surfaces/mcp.ts` in the repository is a complete working client in about a
 hundred lines — session handling, SSE parsing and tool-error handling included.
