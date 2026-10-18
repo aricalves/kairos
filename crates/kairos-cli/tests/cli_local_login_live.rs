@@ -76,6 +76,16 @@ impl Run {
 /// Run the `kairos` binary with its config directory in `config_dir`, and
 /// `stdin` (when there is one) written to its standard input.
 async fn run_cli(config_dir: &Path, args: &[&str], stdin: Option<&str>) -> Run {
+    run_cli_env(config_dir, args, stdin, &[]).await
+}
+
+/// [`run_cli`] with the variables of `env` set (KAIROS-T-0594).
+async fn run_cli_env(
+    config_dir: &Path,
+    args: &[&str],
+    stdin: Option<&str>,
+    env: &[(&str, &str)],
+) -> Run {
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_kairos"))
         .args(args)
         .env("KAIROS_CONFIG_DIR", config_dir)
@@ -84,10 +94,12 @@ async fn run_cli(config_dir: &Path, args: &[&str], stdin: Option<&str>) -> Run {
         .env_remove("KAIROS_KEY")
         .env_remove("KAIROS_MCP_KEY")
         .env_remove("KAIROS_URL")
+        .env_remove("KAIROS_QUIET")
         // The two fallbacks of the config directory. With these set, a
         // defect in the resolution order still cannot reach the real home.
         .env("XDG_CONFIG_HOME", config_dir)
         .env("HOME", config_dir)
+        .envs(env.iter().copied())
         .stdin(if stdin.is_some() {
             Stdio::piped()
         } else {
@@ -453,6 +465,85 @@ async fn login_with_a_password_then_whoami_then_logout() {
             ("whoami after logout", &after),
         ],
         Some(&bearer),
+    );
+
+    deployment.teardown();
+}
+
+/// KAIROS-T-0594: `login` and `logout` read KAIROS_URL when `--url` is
+/// absent. `whoami` names the login as the source of the credential.
+#[tokio::test]
+async fn login_and_logout_read_kairos_url() {
+    let deployment = Deployment::boot("kairos_cli_t0594_url_test", LOCAL_ONLY).await;
+    let base_url = deployment.base_url.clone();
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let config_dir = ConfigDir(scratch.path().join("kairos"));
+    let env = [("KAIROS_URL", base_url.as_str())];
+
+    let logged_in = run_cli_env(
+        config_dir.path(),
+        &["login", "--email", EMAIL, "--tenant", TENANT],
+        Some(&format!("{PASSWORD}\n")),
+        &env,
+    )
+    .await;
+    assert_eq!(logged_in.code, 0, "login failed: {}", logged_in.all());
+    assert!(
+        logged_in
+            .stdout
+            .contains(&format!("You are logged in to {base_url} as {EMAIL}.")),
+        "{}",
+        logged_in.stdout
+    );
+    assert!(
+        !config_dir.path().join("credentials.json.tmp").exists(),
+        "no temp file stays"
+    );
+
+    let whoami = run_cli(config_dir.path(), &["whoami"], None).await;
+    assert_eq!(whoami.code, 0, "whoami failed: {}", whoami.all());
+    assert!(
+        whoami
+            .stdout
+            .contains(&format!("credential: login cached for {base_url}")),
+        "{}",
+        whoami.stdout
+    );
+    assert!(!whoami.stderr.contains("warning"), "{}", whoami.stderr);
+
+    // With neither --url nor KAIROS_URL, login names both.
+    let no_url = run_cli(config_dir.path(), &["login", "--email", EMAIL], None).await;
+    assert_eq!(no_url.code, 1, "{}", no_url.all());
+    assert!(
+        no_url.stderr.contains("Use --url or set KAIROS_URL."),
+        "{}",
+        no_url.stderr
+    );
+
+    let logout = run_cli_env(config_dir.path(), &["logout"], None, &env).await;
+    assert_eq!(logout.code, 0, "logout failed: {}", logout.all());
+    assert!(
+        logout
+            .stdout
+            .contains(&format!("You are logged out of {base_url}.")),
+        "{}",
+        logout.stdout
+    );
+    let cache = read_cache(config_dir.path());
+    assert!(
+        cache["deployments"]
+            .as_object()
+            .expect("deployments")
+            .is_empty(),
+        "logout must remove the entry: {cache:#}"
+    );
+    assert_no_secret(
+        &[
+            ("login", &logged_in),
+            ("whoami", &whoami),
+            ("logout", &logout),
+        ],
+        None,
     );
 
     deployment.teardown();

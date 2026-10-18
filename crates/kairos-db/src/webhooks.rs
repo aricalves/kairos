@@ -441,18 +441,24 @@ pub fn list_deliveries(
     conn: &mut PgConnection,
     target_ids: &[Uuid],
     rule_id: Option<Uuid>,
+    before: Option<&Delivery>,
     limit: i64,
 ) -> Result<Vec<Delivery>, DieselError> {
     if target_ids.is_empty() {
         return Ok(Vec::new());
     }
+    // KAIROS-T-0584: `before` is the cursor of the next page. The order is
+    // the time, then the id, so two deliveries of one time keep their order.
     sql_query(format!(
         "SELECT {DELIVERY_COLUMNS} FROM webhook_deliveries d WHERE d.target_id = ANY($1) \
            AND ($2::uuid IS NULL OR d.rule_id = $2) \
-         ORDER BY d.created_at DESC, d.id LIMIT $3"
+           AND ($3::timestamptz IS NULL OR (d.created_at, d.id) < ($3, $4)) \
+         ORDER BY d.created_at DESC, d.id DESC LIMIT $5"
     ))
     .bind::<Array<SqlUuid>, _>(target_ids)
     .bind::<Nullable<SqlUuid>, _>(rule_id)
+    .bind::<Nullable<diesel::sql_types::Timestamptz>, _>(before.map(|d| d.created_at))
+    .bind::<Nullable<SqlUuid>, _>(before.map(|d| d.id))
     .bind::<diesel::sql_types::BigInt, _>(limit)
     .load(conn)
 }

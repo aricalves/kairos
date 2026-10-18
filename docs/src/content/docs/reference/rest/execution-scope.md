@@ -153,11 +153,14 @@ Each indexed commit of a repository, newest write first.
 The runs of the code index builder for a repository, newest first
 (KAIROS-T-0331). The server keeps `limit` in the range 1 to 100, as it
 does for each list (COLLIERY-T-0264). With no `limit`, it gives 20.
+`offset` skips the newest runs: the pages (KAIROS-T-0584). `total` is
+exact.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
 | `slug` | path | yes | `string` | Repository slug (or UUID) |
 | `limit` | query | no | `integer` | The most runs in the answer: 20 when not given, 100 at most. |
+| `offset` | query | no | `integer` | The runs to skip before the page, newest first: 0 when not given (KAIROS-T-0584). |
 
 | Response | Body | Meaning |
 |---|---|---|

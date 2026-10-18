@@ -468,6 +468,7 @@ The answer to `GET /api/repositories/{slug}/code-indexes/builds`.
 | `disk` | [`CodeIndexDiskUse`](#codeindexdiskuse), nullable | no |  |
 | `items` | array of [`CodeIndexBuild`](#codeindexbuild) | yes | The runs, newest first. |
 | `limit` | `integer` | yes | The limit that the answer used. |
+| `offset` | `integer` | no | The runs before the page, newest first (KAIROS-T-0584). |
 | `total` | `integer` | yes | The runs of the repository, with those not in `items`. |
 
 ## CodeIndexCacheUse
