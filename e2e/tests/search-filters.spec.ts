@@ -196,19 +196,41 @@ test('search: each filter of the form narrows the hits', async ({ page }) => {
         .click();
       await field(page, 'Initiative buckets', 'select').selectOption('true');
       await page.getByRole('button', { name: 'Search', exact: true }).click();
-      const rows = page.locator('tbody tr', { has: page.locator('.cl-mono') });
-      await expect(rows.first()).toBeVisible({ timeout: 20_000 });
-      // Each hit is a bucket: the seed has the buckets "bugs" and "tech-debt".
-      const count = await rows.count();
-      expect(count).toBeGreaterThanOrEqual(2);
-      await expect(rows.filter({ has: page.locator('.cl-pill', { hasText: /^bucket$/ }) }))
-        .toHaveCount(count);
+      await expect(page).toHaveURL(/is_bucket=true/);
+      /** The hits of the page by group: initiatives, buckets among them, the rest. */
+      const groups = () =>
+        page.locator('tbody tr').evaluateAll((rows) => {
+          const out = { initiatives: 0, buckets: 0, other: 0 };
+          for (const row of rows) {
+            if (!row.querySelector('.cl-mono')) continue;
+            const panel = row.closest('.cl-panel');
+            const title = panel?.querySelector('.cl-panel__title')?.textContent?.trim();
+            if (title !== 'Initiatives') {
+              out.other += 1;
+              continue;
+            }
+            out.initiatives += 1;
+            const pills = [...row.querySelectorAll('.cl-pill')].map((p) => p.textContent?.trim());
+            if (pills.includes('bucket')) out.buckets += 1;
+          }
+          return out;
+        });
+      // Each hit is a bucket initiative: the seed has "bugs" and "tech-debt".
+      await expect
+        .poll(async () => {
+          const g = await groups();
+          return g.other === 0 && g.initiatives >= 2 && g.buckets === g.initiatives;
+        })
+        .toBe(true);
       await field(page, 'Initiative buckets', 'select').selectOption('false');
       await page.getByRole('button', { name: 'Search', exact: true }).click();
       await expect(page).toHaveURL(/is_bucket=false/);
-      await expect(rows.first()).toBeVisible({ timeout: 20_000 });
-      await expect(rows.filter({ has: page.locator('.cl-pill', { hasText: /^bucket$/ }) }))
-        .toHaveCount(0);
+      await expect
+        .poll(async () => {
+          const g = await groups();
+          return g.other === 0 && g.initiatives > 0 && g.buckets === 0;
+        })
+        .toBe(true);
     });
   } finally {
     for (const code of codes) await tryArchiveTask(GUI, alice, code);
