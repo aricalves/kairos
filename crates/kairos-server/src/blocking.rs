@@ -41,6 +41,9 @@
 //!   NULL. A job on a connection of its own (the retention sweep, SCIM)
 //!   never sets the setting, and the default reads NULL.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use diesel::connection::SimpleConnection;
 use diesel::pg::PgConnection;
 use diesel::r2d2::{ConnectionManager, CustomizeConnection, Pool};
@@ -88,6 +91,9 @@ pub fn current_agent_key() -> Option<uuid::Uuid> {
 #[derive(Clone)]
 pub struct BlockingTenantPool {
     pool: Pool<ConnectionManager<PgConnection>>,
+    /// The checkouts of [`Self::run`] and [`Self::run_public`] since the
+    /// pool was built (KAIROS-T-0612, [`Self::checkouts`]).
+    checkouts: Arc<AtomicU64>,
 }
 
 impl std::fmt::Debug for BlockingTenantPool {
@@ -131,7 +137,10 @@ impl BlockingTenantPool {
             .connection_timeout(std::time::Duration::from_secs(5))
             .connection_customizer(Box::new(SessionTimeouts))
             .build_unchecked(manager);
-        Self { pool }
+        Self {
+            pool,
+            checkouts: Arc::new(AtomicU64::new(0)),
+        }
     }
 
     /// Run `f` on a sync connection pinned to `slug`'s tenant schema
@@ -185,12 +194,14 @@ impl BlockingTenantPool {
         // KAIROS-T-0359: the sink of the claim warnings, read here too.
         let sink = crate::claims::current_sink();
         let pool = self.pool.clone();
+        let checkouts = self.checkouts.clone();
 
         async move {
             if let Some(message) = invalid {
                 return Err(ApiError::internal(message));
             }
             tokio::task::spawn_blocking(move || {
+                checkouts.fetch_add(1, Ordering::Relaxed);
                 let mut conn = pool.get().map_err(ApiError::internal)?;
                 conn.batch_execute(&format!(
                     "SET search_path TO \"{schema}\", public; {agent_key}"
@@ -233,8 +244,10 @@ impl BlockingTenantPool {
             code.lineno = location.line(),
         );
         let pool = self.pool.clone();
+        let checkouts = self.checkouts.clone();
         async move {
             tokio::task::spawn_blocking(move || {
+                checkouts.fetch_add(1, Ordering::Relaxed);
                 let mut conn = pool.get().map_err(ApiError::internal)?;
                 // KAIROS-T-0359: clear the agent key, as `run` sets it.
                 conn.batch_execute(&format!(
@@ -255,6 +268,14 @@ impl BlockingTenantPool {
     /// jobs; KAIROS-T-0614).
     pub fn max_size(&self) -> u32 {
         self.pool.max_size()
+    }
+
+    /// How many checkouts [`Self::run`] and [`Self::run_public`] made since
+    /// the pool was built, a refused one included (KAIROS-T-0612). A test
+    /// reads it before and after a request to count the checkouts of the
+    /// request.
+    pub fn checkouts(&self) -> u64 {
+        self.checkouts.load(Ordering::Relaxed)
     }
 
     /// Point-in-time `(total_connections, idle_connections)` for the r2d2

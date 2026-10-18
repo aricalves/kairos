@@ -66,11 +66,12 @@ pub fn router() -> Router<AppState> {
 pub(crate) fn archive_item(
     conn: &mut diesel::pg::PgConnection,
     slug: &str,
+    role: kairos_db::models::OrgRole,
     user_id: Uuid,
     item_id: Uuid,
     item_type: ItemType,
 ) -> Result<items::SoftDeleteOutcome, ApiError> {
-    require_item_archive(conn, slug, user_id, item_id, item_type)?;
+    require_item_archive(conn, role, user_id, item_id, item_type)?;
     let principal = items::Principal {
         org_slug: slug,
         user_id,
