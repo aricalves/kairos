@@ -274,6 +274,16 @@ async fn the_board_and_search_send_cards_without_content_against_live_stack() {
     let item = stack
         .ok(Method::GET, &format!("/api/tasks/{first_code}"), None)
         .await;
+    // KAIROS-T-0630: the notes are rows. The read of one item has them in
+    // `notes`; a card of a list has none, `fields=full` too.
+    assert!(
+        item["notes"].is_array(),
+        "the read of the item has notes: {item}"
+    );
+    assert!(
+        first.get("notes").is_none(),
+        "a full card has no notes: {first}"
+    );
     for (key, value) in item.as_object().expect("the task") {
         // KAIROS-T-0649: a card has the count of the notes, not the notes.
         if key == "notes" {
