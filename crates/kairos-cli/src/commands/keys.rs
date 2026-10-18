@@ -9,6 +9,7 @@ use kairos_client::types_service_accounts::{ApiKey, CreateApiKeyRequest};
 use crate::commands::entities::require_confirm;
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
+use crate::listing::print_whole;
 use crate::table::Table;
 
 /// Your agent keys, or the API keys of a service account (org-admin).
@@ -172,7 +173,7 @@ impl KeysCommand {
                     None => client.list_agent_keys().await?,
                 };
                 if common.json {
-                    return print_json(&list);
+                    return print_whole(&list.items);
                 }
                 if list.items.is_empty() {
                     println!("(none)");

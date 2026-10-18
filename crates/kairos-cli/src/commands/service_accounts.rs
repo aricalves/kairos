@@ -7,6 +7,7 @@ use kairos_client::types_service_accounts::{CreateServiceAccountRequest, Service
 use crate::commands::entities::require_confirm;
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
+use crate::listing::print_whole;
 use crate::table::Table;
 
 /// Service accounts (org-admin operations).
@@ -69,7 +70,7 @@ impl ServiceAccountsCommand {
                 let client = client(&common)?;
                 let list = client.list_service_accounts().await?;
                 if common.json {
-                    return print_json(&list);
+                    return print_whole(&list.items);
                 }
                 if list.items.is_empty() {
                     println!("(none)");

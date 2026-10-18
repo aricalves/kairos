@@ -156,7 +156,7 @@ journey(
     await step(alice, 'finds that card by the field she just invented', async () => {
       const cli = await alice.cli();
       const hits = await cli.json(['search', '--metadata', `${fieldSlug}=high`, '--limit', '50']);
-      const codes = (hits.results?.tasks ?? []).map((t: any) => t.short_code);
+      const codes = (hits.items.filter((h: any) => h.entity_type === 'task')).map((t: any) => t.short_code);
       expect(codes).toContain(code);
       return { query: `${fieldSlug}=high`, hits: codes.length };
     });
