@@ -265,8 +265,9 @@ def render(spec):
         "",
         f"OpenAPI {spec['openapi']}"
         + (f", Kairos {info['version']}" if info.get("version") else "")
-        + f". {len(paths)} paths, "
-        + f"{len(spec.get('components', {}).get('schemas', {}))} schemas.",
+        # No counts on this page (KAIROS-T-0661): two PRs that add a route
+        # would both change the line and conflict.
+        + ".",
         "",
         "Every endpoint is served under the tenant resolved from the request "
         "host and requires a bearer token; see "
@@ -286,12 +287,8 @@ def render(spec):
         present = [t for t in tags if t in by_tag]
         if not present:
             continue
-        count = sum(len(by_tag[t]) for t in present)
         slug = anchor(title)
-        lines.append(
-            f"- [{title}](../rest/{slug}/) — {count} operations. "
-            + " ".join(blurb.split())
-        )
+        lines.append(f"- [{title}](../rest/{slug}/) — " + " ".join(blurb.split()))
 
         page = front_matter(title) + [
             GENERATED_HEADER,
@@ -308,8 +305,8 @@ def render(spec):
     schemas = (spec.get("components") or {}).get("schemas") or {}
     if schemas:
         lines.append(
-            f"- [Schemas](../rest/schemas/) — {len(schemas)} wire shapes, "
-            "referenced from the operations above."
+            "- [Schemas](../rest/schemas/) — the wire shapes that the "
+            "operations above reference."
         )
         page = front_matter("Schemas") + [
             GENERATED_HEADER,
