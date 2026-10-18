@@ -1,0 +1,12 @@
+-- KAIROS-T-0565: a board policy. On a delivery board with the policy on, a
+-- task with an open blocker does not move into a claims column or a done
+-- column. With the policy off, the move gets a warning.
+--
+-- WHAT THIS DOES TO THE DATA OF A TENANT
+--
+-- 1 new column on boards, false for each board. Only a delivery board
+-- reads it. No other row is changed. A task in Active or Completed with an
+-- open blocker stays there.
+--
+-- Re-runnable.
+ALTER TABLE boards ADD COLUMN IF NOT EXISTS blockers_gate BOOLEAN NOT NULL DEFAULT false;

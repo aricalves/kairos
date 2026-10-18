@@ -188,6 +188,11 @@ shows it.
   of an initiative in Active or Monitoring cannot release it. A hand-off to a
   member of the board can change the owner. The refusal is `OWNER_REQUIRED`.
   The policy is on by default.
+- **`blockers_gate`**, a policy of a delivery board (KAIROS-T-0565). With it
+  on, a task with open blockers does not move into a claims column or a done
+  column. Kairos counts a cancelled blocker as open. The refusal is
+  `BLOCKED`. With it off, the move gets a warning that names each blocker.
+  The policy is off by default.
 
 ## bucket
 

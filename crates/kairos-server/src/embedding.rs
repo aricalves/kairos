@@ -821,9 +821,10 @@ impl EmbeddingService {
     /// nothing compares a similarity to a constant.
     ///
     /// Degrades rather than fails: with no usable vectors this answers from text
-    /// alone and says so in every proposal. That is KAIROS-A-0021 rule 7, and it
-    /// is the reason this returns `Sources` rather than leaving a caller to
-    /// wonder why the answers look thin.
+    /// alone, and `Sources` says so once for the response. That is KAIROS-A-0021
+    /// rule 7. A text-only answer uses the text score of
+    /// `kairos_db::embeddings::text_neighbours`: fewer proposals, and none
+    /// under the floor (KAIROS-T-0562).
     pub fn related_work(
         &self,
         conn: &mut diesel::pg::PgConnection,
@@ -835,12 +836,6 @@ impl EmbeddingService {
 
         let item = kairos_db::embeddings::item_by_short_code(conn, short_code)?;
 
-        // Lexical uses the item's own title as the query: it is the most
-        // discriminating text the item has, and a whole document as a tsquery
-        // matches everything. Any word of it matches, and more words rank
-        // higher (COLLIERY-T-1840); requiring every word matched nothing.
-        let lexical =
-            kairos_db::embeddings::lexical_neighbours(conn, item.id, &item.title, CANDIDATE_DEPTH)?;
         let vector =
             kairos_db::embeddings::vector_neighbours(conn, item.id, &self.model, CANDIDATE_DEPTH)?;
         let sources = Sources {
@@ -849,8 +844,38 @@ impl EmbeddingService {
         };
 
         let mut by_id: HashMap<uuid::Uuid, Candidate> = HashMap::new();
-        for (rank, n) in lexical.iter().enumerate() {
-            by_id.entry(n.id).or_insert_with(|| blank(n)).lexical_rank = Some(rank);
+        if sources.vector {
+            // Lexical uses the item's own title as the query: it is the most
+            // discriminating text the item has, and a whole document as a
+            // tsquery matches everything. Any word of it matches, and more
+            // words rank higher (COLLIERY-T-1840); requiring every word matched
+            // nothing.
+            let lexical = kairos_db::embeddings::lexical_neighbours(
+                conn,
+                item.id,
+                &item.title,
+                CANDIDATE_DEPTH,
+            )?;
+            for (rank, n) in lexical.iter().enumerate() {
+                by_id.entry(n.id).or_insert_with(|| blank(n)).lexical_rank = Some(rank);
+            }
+        } else {
+            // No vectors: the text score decides (KAIROS-T-0562). The same
+            // title words, but each weighs by how rare it is, so a match on
+            // common words alone stays under the floor of `propose`.
+            let text = kairos_db::embeddings::text_neighbours(
+                conn,
+                item.id,
+                &item.title,
+                CANDIDATE_DEPTH,
+            )?;
+            for (rank, n) in text.iter().enumerate() {
+                let c = by_id
+                    .entry(n.neighbour.id)
+                    .or_insert_with(|| blank(&n.neighbour));
+                c.lexical_rank = Some(rank);
+                c.text_score = Some(n.text_score as f32);
+            }
         }
         for (rank, n) in vector.iter().enumerate() {
             let c = by_id.entry(n.id).or_insert_with(|| blank(n));
@@ -898,5 +923,6 @@ fn blank(n: &kairos_db::embeddings::Neighbour) -> kairos_core::retrieval::Candid
         // the prior-art claim worth making.
         finished: n.archived,
         heading: n.heading.clone(),
+        text_score: None,
     }
 }

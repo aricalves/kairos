@@ -15,7 +15,7 @@ This page is generated from that spec, so it cannot drift from the router — bu
 
 ## Contents
 
-- [Work items](../rest/work-items/) — 42 operations. The five entity families. Every one has the same shape — list, get, create, update, delete — and the same optimistic-concurrency contract on update (KAIROS-A-0004): submit the `version` you read, and a concurrent edit gets 409 with the current entity in `details.current`. A write to a claimed task by a different person gets the header `Kairos-Warning: <code> claimed by <name> since <time>` (KAIROS-T-0359).
+- [Work items](../rest/work-items/) — 42 operations. The five entity families. Every one has the same shape — list, get, create, update, delete — and the same optimistic-concurrency contract on update (KAIROS-A-0004): submit the `version` you read, and a concurrent edit gets 409 with the current entity in `details.current`. A write to a claimed task by a different person gets the header `Kairos-Warning: <code> claimed by <name> since <time>` (KAIROS-T-0359). A task with open blockers can move into a claims column or a done column. That answer gets the header `Kairos-Warning: <code> moved into <column>, blocked by <blocker> (open)` (KAIROS-T-0565).
 - [Across any work item](../rest/across-any-work-item/) — 32 operations. Operations addressed by `{entity_type}` and a short code, so they work uniformly across the five families.
 - [Boards and teams](../rest/boards-and-teams/) — 73 operations. Board configuration, membership, the team structures that own boards, and the grants of `manage_structure` (KAIROS-T-0337).
 - [Execution scope](../rest/execution-scope/) — 29 operations. Repositories as first-class execution scope (KAIROS-A-0019) and the git forges behind them.

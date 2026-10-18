@@ -1057,6 +1057,23 @@ pub fn map_board_error(e: BoardError) -> ApiError {
             "policy": "owner_gate",
             "fix": format!("claim_item {initiative}"),
         })),
+        // KAIROS-T-0565: the board policy blockers_gate.
+        BoardError::Blocked {
+            ref task,
+            ref to_column,
+            ref blockers,
+            board_id,
+        } => ApiError::unprocessable("BLOCKED", e.to_string()).with_details(json!({
+            "task": task,
+            "to_column": to_column,
+            "board_id": board_id,
+            "blockers": blockers
+                .iter()
+                .map(|b| json!({"short_code": b.short_code, "cancelled": b.cancelled}))
+                .collect::<Vec<_>>(),
+            "policy": "blockers_gate",
+            "fix": "unlink_items",
+        })),
         // KAIROS-T-0564: a done task moves to another board only after a
         // reopen; a reopen takes a done task only.
         BoardError::TaskDone { ref task, .. } => {

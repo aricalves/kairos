@@ -278,7 +278,7 @@ fn load_edges(
 }
 
 /// The name of the unique index that holds one parent per item
-/// (KAIROS-T-0572, migration `2026-10-17-001900_one_parent`).
+/// (KAIROS-T-0572, migration `2026-10-17-002200_one_parent`).
 pub const ONE_PARENT_INDEX: &str = "item_relationships_one_parent";
 
 /// The short code of an item, archived or not, or its id when the item is

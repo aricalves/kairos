@@ -85,8 +85,8 @@ const TENANT: &str = "acme";
 
 /// How many tools `tools/list` returns, and the word the reference pages
 /// use for that number (COLLIERY-T-0220, COLLIERY-T-0266).
-const TOOL_COUNT: usize = 73;
-const TOOL_COUNT_WORD: &str = "seventy-three";
+const TOOL_COUNT: usize = 74;
+const TOOL_COUNT_WORD: &str = "seventy-four";
 
 /// Every request carries a real `Host` header and the tenant resolves from
 /// its subdomain against the configured base domain — the S-0006 REQ-1.2
@@ -672,6 +672,9 @@ async fn mcp_endpoint_against_live_stack() {
         "append_note",
         // KAIROS-T-0505: a note becomes a draft ADR or document.
         "promote_note",
+        // KAIROS-T-0555: a document moves between draft, review and
+        // published.
+        "set_lifecycle",
         // KAIROS-T-0506: the live state of a task.
         "set_state",
         // KAIROS-T-0368: the scales and the templates, for triage.
@@ -771,6 +774,7 @@ async fn mcp_endpoint_against_live_stack() {
             "propose_edge",
             "append_note",
             "promote_note",
+            "set_lifecycle",
             "set_state",
             "set_metadata",
             "set_repository",
@@ -884,6 +888,8 @@ async fn mcp_endpoint_against_live_stack() {
             "thirty-one",
             "thirty-nine",
             "forty-one",
+            "seventy-two",
+            "seventy-three",
             "forty-four",
             "forty-five",
             "forty-six",
@@ -2104,6 +2110,95 @@ async fn mcp_endpoint_against_live_stack() {
         text.contains(&format!(
             "to the draft document {promoted_doc}. {promoted_doc} supports {filed}."
         )),
+        "{text}"
+    );
+    // KAIROS-T-0555: the draft moves to review, then to published. The
+    // same value changes nothing; an unknown value is refused by name with
+    // the four values; bob has no edit right on the document.
+    let text = session
+        .call_ok(
+            "set_lifecycle",
+            json!({"short_code": promoted_doc, "lifecycle": "review"}),
+        )
+        .await;
+    assert_eq!(
+        text,
+        format!("Set the lifecycle of {promoted_doc} to review (was draft).")
+    );
+    let text = session
+        .call_ok(
+            "set_lifecycle",
+            json!({"short_code": promoted_doc, "lifecycle": "published"}),
+        )
+        .await;
+    assert_eq!(
+        text,
+        format!("Set the lifecycle of {promoted_doc} to published (was review).")
+    );
+    let text = session
+        .call_ok(
+            "set_lifecycle",
+            json!({"short_code": promoted_doc, "lifecycle": "published"}),
+        )
+        .await;
+    assert_eq!(
+        text,
+        format!("{promoted_doc} is already published: nothing changed.")
+    );
+    let text = session
+        .call_ok("get_item", json!({"short_code": promoted_doc}))
+        .await;
+    assert!(text.contains("published"), "{text}");
+    let text = session
+        .call_err(
+            "set_lifecycle",
+            json!({"short_code": promoted_doc, "lifecycle": "final"}),
+        )
+        .await;
+    assert!(
+        text.contains("VALIDATION")
+            && text.contains("\"final\"")
+            && text.contains("draft, review, published, archived"),
+        "{text}"
+    );
+    let text = session
+        .call_err(
+            "set_lifecycle",
+            json!({"short_code": filed, "lifecycle": "draft"}),
+        )
+        .await;
+    assert!(
+        text.contains("VALIDATION") && text.contains("documents only"),
+        "{text}"
+    );
+    let text = session
+        .call_err(
+            "set_lifecycle",
+            json!({"short_code": promoted_doc, "lifecycle": "draft", "to": "x"}),
+        )
+        .await;
+    assert!(
+        text.contains("VALIDATION") && text.contains("\"to\""),
+        "{text}"
+    );
+    let text = bob_session
+        .call_err(
+            "set_lifecycle",
+            json!({"short_code": promoted_doc, "lifecycle": "draft"}),
+        )
+        .await;
+    assert!(
+        text.contains("FORBIDDEN") && text.contains("manage_documents"),
+        "{text}"
+    );
+    let text = session
+        .call_err(
+            "transition_item",
+            json!({"short_code": promoted_doc, "to_column": "Published"}),
+        )
+        .await;
+    assert!(
+        text.contains("ITEM_NOT_ON_BOARD") && text.contains("Use set_lifecycle"),
         "{text}"
     );
     let text = session

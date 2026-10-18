@@ -5,7 +5,7 @@
 //! - `set_parent` swaps the edge in one transaction, writes the remove and
 //!   the add rows, and writes nothing when nothing changes; a refused swap
 //!   keeps the old edge;
-//! - the migration `2026-10-17-001900_one_parent` on a tenant with two
+//! - the migration `2026-10-17-002200_one_parent` on a tenant with two
 //!   parents: it keeps the oldest edge, removes the others, writes one
 //!   activity row for each, and is re-runnable.
 //!
@@ -31,8 +31,8 @@ use kairos_db::{create_board, provision_tenant, run_public_migrations, schema};
 
 /// The migration under test, verbatim: what a deployment runs is what this
 /// test runs.
-const UP: &str = include_str!("../migrations/tenant/2026-10-17-001900_one_parent/up.sql");
-const DOWN: &str = include_str!("../migrations/tenant/2026-10-17-001900_one_parent/down.sql");
+const UP: &str = include_str!("../migrations/tenant/2026-10-17-002200_one_parent/up.sql");
+const DOWN: &str = include_str!("../migrations/tenant/2026-10-17-002200_one_parent/down.sql");
 
 /// The actor of the activity rows of the migration: the system.
 const SYSTEM: Uuid = Uuid::nil();

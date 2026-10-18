@@ -163,6 +163,22 @@ owner; the work never runs with nobody. An initiative also starts in Discovery,
 the entry column of its board: it reaches Active by moves, so the rule meets
 each initiative that runs.
 
+A `blocks` edge says that one task waits for another. The Blocked column is a
+different idea: a place on the board. Kairos does not join the two. So a move
+of a task with open blockers into a claims column or a done column gets a
+warning (KAIROS-T-0565). The warning names each open blocker, for example
+"blocked by KAIROS-T-0012 (open)". Kairos counts a cancelled blocker as open
+too: the work it stood for will not happen. The warning comes on a transition,
+a reopen and a move to a board. It is the header `Kairos-Warning` on REST and a line on MCP.
+
+A delivery board can turn the warning into a refusal with the policy
+`blockers_gate`. Then Kairos refuses the move with `BLOCKED` and names the
+blockers. This policy is off by default, unlike the other two. Many teams use
+`blocks` as a note of order, and they start work before the blocker is done.
+A refusal on each existing board would stop that work at once. A cancelled
+blocker would also hold its dependants until a person decides. A board that
+wants the strict rule turns it on.
+
 Rolling *up* through that graph is where one subtlety lives. An item's
 relationship list and its progress rollup answer different questions, and they
 disagree about archived work on purpose: containment is a fact about the

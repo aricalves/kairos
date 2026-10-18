@@ -224,6 +224,7 @@ A board (`/api/boards` list element).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `blockers_gate` | `boolean`, nullable | yes | The board policy `blockers_gate` of a delivery board (KAIROS-T-0565): when true, a task with an open blocker does not move into a claims column or a done column. The refusal is a 422 `BLOCKED`. When false, the move goes on with a `Kairos-Warning`. False by default. `null` on each other level. |
 | `board_level` | `string` | yes | `strategy|initiative|delivery|adr`. |
 | `code_prefix` | `string` | yes | The short-code prefix of the board (COLLIERY-T-3099): an item on the board gets a code `{code_prefix}-{type letter}-{number}`. It is set when the board is created and never changes. The default is for the client only: a response of an older server has no prefix. |
 | `created_at` | `string` | yes | RFC 3339. |
@@ -2946,6 +2947,7 @@ Body of `PATCH /api/boards/{id}` (board settings).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `blockers_gate` | `boolean`, nullable | no | The board policy `blockers_gate` (KAIROS-T-0565), for a delivery board only: true turns it on, false turns it off. On each other level the field is a 422 `VALIDATION`. |
 | `name` | `string`, nullable | no |  |
 | `owner_gate` | `boolean`, nullable | no | The board policy `owner_gate` (KAIROS-T-0643), for an initiative board only: true turns it on, false turns it off. On each other level the field is a 422 `VALIDATION`. |
 | `parent_gate` | `boolean`, nullable | no | The board policy `parent_gate` (KAIROS-T-0641), for a delivery board only: true turns it on, false turns it off. On each other level the field is a 422 `VALIDATION`. |

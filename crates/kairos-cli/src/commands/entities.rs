@@ -349,6 +349,22 @@ pub struct SetParentArgs {
     pub common: Common,
 }
 
+/// Arguments of `kairos documents lifecycle` (KAIROS-T-0555).
+#[derive(Args, Debug)]
+pub struct LifecycleArgs {
+    /// The document's short code (e.g. ACME-D-0001)
+    pub short_code: String,
+    /// The lifecycle of the document after the call. Each move is possible
+    #[arg(
+        long = "to",
+        value_name = "STATE",
+        value_parser = ["draft", "review", "published", "archived"]
+    )]
+    pub to: String,
+    #[command(flatten)]
+    pub common: Common,
+}
+
 /// Arguments of `kairos tasks purge` (KAIROS-T-0362).
 #[derive(Args, Debug)]
 pub struct PurgeArgs {
@@ -978,6 +994,25 @@ fn document_moved_line(short_code: &str, board_id: &str) -> String {
     format!("The owner board of the document {short_code} is {board_id}.")
 }
 
+/// `documents lifecycle` output (KAIROS-T-0555).
+pub fn emit_lifecycle(common: &Common, document: &Document) -> Result<(), CliError> {
+    if common.json {
+        return print_json(document);
+    }
+    println!(
+        "{}",
+        lifecycle_line(&document.short_code, &document.lifecycle)
+    );
+    Ok(())
+}
+
+/// The line of [`emit_lifecycle`]: the lifecycle of the document after the
+/// call, from the answer of the server. The CLI does not read the document
+/// first, so it does not say whether the lifecycle changed.
+fn lifecycle_line(short_code: &str, lifecycle: &str) -> String {
+    format!("The document {short_code} is {lifecycle}.")
+}
+
 /// `promote-note` output (KAIROS-T-0505): the new item and its edge.
 pub fn emit_promoted(common: &Common, response: &PromoteNoteResponse) -> Result<(), CliError> {
     if common.json {
@@ -1331,6 +1366,7 @@ macro_rules! entity_family_cli {
         $(, task_end($cancel_variant:ident = $cancel_fn:ident, $reopen_variant:ident = $reopen_fn:ident, $purge_variant:ident = $purge_fn:ident))?
         $(, lane($lane_variant:ident = $lane_fn:ident))?
         $(, parent($parent_variant:ident))?
+        $(, lifecycle($lifecycle_variant:ident = $lifecycle_fn:ident))?
     ) => {
         #[doc = concat!("Operations on ", $noun, "s.")]
         #[derive(clap::Subcommand, Debug)]
@@ -1407,6 +1443,12 @@ macro_rules! entity_family_cli {
                                       "replaces the old one)"),
                       name = "set-parent")]
             $parent_variant(SetParentArgs),
+            )?
+            $(
+            #[command(about = concat!("Set the lifecycle of a ", $noun,
+                                      ": draft, review, published or archived ",
+                                      "(the edit rule applies)"))]
+            $lifecycle_variant(LifecycleArgs),
             )?
             #[command(about = concat!("Archive a ", $noun,
                                       " and its children (requires --confirm; ",
@@ -1554,6 +1596,13 @@ macro_rules! entity_family_cli {
                         emit_parent(&args.common, &response)
                     }
                     )?
+                    $(
+                    Self::$lifecycle_variant(args) => {
+                        let client = client(&args.common)?;
+                        let document = client.$lifecycle_fn(&args.short_code, &args.to).await?;
+                        emit_lifecycle(&args.common, &document)
+                    }
+                    )?
                     Self::Archive(args) => {
                         require_archive_confirm(args.confirm, &args.short_code)?;
                         let client = client(&args.common)?;
@@ -1642,7 +1691,8 @@ entity_family_cli!(
     delete = delete_document,
     restore = restore_document,
     kind = EntityKind::Document,
-    owner_move(Move) = set_document_board_with
+    owner_move(Move) = set_document_board_with,
+    lifecycle(Lifecycle = set_document_lifecycle)
 );
 
 entity_family_cli!(
@@ -1768,6 +1818,40 @@ mod tests {
         assert_eq!(
             lane_line("ACME-T-0001", "planned"),
             "ACME-T-0001 is in the planned lane."
+        );
+    }
+
+    /// KAIROS-T-0555: `documents lifecycle` names the lifecycle after the
+    /// call, and clap refuses a value that is not one of the four.
+    #[test]
+    fn the_lifecycle_of_a_document_names_the_result() {
+        use clap::Parser;
+        #[derive(Parser, Debug)]
+        struct Cli {
+            #[command(subcommand)]
+            command: DocumentsCommand,
+        }
+        assert_eq!(
+            lifecycle_line("ACME-D-0001", "published"),
+            "The document ACME-D-0001 is published."
+        );
+        let parsed =
+            Cli::try_parse_from(["documents", "lifecycle", "ACME-D-0001", "--to", "review"])
+                .expect("parses");
+        match parsed.command {
+            DocumentsCommand::Lifecycle(args) => {
+                assert_eq!(args.short_code, "ACME-D-0001");
+                assert_eq!(args.to, "review");
+            }
+            other => panic!("not the lifecycle verb: {other:?}"),
+        }
+        let refused =
+            Cli::try_parse_from(["documents", "lifecycle", "ACME-D-0001", "--to", "final"])
+                .expect_err("an unknown state is refused");
+        let text = refused.to_string();
+        assert!(
+            text.contains("final") && text.contains("published"),
+            "{text}"
         );
     }
 
