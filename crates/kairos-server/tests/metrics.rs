@@ -415,15 +415,20 @@ async fn jobs_gauges_and_endpoint(
     );
 
     // The default refresh time: a scrape reads the queue once.
-    let (_, _, cached_body) = raw_request(router, Method::GET, "/metrics", None, &[]).await;
-    assert_eq!(parse_prometheus(&cached_body).get(&queued), Some(&4.0));
+    let cached = app::router(app::state_with(
+        base_config(scratch_url),
+        pool.clone(),
+        auth.clone(),
+    ));
+    let (_, _, body) = raw_request(&cached, Method::GET, "/metrics", None, &[]).await;
+    assert_eq!(parse_prometheus(&body).get(&queued), Some(&4.0), "{body}");
 
     fail_next_probe(conn, "The probe failed.");
     let (_, _, body) = raw_request(&fresh, Method::GET, "/metrics", None, &[]).await;
     let sample = parse_prometheus(&body);
     assert_eq!(sample.get(&queued), Some(&3.0), "the gauge moves: {body}");
     assert_eq!(sample.get(&failed), Some(&1.0), "the gauge moves: {body}");
-    let (_, _, body) = raw_request(router, Method::GET, "/metrics", None, &[]).await;
+    let (_, _, body) = raw_request(&cached, Method::GET, "/metrics", None, &[]).await;
     assert_eq!(
         parse_prometheus(&body).get(&queued),
         Some(&4.0),
