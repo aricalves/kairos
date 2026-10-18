@@ -81,9 +81,11 @@
 //! 'relationship_remove'`, with `details =
 //! "relationship:{rel}:{source_short}->{target_short}"` (the S-0004 DDL
 //! comment's format, e.g. `relationship:parent:ACME-I-0001->ACME-T-0005`).
-//! `entity_id`/`entity_type` are NULL for relationship actions (per the
-//! DDL comment and [`crate::models::graph::ActivityLogEntry`]) — the edge
-//! itself is the subject, and both endpoints are named in `details`.
+//! `entity_id`/`entity_type` name the SOURCE of the edge (KAIROS-T-0638),
+//! so a read or a purge of an item finds the rows of its edges; both
+//! endpoints are named in `details`. Rows from before KAIROS-T-0638 had
+//! NULL there; the migration `retention_more` set the source where the
+//! label of the source names a known item.
 //!
 //! # Duplicate edges
 //!
@@ -235,13 +237,29 @@ fn resolve_entity(
         .transpose()
 }
 
+/// The entity type of `id`, live or archived, via `entity_directory`.
+/// `None`: no such item.
+fn entity_type_of(conn: &mut PgConnection, id: Uuid) -> Result<Option<String>, DieselError> {
+    Ok(
+        sql_query("SELECT entity_type, short_code FROM entity_directory WHERE id = $1")
+            .bind::<SqlUuid, _>(id)
+            .get_result::<DirectoryRow>(conn)
+            .optional()?
+            .map(|row| row.entity_type),
+    )
+}
+
 /// Insert one relationship `activity_log` row: `entity_id`/`entity_type`
-/// NULL, both endpoints named in `details` (module docs).
+/// name the source (KAIROS-T-0638), both endpoints named in `details`
+/// (module docs).
+#[allow(clippy::too_many_arguments)]
 fn log_relationship_activity(
     conn: &mut PgConnection,
     actor: Uuid,
     action: ActivityAction,
     relationship: RelationshipType,
+    source_id: Uuid,
+    source_type: Option<String>,
     source_label: &str,
     target_label: &str,
 ) -> Result<(), DieselError> {
@@ -249,8 +267,8 @@ fn log_relationship_activity(
         .values(NewActivityLogEntry {
             actor_id: actor,
             action,
-            entity_id: None,
-            entity_type: None,
+            entity_id: Some(source_id),
+            entity_type: source_type,
             details: format!("relationship:{relationship}:{source_label}->{target_label}"),
         })
         .execute(conn)?;
@@ -455,6 +473,8 @@ pub fn link_items(
             actor,
             ActivityAction::RelationshipAdd,
             relationship,
+            source_id,
+            Some(source_type.entity_type().to_string()),
             &source_code,
             &target_code,
         )?;
@@ -512,11 +532,17 @@ pub fn unlink_items(
         let target_label = target
             .as_ref()
             .map_or_else(|| target_id.to_string(), |(_, code)| code.clone());
+        let source_type = match &source {
+            Some((item_type, _)) => Some(item_type.entity_type().to_string()),
+            None => entity_type_of(conn, source_id)?,
+        };
         log_relationship_activity(
             conn,
             actor,
             ActivityAction::RelationshipRemove,
             relationship,
+            source_id,
+            source_type,
             &source_label,
             &target_label,
         )?;
@@ -636,18 +662,21 @@ pub fn set_parent(
             // 0: a write at the same time removed the edge first. That
             // write has its own row.
             if deleted > 0 {
+                let old_type = old.item_type.map(|t| t.entity_type().to_string());
                 log_relationship_activity(
                     conn,
                     actor,
                     ActivityAction::RelationshipRemove,
                     RelationshipType::Parent,
+                    old.id,
+                    old_type,
                     &old.short_code,
                     &item_code,
                 )?;
             }
         }
 
-        if let Some((new_id, _, new_code)) = &new_parent {
+        if let Some((new_id, new_type, new_code)) = &new_parent {
             let edges = load_edges(conn, RelationshipType::Parent)?;
             if rules::would_create_cycle(&edges, *new_id, item_id) {
                 return Err(GraphError::CycleDetected {
@@ -662,6 +691,8 @@ pub fn set_parent(
                 actor,
                 ActivityAction::RelationshipAdd,
                 RelationshipType::Parent,
+                *new_id,
+                Some(new_type.entity_type().to_string()),
                 new_code,
                 &item_code,
             )?;

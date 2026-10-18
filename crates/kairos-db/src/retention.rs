@@ -3,7 +3,8 @@
 //! per KAIROS-A-0013).
 //!
 //! KAIROS-A-0009 layering, same shape as [`crate::items`]: this module
-//! loads `item_history`/`activity_log` rows, delegates the pure decision
+//! loads `item_history`/`team_page_history`/`activity_log` rows, delegates
+//! the pure decision
 //! (WHICH rows leave the database) to
 //! [`kairos_core::retention::plan_history_compaction`], and performs the
 //! I/O: **offload-then-prune**. Rows are serialized as NDJSON (one JSON
@@ -26,20 +27,25 @@
 //! - `off`: complete no-op (no prune, no archive, no `retention_sweep`
 //!   activity row).
 //!
+//! `team_page_history` follows the rules and the mode of `item_history`
+//! (KAIROS-T-0638): a page is an item.
+//!
 //! # Paging (KAIROS-T-0631)
 //!
 //! The sweep never loads a table whole. It reads `item_history` a page of
 //! items at a time, in `item_id` order, and only the metadata columns
 //! `(id, item_id, version, edited_at, base_version)`; it reads the content
-//! only of the rows that it archives. It reads `activity_log` a page of
-//! rows at a time, in `(occurred_at, id)` order. Each delete names at most
-//! one batch of ids. [`SweepPaging`] sets the sizes.
+//! only of the rows that it archives. `team_page_history` pages by
+//! `page_id` the same way. It reads `activity_log` a page of rows at a
+//! time, in `(occurred_at, id)` order. Each delete names at most one batch
+//! of ids. [`SweepPaging`] sets the sizes.
 //!
 //! # Diff rows (KAIROS-T-0651)
 //!
-//! A diff row needs its base full row ([`crate::history`]). The planner
-//! keeps the base of each row that it keeps, so each kept version keeps
-//! its text. The archive line of a diff row has the full text.
+//! A diff row of `item_history` needs its base full row
+//! ([`crate::history`]). The planner keeps the base of each row that it
+//! keeps, so each kept version keeps its text. The archive line of a diff
+//! row has the full text. `team_page_history` has full rows only.
 //!
 //! # Archive layout
 //!
@@ -62,8 +68,18 @@
 //! when it is wired — no metrics crate is taken here on purpose. The
 //! server runs [`run_retention_pass`] as a periodic job
 //! (KAIROS-T-0366, KAIROS-T-0376).
+//!
+//! # The other tables of the pass (KAIROS-T-0638)
+//!
+//! The pass also deletes, in each mode and with no archive, a page of rows
+//! at a time: the old code indexes (the newest `code_index_keep` per
+//! repository and ref stay), the summaries that no stored index uses, the
+//! read and the unread notifications past their windows, and the webhook
+//! deliveries that finished more than [`crate::webhooks::KEEP_DAYS`] days
+//! ago. Each of these rows is a cache or a copy of a fact that another row
+//! keeps.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -73,16 +89,18 @@ use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::result::Error as DieselError;
 use diesel::sql_query;
-use diesel::sql_types::{Bool, Text};
+use diesel::sql_types::{
+    Array, BigInt, Bool, Integer, Nullable, Text, Timestamptz, Uuid as SqlUuid,
+};
 use serde::Serialize;
 use uuid::Uuid;
 
 use kairos_core::retention::{
-    ArchiveTarget, HistoryRowMeta, RetentionConfig, RetentionMode, plan_history_compaction,
+    ArchiveTarget, HistoryRowMeta, RetentionConfig, RetentionMode, plan_code_index_retention,
+    plan_history_compaction,
 };
 
 use crate::models::enums::ActivityAction;
-use crate::models::graph::ItemHistory;
 use crate::tenant::{self, TenantError};
 
 /// Errors from the retention sweeper.
@@ -166,6 +184,9 @@ pub struct SweepReport {
     pub item_history: TableCounts,
     /// `activity_log` counters (plain window, no compaction tiers).
     pub activity_log: TableCounts,
+    /// `team_page_history` counters (the tiers of `item_history`,
+    /// KAIROS-T-0638).
+    pub team_page_history: TableCounts,
     /// Archive files written by this sweep (empty unless `archive` mode
     /// pruned something).
     pub archive_files: Vec<PathBuf>,
@@ -175,6 +196,8 @@ pub struct SweepReport {
     pub history_pages: u64,
     /// The pages of rows of `activity_log` that the sweep read.
     pub activity_pages: u64,
+    /// The pages of team pages of `team_page_history` that the sweep read.
+    pub team_page_history_pages: u64,
 }
 
 impl SweepReport {
@@ -184,10 +207,12 @@ impl SweepReport {
             mode,
             item_history: TableCounts::default(),
             activity_log: TableCounts::default(),
+            team_page_history: TableCounts::default(),
             archive_files: Vec::new(),
             skipped: None,
             history_pages: 0,
             activity_pages: 0,
+            team_page_history_pages: 0,
         }
     }
 
@@ -199,16 +224,18 @@ impl SweepReport {
             .skipped
             .map(|skip| format!(" {}", skip.as_str()))
             .unwrap_or_default();
+        let counts = |name: &str, c: &TableCounts| {
+            format!(
+                "{name}:{{archived:{},pruned:{},warnings:{}}}",
+                c.rows_archived, c.rows_pruned, c.warnings
+            )
+        };
         format!(
-            "mode:{}{skipped} item_history:{{archived:{},pruned:{},warnings:{}}} \
-             activity_log:{{archived:{},pruned:{},warnings:{}}}",
+            "mode:{}{skipped} {} {} {}",
             self.mode,
-            self.item_history.rows_archived,
-            self.item_history.rows_pruned,
-            self.item_history.warnings,
-            self.activity_log.rows_archived,
-            self.activity_log.rows_pruned,
-            self.activity_log.warnings,
+            counts("item_history", &self.item_history),
+            counts("activity_log", &self.activity_log),
+            counts("team_page_history", &self.team_page_history),
         )
     }
 }
@@ -216,6 +243,34 @@ impl SweepReport {
 // ---------------------------------------------------------------------------
 // NDJSON archive rows (full column fidelity)
 // ---------------------------------------------------------------------------
+
+/// One whole row of `item_history` or `team_page_history`: the two tables
+/// have the same columns, and `owner` is `item_id` or `page_id`.
+#[derive(QueryableByName)]
+struct HistoryFullRow {
+    #[diesel(sql_type = SqlUuid)]
+    id: Uuid,
+    #[diesel(sql_type = SqlUuid)]
+    owner: Uuid,
+    #[diesel(sql_type = Integer)]
+    version: i32,
+    #[diesel(sql_type = Text)]
+    title: String,
+    #[diesel(sql_type = Text)]
+    content: String,
+    #[diesel(sql_type = SqlUuid)]
+    edited_by: Uuid,
+    #[diesel(sql_type = Timestamptz)]
+    edited_at: DateTime<Utc>,
+    #[diesel(sql_type = Nullable<SqlUuid>)]
+    agent_key_id: Option<Uuid>,
+    /// `item_history` only (KAIROS-T-0651); NULL for `team_page_history`.
+    #[diesel(sql_type = Nullable<Integer>)]
+    base_version: Option<i32>,
+    /// `item_history` only (KAIROS-T-0651); NULL for `team_page_history`.
+    #[diesel(sql_type = Nullable<Text>)]
+    content_diff: Option<String>,
+}
 
 /// Full-fidelity `item_history` archive row (every DDL column). `content`
 /// is always the full text of the version, also for a diff row
@@ -235,19 +290,77 @@ struct HistoryArchiveRow<'a> {
     content_diff: Option<&'a str>,
 }
 
-impl<'a> From<&'a ItemHistory> for HistoryArchiveRow<'a> {
-    fn from(row: &'a ItemHistory) -> Self {
-        HistoryArchiveRow {
-            id: row.id,
-            item_id: row.item_id,
-            version: row.version,
-            title: &row.title,
-            content: &row.content,
-            edited_by: row.edited_by,
-            edited_at: row.edited_at,
-            agent_key_id: row.agent_key_id,
-            base_version: row.base_version,
-            content_diff: row.content_diff.as_deref(),
+/// Full-fidelity `team_page_history` archive row (every DDL column).
+#[derive(Serialize)]
+struct PageHistoryArchiveRow<'a> {
+    id: Uuid,
+    page_id: Uuid,
+    version: i32,
+    title: &'a str,
+    content: &'a str,
+    edited_by: Uuid,
+    edited_at: DateTime<Utc>,
+    agent_key_id: Option<Uuid>,
+}
+
+/// A history table that the compaction tiers of KAIROS-A-0004 thin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HistoryTable {
+    /// `item_history`, by `item_id`.
+    Item,
+    /// `team_page_history`, by `page_id` (KAIROS-T-0638).
+    TeamPage,
+}
+
+impl HistoryTable {
+    fn table(self) -> &'static str {
+        match self {
+            HistoryTable::Item => "item_history",
+            HistoryTable::TeamPage => "team_page_history",
+        }
+    }
+
+    fn owner(self) -> &'static str {
+        match self {
+            HistoryTable::Item => "item_id",
+            HistoryTable::TeamPage => "page_id",
+        }
+    }
+
+    /// The SQL of the diff columns `base_version, content_diff`
+    /// (KAIROS-T-0651). `team_page_history` has full rows only.
+    fn diff_columns(self) -> &'static str {
+        match self {
+            HistoryTable::Item => "base_version, content_diff",
+            HistoryTable::TeamPage => "NULL::integer AS base_version, NULL::text AS content_diff",
+        }
+    }
+
+    /// The NDJSON line of a whole row, with the column names of the table.
+    fn archive_line(self, row: &HistoryFullRow) -> Result<String, serde_json::Error> {
+        match self {
+            HistoryTable::Item => serde_json::to_string(&HistoryArchiveRow {
+                id: row.id,
+                item_id: row.owner,
+                version: row.version,
+                title: &row.title,
+                content: &row.content,
+                edited_by: row.edited_by,
+                edited_at: row.edited_at,
+                agent_key_id: row.agent_key_id,
+                base_version: row.base_version,
+                content_diff: row.content_diff.as_deref(),
+            }),
+            HistoryTable::TeamPage => serde_json::to_string(&PageHistoryArchiveRow {
+                id: row.id,
+                page_id: row.owner,
+                version: row.version,
+                title: &row.title,
+                content: &row.content,
+                edited_by: row.edited_by,
+                edited_at: row.edited_at,
+                agent_key_id: row.agent_key_id,
+            }),
         }
     }
 }
@@ -490,72 +603,85 @@ pub fn sweep_tenant_with(
     Ok(report)
 }
 
-/// The `item_history` columns that the planner needs: `(id, item_id,
-/// version, edited_at, base_version)`. Never the title or the content.
-type HistoryMetaRow = (Uuid, Uuid, i32, DateTime<Utc>, Option<i32>);
+#[derive(QueryableByName)]
+struct OwnerRow {
+    #[diesel(sql_type = SqlUuid)]
+    owner: Uuid,
+}
 
-/// Plan `item_history` page by page (KAIROS-T-0631): a page is the
-/// metadata of every row of up to `items_per_page` items, in `item_id`
-/// order, so the planner sees whole items. The content is read only for
-/// the rows that `archive` writes, `batch` rows at a time. The ids to
-/// delete, in `(item_id, version)` order.
+/// The history columns that the planner needs: `(id, owner, version,
+/// edited_at, base_version)`. Never the title or the content.
+#[derive(QueryableByName)]
+struct HistoryMetaRow {
+    #[diesel(sql_type = SqlUuid)]
+    id: Uuid,
+    #[diesel(sql_type = SqlUuid)]
+    owner: Uuid,
+    #[diesel(sql_type = Integer)]
+    version: i32,
+    #[diesel(sql_type = Timestamptz)]
+    edited_at: DateTime<Utc>,
+    #[diesel(sql_type = Nullable<Integer>)]
+    base_version: Option<i32>,
+}
+
+/// Plan a history table page by page (KAIROS-T-0631): a page is the
+/// metadata of every row of up to `items_per_page` owners (items, or team
+/// pages), in owner order, so the planner sees whole owners. The content
+/// is read only for the rows that `archive` writes, `batch` rows at a
+/// time. `pages` counts the pages. The ids to delete, in `(owner,
+/// version)` order.
+#[allow(clippy::too_many_arguments)]
 fn plan_history_pages(
     conn: &mut PgConnection,
+    table: HistoryTable,
     slug: &str,
     config: &RetentionConfig,
     now: DateTime<Utc>,
     paging: SweepPaging,
     mut archive: Option<&mut LazyArchive>,
-    report: &mut SweepReport,
+    pages: &mut u64,
 ) -> Result<Vec<Uuid>, RetentionError> {
-    use crate::schema::item_history;
-
+    let (name, owner) = (table.table(), table.owner());
     let mut delete_ids = Vec::new();
     let mut after: Option<Uuid> = None;
     loop {
-        let mut page = item_history::table
-            .select(item_history::item_id)
-            .distinct()
-            .order(item_history::item_id.asc())
-            .limit(paging.items_per_page)
-            .into_boxed();
-        if let Some(last) = after {
-            page = page.filter(item_history::item_id.gt(last));
-        }
-        let items: Vec<Uuid> = page.load(conn)?;
-        let Some(last) = items.last().copied() else {
+        let owners: Vec<Uuid> = sql_query(format!(
+            "SELECT DISTINCT {owner} AS owner FROM {name} \
+             WHERE ($1::uuid IS NULL OR {owner} > $1) ORDER BY owner LIMIT $2"
+        ))
+        .bind::<Nullable<SqlUuid>, _>(after)
+        .bind::<BigInt, _>(paging.items_per_page)
+        .load::<OwnerRow>(conn)?
+        .into_iter()
+        .map(|r| r.owner)
+        .collect();
+        let Some(last) = owners.last().copied() else {
             break;
         };
-        report.history_pages += 1;
+        *pages += 1;
 
-        let rows: Vec<HistoryMetaRow> = item_history::table
-            .filter(item_history::item_id.eq_any(&items))
-            .select((
-                item_history::id,
-                item_history::item_id,
-                item_history::version,
-                item_history::edited_at,
-                item_history::base_version,
-            ))
-            .load(conn)?;
-        let ids: HashMap<(Uuid, i32), Uuid> = rows
-            .iter()
-            .map(|(id, item, version, ..)| ((*item, *version), *id))
-            .collect();
-        // KAIROS-T-0651: the planner keeps the base full row of each diff
-        // row that it keeps.
+        let diff_columns = table.diff_columns();
+        let rows: Vec<HistoryMetaRow> = sql_query(format!(
+            "SELECT id, {owner} AS owner, version, edited_at, {diff_columns} FROM {name} \
+             WHERE {owner} = ANY($1)"
+        ))
+        .bind::<Array<SqlUuid>, _>(&owners)
+        .load(conn)?;
+        let ids: HashMap<(Uuid, i32), Uuid> =
+            rows.iter().map(|r| ((r.owner, r.version), r.id)).collect();
         let meta: Vec<HistoryRowMeta> = rows
             .iter()
-            .map(
-                |(_, item_id, version, edited_at, base_version)| HistoryRowMeta {
-                    item_id: *item_id,
-                    version: *version,
-                    edited_at: *edited_at,
-                    base_version: *base_version,
-                },
-            )
+            .map(|r| HistoryRowMeta {
+                item_id: r.owner,
+                version: r.version,
+                edited_at: r.edited_at,
+                // KAIROS-T-0651: the planner keeps the base full row of each
+                // diff row that it keeps.
+                base_version: r.base_version,
+            })
             .collect();
-        // The plan is sorted by (item_id, version), so the ids are too.
+        // The plan is sorted by (owner, version), so the ids are too.
         let page_ids: Vec<Uuid> = plan_history_compaction(&meta, now, config)
             .into_iter()
             .filter_map(|k| ids.get(&(k.item_id, k.version)).copied())
@@ -563,31 +689,51 @@ fn plan_history_pages(
 
         if let Some(archive) = archive.as_deref_mut() {
             for chunk in page_ids.chunks(paging.batch) {
-                let full: Vec<ItemHistory> = item_history::table
-                    .filter(item_history::id.eq_any(chunk))
-                    .order((item_history::item_id.asc(), item_history::version.asc()))
-                    .select(ItemHistory::as_select())
-                    .load(conn)?;
+                let mut full: Vec<HistoryFullRow> = sql_query(format!(
+                    "SELECT id, {owner} AS owner, version, title, content, edited_by, \
+                         edited_at, agent_key_id, {diff_columns} \
+                     FROM {name} WHERE id = ANY($1) ORDER BY {owner}, version"
+                ))
+                .bind::<Array<SqlUuid>, _>(chunk)
+                .load(conn)?;
                 // KAIROS-T-0651: the archive has the full text of each row.
                 // The base rows are still in the table: no delete ran yet.
-                let full = crate::history::with_full_content(conn, full)?;
+                let wanted: HashSet<(Uuid, i32)> = full
+                    .iter()
+                    .filter_map(|row| row.base_version.map(|base| (row.owner, base)))
+                    .collect();
+                let bases = crate::history::base_texts(conn, &wanted)?;
+                for row in &mut full {
+                    if let (Some(base_version), Some(diff)) =
+                        (row.base_version, row.content_diff.as_deref())
+                    {
+                        row.content = crate::history::full_text(
+                            &bases,
+                            row.owner,
+                            row.version,
+                            base_version,
+                            diff,
+                        )?;
+                    }
+                }
                 for row in &full {
-                    archive.write_line(&serde_json::to_string(&HistoryArchiveRow::from(row))?)?;
+                    archive.write_line(&table.archive_line(row)?)?;
                 }
             }
         }
         delete_ids.extend(page_ids);
 
-        if (items.len() as i64) < paging.items_per_page {
+        if (owners.len() as i64) < paging.items_per_page {
             break;
         }
         after = Some(last);
     }
     tracing::debug!(
         tenant = slug,
-        pages = report.history_pages,
+        table = name,
+        pages = *pages,
         candidates = delete_ids.len(),
-        "retention: item_history planned"
+        "retention: history planned"
     );
     Ok(delete_ids)
 }
@@ -678,7 +824,7 @@ fn sweep_current_schema(
     now: DateTime<Utc>,
     paging: SweepPaging,
 ) -> Result<SweepReport, RetentionError> {
-    use crate::schema::{activity_log, item_history};
+    use crate::schema::activity_log;
 
     let mut report = SweepReport::new(slug, config.mode);
 
@@ -691,14 +837,15 @@ fn sweep_current_schema(
             // KAIROS-T-0631: the sweep reads no row, and says so.
             tracing::warn!(
                 tenant = slug,
-                "retention: archive mode with no {} configured; item_history and \
-                 activity_log are not swept, nothing pruned ({})",
+                "retention: archive mode with no {} configured; item_history, \
+                 team_page_history and activity_log are not swept, nothing pruned ({})",
                 kairos_core::retention::ENV_ARCHIVE_TARGET,
                 kairos_core::retention::SKIPPED_NO_TARGET,
             );
             report.skipped = Some(SweepSkip::NoTarget);
             report.item_history.warnings = 1;
             report.activity_log.warnings = 1;
+            report.team_page_history.warnings = 1;
             insert_audit_row(conn, &report, now)?;
             return Ok(report);
         }
@@ -713,12 +860,27 @@ fn sweep_current_schema(
         target.map(|base| LazyArchive::new(archive_path(base, slug, "item_history", now)));
     let history_delete_ids = plan_history_pages(
         conn,
+        HistoryTable::Item,
         slug,
         config,
         now,
         paging,
         history_archive.as_mut(),
-        &mut report,
+        &mut report.history_pages,
+    )?;
+
+    // team_page_history: the tiers of item_history (KAIROS-T-0638).
+    let mut page_archive =
+        target.map(|base| LazyArchive::new(archive_path(base, slug, "team_page_history", now)));
+    let page_delete_ids = plan_history_pages(
+        conn,
+        HistoryTable::TeamPage,
+        slug,
+        config,
+        now,
+        paging,
+        page_archive.as_mut(),
+        &mut report.team_page_history_pages,
     )?;
 
     // activity_log: plain retention window, no compaction tiers (A-0004 §4).
@@ -737,6 +899,7 @@ fn sweep_current_schema(
     for (archive, counts) in [
         (history_archive, &mut report.item_history),
         (activity_archive, &mut report.activity_log),
+        (page_archive, &mut report.team_page_history),
     ] {
         if let Some((path, lines)) = archive.map(LazyArchive::finish).transpose()?.flatten() {
             counts.rows_archived = lines;
@@ -748,10 +911,24 @@ fn sweep_current_schema(
     // durable; a failed transaction leaves at worst an orphan archive copy,
     // never a deleted-but-unarchived row). The deletes go in batches.
     conn.transaction::<_, DieselError, _>(|conn| {
-        for chunk in history_delete_ids.chunks(paging.batch) {
-            let n = diesel::delete(item_history::table.filter(item_history::id.eq_any(chunk)))
-                .execute(conn)?;
-            report.item_history.rows_pruned += n as u64;
+        for (table, ids, counts) in [
+            (
+                HistoryTable::Item,
+                &history_delete_ids,
+                &mut report.item_history,
+            ),
+            (
+                HistoryTable::TeamPage,
+                &page_delete_ids,
+                &mut report.team_page_history,
+            ),
+        ] {
+            for chunk in ids.chunks(paging.batch) {
+                let n = sql_query(format!("DELETE FROM {} WHERE id = ANY($1)", table.table()))
+                    .bind::<Array<SqlUuid>, _>(chunk)
+                    .execute(conn)?;
+                counts.rows_pruned += n as u64;
+            }
         }
         for chunk in activity_delete_ids.chunks(paging.batch) {
             let n = diesel::delete(activity_log::table.filter(activity_log::id.eq_any(chunk)))
@@ -788,61 +965,205 @@ pub fn sweep_all_tenants(
     Ok(reports)
 }
 
+/// Run `f` in each tenant schema, with `search_path` pinned to it and
+/// restored after, and sum the counts.
+fn in_each_tenant(
+    conn: &mut PgConnection,
+    mut f: impl FnMut(&mut PgConnection) -> Result<u64, RetentionError>,
+) -> Result<u64, RetentionError> {
+    let mut total = 0u64;
+    for tenant_info in tenant::list_tenants(conn)? {
+        if !tenant_info.schema_exists {
+            continue;
+        }
+        let schema = tenant::tenant_schema_name(&tenant_info.slug);
+        sql_query(format!("SET search_path TO \"{schema}\"")).execute(conn)?;
+        let result = f(conn);
+        let reset = sql_query("SET search_path TO DEFAULT").execute(conn);
+        total += result?;
+        reset?;
+    }
+    Ok(total)
+}
+
+/// Call `delete_page` with the page size `batch` until a page deletes
+/// fewer rows (KAIROS-T-0638): no delete names more than one page of rows.
+/// The sum.
+fn delete_in_pages(
+    conn: &mut PgConnection,
+    batch: usize,
+    mut delete_page: impl FnMut(&mut PgConnection, i64) -> Result<usize, DieselError>,
+) -> Result<u64, DieselError> {
+    let mut total = 0u64;
+    loop {
+        let n = delete_page(conn, batch as i64)?;
+        total += n as u64;
+        if n < batch {
+            return Ok(total);
+        }
+    }
+}
+
 /// Delete, in each tenant, the notifications that were read more than
 /// `notifications_read_days` days before `now` (KAIROS-T-0381). In each
 /// mode, also `off`: a read notification is not archived. 0 days deletes
-/// nothing. Returns the count.
+/// nothing. Returns the count. The default page size.
 pub fn delete_read_notifications(
     conn: &mut PgConnection,
     config: &RetentionConfig,
     now: DateTime<Utc>,
 ) -> Result<u64, RetentionError> {
+    delete_read_notifications_with(conn, config, now, SweepPaging::default())
+}
+
+fn delete_read_notifications_with(
+    conn: &mut PgConnection,
+    config: &RetentionConfig,
+    now: DateTime<Utc>,
+    paging: SweepPaging,
+) -> Result<u64, RetentionError> {
     if config.notifications_read_days == 0 {
         return Ok(0);
     }
     let cutoff = now - Duration::days(i64::from(config.notifications_read_days));
-    let mut deleted = 0u64;
-    for tenant_info in tenant::list_tenants(conn)? {
-        if !tenant_info.schema_exists {
-            continue;
-        }
-        let schema = tenant::tenant_schema_name(&tenant_info.slug);
-        sql_query(format!("SET search_path TO \"{schema}\"")).execute(conn)?;
-        let result = crate::notifications::delete_read_before(conn, cutoff);
-        let reset = sql_query("SET search_path TO DEFAULT").execute(conn);
-        deleted += result? as u64;
-        reset?;
+    in_each_tenant(conn, |conn| {
+        Ok(delete_in_pages(conn, paging.batch, |conn, limit| {
+            crate::notifications::delete_read_before(conn, cutoff, limit)
+        })?)
+    })
+}
+
+/// Delete, in each tenant, the notifications that nobody read and that
+/// were made more than `notifications_unread_days` days before `now`
+/// (KAIROS-T-0638). In each mode, also `off`; not archived. 0 days deletes
+/// nothing. Returns the count.
+fn delete_unread_notifications(
+    conn: &mut PgConnection,
+    config: &RetentionConfig,
+    now: DateTime<Utc>,
+    paging: SweepPaging,
+) -> Result<u64, RetentionError> {
+    if config.notifications_unread_days == 0 {
+        return Ok(0);
     }
-    Ok(deleted)
+    let cutoff = now - Duration::days(i64::from(config.notifications_unread_days));
+    in_each_tenant(conn, |conn| {
+        Ok(delete_in_pages(conn, paging.batch, |conn, limit| {
+            crate::notifications::delete_unread_before(conn, cutoff, limit)
+        })?)
+    })
 }
 
 /// Delete, in each tenant, the summaries of the code-index pools that no
-/// stored index has used and that a build made more than
-/// `code_index_pool_days` days before `now` (KAIROS-T-0378). In each mode,
-/// also `off`: such a summary is a cache that a build can make again. 0
-/// days deletes nothing. Returns the count.
+/// stored index uses (KAIROS-T-0378, KAIROS-T-0638): a summary that no
+/// index used and that a build made more than `code_index_pool_days` days
+/// before `now`, and a summary whose last use is older than that and older
+/// than every stored index of its repository. In each mode, also `off`:
+/// such a summary is a cache that a build can make again. 0 days deletes
+/// nothing. Returns the count. The default page size.
 pub fn delete_unused_summaries(
     conn: &mut PgConnection,
     config: &RetentionConfig,
     now: DateTime<Utc>,
 ) -> Result<u64, RetentionError> {
+    delete_unused_summaries_with(conn, config, now, SweepPaging::default())
+}
+
+fn delete_unused_summaries_with(
+    conn: &mut PgConnection,
+    config: &RetentionConfig,
+    now: DateTime<Utc>,
+    paging: SweepPaging,
+) -> Result<u64, RetentionError> {
     if config.code_index_pool_days == 0 {
         return Ok(0);
     }
     let cutoff = now - Duration::days(i64::from(config.code_index_pool_days));
-    let mut deleted = 0u64;
-    for tenant_info in tenant::list_tenants(conn)? {
-        if !tenant_info.schema_exists {
-            continue;
+    in_each_tenant(conn, |conn| {
+        let mut deleted = delete_in_pages(conn, paging.batch, |conn, limit| {
+            crate::code_indexes::delete_unused(conn, cutoff, limit)
+        })?;
+        let mut after = None;
+        loop {
+            let repositories =
+                crate::code_indexes::repositories_page(conn, false, after, paging.items_per_page)?;
+            for repository in &repositories {
+                deleted += delete_in_pages(conn, paging.batch, |conn, limit| {
+                    crate::code_indexes::delete_used_by_no_stored_index(
+                        conn,
+                        *repository,
+                        cutoff,
+                        limit,
+                    )
+                })?;
+            }
+            if (repositories.len() as i64) < paging.items_per_page {
+                return Ok(deleted);
+            }
+            after = repositories.last().copied();
         }
-        let schema = tenant::tenant_schema_name(&tenant_info.slug);
-        sql_query(format!("SET search_path TO \"{schema}\"")).execute(conn)?;
-        let result = crate::code_indexes::delete_unused(conn, cutoff);
-        let reset = sql_query("SET search_path TO DEFAULT").execute(conn);
-        deleted += result? as u64;
-        reset?;
+    })
+}
+
+/// Delete, in each tenant, the code indexes past the newest
+/// `code_index_keep` of their repository and ref (KAIROS-T-0638). A page is
+/// the indexes of up to `items_per_page` repositories, read with no
+/// structure; each delete names at most `batch` commits. In each mode,
+/// also `off`: a build or an upload makes an index again. 0 keeps every
+/// index. Returns the count.
+fn delete_old_code_indexes(
+    conn: &mut PgConnection,
+    config: &RetentionConfig,
+    paging: SweepPaging,
+) -> Result<u64, RetentionError> {
+    if config.code_index_keep == 0 {
+        return Ok(0);
     }
-    Ok(deleted)
+    in_each_tenant(conn, |conn| {
+        let mut deleted = 0u64;
+        let mut after = None;
+        loop {
+            let repositories =
+                crate::code_indexes::repositories_page(conn, true, after, paging.items_per_page)?;
+            let meta = crate::code_indexes::index_meta(conn, &repositories)?;
+            let mut by_repository: HashMap<Uuid, Vec<String>> = HashMap::new();
+            for key in plan_code_index_retention(&meta, config.code_index_keep) {
+                by_repository
+                    .entry(key.repository_id)
+                    .or_default()
+                    .push(key.commit_sha);
+            }
+            for (repository, commits) in &by_repository {
+                for chunk in commits.chunks(paging.batch) {
+                    deleted +=
+                        crate::code_indexes::delete_indexes(conn, *repository, chunk)? as u64;
+                }
+            }
+            if (repositories.len() as i64) < paging.items_per_page {
+                return Ok(deleted);
+            }
+            after = repositories.last().copied();
+        }
+    })
+}
+
+/// Delete, in each tenant, the webhook deliveries that finished more than
+/// [`crate::webhooks::KEEP_DAYS`] days before `now` (KAIROS-T-0638), of
+/// each target: the delivery of a target removes only the old rows of
+/// that target, so a quiet target kept its log. In each mode, also `off`;
+/// not archived. A `skipped` delivery stays as long as the others, so it
+/// can be sent again in that time. Returns the count.
+fn delete_old_webhook_deliveries(
+    conn: &mut PgConnection,
+    now: DateTime<Utc>,
+    paging: SweepPaging,
+) -> Result<u64, RetentionError> {
+    let cutoff = now - Duration::days(crate::webhooks::KEEP_DAYS);
+    in_each_tenant(conn, |conn| {
+        Ok(delete_in_pages(conn, paging.batch, |conn, limit| {
+            crate::webhooks::delete_finished_before(conn, cutoff, limit)
+        })?)
+    })
 }
 
 /// What one [`run_retention_pass`] did (KAIROS-T-0366).
@@ -861,9 +1182,18 @@ pub struct RetentionPass {
     /// The read notifications that the pass deleted in all the tenants
     /// (KAIROS-T-0381).
     pub read_notifications_deleted: u64,
+    /// The unread notifications past their window that the pass deleted in
+    /// all the tenants (KAIROS-T-0638).
+    pub unread_notifications_deleted: u64,
+    /// The code indexes past the newest of their repository and ref that
+    /// the pass deleted in all the tenants (KAIROS-T-0638).
+    pub code_indexes_deleted: u64,
     /// The summaries of the code-index pools that no stored index used,
     /// which the pass deleted in all the tenants (KAIROS-T-0378).
     pub unused_summaries_deleted: u64,
+    /// The finished webhook deliveries past their window that the pass
+    /// deleted in all the tenants (KAIROS-T-0638).
+    pub webhook_deliveries_deleted: u64,
 }
 
 impl RetentionPass {
@@ -880,12 +1210,14 @@ impl RetentionPass {
         let sum = |f: fn(&SweepReport) -> u64| self.tenants.iter().map(f).sum::<u64>();
         format!(
             "swept {} tenants: item_history archived {} pruned {}, activity_log archived {} \
-             pruned {}",
+             pruned {}, team_page_history archived {} pruned {}",
             self.tenants.len(),
             sum(|t| t.item_history.rows_archived),
             sum(|t| t.item_history.rows_pruned),
             sum(|t| t.activity_log.rows_archived),
             sum(|t| t.activity_log.rows_pruned),
+            sum(|t| t.team_page_history.rows_archived),
+            sum(|t| t.team_page_history.rows_pruned),
         )
     }
 }
@@ -896,19 +1228,33 @@ impl RetentionPass {
 /// mode, also `off`: an expired session cannot authenticate, so the row has
 /// no use. So does the delete of the rows of the login throttle whose
 /// window and lockout ended (KAIROS-T-0377), of the read notifications
-/// (KAIROS-T-0381) and of the unused summaries of the code-index pools
-/// (KAIROS-T-0378). `progress` is called before each tenant and after
-/// each delete.
+/// (KAIROS-T-0381), of the unread notifications, the old code indexes and
+/// the old webhook deliveries (KAIROS-T-0638), and of the unused summaries
+/// of the code-index pools (KAIROS-T-0378). `progress` is called before
+/// each tenant and after each delete of a tenant table.
 ///
 /// The pass is a periodic job of the job queue of the server
 /// (KAIROS-T-0376): the queue gives each run to one server, so the pass
-/// takes no lock of its own.
+/// takes no lock of its own. The default [`SweepPaging`]; see
+/// [`run_retention_pass_with`].
 pub fn run_retention_pass(
     conn: &mut PgConnection,
     config: &RetentionConfig,
     now: DateTime<Utc>,
     progress: &mut dyn FnMut(),
 ) -> Result<RetentionPass, RetentionError> {
+    run_retention_pass_with(conn, config, now, SweepPaging::default(), progress)
+}
+
+/// [`run_retention_pass`] with the page and batch sizes `paging`.
+pub fn run_retention_pass_with(
+    conn: &mut PgConnection,
+    config: &RetentionConfig,
+    now: DateTime<Utc>,
+    paging: SweepPaging,
+    progress: &mut dyn FnMut(),
+) -> Result<RetentionPass, RetentionError> {
+    let paging = paging.checked();
     let mut tenants = Vec::new();
     if config.mode != RetentionMode::Off {
         for tenant_info in tenant::list_tenants(conn)? {
@@ -916,21 +1262,38 @@ pub fn run_retention_pass(
             if !tenant_info.schema_exists {
                 return Err(RetentionError::TenantNotFound(tenant_info.slug));
             }
-            tenants.push(sweep_tenant(conn, &tenant_info.slug, config, now)?);
+            tenants.push(sweep_tenant_with(
+                conn,
+                &tenant_info.slug,
+                config,
+                now,
+                paging,
+            )?);
         }
     }
     let expired = crate::local_auth::delete_expired_sessions(conn, now)?;
     let throttle = crate::auth_failures::delete_expired(conn, now)?;
-    let notifications = delete_read_notifications(conn, config, now)?;
+    let read = delete_read_notifications_with(conn, config, now, paging)?;
     progress();
-    let summaries = delete_unused_summaries(conn, config, now)?;
+    let unread = delete_unread_notifications(conn, config, now, paging)?;
+    progress();
+    // The indexes first, so the summaries that only they used go in the
+    // same pass.
+    let indexes = delete_old_code_indexes(conn, config, paging)?;
+    progress();
+    let summaries = delete_unused_summaries_with(conn, config, now, paging)?;
+    progress();
+    let deliveries = delete_old_webhook_deliveries(conn, now, paging)?;
     progress();
     Ok(RetentionPass {
         mode: config.mode,
         tenants,
         expired_sessions_deleted: expired as u64,
         expired_auth_failures_deleted: throttle as u64,
-        read_notifications_deleted: notifications,
+        read_notifications_deleted: read,
+        unread_notifications_deleted: unread,
+        code_indexes_deleted: indexes,
         unused_summaries_deleted: summaries,
+        webhook_deliveries_deleted: deliveries,
     })
 }

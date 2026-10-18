@@ -1197,14 +1197,38 @@ pub fn set_settings(
     })
 }
 
-/// Delete the notifications that were read before `cutoff` (the retention
-/// pass). Returns the count.
+/// Delete at most `limit` notifications that were read before `cutoff`
+/// (the retention pass, which calls it until a page deletes fewer than
+/// `limit`, KAIROS-T-0638). Returns the count.
 pub fn delete_read_before(
     conn: &mut PgConnection,
     cutoff: DateTime<Utc>,
+    limit: i64,
 ) -> Result<usize, DieselError> {
-    use crate::schema::notifications::dsl;
-    diesel::delete(dsl::notifications.filter(dsl::read_at.lt(cutoff))).execute(conn)
+    sql_query(
+        "DELETE FROM notifications WHERE id IN ( \
+             SELECT id FROM notifications WHERE read_at < $1 LIMIT $2)",
+    )
+    .bind::<Timestamptz, _>(cutoff)
+    .bind::<BigInt, _>(limit)
+    .execute(conn)
+}
+
+/// Delete at most `limit` notifications that nobody read and that were
+/// made before `cutoff` (the retention pass, KAIROS-T-0638). Returns the
+/// count.
+pub fn delete_unread_before(
+    conn: &mut PgConnection,
+    cutoff: DateTime<Utc>,
+    limit: i64,
+) -> Result<usize, DieselError> {
+    sql_query(
+        "DELETE FROM notifications WHERE id IN ( \
+             SELECT id FROM notifications WHERE read_at IS NULL AND created_at < $1 LIMIT $2)",
+    )
+    .bind::<Timestamptz, _>(cutoff)
+    .bind::<BigInt, _>(limit)
+    .execute(conn)
 }
 
 /// Delete the notifications about an item (a purge of the item).

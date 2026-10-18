@@ -80,9 +80,10 @@ and the number of each try. The status of a delivery is one of these values:
 | `pending` | Kairos sends the delivery, or waits for the next try. |
 | `delivered` | The target answered with a `2xx` code. |
 | `failed` | The delivery used its tries, or Kairos turned off the target. |
-| `skipped` | The target was off when the event occurred. Kairos sent nothing. |
+| `skipped` | The target was off when the event occurred. Kairos sent nothing. Kairos sends it when the target is on again. |
 
-Kairos keeps a finished delivery for 30 days.
+Kairos keeps a finished delivery for 30 days. This includes a `skipped`
+delivery.
 
 ## A target that fails
 
@@ -91,6 +92,44 @@ sets the count to 0. At the limit (`KAIROS_WEBHOOK_DISABLE_AFTER`), Kairos
 turns off the target. Then the person who made the target and the managers
 of its board get a notification of the kind `delivery_failing`. A board
 manager turns on the target again.
+
+## Skipped deliveries go again
+
+When a board manager turns on a target, Kairos queues its `skipped`
+deliveries again (KAIROS-T-0577). Kairos queues them in the order of their
+events, oldest first. A delivery keeps its id, so `X-Kairos-Delivery` does
+not change. Kairos does not send a delivery that is older than 30 days. A
+`failed` delivery does not go again.
+
+The answer of the request that turns on the target has the field
+`redelivered`. It is the number of the deliveries that Kairos queued again.
+
+To send the `skipped` deliveries on request, use this request:
+
+```http
+POST /api/boards/{id}/webhook-targets/{target_id}/redeliver?since=2026-10-17T09:00:00Z
+```
+
+| Parameter | Description |
+|---|---|
+| `since` | Optional. An RFC 3339 time. Kairos sends only the deliveries of the events at or after this time. |
+
+The request needs `configure_boards` on the board. It is the same capability
+as the request that turns on the target. When the target is off, Kairos
+refuses the request with the code `CONFLICT`. Then turn on the target.
+
+The CLI has the same action:
+
+```sh
+kairos boards dispatch redeliver <BOARD> <TARGET> [--since <TIME>]
+```
+
+In the GUI, open **Admin**, then **Boards**, and select the board. In the
+section **Agent dispatch**, select **Send skipped again** on the target.
+
+A worker can send 2 or more deliveries at the same time. Thus a receiver can
+get the deliveries in a different order. Use `created_at` of the body to put
+them in order.
 
 ## The addresses that Kairos refuses
 

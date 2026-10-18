@@ -117,7 +117,8 @@ pub struct ActivityLogEntry {
     pub id: Uuid,
     pub actor_id: Uuid,
     pub action: ActivityAction,
-    /// The item acted on (NULL for a relationship between two items). For
+    /// The item acted on. For a relationship between two items it is the
+    /// source of the edge (KAIROS-T-0638; NULL in rows from before it). For
     /// an `impacts` link it is the document or the ADR of the link
     /// (COLLIERY-T-0269).
     pub entity_id: Option<Uuid>,

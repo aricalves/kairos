@@ -32,6 +32,11 @@
 //! - `sweep_all_tenants` iterates every provisioned org (fleet pattern)
 //! - `run_retention_pass` (the periodic job of the server, KAIROS-T-0376)
 //!   removes the old rows and the expired sessions, and reports progress
+//! - `team_page_history` follows the rules of `item_history`, paged by
+//!   page (KAIROS-T-0638)
+//! - the pass removes old code indexes, unused summaries, old unread and
+//!   read notifications and old webhook deliveries in each mode, a page at
+//!   a time (KAIROS-T-0638)
 
 #[path = "common/scratch.rs"]
 mod scratch;
@@ -367,7 +372,8 @@ fn retention_sweeper_lifecycle() {
         sweep_details(&mut conn),
         vec![
             "mode:archive skipped: no target item_history:{archived:0,pruned:0,warnings:1} \
-             activity_log:{archived:0,pruned:0,warnings:1}"
+             activity_log:{archived:0,pruned:0,warnings:1} \
+             team_page_history:{archived:0,pruned:0,warnings:1}"
         ],
         "the paused sweep still writes its audit row, with the skip"
     );
@@ -490,7 +496,8 @@ fn retention_sweeper_lifecycle() {
     assert_eq!(
         sweep_details(&mut conn).last().unwrap(),
         "mode:archive item_history:{archived:5,pruned:5,warnings:0} \
-         activity_log:{archived:3,pruned:3,warnings:0}"
+         activity_log:{archived:3,pruned:3,warnings:0} \
+         team_page_history:{archived:0,pruned:0,warnings:0}"
     );
 
     // ---- idempotency: an immediate re-run prunes nothing --------------------
@@ -520,10 +527,12 @@ fn retention_sweeper_lifecycle() {
             mode: RetentionMode::Off,
             item_history: counts(0, 0, 0),
             activity_log: counts(0, 0, 0),
+            team_page_history: counts(0, 0, 0),
             archive_files: vec![],
             skipped: None,
             history_pages: 0,
             activity_pages: 0,
+            team_page_history_pages: 0,
         }
     );
     pin(&mut conn, "org_acme");
@@ -596,7 +605,8 @@ fn retention_sweeper_lifecycle() {
         sweep_details(&mut conn),
         vec![
             "mode:discard item_history:{archived:0,pruned:2,warnings:0} \
-             activity_log:{archived:0,pruned:0,warnings:0}"
+             activity_log:{archived:0,pruned:0,warnings:0} \
+             team_page_history:{archived:0,pruned:0,warnings:0}"
         ],
         "beta's audit row records the discard counts"
     );
@@ -716,8 +726,9 @@ fn retention_pass_removes_old_rows_and_expired_sessions() {
     let mut steps = 0;
     let pass = run_retention_pass(&mut conn, &config, now, &mut || steps += 1).expect("pass");
     assert_eq!(
-        steps, 3,
-        "one tenant, after the notifications, and after the pool summaries"
+        steps, 6,
+        "one tenant, then after the read and the unread notifications, the code \
+         indexes, the pool summaries and the webhook deliveries"
     );
     assert_eq!(pass.expired_sessions_deleted, 1);
     assert_eq!(pass.unused_summaries_deleted, 0);
@@ -726,7 +737,8 @@ fn retention_pass_removes_old_rows_and_expired_sessions() {
     assert_eq!(pass.tenants[0].activity_log.rows_pruned, 1);
     assert_eq!(
         pass.result(),
-        "swept 1 tenants: item_history archived 0 pruned 0, activity_log archived 0 pruned 1"
+        "swept 1 tenants: item_history archived 0 pruned 0, activity_log archived 0 pruned 1, \
+         team_page_history archived 0 pruned 0"
     );
     assert_eq!(session_hashes(&mut conn), vec!["live"]);
     assert_eq!(activity_actions(&mut conn), vec!["new_row"]);
@@ -956,6 +968,524 @@ fn the_sweep_pages_by_item_and_prunes_what_the_planner_gives() {
 
     drop(conn);
     std::fs::remove_dir_all(&archive_base).expect("removing archive dir");
+}
+
+/// A fresh scratch database with the tenant `acme`, pinned to it.
+fn fresh_acme(name: &'static scratch::ScratchName) -> (PgConnection, PgConnection) {
+    let admin_url = admin_database_url();
+    let mut admin_conn = PgConnection::establish(&admin_url).unwrap_or_else(|e| {
+        panic!("cannot connect to compose postgres at {admin_url}: {e} (`angreal services up`)")
+    });
+    sql_query(format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)"))
+        .execute(&mut admin_conn)
+        .expect("dropping scratch database");
+    sql_query(format!("CREATE DATABASE {name}"))
+        .execute(&mut admin_conn)
+        .expect("creating scratch database");
+    let url = with_database(&admin_url, name);
+    let mut conn = PgConnection::establish(&url).expect("connecting to scratch database");
+    run_public_migrations(&mut conn).expect("running public migrations");
+    provision_tenant(&mut conn, "acme", "Acme Inc").expect("provisioning acme");
+    pin(&mut conn, "org_acme");
+    (admin_conn, conn)
+}
+
+#[derive(diesel::QueryableByName)]
+struct IdRow {
+    #[diesel(sql_type = diesel::sql_types::Uuid)]
+    id: Uuid,
+}
+
+#[derive(diesel::QueryableByName)]
+struct CountRow {
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    n: i64,
+}
+
+fn count_where(conn: &mut PgConnection, sql: &str) -> i64 {
+    sql_query(sql)
+        .get_result::<CountRow>(conn)
+        .unwrap_or_else(|e| panic!("{sql}: {e}"))
+        .n
+}
+
+/// KAIROS-T-0638: `team_page_history` follows the rules of `item_history`.
+/// Five pages with many versions each and a page of two team pages: the
+/// sweep reads three pages, and prunes and archives exactly the rows that
+/// the planner gives for the whole table. The archive names `page_id`.
+/// The deletes go in batches of three ids.
+#[test]
+fn team_page_history_follows_the_item_history_rules() {
+    static PAGES_DB: scratch::ScratchName =
+        scratch::ScratchName::new("kairos_retention_team_pages_test");
+    let (mut admin_conn, mut conn) = fresh_acme(&PAGES_DB);
+    let _scratch_guard = scratch::ScratchGuard::new(&PAGES_DB);
+    let robin = insert_user(&mut conn, "dex|robin", "robin@acme.test", "Robin");
+    let team = sql_query(
+        "INSERT INTO teams (name, slug, team_type) VALUES ('Core', 'core-t0638', 'platform') \
+         RETURNING id",
+    )
+    .get_result::<IdRow>(&mut conn)
+    .expect("a team")
+    .id;
+
+    let now = at(2026, 7, 15, 12, 0, 0);
+    let mut pages = Vec::new();
+    for i in 0..5_i32 {
+        let page = sql_query(
+            "INSERT INTO team_pages (team_id, kind, slug, title, created_by, updated_by) \
+             VALUES ($1, 'page', $2, $3, $4, $4) RETURNING id",
+        )
+        .bind::<diesel::sql_types::Uuid, _>(team)
+        .bind::<diesel::sql_types::Text, _>(format!("page-{i}"))
+        .bind::<diesel::sql_types::Text, _>(format!("Page {i}"))
+        .bind::<diesel::sql_types::Uuid, _>(robin)
+        .get_result::<IdRow>(&mut conn)
+        .expect("a page")
+        .id;
+        pages.push(page);
+        for v in 1..=(20 + i) {
+            let edited_at = at(2025, 11, 1, 0, 0, 0) + Duration::hours(12 * i64::from(v));
+            sql_query(
+                "INSERT INTO team_page_history (page_id, version, title, content, edited_by, \
+                     edited_at) VALUES ($1, $2, $3, $4, $5, $6)",
+            )
+            .bind::<diesel::sql_types::Uuid, _>(page)
+            .bind::<diesel::sql_types::Integer, _>(v)
+            .bind::<diesel::sql_types::Text, _>(format!("Page {i}"))
+            .bind::<diesel::sql_types::Text, _>(format!("page {i} content v{v}"))
+            .bind::<diesel::sql_types::Uuid, _>(robin)
+            .bind::<diesel::sql_types::Timestamptz, _>(edited_at)
+            .execute(&mut conn)
+            .expect("seeding page history");
+        }
+    }
+    // The whole table, with the pages that the tenant came with.
+    #[derive(diesel::QueryableByName)]
+    struct MetaRow {
+        #[diesel(sql_type = diesel::sql_types::Uuid)]
+        page_id: Uuid,
+        #[diesel(sql_type = diesel::sql_types::Integer)]
+        version: i32,
+        #[diesel(sql_type = diesel::sql_types::Timestamptz)]
+        edited_at: DateTime<Utc>,
+    }
+    let meta: Vec<HistoryRowMeta> =
+        sql_query("SELECT page_id, version, edited_at FROM team_page_history")
+            .load::<MetaRow>(&mut conn)
+            .expect("loading page history")
+            .into_iter()
+            .map(|r| HistoryRowMeta {
+                item_id: r.page_id,
+                version: r.version,
+                edited_at: r.edited_at,
+                base_version: None,
+            })
+            .collect();
+    let total = meta.len() as i64;
+    assert!(total >= 110, "the fixture: {total}");
+
+    let archive_base =
+        PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("kairos_retention_team_pages");
+    if archive_base.exists() {
+        std::fs::remove_dir_all(&archive_base).expect("cleaning archive dir");
+    }
+
+    // archive with no target: the table is not read, nothing goes.
+    let report = sweep_tenant_with(
+        &mut conn,
+        "acme",
+        &RetentionConfig::default(),
+        now,
+        SweepPaging {
+            items_per_page: 2,
+            activity_per_page: 4,
+            batch: 3,
+        },
+    )
+    .expect("skipped sweep");
+    assert_eq!(report.skipped, Some(SweepSkip::NoTarget));
+    assert_eq!(report.team_page_history, counts(0, 0, 1));
+    assert_eq!(report.team_page_history_pages, 0);
+    pin(&mut conn, "org_acme");
+    assert_eq!(
+        count_where(&mut conn, "SELECT count(*) AS n FROM team_page_history"),
+        total
+    );
+
+    let config = RetentionConfig {
+        archive_target: Some(ArchiveTarget::Filesystem(archive_base.clone())),
+        ..RetentionConfig::default()
+    };
+    let mut expected: Vec<(Uuid, i32)> = plan_history_compaction(&meta, now, &config)
+        .into_iter()
+        .map(|k| (k.item_id, k.version))
+        .collect();
+    expected.sort();
+    assert!(expected.len() > 5, "candidates on every page");
+
+    let paging = SweepPaging {
+        items_per_page: 2,
+        activity_per_page: 4,
+        batch: 3,
+    };
+    let report = sweep_tenant_with(&mut conn, "acme", &config, now, paging).expect("sweep");
+    let owners = count_where(
+        &mut conn,
+        "SELECT count(DISTINCT page_id) AS n FROM org_acme.team_page_history",
+    );
+    assert_eq!(
+        report.team_page_history_pages as i64,
+        (owners + 1) / 2,
+        "the pages in pages of 2"
+    );
+    assert_eq!(
+        report.team_page_history,
+        counts(expected.len() as u64, expected.len() as u64, 0)
+    );
+    let file = report
+        .archive_files
+        .iter()
+        .find(|p| p.to_string_lossy().contains("team_page_history"))
+        .expect("team_page_history archive");
+    let archived: Vec<(Uuid, i32)> = read_ndjson(file)
+        .iter()
+        .map(|v| {
+            let page: Uuid = v["page_id"].as_str().unwrap().parse().unwrap();
+            let version = v["version"].as_i64().unwrap() as i32;
+            let i = pages.iter().position(|x| *x == page).unwrap();
+            assert_eq!(
+                v["content"].as_str().unwrap(),
+                format!("page {i} content v{version}")
+            );
+            assert!(v.get("item_id").is_none(), "{v}");
+            (page, version)
+        })
+        .collect();
+    assert_eq!(archived, expected);
+
+    pin(&mut conn, "org_acme");
+    assert_eq!(
+        count_where(&mut conn, "SELECT count(*) AS n FROM team_page_history"),
+        total - expected.len() as i64
+    );
+    for page in &pages {
+        let latest = count_where(
+            &mut conn,
+            &format!(
+                "SELECT count(*) AS n FROM team_page_history h WHERE page_id = '{page}' \
+                 AND version > (SELECT max(version) - 5 FROM team_page_history \
+                                WHERE page_id = '{page}')"
+            ),
+        );
+        assert_eq!(latest, 5, "the latest 5 versions of each page stay");
+    }
+    let details = sweep_details(&mut conn);
+    assert!(
+        details.last().unwrap().ends_with(&format!(
+            "team_page_history:{{archived:{n},pruned:{n},warnings:0}}",
+            n = expected.len()
+        )),
+        "{details:?}"
+    );
+
+    drop(conn);
+    sql_query(format!("DROP DATABASE IF EXISTS {PAGES_DB} WITH (FORCE)"))
+        .execute(&mut admin_conn)
+        .expect("dropping scratch database");
+}
+
+/// KAIROS-T-0638: the pass removes, in each mode (here `off`) and a page at
+/// a time, the old code indexes (the newest 5 of each repository and ref
+/// stay), the summaries that no stored index uses, the unread
+/// notifications older than 180 days, the read ones older than 30 days and
+/// the webhook deliveries that finished more than 30 days ago. Each
+/// fixture is larger than one page of 3. A second pass removes nothing.
+#[test]
+fn the_pass_removes_old_rows_of_the_other_tables_a_page_at_a_time() {
+    use diesel::sql_types::{Nullable, Text, Timestamptz, Uuid as SqlUuid};
+    use kairos_db::retention::run_retention_pass_with;
+
+    static OTHER_DB: scratch::ScratchName =
+        scratch::ScratchName::new("kairos_retention_other_tables_test");
+    let (mut admin_conn, mut conn) = fresh_acme(&OTHER_DB);
+    let _scratch_guard = scratch::ScratchGuard::new(&OTHER_DB);
+    let robin = insert_user(&mut conn, "dex|robin", "robin@acme.test", "Robin");
+    let now = at(2026, 10, 11, 12, 0, 0);
+
+    // ---- code indexes ------------------------------------------------------
+    // Repository one: ten indexes of main, one a day from 60 days ago, and
+    // one with no ref (40 days ago). Repository two: three of main.
+    let (one, two) = (Uuid::new_v4(), Uuid::new_v4());
+    let put_index =
+        |conn: &mut PgConnection, repo: Uuid, n: u32, ref_name: Option<&str>, at: DateTime<Utc>| {
+            sql_query(
+                "INSERT INTO code_indexes (repository_id, commit_sha, ref_name, source, structure, \
+                 structure_bytes, summary_keys, created_at, updated_at) \
+             VALUES ($1, $2, $3, 'build', '\\x01'::bytea, 1, 0, $4, $4)",
+            )
+            .bind::<SqlUuid, _>(repo)
+            .bind::<Text, _>(format!("{n:040x}"))
+            .bind::<Nullable<Text>, _>(ref_name)
+            .bind::<Timestamptz, _>(at)
+            .execute(conn)
+            .expect("an index");
+        };
+    for i in 0..10_u32 {
+        put_index(
+            &mut conn,
+            one,
+            i,
+            Some("main"),
+            now - Duration::days(60) + Duration::days(i64::from(i)),
+        );
+    }
+    put_index(&mut conn, one, 100, None, now - Duration::days(40));
+    for i in 0..3_u32 {
+        put_index(
+            &mut conn,
+            two,
+            200 + i,
+            Some("main"),
+            now - Duration::days(i64::from(i)),
+        );
+    }
+    // The pool of repository one. The kept indexes start 55 days ago.
+    let put_summary = |conn: &mut PgConnection,
+                       key: &str,
+                       created: DateTime<Utc>,
+                       used: Option<DateTime<Utc>>| {
+        sql_query(
+            "INSERT INTO code_index_summaries (repository_id, key, level, summary, model, \
+                 created_at, last_used_at) VALUES ($1, $2, 'symbol', 'S.', 'fake/fixed', $3, $4)",
+        )
+        .bind::<SqlUuid, _>(one)
+        .bind::<Text, _>(key)
+        .bind::<Timestamptz, _>(created)
+        .bind::<Nullable<Timestamptz>, _>(used)
+        .execute(conn)
+        .expect("a summary");
+    };
+    let long_ago = now - Duration::days(90);
+    for i in 0..7 {
+        // Used last by an index that the pass removes.
+        put_summary(
+            &mut conn,
+            &format!("gone-{i}"),
+            long_ago,
+            Some(now - Duration::days(58)),
+        );
+    }
+    put_summary(&mut conn, "kept", long_ago, Some(now - Duration::days(51)));
+    put_summary(
+        &mut conn,
+        "oldest-kept",
+        long_ago,
+        Some(now - Duration::days(55)),
+    );
+    put_summary(&mut conn, "never-used", long_ago, None);
+    put_summary(&mut conn, "new-unused", now - Duration::days(1), None);
+
+    // ---- notifications -----------------------------------------------------
+    let notify = |conn: &mut PgConnection, created: DateTime<Utc>, read: Option<DateTime<Utc>>| {
+        sql_query(
+            "INSERT INTO notifications (user_id, kind, text, created_at, read_at) \
+             VALUES ($1, 'mention', 'You were named.', $2, $3)",
+        )
+        .bind::<SqlUuid, _>(robin)
+        .bind::<Timestamptz, _>(created)
+        .bind::<Nullable<Timestamptz>, _>(read)
+        .execute(conn)
+        .expect("a notification");
+    };
+    for i in 0..7 {
+        notify(&mut conn, now - Duration::days(181 + i), None);
+        notify(
+            &mut conn,
+            now - Duration::days(200),
+            Some(now - Duration::days(31 + i)),
+        );
+    }
+    notify(&mut conn, now - Duration::days(179), None);
+    notify(
+        &mut conn,
+        now - Duration::days(200),
+        Some(now - Duration::days(29)),
+    );
+
+    // ---- webhook deliveries --------------------------------------------------
+    let board = board_id_by_slug(&mut conn, "strategy");
+    let target = sql_query(
+        "INSERT INTO webhook_targets (board_id, name, url, secret_ciphertext, secret_nonce, \
+             secret_key_id, created_by) \
+         VALUES ($1, 'Quiet', 'https://hooks.example.test/x', '\\x00'::bytea, '\\x00'::bytea, \
+             'k1', $2) RETURNING id",
+    )
+    .bind::<SqlUuid, _>(board)
+    .bind::<SqlUuid, _>(robin)
+    .get_result::<IdRow>(&mut conn)
+    .expect("a target")
+    .id;
+    let deliver =
+        |conn: &mut PgConnection, status: &str, finished: Option<DateTime<Utc>>| -> Uuid {
+            sql_query(
+                "INSERT INTO webhook_deliveries (target_id, event, body, status, created_at, \
+                     finished_at) VALUES ($1, 'item.moved', '{}', $2, $3, $4) RETURNING id",
+            )
+            .bind::<SqlUuid, _>(target)
+            .bind::<Text, _>(status)
+            .bind::<Timestamptz, _>(now - Duration::days(90))
+            .bind::<Nullable<Timestamptz>, _>(finished)
+            .get_result::<IdRow>(conn)
+            .expect("a delivery")
+            .id
+        };
+    let mut old_ids = Vec::new();
+    for (i, status) in ["delivered", "failed", "skipped"]
+        .iter()
+        .cycle()
+        .take(7)
+        .enumerate()
+    {
+        old_ids.push(deliver(
+            &mut conn,
+            status,
+            Some(now - Duration::days(31 + i as i64)),
+        ));
+    }
+    sql_query(
+        "INSERT INTO webhook_delivery_tries (delivery_id, try, ok, duration_ms) \
+         VALUES ($1, 1, true, 5)",
+    )
+    .bind::<SqlUuid, _>(old_ids[0])
+    .execute(&mut conn)
+    .expect("a try");
+    let recent_skip = deliver(&mut conn, "skipped", Some(now - Duration::days(29)));
+    let pending = deliver(&mut conn, "pending", None);
+
+    sql_query("SET search_path TO DEFAULT")
+        .execute(&mut conn)
+        .expect("resetting search_path");
+
+    // `off`: no sweep, but each of these tables in pages of 3.
+    let config = RetentionConfig {
+        mode: RetentionMode::Off,
+        ..RetentionConfig::default()
+    };
+    let paging = SweepPaging {
+        items_per_page: 1,
+        activity_per_page: 3,
+        batch: 3,
+    };
+    let mut steps = 0;
+    let pass =
+        run_retention_pass_with(&mut conn, &config, now, paging, &mut || steps += 1).expect("pass");
+    assert!(pass.tenants.is_empty());
+    assert_eq!(steps, 5, "after each table");
+    assert_eq!(
+        pass.code_indexes_deleted, 5,
+        "main of repository one keeps 5"
+    );
+    assert_eq!(
+        pass.unused_summaries_deleted, 8,
+        "the 7 that only removed indexes used, and the old unused one"
+    );
+    assert_eq!(pass.unread_notifications_deleted, 7);
+    assert_eq!(pass.read_notifications_deleted, 7);
+    assert_eq!(pass.webhook_deliveries_deleted, 7);
+
+    pin(&mut conn, "org_acme");
+    let mut shas: Vec<String> = schema::code_indexes::table
+        .filter(schema::code_indexes::repository_id.eq(one))
+        .select(schema::code_indexes::commit_sha)
+        .load(&mut conn)
+        .expect("indexes");
+    shas.sort();
+    let mut want: Vec<String> = (5..10_u32)
+        .chain([100])
+        .map(|n| format!("{n:040x}"))
+        .collect();
+    want.sort();
+    assert_eq!(shas, want, "the newest 5 of main, and the one with no ref");
+    assert_eq!(
+        count_where(
+            &mut conn,
+            &format!("SELECT count(*) AS n FROM code_indexes WHERE repository_id = '{two}'")
+        ),
+        3
+    );
+    let mut keys: Vec<String> = schema::code_index_summaries::table
+        .select(schema::code_index_summaries::key)
+        .load(&mut conn)
+        .expect("summaries");
+    keys.sort();
+    assert_eq!(keys, vec!["kept", "new-unused", "oldest-kept"]);
+    assert_eq!(
+        count_where(
+            &mut conn,
+            "SELECT count(*) AS n FROM notifications WHERE read_at IS NULL"
+        ),
+        1
+    );
+    assert_eq!(
+        count_where(
+            &mut conn,
+            "SELECT count(*) AS n FROM notifications WHERE read_at IS NOT NULL"
+        ),
+        1
+    );
+    let mut left: Vec<Uuid> = sql_query("SELECT id FROM webhook_deliveries")
+        .load::<IdRow>(&mut conn)
+        .expect("deliveries")
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
+    left.sort();
+    let mut want = vec![recent_skip, pending];
+    want.sort();
+    assert_eq!(
+        left, want,
+        "a skipped delivery stays 30 days; a pending one stays"
+    );
+    assert_eq!(
+        count_where(
+            &mut conn,
+            "SELECT count(*) AS n FROM webhook_delivery_tries"
+        ),
+        0,
+        "the tries go with the delivery"
+    );
+
+    // A second pass removes nothing; 0 keeps each of them.
+    sql_query("SET search_path TO DEFAULT")
+        .execute(&mut conn)
+        .expect("resetting search_path");
+    let pass = run_retention_pass_with(&mut conn, &config, now, paging, &mut || {}).expect("pass");
+    assert_eq!(
+        (
+            pass.code_indexes_deleted,
+            pass.unused_summaries_deleted,
+            pass.unread_notifications_deleted,
+            pass.read_notifications_deleted,
+            pass.webhook_deliveries_deleted
+        ),
+        (0, 0, 0, 0, 0)
+    );
+    let keep = RetentionConfig {
+        mode: RetentionMode::Off,
+        code_index_keep: 0,
+        notifications_unread_days: 0,
+        ..RetentionConfig::default()
+    };
+    let later = now + Duration::days(400);
+    let pass = run_retention_pass_with(&mut conn, &keep, later, paging, &mut || {}).expect("pass");
+    assert_eq!(pass.code_indexes_deleted, 0, "0 keeps every index");
+    assert_eq!(pass.unread_notifications_deleted, 0, "0 keeps unread ones");
+
+    drop(conn);
+    sql_query(format!("DROP DATABASE IF EXISTS {OTHER_DB} WITH (FORCE)"))
+        .execute(&mut admin_conn)
+        .expect("dropping scratch database");
 }
 
 /// The text of version `v` of the diff fixture (KAIROS-T-0651): 60 lines,

@@ -119,9 +119,28 @@ pub fn with_full_content(
     if wanted.is_empty() {
         return Ok(rows);
     }
+    let bases = base_texts(conn, &wanted)?;
+    for row in &mut rows {
+        if let (Some(base_version), Some(diff)) = (row.base_version, row.content_diff.as_deref())
+        {
+            row.content = full_text(&bases, row.item_id, row.version, base_version, diff)?;
+        }
+    }
+    Ok(rows)
+}
+
+/// The texts of the full rows `wanted`, as `(item_id, version)`. A key
+/// that is not a full row is not in the map.
+pub fn base_texts(
+    conn: &mut PgConnection,
+    wanted: &HashSet<(Uuid, i32)>,
+) -> Result<HashMap<(Uuid, i32), String>, DieselError> {
+    if wanted.is_empty() {
+        return Ok(HashMap::new());
+    }
     let items: Vec<Uuid> = wanted.iter().map(|(item, _)| *item).collect();
     let versions: Vec<i32> = wanted.iter().map(|(_, version)| *version).collect();
-    let bases: HashMap<(Uuid, i32), String> = item_history::table
+    Ok(item_history::table
         .filter(item_history::item_id.eq_any(&items))
         .filter(item_history::version.eq_any(&versions))
         .filter(item_history::base_version.is_null())
@@ -134,21 +153,25 @@ pub fn with_full_content(
         .into_iter()
         .filter(|(item, version, _)| wanted.contains(&(*item, *version)))
         .map(|(item, version, text)| ((item, version), text))
-        .collect();
-    for row in &mut rows {
-        let (Some(base_version), Some(diff)) = (row.base_version, row.content_diff.as_deref())
-        else {
-            continue;
-        };
-        let corrupt = |reason: String| HistoryError::Corrupt {
-            item_id: row.item_id,
-            version: row.version,
-            reason,
-        };
-        let base = bases
-            .get(&(row.item_id, base_version))
-            .ok_or_else(|| corrupt(format!("Its base version {base_version} is missing.")))?;
-        row.content = history_diff::apply(base, diff).map_err(|e| corrupt(e.to_string()))?;
-    }
-    Ok(rows)
+        .collect())
+}
+
+/// The full text of the diff row `version` of `item_id`: `diff` applied
+/// to the base text from `bases` ([`base_texts`]).
+pub fn full_text(
+    bases: &HashMap<(Uuid, i32), String>,
+    item_id: Uuid,
+    version: i32,
+    base_version: i32,
+    diff: &str,
+) -> Result<String, HistoryError> {
+    let corrupt = |reason: String| HistoryError::Corrupt {
+        item_id,
+        version,
+        reason,
+    };
+    let base = bases
+        .get(&(item_id, base_version))
+        .ok_or_else(|| corrupt(format!("Its base version {base_version} is missing.")))?;
+    history_diff::apply(base, diff).map_err(|e| corrupt(e.to_string()))
 }
