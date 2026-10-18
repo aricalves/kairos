@@ -14,7 +14,9 @@
 //!   or an ADR impacts ([`owner`], COLLIERY-T-0269);
 //! - relationships summary (linked; the full explorer is T-0042's
 //!   `/search/relationships/:code`) and the history link (T-0044's
-//!   `/activity/history/:code`);
+//!   `/activity/history/:code`); add and remove of an edge, and the
+//!   Parent picker, for a person who may edit an end ([`relations`],
+//!   KAIROS-T-0580);
 //! - create-from-template ([`create_doc`]) and the archive (a soft
 //!   delete) with cascade warning ([`delete`], A-0001);
 //! - for a task: Cancel with a reason, and Delete for good ([`end`],
@@ -35,6 +37,7 @@
 mod access;
 pub(crate) mod api;
 mod claim;
+pub(crate) mod code_picker;
 mod create_doc;
 mod delete;
 mod editor;
@@ -46,6 +49,7 @@ pub(crate) use kairos_markdown as markdown;
 mod metadata;
 mod owner;
 mod picker;
+mod relations;
 mod state;
 mod teams;
 
@@ -492,6 +496,9 @@ fn ItemLoaded(item: ItemDetail, family: Family) -> impl IntoView {
         access::edit_access(archived.get(), may_edit.get(), family, slug.as_deref())
     });
     let edit_read_only = Signal::derive(move || edit.with(access::EditAccess::is_read_only));
+    // KAIROS-T-0580: the link rule, for the writes of the Relationships
+    // panel.
+    let may_link = link_power(may_edit);
     let edit_reason = Signal::derive(move || edit.with(access::EditAccess::reason));
 
     view! {
@@ -671,7 +678,7 @@ fn ItemLoaded(item: ItemDetail, family: Family) -> impl IntoView {
                 // is the same idea from the other direction — one you were
                 // handed, one you asked for.
                 <RelatedWorkPanel code=code.get_value()/>
-                <RelationshipsPanel family code=code.get_value()/>
+                <RelationshipsPanel family code=code.get_value() may_link archived/>
             </Stack>
         </div>
         <CreateDocumentDialog parent_code=code.get_value() open=create_open/>
@@ -782,6 +789,19 @@ fn edit_power(
             Ok(None) | Err(_) => Some(boards::may_edit_item(&me, created_by, None, None, required)),
         })?;
         Some(by_rule || claim.with(|claim| access::holds_claim(&me, claim.as_ref())))
+    })
+}
+
+/// May the signed-in user add or remove an edge here (KAIROS-T-0580)?
+/// [`relations::may_link`] with the edit rule of this item. `false`
+/// until whoami has resolved.
+fn link_power(may_edit: Memo<Option<bool>>) -> Signal<bool> {
+    let whoami = use_context::<LocalResource<Result<crate::api::Whoami, ApiError>>>();
+    Signal::derive(move || {
+        whoami
+            .and_then(|resource| resource.get())
+            .and_then(Result::ok)
+            .is_some_and(|me| relations::may_link(&me, may_edit.get() == Some(true)))
     })
 }
 
@@ -2118,9 +2138,18 @@ fn RelatedWorkPanel(#[prop(into)] code: String) -> impl IntoView {
 /// Archived-INCLUSIVE since KAIROS-T-0158, with every put-away neighbour
 /// marked (KAIROS-T-0163) — deliberately unlike [`ChildrenProgressBar`]
 /// above it, which stays live-only per ADR-20 rule 5.
+///
+/// KAIROS-T-0580: a person who may edit an end ([`relations::may_link`])
+/// gets a Remove button on each edge, the add form and the Parent picker.
 #[component]
-fn RelationshipsPanel(family: Family, #[prop(into)] code: String) -> impl IntoView {
+fn RelationshipsPanel(
+    family: Family,
+    #[prop(into)] code: String,
+    #[prop(into)] may_link: Signal<bool>,
+    #[prop(into)] archived: Signal<bool>,
+) -> impl IntoView {
     let auth = use_auth();
+    let toaster = use_toaster();
     let code = StoredValue::new(code);
     let reload = RwSignal::new(0u32);
     let relationships = LocalResource::new(move || {
@@ -2129,55 +2158,94 @@ fn RelationshipsPanel(family: Family, #[prop(into)] code: String) -> impl IntoVi
         api::fetch_relationships(auth, family, code.get_value())
     });
     let retry = Callback::new(move |_| reload.update(|n| *n += 1));
+    let on_changed = Callback::new(move |message: String| {
+        toaster.success(message);
+        reload.update(|n| *n += 1);
+    });
+    let remove = Callback::new(move |(edge_id, what): (String, String)| {
+        leptos::task::spawn_local(async move {
+            match super::search::data::delete_relationship(auth, &edge_id).await {
+                Ok(_) => on_changed.run(format!("Kairos removed the edge: {what}.")),
+                Err(e) => {
+                    toaster.error(format!(
+                        "Kairos did not remove the edge: {}",
+                        api::error_text(&e)
+                    ));
+                }
+            }
+        });
+    });
+    let writes = move || may_link.get() && !archived.get();
 
     view! {
         <Panel title="Relationships" caption="summary">
             {move || match relationships.get() {
                 None => view! { <Loading label="Loading relationships…"/> }.into_any(),
                 Some(Err(error)) => view! { <ErrorState error on_retry=retry/> }.into_any(),
-                Some(Ok(relationships))
-                    if relationships.outgoing.is_empty() && relationships.incoming.is_empty() =>
-                {
-                    view! { <Empty message="No relationships yet — link items from the graph explorer."/> }
-                        .into_any()
-                }
                 Some(Ok(relationships)) => {
-                    // ADR-20 rule 5, and the difference worth making
-                    // legible rather than reconciling away: this panel
-                    // is archived-INCLUSIVE, while the children rollup
-                    // at the top of the page counts live work only. So
-                    // "2 children" here beside "1 of 1 done" up there is
-                    // CORRECT, and the note says why in one line.
-                    let any_put_away = relationships
-                        .outgoing
+                    let has_parent = relationships
+                        .incoming
                         .iter()
-                        .chain(relationships.incoming.iter())
-                        .flat_map(|group| group.items.iter())
-                        .any(|item| item.archived_at.is_some());
+                        .any(|group| group.relationship == "parent" && !group.items.is_empty());
+                    let editor = writes().then(|| view! {
+                        <relations::RelationshipEditor family code=code.get_value() has_parent
+                            on_changed/>
+                    });
+                    let on_remove = writes().then_some(remove);
                     view! {
                         <Stack gap="sm">
-                            {relationships.outgoing.into_iter().map(|group| view! {
-                                <RelationshipGroupView group direction="outgoing"/>
-                            }).collect_view()}
-                            {relationships.incoming.into_iter().map(|group| view! {
-                                <RelationshipGroupView group direction="incoming"/>
-                            }).collect_view()}
-                            {any_put_away.then(|| view! {
-                                <Text dimmed=true size="xs">
-                                    "Put-away neighbours are listed: containment is a fact \
-                                     about the record. The progress bar above counts live \
-                                     work only — progress is a fact about live work."
-                                </Text>
-                            })}
-                            <Anchor href=format!("/search/relationships/{}", code.get_value())>
-                                "Open the graph explorer"
-                            </Anchor>
+                            <RelationshipList relationships on_remove code=code.get_value()/>
+                            {editor}
                         </Stack>
                     }.into_any()
                 }
             }}
         </Panel>
     }
+}
+
+/// The list of the panel: each group, or the empty state.
+#[component]
+fn RelationshipList(
+    relationships: api::ItemRelationships,
+    on_remove: Option<Callback<(String, String)>>,
+    #[prop(into)] code: String,
+) -> impl IntoView {
+    if relationships.outgoing.is_empty() && relationships.incoming.is_empty() {
+        return view! { <Empty message="No relationships yet."/> }.into_any();
+    }
+    // ADR-20 rule 5, and the difference worth making legible rather than
+    // reconciling away: this panel is archived-INCLUSIVE, while the
+    // children rollup at the top of the page counts live work only. So
+    // "2 children" here beside "1 of 1 done" up there is CORRECT, and the
+    // note says why in one line.
+    let any_put_away = relationships
+        .outgoing
+        .iter()
+        .chain(relationships.incoming.iter())
+        .flat_map(|group| group.items.iter())
+        .any(|item| item.archived_at.is_some());
+    view! {
+        <Stack gap="sm">
+            {relationships.outgoing.into_iter().map(|group| view! {
+                <RelationshipGroupView group direction="outgoing" on_remove/>
+            }).collect_view()}
+            {relationships.incoming.into_iter().map(|group| view! {
+                <RelationshipGroupView group direction="incoming" on_remove/>
+            }).collect_view()}
+            {any_put_away.then(|| view! {
+                <Text dimmed=true size="xs">
+                    "Put-away neighbours are listed: containment is a fact \
+                     about the record. The progress bar above counts live \
+                     work only — progress is a fact about live work."
+                </Text>
+            })}
+            <Anchor href=format!("/search/relationships/{code}")>
+                "Open the graph explorer"
+            </Anchor>
+        </Stack>
+    }
+    .into_any()
 }
 
 /// The accent for a forge link's state (KAIROS-T-0100). Red stays
@@ -2303,13 +2371,17 @@ fn relationship_label(relationship: &str, outgoing: bool) -> String {
 fn RelationshipGroupView(
     group: RelationshipGroup,
     #[prop(into)] direction: String,
+    /// KAIROS-T-0580: the remove of an edge, `(edge id, words)`. `None`:
+    /// the person may not write here.
+    on_remove: Option<Callback<(String, String)>>,
 ) -> impl IntoView {
     let label = relationship_label(&group.relationship, direction == "outgoing");
+    let header = label.clone();
     let is_blocks = group.relationship == "blocks";
     view! {
         <div class="kairos-relationships__group">
             <Group gap="sm">
-                <Text size="xs" dimmed=true>{label}</Text>
+                <Text size="xs" dimmed=true>{header}</Text>
             </Group>
             {group.items.into_iter().map(|item| {
                 // KAIROS-T-0158/T-0163: the neighbour lists include
@@ -2351,6 +2423,16 @@ fn RelationshipGroupView(
                         <Pill color=token::OK>"done"</Pill>
                     </span>
                 }.into_any()));
+                let remove = on_remove.filter(|_| !item.relationship_id.is_empty()).map(|run| {
+                    let edge = (item.relationship_id.clone(), format!("{label} {}", item.short_code));
+                    let aria = format!("Remove {label} {}", item.short_code);
+                    view! {
+                        <Button variant="default" size="xs" bad=true aria_label=aria
+                            on_click=Callback::new(move |_| run.run(edge.clone()))>
+                            "Remove"
+                        </Button>
+                    }
+                });
                 view! {
                     <Group gap="sm" justify="between">
                         <Anchor href=format!("/items/{}", item.short_code)>
@@ -2360,6 +2442,7 @@ fn RelationshipGroupView(
                             {done}
                             {put_away}
                             <Pill color=token::VIOLET>{item.entity_type.clone()}</Pill>
+                            {remove}
                         </Group>
                     </Group>
                 }

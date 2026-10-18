@@ -37,6 +37,7 @@ use leptos_router::NavigateOptions;
 use leptos_router::hooks::{query_signal_with_options, use_params_map};
 
 use super::copy_link;
+use super::item::code_picker::CodePicker;
 use super::repositories;
 use crate::auth::use_auth;
 use data::EntityKind;
@@ -531,6 +532,9 @@ struct CreateForm {
     repository: String,
     decision_maker: String,
     decision_date: String,
+    /// The short code of the parent, or empty (KAIROS-T-0580). The dialog
+    /// shows the field for an initiative and a task.
+    parent: String,
 }
 
 /// What the create dialog SENDS: the column, then the item
@@ -574,6 +578,7 @@ fn create_body(
         task_type: Some(form.task_type.clone()),
         team_id: team_id.map(str::to_string),
         repository: Some(form.repository.clone()).filter(|slug| slug != NO_REPOSITORY),
+        parent: filled(&form.parent).map(|code| code.trim().to_string()),
         ..data::NewItem::default()
     };
     let item = match mode {
@@ -3666,6 +3671,8 @@ fn CreateItemModal(
     // KAIROS-T-0124 #6b: the repository the task links to. "(none)" omits
     // the field. The item page keeps its own picker to change it later.
     let repository = RwSignal::new(NO_REPOSITORY.to_string());
+    // KAIROS-T-0580: the parent, in the transaction of the create.
+    let parent = RwSignal::new(String::new());
     let busy = RwSignal::new(false);
     let error = RwSignal::new(None::<ApiError>);
 
@@ -3713,6 +3720,7 @@ fn CreateItemModal(
             decision_maker.set(String::new());
             decision_date.set(String::new());
             repository.set(NO_REPOSITORY.to_string());
+            parent.set(String::new());
             busy.set(false);
             error.set(None);
         }
@@ -3735,6 +3743,7 @@ fn CreateItemModal(
             repository: repository.get_untracked(),
             decision_maker: decision_maker.get_untracked(),
             decision_date: decision_date.get_untracked(),
+            parent: parent.get_untracked(),
         };
         // COLLIERY-T-0232: the mode decides the body, not the form.
         let (column_id, item) = create_body(mode, &form, &entry_id, team_id.as_deref());
@@ -3825,6 +3834,17 @@ fn CreateItemModal(
                             attr:data-testid="create-repository"
                         />
                     })}
+                })}
+                // KAIROS-T-0580: a strategy parents an initiative, an
+                // initiative parents a task.
+                {match kind {
+                    EntityKind::Initiative => Some(&["strategy"][..]),
+                    EntityKind::Task => Some(&["initiative"][..]),
+                    _ => None,
+                }.map(|types| view! {
+                    <div data-testid="create-parent">
+                        <CodePicker label="Parent (optional)" value=parent types/>
+                    </div>
                 })}
                 {matches!(kind, EntityKind::Adr).then(|| view! {
                     <Stack gap="sm">
@@ -4683,6 +4703,7 @@ mod tests {
             repository: repository.to_string(),
             decision_maker: "alice".to_string(),
             decision_date: "2026-09-27".to_string(),
+            parent: String::new(),
         }
     }
 
@@ -4733,6 +4754,7 @@ mod tests {
                 repository: Some("payments-api".to_string()),
                 decision_maker: None,
                 decision_date: None,
+                parent: None,
             }
         );
         let (_, unlinked) = create_body(
@@ -4775,6 +4797,7 @@ mod tests {
                 repository: None,
                 decision_maker: Some("alice".to_string()),
                 decision_date: Some("2026-09-27".to_string()),
+                parent: None,
             }
         );
         // Empty optional fields are left out, and `none` is no complexity.
@@ -4794,6 +4817,22 @@ mod tests {
         assert_eq!(item.decision_maker, None);
         assert_eq!(item.decision_date, None);
         assert_eq!(item.team_id, None);
+        assert_eq!(item.parent, None);
+    }
+
+    /// KAIROS-T-0580: the Parent field sends the trimmed code, in both
+    /// modes; an empty field sends no parent.
+    #[test]
+    fn the_parent_field_sends_the_code_or_nothing() {
+        for mode in [CreateMode::Manager, CreateMode::Request] {
+            let mut child = form("task", "auto", NO_REPOSITORY);
+            child.parent = " DEMO-I-0001 ".to_string();
+            let (_, item) = create_body(mode, &child, "c-backlog", None);
+            assert_eq!(item.parent.as_deref(), Some("DEMO-I-0001"));
+            child.parent = "   ".to_string();
+            let (_, item) = create_body(mode, &child, "c-backlog", None);
+            assert_eq!(item.parent, None);
+        }
     }
 
     /// KAIROS-T-0587: the Bucket select sends its kind, and `none` sends no
