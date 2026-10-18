@@ -69,7 +69,11 @@ async fn list_agent_keys(auth: Auth) -> Result<Vec<AgentKey>, ApiError> {
 }
 
 /// The body of a new key. Pure, host-tested.
-fn create_body(name: &str, expires_at: Option<&str>, no_expiry: bool) -> serde_json::Value {
+pub(crate) fn create_body(
+    name: &str,
+    expires_at: Option<&str>,
+    no_expiry: bool,
+) -> serde_json::Value {
     match (expires_at, no_expiry) {
         (_, true) => json!({ "name": name, "no_expiry": true }),
         (Some(expires_at), false) => json!({ "name": name, "expires_at": expires_at }),
@@ -95,7 +99,7 @@ async fn revoke_agent_key(auth: Auth, key_id: &str) -> Result<serde_json::Value,
 }
 
 /// The date part of an RFC 3339 timestamp, or "never".
-fn day(value: Option<&str>) -> String {
+pub(crate) fn day(value: Option<&str>) -> String {
     value
         .map(|ts| ts.split('T').next().unwrap_or(ts).to_string())
         .unwrap_or_else(|| "never".to_string())
@@ -103,7 +107,7 @@ fn day(value: Option<&str>) -> String {
 
 /// `2027-01-01T10:30:00.000000Z` → `2027-01-01 10:30 UTC`. Pure,
 /// host-tested.
-fn day_and_time(value: &str) -> String {
+pub(crate) fn day_and_time(value: &str) -> String {
     match value.split_once('T') {
         Some((date, time)) => format!("{date} {} UTC", time.get(..5).unwrap_or(time)),
         None => value.to_string(),

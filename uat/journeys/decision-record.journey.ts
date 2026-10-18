@@ -185,6 +185,21 @@ journey(
       };
     });
 
+    await step(alice, 'sends the note back for review, and her agent publishes it again', async () => {
+      // KAIROS-T-0555: the CLI and MCP set the lifecycle too. A document is
+      // not on a board, so transition_item refuses it and names the tool.
+      const cli = await alice.cli();
+      const said = await cli.ok(['documents', 'lifecycle', note, '--to', 'review']);
+      expect(said).toContain(`The document ${note} is review.`);
+      const mcp = await alice.mcp();
+      const refused = await mcp.refused('transition_item', { short_code: note, to_column: 'Published' });
+      expect(refused).toContain('ITEM_NOT_ON_BOARD');
+      expect(refused).toContain('set_lifecycle');
+      const published = await mcp.call('set_lifecycle', { short_code: note, lifecycle: 'published' });
+      expect(published).toBe(`Set the lifecycle of ${note} to published (was review).`);
+      return { document: note, cli: 'published → review', mcp: 'review → published' };
+    });
+
     await step(alice, 'months later, records the decision that replaces it', async () => {
       const mcp = await alice.mcp();
       const created = await mcp.call('create_item', {

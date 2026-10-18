@@ -3,7 +3,7 @@
 //! (KAIROS-I-0012), `restore_item` (KAIROS-A-0020), `related_work`
 //! (KAIROS-T-0191), `propose_edge` (KAIROS-T-0192), `set_repository`
 //! (COLLIERY-T-0220), and `add_repository` and `update_repository`
-//! (COLLIERY-T-0266); later tasks added more (72 in all, in the profiles
+//! (COLLIERY-T-0266); later tasks added more (73 in all, in the profiles
 //! of `profiles.rs`, KAIROS-T-0454) — each a
 //! thin wrapper over the same `kairos-core`/`kairos-db` services the REST
 //! handlers call — through [`crate::blocking::BlockingTenantPool`], never
@@ -210,6 +210,10 @@ pub struct SetBoardPolicyParams {
     /// column only with an owner, and its owner cannot release it in Active
     /// or Monitoring. False: no check.
     pub owner_gate: Option<bool>,
+    /// A delivery board only. True: a task with an open blocker does not
+    /// move into a claims column or a done column (BLOCKED). False: the
+    /// move goes on with a warning.
+    pub blockers_gate: Option<bool>,
 }
 
 /// `delete_dispatch_rule` (KAIROS-T-0385).
@@ -634,6 +638,17 @@ pub struct SetWorkClassParams {
     pub short_code: String,
     /// The lane: planned | support.
     pub work_class: String,
+}
+
+/// Parameters for `set_lifecycle` (KAIROS-T-0555).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub struct SetLifecycleParams {
+    /// The short code of the document (e.g. "ACME-D-0012").
+    pub short_code: String,
+    /// The lifecycle: draft | review | published | archived.
+    pub lifecycle: String,
 }
 
 /// Parameters for `promote_note` (KAIROS-T-0505).
@@ -1309,7 +1324,7 @@ pub struct SaveTemplateParams {
 }
 
 // ---------------------------------------------------------------------------
-// The tools (72; the list of each profile is asserted in tests/mcp.rs)
+// The tools (73; the list of each profile is asserted in tests/mcp.rs)
 // ---------------------------------------------------------------------------
 
 #[tool_router(vis = "pub(super)")]
@@ -2272,7 +2287,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Set the policies of a board. `parent_gate` (a delivery board): when true (the default), a task moves into a claims column (Active) by a transition, a board move or a create only while its parent initiative is in Active or Monitoring, or is a bucket; else PARENT_NOT_ACTIVE. A task with no parent initiative moves freely. `owner_gate` (an initiative board): when true (the default), an initiative moves into Active only with an owner, and the owner of an initiative in Active or Monitoring cannot release it (hand_off_item changes it); else OWNER_REQUIRED. Send at least one policy; a policy of a different level is VALIDATION. Needs configure_boards; `my_boards` shows the policies."
+        description = "Set the policies of a board. `parent_gate` (a delivery board): when true (the default), a task moves into a claims column (Active) by a transition, a board move or a create only while its parent initiative is in Active or Monitoring, or is a bucket; else PARENT_NOT_ACTIVE. A task with no parent initiative moves freely. `owner_gate` (an initiative board): when true (the default), an initiative moves into Active only with an owner, and the owner of an initiative in Active or Monitoring cannot release it (hand_off_item changes it); else OWNER_REQUIRED. `blockers_gate` (a delivery board): when true, a task with an open blocker (a cancelled blocker is open) does not move into a claims column or a done column by a transition, a reopen or a board move; else BLOCKED, with the blockers. When false (the default), the move goes on with a warning that names each open blocker. Send at least one policy; a policy of a different level is VALIDATION. Needs configure_boards; `my_boards` shows the policies."
     )]
     pub async fn set_board_policy(
         &self,
@@ -2290,6 +2305,7 @@ impl KairosMcp {
                 crate::api::org::boards::PolicyChange {
                     parent_gate: params.parent_gate,
                     owner_gate: params.owner_gate,
+                    blockers_gate: params.blockers_gate,
                 },
             )?;
             Ok(format!(
@@ -3084,7 +3100,8 @@ impl KairosMcp {
                 .rename
                 .as_ref()
                 .map_or(item.short_code.clone(), |rename| rename.new_code.clone());
-            crate::claims::note_wip(conn, moved.column_id, &moved_code)?;
+            // KAIROS-T-0565: and the open blockers.
+            crate::claims::note_task_move(conn, item.id, moved.column_id, &moved_code)?;
             let column = board_columns(conn, target.id)?
                 .into_iter()
                 .find(|c| c.id == moved.column_id)
@@ -3259,6 +3276,52 @@ impl KairosMcp {
                 promoted.created_code
             ));
             Ok(out)
+        })
+        .await
+    }
+
+    // KAIROS-T-0555: a document moves between draft, review, published
+    // and archived. A document is not on a board (KAIROS-A-0018), so
+    // `transition_item` cannot move it. REST and this tool call one
+    // function (`crate::api::documents::change_lifecycle`).
+    #[tool(
+        description = "Set the lifecycle of a DOCUMENT: `lifecycle` is draft, review, published or archived. You can move a document from each value to each other value. A document is not on a board, so `transition_item` does not move it. A value that the document already has changes nothing. The edit rule applies: the creator of the document, or `manage_documents` on its owner board. `promote_note` makes a draft: publish it with this tool."
+    )]
+    pub async fn set_lifecycle(
+        &self,
+        Parameters(params): Parameters<SetLifecycleParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (auth, tenant) = Self::caller(&context)?;
+        let user = auth.user_id;
+        let slug = tenant.slug.clone();
+        self.run_tool(&tenant, move |conn| {
+            let lifecycle = crate::api::documents::parse_lifecycle(&params.lifecycle)?;
+            let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
+            if item.item_type != ItemType::Document {
+                return Err(ApiError::validation(format!(
+                    "The {} {} is not a document. set_lifecycle applies to documents only.",
+                    item.item_type, item.short_code
+                )));
+            }
+            let (before, updated) = crate::api::documents::change_lifecycle(
+                conn,
+                &slug,
+                user,
+                &item.short_code,
+                lifecycle,
+            )?;
+            Ok(if before == lifecycle {
+                format!(
+                    "{} is already {}: nothing changed.",
+                    updated.short_code, updated.lifecycle
+                )
+            } else {
+                format!(
+                    "Set the lifecycle of {} to {} (was {}).",
+                    updated.short_code, updated.lifecycle, before
+                )
+            })
         })
         .await
     }
@@ -3603,10 +3666,19 @@ impl KairosMcp {
                 _ => {
                     return Err(ApiError::unprocessable(
                         "ITEM_NOT_ON_BOARD",
-                        format!(
-                            "The {} {} is not on a board, so it cannot move between columns.",
-                            item.item_type, item.short_code
-                        ),
+                        if item.item_type == ItemType::Document {
+                            format!(
+                                "The document {} is not on a board, so it cannot move between \
+                                 columns. Use set_lifecycle to move it between draft, review, \
+                                 published and archived.",
+                                item.short_code
+                            )
+                        } else {
+                            format!(
+                                "The {} {} is not on a board, so it cannot move between columns.",
+                                item.item_type, item.short_code
+                            )
+                        },
                     ));
                 }
             };
@@ -3649,7 +3721,12 @@ impl KairosMcp {
             .map_err(map_board_error)?;
             crate::agent_triage::record(conn, &auth, item.id, triaged)?;
             // KAIROS-T-0371: a move into a column over its WIP limit.
-            crate::claims::note_wip(conn, to_column_id, &item.short_code)?;
+            // KAIROS-T-0565: the open blockers of a task.
+            if item.item_type == ItemType::Task {
+                crate::claims::note_task_move(conn, item.id, to_column_id, &item.short_code)?;
+            } else {
+                crate::claims::note_wip(conn, to_column_id, &item.short_code)?;
+            }
 
             let name_of = |id: Uuid| {
                 columns
@@ -7248,8 +7325,10 @@ fn policy_text(board: &Board) -> Option<String> {
     match board.board_level {
         BoardLevel::Delivery => Some(format!(
             "parent_gate {} (a task moves to a claims column only while its initiative is \
-             active)",
-            if board.parent_gate { "on" } else { "off" }
+             active); blockers_gate {} (on: a task with an open blocker cannot move to a claims \
+             or done column; off: the move gets a warning)",
+            if board.parent_gate { "on" } else { "off" },
+            if board.blockers_gate { "on" } else { "off" }
         )),
         BoardLevel::Initiative => Some(format!(
             "owner_gate {} (an initiative moves to Active only with an owner)",
