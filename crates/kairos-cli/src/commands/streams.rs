@@ -6,7 +6,7 @@ use kairos_client::types_org::{
 };
 
 use crate::commands::entities::{ListArgs, require_confirm};
-use crate::context::{Common, client, print_json};
+use crate::context::{Common, client, print_json, stream_id as stream_ref, team_id};
 use crate::error::CliError;
 use crate::listing::{fetch, print_whole};
 use crate::table::Table;
@@ -17,8 +17,10 @@ pub enum StreamsCommand {
     /// List delivery streams (paginated)
     List(ListArgs),
     /// Show one delivery stream
-    Get {
-        /// Stream id (UUID)
+    #[command(alias = "get")]
+    Show {
+        /// Stream slug, name or id (UUID)
+        #[arg(value_name = "STREAM")]
         stream_id: String,
         #[command(flatten)]
         common: Common,
@@ -39,7 +41,8 @@ pub enum StreamsCommand {
     },
     /// Update a stream's name, slug, and/or description
     Update {
-        /// Stream id (UUID)
+        /// Stream slug, name or id (UUID)
+        #[arg(value_name = "STREAM")]
         stream_id: String,
         /// New name
         #[arg(long)]
@@ -55,7 +58,8 @@ pub enum StreamsCommand {
     },
     /// Soft-delete a delivery stream (requires --confirm)
     Delete {
-        /// Stream id (UUID)
+        /// Stream slug, name or id (UUID)
+        #[arg(value_name = "STREAM")]
         stream_id: String,
         /// Actually delete
         #[arg(long)]
@@ -73,27 +77,30 @@ pub enum StreamsCommand {
 pub enum StreamTeamsCommand {
     /// List the teams in a stream
     List {
-        /// Stream id (UUID)
+        /// Stream slug, name or id (UUID)
+        #[arg(value_name = "STREAM")]
         stream_id: String,
         #[command(flatten)]
         common: Common,
     },
     /// Add a team to a stream
     Add {
-        /// Stream id (UUID)
+        /// Stream slug, name or id (UUID)
+        #[arg(value_name = "STREAM")]
         stream_id: String,
-        /// Team id (UUID)
-        #[arg(long, value_name = "TEAM_ID")]
+        /// Team slug or id (UUID)
+        #[arg(long, value_name = "TEAM")]
         team: String,
         #[command(flatten)]
         common: Common,
     },
     /// Remove a team from a stream
     Remove {
-        /// Stream id (UUID)
+        /// Stream slug, name or id (UUID)
+        #[arg(value_name = "STREAM")]
         stream_id: String,
-        /// Team id (UUID)
-        #[arg(long, value_name = "TEAM_ID")]
+        /// Team slug or id (UUID)
+        #[arg(long, value_name = "TEAM")]
         team: String,
         #[command(flatten)]
         common: Common,
@@ -133,8 +140,9 @@ impl StreamsCommand {
                 envelope.print_footer();
                 Ok(())
             }
-            Self::Get { stream_id, common } => {
+            Self::Show { stream_id, common } => {
                 let client = client(&common)?;
+                let stream_id = stream_ref(&client, &stream_id).await?;
                 let stream = client.get_stream(&stream_id).await?;
                 if common.json {
                     return print_json(&stream);
@@ -179,6 +187,7 @@ impl StreamsCommand {
                     ));
                 }
                 let client = client(&common)?;
+                let stream_id = stream_ref(&client, &stream_id).await?;
                 let stream = client
                     .update_stream(
                         &stream_id,
@@ -205,11 +214,12 @@ impl StreamsCommand {
             } => {
                 require_confirm(confirm, &format!("the delivery stream {stream_id}"))?;
                 let client = client(&common)?;
-                let response = client.delete_stream(&stream_id).await?;
+                let id = stream_ref(&client, &stream_id).await?;
+                let response = client.delete_stream(&id).await?;
                 if common.json {
                     return print_json(&response);
                 }
-                println!("Kairos deleted the delivery stream {}.", response.id);
+                println!("Kairos deleted the delivery stream {stream_id}.");
                 Ok(())
             }
             Self::Teams(command) => command.run().await,
@@ -222,6 +232,7 @@ impl StreamTeamsCommand {
         match self {
             Self::List { stream_id, common } => {
                 let client = client(&common)?;
+                let stream_id = stream_ref(&client, &stream_id).await?;
                 let teams = client.list_stream_teams(&stream_id).await?;
                 if common.json {
                     return print_whole(&teams);
@@ -248,16 +259,15 @@ impl StreamTeamsCommand {
                 common,
             } => {
                 let client = client(&common)?;
+                let id = stream_ref(&client, &stream_id).await?;
+                let team_id = team_id(&client, &team).await?;
                 let response = client
-                    .add_stream_team(&stream_id, &AddStreamTeamRequest { team_id: team })
+                    .add_stream_team(&id, &AddStreamTeamRequest { team_id })
                     .await?;
                 if common.json {
                     return print_json(&response);
                 }
-                println!(
-                    "Kairos added the team {} to the stream {stream_id}.",
-                    response.id
-                );
+                println!("Kairos added the team {team} to the stream {stream_id}.");
                 Ok(())
             }
             Self::Remove {
@@ -266,14 +276,13 @@ impl StreamTeamsCommand {
                 common,
             } => {
                 let client = client(&common)?;
-                let response = client.remove_stream_team(&stream_id, &team).await?;
+                let id = stream_ref(&client, &stream_id).await?;
+                let team_id = team_id(&client, &team).await?;
+                let response = client.remove_stream_team(&id, &team_id).await?;
                 if common.json {
                     return print_json(&response);
                 }
-                println!(
-                    "Kairos removed the team {} from the stream {stream_id}.",
-                    response.id
-                );
+                println!("Kairos removed the team {team} from the stream {stream_id}.");
                 Ok(())
             }
         }

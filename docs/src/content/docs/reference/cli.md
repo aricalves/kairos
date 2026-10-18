@@ -104,6 +104,43 @@ the per-command tables below.
 `https://kairos.example/` and `https://kairos.example` address the same cached
 entry.
 
+## Names, slugs and flag names
+
+Each command that names a board, a column, a team, a user, a template, a
+service account or a stream takes a name or a slug. It also takes the id
+(UUID). A value with the form of a UUID is an id (KAIROS-T-0589).
+
+| Reference | You can give | How the CLI finds it |
+|---|---|---|
+| board | slug or id | The server takes the slug. |
+| column | name or id | One read of the board. The case of the name does not count. An unknown name is refused, and the error names each column of the board. |
+| team | slug or id | One read of the team. |
+| user | id, email or user name | The server takes each form. |
+| template | slug or id | One read of the template. |
+| service account | name or id | One read of the service accounts. Two accounts with the same name are refused: send the id. |
+| stream | slug, name or id | One read of the streams. |
+
+One concept has one flag name in each command:
+
+| Concept | Flag | Old name (it still works) |
+|---|---|---|
+| a repository | `--repo` | `--repository` on `boards dispatch add-rule` and `index` |
+| the kind of a task | `--kind` | `--type` on `tasks create`, `--task-type` on `search` and `boards dispatch add-rule` |
+| the kind of a team | `--kind` | `--type` on `teams create` and `teams update` |
+| a column or a person as the target | `--to` | — |
+| the last day of a range | `--until` | `--to` on `boards flow` |
+| a file with the markdown text | `--content-file`, `--text-file` | — |
+
+The verb `show` shows one thing. `get` is its old name, and it still works.
+The verb `archive` puts a work item away; `delete` is its old name on items. The
+verb `delete` removes a structure: a team, a repository, a stream or a service
+account.
+
+`transition` prints the name of the column after the move, not its id.
+`boards list` prints the slug of the team. `teams delete`, `repos delete`,
+`streams delete`, `service-accounts delete` and `members remove` print the
+reference that you gave.
+
 ## Authentication
 
 A deployment lets people log in through an OIDC issuer, with local accounts, or
@@ -261,7 +298,7 @@ differ.
 | Verb | `strategies` | `initiatives` | `tasks` | `documents` | `adrs` |
 |---|---|---|---|---|---|
 | `list` | yes | yes | yes | yes | yes |
-| `get` | yes | yes | yes | yes | yes |
+| `show` (alias `get`) | yes | yes | yes | yes | yes |
 | `create` | yes | yes | yes | yes | yes |
 | `edit` | yes | yes | yes | yes | yes |
 | `note` | yes | yes | yes | yes | yes |
@@ -376,11 +413,13 @@ printed a bare array. A script that reads `results.tasks`, a bare array,
 `limit` or `offset` must change. Read `items`, and use `next_offset` for the
 next page.
 
-### `<noun> get`
+### `<noun> show`
 
 ```
-kairos <noun> get <SHORT_CODE> [OPTIONS]
+kairos <noun> show <SHORT_CODE> [OPTIONS]
 ```
+
+`get` is the old name of `show`, and it still works.
 
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
@@ -393,10 +432,10 @@ stderr. The notice names the current code, for example `The code
 COLLIERY-T-0100 is retired. The current code of this item is SKADI-T-0001.`
 The output on stdout is the item, and `--json` stays clean.
 
-`documents get` prints the line `owner board`. It has the id of the owner
+`documents show` prints the line `owner board`. It has the id of the owner
 board of the document.
 
-`documents get` and `adrs get` print the line `impacts`. It has the slugs of
+`documents show` and `adrs show` print the line `impacts`. It has the slugs of
 the repositories that the item impacts, or `-`. The mark `[archived]` shows a
 repository that is not live.
 
@@ -411,22 +450,23 @@ Options common to every noun:
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--title <TITLE>` | string | required | The item's title. |
-| `--content <CONTENT>` | string | `""`; on `documents`, no default | Markdown content. On `documents`, content omitted together with `--template` stamps the template's content. |
+| `--content <CONTENT>` | string | `""`; on `documents`, no default | Markdown content. On `documents`, content omitted together with `--template` stamps the template's content. Conflicts with `--content-file`. |
+| `--content-file <FILE>` | path | — | Read the markdown content from a file. `-` reads standard input. Conflicts with `--content`. |
 
 Board placement per noun:
 
 | Noun | Option | Type | Default | Description |
 |---|---|---|---|---|
 | `strategies` | `--board <BOARD>` | slug or UUID | required | Board to create the strategy on. |
-| `strategies` | `--column <COLUMN_ID>` | UUID | the board's first column | Column to place it in. |
+| `strategies` | `--column <COLUMN>` | name or UUID | the board's first column | Column to place it in. |
 | `initiatives` | `--board <BOARD>` | slug or UUID | required | Board to create the initiative on. |
-| `initiatives` | `--column <COLUMN_ID>` | UUID | the board's first column | Only the entry column (Discovery). An initiative starts there, and a different column is refused with `VALIDATION` (KAIROS-T-0643). |
+| `initiatives` | `--column <COLUMN>` | name or UUID | the board's first column | Only the entry column (Discovery). An initiative starts there, and a different column is refused with `VALIDATION` (KAIROS-T-0643). |
 | `tasks` | `--board <BOARD>` | slug or UUID | required unless `--team` is given | Delivery board to create the task on. The board decides the team of the task. With `--team` and no `--board`, the task goes to the delivery board of that team. |
-| `tasks` | `--column <COLUMN_ID>` | UUID | the board's first column | Only the entry column. A task starts there, and a different column is refused with `VALIDATION`, for each caller (KAIROS-T-0566). Move the task after the create. |
+| `tasks` | `--column <COLUMN>` | name or UUID | the board's first column | Only the entry column. A name is a column of `--board`, else of the delivery board of `--team`. A task starts there, and a different column is refused with `VALIDATION`, for each caller (KAIROS-T-0566). Move the task after the create. |
 | `documents` | `--board <BOARD>` | slug or UUID | required | The owner board of the document. It gives the right to edit the document, and the code of the document gets the prefix of this board. The document is not a card of the board. |
 | `documents` | `--parent <SHORT_CODE>` | string | none | The workflow item the document supports. It does not give the document an owner board. |
 | `adrs` | `--board <BOARD>` | slug or UUID | none | ADR board. Omitting it creates an off-board ADR, which is an org-admin operation. |
-| `adrs` | `--column <COLUMN_ID>` | UUID | the board's first column | Column to place it in. |
+| `adrs` | `--column <COLUMN>` | name (with `--board`) or UUID | the board's first column | Column to place it in. |
 
 Options specific to one noun:
 
@@ -436,13 +476,13 @@ Options specific to one noun:
 | `initiatives` | `--complexity <COMPLEXITY>` | `xs` \| `s` \| `m` \| `l` \| `xl` | none | T-shirt sizing. |
 | `initiatives` | `--bucket-type <KIND>` | `tech_debt` \| `bug` \| `ad_hoc` | none | Marks the initiative as a bucket of this kind. |
 | `initiatives` | `--parent <STRATEGY>` | short code | none | The parent strategy. Kairos writes the initiative and the `parent` edge in one transaction: a refused parent leaves no initiative (KAIROS-T-0572). |
-| `tasks` | `--type <TASK_TYPE>` | `task` \| `bug` \| `tech_debt` \| `support` | `task` | Task type. |
+| `tasks` | `--kind <KIND>` | `task` \| `bug` \| `tech_debt` \| `support` | `task` | The kind of the task. The old name `--type` still works. |
 | `tasks` | `--work-class <WORK_CLASS>` | `planned` \| `support` | `support` for support-type tasks, `planned` otherwise; always `support` on a board that the caller does not manage | Planned/Support lane. On a board that the caller does not manage, `planned` is refused with 403. |
 | `tasks` | `--from-team <TEAM>` | slug or UUID | none | The team that sends the task. When it is not the team of the board, the task is a request: entry column, support lane, also for a manager of the board. With it, `planned` and a column other than the entry column are refused with 422. Kairos does not keep it on the task: name the sending team in the body. |
-| `tasks` | `--team <TEAM_ID>` | UUID | none | Team. Without `--board`, the task goes to the delivery board of this team. With `--board`, it must be the team of that board. |
+| `tasks` | `--team <TEAM>` | slug or UUID | none | Team. Without `--board`, the task goes to the delivery board of this team. With `--board`, it must be the team of that board. |
 | `tasks` | `--repo <REPOSITORY>` | slug or UUID | none | Repository the task links to. It can be any repository, of any team. It does not choose the board. |
 | `tasks` | `--parent <INITIATIVE>` | short code | none | The parent initiative. Kairos writes the task and the `parent` edge in one transaction: a refused parent leaves no task (KAIROS-T-0572). In a claims column, `parent_gate` applies. |
-| `documents` | `--template <TEMPLATE_ID>` | UUID | none | Template to stamp content and metadata defaults from. |
+| `documents` | `--template <TEMPLATE>` | slug or UUID | none | Template to stamp content and metadata defaults from. |
 | `adrs` | `--decision-maker <DECISION_MAKER>` | string | none | Decision maker. |
 | `adrs` | `--decision-date <DATE>` | `YYYY-MM-DD` | none | Decision date. |
 
@@ -478,13 +518,14 @@ its current version; a concurrent edit is rejected with 409 `CONFLICT`. A
 ### `<noun> note`
 
 ```
-kairos <noun> note <SHORT_CODE> --text <TEXT> [OPTIONS]
+kairos <noun> note <SHORT_CODE> (--text <TEXT> | --text-file <FILE>) [OPTIONS]
 ```
 
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
 | `<SHORT_CODE>` | string | required | The item's short code. |
-| `--text <TEXT>` | string | required | The markdown text of the note. Must not be empty. |
+| `--text <TEXT>` | string | required without `--text-file` | The markdown text of the note. Must not be empty. |
+| `--text-file <FILE>` | path | — | Read the text of the note from a file. `-` reads standard input. Conflicts with `--text`. |
 
 Appends a note at the end of the item's content. The note gets a title with
 its id, the date and your name: `## Note n-3 (2026-10-11, Robin)`. Send no
@@ -504,7 +545,7 @@ kairos <noun> promote-note <SHORT_CODE> <NOTE_ID> --kind <KIND> --board <BOARD> 
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
 | `<SHORT_CODE>` | string | required | The item's short code. |
-| `<NOTE_ID>` | string | required | The id of the note, as `get` lists it: `n-3`. |
+| `<NOTE_ID>` | string | required | The id of the note, as `show` lists it: `n-3`. |
 | `--kind <KIND>` | `adr` \| `document` | required | What the note becomes. |
 | `--board <BOARD>` | slug or UUID | required | The board that gets the new item: an ADR board for an ADR, the owner board for a document. |
 | `--title <TITLE>` | string | the first line of the note | The title of the new item. |
@@ -524,20 +565,23 @@ Kairos promoted note n-3 on ACME-T-0012 to the draft adr ACME-A-0029. ACME-A-002
 ### `<noun> transition`
 
 ```
-kairos <noun> transition <SHORT_CODE> --to <COLUMN_ID> [OPTIONS]
+kairos <noun> transition <SHORT_CODE> --to <COLUMN> [OPTIONS]
 ```
 
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
 | `<SHORT_CODE>` | string | required | The item's short code. |
-| `--to <COLUMN_ID>` | UUID | required | Target column. |
+| `--to <COLUMN>` | name or UUID | required | Target column, on the board of the item. The case of the name does not count. |
+
+The output names the column: `Kairos moved the task ACME-T-0012 to the column
+Active.` Before KAIROS-T-0589, it gave the id of the column.
 
 A target outside the board's transition graph is rejected with 422
 `INVALID_TRANSITION`, and the rejection lists the allowed target columns by
 name and id. Not available on `documents`.
 
 A task that a person moves to Active gets the [claim](../glossary/#claim) of the
-person. `tasks get` shows it in the field `claim`. A task with a live state
+person. `tasks show` shows it in the field `claim`. A task with a live state
 (`kairos state`) shows it in the field `state`.
 
 ### `tasks move`
@@ -624,7 +668,7 @@ kairos tasks cancel <SHORT_CODE> --reason <TEXT> [OPTIONS]
 
 [Cancels](../glossary/#cancel) a task: the team will not do it. The task moves
 to the done column of its board with the mark "cancelled" and the reason.
-`tasks get` shows the mark in the line `cancelled`. `tasks reopen` brings the
+`tasks show` shows the mark in the line `cancelled`. `tasks reopen` brings the
 task back and removes the mark. You need `transition_items` on the board of the
 task.
 
@@ -722,7 +766,7 @@ The state is not content: the write makes no new version of the task. A
 hand-off or a release clears the next step.
 
 The edit rule applies, as for `note`. It passes the creator of the task, the
-holder of its claim (KAIROS-T-0532), and `manage_tasks` on its board. `tasks get` shows the state in the field
+holder of its claim (KAIROS-T-0532), and `manage_tasks` on its board. `tasks show` shows the state in the field
 `state`. The board card and the item page of the GUI show it too. The
 command prints one line:
 
@@ -926,7 +970,7 @@ Filters:
 | `--column <COLUMN>` | name or UUID | none | Restrict to items in this column. A name needs `--board`; an unknown name is refused with the columns of the board (KAIROS-T-0552). |
 | `--team <TEAM>` | slug or UUID | none | Restrict to tasks assigned to this team. |
 | `--repo <REPOSITORY>` | slug or UUID | none | Restrict to the items of this repository: the tasks that link to it, and the documents and the ADRs that impact it. |
-| `--task-type <TASK_TYPE>` | `task` \| `bug` \| `tech_debt` \| `support` | all | Task type filter. Repeatable. |
+| `--kind <KIND>` | `task` \| `bug` \| `tech_debt` \| `support` | all | The kind of a task. Repeatable. The old name `--task-type` still works. |
 | `--work-class <WORK_CLASS>` | `planned` \| `support` | all | Lane filter. Repeatable. |
 | `--is-bucket <BOOL>` | `true` \| `false` | both | Restrict to bucket or non-bucket initiatives. |
 | `--metadata <KEY=VALUE>` | `slug=value` | none | Metadata condition. Repeatable. Values support trailing-`*` globs, e.g. `component=auth*`. |
@@ -1031,14 +1075,14 @@ name, for example `[WIP 2/3]`. When it has more items than the limit, it shows
 ### `kairos boards flow`
 
 ```
-kairos boards flow <BOARD> [--from <YYYY-MM-DD>] [--to <YYYY-MM-DD>] [OPTIONS]
+kairos boards flow <BOARD> [--from <YYYY-MM-DD>] [--until <YYYY-MM-DD>] [OPTIONS]
 ```
 
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
 | `<BOARD>` | slug or UUID | required | The board. |
-| `--from <DATE>` | `YYYY-MM-DD` | 89 days before `--to` | The first day of the range (UTC). |
-| `--to <DATE>` | `YYYY-MM-DD` | today | The last day of the range (UTC). |
+| `--from <DATE>` | `YYYY-MM-DD` | 89 days before `--until` | The first day of the range (UTC). |
+| `--until <DATE>` | `YYYY-MM-DD` | today | The last day of the range (UTC). The old name `--to` still works. |
 
 Shows the flow metrics of the board for the range:
 
@@ -1148,7 +1192,7 @@ kairos boards dispatch remove-target <BOARD> <TARGET> --confirm [OPTIONS]
 kairos boards dispatch enable-target <BOARD> <TARGET> [OPTIONS]
 kairos boards dispatch redeliver <BOARD> <TARGET> [--since <TIME>] [OPTIONS]
 kairos boards dispatch test-target <BOARD> <TARGET> [OPTIONS]
-kairos boards dispatch add-rule <BOARD> [--trigger entered_column|unblocked] [--column <COLUMN>] --target <TARGET> [--task-type <TYPE>] [--metadata <SLUG=VALUE>] [--repository <REPO>] [OPTIONS]
+kairos boards dispatch add-rule <BOARD> [--trigger entered_column|unblocked] [--column <COLUMN>] --target <TARGET> [--kind <KIND>] [--metadata <SLUG=VALUE>] [--repo <REPOSITORY>] [OPTIONS]
 kairos boards dispatch remove-rule <BOARD> <RULE> --confirm [OPTIONS]
 kairos boards dispatch agent-triage <BOARD> [--on | --off] [OPTIONS]
 kairos boards dispatch log <BOARD> [--target <TARGET>] [--rule <RULE>] [--limit <N>] [--before <DELIVERY>] [OPTIONS]
@@ -1181,9 +1225,9 @@ nothing and exit 1.
 | `--trigger <TRIGGER>` | string | `entered_column` | `entered_column`: a task enters the column. `unblocked`: the last open blocker of a task closes (the event `task.unblocked`). |
 | `--column <COLUMN>` | name or UUID | required for `entered_column` | The column. For `unblocked`, the column the task must be in; with none, each column that is not done. |
 | `--target <TARGET>` | UUID | required | A target of the board. |
-| `--task-type <TYPE>` | string | none | Only tasks of this type: `task`, `bug`, `tech_debt` or `support`. |
+| `--kind <KIND>` | string | none | Only tasks of this kind: `task`, `bug`, `tech_debt` or `support`. The old name `--task-type` still works. |
 | `--metadata <SLUG=VALUE>` | string | none | Only tasks with this metadata value, for example `priority=high`. |
-| `--repository <REPO>` | slug or UUID | none | Only tasks of this repository. |
+| `--repo <REPOSITORY>` | slug or UUID | none | Only tasks of this repository. The old name `--repository` still works. |
 
 ### `kairos boards archive-completed`
 
@@ -1256,12 +1300,12 @@ kairos members add --email <EMAIL> [OPTIONS]
 ### `kairos members set-role`
 
 ```
-kairos members set-role <USER_ID> --role <ROLE> [OPTIONS]
+kairos members set-role <USER> --role <ROLE> [OPTIONS]
 ```
 
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
-| `<USER_ID>` | UUID | required | User id, from `kairos members list`. |
+| `<USER>` | id, email or user name | required | The member, from `kairos members list`. |
 | `--role <ROLE>` | `admin` \| `member` | required | New role. |
 
 Kairos refuses a demotion of the last admin with `LAST_ADMIN`.
@@ -1269,12 +1313,12 @@ Kairos refuses a demotion of the last admin with `LAST_ADMIN`.
 ### `kairos members remove`
 
 ```
-kairos members remove <USER_ID> --confirm [OPTIONS]
+kairos members remove <USER> --confirm [OPTIONS]
 ```
 
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
-| `<USER_ID>` | UUID | required | User id. |
+| `<USER>` | id, email or user name | required | The member. |
 | `--confirm` | flag | off | Required for the removal to happen. |
 
 Kairos refuses the removal of the last admin with `LAST_ADMIN`.
@@ -1293,11 +1337,13 @@ kairos teams list [OPTIONS]
 | `--offset <OFFSET>` | integer | 0 | Rows to skip. |
 | `--all` | flag | off | Read each page. The CLI asks for one page after the other and prints each row. Not with `--limit` or `--offset`. |
 
-### `kairos teams get`
+### `kairos teams show`
 
 ```
-kairos teams get <TEAM> [OPTIONS]
+kairos teams show <TEAM> [OPTIONS]
 ```
+
+`get` is the old name of `show`, and it still works.
 
 | Argument | Type | Default | Description |
 |---|---|---|---|
@@ -1314,7 +1360,7 @@ kairos teams create --name <NAME> --slug <SLUG> --code-prefix <PREFIX> [OPTIONS]
 | `--name <NAME>` | string | required | Team name. |
 | `--slug <SLUG>` | string | required | Team slug. The team's delivery board becomes `{slug}-delivery`. |
 | `--code-prefix <PREFIX>` | string | required | The short-code prefix of the delivery board, for example `SKADI`. A capital letter, then 1 to 9 capital letters or digits. A task on the board gets the code `SKADI-T-0001`. The prefix does not change later. |
-| `--type <TEAM_TYPE>` | `stream_aligned` \| `platform` \| `enabling` \| `complicated_subsystem` | `stream_aligned` | Team Topologies type. |
+| `--kind <KIND>` | `stream_aligned` \| `platform` \| `enabling` \| `complicated_subsystem` | `stream_aligned` | The Team Topologies kind of the team. The old name `--type` still works. |
 
 Creating a team also creates its delivery board.
 
@@ -1329,7 +1375,7 @@ kairos teams update <TEAM> [OPTIONS]
 | `<TEAM>` | slug or UUID | required | Team to update. |
 | `--name <NAME>` | string | unchanged | New name. |
 | `--slug <SLUG>` | string | unchanged | New slug. |
-| `--type <TEAM_TYPE>` | `stream_aligned` \| `platform` \| `enabling` \| `complicated_subsystem` | unchanged | New type. |
+| `--kind <KIND>` | `stream_aligned` \| `platform` \| `enabling` \| `complicated_subsystem` | unchanged | The new kind. The old name `--type` still works. |
 
 ### `kairos teams delete`
 
@@ -1454,15 +1500,17 @@ kairos streams list [OPTIONS]
 | `--offset <OFFSET>` | integer | 0 | Rows to skip. |
 | `--all` | flag | off | Read each page. The CLI asks for one page after the other and prints each row. Not with `--limit` or `--offset`. |
 
-### `kairos streams get`
+### `kairos streams show`
 
 ```
-kairos streams get <STREAM_ID> [OPTIONS]
+kairos streams show <STREAM> [OPTIONS]
 ```
+
+`get` is the old name of `show`, and it still works.
 
 | Argument | Type | Default | Description |
 |---|---|---|---|
-| `<STREAM_ID>` | UUID | required | Stream to show. |
+| `<STREAM>` | slug, name or UUID | required | Stream to show. |
 
 ### `kairos streams create`
 
@@ -1479,12 +1527,12 @@ kairos streams create --name <NAME> --slug <SLUG> [OPTIONS]
 ### `kairos streams update`
 
 ```
-kairos streams update <STREAM_ID> [OPTIONS]
+kairos streams update <STREAM> [OPTIONS]
 ```
 
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
-| `<STREAM_ID>` | UUID | required | Stream to update. |
+| `<STREAM>` | slug, name or UUID | required | Stream to update. |
 | `--name <NAME>` | string | unchanged | New name. |
 | `--slug <SLUG>` | string | unchanged | New slug. |
 | `--description <DESCRIPTION>` | string | unchanged | New description. |
@@ -1492,12 +1540,12 @@ kairos streams update <STREAM_ID> [OPTIONS]
 ### `kairos streams delete`
 
 ```
-kairos streams delete <STREAM_ID> --confirm [OPTIONS]
+kairos streams delete <STREAM> --confirm [OPTIONS]
 ```
 
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
-| `<STREAM_ID>` | UUID | required | Stream to delete. |
+| `<STREAM>` | slug, name or UUID | required | Stream to delete. |
 | `--confirm` | flag | off | Required for the deletion to happen. |
 
 A soft delete.
@@ -1505,15 +1553,15 @@ A soft delete.
 ### `kairos streams teams`
 
 ```
-kairos streams teams list   <STREAM_ID> [OPTIONS]
-kairos streams teams add    <STREAM_ID> --team <TEAM_ID> [OPTIONS]
-kairos streams teams remove <STREAM_ID> --team <TEAM_ID> [OPTIONS]
+kairos streams teams list   <STREAM> [OPTIONS]
+kairos streams teams add    <STREAM> --team <TEAM> [OPTIONS]
+kairos streams teams remove <STREAM> --team <TEAM> [OPTIONS]
 ```
 
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
-| `<STREAM_ID>` | UUID | required | The stream. |
-| `--team <TEAM_ID>` | UUID | required on `add` and `remove` | The team. |
+| `<STREAM>` | slug, name or UUID | required | The stream. |
+| `--team <TEAM>` | slug or UUID | required on `add` and `remove` | The team. |
 
 ### `kairos repos list`
 
@@ -1532,13 +1580,13 @@ After the table, the command prints the count of the repositories and the
 page: `total: 12 (limit 50, offset 0)`. See
 [the pages of a list](#the-pages-of-a-list).
 
-### `kairos repos get`
+### `kairos repos show`
 
 ```
-kairos repos get <REPOSITORY> [OPTIONS]
+kairos repos show <REPOSITORY> [OPTIONS]
 ```
 
-`kairos repos show` is the same command.
+`get` is the old name of `show`, and it still works.
 
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
@@ -1805,6 +1853,38 @@ upload. Each run shows its result. `--limit` gives the most runs to show:
 | `SYMBOLS` | The symbols of the index that the run wrote. |
 | `DETAIL` | The text of a failure, or when the run ended. |
 
+### `kairos repos indexes`
+
+```text
+kairos repos indexes <REPOSITORY> [OPTIONS]
+```
+
+List the indexed commits of a repository, newest first. The order is the
+time of the last write of each index. Use it when `fetch_index` refuses a
+checkout. The list shows how far the nearest index is from the checkout.
+Each member can read the list.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--limit <LIMIT>` | integer | server default 50, maximum 200 | Page size. |
+| `--offset <OFFSET>` | integer | 0 | Rows to skip. |
+| `--all` | flag | off | Read each page. The CLI asks for one page after the other and prints each row. Not with `--limit` or `--offset`. |
+
+| Column | Meaning |
+|---|---|
+| `COMMIT` | The first 12 characters of the commit. |
+| `REF` | The branch, the pull request or the tag of the index, or `-`. |
+| `SCHEMA` | The schema version of the index file, or `-` when the server cannot read it. |
+| `SIZE` | The size of the structure: the index with no summaries. |
+| `SUMMARIES` | The summaries that the index uses. |
+| `CREATED` | When Kairos first stored an index of the commit, in UTC. |
+| `UPDATED` | When Kairos last stored an index of the commit, in UTC. |
+
+After the table, the command prints the count of the indexes and the page.
+With `--json`, each row has the fields of
+`GET /api/repositories/{slug}/code-indexes/commits`. See
+[the pages of a list](#the-pages-of-a-list).
+
 ### `kairos repos credential set`
 
 ```
@@ -1878,7 +1958,7 @@ write" on the one repository. Only a GitHub repository takes a write token.
 exits 1.
 
 `remove` removes the token, and Kairos writes nothing more. `status` prints
-`off (no write token)`, or `on` with the last write. `kairos repos get` shows
+`off (no write token)`, or `on` with the last write. `kairos repos show` shows
 the same line. No command shows the token. See
 [Turn on GitHub write-back](../../how-to/turn-on-github-write-back/).
 
@@ -2062,12 +2142,12 @@ No arguments beyond the common options.
 ### `kairos service-accounts delete`
 
 ```
-kairos service-accounts delete <ID> --confirm [OPTIONS]
+kairos service-accounts delete <SERVICE_ACCOUNT> --confirm [OPTIONS]
 ```
 
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
-| `<ID>` | UUID | required | Service account id, from `kairos service-accounts list`. |
+| `<SERVICE_ACCOUNT>` | name or UUID | required | The service account, from `kairos service-accounts list`. |
 | `--confirm` | flag | off | Required for the deletion to happen. |
 
 Deletes the service account and all of its keys.
@@ -2081,7 +2161,7 @@ kairos keys create --name <NAME> [--service-account <SERVICE_ACCOUNT>] [OPTIONS]
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--name <NAME>` | string | required | Label for the key, for example `laptop-claude-code` or `gha-main`. |
-| `--service-account <SERVICE_ACCOUNT>` | UUID | none | The service account. Without it, the command makes an agent key for you. |
+| `--service-account <SERVICE_ACCOUNT>` | name or UUID | none | The service account. Without it, the command makes an agent key for you. |
 | `--expires-at <EXPIRES_AT>` | RFC 3339 instant | the default life | Expiry, for example `2027-01-01T00:00:00Z`. Without it, the key expires after the default life of the server: 90 days, unless the operator changed `KAIROS_API_KEY_TTL_DAYS`. |
 | `--no-expiry` | flag | off | The key never expires. Do not use it with `--expires-at`. |
 
@@ -2105,7 +2185,7 @@ kairos keys list [--service-account <SERVICE_ACCOUNT>] [OPTIONS]
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--service-account <SERVICE_ACCOUNT>` | UUID | none | The service account. Without it, the command lists your agent keys. |
+| `--service-account <SERVICE_ACCOUNT>` | name or UUID | none | The service account. Without it, the command lists your agent keys. |
 
 The list shows the start of each key only. It never shows the secret.
 
@@ -2118,7 +2198,7 @@ kairos keys rotate <KEY_ID> [--service-account <SERVICE_ACCOUNT>] [OPTIONS]
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
 | `<KEY_ID>` | UUID | required | Key id, from `kairos keys list`. |
-| `--service-account <SERVICE_ACCOUNT>` | UUID | none | The service account of the key. Without it, the command rotates your agent key. |
+| `--service-account <SERVICE_ACCOUNT>` | name or UUID | none | The service account of the key. Without it, the command rotates your agent key. |
 
 The command makes a new key with the same name and a new secret. It shows the new
 secret one time only. The old secret works until the end of the grace time: 1
@@ -2137,7 +2217,7 @@ kairos keys revoke <KEY_ID> [--service-account <SERVICE_ACCOUNT>] --confirm [OPT
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
 | `<KEY_ID>` | UUID | required | Key id, from `kairos keys list`. |
-| `--service-account <SERVICE_ACCOUNT>` | UUID | none | The service account of the key. Without it, the command revokes your agent key. |
+| `--service-account <SERVICE_ACCOUNT>` | name or UUID | none | The service account of the key. Without it, the command revokes your agent key. |
 | `--confirm` | flag | off | Required for the revocation to happen. |
 
 ## Agent keys of each person
@@ -2153,7 +2233,7 @@ kairos admin agent-keys list [--user <USER>] [OPTIONS]
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--user <USER>` | UUID or email | none | Only the keys of this person. A value that names no person gets `422`. |
+| `--user <USER>` | UUID, email or user name | none | Only the keys of this person. A value that names no person gets `422`. |
 | `--limit <LIMIT>` | integer | server default 50, maximum 200 | Page size. |
 | `--offset <OFFSET>` | integer | 0 | Rows to skip. |
 | `--all` | flag | off | Read each page. The CLI asks for one page after the other and prints each row. Not with `--limit` or `--offset`. |
@@ -2331,7 +2411,7 @@ says why it made no summaries.
 ### `kairos index update`
 
 ```
-kairos index update [--root <ROOT>] [--rust-edges] [--link-only] [--max-changed <MAX_CHANGED>] [--repository <REPOSITORY>] [--url <URL>] [--tenant <TENANT>] [--json]
+kairos index update [--root <ROOT>] [--rust-edges] [--link-only] [--max-changed <MAX_CHANGED>] [--repo <REPOSITORY>] [--url <URL>] [--tenant <TENANT>] [--json]
 ```
 
 | Option | Type | Default | Description |
@@ -2339,7 +2419,7 @@ kairos index update [--root <ROOT>] [--rust-edges] [--link-only] [--max-changed 
 | `--rust-edges` (alias `--scip`) | flag | off | Run the SCIP indexers again for the precise edges of the changed code: rust-analyzer, scip-go, scip-typescript and scip-python. |
 | `--link-only` | flag | off | Run no model. Link the summaries of the pool, and make no new summaries. |
 | `--max-changed <MAX_CHANGED>` | integer | 200 when a model runs, else no limit | The most files that can change since the base index. Above it, the CLI builds nothing. With `--link-only` or on a hosted repository, no model runs. |
-| `--repository <REPOSITORY>` | slug or UUID | `repository` in `.claude/kairos.local.md`, else the repository of the `origin` remote | The repository in Kairos. |
+| `--repo <REPOSITORY>` | slug or UUID | `repository` in `.claude/kairos.local.md`, else the repository of the `origin` remote | The repository in Kairos. The old name `--repository` still works. |
 | `--url <URL>` | string | `KAIROS_URL`, else `deployment_url` in `.claude/kairos.local.md`, else the only deployment of `kairos login` | The deployment. |
 | `--tenant <TENANT>` | string | `tenant` in `.claude/kairos.local.md`, else the tenant of the login | The tenant, for a token from `kairos login`. A key carries its tenant. |
 

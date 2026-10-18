@@ -22,8 +22,13 @@
 //! the code index gives to git (COLLIERY-T-3105). `set` reads the token from
 //! standard input or from a prompt with no echo, never from an argument.
 //! `get` (alias `show`) prints the status of the token, never the token.
+//!
+//! `indexes` lists the indexed commits of a repository, newest first
+//! (KAIROS-T-0518). It shows why `fetch_index` takes an old base: the
+//! nearest index can be far from the checkout.
 
 use kairos_client::EntityKind;
+use kairos_client::types_code_index::CodeIndex;
 use kairos_client::types_repositories::{
     CreateRepositoryRequest, ImpactingItem, Repository, UpdateRepositoryRequest,
 };
@@ -58,8 +63,8 @@ pub enum ReposCommand {
     /// Show one repository: owner, the owner's board, how-to-work-here,
     /// the status of its read token, the documents and ADRs that impact it,
     /// in-flight PRs
-    #[command(visible_alias = "show")]
-    Get {
+    #[command(alias = "get")]
+    Show {
         /// Repository slug (or UUID)
         repository: String,
         /// Also list the archived documents and ADRs that impact the
@@ -247,6 +252,24 @@ pub enum ReposCommand {
     Reindex {
         /// Repository slug (or UUID)
         repository: String,
+        #[command(flatten)]
+        common: Common,
+    },
+    /// List the indexed commits of a repository, newest first: the commit,
+    /// its branch or tag, the schema version, the size and the times
+    Indexes {
+        /// Repository slug (or UUID)
+        repository: String,
+        /// Page size (default 50, max 200)
+        #[arg(long)]
+        limit: Option<i64>,
+        /// Rows to skip
+        #[arg(long)]
+        offset: Option<i64>,
+        /// Read each page: the CLI asks for one page after the other, and
+        /// prints each row. Not with --limit or --offset
+        #[arg(long, conflicts_with_all = ["limit", "offset"])]
+        all: bool,
         #[command(flatten)]
         common: Common,
     },
@@ -561,6 +584,59 @@ fn repo_table(repos: &[Repository]) -> Table {
     table
 }
 
+/// The table of the indexed commits (KAIROS-T-0518). Pure.
+fn index_table(indexes: &[CodeIndex]) -> Table {
+    let mut table = Table::new(&[
+        "COMMIT",
+        "REF",
+        "SCHEMA",
+        "SIZE",
+        "SUMMARIES",
+        "CREATED",
+        "UPDATED",
+    ]);
+    for index in indexes {
+        table.row(vec![
+            index.commit.chars().take(12).collect(),
+            index.r#ref.clone().unwrap_or_else(|| "-".to_string()),
+            index
+                .schema_version
+                .map_or_else(|| "-".to_string(), |v| v.to_string()),
+            size_text(index.structure_bytes),
+            index.summary_keys.to_string(),
+            minute_text(&index.created_at),
+            minute_text(&index.updated_at),
+        ]);
+    }
+    table
+}
+
+/// A size in bytes as B, KiB or MiB. Pure.
+fn size_text(bytes: i64) -> String {
+    const KIB: i64 = 1024;
+    const MIB: i64 = 1024 * 1024;
+    if bytes < KIB {
+        format!("{bytes} B")
+    } else if bytes < MIB {
+        format!("{:.1} KiB", bytes as f64 / KIB as f64)
+    } else {
+        format!("{:.1} MiB", bytes as f64 / MIB as f64)
+    }
+}
+
+/// An RFC 3339 time as `YYYY-MM-DD HH:MM` in UTC; another text as it is.
+/// Pure.
+fn minute_text(time: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(time).map_or_else(
+        |_| time.to_string(),
+        |t| {
+            t.with_timezone(&chrono::Utc)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        },
+    )
+}
+
 impl ReposCommand {
     pub async fn run(self) -> Result<(), CliError> {
         match self {
@@ -588,7 +664,7 @@ impl ReposCommand {
                 envelope.print_footer();
                 Ok(())
             }
-            Self::Get {
+            Self::Show {
                 repository,
                 include_deleted,
                 common,
@@ -830,7 +906,7 @@ impl ReposCommand {
                 if common.json {
                     return print_json(&response);
                 }
-                println!("Kairos deleted the repository {}.", response.id);
+                println!("Kairos deleted the repository {repository}.");
                 Ok(())
             }
             Self::Bind {
@@ -908,6 +984,28 @@ impl ReposCommand {
                      started {}). To follow it, run: kairos repos builds {repository}",
                     run.id, run.started_at
                 );
+                Ok(())
+            }
+            Self::Indexes {
+                repository,
+                limit,
+                offset,
+                all,
+                common,
+            } => {
+                let client = client(&common)?;
+                let paging = Paging { limit, offset, all };
+                let listing =
+                    fetch(paging, |page| client.code_indexes_page(&repository, page)).await?;
+                if common.json {
+                    return listing.print_json();
+                }
+                if listing.items.is_empty() {
+                    println!("(none)");
+                } else {
+                    print!("{}", index_table(&listing.items).render());
+                }
+                listing.print_footer();
                 Ok(())
             }
             Self::Builds {
@@ -998,6 +1096,46 @@ fn print_import(import: &kairos_client::types_repositories::IssueImport) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn index(commit: &str, r#ref: Option<&str>, version: Option<i64>, bytes: i64) -> CodeIndex {
+        CodeIndex {
+            commit: commit.to_string(),
+            r#ref: r#ref.map(str::to_string),
+            source: "build".to_string(),
+            structure_bytes: bytes,
+            summary_keys: 7,
+            schema_version: version,
+            vector_model: None,
+            created_at: "2026-10-16T21:57:18.123456+00:00".to_string(),
+            updated_at: "2026-10-18T01:24:06+00:00".to_string(),
+        }
+    }
+
+    /// KAIROS-T-0518: one line for each indexed commit, with the short
+    /// commit, the ref, the schema version, the size and the times.
+    #[test]
+    fn the_index_table_has_one_line_for_each_commit() {
+        let rows = [
+            index(&"a".repeat(40), Some("main"), Some(6), 2_500_000),
+            index(&"b".repeat(40), None, None, 900),
+        ];
+        assert_eq!(
+            index_table(&rows).render(),
+            "COMMIT        REF   SCHEMA  SIZE     SUMMARIES  CREATED           UPDATED\n\
+             aaaaaaaaaaaa  main  6       2.4 MiB  7          2026-10-16 21:57  2026-10-18 01:24\n\
+             bbbbbbbbbbbb  -     -       900 B    7          2026-10-16 21:57  2026-10-18 01:24\n"
+        );
+    }
+
+    #[test]
+    fn sizes_and_times_are_short() {
+        assert_eq!(size_text(0), "0 B");
+        assert_eq!(size_text(1023), "1023 B");
+        assert_eq!(size_text(1536), "1.5 KiB");
+        assert_eq!(size_text(22 * 1024 * 1024), "22.0 MiB");
+        assert_eq!(minute_text("2026-10-18T03:24:06+02:00"), "2026-10-18 01:24");
+        assert_eq!(minute_text("not a time"), "not a time");
+    }
 
     /// COLLIERY-T-0269: the family of `link` and `unlink` comes from the
     /// type letter of the short code.

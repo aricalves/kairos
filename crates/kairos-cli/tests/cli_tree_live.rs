@@ -569,7 +569,7 @@ async fn cli_command_tree_golden_path_live() {
     assert_eq!(code, 0, "valid transition failed: {stderr}");
     assert_eq!(
         stdout.trim(),
-        format!("Kairos moved the task {task_code} to the column {todo}.")
+        format!("Kairos moved the task {task_code} to the column Todo.")
     );
 
     // --- search finds it: flags, --json, and the --query-json escape hatch -----
@@ -915,6 +915,30 @@ async fn cli_command_tree_golden_path_live() {
     assert!(stdout.contains("payments-api"), "{stdout}");
     assert!(stdout.contains("acme/payments-api"), "{stdout}");
 
+    // KAIROS-T-0518: `repos indexes` of a repository with no index is an
+    // empty list, in the envelope of each list.
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["repos", "indexes", "payments-api", "--json"],
+    )
+    .await;
+    assert_eq!(code, 0, "repos indexes --json failed: {stderr}");
+    let indexes: serde_json::Value = serde_json::from_str(&stdout).expect("envelope JSON");
+    assert_eq!(
+        indexes,
+        serde_json::json!({ "items": [], "total": 0, "next_offset": null })
+    );
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["repos", "indexes", "payments-api", "--all"],
+    )
+    .await;
+    assert_eq!(code, 0, "repos indexes --all failed: {stderr}");
+    assert_eq!(stdout, "(none)\ntotal: 0\n");
+    let (code, _, stderr) = run_cli(config_dir.path(), &["repos", "indexes", "no-such-repo"]).await;
+    assert_ne!(code, 0, "an unknown repository must fail");
+    assert!(stderr.contains("no-such-repo"), "{stderr}");
+
     // The golden-path task was deleted above; bind a fresh one.
     let (code, stdout, stderr) = run_cli(
         config_dir.path(),
@@ -1256,6 +1280,208 @@ async fn cli_command_tree_golden_path_live() {
         stderr.contains("final") && stderr.contains("published"),
         "{stderr}"
     );
+
+    // --- KAIROS-T-0589: a name or a slug for each reference -------------------
+    let text_dir = tempfile::tempdir().expect("temp text dir");
+    let content_path = text_dir.path().join("content.md");
+    std::fs::write(&content_path, "Content from a file.").expect("content file");
+    let note_path = text_dir.path().join("note.md");
+    std::fs::write(&note_path, "A note from a file.").expect("note file");
+    let content_file = content_path.to_str().expect("path").to_string();
+    let note_file = note_path.to_str().expect("path").to_string();
+
+    // tasks create: --team by slug, --column by name, --kind, --content-file.
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &[
+            "tasks",
+            "create",
+            "--team",
+            "platform",
+            "--column",
+            "backlog",
+            "--title",
+            "Named references",
+            "--kind",
+            "bug",
+            "--content-file",
+            &content_file,
+            "--json",
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "tasks create by names failed: {stderr}");
+    let named: serde_json::Value = serde_json::from_str(&stdout).expect("task DTO JSON");
+    let named_code = named["short_code"].as_str().expect("code").to_string();
+    // A task starts in the entry column (KAIROS-T-0566).
+    assert_eq!(
+        named["column_id"].as_str(),
+        Some(backlog.as_str()),
+        "{stdout}"
+    );
+    assert_eq!(
+        named["team_id"].as_str(),
+        Some(team.id.as_str()),
+        "{stdout}"
+    );
+    assert_eq!(named["task_type"], "bug");
+    assert_eq!(named["content"], "Content from a file.");
+    // An unknown column is refused before the write, and each column is named.
+    let (code, _, stderr) = run_cli(
+        config_dir.path(),
+        &[
+            "tasks",
+            "create",
+            "--board",
+            &delivery_board_id,
+            "--column",
+            "Nowhere",
+            "--title",
+            "x",
+        ],
+    )
+    .await;
+    assert_eq!(code, 1, "an unknown column: {stderr}");
+    assert!(
+        stderr.contains("\"Nowhere\"") && stderr.contains("Backlog"),
+        "{stderr}"
+    );
+
+    // transition --to a column name; the line names the column.
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["tasks", "transition", &named_code, "--to", "todo"],
+    )
+    .await;
+    assert_eq!(code, 0, "transition by name failed: {stderr}");
+    assert_eq!(
+        stdout.trim(),
+        format!("Kairos moved the task {named_code} to the column Todo.")
+    );
+
+    // note --text-file; show, and get as its alias.
+    let (code, _, stderr) = run_cli(
+        config_dir.path(),
+        &["tasks", "note", &named_code, "--text-file", &note_file],
+    )
+    .await;
+    assert_eq!(code, 0, "note --text-file failed: {stderr}");
+    for verb in ["show", "get"] {
+        let (code, stdout, stderr) =
+            run_cli(config_dir.path(), &["tasks", verb, &named_code]).await;
+        assert_eq!(code, 0, "tasks {verb} failed: {stderr}");
+        assert!(stdout.contains("A note from a file."), "{stdout}");
+    }
+
+    // documents create --template by slug.
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &[
+            "documents",
+            "create",
+            "--title",
+            "From a template",
+            "--board",
+            &delivery_board_id,
+            "--template",
+            "paging-two",
+            "--json",
+        ],
+    )
+    .await;
+    assert_eq!(
+        code, 0,
+        "documents create --template <slug> failed: {stderr}"
+    );
+    let templated: serde_json::Value = serde_json::from_str(&stdout).expect("document JSON");
+    assert!(templated["template_id"].is_string(), "{stdout}");
+
+    // boards list shows the slug of the team.
+    let (code, stdout, stderr) = run_cli(config_dir.path(), &["boards", "list"]).await;
+    assert_eq!(code, 0, "boards list failed: {stderr}");
+    let delivery_row = stdout
+        .lines()
+        .find(|line| line.starts_with(&delivery_board_id))
+        .expect("the delivery board row");
+    assert!(delivery_row.trim_end().ends_with("platform"), "{stdout}");
+
+    // members set-role by email.
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &[
+            "members",
+            "set-role",
+            "alice@kairos.test",
+            "--role",
+            "admin",
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "members set-role by email failed: {stderr}");
+    assert!(stdout.contains("has the role admin"), "{stdout}");
+
+    // service accounts and keys by the name of the account.
+    let (code, _, stderr) = run_cli(
+        config_dir.path(),
+        &["service-accounts", "create", "--name", "ci-deploy"],
+    )
+    .await;
+    assert_eq!(code, 0, "service-accounts create failed: {stderr}");
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["keys", "list", "--service-account", "ci-deploy"],
+    )
+    .await;
+    assert_eq!(code, 0, "keys list by account name failed: {stderr}");
+    assert!(stdout.contains("total: 0"), "{stdout}");
+    let (code, _, stderr) = run_cli(
+        config_dir.path(),
+        &["keys", "list", "--service-account", "no-such-account"],
+    )
+    .await;
+    assert_eq!(code, 1, "an unknown account: {stderr}");
+    assert!(stderr.contains("no-such-account"), "{stderr}");
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["service-accounts", "delete", "ci-deploy", "--confirm"],
+    )
+    .await;
+    assert_eq!(code, 0, "service-accounts delete by name failed: {stderr}");
+    assert!(stdout.contains("ci-deploy"), "{stdout}");
+
+    // streams by slug, and their teams by slug.
+    let (code, _, stderr) = run_cli(
+        config_dir.path(),
+        &[
+            "streams", "create", "--name", "Payments", "--slug", "payments",
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "streams create failed: {stderr}");
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["streams", "teams", "add", "payments", "--team", "platform"],
+    )
+    .await;
+    assert_eq!(code, 0, "streams teams add by slugs failed: {stderr}");
+    assert!(stdout.contains("platform"), "{stdout}");
+    let (code, stdout, stderr) =
+        run_cli(config_dir.path(), &["streams", "teams", "list", "payments"]).await;
+    assert_eq!(code, 0, "streams teams list by slug failed: {stderr}");
+    assert!(stdout.contains("platform"), "{stdout}");
+    let (code, stdout, stderr) = run_cli(config_dir.path(), &["streams", "show", "payments"]).await;
+    assert_eq!(code, 0, "streams show by slug failed: {stderr}");
+    assert!(stdout.contains("Payments"), "{stdout}");
+
+    // boards flow --until, and the old name --to.
+    for flag in ["--until", "--to"] {
+        let (code, _, stderr) = run_cli(
+            config_dir.path(),
+            &["boards", "flow", &delivery_board_id, flag, "2026-10-18"],
+        )
+        .await;
+        assert_eq!(code, 0, "boards flow {flag} failed: {stderr}");
+    }
 
     // --- teardown ----------------------------------------------------------------
     drop(conn);
