@@ -232,14 +232,20 @@ pub(crate) async fn update_strategy(
     let updated = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            let strategy = load(conn, &short_code, Liveness::LiveOnly)?;
-            require_item_edit(conn, role, user, strategy.id, ItemType::Strategy)?;
+            // KAIROS-T-0635: the rights need no content.
+            let (strategy_id, _) = crate::api::meta::resolve_family_item(
+                conn,
+                "strategies",
+                &short_code,
+                Liveness::LiveOnly,
+            )?;
+            require_item_edit(conn, role, user, strategy_id, ItemType::Strategy)?;
             let update = items::ContentUpdate {
                 new_title: body.title.as_deref(),
                 new_content: &body.content,
                 expected_version: body.version,
             };
-            match items::update_item_content(conn, ItemType::Strategy, strategy.id, update, user) {
+            match items::update_item_content(conn, ItemType::Strategy, strategy_id, update, user) {
                 Ok(_) => {
                     let item = load(conn, &short_code, Liveness::LiveOnly)?.into_dto();
                     crate::owners::attach_owner(conn, item)

@@ -259,8 +259,14 @@ pub(crate) async fn update_initiative(
     let updated = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            let initiative = load(conn, &short_code, Liveness::LiveOnly)?;
-            require_item_edit(conn, role, user, initiative.id, ItemType::Initiative)?;
+            // KAIROS-T-0635: the rights need no content.
+            let (initiative_id, _) = crate::api::meta::resolve_family_item(
+                conn,
+                "initiatives",
+                &short_code,
+                Liveness::LiveOnly,
+            )?;
+            require_item_edit(conn, role, user, initiative_id, ItemType::Initiative)?;
             let update = items::ContentUpdate {
                 new_title: body.title.as_deref(),
                 new_content: &body.content,
@@ -269,7 +275,7 @@ pub(crate) async fn update_initiative(
             match items::update_item_content(
                 conn,
                 ItemType::Initiative,
-                initiative.id,
+                initiative_id,
                 update,
                 user,
             ) {
