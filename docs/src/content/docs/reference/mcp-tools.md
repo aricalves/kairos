@@ -242,8 +242,8 @@ An organization admin holds each capability on each board. `list_members` with n
   (`admin` or `member`).
 - `team`: the members of the team.
 - `board`: the members of the board and their capabilities. A capability
-  comes from a grant, or `(grant)`. On a strategy or an initiative board, a
-  grant also gives `(board member, no grant)`. The team of the board gives
+  comes from a grant, or `(grant)`. On a strategy or an initiative board, the
+  `member` grant also gives `(board member, no grant)`. The team of the board gives
   `(team <slug>, no grant)`. The list does not show the capabilities of the
   organization admin role.
 

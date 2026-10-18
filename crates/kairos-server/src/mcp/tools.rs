@@ -7552,7 +7552,6 @@ fn board_member_lines(conn: &mut PgConnection, board: &Board) -> Result<Vec<Memb
     let mut ids: Vec<Uuid> = granted.keys().copied().collect();
     ids.extend(in_team.iter().filter(|id| !granted.contains_key(*id)));
     let users = users_by_id(conn, &ids)?;
-    let member = member_capabilities(board.board_level);
     let team = team_capabilities(board.board_level);
     let mut lines = Vec::new();
     for id in ids {
@@ -7560,6 +7559,9 @@ fn board_member_lines(conn: &mut PgConnection, board: &Board) -> Result<Vec<Memb
         let mut parts = Vec::new();
         if let Some(capabilities) = granted.get(&id) {
             parts.push(format!("{} (grant)", capabilities.join(", ")));
+            // KAIROS-T-0541: only the `member` grant (or `*`) of this person
+            // makes a member of a strategy or initiative board.
+            let member = member_capabilities(board.board_level, capabilities);
             if !member.is_empty() {
                 parts.push(format!("{} (board member, no grant)", member.join(", ")));
             }

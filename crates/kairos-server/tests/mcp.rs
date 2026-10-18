@@ -4739,6 +4739,45 @@ async fn member_tools_against_live_stack() {
     );
     assert!(!text.contains("- svc — "), "{text}");
 
+    // --- KAIROS-T-0541: on an initiative board, only the `member` grant
+    // gives the edit and the move. `pages` alone gives no more.
+    let initiatives = board_id_of(&mut conn, BoardLevel::Initiative);
+    let initiatives_slug: String = boards::table
+        .filter(boards::id.eq(initiatives))
+        .select(boards::slug)
+        .first(&mut conn)
+        .expect("the initiative board");
+    for (user_id, capability) in [(alice, "pages"), (bob, "member")] {
+        diesel::insert_into(kairos_db::schema::board_member_capabilities::table)
+            .values(kairos_db::models::boards::NewBoardMemberCapability {
+                board_id: initiatives,
+                user_id,
+                capability: capability.into(),
+                granted_by: svc,
+            })
+            .execute(&mut conn)
+            .expect("a grant on the initiative board");
+    }
+    let text = session
+        .call_ok("list_members", json!({"board": initiatives_slug}))
+        .await;
+    let alice_line = line_of(&text, "alice");
+    assert!(
+        alice_line.ends_with("· capabilities: pages (grant)"),
+        "{alice_line}"
+    );
+    assert!(
+        !alice_line.contains("manage_initiatives") && !alice_line.contains("board member"),
+        "{alice_line}"
+    );
+    assert!(
+        line_of(&text, "bob").ends_with(
+            "· capabilities: member (grant); manage_initiatives, transition_items (board \
+             member, no grant)"
+        ),
+        "{text}"
+    );
+
     // --- refusals: an unknown team or board, both at once, an unknown argument
     let text = session
         .call_err("list_members", json!({"team": "nope"}))
