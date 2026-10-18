@@ -353,11 +353,12 @@ pub(crate) async fn archive_completed(
 ) -> Result<Json<kairos_client::types::ArchiveCompletedResponse>, ApiError> {
     let user = auth.user_id;
     let slug = tenant.slug.clone();
+    let role = tenant.role;
     let response = state
         .blocking
         .run(&tenant.slug, move |conn| {
             let board = load_board_by_ref(conn, &id)?;
-            archive_completed_tasks(conn, &slug, &board, user)
+            archive_completed_tasks(conn, &slug, role, &board, user)
         })
         .await?;
     Ok(Json(response))
@@ -369,6 +370,7 @@ pub(crate) async fn archive_completed(
 pub(crate) fn archive_completed_tasks(
     conn: &mut PgConnection,
     slug: &str,
+    role: kairos_db::models::OrgRole,
     board: &Board,
     user: Uuid,
 ) -> Result<kairos_client::types::ArchiveCompletedResponse, ApiError> {
@@ -407,7 +409,7 @@ pub(crate) fn archive_completed_tasks(
             if !live {
                 continue;
             }
-            crate::api::cascade::archive_item(conn, slug, user, task_id, ItemType::Task)?;
+            crate::api::cascade::archive_item(conn, slug, role, user, task_id, ItemType::Task)?;
             short_codes.push(short_code);
         }
         Ok(kairos_client::types::ArchiveCompletedResponse {
