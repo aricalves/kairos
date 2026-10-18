@@ -73,7 +73,7 @@ Notes on the entry:
 
 ## What Desktop gets
 
-The work profile: the forty-six tools of the daily work. For the
+The work profile: the forty-seven tools of the daily work. For the
 administration tools, add `?profile=admin` to the URL. See
 [Profiles](../../reference/mcp-tools/#profiles).
 

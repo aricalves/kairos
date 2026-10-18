@@ -255,6 +255,7 @@ async fn notifications_ride_along_until_read() {
             team_id: None,
             repository: None,
             from_team: None,
+            parent: None,
         })
         .await
         .expect("task");
@@ -534,6 +535,7 @@ async fn each_key_keeps_its_own_read_state() {
         team_id: None,
         repository: None,
         from_team: None,
+        parent: None,
     };
     for n in 1..=3 {
         bob.create_task(&mention(n)).await.expect("task");

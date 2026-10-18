@@ -157,6 +157,7 @@ async fn task_move_and_team_deletion_against_live_stack() {
             team_id: None,
             repository: None,
             from_team: None,
+            parent: None,
         })
         .await
         .expect("creating the task");
@@ -312,6 +313,7 @@ async fn task_move_and_team_deletion_against_live_stack() {
             team_id: None,
             repository: None,
             from_team: None,
+            parent: None,
         })
         .await
         .expect("creating a task on web");

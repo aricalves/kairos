@@ -155,6 +155,7 @@ fn task(board: &str, title: &str, from_team: Option<&str>) -> CreateTaskRequest 
         team_id: None,
         repository: None,
         from_team: from_team.map(str::to_string),
+        parent: None,
     }
 }
 

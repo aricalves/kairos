@@ -33,21 +33,42 @@ function field(page: Page, label: string): Locator {
 /** Every short code the graph canvas is currently drawing. */
 async function drawn(page: Page): Promise<string[]> {
   // COLLIERY-T-1836: the canvas is the Aurora `Dag`; the `data-id` of a
-  // node is its short code.
+  // node is its short code. KAIROS-T-0492: a parent with tasks is a group
+  // box, not a node; its code, and the code of the strategy above it, are
+  // links in the header of the group.
   const codes = await page
     .locator('.cl-dag__node')
     .evaluateAll((nodes) => nodes.map((n) => n.getAttribute('data-id') ?? ''));
-  return [...new Set(codes.map((c) => c.trim()).filter(Boolean))].sort();
+  const headers = await page
+    .locator('.kairos-graph__header .kairos-graph__link[data-code]')
+    .evaluateAll((links) => links.map((l) => l.getAttribute('data-code') ?? ''));
+  return [...new Set([...codes, ...headers].map((c) => c.trim()).filter(Boolean))].sort();
 }
 
-/** The graph node carrying a short code. */
+/** What to click to move the focus to a code: its node, or its link in a
+ * group header (KAIROS-T-0492). A strategy can head more than one group. */
 function node(page: Page, code: string): Locator {
-  return page.locator(`.cl-dag__node[data-id="${code}"]`);
+  return page
+    .locator(`.cl-dag__node[data-id="${code}"]`)
+    .or(page.locator(`.kairos-graph__header .kairos-graph__link[data-code="${code}"]`))
+    .first();
 }
 
-/** The focus node of the graph. */
+/** The focus node of the graph (a task). */
 function focusNode(page: Page): Locator {
   return page.locator('.cl-dag__node--current');
+}
+
+/** The graph marks the code as its focus: the current node, or the current
+ * group header that the code heads (KAIROS-T-0492). */
+async function expectFocus(page: Page, code: string): Promise<void> {
+  await expect(
+    page
+      .locator(`.cl-dag__node--current[data-id="${code}"]`)
+      .or(page.locator(`.kairos-graph__header--current[data-group="${code}"]`))
+      .or(page.locator(`.kairos-graph__header--current .kairos-graph__link[data-code="${code}"]`))
+      .first(),
+  ).toBeAttached({ timeout: 20_000 });
 }
 
 /** Short codes anywhere in a search response DTO, whatever the group. */
@@ -86,14 +107,29 @@ journey(
         .filter((g: any) => g.relationship === 'parent')
         .flatMap((g: any) => g.items)
         .find((item: any) => item.entity_type === 'initiative');
-      if (parent) {
+      if (!parent) continue;
+      // The walk goes out to a strategy and back down to a sibling, so the
+      // initiative needs both. On a long-lived database the first task of
+      // the board can hang off an initiative with neither.
+      const up = await api.get(`/api/initiatives/${parent.short_code}/relationships`);
+      const hasStrategy = (up.incoming ?? [])
+        .filter((g: any) => g.relationship === 'parent')
+        .flatMap((g: any) => g.items)
+        .some((item: any) => item.entity_type === 'strategy');
+      const children = (up.outgoing ?? [])
+        .filter((g: any) => g.relationship === 'parent')
+        .flatMap((g: any) => g.items);
+      if (hasStrategy && children.length > 1) {
         subject = task.short_code;
         subjectTitle = task.title;
         initiative = parent.short_code;
         break;
       }
     }
-    expect(subject, `a task on ${board.slug} has a parent initiative`).toBeTruthy();
+    expect(
+      subject,
+      `a task on ${board.slug} has a parent initiative with a strategy and another child`,
+    ).toBeTruthy();
     // The word carol half-remembers from the title.
     const phrase = [...subjectTitle.matchAll(/[A-Za-z]{5,}/g)]
       .map((m) => m[0])
@@ -147,9 +183,7 @@ journey(
       // Clicking a non-focus node refocuses and extends `?trail=`.
       await node(page, initiative).click();
       await page.waitForURL(new RegExp(`/search/relationships/${initiative}\\?trail=${subject}`));
-      await expect(focusNode(page)).toHaveAttribute('data-id', initiative, {
-        timeout: 20_000,
-      });
+      await expectFocus(page, initiative);
       return { from: subject, now_focused: initiative, trail: subject, canvas_had: before.length };
     });
 
@@ -160,9 +194,7 @@ journey(
       strategy = above[0];
       await node(page, strategy).click();
       await page.waitForURL(new RegExp(`/search/relationships/${strategy}\\?trail=`));
-      await expect(focusNode(page)).toHaveAttribute('data-id', strategy, {
-        timeout: 20_000,
-      });
+      await expectFocus(page, strategy);
       await expect(page.getByText('trail:')).toBeVisible();
       canvas = await drawn(page);
       expect(canvas).toContain(initiative);

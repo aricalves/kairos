@@ -109,6 +109,7 @@ async fn task(client: &KairosClient, board: &str, title: &str) -> String {
             team_id: None,
             repository: None,
             from_team: None,
+            parent: None,
         })
         .await
         .expect("task")
@@ -365,6 +366,7 @@ async fn a_claim_ends_when_its_person_leaves_and_a_stale_claim_is_reported() {
             content: String::new(),
             complexity: None,
             bucket_type: None,
+            parent: None,
         })
         .await
         .expect("initiative")

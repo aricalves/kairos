@@ -325,6 +325,33 @@ Request body (required): `application/json`, [`HandOffRequest`](../schemas/#hand
 | `409` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The person is the owner already |
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | RELATIONSHIP_RULE: the item is not a strategy and not an initiative. VALIDATION: `to` is not a person of the organization. NOT_BOARD_MEMBER: `to` is not a member of the board of the item |
 
+### `PUT /api/{entity_type}/{short_code}/parent`
+
+Set the parent of an initiative or a task, or remove it with `null`
+(KAIROS-T-0572). An item has one parent. The new edge replaces the old
+one in one transaction, so no reader sees two parents.
+
+The link rule applies to each edge that changes (COLLIERY-T-0228). The
+caller may edit the item, or the parent at that end. The same parent
+again changes nothing (`changed: false`). Kairos refuses a retired code
+of the item. A retired code of the parent finds its item
+(KAIROS-T-0560). The move rules do not apply: a change of parent is not
+a move (KAIROS-A-0040 decision 7).
+
+| Parameter | In | Required | Type | Description |
+|---|---|---|---|---|
+| `entity_type` | path | yes | `string` | initiatives or tasks |
+| `short_code` | path | yes | `string` | The item's short code |
+
+Request body (required): `application/json`, [`SetParentRequest`](../schemas/#setparentrequest)
+
+| Response | Body | Meaning |
+|---|---|---|
+| `200` | [`SetParentResponse`](../schemas/#setparentresponse) | The parent now and before; `changed` is false when nothing changed |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The caller may edit neither the item nor the parent at an end that changes |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown family or short code |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | No `parent` key, a type with no parent, an unknown or archived parent, RELATIONSHIP_RULE, or PARENT_EXISTS (a write at the same time set a parent) |
+
 ### `GET /api/{entity_type}/{short_code}/relationships`
 
 All relationships of an item, both directions, grouped by type (open

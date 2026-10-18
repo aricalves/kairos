@@ -33,7 +33,7 @@ pub struct KairosMcp {
     pub(super) tool_router: ToolRouter<Self>,
 }
 
-/// The router of the 74 tools, built once per process (KAIROS-T-0611): the
+/// The router of the 75 tools, built once per process (KAIROS-T-0611): the
 /// stateless `/mcp` makes a service per request, and building the router
 /// each time was 70 boxed handlers and a map per call.
 static TOOL_ROUTER: OnceLock<ToolRouter<KairosMcp>> = OnceLock::new();

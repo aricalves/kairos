@@ -157,6 +157,7 @@ async fn a_person_gives_an_agent_their_own_key() {
             team_id: None,
             repository: None,
             from_team: None,
+            parent: None,
         })
         .await
         .expect("the agent makes a task on the board of alice");

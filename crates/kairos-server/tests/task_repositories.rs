@@ -184,6 +184,7 @@ async fn task_repository_binding_against_live_stack() {
         team_id: None,
         repository: None,
         from_team: None,
+        parent: None,
     };
 
     // =======================================================================
