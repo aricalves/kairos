@@ -35,6 +35,14 @@ pub struct Board {
     /// The short-code prefix of the board (COLLIERY-T-3099).
     #[serde(default)]
     pub code_prefix: String,
+    /// The board policy `parent_gate` of a delivery board (KAIROS-T-0641);
+    /// `None` on each other level.
+    #[serde(default)]
+    pub parent_gate: Option<bool>,
+    /// The board policy `owner_gate` of an initiative board (KAIROS-T-0643);
+    /// `None` on each other level.
+    #[serde(default)]
+    pub owner_gate: Option<bool>,
 }
 
 /// mirror of: `kairos_client::types_org::BoardColumn` (partial).
@@ -50,6 +58,127 @@ pub struct BoardColumn {
     /// The WIP limit of the column (KAIROS-T-0371); `None`: no limit.
     #[serde(default)]
     pub wip_limit: Option<i32>,
+    /// A move into the column gives the mover the claim of a free task
+    /// (KAIROS-T-0359).
+    #[serde(default)]
+    pub claims: bool,
+    /// A task keeps its claim in the column, and gets none (KAIROS-T-0529).
+    #[serde(default)]
+    pub keeps_claims: bool,
+}
+
+/// A flag of a column that the admin page sets with a switch
+/// (KAIROS-T-0587). `field` is the name in `UpdateColumnRequest`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColumnFlag {
+    Claims,
+    KeepsClaims,
+}
+
+impl ColumnFlag {
+    /// The field of the flag in the body of the column update.
+    pub fn field(self) -> &'static str {
+        match self {
+            ColumnFlag::Claims => "claims",
+            ColumnFlag::KeepsClaims => "keeps_claims",
+        }
+    }
+
+    /// The value of the flag on `column`.
+    pub fn of(self, column: &BoardColumn) -> bool {
+        match self {
+            ColumnFlag::Claims => column.claims,
+            ColumnFlag::KeepsClaims => column.keeps_claims,
+        }
+    }
+}
+
+/// The body that sets ONE flag of a column, and nothing else. Pure,
+/// host-tested.
+pub fn column_flag_body(flag: ColumnFlag, on: bool) -> Value {
+    let mut body = serde_json::Map::new();
+    body.insert(flag.field().to_string(), Value::Bool(on));
+    Value::Object(body)
+}
+
+/// `PATCH /api/boards/{id}/columns/{col_id}` with one flag
+/// (KAIROS-T-0587): `claims` or `keeps_claims`.
+pub async fn set_column_flag(
+    auth: Auth,
+    board_id: &str,
+    column_id: &str,
+    flag: ColumnFlag,
+    on: bool,
+) -> Result<Value, ApiError> {
+    patch_json(
+        auth,
+        &format!("/api/boards/{board_id}/columns/{column_id}"),
+        &column_flag_body(flag, on),
+    )
+    .await
+}
+
+/// A policy of a board (KAIROS-A-0040, KAIROS-A-0042). Each level has one
+/// policy or none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoardPolicy {
+    /// Delivery boards: a task moves into a claims column only while its
+    /// initiative is active.
+    ParentGate,
+    /// Initiative boards: an initiative moves to Active only with an owner.
+    OwnerGate,
+}
+
+impl BoardPolicy {
+    /// The policy of a board of `level`, or `None`. Pure, host-tested.
+    pub fn for_level(level: &str) -> Option<BoardPolicy> {
+        match level {
+            "delivery" => Some(BoardPolicy::ParentGate),
+            "initiative" => Some(BoardPolicy::OwnerGate),
+            _ => None,
+        }
+    }
+
+    /// The field of the policy in the board and in `UpdateBoardRequest`.
+    pub fn field(self) -> &'static str {
+        match self {
+            BoardPolicy::ParentGate => "parent_gate",
+            BoardPolicy::OwnerGate => "owner_gate",
+        }
+    }
+
+    /// The value on `board`. The server sends it for the level of the
+    /// policy; a board with no value reads as on (the default).
+    pub fn of(self, board: &Board) -> bool {
+        match self {
+            BoardPolicy::ParentGate => board.parent_gate,
+            BoardPolicy::OwnerGate => board.owner_gate,
+        }
+        .unwrap_or(true)
+    }
+}
+
+/// The body that sets ONE policy of a board. Pure, host-tested.
+pub fn board_policy_body(policy: BoardPolicy, on: bool) -> Value {
+    let mut body = serde_json::Map::new();
+    body.insert(policy.field().to_string(), Value::Bool(on));
+    Value::Object(body)
+}
+
+/// `PATCH /api/boards/{id}` with one policy (KAIROS-T-0587). The server
+/// refuses a policy of a different level with a 422.
+pub async fn set_board_policy(
+    auth: Auth,
+    board_id: &str,
+    policy: BoardPolicy,
+    on: bool,
+) -> Result<Value, ApiError> {
+    patch_json(
+        auth,
+        &format!("/api/boards/{board_id}"),
+        &board_policy_body(policy, on),
+    )
+    .await
 }
 
 /// mirror of: `kairos_client::types_org::BoardTransition` (partial).
@@ -1066,4 +1195,89 @@ pub async fn check_repository_credential(
 /// `DELETE /api/forge-connections/{id}` — disconnect (the repo stays).
 pub async fn disconnect_webhook(auth: Auth, connection_id: &str) -> Result<Value, ApiError> {
     delete_json(auth, &format!("/api/forge-connections/{connection_id}")).await
+}
+
+/// `POST /api/forge-connections/{id}/rotate` (KAIROS-T-0587): a new
+/// connection takes the place of the old one. The webhook URL and the
+/// secret change, and the response shows them once.
+pub async fn rotate_webhook(
+    auth: Auth,
+    connection_id: &str,
+) -> Result<CreatedForgeConnection, ApiError> {
+    post_empty(
+        auth,
+        &format!("/api/forge-connections/{connection_id}/rotate"),
+    )
+    .await
+}
+
+#[cfg(test)]
+mod flag_and_policy_tests {
+    use super::*;
+
+    #[test]
+    fn a_column_flag_body_sets_one_flag_only() {
+        assert_eq!(
+            column_flag_body(ColumnFlag::Claims, true),
+            json!({ "claims": true })
+        );
+        assert_eq!(
+            column_flag_body(ColumnFlag::KeepsClaims, false),
+            json!({ "keeps_claims": false })
+        );
+    }
+
+    #[test]
+    fn the_column_mirror_reads_both_claim_flags() {
+        let wire = json!({
+            "id": "c", "name": "Blocked", "position": 4, "is_done": false,
+            "wip_limit": null, "claims": false, "keeps_claims": true
+        });
+        let column: BoardColumn = serde_json::from_value(wire).expect("parses");
+        assert!(!ColumnFlag::Claims.of(&column));
+        assert!(ColumnFlag::KeepsClaims.of(&column));
+        // An older server sends neither flag: both read as off.
+        let old: BoardColumn =
+            serde_json::from_value(json!({ "id": "c", "name": "Todo", "position": 1 }))
+                .expect("parses");
+        assert!(!old.claims && !old.keeps_claims);
+    }
+
+    #[test]
+    fn each_level_has_its_policy_or_none() {
+        assert_eq!(
+            BoardPolicy::for_level("delivery"),
+            Some(BoardPolicy::ParentGate)
+        );
+        assert_eq!(
+            BoardPolicy::for_level("initiative"),
+            Some(BoardPolicy::OwnerGate)
+        );
+        assert_eq!(BoardPolicy::for_level("strategy"), None);
+        assert_eq!(BoardPolicy::for_level("adr"), None);
+    }
+
+    #[test]
+    fn a_policy_body_sets_one_policy_only() {
+        assert_eq!(
+            board_policy_body(BoardPolicy::ParentGate, false),
+            json!({ "parent_gate": false })
+        );
+        assert_eq!(
+            board_policy_body(BoardPolicy::OwnerGate, true),
+            json!({ "owner_gate": true })
+        );
+    }
+
+    #[test]
+    fn the_board_mirror_reads_the_policy_of_its_level() {
+        let wire = json!({
+            "id": "b", "name": "Delivery", "slug": "delivery", "board_level": "delivery",
+            "team_id": "t", "code_prefix": "DEL", "parent_gate": false, "owner_gate": null
+        });
+        let board: Board = serde_json::from_value(wire).expect("parses");
+        assert!(!BoardPolicy::ParentGate.of(&board));
+        // No value reads as on, the default of the server.
+        assert!(BoardPolicy::OwnerGate.of(&board));
+    }
 }
