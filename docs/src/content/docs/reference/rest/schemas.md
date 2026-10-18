@@ -178,7 +178,7 @@ One row of `GET /api/service-accounts/{id}/keys` — never a secret or hash.
 
 ## AppendNoteRequest
 
-Body of `POST /api/{entity_type}/{short_code}/notes` (KAIROS-T-0367): the text of a note to append at the end of the item's content.
+Body of `POST /api/{entity_type}/{short_code}/notes` (KAIROS-T-0367): the text of a note to append to the item (a row of its own, KAIROS-T-0630).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
