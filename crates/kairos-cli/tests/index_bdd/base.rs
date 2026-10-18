@@ -509,6 +509,23 @@ impl BaseWorld {
         self.run = Some(run);
     }
 
+    /// `kairos index upload` in the checkout (KAIROS-T-0592), with the URL
+    /// and the key of the scenario and no other Kairos setting.
+    fn upload_cli(&mut self) {
+        let root = self.root().to_path_buf();
+        let config = TempDir::new().expect("a config folder");
+        let run = Command::new(KAIROS)
+            .args(["index", "upload", "--repo", REPOSITORY, "--root"])
+            .arg(&root)
+            .env_remove("KAIROS_MCP_KEY")
+            .env("KAIROS_CONFIG_DIR", config.path())
+            .env("KAIROS_URL", &self.url)
+            .env("KAIROS_KEY", &self.key)
+            .output()
+            .expect("run kairos");
+        self.run = Some(run);
+    }
+
     /// The summarizable symbols of the index, test code too (KAIROS-T-0421),
     /// as `file:name`, split by whether they have a summary.
     fn summarized(&self) -> (BTreeSet<String>, BTreeSet<String>) {
@@ -952,6 +969,7 @@ fn run_update(world: &mut CliWorld, command: String) {
         "kairos index update" => base(world).update(),
         "kairos index update --link-only" => base(world).update_args(&["--link-only"], &[]),
         "kairos index update --json" => base(world).update_args(&["--json"], &[]),
+        "kairos index upload" => base(world).upload_cli(),
         other => panic!("no step runs {other:?}"),
     }
 }
@@ -1009,7 +1027,95 @@ fn change_and_update(world: &mut CliWorld, command: String) {
     w.update();
 }
 
+/// KAIROS-T-0592: a change in the tree that is not committed.
+#[when("a file of the checkout changes, with no commit")]
+fn a_file_changes(world: &mut CliWorld) {
+    let w = base(world);
+    let path = w.root().join("pkg/stats.py");
+    let mut text = fs::read_to_string(&path).expect("read");
+    text.push_str("\n\ndef spread(xs):\n    return max(xs) - min(xs)\n");
+    fs::write(&path, text).expect("write");
+}
+
 // --- Then ---------------------------------------------------------------------
+
+/// KAIROS-T-0592: the upload stored the index of HEAD, with the branch as
+/// its ref, and the index is the index of the checkout.
+#[then("Kairos has an index of the HEAD commit of the checkout, for the ref feature")]
+async fn kairos_has_head(world: &mut CliWorld) {
+    let w = base(world);
+    let out = w.output();
+    assert!(w.run.as_ref().expect("no run").status.success(), "{out}");
+    let head = git(w.root(), &["rev-parse", "HEAD"]);
+    assert!(
+        w.stdout().starts_with(&format!(
+            "Kairos keeps the index of {} (feature) for the repository {REPOSITORY}.",
+            &head[..12]
+        )),
+        "{out}"
+    );
+    let indexes = w
+        .kairos()
+        .client()
+        .list_code_indexes(REPOSITORY)
+        .await
+        .expect("the indexes");
+    let stored = indexes
+        .iter()
+        .find(|index| index.commit == head)
+        .unwrap_or_else(|| panic!("no index of {head}: {indexes:?}"));
+    assert_eq!(stored.r#ref.as_deref(), Some("feature"));
+    assert_eq!(stored.source, "upload");
+    let local = fs::read(w.root().join(INDEX_DB)).expect("the local index");
+    let downloaded = w
+        .kairos()
+        .client()
+        .download_code_index(REPOSITORY, &head)
+        .await
+        .expect("the download");
+    let dir = TempDir::new().expect("a folder");
+    let (a, b) = (dir.path().join("local.db"), dir.path().join("stored.db"));
+    fs::write(&a, local).expect("write");
+    fs::write(&b, downloaded).expect("write");
+    let files = |path: &Path| -> Vec<(String, String)> {
+        Index::open(path)
+            .expect("an index")
+            .files()
+            .expect("files")
+            .into_iter()
+            .map(|f| (f.path, f.content_hash))
+            .collect()
+    };
+    assert_eq!(files(&a), files(&b), "the stored index is the local index");
+}
+
+/// KAIROS-T-0592: the refusal names a changed file, and Kairos stores
+/// nothing for HEAD.
+#[then(expr = "the CLI refuses the upload, because {word} is not committed")]
+async fn upload_refused(world: &mut CliWorld, file: String) {
+    let w = base(world);
+    let out = w.output();
+    let run = w.run.as_ref().expect("no run");
+    assert_eq!(run.status.code(), Some(1), "{out}");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "1 changed file that is not committed, for example {file}."
+        )),
+        "{out}"
+    );
+    let head = git(w.root(), &["rev-parse", "HEAD"]);
+    let indexes = w
+        .kairos()
+        .client()
+        .list_code_indexes(REPOSITORY)
+        .await
+        .expect("the indexes");
+    assert!(
+        indexes.iter().all(|index| index.commit != head),
+        "{indexes:?}"
+    );
+}
 
 #[then("the CLI downloads the index of A")]
 fn downloads_a(world: &mut CliWorld) {

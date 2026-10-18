@@ -347,6 +347,10 @@ pub struct DeleteArgs {
     /// brings each one back)
     #[arg(long)]
     pub confirm: bool,
+    /// Archive nothing: show the items that the archive takes, and the
+    /// items that it cannot reach. Not with --confirm
+    #[arg(long, conflicts_with = "confirm")]
+    pub preview: bool,
     #[command(flatten)]
     pub common: Common,
 }
@@ -1183,19 +1187,27 @@ fn not_reached_lines(items: &[kairos_client::types::NotReached]) -> Vec<String> 
         if items.len() == 1 { "" } else { "s" }
     )];
     for item in items {
-        let reason = match (&item.below, &item.required_capability, &item.board_id) {
-            (Some(stop), _, _) => format!("It is below {stop}."),
-            (None, Some(capability), Some(board)) => {
-                format!("You need {capability} on the board {board}.")
-            }
-            (None, Some(capability), None) => {
-                format!("It has no board for {capability}. Ask an organization admin.")
-            }
-            (None, None, _) => "You cannot edit it.".to_string(),
-        };
-        lines.push(format!("    - {}: {reason}", item.short_code));
+        lines.push(format!(
+            "    - {}: {}",
+            item.short_code,
+            not_reached_reason(item)
+        ));
     }
     lines
+}
+
+/// Why the archive does not reach one descendant (COLLIERY-T-0234). Pure.
+pub fn not_reached_reason(item: &kairos_client::types::NotReached) -> String {
+    match (&item.below, &item.required_capability, &item.board_id) {
+        (Some(stop), _, _) => format!("It is below {stop}."),
+        (None, Some(capability), Some(board)) => {
+            format!("You need {capability} on the board {board}.")
+        }
+        (None, Some(capability), None) => {
+            format!("It has no board for {capability}. Ask an organization admin.")
+        }
+        (None, None, _) => "You cannot edit it.".to_string(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1568,6 +1580,13 @@ macro_rules! entity_family_cli {
                                       ", including its markdown content"),
                       alias = "get")]
             Show(GetArgs),
+            #[command(about = concat!("Compare two versions of a ", $noun,
+                                      ": the title and a unified diff of the content. ",
+                                      "With one version, compare it with the version before"))]
+            Diff(crate::commands::item_views::DiffArgs),
+            #[command(about = concat!("List the branches, pull requests and issues ",
+                                      "of the forge that link to a ", $noun))]
+            Links(GetArgs),
             #[command(about = concat!("Create a ", $noun))]
             Create($create_args),
             #[command(about = concat!("Edit a ", $noun, "'s title and/or content ",
@@ -1640,7 +1659,7 @@ macro_rules! entity_family_cli {
             )?
             #[command(about = concat!("Archive a ", $noun,
                                       " and its children (requires --confirm; ",
-                                      "`restore` brings it back)"),
+                                      "`restore` brings it back; --preview archives nothing)"),
                       alias = "delete")]
             Archive(DeleteArgs),
             #[command(about = concat!("Put an archived ", $noun,
@@ -1671,6 +1690,36 @@ macro_rules! entity_family_cli {
                             eprintln!("{notice}");
                         }
                         emit_get(&args.common, &item)
+                    }
+                    Self::Diff(args) => {
+                        let client = client(&args.common)?;
+                        let (from, to) = args.versions()?;
+                        let old = match from {
+                            Some(version) => Some(
+                                client
+                                    .history_snapshot($kind, &args.short_code, version)
+                                    .await?,
+                            ),
+                            None => None,
+                        };
+                        let new = client
+                            .history_snapshot($kind, &args.short_code, to)
+                            .await?;
+                        crate::commands::item_views::emit_diff(
+                            &args.common,
+                            &args.short_code,
+                            old.as_ref(),
+                            &new,
+                        )
+                    }
+                    Self::Links(args) => {
+                        let client = client(&args.common)?;
+                        let links = client.item_links($kind, &args.short_code).await?;
+                        crate::commands::item_views::emit_links(
+                            &args.common,
+                            &args.short_code,
+                            &links,
+                        )
                     }
                     Self::Create(args) => {
                         let client = client(&args.common)?;
@@ -1804,6 +1853,11 @@ macro_rules! entity_family_cli {
                         emit_lifecycle(&args.common, &document)
                     }
                     )?
+                    Self::Archive(args) if args.preview => {
+                        let client = client(&args.common)?;
+                        let preview = client.cascade_preview($kind, &args.short_code).await?;
+                        crate::commands::item_views::emit_preview(&args.common, &preview)
+                    }
                     Self::Archive(args) => {
                         require_archive_confirm(args.confirm, &args.short_code)?;
                         let client = client(&args.common)?;

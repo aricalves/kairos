@@ -29,6 +29,8 @@
 //!   MCP tool `duplicates`.
 //! - `kairos index mcp` serves the code tools to an agent over stdio
 //!   ([`mcp`]).
+//! - `kairos index upload` sends the index of the checkout to Kairos as the
+//!   index of its HEAD commit ([`upload`], KAIROS-T-0592).
 //!
 //! The index is `.kairos/index.db` in the checkout. Git must not track it,
 //! so a build adds it to `.git/info/exclude` when git does not ignore it
@@ -46,6 +48,7 @@ mod error;
 mod mcp;
 mod query;
 mod report;
+mod upload;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -191,6 +194,19 @@ pub enum IndexCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Send the index of the checkout to Kairos as the index of its HEAD commit, for example from CI. The tree must have no changes that are not committed
+    Upload {
+        #[command(flatten)]
+        root: RootArg,
+        #[command(flatten)]
+        remote: base::RemoteArgs,
+        /// The branch, the pull request or the tag of the index, for example main, pull/12 or v1.0.0. Default: the branch of the checkout
+        #[arg(long = "ref", value_name = "REF")]
+        r#ref: Option<String>,
+        /// Print the JSON of the stored index, in place of the text
+        #[arg(long)]
+        json: bool,
+    },
     /// Serve the code tools of the index to an agent: MCP over stdio
     Mcp {
         #[command(flatten)]
@@ -273,6 +289,12 @@ impl IndexCommand {
                 limit as usize,
                 json,
             ),
+            IndexCommand::Upload {
+                root,
+                remote,
+                r#ref,
+                json,
+            } => upload::upload(&resolve_root(root)?, &remote, r#ref, json).await,
             IndexCommand::Mcp { root } => Ok(mcp::serve(resolve_root(root)?).await?),
         }
     }

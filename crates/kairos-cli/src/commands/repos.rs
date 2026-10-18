@@ -246,6 +246,12 @@ pub enum ReposCommand {
         #[command(subcommand)]
         command: WriteTokenCommand,
     },
+    /// Connect, list, rotate or remove the webhook of a repository on
+    /// GitHub or GitLab. Add and rotate print the secret one time
+    Webhook {
+        #[command(subcommand)]
+        command: crate::commands::webhooks::WebhookCommand,
+    },
     /// Ask Kairos to build the code index of a repository again. The builder
     /// of the server makes a full index of the head of the default branch.
     /// The command shows the run; `kairos repos builds` follows it
@@ -973,6 +979,7 @@ impl ReposCommand {
             }
             Self::Credential { command } => command.run().await,
             Self::WriteToken { command } => command.run().await,
+            Self::Webhook { command } => command.run().await,
             Self::Reindex { repository, common } => {
                 let client = client(&common)?;
                 let run = client.rebuild_code_index(&repository).await?;
