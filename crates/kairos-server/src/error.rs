@@ -113,6 +113,15 @@ impl ApiError {
         Self::new(StatusCode::FORBIDDEN, "FORBIDDEN", message)
     }
 
+    /// 403 `PERSON_DECIDES` — the caller may not confirm or reject an edge
+    /// proposal (KAIROS-T-0538). `details.reason` is `service_account`,
+    /// `agent_key` or `proposer`. A person other than the proposer decides,
+    /// and not through an agent key.
+    pub fn person_decides(message: impl Into<String>, reason: &'static str) -> Self {
+        Self::new(StatusCode::FORBIDDEN, "PERSON_DECIDES", message)
+            .with_details(json!({ "reason": reason }))
+    }
+
     /// 404 `TENANT_NOT_FOUND` — no organization for the resolved slug (or
     /// no slug was resolvable from the request at all).
     pub fn tenant_not_found(message: impl Into<String>) -> Self {

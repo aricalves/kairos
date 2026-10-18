@@ -136,6 +136,10 @@ Claude Code needs only `KAIROS_URL`. When a key is set, it wins over a login.
 Unset it to use the login again. The key cannot make or revoke agent keys:
 use your login or the **Agent keys** page for that.
 
+When the key hides a login, each command writes a warning on stderr.
+`KAIROS_QUIET=1` stops the warning. The last line of `kairos whoami` names the
+credential that the CLI sends.
+
 ## What you cannot do
 
 | You try to | Kairos answers |

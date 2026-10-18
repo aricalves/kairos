@@ -34,11 +34,21 @@ pub struct Common {
 /// timeout (KAIROS-T-0607); a value that is not a positive integer is a
 /// failure (exit 1) that names the variable.
 pub fn client(common: &Common) -> Result<KairosClient, CliError> {
+    client_with_credential(common).map(|(client, _)| client)
+}
+
+/// [`client`], and the `credential:` line of `kairos whoami`
+/// (KAIROS-T-0594). A key that hides a login for the same deployment gives
+/// one warning line on stderr, unless `KAIROS_QUIET=1`.
+pub fn client_with_credential(common: &Common) -> Result<(KairosClient, String), CliError> {
     let timeout = kairos_client::timeout_from_env()?;
     let path = credentials::credentials_path()?;
-    let source = auth::resolve(common.url.as_deref(), &auth::Env::from_process(), || {
-        credentials::load(&path)
-    })?;
+    let env = auth::Env::from_process();
+    let source = auth::resolve(common.url.as_deref(), &env, || credentials::load(&path))?;
+    if let Some(warning) = auth::override_warning(&source, &env, || credentials::load(&path)) {
+        eprintln!("{warning}");
+    }
+    let credential = source.credential_line();
     let (mut client, cached_tenant) = match source {
         Source::Key {
             deployment,
@@ -61,7 +71,7 @@ pub fn client(common: &Common) -> Result<KairosClient, CliError> {
     if let Some(timeout) = timeout {
         client = client.with_timeout(timeout);
     }
-    Ok(client)
+    Ok((client, credential))
 }
 
 /// Pretty-print a DTO as JSON (the `--json` scripting surface).
