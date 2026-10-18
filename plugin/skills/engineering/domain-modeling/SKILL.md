@@ -77,3 +77,4 @@ One short path when the user says "record this decision", or when `implement` fi
 4. `link_items` with `impacts` from the ADR to each repository that it is about.
 5. A decision that changes an existing ADR: `link_items` with `supersedes` from the new ADR to the old one. The old one stays as it is.
 6. Show the short code of the ADR, and write it on the task or the initiative.
+7. A spec or a plan that the decision needs is a document, not an ADR. `promote_note` with `kind: document` makes a draft. When the user agrees with the text, `set_lifecycle` with `lifecycle: published` publishes it. A document is not on a board, so `transition_item` does not move it.

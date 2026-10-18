@@ -41,6 +41,10 @@ pub struct Board {
     /// initiative board, an initiative moves into its Active column only
     /// with an owner. True by default.
     pub owner_gate: bool,
+    /// A board policy (KAIROS-T-0565, [`crate::board_policy`]): on a
+    /// delivery board, a task with an open blocker does not move into a
+    /// claims column or a done column. False by default.
+    pub blockers_gate: bool,
 }
 
 /// Insert for [`Board`].

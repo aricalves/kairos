@@ -1083,6 +1083,55 @@ async fn cli_command_tree_golden_path_live() {
         "{stderr}"
     );
 
+    // --- documents lifecycle (KAIROS-T-0555) -----------------------------------
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &[
+            "documents",
+            "create",
+            "--title",
+            "Rollout note",
+            "--board",
+            &delivery_board_id,
+            "--json",
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "documents create failed: {stderr}");
+    let document: serde_json::Value = serde_json::from_str(&stdout).expect("document DTO JSON");
+    let document_code = document["short_code"].as_str().expect("code").to_string();
+    assert_eq!(document["lifecycle"], "draft");
+    for state in ["review", "published", "published"] {
+        let (code, stdout, stderr) = run_cli(
+            config_dir.path(),
+            &["documents", "lifecycle", &document_code, "--to", state],
+        )
+        .await;
+        assert_eq!(code, 0, "documents lifecycle --to {state} failed: {stderr}");
+        assert_eq!(
+            stdout.trim_end(),
+            format!("The document {document_code} is {state}.")
+        );
+    }
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["documents", "get", &document_code, "--json"],
+    )
+    .await;
+    assert_eq!(code, 0, "documents get failed: {stderr}");
+    let document: serde_json::Value = serde_json::from_str(&stdout).expect("document DTO JSON");
+    assert_eq!(document["lifecycle"], "published");
+    let (code, _, stderr) = run_cli(
+        config_dir.path(),
+        &["documents", "lifecycle", &document_code, "--to", "final"],
+    )
+    .await;
+    assert_ne!(code, 0, "an unknown lifecycle must be refused");
+    assert!(
+        stderr.contains("final") && stderr.contains("published"),
+        "{stderr}"
+    );
+
     // --- teardown ----------------------------------------------------------------
     drop(conn);
     sql_query(format!("DROP DATABASE IF EXISTS {SCRATCH_DB} WITH (FORCE)"))

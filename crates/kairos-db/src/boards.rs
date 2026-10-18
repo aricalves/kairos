@@ -215,6 +215,21 @@ pub enum BoardError {
         to_column: String,
         board_id: Uuid,
     },
+    /// The board policy `blockers_gate` (KAIROS-T-0565,
+    /// [`crate::board_policy`]): the task goes into a claims column or a
+    /// done column, and it has open blockers.
+    #[error(
+        "{task} cannot move to {to_column}. These items block it: {}. The board policy \
+         blockers_gate refuses this move. Complete each blocker, or remove its blocks link: \
+         unlink_items. Then move the task.",
+        crate::board_policy::blockers_text(blockers)
+    )]
+    Blocked {
+        task: String,
+        to_column: String,
+        blockers: Vec<crate::board_policy::OpenBlocker>,
+        board_id: Uuid,
+    },
     /// `move_task` (KAIROS-T-0564): the task is in a done column. A done
     /// task does not go live on another board by a move.
     #[error(
@@ -1228,9 +1243,10 @@ macro_rules! transition_item_fn {
 
                 let (from_name, to_name) =
                     validate_transition(conn, board_id, from_column_id, to_column_id)?;
-                // KAIROS-T-0641: the board policy parent_gate.
+                // KAIROS-T-0641, KAIROS-T-0565: the board policies
+                // parent_gate and blockers_gate.
                 if $entity_type == "task" {
-                    crate::board_policy::check_active_parent(conn, item_id, to_column_id)?;
+                    crate::board_policy::check_task_move(conn, item_id, to_column_id)?;
                 }
                 // KAIROS-T-0643: the board policy owner_gate.
                 if $entity_type == "initiative" {
@@ -1311,8 +1327,8 @@ pub struct Reopened {
 ///
 /// - The transition graph of the board does not apply. A done column has
 ///   no edge out on a seeded board; the reopen is the way out.
-/// - The board policy `parent_gate` applies to the column, as for a
-///   transition (KAIROS-T-0641).
+/// - The board policies `parent_gate` and `blockers_gate` apply to the
+///   column, as for a transition (KAIROS-T-0641, KAIROS-T-0565).
 /// - The rest is the path of a transition ([`after_column_move`]): a
 ///   `transition` activity row, `blocked_again` for the dependants (none
 ///   for a cancelled task, KAIROS-A-0038), the claim rule, the end of the
@@ -1362,8 +1378,9 @@ pub fn reopen_task(
             task: short_code.clone(),
             board_id,
         })?;
-        // KAIROS-T-0641: the first open column can hold claims.
-        crate::board_policy::check_active_parent(conn, task_id, to_column_id)?;
+        // KAIROS-T-0641, KAIROS-T-0565: the first open column can hold
+        // claims; the policies of a transition apply.
+        crate::board_policy::check_task_move(conn, task_id, to_column_id)?;
         let was_cancelled = crate::task_cancellations::mark_of(conn, task_id)?.is_some();
 
         diesel::update(tasks::table.filter(tasks::id.eq(task_id)))
@@ -1490,9 +1507,9 @@ pub fn move_task_with(
         }
         let to_column_id =
             entry_column(conn, to_board_id)?.ok_or(BoardError::NoEntryColumn(to_board_id))?;
-        // KAIROS-T-0641: the entry column can hold claims; the policy of the
-        // target board decides.
-        crate::board_policy::check_active_parent(conn, task_id, to_column_id)?;
+        // KAIROS-T-0641, KAIROS-T-0565: the entry column can hold claims;
+        // the policies of the target board decide.
+        crate::board_policy::check_task_move(conn, task_id, to_column_id)?;
 
         diesel::update(dsl::tasks.filter(dsl::id.eq(task_id)))
             .set((

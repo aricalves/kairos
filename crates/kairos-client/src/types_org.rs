@@ -53,6 +53,14 @@ pub struct Board {
     #[serde(default)]
     #[schema(required = true)]
     pub owner_gate: Option<bool>,
+    /// The board policy `blockers_gate` of a delivery board (KAIROS-T-0565):
+    /// when true, a task with an open blocker does not move into a claims
+    /// column or a done column. The refusal is a 422 `BLOCKED`. When false,
+    /// the move goes on with a `Kairos-Warning`. False by default. `null` on
+    /// each other level.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub blockers_gate: Option<bool>,
     /// RFC 3339.
     pub created_at: String,
     /// RFC 3339.
@@ -207,6 +215,11 @@ pub struct UpdateBoardRequest {
     /// the field is a 422 `VALIDATION`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_gate: Option<bool>,
+    /// The board policy `blockers_gate` (KAIROS-T-0565), for a delivery
+    /// board only: true turns it on, false turns it off. On each other level
+    /// the field is a 422 `VALIDATION`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blockers_gate: Option<bool>,
 }
 
 /// Body of `PUT /api/boards/{id}/code-sequences/{item_type}`
