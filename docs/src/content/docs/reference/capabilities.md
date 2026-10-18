@@ -27,6 +27,7 @@ else is refused at grant time.
 | `configure_boards` | Add, rename, reorder and remove columns and transitions |
 | `administer_members` | Add and remove board members, and grant and revoke their capabilities |
 | `member` | On a strategy or initiative board only: membership of the board. A member edits and moves each item on the board. See [Computed capabilities](#computed-capabilities). |
+| `approve_proposals` | Confirm and reject the edge proposals that have an item of the board at one end. See [The decision of an edge proposal](#the-decision-of-an-edge-proposal). |
 | `pages` | Publish and unpublish the sites of the repositories of the team of the board |
 | `purge` | Delete an archived task of the board for good (KAIROS-T-0570) |
 
@@ -46,10 +47,10 @@ on each board. These capabilities apply:
 
 | Board level | Capabilities that apply |
 |---|---|
-| `strategy` | `manage_strategies`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members`, `member` |
-| `initiative` | `manage_initiatives`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members`, `member` |
-| `delivery` | `manage_tasks`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members`, `pages`, `purge` |
-| `adr` | `manage_adrs`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members` |
+| `strategy` | `manage_strategies`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members`, `member`, `approve_proposals` |
+| `initiative` | `manage_initiatives`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members`, `member`, `approve_proposals` |
+| `delivery` | `manage_tasks`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members`, `pages`, `purge`, `approve_proposals` |
+| `adr` | `manage_adrs`, `manage_documents`, `transition_items`, `configure_boards`, `administer_members`, `approve_proposals` |
 
 The grants page of a person uses this table (see below). A change on that page
 can grant only a capability of the table.
@@ -138,7 +139,7 @@ are unaffected.
 `*` matches any sequence of characters, including an empty one. Every other
 character matches itself. Matching is **case-sensitive**.
 
-The API accepts only the fourteen values in the two tables above as a stored
+The API accepts only the sixteen values in the two tables above as a stored
 grant; anything else — including a pattern such as `manage_*s` — is refused at
 grant time with `VALIDATION`. The matcher itself is general, and the rules
 below describe it, because it is the matcher that decides authorisation and it
@@ -422,19 +423,42 @@ Each `supports` edge of a document can go, the last one too. The document
 keeps its owner board. In 0.4.0 and before, a document could have no owner
 board. Then the server kept its last `supports` edge.
 
-### The confirm of an edge proposal
+### The decision of an edge proposal
 
-The confirm of an edge proposal writes an edge, so the link rule applies to
-`POST /api/proposals/{id}/confirm`. The caller must be a person. The caller
-must be able to edit the item at one end of the proposed edge. A refused
-confirm leaves the proposal pending. To propose an edge, and to reject a proposal,
-the link rule is not necessary: they write no edge.
+The grant `approve_proposals` decides who confirms or rejects an edge
+proposal (KAIROS-T-0659). These callers can decide:
 
-A person other than the proposer confirms or rejects a proposal
-(KAIROS-T-0538). The server refuses a service account, an agent key and
-the proposer with `PERSON_DECIDES`. An agent key is the person, but an
-agent uses it. So a proposal that your agent made needs a different
-person. A proposal has one decision. A second decision gets `CONFLICT`.
+- a holder of `approve_proposals` on the board of the source;
+- a holder of `approve_proposals` on the board of the target;
+- an organization admin.
+
+The board of a document is its owner board. An ADR off a board has no
+board. For that end, only an organization admin decides.
+
+The type of the caller does not change the rule. The agent key of a holder
+can decide. A service account that holds the grant can decide: use it to
+automate the approval. The proposer can decide their own proposal when they
+hold the grant.
+
+The rule is the same for `POST /api/proposals/{id}/confirm` and for
+`POST /api/proposals/{id}/reject`. The link rule does not apply to a
+confirm: the grant on the board of one end replaces it. A refusal is 403
+`FORBIDDEN`. `details.required_capability` is `approve_proposals`, and
+`details.any_of` gives the board of each end (`board_id` and `board`). A
+refused decision leaves the proposal pending.
+
+Each member can propose an edge with no capability, because a proposal
+writes no edge. A proposal has one decision. A second decision gets
+`CONFLICT`. Of two decisions at the same time, one gets `CONFLICT`.
+
+No grant of `approve_proposals` exists after an upgrade. At first only the
+organization admins decide. An admin grants `approve_proposals` to the
+people and the service accounts that must decide. A holder of `*` on a
+board holds it too.
+
+Before KAIROS-T-0659, a person other than the proposer decided, and not
+with an agent key (403 `PERSON_DECIDES`). The caller also had to be able to
+edit one end.
 
 ## The owner of a document
 

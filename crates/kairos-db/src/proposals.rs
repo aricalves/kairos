@@ -1,7 +1,17 @@
-//! Proposed graph edges, awaiting a human (KAIROS-A-0021 rule 6,
+//! Proposed graph edges, awaiting a decision (KAIROS-A-0021 rule 6,
 //! KAIROS-T-0192).
 //!
 //! Every function operates in the CURRENT `search_path` tenant schema.
+//!
+//! # Who decides (KAIROS-T-0659)
+//!
+//! A holder of [`kairos_core::abac::APPROVE_PROPOSALS`] on the board of the
+//! source or of the target confirms or rejects. An org admin decides each
+//! proposal. Who the caller is does not count: an agent key of a holder, a
+//! service account that holds the grant, and the proposer all decide. Until
+//! KAIROS-T-0659 a person other than the proposer decided, never through an
+//! agent key (KAIROS-T-0538). So nobody could confirm the proposal of an
+//! agent in an organization with one person.
 //!
 //! # Why a proposal rather than an edge
 //!
@@ -17,8 +27,9 @@
 //!
 //! Graph distance is half the signal the retrieval surface uses, so every
 //! confirmation makes the next retrieval better. The feature improves with use
-//! rather than decaying — but only because a human is in the loop, which is what
-//! keeps a confident wrong similarity from quietly restructuring a portfolio.
+//! rather than decaying — but only because a decider is in the loop, which is
+//! what keeps a confident wrong similarity from quietly restructuring a
+//! portfolio. The decider holds a grant for it (see "Who decides").
 
 use chrono::{DateTime, Utc};
 use diesel::pg::PgConnection;
@@ -69,25 +80,16 @@ pub enum ProposalError {
         /// The cap.
         limit: i64,
     },
-    /// A service account tried to rule on a proposal.
+    /// The caller holds `approve_proposals` on neither board of the
+    /// proposal, and is not an org admin (KAIROS-T-0659).
     #[error(
-        "A service account can propose an edge. Only a person can confirm or reject a \
-         proposal."
+        "You cannot confirm or reject this proposal. {} Ask an organization admin for the grant.",
+        boards.deciders()
     )]
-    NotHuman,
-    /// A request with an agent key tried to rule on a proposal (KAIROS-T-0538).
-    /// The key is the person, but an agent uses it.
-    #[error(
-        "An agent key can propose an edge. It cannot confirm or reject a proposal. A person \
-         other than the proposer decides, in the web interface or with a login token."
-    )]
-    AgentKey,
-    /// The proposer tried to rule on their own proposal (KAIROS-T-0538).
-    #[error(
-        "You proposed this edge. A person other than the proposer confirms or rejects the \
-         proposal."
-    )]
-    Proposer,
+    NotApprover {
+        /// The boards that decide the proposal.
+        boards: ApprovalBoards,
+    },
     /// Only `parent` and `blocks` may be proposed.
     #[error("You can propose only a parent edge or a blocks edge. {0:?} is not one of them.")]
     NotProposable(String),
@@ -97,6 +99,59 @@ pub enum ProposalError {
     /// The database refused or failed.
     #[error(transparent)]
     Database(#[from] diesel::result::Error),
+    /// The capability check failed.
+    #[error(transparent)]
+    Abac(#[from] crate::abac::AbacError),
+}
+
+/// The board at one end of a proposal (KAIROS-T-0659).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EndBoard {
+    /// `boards.id`.
+    pub id: Uuid,
+    /// `boards.slug`, for the text of a refusal.
+    pub slug: String,
+}
+
+/// The boards that decide a proposal (KAIROS-T-0659): the board of the
+/// source and the board of the target. `None` is an end with no board (an
+/// ADR off a board). Only an org admin decides for that end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalBoards {
+    /// The board of the source.
+    pub source: Option<EndBoard>,
+    /// The board of the target.
+    pub target: Option<EndBoard>,
+}
+
+impl ApprovalBoards {
+    /// The slugs of the boards, each one once: the source first.
+    pub fn slugs(&self) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        for end in [&self.source, &self.target].into_iter().flatten() {
+            if !out.contains(&end.slug.as_str()) {
+                out.push(&end.slug);
+            }
+        }
+        out
+    }
+
+    /// Who decides, in one sentence or two: for the reply of
+    /// `propose_edge` and the text of a refusal.
+    pub fn deciders(&self) -> String {
+        let capability = kairos_core::abac::APPROVE_PROPOSALS;
+        match self.slugs().as_slice() {
+            [] => "Only an organization admin can confirm or reject it.".to_string(),
+            [one] => format!(
+                "A holder of {capability:?} on the board {one} can confirm or reject it. An \
+                 organization admin can too."
+            ),
+            [source, target, ..] => format!(
+                "A holder of {capability:?} on the board {source} or on the board {target} can \
+                 confirm or reject it. An organization admin can too."
+            ),
+        }
+    }
 }
 
 /// A proposed edge.
@@ -269,9 +324,8 @@ pub fn pending_for_item(
 /// One proposal by id, in any state: [`ProposalError::NotFound`] when
 /// there is none.
 ///
-/// Public since COLLIERY-T-0234. The server reads the two ends of the
-/// proposal before the confirm, to apply the link rule to the edge that
-/// the confirm writes.
+/// Public since COLLIERY-T-0234, for a caller that reads a proposal in any
+/// state.
 pub fn get(conn: &mut PgConnection, id: Uuid) -> Result<EdgeProposal, ProposalError> {
     load(conn, id)
 }
@@ -290,72 +344,87 @@ fn load(conn: &mut PgConnection, id: Uuid) -> Result<EdgeProposal, ProposalError
     })
 }
 
-/// Whether `actor` is a person rather than a service account.
-///
-/// The check lives here, in the service, rather than in each surface. Rule 6 is
-/// the whole point of this table: an agent proposes, a human decides. A rule
-/// enforced in two handlers is a rule that a third handler will not have, and
-/// the third handler is the one that silently restructures a portfolio.
-///
-/// Public since COLLIERY-T-0234, so that the server can give this refusal
-/// before the refusal of the link rule, as the order was. [`confirm`] and
-/// [`reject`] still make the check themselves, with the agent-key and
-/// proposer checks of KAIROS-T-0538.
-pub fn is_human(conn: &mut PgConnection, actor: Uuid) -> Result<bool, ProposalError> {
-    #[derive(QueryableByName)]
-    struct Kind {
-        #[diesel(sql_type = Text)]
-        kind: String,
-    }
-    let kind = sql_query("SELECT kind FROM public.users WHERE id = $1")
-        .bind::<SqlUuid, _>(actor)
-        .get_result::<Kind>(conn)?;
-    Ok(kind.kind != crate::models::public::USER_KIND_SERVICE_ACCOUNT)
+/// The boards that decide a proposal of an edge from `source_id` to
+/// `target_id` (KAIROS-T-0659): the board of each end, as
+/// [`crate::abac::resolve_authorization_board`] gives it. A document gives
+/// its owner board.
+pub fn approval_boards(
+    conn: &mut PgConnection,
+    source_id: Uuid,
+    target_id: Uuid,
+) -> Result<ApprovalBoards, ProposalError> {
+    let mut end = |item_id: Uuid| -> Result<Option<EndBoard>, ProposalError> {
+        use crate::schema::boards;
+        let Some(id) = crate::abac::resolve_authorization_board(conn, item_id)? else {
+            return Ok(None);
+        };
+        let slug = boards::table
+            .filter(boards::id.eq(id))
+            .select(boards::slug)
+            .first::<String>(conn)?;
+        Ok(Some(EndBoard { id, slug }))
+    };
+    Ok(ApprovalBoards {
+        source: end(source_id)?,
+        target: end(target_id)?,
+    })
 }
 
-/// Who decides a proposal, and how the request came (KAIROS-T-0538).
-///
-/// The service needs both. A person's agent key authenticates as the
-/// person, so the user id alone cannot tell an agent from its person.
+/// Who decides a proposal (KAIROS-T-0659): the caller, and whether the
+/// caller is an org admin. The server reads the role from the context of
+/// the request, as the edit rule does (KAIROS-T-0625).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Decider {
-    /// `public.users.id` of the caller.
+    /// `public.users.id` of the caller. An agent key authenticates as its
+    /// person, so this is the person.
     pub user_id: Uuid,
-    /// True when the request authenticated with the agent key of a person.
-    pub agent_key: bool,
+    /// True when the caller is an org admin of the current tenant.
+    pub is_org_admin: bool,
 }
 
-/// The rule of who may decide (KAIROS-T-0538): a person, not through an
-/// agent key, and not the proposer.
-///
-/// The first two checks need no proposal, so they come before the load:
-/// a caller who may never decide learns nothing about a proposal.
-fn require_decider(conn: &mut PgConnection, decider: Decider) -> Result<(), ProposalError> {
-    if !is_human(conn, decider.user_id)? {
-        return Err(ProposalError::NotHuman);
-    }
-    if decider.agent_key {
-        return Err(ProposalError::AgentKey);
-    }
-    Ok(())
-}
-
-/// Load the proposal to decide: it exists, waits, and is not the
-/// decider's own.
-fn load_pending(
+/// The rule of who decides (KAIROS-T-0659): an org admin, or a holder of
+/// `approve_proposals` on the board of one end
+/// ([`kairos_core::abac::may_decide_proposal`]). The check reads the grants
+/// of the caller. An agent key authenticates as its person, so the grants
+/// of the person count for it.
+fn require_approver(
     conn: &mut PgConnection,
-    id: Uuid,
     decider: Decider,
-) -> Result<EdgeProposal, ProposalError> {
+    proposal: &EdgeProposal,
+) -> Result<(), ProposalError> {
+    let (actor, is_org_admin) = (decider.user_id, decider.is_org_admin);
+    if is_org_admin {
+        return Ok(());
+    }
+    let boards = approval_boards(conn, proposal.source_id, proposal.target_id)?;
+    let mut holds = |end: &Option<EndBoard>| -> Result<bool, ProposalError> {
+        match end {
+            Some(board) => Ok(crate::abac::check_capability(
+                conn,
+                board.id,
+                actor,
+                kairos_core::abac::APPROVE_PROPOSALS,
+            )?),
+            None => Ok(false),
+        }
+    };
+    let on_source = holds(&boards.source)?;
+    let on_target = holds(&boards.target)?;
+    if kairos_core::abac::may_decide_proposal(is_org_admin, on_source, on_target) {
+        Ok(())
+    } else {
+        Err(ProposalError::NotApprover { boards })
+    }
+}
+
+/// Load the proposal to decide: it exists and waits.
+fn load_pending(conn: &mut PgConnection, id: Uuid) -> Result<EdgeProposal, ProposalError> {
     let proposal = load(conn, id)?;
     if proposal.state != "pending" {
         return Err(ProposalError::AlreadyDecided {
             id,
             state: proposal.state,
         });
-    }
-    if proposal.proposed_by == decider.user_id {
-        return Err(ProposalError::Proposer);
     }
     Ok(proposal)
 }
@@ -405,17 +474,16 @@ fn decide(
 ///
 /// Transactional: the edge and the state change land together or not at all.
 ///
-/// WHO may confirm is decided here only in part: a person, not through an
-/// agent key, and not the proposer (KAIROS-T-0538). The link rule is the
-/// rule of the server (`require_edge_write`), and the REST handler applies
-/// it before this call (COLLIERY-T-0234).
+/// WHO may confirm is decided here (KAIROS-T-0659): an org admin, or a
+/// holder of `approve_proposals` on the board of one end. The order of the
+/// refusals: no such proposal, a decided proposal, then the grant.
 pub fn confirm(
     conn: &mut PgConnection,
     id: Uuid,
     decider: Decider,
 ) -> Result<EdgeProposal, ProposalError> {
-    require_decider(conn, decider)?;
-    let proposal = load_pending(conn, id, decider)?;
+    let proposal = load_pending(conn, id)?;
+    require_approver(conn, decider, &proposal)?;
     let actor = decider.user_id;
     let relationship = match proposal.relationship.as_str() {
         "parent" => RelationshipType::Parent,
@@ -446,14 +514,14 @@ pub fn confirm(
 /// something, and [`stats`] is where that shows up. Deleting rejections would
 /// delete the only honest measurement this feature has.
 ///
-/// The rule of who may decide is the rule of [`confirm`] (KAIROS-T-0538).
+/// The rule of who may decide is the rule of [`confirm`] (KAIROS-T-0659).
 pub fn reject(
     conn: &mut PgConnection,
     id: Uuid,
     decider: Decider,
 ) -> Result<EdgeProposal, ProposalError> {
-    require_decider(conn, decider)?;
-    load_pending(conn, id, decider)?;
+    let proposal = load_pending(conn, id)?;
+    require_approver(conn, decider, &proposal)?;
     decide(conn, id, "rejected", decider.user_id)
 }
 

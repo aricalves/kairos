@@ -32,7 +32,7 @@ stdio). Each is described below.
   deployment URL in `KAIROS_URL`, for the `kairos` server of the plugin (below); the key acts as that person
   (KAIROS-A-0024). Do not share a service-account key for Claude Code. That server lists
   the work profile of the MCP tools; the administration tools (teams, boards, grants,
-  dispatch rules, team page writes) need a second server at `$KAIROS_URL/mcp?profile=admin`,
+  dispatch rule writes, team page writes) need a second server at `$KAIROS_URL/mcp?profile=admin`,
   which the plugin does not ship: the user adds it (`onboard-team` gives the recipe; see the
   Profiles section of the MCP tools reference).
 - `workflow/` — `grill-initiative` (an interview that writes each settled answer into the

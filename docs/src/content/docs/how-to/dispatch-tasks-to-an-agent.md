@@ -146,6 +146,10 @@ notification. Repair the runner, then turn on the target again:
 kairos boards dispatch enable-target platform-delivery 6f1a…
 ```
 
+Then Kairos sends the deliveries that it skipped while the target was off.
+It sends the deliveries of the last 30 days, oldest first. The command
+`redeliver` sends them again on request.
+
 The GUI has the same targets, rules and log. Open **Admin**, then
 **Boards**, and select the board. Use the section **Agent dispatch**:
 
@@ -158,6 +162,8 @@ The GUI has the same targets, rules and log. Open **Admin**, then
 3. Read the **Delivery log**. Select **Refresh** to read it again. A page
    shows 50 deliveries. Select **Older** for the next page, and **Newer** to
    go back.
+4. Select **Turn on** on a target that is off. Select **Send skipped
+   again** to send its skipped deliveries on request.
 
 With the CLI, `--before <id>` shows the deliveries older than the delivery
 `<id>`. Send the id of the last delivery of a page to get the next page.
