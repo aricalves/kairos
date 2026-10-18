@@ -1767,6 +1767,22 @@ meaning` is a full answer; `Text only` is a **degraded** one — real, but it wi
 have missed work phrased differently. See
 [Configure semantic retrieval](../../how-to/configure-retrieval/).
 
+A text-only answer has these rules:
+
+- It gives 3 proposals at most, also with a higher `limit`.
+- Each word of the title has a weight. A rare word in the tenant weighs more
+  than a common word.
+- An item gets the full weight of a word in its title. It gets half the weight
+  of a word that is only in its content.
+- The text score of an item is its share of the total weight, from 0 to 1.
+- The tool does not propose an item with a text score below 0.4. So a match
+  on common words alone gives no proposal.
+- The same repository and the same board move an item up the list. They do
+  not lift an item over the bar.
+- The `Text only` warning is at the top of the response, one time. It is not
+  in the lines of the proposals.
+- When no item is over the bar, the response starts with `None found`.
+
 Results are **bounded** and the wording is deliberate: every line says *possible*
 or *prior art*, never *blocks* or *duplicates*. At the measured precision about
 half of the strongest matches are genuinely related, so these are suggestions to
