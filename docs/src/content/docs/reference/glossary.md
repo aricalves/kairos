@@ -519,8 +519,8 @@ history. Also called a *work item*.
 
 The rule that decides who can write a [relationship](#relationship). A
 principal can create or remove an edge when the principal can edit the item at
-one end. The [edit rule](#edit-rule) decides each end. The rule is the same
-for each relationship type. See
+one end. The [edit rule](#edit-rule) decides each end. The create of a
+`blocks` edge needs the target, and the source alone gives a proposal. See
 [Capabilities](../capabilities/#who-can-write-relationships).
 
 The confirm of an edge proposal does not take this rule. The grant

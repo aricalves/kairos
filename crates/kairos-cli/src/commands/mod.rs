@@ -20,6 +20,7 @@ pub mod orgs;
 pub mod pages;
 pub mod read_tokens;
 pub mod repos;
+pub mod repos_local;
 pub mod search;
 pub mod service_accounts;
 pub mod state;

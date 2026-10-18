@@ -576,3 +576,161 @@ class BoardFolder(unittest.TestCase):
         context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
         self.assertIn("- payments/: remote github.com/acme/payments, branch main, 2 behind origin/main", context)
         self.assertIn("- wt-acme-t-0001/: worktree of payments/", context)
+
+
+STUB_CLI = """#!/bin/sh
+echo "$@" >> "$STUB_LOG"
+case "$1 $2" in
+  "--version ") echo "kairos 99.0.0" ;;
+  "repos local") if [ -n "$STUB_JSON" ]; then cat "$STUB_JSON"; else echo "error: unrecognized subcommand 'local'" >&2; exit 64; fi ;;
+  *) exit 64 ;;
+esac
+"""
+
+
+class BoardFolderWithTheCli(unittest.TestCase):
+    """KAIROS-T-0646: when the CLI has `kairos repos local`, the session
+    hook takes the list from it, with the repository of each clone. An
+    older CLI, or a CLI that fails, gives the listing of the hook. A stub
+    `kairos` on PATH stands for the CLI."""
+
+    def setUp(self):
+        self.folder = BoardFolder()
+        self.folder.setUp()
+        self.board = self.folder.board
+        self.bin = os.path.join(self.folder.tmp.name, "bin")
+        os.makedirs(self.bin)
+        stub = os.path.join(self.bin, "kairos")
+        with open(stub, "w") as handle:
+            handle.write(STUB_CLI)
+        os.chmod(stub, 0o755)
+        self.log = os.path.join(self.folder.tmp.name, "stub.log")
+        self.json = os.path.join(self.folder.tmp.name, "local.json")
+        with open(self.json, "w") as handle:
+            handle.write(
+                '{"items": ['
+                '{"folder": "payments", "path": "/x/payments", "worktree": false, "clone": null,'
+                ' "branch": "main", "remote": "github.com/acme/payments", "repository": "payments",'
+                ' "default_branch": "main", "behind": 2},'
+                '{"folder": "wt-acme-t-0001", "path": "/x/wt", "worktree": true, "clone": "payments",'
+                ' "branch": "acme-t-0001", "remote": "github.com/acme/payments", "repository": "payments",'
+                ' "default_branch": "main", "behind": 0},'
+                '{"folder": "other", "path": "/x/other", "worktree": false, "clone": null,'
+                ' "branch": null, "remote": "github.com/acme/other", "repository": null,'
+                ' "default_branch": null, "behind": null}'
+                '], "total": 3, "next_offset": null}'
+            )
+        self.env = {
+            "PATH": self.bin + os.pathsep + "/usr/bin:/bin",
+            "STUB_LOG": self.log,
+            "STUB_JSON": self.json,
+        }
+
+    def tearDown(self):
+        self.folder.tearDown()
+
+    def checkouts(self, **env):
+        with unittest.mock.patch.dict(os.environ, {**self.env, **env}):
+            return session_start.cli_checkouts(self.board, "http://127.0.0.1:9")
+
+    def test_the_cli_gives_the_repository_of_each_clone(self):
+        checkouts = self.checkouts()
+        by_name = {e["name"]: e for e in checkouts}
+        self.assertEqual(by_name["payments"]["repository"], "payments")
+        self.assertEqual(by_name["payments"]["behind"], 2)
+        self.assertEqual(by_name["wt-acme-t-0001"]["clone"], "payments")
+        self.assertIsNone(by_name["other"]["repository"])
+        self.assertEqual(by_name["other"]["branch"], "(detached HEAD)")
+        with open(self.log) as handle:
+            self.assertEqual(
+                handle.read().split(),
+                ["repos", "local", "--json", "--url", "http://127.0.0.1:9", self.board],
+            )
+
+    def test_the_text_names_the_repository_of_each_clone(self):
+        text = session_start.checkouts_text(self.checkouts())
+        self.assertIn(
+            "- payments/: repository payments, remote github.com/acme/payments, "
+            "branch main, 2 behind origin/main",
+            text,
+        )
+        self.assertIn(
+            "- wt-acme-t-0001/: repository payments, worktree of payments/", text
+        )
+        self.assertIn("- other/: no repository in Kairos, remote github.com/acme/other", text)
+        self.assertIn("`kairos repos local` matched each remote", text)
+        self.assertNotIn("`list_repositories`", text)
+
+    def test_an_older_cli_gives_none(self):
+        self.assertIsNone(self.checkouts(STUB_JSON=""))
+
+    def test_output_that_is_not_the_list_gives_none(self):
+        with open(self.json, "w") as handle:
+            handle.write("not json")
+        self.assertIsNone(self.checkouts())
+        with open(self.json, "w") as handle:
+            handle.write('{"items": [{"path": "/x"}]}')
+        self.assertIsNone(self.checkouts())
+
+    def test_no_cli_on_path_gives_none(self):
+        self.assertIsNone(self.checkouts(PATH="/usr/bin:/bin"))
+
+    def test_a_checkout_is_not_a_board_folder(self):
+        with unittest.mock.patch.dict(os.environ, self.env):
+            self.assertIsNone(
+                session_start.cli_checkouts(self.folder.clone, "http://127.0.0.1:9")
+            )
+
+    def run_hook(self, **env):
+        import http.server
+        import json
+        import subprocess
+        import sys
+        import threading
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b'{"version": "0.0.1"}' if self.path == "/version" else b"ok"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        url = f"http://127.0.0.1:{server.server_address[1]}"
+        os.makedirs(os.path.join(self.board, ".claude"))
+        with open(os.path.join(self.board, ".claude", "kairos.local.md"), "w") as handle:
+            handle.write(f"---\ndeployment_url: {url}\nteam_board: platform\n---\n")
+        hook_env = dict(
+            os.environ,
+            CLAUDE_PROJECT_DIR=self.board,
+            KAIROS_RULES_STATE_DIR=os.path.join(self.folder.tmp.name, "rules"),
+            **{**self.env, **env},
+        )
+        result = subprocess.run(
+            [sys.executable, os.path.join(HERE, "session_start.py")],
+            input=json.dumps({"session_id": "session-0646", "source": "startup"}),
+            capture_output=True, text=True, env=hook_env, cwd=self.board, check=False, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+
+    def test_the_hook_in_a_board_folder_uses_the_cli(self):
+        context = self.run_hook()
+        self.assertIn("- payments/: repository payments, remote github.com/acme/payments", context)
+        self.assertIn("- other/: no repository in Kairos", context)
+
+    def test_the_hook_with_an_older_cli_lists_the_clones_itself(self):
+        context = self.run_hook(STUB_JSON="")
+        self.assertIn(
+            "- payments/: remote github.com/acme/payments, branch main, 2 behind origin/main",
+            context,
+        )
+        self.assertNotIn("repository payments", context)
+        self.assertIn("`list_repositories`", context)
