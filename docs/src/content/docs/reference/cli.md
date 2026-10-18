@@ -116,8 +116,8 @@ A command can also use a key in place of the login.
 | `KAIROS_QUIET` | `1` stops the warning of a key that hides a login. |
 | `KAIROS_TIMEOUT` | The time in seconds that a command waits for an answer. The default is 60. A connection gets 5 seconds. A value that is not a positive integer stops the command with exit code 1. |
 | `KAIROS_UPDATE_CHECK` | `0` turns off the daily version check (see [`kairos self-update`](#kairos-self-update)). |
-| `KAIROS_AUTO_UPDATE` | `1` makes the daily check install the newer version of the server instead of printing a line. |
-| `KAIROS_RELEASES_URL` | The base URL of the release tarballs for `self-update --version` and `--latest`, for a mirror. The default is the GitHub releases. |
+| `KAIROS_AUTO_UPDATE` | `1` makes the daily check install the newer version of the server instead of printing a line. It does not install from an `http://` deployment. |
+| `KAIROS_RELEASES_URL` | The base URL of the published releases, for a mirror. `self-update` takes each checksum from it, and the tarballs of `--version` and `--latest`. The default is the GitHub releases. |
 
 A key carries its tenant, so it needs no `--tenant`. A 401 for a key names the
 variable that holds it.
@@ -2303,7 +2303,7 @@ kairos index update [--root <ROOT>] [--rust-edges] [--link-only] [--max-changed 
 |---|---|---|---|
 | `--rust-edges` (alias `--scip`) | flag | off | Run the SCIP indexers again for the precise edges of the changed code: rust-analyzer, scip-go, scip-typescript and scip-python. |
 | `--link-only` | flag | off | Run no model. Link the summaries of the pool, and make no new summaries. |
-| `--max-changed <MAX_CHANGED>` | integer | 200 | The most files that can change since the base index. Above it, the CLI builds nothing. |
+| `--max-changed <MAX_CHANGED>` | integer | 200 when a model runs, else no limit | The most files that can change since the base index. Above it, the CLI builds nothing. With `--link-only` or on a hosted repository, no model runs. |
 | `--repository <REPOSITORY>` | slug or UUID | `repository` in `.claude/kairos.local.md`, else the repository of the `origin` remote | The repository in Kairos. |
 | `--url <URL>` | string | `KAIROS_URL`, else `deployment_url` in `.claude/kairos.local.md`, else the only deployment of `kairos login` | The deployment. |
 | `--tenant <TENANT>` | string | `tenant` in `.claude/kairos.local.md`, else the tenant of the login | The tenant, for a token from `kairos login`. A key carries its tenant. |
@@ -2369,36 +2369,70 @@ output. The Claude Code plugin starts this command.
 ### `kairos self-update`
 
 ```
-kairos self-update [--url <URL>] [--version <VERSION> | --latest | --check]
+kairos self-update [--url <URL>] [--version <VERSION> | --latest | --check] [--allow-downgrade] [--json]
 ```
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--url <URL>` | string | `KAIROS_URL`, then the only cached deployment | The deployment whose version to install. |
-| `--version <VERSION>` | string | the version of the server | Install this version (e.g. `0.12.0`). |
+| `--version <VERSION>` | string | the version of the server | Install this version (e.g. `0.12.0`). It can be older than the CLI. |
 | `--latest` | flag | off | Install the latest release on GitHub. |
 | `--check` | flag | off | Print the version of the CLI and of the server, and change nothing. The exit code is 3 when the server is newer, else 0. |
+| `--allow-downgrade` | flag | off | Install the version of the server or of `--latest` also when it is older than the CLI. |
+| `--json` | flag | off | Print one JSON object: the versions and the action. |
 
 Installs the version of the server in place of the running binary. The server
-tells its version at `GET /version` (open). It also gives the links of the
-tarball of the CLI and its `.sha256` for each platform. `KAIROS_CLI_DOWNLOAD_URL`
-on the server sets these links; the default is the GitHub releases.
+tells its version at `GET /version` (open). It also gives the link of the
+tarball of the CLI for each platform. `KAIROS_CLI_DOWNLOAD_URL` on the server
+sets these links; the default is the GitHub releases.
 
 The CLI downloads the tarball of its platform,
-`kairos-<version>-<target>.tar.gz`, and checks it against the `.sha256`. It
-writes the new binary to a new file next to the old one. It keeps the old
-binary as `kairos.bak` and renames the new file over the old path. A failed
-download or a bad checksum changes nothing. With `--version` or `--latest`,
-the CLI takes the tarball from the GitHub releases; `KAIROS_RELEASES_URL`
-replaces that URL, for a mirror.
+`kairos-<version>-<target>.tar.gz`. It checks the tarball against the
+`.sha256` of the published release. The CLI always takes the `.sha256` from
+the GitHub releases, also when the server names a mirror for the tarball. The
+CLI does not use the `.sha256` of the server. A server cannot give a tarball that is
+not a published release. `KAIROS_RELEASES_URL` replaces the GitHub releases,
+for a mirror that you trust.
+
+The CLI writes the new binary to a new file next to the old one. It keeps
+the old binary as `kairos.bak` and renames the new file over the old path. A
+failed download or a bad checksum changes nothing.
+
+A version older than the CLI is a downgrade. The command refuses the version
+of the server or of `--latest` when it is older. The refusal names
+`--allow-downgrade` and `--version`, and nothing changes. The exit code is 1.
+`--version` installs the version that it names, older or newer.
 
 `--check` is for a script: `kairos self-update --check || kairos self-update`
 updates the CLI only when the server is newer.
 
+With `--json`, the command prints one object on stdout:
+
+```json
+{
+  "cli_version": "0.14.0",
+  "server_version": "0.13.0",
+  "deployment": "https://kairos.example.com",
+  "version": "0.13.0",
+  "action": "refused",
+  "message": "The version 0.13.0 is older than this CLI (0.14.0). Nothing changed. To install it, use --allow-downgrade or --version 0.13.0.",
+  "binary": null,
+  "backup": null
+}
+```
+
+`action` is `checked` (`--check`), `unchanged` (the same version),
+`updated` (a newer version), `installed` (an older version) or `refused`.
+`server_version` and `deployment` are `null` with `--version` and
+`--latest`. `binary` and `backup` are the paths after a swap. The exit codes
+do not change. An error that is not a refusal is the JSON error envelope on
+stderr.
+
 A server older than this command does not tell its version: name one with
 `--version`, or use `--latest`. The CLI refuses a server whose links
 (`KAIROS_CLI_DOWNLOAD_URL`) have no tarball for this platform. The message
-names the platforms that the server lists.
+names the platforms that the server lists. The CLI also refuses a version
+that is not a release version, such as `1.2.3` or `1.2.3-rc.1`.
 
 The command writes the binary that runs, wherever it is: a `cargo install`
 binary in `~/.cargo/bin` too. A folder the CLI cannot write refuses the
@@ -2412,17 +2446,26 @@ code tools are off until you run `kairos self-update`.
 
 #### The daily check
 
-After a command that succeeded, the CLI asks the default deployment for its
-version. That is `KAIROS_URL`, then the only cached deployment, not the
-`--url` of the command. It does this once a day, with a 2 second limit. The
-commands `login`, `logout`, `index` and `self-update` make no check.
-`KAIROS_UPDATE_CHECK=0` turns the check off, for a script or CI.
+After a command that succeeded, the CLI asks the deployment of that command
+for its version. That is the `--url` of the command, else `KAIROS_URL`, the
+checkout settings of `index` or the only cached deployment. A command that
+uses no deployment asks the default deployment. The check runs once a day
+for each deployment, with a 2 second limit.
 
-When the server is newer, the CLI prints one line on stderr that names
-`kairos self-update`. With `KAIROS_AUTO_UPDATE=1`, the CLI updates itself
-instead of printing the line. It says so on stderr, and the output of the
-command stays what it is. The check keeps its state in `version-check.json`
-in the config directory. A server that does not answer counts as a check.
+The commands `login`, `logout`,
+`index mcp` and `self-update` make no check. The other `index` commands make
+the check. `KAIROS_UPDATE_CHECK=0` turns the check off, for a script or CI.
+
+When the server is newer, the CLI prints one line on stderr. The line names
+`kairos self-update` and `kairos self-update --check`. With
+`KAIROS_AUTO_UPDATE=1`, the CLI updates itself instead of printing the line.
+It says so on stderr, and the output of the command stays what it is.
+`KAIROS_AUTO_UPDATE` does not update from an `http://` deployment: the CLI
+prints the line, and it says why.
+
+The check keeps its state in `version-check.json` in the config directory.
+The CLI records only an answer. When a server does not answer, the next
+command asks it again.
 
 ## Operator subcommands (`kairos-server`)
 
@@ -2519,7 +2562,7 @@ plaintext password never has to be written into a manifest.
 | `credentials.json` inside it | `0600` | The credential cache, keyed by normalized deployment URL. Holds issuer tokens and local sessions. |
 | `credentials.json.lock` inside it | `0600` | The lock of the cache. A token refresh, `login` and `logout` hold it while they change the cache. The lock is an advisory lock of the operating system. Another process waits for it, and then reads the new token. |
 | `credentials.json.<PID>.tmp` inside it | `0600` | The temporary file of a write to the cache. The rename to `credentials.json` removes it. |
-| `version-check.json` inside it | default | The last daily version check: the deployment, the time and the version of the server. |
+| `version-check.json` inside it | default | The last daily version check of each deployment: the time and the version of the server. |
 
 [Configuration](../configuration/#cli-configuration) is the canonical entry for
 the resolution order, the file's full shape, and the refresh behaviour.

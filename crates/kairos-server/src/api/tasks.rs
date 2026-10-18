@@ -529,12 +529,12 @@ pub(crate) async fn update_task(
     ApiJson(body): ApiJson<dto::UpdateContentRequest>,
 ) -> Result<Json<dto::Task>, ApiError> {
     let user = auth.user_id;
-    let slug = tenant.slug.clone();
+    let role = tenant.role;
     let updated = state
         .blocking
         .run(&tenant.slug, move |conn| {
             let task = load(conn, &short_code, Liveness::LiveOnly)?;
-            require_item_edit(conn, &slug, user, task.id, ItemType::Task)?;
+            require_item_edit(conn, role, user, task.id, ItemType::Task)?;
             let update = items::ContentUpdate {
                 new_title: body.title.as_deref(),
                 new_content: &body.content,
@@ -589,13 +589,15 @@ pub(crate) async fn delete_task(
 ) -> Result<Json<dto::DeleteResponse>, ApiError> {
     let user = auth.user_id;
     let slug = tenant.slug.clone();
+    let role = tenant.role;
     let outcome = state
         .blocking
         .run(&tenant.slug, move |conn| {
             let task = load(conn, &short_code, Liveness::LiveOnly)?;
             // The edit rule for the task, and then for each descendant
             // (COLLIERY-T-0234): `archive_item` does the two.
-            let outcome = super::cascade::archive_item(conn, &slug, user, task.id, ItemType::Task)?;
+            let outcome =
+                super::cascade::archive_item(conn, &slug, role, user, task.id, ItemType::Task)?;
             Ok(super::cascade::delete_response(outcome))
         })
         .await?;
@@ -730,12 +732,12 @@ pub(crate) async fn set_repository(
     ApiJson(body): ApiJson<kairos_client::types_repositories::SetTaskRepositoryRequest>,
 ) -> Result<Json<dto::Task>, ApiError> {
     let user = auth.user_id;
-    let slug = tenant.slug.clone();
+    let role = tenant.role;
     let updated = state
         .blocking
         .run(&tenant.slug, move |conn| {
             let task = load(conn, &short_code, Liveness::LiveOnly)?;
-            require_item_edit(conn, &slug, user, task.id, ItemType::Task)?;
+            require_item_edit(conn, role, user, task.id, ItemType::Task)?;
             let updated = link_task_to_repository(conn, task.id, body.repository.as_deref(), user)?;
             embed(conn, updated.into_dto())
         })
@@ -769,12 +771,12 @@ pub(crate) async fn set_state(
     ApiJson(body): ApiJson<dto::SetTaskStateRequest>,
 ) -> Result<Json<dto::Task>, ApiError> {
     let user = auth.user_id;
-    let slug = tenant.slug.clone();
+    let role = tenant.role;
     let updated = state
         .blocking
         .run(&tenant.slug, move |conn| {
             let task = load(conn, &short_code, Liveness::LiveOnly)?;
-            crate::task_state::write_state(conn, &slug, user, task.id, &body)?;
+            crate::task_state::write_state(conn, role, user, task.id, &body)?;
             embed(conn, task.into_dto())
         })
         .await?;

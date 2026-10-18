@@ -21,6 +21,45 @@ Feature: Start from the base index
     And it tells me to rebase on main, or to run "kairos index --full"
     And it gives the time of a full build
 
+  # KAIROS-T-0516: a clone that is only behind gets the index of the tip
+  # of origin/main, when its diff is smaller than the diff of the index
+  # below the checkout.
+  Scenario: A checkout behind origin/main starts from the index of the tip
+    Given Kairos has an index of commit A of main
+    And main then has commit C with 250 new files, then commit B with 1 change
+    And Kairos has an index of commit B
+    And a checkout of main at C, behind origin/main at B
+    When I run "kairos index update"
+    Then the CLI downloads the index of B, 1 file changed since it
+    And the index of the checkout has the 250 new files
+
+  # KAIROS-T-0515: an update that runs no model has no default limit of
+  # changed files. It parses the changed files and links the pool.
+  Scenario: A link-only update of a branch with 500 changed files starts from the base
+    Given Kairos has an index of commit A of main
+    And a checkout of a branch from A with 500 changed files and no local index
+    When I run "kairos index update --link-only"
+    Then the CLI downloads the index of A, with 500 changed files
+    And the index of the checkout has the 500 new files
+
+  Scenario: fetch_index opens a branch with 500 changed files
+    Given Kairos has an index of commit A of main
+    And a checkout of a branch from A with 500 changed files and no local index
+    And a kairos-code server started in a folder that is not a checkout
+    When the agent calls fetch_index with the path of the checkout
+    Then the server says that the index of A is open, with 500 changed files
+    And the index of the checkout has the 500 new files
+
+  # KAIROS-T-0517: the agent gives a limit. The refusal names it, and says
+  # that no checkout is open.
+  Scenario: fetch_index with max_changed refuses a far branch
+    Given Kairos has an index of commit A of main
+    And a checkout of a branch from A with 250 changed files and no local index
+    And a kairos-code server started in a folder that is not a checkout
+    When the agent calls fetch_index with the path of the checkout and max_changed 10
+    Then the server refuses: 250 files changed, the limit is 10, give max_changed 250
+    And the server says that no checkout is open
+
   Scenario: A machine with no model shows the summaries of the base index
     Given Kairos has a summarized index of commit A of main
     And a kairos binary with no summarizer

@@ -27,7 +27,7 @@ use crate::error::ApiError;
 /// the item page refresh, then `task_state_changed` (KAIROS-T-0574).
 pub fn write_state(
     conn: &mut PgConnection,
-    slug: &str,
+    role: kairos_db::models::OrgRole,
     user: Uuid,
     task_id: Uuid,
     body: &dto::SetTaskStateRequest,
@@ -61,7 +61,7 @@ pub fn write_state(
              send is kept.",
         ));
     }
-    crate::api::require_item_edit(conn, slug, user, task_id, ItemType::Task)?;
+    crate::api::require_item_edit(conn, role, user, task_id, ItemType::Task)?;
     let state = match task_state::patch(conn, task_id, patch, user) {
         Ok(state) => state,
         Err(PatchError::Conflict(current)) => {
