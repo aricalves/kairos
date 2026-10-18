@@ -23,9 +23,9 @@ use kairos_db::models::templates::{
 use uuid::Uuid;
 
 use super::{enum_option_values, require_org_admin, validate_metadata_value};
+use crate::api::clamp_pagination;
 use crate::api::convert::IntoDto;
 use crate::api::convert_meta::template_detail_dto;
-use crate::api::{clamp_pagination, parse_uuid};
 use crate::app::AppState;
 use crate::body::ApiJson;
 use crate::error::ApiError;
@@ -54,6 +54,28 @@ fn load(conn: &mut PgConnection, id: Uuid) -> Result<Template, ApiError> {
         .optional()
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found(format!("The template {id} does not exist.")))
+}
+
+/// The id of the template that `reference` names, or 404 (KAIROS-T-0644).
+/// The reference is the slug or the id, as for a team
+/// ([`crate::api::org::teams::team_by_ref`]): a reference with the form
+/// of a UUID is an id, each other reference is a slug. Each
+/// `/api/templates/{id}` route takes it, so that a client that has the
+/// slug makes one call.
+pub(crate) fn template_by_ref(conn: &mut PgConnection, reference: &str) -> Result<Uuid, ApiError> {
+    use kairos_db::schema::templates;
+    if let Ok(id) = Uuid::parse_str(reference) {
+        return load(conn, id).map(|template| template.id);
+    }
+    templates::table
+        .filter(templates::slug.eq(reference))
+        .select(templates::id)
+        .first(conn)
+        .optional()
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| {
+            ApiError::not_found(format!("No template has the slug or the id {reference:?}."))
+        })
 }
 
 /// The template's associated metadata fields, hydrated with their
@@ -259,10 +281,10 @@ pub(crate) async fn list_templates(
     get,
     path = "/api/templates/{id}",
     tag = "templates",
-    params(("id" = String, Path, description = "Template id (UUID)")),
+    params(("id" = String, Path, description = "The slug or the id (UUID) of the template")),
     responses(
         (status = 200, description = "The template with its metadata fields", body = dto::TemplateDetail),
-        (status = 404, description = "Unknown id", body = dto_base::ErrorEnvelope),
+        (status = 404, description = "Unknown slug or id", body = dto_base::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn get_template(
@@ -270,10 +292,10 @@ pub(crate) async fn get_template(
     Extension(tenant): Extension<TenantContext>,
     Path(id): Path<String>,
 ) -> Result<Json<dto::TemplateDetail>, ApiError> {
-    let id = parse_uuid(&id, "template id")?;
     let template = state
         .blocking
         .run(&tenant.slug, move |conn| {
+            let id = template_by_ref(conn, &id)?;
             let template = load(conn, id)?;
             detail(conn, template)
         })
@@ -346,12 +368,12 @@ pub(crate) fn create_template_in(
     patch,
     path = "/api/templates/{id}",
     tag = "templates",
-    params(("id" = String, Path, description = "Template id (UUID)")),
+    params(("id" = String, Path, description = "The slug or the id (UUID) of the template")),
     request_body = dto::UpdateTemplateRequest,
     responses(
         (status = 200, description = "Updated", body = dto::TemplateDetail),
         (status = 403, description = "Caller is not an org admin", body = dto_base::ErrorEnvelope),
-        (status = 404, description = "Unknown id", body = dto_base::ErrorEnvelope),
+        (status = 404, description = "Unknown slug or id", body = dto_base::ErrorEnvelope),
         (status = 422, description = "No field to change, unknown definition slug, invalid default, or duplicate slug", body = dto_base::ErrorEnvelope),
     ),
 )]
@@ -363,11 +385,11 @@ pub(crate) async fn update_template(
     ApiJson(body): ApiJson<dto::UpdateTemplateRequest>,
 ) -> Result<Json<dto::TemplateDetail>, ApiError> {
     require_org_admin(&tenant)?;
-    let id = parse_uuid(&id, "template id")?;
     let user = auth.user_id;
     let updated = state
         .blocking
         .run(&tenant.slug, move |conn| {
+            let id = template_by_ref(conn, &id)?;
             update_template_in(conn, user, id, &body)
         })
         .await?;
@@ -450,11 +472,11 @@ pub(crate) fn update_template_in(
     delete,
     path = "/api/templates/{id}",
     tag = "templates",
-    params(("id" = String, Path, description = "Template id (UUID)")),
+    params(("id" = String, Path, description = "The slug or the id (UUID) of the template")),
     responses(
         (status = 200, description = "Deleted", body = dto::DeletedResponse),
         (status = 403, description = "Caller is not an org admin", body = dto_base::ErrorEnvelope),
-        (status = 404, description = "Unknown id", body = dto_base::ErrorEnvelope),
+        (status = 404, description = "Unknown slug or id", body = dto_base::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn delete_template(
@@ -463,10 +485,12 @@ pub(crate) async fn delete_template(
     Path(id): Path<String>,
 ) -> Result<Json<dto::DeletedResponse>, ApiError> {
     require_org_admin(&tenant)?;
-    let id = parse_uuid(&id, "template id")?;
     let deleted = state
         .blocking
-        .run(&tenant.slug, move |conn| delete_template_in(conn, id))
+        .run(&tenant.slug, move |conn| {
+            let id = template_by_ref(conn, &id)?;
+            delete_template_in(conn, id)
+        })
         .await?;
     Ok(Json(deleted))
 }

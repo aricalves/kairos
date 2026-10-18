@@ -963,9 +963,18 @@ async fn meta_endpoints_against_live_stack() {
         .await
         .expect("reading team_color definition");
     assert_eq!(body.slug, "team_color");
+    // KAIROS-T-0644: each route of a definition takes its slug too.
+    let by_slug = bob
+        .get_metadata_definition("team_color")
+        .await
+        .expect("reading team_color by its slug");
+    assert_eq!(by_slug.id, color_def_id);
+    let err = rejection(bob.get_metadata_definition("no_such_definition").await);
+    assert!(matches!(err, Error::NotFound { .. }), "{err}");
+    assert!(err.to_string().contains("no_such_definition"), "{err}");
     let body = svc
         .update_metadata_definition(
-            &color_def_id,
+            "team_color",
             &UpdateMetadataDefinitionRequest {
                 name: Some("Team Colour".into()),
                 slug: None,
@@ -977,9 +986,9 @@ async fn meta_endpoints_against_live_stack() {
         .expect("updating team_color definition");
     assert_eq!(body.name, "Team Colour");
     assert_eq!(body.enum_options, ["red", "blue", "green"]);
-    svc.delete_metadata_definition(&color_def_id)
+    svc.delete_metadata_definition("team_color")
         .await
-        .expect("deleting team_color definition");
+        .expect("deleting team_color definition by its slug");
     let err = rejection(bob.get_metadata_definition(&color_def_id).await);
     assert!(matches!(err, Error::NotFound { .. }), "{err}");
 
@@ -1081,6 +1090,12 @@ async fn meta_endpoints_against_live_stack() {
 
     // Detail = content + associated definitions with defaults/required.
     let prd = bob.get_template(&prd_id).await.expect("prd detail");
+    // KAIROS-T-0644: each route of a template takes its slug too.
+    let by_slug = bob.get_template("prd").await.expect("prd by its slug");
+    assert_eq!(by_slug.id, prd_id);
+    let err = rejection(bob.get_template("no-such-template").await);
+    assert!(matches!(err, Error::NotFound { .. }), "{err}");
+    assert!(err.to_string().contains("no-such-template"), "{err}");
     assert!(prd.content.contains("# "), "prd starter content: {prd:?}");
     let doc_type_field = prd
         .metadata
@@ -1180,7 +1195,7 @@ async fn meta_endpoints_against_live_stack() {
     // PATCH updates content; the association list survives untouched.
     let body = svc
         .update_template(
-            &runbook_id,
+            "runbook",
             &UpdateTemplateRequest {
                 name: None,
                 slug: None,
@@ -1195,9 +1210,9 @@ async fn meta_endpoints_against_live_stack() {
 
     // DELETE is a hard delete; stamped documents keep their content and
     // metadata, template_id goes NULL (DDL SET NULL).
-    svc.delete_template(&runbook_id)
+    svc.delete_template("runbook")
         .await
-        .expect("deleting runbook template");
+        .expect("deleting runbook template by its slug");
     let err = rejection(bob.get_template(&runbook_id).await);
     assert!(matches!(err, Error::NotFound { .. }), "{err}");
     let body = bob

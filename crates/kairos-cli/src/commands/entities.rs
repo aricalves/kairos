@@ -13,15 +13,16 @@ use kairos_client::EntityKind;
 use kairos_client::types::{
     Adr, AppendNoteResponse, CreateAdrRequest, CreateDocumentRequest, CreateInitiativeRequest,
     CreateStrategyRequest, CreateTaskRequest, DeleteResponse, Document, ImpactListQuery,
-    Initiative, ListEnvelope, ListQuery, Pagination, PromoteNoteRequest, PromoteNoteResponse,
-    RestoreResponse, Strategy, Task, UpdateContentRequest,
+    Initiative, ListQuery, Pagination, PromoteNoteRequest, PromoteNoteResponse, RestoreResponse,
+    Strategy, Task, UpdateContentRequest,
 };
 use kairos_client::types_meta::SetParentResponse;
 use kairos_client::types_repositories::Impact;
 
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
-use crate::table::{Table, print_page_footer};
+use crate::listing::{Listing, Paging, fetch};
+use crate::table::Table;
 
 // ---------------------------------------------------------------------------
 // Shared verb arguments
@@ -36,15 +37,21 @@ pub struct ListArgs {
     /// Rows to skip
     #[arg(long)]
     pub offset: Option<i64>,
+    /// Read each page: the CLI asks for one page after the other, and
+    /// prints each row. Not with --limit or --offset
+    #[arg(long, conflicts_with_all = ["limit", "offset"])]
+    pub all: bool,
     #[command(flatten)]
     pub common: Common,
 }
 
 impl ListArgs {
-    pub fn page(&self) -> Pagination {
-        Pagination {
+    /// The page flags (KAIROS-T-0644).
+    pub fn paging(&self) -> Paging {
+        Paging {
             limit: self.limit,
             offset: self.offset,
+            all: self.all,
         }
     }
 }
@@ -69,15 +76,29 @@ pub struct EntityListArgs {
     /// CODE column. Default: live work only
     #[arg(long)]
     pub include_deleted: bool,
+    /// Read each page: the CLI asks for one page after the other, and
+    /// prints each row. Not with --limit or --offset
+    #[arg(long, conflicts_with_all = ["limit", "offset"])]
+    pub all: bool,
     #[command(flatten)]
     pub common: Common,
 }
 
 impl EntityListArgs {
-    pub fn query(&self) -> ListQuery {
-        ListQuery {
+    /// The page flags (KAIROS-T-0644).
+    pub fn paging(&self) -> Paging {
+        Paging {
             limit: self.limit,
             offset: self.offset,
+            all: self.all,
+        }
+    }
+
+    /// The query of one page.
+    pub fn query(&self, page: Pagination) -> ListQuery {
+        ListQuery {
+            limit: page.limit,
+            offset: page.offset,
             include_deleted: self.include_deleted,
         }
     }
@@ -103,15 +124,29 @@ pub struct ImpactListArgs {
     /// Only the items that impact this repository (slug or UUID)
     #[arg(long, value_name = "REPOSITORY")]
     pub repo: Option<String>,
+    /// Read each page: the CLI asks for one page after the other, and
+    /// prints each row. Not with --limit or --offset
+    #[arg(long, conflicts_with_all = ["limit", "offset"])]
+    pub all: bool,
     #[command(flatten)]
     pub common: Common,
 }
 
 impl ImpactListArgs {
-    pub fn query(&self) -> ImpactListQuery {
-        ImpactListQuery {
+    /// The page flags (KAIROS-T-0644).
+    pub fn paging(&self) -> Paging {
+        Paging {
             limit: self.limit,
             offset: self.offset,
+            all: self.all,
+        }
+    }
+
+    /// The query of one page.
+    pub fn query(&self, page: Pagination) -> ImpactListQuery {
+        ImpactListQuery {
+            limit: page.limit,
+            offset: page.offset,
             include_deleted: self.include_deleted,
             repository: self.repo.clone(),
         }
@@ -806,12 +841,9 @@ impl EntityView for Adr {
 // Emit helpers (human table / --json raw DTO)
 // ---------------------------------------------------------------------------
 
-pub fn emit_list<T: EntityView>(
-    common: &Common,
-    envelope: &ListEnvelope<T>,
-) -> Result<(), CliError> {
+pub fn emit_list<T: EntityView>(common: &Common, envelope: &Listing<T>) -> Result<(), CliError> {
     if common.json {
-        return print_json(envelope);
+        return envelope.print_json();
     }
     if envelope.items.is_empty() {
         println!("(none)");
@@ -832,12 +864,7 @@ pub fn emit_list<T: EntityView>(
         }
         print!("{}", table.render());
     }
-    print_page_footer(
-        envelope.total,
-        envelope.limit,
-        envelope.offset,
-        envelope.items.len(),
-    );
+    envelope.print_footer();
     Ok(())
 }
 
@@ -1465,8 +1492,11 @@ macro_rules! entity_family_cli {
                 match self {
                     Self::List(args) => {
                         let client = client(&args.common)?;
-                        let envelope = client.$list(args.query()).await?;
-                        emit_list(&args.common, &envelope)
+                        let listing = fetch(args.paging(), |page| {
+                            client.$list(args.query(page))
+                        })
+                        .await?;
+                        emit_list(&args.common, &listing)
                     }
                     Self::Get(args) => {
                         let client = client(&args.common)?;

@@ -174,10 +174,23 @@ journey(
       const page = await bob.gui();
       await page.goto('/activity');
       const filters = panel(page, 'Filters');
-      await filters.locator('.cl-field', { hasText: 'Entity short code' }).locator('input').fill(code);
+      // KAIROS-T-0584: the field is an item picker now. A full short code
+      // opens no picker; Apply resolves the code to the item.
+      await filters.getByLabel('Item (code or words)').fill(code);
       await filters.getByRole('button', { name: 'Apply' }).click();
       await expect(page.getByRole('link', { name: code }).first()).toBeVisible({ timeout: 15_000 });
-      const rows = await page.locator('tbody tr').count();
+      // The new item is near the top of the whole feed too: wait until the
+      // filter has applied, so that the feed has rows and each row is about
+      // the item.
+      const feedRows = page.locator('tbody tr');
+      await expect
+        .poll(async () => {
+          const all = await feedRows.count();
+          const other = await feedRows.filter({ hasNotText: code }).count();
+          return all > 0 && other === 0;
+        })
+        .toBe(true);
+      const rows = await feedRows.count();
       return { filtered_to: code, entries: rows };
     });
   },

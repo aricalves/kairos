@@ -69,13 +69,13 @@ journey(
       // for a bug that returned "no matches" rather than an error.
       const hidden = await cli.json(['search', '--query', topic, '--limit', '50']);
       const hiddenCodes = [
-        ...(hidden.results?.tasks ?? []),
-        ...(hidden.results?.documents ?? []),
+        ...(hidden.items.filter((h: any) => h.entity_type === 'task')),
+        ...(hidden.items.filter((h: any) => h.entity_type === 'document')),
       ].map((r: any) => r.short_code);
       expect(hiddenCodes, 'put-away work stays out of an ordinary search').not.toContain(shelved);
 
       const found = await cli.json(['search', '--query', topic, '--include-deleted', '--limit', '50']);
-      const foundRows = [...(found.results?.tasks ?? [])];
+      const foundRows = [...(found.items.filter((h: any) => h.entity_type === 'task'))];
       const hit = foundRows.find((r: any) => r.short_code === shelved);
       expect(hit, 'asking for put-away work finds it by the same words').toBeTruthy();
       expect(hit.archived_at, 'and the hit says it is put away').toBeTruthy();

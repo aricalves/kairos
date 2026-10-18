@@ -35,7 +35,7 @@ Resolve the board with `whoami`/`my_boards` (the user's delivery board) unless t
 
 For a bucket, `search` gives the answer in one call. Send the board by slug (`filter.board`). Use `filter.metadata_missing` for a missing value and `filter.updated_before` for an age. For the unprioritized bugs that are also stale: `{"filter": {"board": "<board>", "task_type": ["bug"], "metadata_missing": ["priority"], "updated_before": "<now minus 90 days, RFC 3339>"}}`. `list_metadata_definitions` gives the slugs and the scale of each definition (the values of `priority` in their order), and `list_templates` gives the templates.
 
-Call `get_events` too: your notifications show the P0 bugs that landed on the board of your team, the tasks of yours that someone cancelled, and the mentions of your name. Put a P0 bug at the top of the attention list. When the lead has seen them, `mark_events_read` (`ids`, or `all: true` with `up_to`: the newest id that you read). While you have unread notifications, each answer of a Kairos tool ends with the 5 newest.
+Call `get_events` too: your notifications show the P0 bugs that landed on the board of your team, the tasks of yours that someone cancelled, and the mentions of your name. To mention a person, write `@<user name>`. `list_members` gives the user names. Put a P0 bug at the top of the attention list. When the lead has seen them, `mark_events_read` (`ids`, or `all: true` with `up_to`: the newest id that you read). While you have unread notifications, each answer of a Kairos tool ends with the 5 newest.
 
 Let the lead pick where to start.
 

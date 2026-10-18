@@ -434,6 +434,10 @@ pub struct BaseWorld {
     /// KAIROS-T-0348: the folder the server started in, and its config
     /// folder, kept for the scenario.
     pub elsewhere: Option<(TempDir, TempDir)>,
+    /// KAIROS-T-0516: commit C of main (250 new files after A), and commit
+    /// B after it (1 change).
+    pub c: String,
+    pub b: String,
 }
 
 impl BaseWorld {
@@ -685,6 +689,49 @@ fn a_branch(world: &mut CliWorld, changed: usize) {
     assert!(!root.join(INDEX_DB).exists());
 }
 
+/// KAIROS-T-0516: main gets commit C with `files` new files, then commit B
+/// with 1 change.
+#[given(regex = r"^main then has commit C with (\d+) new files, then commit B with 1 change$")]
+fn main_has_c_and_b(world: &mut CliWorld, files: usize) {
+    let w = base(world);
+    let remote = w.kairos().remote.clone();
+    for i in 0..files {
+        write(
+            &remote,
+            &format!("pkg/generated/part_{i:03}.py"),
+            &format!("def part_{i}(x):\n    return x + {i}\n"),
+        );
+    }
+    git(&remote, &["add", "-A"]);
+    git(&remote, &["commit", "-q", "-m", "C"]);
+    w.c = git(&remote, &["rev-parse", "HEAD"]);
+    let (file, from, to, _) = BRANCH_CHANGES[0];
+    let path = remote.join(file);
+    let text = fs::read_to_string(&path).expect("read");
+    fs::write(&path, text.replace(from, to)).expect("write");
+    git(&remote, &["commit", "-q", "-am", "B"]);
+    w.b = git(&remote, &["rev-parse", "HEAD"]);
+}
+
+#[given("Kairos has an index of commit B")]
+async fn kairos_has_b(world: &mut CliWorld) {
+    let w = base(world);
+    let b = w.b.clone();
+    w.kairos().upload(&b).await;
+}
+
+/// KAIROS-T-0516: a clone whose main is at C: HEAD is an ancestor of
+/// origin/main, and the nearest index below HEAD is the index of A.
+#[given("a checkout of main at C, behind origin/main at B")]
+fn a_checkout_behind(world: &mut CliWorld) {
+    let w = base(world);
+    w.clone_remote();
+    let root = w.root().to_path_buf();
+    git(&root, &["reset", "-q", "--hard", &w.c]);
+    assert_eq!(git(&root, &["rev-parse", "origin/main"]), w.b);
+    assert!(!root.join(INDEX_DB).exists());
+}
+
 /// KAIROS-T-0348: the server starts in an empty folder, as a session of a
 /// board folder does, with the deployment of the scenario and no other
 /// Kairos setting of the machine.
@@ -737,8 +784,59 @@ fn calls_fetch_index(world: &mut CliWorld) {
     world.result = Some(result);
 }
 
-#[then("the server says that the index of A is open, with 3 changed files")]
-fn says_open(world: &mut CliWorld) {
+/// KAIROS-T-0515: `fetch_index` takes `max_changed`.
+#[when("the agent calls fetch_index with the path of the checkout and max_changed 10")]
+fn calls_fetch_index_with_a_limit(world: &mut CliWorld) {
+    let root = world.base.root().to_path_buf();
+    let result = world.agent.as_mut().expect("no server").call(
+        "fetch_index",
+        serde_json::json!({"root": root, "repository": REPOSITORY, "max_changed": 10}),
+    );
+    world.result = Some(result);
+}
+
+/// KAIROS-T-0517: the refusal of the tool names `max_changed`.
+#[then("the server refuses: 250 files changed, the limit is 10, give max_changed 250")]
+fn refuses_with_the_limit(world: &mut CliWorld) {
+    let r = world.result.as_ref().expect("no result");
+    assert!(r.is_error, "{}", r.text);
+    assert!(
+        r.text.starts_with("INDEX: 250 files changed since "),
+        "{}",
+        r.text
+    );
+    assert!(
+        r.text
+            .contains("The limit is 10, so the server did not change the index."),
+        "{}",
+        r.text
+    );
+    assert!(r.text.contains("Rebase on main"), "{}", r.text);
+    assert!(
+        r.text
+            .contains("Or give `max_changed` 250 to update from this index."),
+        "{}",
+        r.text
+    );
+    assert!(!world.base.root().join(INDEX_DB).exists(), "{}", r.text);
+}
+
+/// KAIROS-T-0517: a failed fetch opened nothing, and says so.
+#[then("the server says that no checkout is open")]
+fn says_no_checkout_is_open(world: &mut CliWorld) {
+    let r = world.result.as_ref().expect("no result");
+    assert!(
+        r.text.contains(
+            "The server has no open checkout, so the other tools refuse until `fetch_index` \
+             succeeds."
+        ),
+        "{}",
+        r.text
+    );
+}
+
+#[then(regex = r"^the server says that the index of A is open, with (\d+) changed files$")]
+fn says_open(world: &mut CliWorld, changed: usize) {
     let r = world.result.as_ref().expect("no result");
     assert!(!r.is_error, "{}", r.text);
     let a = &world.base.kairos().a[..12];
@@ -749,7 +847,7 @@ fn says_open(world: &mut CliWorld) {
     );
     assert!(
         r.text.contains(&format!(
-            "the index of commit {a} from Kairos, 3 files changed since it."
+            "the index of commit {a} from Kairos, {changed} files changed since it."
         )),
         "{}",
         r.text
@@ -948,6 +1046,53 @@ fn downloads_a(world: &mut CliWorld) {
     assert_ne!(stats.content_hash, in_a, "the index is the index of A");
 }
 
+/// KAIROS-T-0516: the base is the index of the tip of origin/main.
+#[then("the CLI downloads the index of B, 1 file changed since it")]
+fn downloads_b(world: &mut CliWorld) {
+    let w = base(world);
+    let out = w.output();
+    assert!(w.run.as_ref().expect("no run").status.success(), "{out}");
+    assert!(
+        w.stdout().contains(&format!(
+            "Kairos: downloaded the index of {}, 1 files changed since it.",
+            &w.b[..12]
+        )),
+        "{out}"
+    );
+}
+
+/// KAIROS-T-0515: the base of a far branch, with no limit.
+#[then(regex = r"^the CLI downloads the index of A, with (\d+) changed files$")]
+fn downloads_a_far(world: &mut CliWorld, changed: usize) {
+    let w = base(world);
+    let out = w.output();
+    assert!(w.run.as_ref().expect("no run").status.success(), "{out}");
+    let a = &w.kairos().a;
+    assert!(
+        w.stdout().contains(&format!(
+            "Kairos: downloaded the index of {}, {changed} files changed since it.",
+            &a[..12]
+        )),
+        "{out}"
+    );
+}
+
+/// KAIROS-T-0515: the generated files of the branch are in the index.
+#[then(regex = r"^the index of the checkout has the (\d+) new files$")]
+fn has_the_new_files(world: &mut CliWorld, count: usize) {
+    let w = &world.base;
+    let files = w.index().files().expect("files");
+    let new = files
+        .iter()
+        .filter(|f| f.path.starts_with("pkg/generated/"))
+        .count();
+    assert_eq!(new, count);
+    // The files of A are there too, with the summaries of the base.
+    assert!(files.iter().any(|f| f.path == "pkg/stats.py"));
+    let (with, _) = w.summarized();
+    assert!(with.contains("pkg/stats.py:mean"), "{with:?}");
+}
+
 #[then("it summarizes only the changed symbols")]
 fn only_the_changed_symbols(world: &mut CliWorld) {
     let w = base(world);
@@ -983,6 +1128,11 @@ fn tells_to_rebase(world: &mut CliWorld, command: String) {
     let out = base(world).output();
     assert!(out.contains("Rebase on main"), "{out}");
     assert!(out.contains(&format!("run `{command}`")), "{out}");
+    // KAIROS-T-0517: and the limit that lets the update start.
+    assert!(
+        out.contains("Or give `--max-changed 250` to update from this index."),
+        "{out}"
+    );
 }
 
 #[then("it gives the time of a full build")]

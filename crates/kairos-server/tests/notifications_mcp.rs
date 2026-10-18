@@ -2,8 +2,10 @@
 //! acceptance criteria:
 //!
 //! 1. An answer to a person's key (an agent key, or the person's own login)
-//!    ends with the unread notifications: the 5 newest, then "N more: call
-//!    get_events"; it stops after `mark_events_read`.
+//!    ends with the unread notifications: the 5 newest, then "More: call
+//!    get_events" when there are more (the heading says "5+ unread",
+//!    KAIROS-T-0612); it stops after `mark_events_read`. The block is read
+//!    in the one checkout of the tool call (KAIROS-T-0612).
 //! 2. A service account gets no block; `get_events` has no block.
 //! 3. `get_events` and `GET /api/me/notifications` agree;
 //!    `mark_events_read` and `POST /api/me/notifications/read` refuse an id
@@ -192,6 +194,8 @@ async fn notifications_ride_along_until_read() {
             .expect("OIDC discovery against live Dex"),
     );
     let state = app::state_with(base_config(&scratch_url), pool, auth);
+    // KAIROS-T-0612: the pool of the handlers, to count the checkouts.
+    let blocking = state.blocking.clone();
     let server = spawn_server(app::router(state)).await;
     let admin = server.client(&svc_token, "acme");
     let alice = server.client(&alice_token, "acme");
@@ -263,9 +267,19 @@ async fn notifications_ride_along_until_read() {
         .await
         .expect("agent key");
     let mut agent = Mcp::connect(&server.base_url, &agent_key.key).await;
+    // A first call warms the caches of the auth and the tenant.
+    agent.call_ok("whoami", json!({})).await;
+    // KAIROS-T-0612: the tool and its ride-along in one checkout.
+    let before = blocking.checkouts();
     let text = agent.call_ok("whoami", json!({})).await;
+    assert_eq!(
+        blocking.checkouts() - before,
+        1,
+        "one checkout for the tool and the ride-along"
+    );
+    // KAIROS-T-0612: no count past 5, so the query stops at 6 rows.
     let block = text
-        .split("## Your notifications (7 unread)")
+        .split("## Your notifications (5+ unread)")
         .nth(1)
         .unwrap_or_else(|| panic!("the block: {text}"));
     // KAIROS-T-0549: the 5 newest as lines with no id, in a content block of
@@ -283,13 +297,13 @@ async fn notifications_ride_along_until_read() {
         "the answer block is the answer alone: {}",
         agent.last_blocks[0]
     );
-    assert!(block.contains("2 more: call get_events"), "{block}");
+    assert!(block.contains("More: call get_events"), "{block}");
     assert!(block.contains("mark_events_read"), "{block}");
     assert!(block.contains("mention"), "{block}");
     // The person's own login gets it too.
     let mut own = Mcp::connect(&server.base_url, &alice_token).await;
     let text = own.call_ok("my_boards", json!({})).await;
-    assert!(text.contains("## Your notifications (7 unread)"), "{text}");
+    assert!(text.contains("## Your notifications (5+ unread)"), "{text}");
     // A refusal has no block.
     let (text, error) = own
         .call("get_item", json!({"short_code": "WEB-T-9999"}))
@@ -364,7 +378,7 @@ async fn notifications_ride_along_until_read() {
     );
     let text = agent.call_ok("whoami", json!({})).await;
     assert!(text.contains("## Your notifications (5 unread)"), "{text}");
-    assert!(!text.contains("more: call get_events"), "{text}");
+    assert!(!text.contains("More: call get_events"), "{text}");
     // Refusals name the id, and change nothing.
     let unknown = Uuid::new_v4().to_string();
     let (text, error) = agent
@@ -415,11 +429,14 @@ async fn notifications_ride_along_until_read() {
         text.starts_with("Marked 5 notification(s) read. You have 0 unread."),
         "{text}"
     );
+    let before = blocking.checkouts();
     let text = agent.call_ok("whoami", json!({})).await;
     assert!(
         !text.contains("Your notifications"),
         "read: no block: {text}"
     );
+    assert_eq!(agent.last_blocks.len(), 1, "{:?}", agent.last_blocks);
+    assert_eq!(blocking.checkouts() - before, 1, "one checkout, no block");
     let events = agent.call_ok("get_events", json!({})).await;
     assert!(
         events.contains("(0 unread)") && events.contains("## Read"),
