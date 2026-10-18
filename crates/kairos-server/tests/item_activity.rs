@@ -231,6 +231,7 @@ async fn get_history_lists_the_activity_of_the_item_newest_first() {
         team_id: None,
         repository: None,
         from_team: None,
+        parent: None,
     };
     let task = admin.create_task(&new_task("Worked")).await.expect("task");
     let blocker = admin
