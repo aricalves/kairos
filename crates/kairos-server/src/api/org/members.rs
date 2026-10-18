@@ -28,7 +28,7 @@ use kairos_db::models::graph::NewActivityLogEntry;
 use kairos_db::models::{NewOrganizationMember, OrganizationMember, User};
 use uuid::Uuid;
 
-use super::super::{clamp_pagination, parse_enum, parse_uuid, require_capability};
+use super::super::{clamp_pagination, parse_enum, require_capability};
 use super::is_unique_violation;
 use crate::app::AppState;
 use crate::body::ApiJson;
@@ -60,6 +60,17 @@ fn member_view(member: &OrganizationMember, user: &User) -> dto::OrgMember {
         joined_at: member
             .joined_at
             .to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+    }
+}
+
+/// The id of the member that `reference` names (KAIROS-T-0589): a user
+/// id, an email or a user name, as `DELETE /api/teams/{id}/members/{user}`.
+/// A UUID is taken as it is, so a missing member is the 404 of
+/// [`load_membership`].
+fn member_by_ref(conn: &mut PgConnection, slug: &str, reference: &str) -> Result<Uuid, ApiError> {
+    match Uuid::parse_str(reference.trim()) {
+        Ok(id) => Ok(id),
+        Err(_) => Ok(super::structure_grants::resolve_member(conn, slug, reference, "user_id")?.id),
     }
 }
 
@@ -318,7 +329,7 @@ pub(crate) async fn add_member(
     patch,
     path = "/api/members/{user_id}",
     tag = "members",
-    params(("user_id" = String, Path, description = "User id (UUID)")),
+    params(("user_id" = String, Path, description = "The member: a user id (UUID), an email or a user name")),
     request_body = dto::UpdateOrgMemberRequest,
     responses(
         (status = 200, description = "Updated", body = dto::OrgMember),
@@ -334,17 +345,17 @@ pub(crate) async fn update_member(
     Path(user_id): Path<String>,
     ApiJson(body): ApiJson<dto::UpdateOrgMemberRequest>,
 ) -> Result<Json<dto::OrgMember>, ApiError> {
-    let target = parse_uuid(&user_id, "user_id")?;
     let new_role = parse_enum::<OrgRole>(&body.role, "role", OrgRole::ALL)?;
     let org_id = tenant.org_id;
     let user = auth.user_id;
     let slug = tenant.slug.clone();
-    let member = state
+    let (member, target) = state
         .blocking
         .run(&tenant.slug, move |conn| {
             use kairos_db::schema::organization_members::dsl;
             use kairos_db::schema::users;
             require_capability(conn, &slug, None, user, MANAGE)?;
+            let target = member_by_ref(conn, &slug, &user_id)?;
             let membership = load_membership(conn, org_id, target)?;
             if membership.role == OrgRole::Admin
                 && new_role != OrgRole::Admin
@@ -379,7 +390,7 @@ pub(crate) async fn update_member(
                 .select(User::as_select())
                 .first(conn)
                 .map_err(ApiError::internal)?;
-            Ok(member_view(&membership, &identity))
+            Ok((member_view(&membership, &identity), target))
         })
         .await?;
     // KAIROS-T-0609: the next request of the member sees the role.
@@ -396,7 +407,7 @@ pub(crate) async fn update_member(
     delete,
     path = "/api/members/{user_id}",
     tag = "members",
-    params(("user_id" = String, Path, description = "User id (UUID)")),
+    params(("user_id" = String, Path, description = "The member: a user id (UUID), an email or a user name")),
     responses(
         (status = 200, description = "Removed", body = dto::RemoveOrgMemberResponse),
         (status = 403, description = "Not an org admin", body = kairos_client::types::ErrorEnvelope),
@@ -410,7 +421,6 @@ pub(crate) async fn remove_member(
     Extension(tenant): Extension<TenantContext>,
     Path(user_id): Path<String>,
 ) -> Result<Json<dto::RemoveOrgMemberResponse>, ApiError> {
-    let target = parse_uuid(&user_id, "user_id")?;
     let org_id = tenant.org_id;
     let user = auth.user_id;
     let slug = tenant.slug.clone();
@@ -419,6 +429,7 @@ pub(crate) async fn remove_member(
         .run(&tenant.slug, move |conn| {
             use kairos_db::schema::organization_members::dsl;
             require_capability(conn, &slug, None, user, MANAGE)?;
+            let target = member_by_ref(conn, &slug, &user_id)?;
             super::run_in_transaction(conn, |conn| {
                 let membership = load_membership(conn, org_id, target)?;
                 if membership.role == OrgRole::Admin && admin_count(conn, org_id)? <= 1 {
@@ -462,8 +473,10 @@ pub(crate) async fn remove_member(
                     removed: true,
                 })
             })
+            .map(|outcome| (outcome, target))
         })
         .await?;
+    let (outcome, target) = outcome;
     // KAIROS-T-0609: the next request of the person is refused.
     state.auth_cache.drop_user(target);
     Ok(Json(outcome))

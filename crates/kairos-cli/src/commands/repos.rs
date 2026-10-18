@@ -63,8 +63,8 @@ pub enum ReposCommand {
     /// Show one repository: owner, the owner's board, how-to-work-here,
     /// the status of its read token, the documents and ADRs that impact it,
     /// in-flight PRs
-    #[command(visible_alias = "show")]
-    Get {
+    #[command(alias = "get")]
+    Show {
         /// Repository slug (or UUID)
         repository: String,
         /// Also list the archived documents and ADRs that impact the
@@ -664,7 +664,7 @@ impl ReposCommand {
                 envelope.print_footer();
                 Ok(())
             }
-            Self::Get {
+            Self::Show {
                 repository,
                 include_deleted,
                 common,
@@ -906,7 +906,7 @@ impl ReposCommand {
                 if common.json {
                     return print_json(&response);
                 }
-                println!("Kairos deleted the repository {}.", response.id);
+                println!("Kairos deleted the repository {repository}.");
                 Ok(())
             }
             Self::Bind {

@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 
 use clap::Args;
 
-use kairos_client::EntityKind;
 use kairos_client::types::{
     Adr, AppendNoteResponse, CreateAdrRequest, CreateDocumentRequest, CreateInitiativeRequest,
     CreateStrategyRequest, CreateTaskRequest, DeleteResponse, Document, ImpactListQuery,
@@ -18,8 +17,11 @@ use kairos_client::types::{
 };
 use kairos_client::types_meta::SetParentResponse;
 use kairos_client::types_repositories::Impact;
+use kairos_client::{EntityKind, KairosClient};
 
-use crate::context::{Common, client, print_json};
+use crate::context::{
+    Common, client, column_id, find_column, is_uuid, print_json, team_id, template_id,
+};
 use crate::error::CliError;
 use crate::listing::{Listing, Paging, fetch};
 use crate::table::Table;
@@ -194,10 +196,29 @@ pub struct NoteArgs {
     /// The item's short code (e.g. ACME-T-0001)
     pub short_code: String,
     /// The markdown text of the note
-    #[arg(long)]
-    pub text: String,
+    #[arg(
+        long,
+        conflicts_with = "text_file",
+        required_unless_present = "text_file"
+    )]
+    pub text: Option<String>,
+    /// Read the markdown text of the note from a file (`-` reads stdin)
+    #[arg(long, value_name = "FILE")]
+    pub text_file: Option<PathBuf>,
     #[command(flatten)]
     pub common: Common,
+}
+
+impl NoteArgs {
+    /// The text of the note: `--text`, or the file of `--text-file`.
+    pub fn text(&self) -> Result<String, CliError> {
+        Ok(read_text(
+            self.text.as_deref(),
+            self.text_file.as_deref(),
+            "--text-file",
+        )?
+        .unwrap_or_default())
+    }
 }
 
 /// Arguments of `promote-note` (KAIROS-T-0505): turn a note into a draft
@@ -229,20 +250,11 @@ impl EditArgs {
         current_version: i32,
         current_content: &str,
     ) -> Result<UpdateContentRequest, CliError> {
-        let content = match (&self.content, &self.content_file) {
-            (Some(content), _) => Some(content.clone()),
-            (None, Some(path)) if path == Path::new("-") => {
-                let mut text = String::new();
-                std::io::stdin().read_to_string(&mut text).map_err(|err| {
-                    CliError::Failure(format!("The CLI cannot read standard input: {err}."))
-                })?;
-                Some(text)
-            }
-            (None, Some(path)) => Some(std::fs::read_to_string(path).map_err(|err| {
-                CliError::Failure(format!("The CLI cannot read {}: {err}.", path.display()))
-            })?),
-            (None, None) => None,
-        };
+        let content = read_text(
+            self.content.as_deref(),
+            self.content_file.as_deref(),
+            "--content-file",
+        )?;
         if self.title.is_none() && content.is_none() {
             return Err(CliError::Failure(
                 "The command has no change. Use --title, --content or --content-file.".to_string(),
@@ -261,9 +273,10 @@ impl EditArgs {
 pub struct TransitionArgs {
     /// The item's short code (e.g. ACME-T-0001)
     pub short_code: String,
-    /// Target column id (UUID); a move outside the board's transition
-    /// graph is rejected with 422 listing the allowed targets
-    #[arg(long = "to", value_name = "COLUMN_ID")]
+    /// Target column: a name of a column of the board of the item, or an
+    /// id (UUID). A move outside the board's transition graph is rejected
+    /// with 422 listing the allowed targets
+    #[arg(long = "to", value_name = "COLUMN")]
     pub to_column: String,
     #[command(flatten)]
     pub common: Common,
@@ -551,6 +564,8 @@ pub trait EntityView: serde::Serialize + utoipa::ToSchema {
     fn version(&self) -> i32;
     fn content(&self) -> &str;
     fn column_id(&self) -> Option<&str>;
+    /// The board of the item (an off-board ADR has none).
+    fn board_id(&self) -> Option<&str>;
     /// When this work was put away, if it was (KAIROS-A-0020). `get`
     /// prints a banner for it: archived work reads normally, so without
     /// one there is nothing to tell a reader they are looking at a record
@@ -602,6 +617,9 @@ impl EntityView for Strategy {
     fn column_id(&self) -> Option<&str> {
         Some(&self.column_id)
     }
+    fn board_id(&self) -> Option<&str> {
+        Some(&self.board_id)
+    }
     fn archived_at(&self) -> Option<&str> {
         self.archived_at.as_deref()
     }
@@ -645,6 +663,9 @@ impl EntityView for Initiative {
     }
     fn column_id(&self) -> Option<&str> {
         Some(&self.column_id)
+    }
+    fn board_id(&self) -> Option<&str> {
+        Some(&self.board_id)
     }
     fn archived_at(&self) -> Option<&str> {
         self.archived_at.as_deref()
@@ -691,6 +712,9 @@ impl EntityView for Task {
     }
     fn column_id(&self) -> Option<&str> {
         Some(&self.column_id)
+    }
+    fn board_id(&self) -> Option<&str> {
+        Some(&self.board_id)
     }
     fn archived_at(&self) -> Option<&str> {
         self.archived_at.as_deref()
@@ -763,6 +787,9 @@ impl EntityView for Document {
     fn column_id(&self) -> Option<&str> {
         None
     }
+    fn board_id(&self) -> Option<&str> {
+        Some(&self.board_id)
+    }
     fn archived_at(&self) -> Option<&str> {
         self.archived_at.as_deref()
     }
@@ -809,6 +836,9 @@ impl EntityView for Adr {
     }
     fn column_id(&self) -> Option<&str> {
         self.column_id.as_deref()
+    }
+    fn board_id(&self) -> Option<&str> {
+        self.board_id.as_deref()
     }
     fn archived_at(&self) -> Option<&str> {
         self.archived_at.as_deref()
@@ -911,17 +941,42 @@ pub fn emit_edited<T: EntityView>(common: &Common, item: &T) -> Result<(), CliEr
     Ok(())
 }
 
-pub fn emit_transitioned<T: EntityView>(common: &Common, item: &T) -> Result<(), CliError> {
+/// `transition` output: the name of the column after the move
+/// (KAIROS-T-0589), from the columns of the board of the item.
+pub fn emit_transitioned<T: EntityView>(
+    common: &Common,
+    item: &T,
+    detail: &kairos_client::types_org::BoardDetail,
+) -> Result<(), CliError> {
     if common.json {
         return print_json(item);
     }
     println!(
-        "Kairos moved the {} {} to the column {}.",
-        T::NOUN,
-        item.short_code(),
-        item.column_id().unwrap_or("-")
+        "{}",
+        transitioned_line(T::NOUN, item.short_code(), item.column_id(), detail)
     );
     Ok(())
+}
+
+/// The line of [`emit_transitioned`]: the column by its name, or by its id
+/// when the board has no such column. Pure.
+fn transitioned_line(
+    noun: &str,
+    short_code: &str,
+    column_id: Option<&str>,
+    detail: &kairos_client::types_org::BoardDetail,
+) -> String {
+    let column = column_id.map_or_else(
+        || "-".to_string(),
+        |id| {
+            detail
+                .columns
+                .iter()
+                .find(|c| c.id == id)
+                .map_or_else(|| id.to_string(), |c| c.name.clone())
+        },
+    );
+    format!("Kairos moved the {noun} {short_code} to the column {column}.")
 }
 
 /// Render the claim of a task after a claim, a hand-off or a release
@@ -1147,21 +1202,68 @@ fn not_reached_lines(items: &[kairos_client::types::NotReached]) -> Vec<String> 
 // Per-family create arguments
 // ---------------------------------------------------------------------------
 
+/// The markdown of `--content` or of `--content-file` (`-` reads standard
+/// input), or `None` when neither is given (KAIROS-T-0589).
+pub fn read_text(
+    text: Option<&str>,
+    file: Option<&Path>,
+    flags: &str,
+) -> Result<Option<String>, CliError> {
+    match (text, file) {
+        (Some(text), _) => Ok(Some(text.to_string())),
+        (None, Some(path)) if path == Path::new("-") => {
+            let mut text = String::new();
+            std::io::stdin().read_to_string(&mut text).map_err(|err| {
+                CliError::Failure(format!(
+                    "The CLI cannot read standard input for {flags}: {err}."
+                ))
+            })?;
+            Ok(Some(text))
+        }
+        (None, Some(path)) => std::fs::read_to_string(path).map(Some).map_err(|err| {
+            CliError::Failure(format!("The CLI cannot read {}: {err}.", path.display()))
+        }),
+        (None, None) => Ok(None),
+    }
+}
+
+/// The id of the column `--column` of a create (KAIROS-T-0589): a name in
+/// the board `board`, or an id. A name with no board is an error.
+async fn create_column(
+    client: &KairosClient,
+    board: Option<&str>,
+    column: Option<&str>,
+) -> Result<Option<String>, CliError> {
+    match (column, board) {
+        (None, _) => Ok(None),
+        (Some(column), _) if is_uuid(column) => Ok(Some(column.to_string())),
+        (Some(column), Some(board)) => Ok(Some(column_id(client, board, column).await?)),
+        (Some(column), None) => Err(CliError::Failure(format!(
+            "The column {column:?} is a name, and the command names no board. Give --board, \
+             or the id of the column."
+        ))),
+    }
+}
+
 /// Arguments of `kairos strategies create`.
 #[derive(Args, Debug)]
 pub struct StrategyCreateArgs {
     /// Board to create the strategy on (slug or UUID)
     #[arg(long, value_name = "BOARD")]
     pub board: String,
-    /// Column to place it in (UUID; defaults to the board's first column)
-    #[arg(long, value_name = "COLUMN_ID")]
+    /// Column to place it in: a name or an id (UUID). Default: the first
+    /// column of the board
+    #[arg(long, value_name = "COLUMN")]
     pub column: Option<String>,
     /// Title
     #[arg(long)]
     pub title: String,
     /// Markdown content (defaults to empty)
-    #[arg(long, default_value = "")]
-    pub content: String,
+    #[arg(long, conflicts_with = "content_file")]
+    pub content: Option<String>,
+    /// Read the markdown content from a file (`-` reads stdin)
+    #[arg(long, value_name = "FILE")]
+    pub content_file: Option<PathBuf>,
     /// Strategy hypothesis
     #[arg(long)]
     pub hypothesis: Option<String>,
@@ -1170,14 +1272,19 @@ pub struct StrategyCreateArgs {
 }
 
 impl StrategyCreateArgs {
-    fn request(&self) -> CreateStrategyRequest {
-        CreateStrategyRequest {
+    async fn request(&self, client: &KairosClient) -> Result<CreateStrategyRequest, CliError> {
+        Ok(CreateStrategyRequest {
             board_id: self.board.clone(),
-            column_id: self.column.clone(),
+            column_id: create_column(client, Some(&self.board), self.column.as_deref()).await?,
             title: self.title.clone(),
-            content: self.content.clone(),
+            content: read_text(
+                self.content.as_deref(),
+                self.content_file.as_deref(),
+                "--content-file",
+            )?
+            .unwrap_or_default(),
             hypothesis: self.hypothesis.clone(),
-        }
+        })
     }
 }
 
@@ -1187,15 +1294,19 @@ pub struct InitiativeCreateArgs {
     /// Board to create the initiative on (slug or UUID)
     #[arg(long, value_name = "BOARD")]
     pub board: String,
-    /// Column to place it in (UUID; defaults to the board's first column)
-    #[arg(long, value_name = "COLUMN_ID")]
+    /// Column to place it in: a name or an id (UUID). Default: the first
+    /// column of the board
+    #[arg(long, value_name = "COLUMN")]
     pub column: Option<String>,
     /// Title
     #[arg(long)]
     pub title: String,
     /// Markdown content (defaults to empty)
-    #[arg(long, default_value = "")]
-    pub content: String,
+    #[arg(long, conflicts_with = "content_file")]
+    pub content: Option<String>,
+    /// Read the markdown content from a file (`-` reads stdin)
+    #[arg(long, value_name = "FILE")]
+    pub content_file: Option<PathBuf>,
     /// T-shirt sizing: xs|s|m|l|xl
     #[arg(long)]
     pub complexity: Option<String>,
@@ -1211,16 +1322,21 @@ pub struct InitiativeCreateArgs {
 }
 
 impl InitiativeCreateArgs {
-    fn request(&self) -> CreateInitiativeRequest {
-        CreateInitiativeRequest {
+    async fn request(&self, client: &KairosClient) -> Result<CreateInitiativeRequest, CliError> {
+        Ok(CreateInitiativeRequest {
             board_id: self.board.clone(),
-            column_id: self.column.clone(),
+            column_id: create_column(client, Some(&self.board), self.column.as_deref()).await?,
             title: self.title.clone(),
-            content: self.content.clone(),
+            content: read_text(
+                self.content.as_deref(),
+                self.content_file.as_deref(),
+                "--content-file",
+            )?
+            .unwrap_or_default(),
             complexity: self.complexity.clone(),
             bucket_type: self.bucket_type.clone(),
             parent: self.parent.clone(),
-        }
+        })
     }
 }
 
@@ -1232,25 +1348,30 @@ pub struct TaskCreateArgs {
     /// The board decides the team of the task (COLLIERY-A-0023)
     #[arg(long, value_name = "BOARD", required_unless_present = "team")]
     pub board: Option<String>,
-    /// Column to place it in (UUID; defaults to the board's first column)
-    #[arg(long, value_name = "COLUMN_ID")]
+    /// Column to place it in: a name or an id (UUID). Default: the first
+    /// column of the board
+    #[arg(long, value_name = "COLUMN")]
     pub column: Option<String>,
     /// Title
     #[arg(long)]
     pub title: String,
     /// Markdown content (defaults to empty)
-    #[arg(long, default_value = "")]
-    pub content: String,
-    /// Task type: task|bug|tech_debt|support (defaults to task)
-    #[arg(long = "type", value_name = "TASK_TYPE")]
+    #[arg(long, conflicts_with = "content_file")]
+    pub content: Option<String>,
+    /// Read the markdown content from a file (`-` reads stdin)
+    #[arg(long, value_name = "FILE")]
+    pub content_file: Option<PathBuf>,
+    /// The kind of the task: task|bug|tech_debt|support (defaults to
+    /// task). The old name --type still works
+    #[arg(long = "kind", alias = "type", value_name = "KIND")]
     pub task_type: Option<String>,
     /// Planned/Support lane: planned|support (KAIROS-T-0077; defaults to
     /// support for support-type tasks, else planned)
     #[arg(long = "work-class", value_name = "WORK_CLASS")]
     pub work_class: Option<String>,
-    /// Team (UUID). Without --board, the task goes to the delivery board
-    /// of this team. With --board, it must be the team of that board
-    #[arg(long, value_name = "TEAM_ID")]
+    /// Team (slug or UUID). Without --board, the task goes to the delivery
+    /// board of this team. With --board, it must be the team of that board
+    #[arg(long, value_name = "TEAM")]
     pub team: Option<String>,
     /// Repository the task links to (slug or UUID). It can be any
     /// repository, of any team. It does not choose the board
@@ -1270,19 +1391,37 @@ pub struct TaskCreateArgs {
 }
 
 impl TaskCreateArgs {
-    fn request(&self) -> CreateTaskRequest {
-        CreateTaskRequest {
+    async fn request(&self, client: &KairosClient) -> Result<CreateTaskRequest, CliError> {
+        let team = match &self.team {
+            Some(team) => Some(team_id(client, team).await?),
+            None => None,
+        };
+        // A column name needs a board: --board, else the delivery board of
+        // --team.
+        let board = match (&self.board, &team, &self.column) {
+            (Some(board), _, _) => Some(board.clone()),
+            (None, Some(team), Some(column)) if !is_uuid(column) => {
+                client.get_team(team).await?.delivery_board_id
+            }
+            _ => None,
+        };
+        Ok(CreateTaskRequest {
             board_id: self.board.clone(),
             repository: self.repo.clone(),
-            column_id: self.column.clone(),
+            column_id: create_column(client, board.as_deref(), self.column.as_deref()).await?,
             title: self.title.clone(),
-            content: self.content.clone(),
+            content: read_text(
+                self.content.as_deref(),
+                self.content_file.as_deref(),
+                "--content-file",
+            )?
+            .unwrap_or_default(),
             task_type: self.task_type.clone(),
             work_class: self.work_class.clone(),
-            team_id: self.team.clone(),
+            team_id: team,
             from_team: self.from_team.clone(),
             parent: self.parent.clone(),
-        }
+        })
     }
 }
 
@@ -1304,24 +1443,35 @@ pub struct DocumentCreateArgs {
     pub parent: Option<String>,
     /// Markdown content (omit with --template to stamp the template's
     /// content)
-    #[arg(long)]
+    #[arg(long, conflicts_with = "content_file")]
     pub content: Option<String>,
-    /// Template to stamp content + metadata defaults from (UUID)
-    #[arg(long, value_name = "TEMPLATE_ID")]
+    /// Read the markdown content from a file (`-` reads stdin)
+    #[arg(long, value_name = "FILE")]
+    pub content_file: Option<PathBuf>,
+    /// Template to stamp content + metadata defaults from (slug or UUID)
+    #[arg(long, value_name = "TEMPLATE")]
     pub template: Option<String>,
     #[command(flatten)]
     pub common: Common,
 }
 
 impl DocumentCreateArgs {
-    fn request(&self) -> CreateDocumentRequest {
-        CreateDocumentRequest {
+    async fn request(&self, client: &KairosClient) -> Result<CreateDocumentRequest, CliError> {
+        let template_id = match &self.template {
+            Some(template) => Some(template_id(client, template).await?),
+            None => None,
+        };
+        Ok(CreateDocumentRequest {
             title: self.title.clone(),
             board: self.board.clone(),
-            content: self.content.clone(),
-            template_id: self.template.clone(),
+            content: read_text(
+                self.content.as_deref(),
+                self.content_file.as_deref(),
+                "--content-file",
+            )?,
+            template_id,
             parent_short_code: self.parent.clone(),
-        }
+        })
     }
 }
 
@@ -1334,12 +1484,16 @@ pub struct AdrCreateArgs {
     /// ADR board (slug or UUID); omit for an off-board ADR (org-admin only)
     #[arg(long, value_name = "BOARD")]
     pub board: Option<String>,
-    /// Column to place it in (UUID; defaults to the board's first column)
-    #[arg(long, value_name = "COLUMN_ID")]
+    /// Column to place it in: a name (with --board) or an id (UUID).
+    /// Default: the first column of the board
+    #[arg(long, value_name = "COLUMN")]
     pub column: Option<String>,
     /// Markdown content (defaults to empty)
-    #[arg(long, default_value = "")]
-    pub content: String,
+    #[arg(long, conflicts_with = "content_file")]
+    pub content: Option<String>,
+    /// Read the markdown content from a file (`-` reads stdin)
+    #[arg(long, value_name = "FILE")]
+    pub content_file: Option<PathBuf>,
     /// Decision maker
     #[arg(long)]
     pub decision_maker: Option<String>,
@@ -1351,15 +1505,20 @@ pub struct AdrCreateArgs {
 }
 
 impl AdrCreateArgs {
-    fn request(&self) -> CreateAdrRequest {
-        CreateAdrRequest {
+    async fn request(&self, client: &KairosClient) -> Result<CreateAdrRequest, CliError> {
+        Ok(CreateAdrRequest {
             board_id: self.board.clone(),
-            column_id: self.column.clone(),
+            column_id: create_column(client, self.board.as_deref(), self.column.as_deref()).await?,
             title: self.title.clone(),
-            content: self.content.clone(),
+            content: read_text(
+                self.content.as_deref(),
+                self.content_file.as_deref(),
+                "--content-file",
+            )?
+            .unwrap_or_default(),
             decision_maker: self.decision_maker.clone(),
             decision_date: self.decision_date.clone(),
-        }
+        })
     }
 }
 
@@ -1405,8 +1564,9 @@ macro_rules! entity_family_cli {
                                       "s (paginated; --include-deleted adds archived work)"))]
             List($list_args),
             #[command(about = concat!("Show one ", $noun,
-                                      ", including its markdown content"))]
-            Get(GetArgs),
+                                      ", including its markdown content"),
+                      alias = "get")]
+            Show(GetArgs),
             #[command(about = concat!("Create a ", $noun))]
             Create($create_args),
             #[command(about = concat!("Edit a ", $noun, "'s title and/or content ",
@@ -1498,7 +1658,7 @@ macro_rules! entity_family_cli {
                         .await?;
                         emit_list(&args.common, &listing)
                     }
-                    Self::Get(args) => {
+                    Self::Show(args) => {
                         let client = client(&args.common)?;
                         let item = client.$get(&args.short_code).await?;
                         // COLLIERY-T-3100: a retired code finds the item.
@@ -1513,7 +1673,8 @@ macro_rules! entity_family_cli {
                     }
                     Self::Create(args) => {
                         let client = client(&args.common)?;
-                        let item = client.$create_fn(&args.request()).await?;
+                        let request = args.request(&client).await?;
+                        let item = client.$create_fn(&request).await?;
                         emit_created(&args.common, &item)
                     }
                     Self::Edit(args) => {
@@ -1527,7 +1688,7 @@ macro_rules! entity_family_cli {
                     Self::Note(args) => {
                         let client = client(&args.common)?;
                         let response =
-                            client.append_note($kind, &args.short_code, &args.text).await?;
+                            client.append_note($kind, &args.short_code, &args.text()?).await?;
                         emit_noted(&args.common, &response)
                     }
                     Self::PromoteNote(args) => {
@@ -1545,10 +1706,19 @@ macro_rules! entity_family_cli {
                     $(
                     Self::$transition_variant(args) => {
                         let client = client(&args.common)?;
-                        let item = client
-                            .$transition_fn(&args.short_code, &args.to_column)
-                            .await?;
-                        emit_transitioned(&args.common, &item)
+                        // KAIROS-T-0589: the column is a name in the board
+                        // of the item, or an id.
+                        let current = client.$get(&args.short_code).await?;
+                        let board = current.board_id().ok_or_else(|| {
+                            CliError::Failure(format!(
+                                "{} is on no board, so it has no column.",
+                                current.short_code()
+                            ))
+                        })?;
+                        let detail = client.get_board(board).await?;
+                        let column = find_column(&detail, &args.to_column)?.id.clone();
+                        let item = client.$transition_fn(&args.short_code, &column).await?;
+                        emit_transitioned(&args.common, &item, &detail)
                     }
                     )?
                     $(
@@ -1883,6 +2053,51 @@ mod tests {
             text.contains("final") && text.contains("published"),
             "{text}"
         );
+    }
+
+    /// KAIROS-T-0589: `transition` names the column, not its id.
+    #[test]
+    fn the_transition_line_names_the_column() {
+        let detail: kairos_client::types_org::BoardDetail =
+            serde_json::from_value(serde_json::json!({
+                "id": "b-1", "name": "Platform", "slug": "platform-delivery",
+                "board_level": "delivery", "team_id": null, "code_prefix": "PLAT",
+                "created_at": "2026-10-18T00:00:00Z", "updated_at": "2026-10-18T00:00:00Z",
+                "columns": [{
+                    "id": "c-2", "board_id": "b-1", "name": "Todo", "position": 1,
+                    "created_at": "2026-10-18T00:00:00Z", "updated_at": "2026-10-18T00:00:00Z"
+                }],
+                "transitions": []
+            }))
+            .expect("a board detail");
+        assert_eq!(
+            transitioned_line("task", "ACME-T-0001", Some("c-2"), &detail),
+            "Kairos moved the task ACME-T-0001 to the column Todo."
+        );
+        assert_eq!(
+            transitioned_line("task", "ACME-T-0001", Some("c-9"), &detail),
+            "Kairos moved the task ACME-T-0001 to the column c-9."
+        );
+    }
+
+    /// KAIROS-T-0589: `--content` wins; with neither flag there is no text.
+    #[test]
+    fn the_text_comes_from_the_flag_or_the_file() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("body.md");
+        std::fs::write(&path, "from a file").expect("a file");
+        assert_eq!(
+            read_text(Some("inline"), None, "--content-file").expect("text"),
+            Some("inline".to_string())
+        );
+        assert_eq!(
+            read_text(None, Some(&path), "--content-file").expect("file"),
+            Some("from a file".to_string())
+        );
+        assert_eq!(read_text(None, None, "--content-file").expect("none"), None);
+        let missing = dir.path().join("missing.md");
+        let err = read_text(None, Some(&missing), "--content-file").expect_err("no file");
+        assert!(err.to_string().contains("missing.md"), "{err}");
     }
 
     /// COLLIERY-T-0269: an archived repository is marked.
