@@ -38,6 +38,7 @@ use common::{
     AUDIENCE, ISSUER, base_config, recreate_scratch_db, spawn_server, user_token, with_database,
 };
 use kairos_client::Error;
+use kairos_client::types::Pagination;
 use kairos_client::types_auth::Secret;
 use kairos_client::types_code_index::{
     PutCodeIndexSettings, PutSummaryProvider, PutVectorProvider,
@@ -621,6 +622,107 @@ async fn the_nearest_indexed_commit() {
             .collect::<BTreeSet<_>>(),
         [a.as_str(), c.as_str()].into()
     );
+}
+
+// ===========================================================================
+// Scenario: The indexed commits, in pages (KAIROS-T-0518)
+// ===========================================================================
+#[tokio::test]
+async fn the_indexed_commits_in_pages() {
+    // Given indexes for commits A and C of main, C written after A
+    let w = World::new("kairos_code_index_t0518_pages").await;
+    let a = w.a.clone();
+    let c = commit_c(&w.git);
+    for commit in [&a, &c] {
+        let uploaded = w
+            .bob
+            .upload_code_index("payments-api", commit, Some("main"), w.index(commit))
+            .await
+            .expect("upload");
+        assert_eq!(
+            uploaded.index.schema_version,
+            Some(kairos_index::SCHEMA_VERSION)
+        );
+    }
+
+    // When a member of another team asks for pages of one row
+    let page = |offset| Pagination {
+        limit: Some(1),
+        offset: Some(offset),
+    };
+    let first = w
+        .alice
+        .code_indexes_page("payments-api", page(0))
+        .await
+        .expect("the first page");
+    let second = w
+        .alice
+        .code_indexes_page("payments-api", page(1))
+        .await
+        .expect("the second page");
+
+    // Then the newest write comes first, and the total is exact
+    assert_eq!((first.total, first.limit, first.offset), (2, 1, 0));
+    assert_eq!(first.items.len(), 1);
+    assert_eq!(first.items[0].commit, c);
+    assert_eq!(first.items[0].r#ref.as_deref(), Some("main"));
+    assert_eq!(
+        first.items[0].schema_version,
+        Some(kairos_index::SCHEMA_VERSION)
+    );
+    assert!(first.items[0].structure_bytes > 0);
+    assert_eq!(second.total, 2);
+    assert_eq!(second.items.len(), 1);
+    assert_eq!(second.items[0].commit, a);
+
+    // With no limit the page has each row; past the end it has none
+    let whole = w
+        .alice
+        .code_indexes_page("payments-api", Pagination::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        whole
+            .items
+            .iter()
+            .map(|i| i.commit.as_str())
+            .collect::<Vec<_>>(),
+        [c.as_str(), a.as_str()]
+    );
+    assert_eq!(whole.limit, 50);
+    let past = w
+        .alice
+        .code_indexes_page("payments-api", page(5))
+        .await
+        .unwrap();
+    assert!(past.items.is_empty());
+    assert_eq!(past.total, 2);
+
+    // The whole list and the nearest commit give the schema version too
+    let listed = w.alice.list_code_indexes("payments-api").await.unwrap();
+    assert!(
+        listed
+            .iter()
+            .all(|i| i.schema_version == Some(kairos_index::SCHEMA_VERSION)),
+        "{listed:?}"
+    );
+    let nearest = w
+        .alice
+        .nearest_code_index("payments-api", &c)
+        .await
+        .unwrap();
+    assert_eq!(
+        nearest.index.schema_version,
+        Some(kairos_index::SCHEMA_VERSION)
+    );
+
+    // An unknown repository is a 404
+    let err = w
+        .alice
+        .code_indexes_page("no-such-repo", page(0))
+        .await
+        .expect_err("an unknown repository");
+    assert!(matches!(err, Error::NotFound { .. }), "{err}");
 }
 
 // ===========================================================================

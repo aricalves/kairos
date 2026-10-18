@@ -2149,6 +2149,20 @@ impl KairosClient {
             .await
     }
 
+    /// `GET /api/repositories/{slug}/code-indexes/commits` — one page of
+    /// the indexed commits of a repository, newest first (KAIROS-T-0518).
+    pub async fn code_indexes_page(
+        &self,
+        reference: &str,
+        page: Pagination,
+    ) -> Result<ListEnvelope<crate::types_code_index::CodeIndex>, Error> {
+        self.get_query(
+            &format!("/api/repositories/{reference}/code-indexes/commits"),
+            &page,
+        )
+        .await
+    }
+
     /// `GET /api/repositories/{slug}/code-indexes/builds` — the runs of
     /// the code index builder for a repository, newest first
     /// (KAIROS-T-0331). `limit`: 20 when None, 100 at most.
