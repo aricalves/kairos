@@ -2,9 +2,10 @@
 //! resolution and the S-0006 error contract; the tool implementations live
 //! in [`super::tools`].
 
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use axum::http::request::Parts;
+use diesel::pg::PgConnection;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::model::{
@@ -14,6 +15,7 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, tool_handler};
 use serde_json::json;
+use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::error::ApiError;
@@ -39,6 +41,67 @@ static TOOL_ROUTER: OnceLock<ToolRouter<KairosMcp>> = OnceLock::new();
 /// The full tool list, built once per process from the router; each
 /// `list_tools` filters it by the profile of the request (KAIROS-T-0611).
 static ALL_TOOLS: OnceLock<Vec<rmcp::model::Tool>> = OnceLock::new();
+
+/// The notification ride-along of the current tool call (KAIROS-T-0612).
+///
+/// The ride-along ran as a second `blocking.run` after the tool: a second
+/// `spawn_blocking`, checkout, `SET` and reset on each answer. Now
+/// [`KairosMcp::call_tool`] opens this slot in a task-local (the pattern of
+/// the agent key, `crate::blocking`), and `run_tool` fills it on the
+/// connection of the tool, in the same checkout, after the closure of the
+/// tool succeeds ([`RideAlong::fill`]). A tool that does not go through
+/// `run_tool` leaves the slot empty, and `call_tool` reads the
+/// notifications in a checkout of their own, as before.
+#[derive(Clone)]
+pub(super) struct RideAlong {
+    user: Uuid,
+    agent_key: Option<Uuid>,
+    /// `None` until filled; then the block, or `None` for no block.
+    block: Arc<Mutex<Option<Option<String>>>>,
+}
+
+tokio::task_local! {
+    /// The ride-along slot of the tool call in scope, or `None` when the
+    /// answer gets no ride-along (`get_events`).
+    static RIDE_ALONG: Option<RideAlong>;
+}
+
+impl RideAlong {
+    fn new(user: Uuid, agent_key: Option<Uuid>) -> Self {
+        Self {
+            user,
+            agent_key,
+            block: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// The slot of the tool call in scope. Read in the task of the request,
+    /// before the closure moves to the blocking thread.
+    pub(super) fn current() -> Option<RideAlong> {
+        RIDE_ALONG.try_with(Clone::clone).ok().flatten()
+    }
+
+    /// Read the notifications on `conn` into the slot, once per tool call.
+    /// A failure is logged and gives no block: the answer of the tool
+    /// stands, and the notifications come with the next answer.
+    pub(super) fn fill(&self, conn: &mut PgConnection) {
+        let mut slot = self.block.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.is_some() {
+            return;
+        }
+        *slot = Some(
+            super::tools::ride_along(conn, self.user, self.agent_key).unwrap_or_else(|e| {
+                tracing::warn!(error = %e.message, "notifications ride-along failed");
+                None
+            }),
+        );
+    }
+
+    /// The filled slot, or `None` when no `run_tool` filled it.
+    fn take(&self) -> Option<Option<String>> {
+        self.block.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+}
 
 impl KairosMcp {
     /// Build a service instance over the shared state.
@@ -120,12 +183,16 @@ impl ServerHandler for KairosMcp {
         let ride_along = (request.name != "get_events")
             .then(|| Self::caller(&context).ok())
             .flatten();
+        // KAIROS-T-0612: `run_tool` reads them in the checkout of the tool.
+        let slot = ride_along
+            .as_ref()
+            .map(|(auth, _)| RideAlong::new(auth.user_id, auth.agent_key));
         let call = ToolCallContext::new(self, request, context);
         // KAIROS-T-0359: a write to a task that a different person has the
         // claim on gets a warning line (`crate::claims`).
         let (result, warnings) = crate::claims::collect(crate::blocking::with_agent_key(
             agent_key,
-            self.tool_router.call(call),
+            RIDE_ALONG.scope(slot.clone(), self.tool_router.call(call)),
         ))
         .await;
         match result {
@@ -141,31 +208,38 @@ impl ServerHandler for KairosMcp {
                     }
                 }
                 if result.is_error != Some(true)
-                    && let Some((auth, tenant)) = ride_along
+                    && let (Some((_, tenant)), Some(slot)) = (ride_along, slot)
                 {
                     // KAIROS-T-0550: the unread ones of the caller: the agent
                     // key keeps its own read state, apart from the person.
-                    let (user, key) = (auth.user_id, auth.agent_key);
-                    let block = self
-                        .state
-                        .blocking
-                        .run(&tenant.slug, move |conn| {
-                            super::tools::ride_along(conn, user, key)
-                        })
-                        .await;
-                    match block {
-                        // KAIROS-T-0549: a content block of its own, after the
-                        // answer. Appended to the answer's text, the block
-                        // landed after the raw content of `get_item`, and an
-                        // agent that copied "the content" into `update_item`
-                        // wrote the inbox into the item.
-                        Ok(Some(block)) => result.content.push(ContentBlock::text(block)),
-                        Ok(None) => {}
-                        // The answer of the tool stands: the notifications
-                        // come with the next answer.
-                        Err(e) => {
-                            tracing::warn!(error = %e.message, "notifications ride-along failed")
+                    let block = match slot.take() {
+                        Some(block) => block,
+                        // No `run_tool` in this tool: a checkout of its own.
+                        None => {
+                            let filler = slot.clone();
+                            self.state
+                                .blocking
+                                .run(&tenant.slug, move |conn| {
+                                    filler.fill(conn);
+                                    Ok(())
+                                })
+                                .await
+                                .unwrap_or_else(|e| {
+                                    tracing::warn!(
+                                        error = %e.message,
+                                        "notifications ride-along failed"
+                                    )
+                                });
+                            slot.take().flatten()
                         }
+                    };
+                    // KAIROS-T-0549: a content block of its own, after the
+                    // answer. Appended to the answer's text, the block
+                    // landed after the raw content of `get_item`, and an
+                    // agent that copied "the content" into `update_item`
+                    // wrote the inbox into the item.
+                    if let Some(block) = block {
+                        result.content.push(ContentBlock::text(block));
                     }
                 }
                 Ok(result)

@@ -16,16 +16,10 @@ pub enum IndexCommandError {
         "No index that this CLI can update is at {path}, and Kairos gave no base index, because {why}. Run `kairos index --full`."
     )]
     NoStart { path: PathBuf, why: String },
-    #[error(
-        "{changed} files changed since {commit}, the nearest indexed commit in Kairos. The limit is {limit}, so the CLI built nothing. Rebase on {branch}, or run `kairos index --full`. A full build takes {estimate}."
-    )]
-    TooFar {
-        changed: usize,
-        commit: String,
-        limit: usize,
-        branch: String,
-        estimate: String,
-    },
+    /// More files than the limit changed since the index that the update
+    /// starts from (KAIROS-T-0517).
+    #[error(transparent)]
+    TooFar(Box<TooFar>),
     #[error("The folder {0} is not there.")]
     NoRoot(PathBuf),
     #[error("Git did not run in {path}: {message}.")]
@@ -43,6 +37,107 @@ pub enum IndexCommandError {
     /// error of the code tools (KAIROS-T-0419).
     #[error(transparent)]
     Symbol(Box<ToolError>),
+}
+
+/// The text of [`IndexCommandError::TooFar`]: three parts, each of whole
+/// sentences.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TooFar {
+    pub since: Since,
+    pub stop: Stop,
+    pub advice: Advice,
+}
+
+impl std::fmt::Display for TooFar {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {} {}", self.since, self.stop, self.advice)
+    }
+}
+
+impl std::error::Error for TooFar {}
+
+/// The count of changed files, and the index that an update refused to
+/// start from: the start of the text of [`IndexCommandError::TooFar`].
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum Since {
+    #[error("{changed} files changed since {commit}, the nearest indexed commit in Kairos.")]
+    Base { changed: usize, commit: String },
+    /// Kairos has no index of the commit that the CLI asked for: the
+    /// nearest is `distance` commits before it.
+    #[error(
+        "{changed} files changed since {commit}, the nearest indexed commit in Kairos. It is {distance} commits before {from}."
+    )]
+    Below {
+        changed: usize,
+        commit: String,
+        distance: usize,
+        from: String,
+    },
+    /// The local index is nearer to the tree than the base (KAIROS-T-0515).
+    #[error(
+        "{changed} files changed since the local index. It is nearer to the tree than {commit}, the nearest indexed commit in Kairos."
+    )]
+    Local { changed: usize, commit: String },
+}
+
+/// What refused: `kairos index update` or the tool `fetch_index`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Caller {
+    Cli,
+    Tool,
+}
+
+/// The limit, and what the refusal did not do.
+#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
+pub enum Stop {
+    #[error("The limit is {0}, so the CLI built nothing.")]
+    Cli(usize),
+    #[error("The limit is {0}, so the server did not change the index.")]
+    Tool(usize),
+}
+
+/// What to do after [`IndexCommandError::TooFar`] (KAIROS-T-0517).
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum Advice {
+    /// HEAD is an ancestor of `origin/<branch>`: there is nothing to
+    /// rebase, and a full build is more work than the update.
+    #[error(
+        "The checkout is {commits} commits behind origin/{branch}. Run `git pull --ff-only`, or open a worktree at origin/{branch}. {raise}"
+    )]
+    Behind {
+        commits: usize,
+        branch: String,
+        raise: Raise,
+    },
+    #[error(
+        "Rebase on {branch}, or run `kairos index --full`. A full build takes {estimate}. {raise}"
+    )]
+    Rebase {
+        branch: String,
+        estimate: String,
+        raise: Raise,
+    },
+}
+
+/// The limit that lets the update start from this index.
+#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
+pub enum Raise {
+    #[error("Or give `--max-changed {0}` to update from this index.")]
+    Cli(usize),
+    #[error("Or give `max_changed` {0} to update from this index.")]
+    Tool(usize),
+}
+
+/// The checkout that the code tools answer for after a call of
+/// `fetch_index` that failed (KAIROS-T-0517).
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum StillOpen {
+    #[error("The tools still answer for the checkout {0}.")]
+    Root(String),
+    #[error(
+        "The server has no open checkout, so the other tools refuse until `fetch_index` succeeds."
+    )]
+    Nothing,
 }
 
 impl From<IndexCommandError> for CliError {
@@ -223,11 +318,143 @@ impl ToolError {
 
     /// The text of the tool error: `CODE: message`, then `details: {...}`.
     pub fn text(&self) -> String {
+        self.text_with(None)
+    }
+
+    /// [`Self::text`] with `more` after the message, before the details.
+    pub fn text_with(&self, more: Option<&dyn std::fmt::Display>) -> String {
         let mut text = format!("{}: {self}", self.code());
+        if let Some(more) = more {
+            text.push_str(&format!(" {more}"));
+        }
         if let Some(details) = self.details() {
             text.push_str("\ndetails: ");
             text.push_str(&details.to_string());
         }
         text
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn too_far(since: Since, stop: Stop, advice: Advice) -> String {
+        IndexCommandError::TooFar(Box::new(TooFar {
+            since,
+            stop,
+            advice,
+        }))
+        .to_string()
+    }
+
+    /// KAIROS-T-0517: a checkout that is only behind is told to pull.
+    #[test]
+    fn a_checkout_behind_is_told_to_pull() {
+        let text = too_far(
+            Since::Base {
+                changed: 250,
+                commit: "abc123".into(),
+            },
+            Stop::Cli(200),
+            Advice::Behind {
+                commits: 12,
+                branch: "main".into(),
+                raise: Raise::Cli(250),
+            },
+        );
+        assert_eq!(
+            text,
+            "250 files changed since abc123, the nearest indexed commit in Kairos. The limit is \
+             200, so the CLI built nothing. The checkout is 12 commits behind origin/main. Run \
+             `git pull --ff-only`, or open a worktree at origin/main. Or give `--max-changed \
+             250` to update from this index."
+        );
+        assert!(!text.contains("Rebase"));
+    }
+
+    /// KAIROS-T-0517: else the text names the distance and `--max-changed`.
+    #[test]
+    fn a_far_branch_is_told_to_rebase_or_to_raise_the_limit() {
+        let text = too_far(
+            Since::Below {
+                changed: 250,
+                commit: "abc123".into(),
+                distance: 40,
+                from: "def456".into(),
+            },
+            Stop::Cli(200),
+            Advice::Rebase {
+                branch: "main".into(),
+                estimate: "about 2 min".into(),
+                raise: Raise::Cli(250),
+            },
+        );
+        assert_eq!(
+            text,
+            "250 files changed since abc123, the nearest indexed commit in Kairos. It is 40 \
+             commits before def456. The limit is 200, so the CLI built nothing. Rebase on main, or run \
+             `kairos index --full`. A full build takes about 2 min. Or give `--max-changed 250` \
+             to update from this index."
+        );
+    }
+
+    /// KAIROS-T-0517: the tool names `max_changed`, and the local index
+    /// when it is nearer (KAIROS-T-0515).
+    #[test]
+    fn the_tool_names_max_changed() {
+        let text = too_far(
+            Since::Local {
+                changed: 250,
+                commit: "abc123".into(),
+            },
+            Stop::Tool(200),
+            Advice::Rebase {
+                branch: "main".into(),
+                estimate: "about 2 min".into(),
+                raise: Raise::Tool(250),
+            },
+        );
+        assert!(
+            text.starts_with(
+                "250 files changed since the local index. It is nearer to the tree than abc123"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("so the server did not change the index."),
+            "{text}"
+        );
+        assert!(
+            text.ends_with("Or give `max_changed` 250 to update from this index."),
+            "{text}"
+        );
+        assert!(!text.contains("--max-changed"), "{text}");
+    }
+
+    /// KAIROS-T-0517: the error of `fetch_index` says what the tools answer
+    /// for, before the details.
+    #[test]
+    fn a_failed_fetch_says_what_the_tools_answer_for() {
+        let e = ToolError::NotACheckout(PathBuf::from("/tmp/x"));
+        assert_eq!(
+            e.text_with(Some(&StillOpen::Root("/work/a".into()))),
+            "NOT_A_CHECKOUT: The folder /tmp/x is not in a git checkout. The tools still \
+             answer for the checkout /work/a."
+        );
+        assert_eq!(
+            e.text_with(Some(&StillOpen::Nothing)),
+            "NOT_A_CHECKOUT: The folder /tmp/x is not in a git checkout. The server has no open \
+             checkout, so the other tools refuse until `fetch_index` succeeds."
+        );
+        let e = ToolError::MissingArgument {
+            argument: "root".into(),
+            allowed: "root".into(),
+        };
+        let text = e.text_with(Some(&StillOpen::Nothing));
+        assert!(
+            text.contains("succeeds.\ndetails: {\"argument\":\"root\"}"),
+            "{text}"
+        );
     }
 }

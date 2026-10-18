@@ -102,7 +102,12 @@ def _check_wasm_budget():
     for wasm in wasms:
         size = wasm.stat().st_size
         verdict = "within" if size <= budget else "OVER"
-        print(f"{wasm.name}: {size:,} bytes, {verdict} the budget of {budget:,} bytes ({WASM_BUDGET_FILE.name})")
+        # flush: angreal exits without flushing stdout, so a failed check
+        # lost this line in the CI log (KAIROS-T-0656).
+        print(
+            f"{wasm.name}: {size:,} bytes, {verdict} the budget of {budget:,} bytes ({WASM_BUDGET_FILE.name})",
+            flush=True,
+        )
         if size > budget:
             print(
                 "The bundle is over its size budget. Make it smaller, or raise "

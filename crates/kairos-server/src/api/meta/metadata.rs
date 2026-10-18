@@ -97,13 +97,13 @@ pub(crate) async fn update_metadata(
     ApiJson(body): ApiJson<dto::UpdateMetadataRequest>,
 ) -> Result<Json<dto::ItemMetadataResponse>, ApiError> {
     let user = auth.user_id;
-    let slug = tenant.slug.clone();
+    let role = tenant.role;
     let response = state
         .blocking
         .run(&tenant.slug, move |conn| {
             let (item_id, item_type) =
                 resolve_family_item(conn, &family, &short_code, Liveness::LiveOnly)?;
-            require_item_edit(conn, &slug, user, item_id, item_type)?;
+            require_item_edit(conn, role, user, item_id, item_type)?;
 
             // Phase 1 — resolve + validate every entry (no writes yet): a bad
             // entry rejects the whole PATCH. Shared with MCP `set_metadata`
