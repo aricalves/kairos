@@ -162,6 +162,7 @@ mod tests {
     fn event(kind: &str, code: &str) -> ThinEvent {
         ThinEvent {
             event: kind.to_string(),
+            entity_type: "task".to_string(),
             short_code: code.to_string(),
             board_id: Some("b".to_string()),
         }
