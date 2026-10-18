@@ -120,6 +120,10 @@ worth checking:
 
 In every case search keeps working and the answers stay honest about being thin.
 
+A text-only answer gives 3 proposals at most. Each proposal must match a large
+share of the rare words of the title. When no item does, the answer is `None
+found`. The rules are in [`related_work`](../../reference/mcp-tools/#related_work).
+
 ## Watch the suggestions
 
 Retrieval suggests edges; people confirm them. Whether those suggestions are any
