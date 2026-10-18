@@ -11,6 +11,7 @@ use kairos_client::types_org::{
 use crate::commands::entities::require_confirm;
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
+use crate::listing::print_whole;
 use crate::table::Table;
 
 /// The name of the structure capability.
@@ -104,7 +105,7 @@ impl GrantsCommand {
                 let client = client(&common)?;
                 let grants = client.list_structure_grants().await?;
                 if common.json {
-                    return print_json(&grants);
+                    return print_whole(&grants);
                 }
                 if grants.is_empty() {
                     println!("(none)");

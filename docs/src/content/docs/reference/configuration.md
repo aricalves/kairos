@@ -1026,8 +1026,8 @@ cached credentials, the daily version check, and the settings of
 | `XDG_CONFIG_HOME` | Used as `$XDG_CONFIG_HOME/kairos` when `KAIROS_CONFIG_DIR` is unset or empty. |
 | `HOME` | Used as `$HOME/.config/kairos` when neither of the above is set. |
 | `KAIROS_UPDATE_CHECK` | `0` turns off the daily version check of the CLI. |
-| `KAIROS_AUTO_UPDATE` | `1` makes the daily check install the newer version of the server. |
-| `KAIROS_RELEASES_URL` | The base URL of the release tarballs for `kairos self-update --version` and `--latest`; the default is the GitHub releases. |
+| `KAIROS_AUTO_UPDATE` | `1` makes the daily check install the newer version of the server. It does not install from an `http://` deployment. |
+| `KAIROS_RELEASES_URL` | The base URL of the published releases, for a mirror. `kairos self-update` takes each checksum from it, and the tarballs of `--version` and `--latest`. The default is the GitHub releases. |
 
 With none of the three set, any command that reaches the API fails with exit 1
 and a message naming all three.

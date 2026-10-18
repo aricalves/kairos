@@ -9,7 +9,8 @@ use crate::commands::entities::{ListArgs, require_confirm};
 use crate::commands::repos::family_of;
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
-use crate::table::{Table, print_page_footer};
+use crate::listing::{fetch, print_whole};
+use crate::table::Table;
 
 /// Operations on teams.
 #[derive(clap::Subcommand, Debug)]
@@ -185,21 +186,16 @@ impl TeamsCommand {
         match self {
             Self::List(args) => {
                 let client = client(&args.common)?;
-                let envelope = client.list_teams(args.page()).await?;
+                let envelope = fetch(args.paging(), |page| client.list_teams(page)).await?;
                 if args.common.json {
-                    return print_json(&envelope);
+                    return envelope.print_json();
                 }
                 if envelope.items.is_empty() {
                     println!("(none)");
                 } else {
                     print!("{}", team_table(&envelope.items).render());
                 }
-                print_page_footer(
-                    envelope.total,
-                    envelope.limit,
-                    envelope.offset,
-                    envelope.items.len(),
-                );
+                envelope.print_footer();
                 Ok(())
             }
             Self::Get { team, common } => {
@@ -357,7 +353,7 @@ impl TeamMembersCommand {
                 let team_id = team_id(&team);
                 let members = client.list_team_members(&team_id).await?;
                 if common.json {
-                    return print_json(&members);
+                    return print_whole(&members);
                 }
                 if members.is_empty() {
                     println!("(none)");

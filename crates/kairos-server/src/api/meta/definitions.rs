@@ -34,7 +34,7 @@ use uuid::Uuid;
 
 use super::{enum_option_values, require_org_admin};
 use crate::api::convert_meta::definition_dto;
-use crate::api::{clamp_pagination, parse_enum, parse_uuid};
+use crate::api::{clamp_pagination, parse_enum};
 use crate::app::AppState;
 use crate::body::ApiJson;
 use crate::error::ApiError;
@@ -66,6 +66,33 @@ fn load(conn: &mut PgConnection, id: Uuid) -> Result<MetadataDefinition, ApiErro
         .optional()
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found(format!("The metadata definition {id} does not exist.")))
+}
+
+/// The id of the definition that `reference` names, or 404
+/// (KAIROS-T-0644). The reference is the slug or the id, as for a team
+/// ([`crate::api::org::teams::team_by_ref`]): a reference with the form
+/// of a UUID is an id, each other reference is a slug. Each
+/// `/api/metadata-definitions/{id}` route takes it, so that a client that
+/// has the slug makes one call.
+pub(crate) fn definition_by_ref(
+    conn: &mut PgConnection,
+    reference: &str,
+) -> Result<Uuid, ApiError> {
+    use kairos_db::schema::metadata_definitions as definitions;
+    if let Ok(id) = Uuid::parse_str(reference) {
+        return load(conn, id).map(|definition| definition.id);
+    }
+    definitions::table
+        .filter(definitions::slug.eq(reference))
+        .select(definitions::id)
+        .first(conn)
+        .optional()
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| {
+            ApiError::not_found(format!(
+                "No metadata definition has the slug or the id {reference:?}."
+            ))
+        })
 }
 
 /// The entity-type vocabulary for scope rows (KAIROS-T-0078) — matches
@@ -484,10 +511,10 @@ pub(crate) fn create_definition_in(
     get,
     path = "/api/metadata-definitions/{id}",
     tag = "metadata-definitions",
-    params(("id" = String, Path, description = "Definition id (UUID)")),
+    params(("id" = String, Path, description = "The slug or the id (UUID) of the definition")),
     responses(
         (status = 200, description = "The definition", body = dto::MetadataDefinition),
-        (status = 404, description = "Unknown id", body = dto_base::ErrorEnvelope),
+        (status = 404, description = "Unknown slug or id", body = dto_base::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn get_definition(
@@ -495,10 +522,10 @@ pub(crate) async fn get_definition(
     Extension(tenant): Extension<TenantContext>,
     Path(id): Path<String>,
 ) -> Result<Json<dto::MetadataDefinition>, ApiError> {
-    let id = parse_uuid(&id, "definition id")?;
     let definition = state
         .blocking
         .run(&tenant.slug, move |conn| {
+            let id = definition_by_ref(conn, &id)?;
             let definition = load(conn, id)?;
             hydrate(conn, definition)
         })
@@ -517,12 +544,12 @@ pub(crate) async fn get_definition(
     patch,
     path = "/api/metadata-definitions/{id}",
     tag = "metadata-definitions",
-    params(("id" = String, Path, description = "Definition id (UUID)")),
+    params(("id" = String, Path, description = "The slug or the id (UUID) of the definition")),
     request_body = dto::UpdateMetadataDefinitionRequest,
     responses(
         (status = 200, description = "Updated", body = dto::MetadataDefinition),
         (status = 403, description = "Caller is not an org admin", body = dto_base::ErrorEnvelope),
-        (status = 404, description = "Unknown id", body = dto_base::ErrorEnvelope),
+        (status = 404, description = "Unknown slug or id", body = dto_base::ErrorEnvelope),
         (status = 422, description = "No field to change, option rules, or duplicate slug", body = dto_base::ErrorEnvelope),
     ),
 )]
@@ -534,11 +561,11 @@ pub(crate) async fn update_definition(
     ApiJson(body): ApiJson<dto::UpdateMetadataDefinitionRequest>,
 ) -> Result<Json<dto::MetadataDefinition>, ApiError> {
     require_org_admin(&tenant)?;
-    let id = parse_uuid(&id, "definition id")?;
     let user = auth.user_id;
     let updated = state
         .blocking
         .run(&tenant.slug, move |conn| {
+            let id = definition_by_ref(conn, &id)?;
             update_definition_in(conn, user, id, &body)
         })
         .await?;
@@ -642,11 +669,11 @@ pub(crate) fn update_definition_in(
     delete,
     path = "/api/metadata-definitions/{id}",
     tag = "metadata-definitions",
-    params(("id" = String, Path, description = "Definition id (UUID)")),
+    params(("id" = String, Path, description = "The slug or the id (UUID) of the definition")),
     responses(
         (status = 200, description = "Deleted", body = dto::DeletedResponse),
         (status = 403, description = "Caller is not an org admin", body = dto_base::ErrorEnvelope),
-        (status = 404, description = "Unknown id", body = dto_base::ErrorEnvelope),
+        (status = 404, description = "Unknown slug or id", body = dto_base::ErrorEnvelope),
         (status = 409, description = "Definition is in use; the message names the carrying items and templates", body = dto_base::ErrorEnvelope),
     ),
 )]
@@ -656,10 +683,12 @@ pub(crate) async fn delete_definition(
     Path(id): Path<String>,
 ) -> Result<Json<dto::DeletedResponse>, ApiError> {
     require_org_admin(&tenant)?;
-    let id = parse_uuid(&id, "definition id")?;
     let deleted = state
         .blocking
-        .run(&tenant.slug, move |conn| delete_definition_in(conn, id))
+        .run(&tenant.slug, move |conn| {
+            let id = definition_by_ref(conn, &id)?;
+            delete_definition_in(conn, id)
+        })
         .await?;
     Ok(Json(deleted))
 }

@@ -69,11 +69,11 @@ pub fn router() -> Router<AppState> {
 /// Rule 1: the edit rule, with a text that says what the reference needs.
 fn require_edit(
     conn: &mut PgConnection,
-    slug: &str,
+    role: kairos_db::models::OrgRole,
     user: Uuid,
     (item_id, item_type): (Uuid, ItemType),
 ) -> Result<(), ApiError> {
-    let Some(board_id) = missing_item_edit(conn, slug, user, item_id, item_type)? else {
+    let Some(board_id) = missing_item_edit(conn, role, user, item_id, item_type)? else {
         return Ok(());
     };
     let short_code = short_code_of(conn, item_id)?;
@@ -126,13 +126,13 @@ pub(crate) fn map_error(e: ExternalRefError) -> ApiError {
 /// [`external_refs::link`].
 pub(crate) fn add(
     conn: &mut PgConnection,
-    slug: &str,
+    role: kairos_db::models::OrgRole,
     user: Uuid,
     item: (Uuid, ItemType),
     uri: &str,
     label: Option<&str>,
 ) -> Result<ExternalRef, ApiError> {
-    require_edit(conn, slug, user, item)?;
+    require_edit(conn, role, user, item)?;
     external_refs::link(conn, item.0, uri, label, user).map_err(map_error)
 }
 
@@ -140,12 +140,12 @@ pub(crate) fn add(
 /// docs for the rules. The result is the reference that was removed.
 pub(crate) fn remove(
     conn: &mut PgConnection,
-    slug: &str,
+    role: kairos_db::models::OrgRole,
     user: Uuid,
     item: (Uuid, ItemType),
     uri: &str,
 ) -> Result<ExternalRef, ApiError> {
-    require_edit(conn, slug, user, item)?;
+    require_edit(conn, role, user, item)?;
     external_refs::unlink(conn, item.0, uri, user).map_err(map_error)
 }
 
@@ -212,12 +212,12 @@ pub(crate) async fn create_external_ref(
     ApiJson(body): ApiJson<dto::CreateExternalRefRequest>,
 ) -> Result<(StatusCode, Json<dto::ExternalRef>), ApiError> {
     let user = auth.user_id;
-    let slug = tenant.slug.clone();
+    let role = tenant.role;
     let created = state
         .blocking
         .run(&tenant.slug, move |conn| {
             let item = resolve_family_item(conn, &family, &short_code, Liveness::LiveOnly)?;
-            let made = add(conn, &slug, user, item, &body.uri, body.label.as_deref())?;
+            let made = add(conn, role, user, item, &body.uri, body.label.as_deref())?;
             Ok(external_ref(made))
         })
         .await?;
@@ -249,7 +249,7 @@ pub(crate) async fn delete_external_ref(
     Path((family, short_code, id)): Path<(String, String, String)>,
 ) -> Result<Json<dto::DeletedExternalRefResponse>, ApiError> {
     let user = auth.user_id;
-    let slug = tenant.slug.clone();
+    let role = tenant.role;
     let deleted = state
         .blocking
         .run(&tenant.slug, move |conn| {
@@ -263,7 +263,7 @@ pub(crate) async fn delete_external_ref(
             let found = external_refs::by_id(conn, item.0, ref_id)
                 .map_err(map_error)?
                 .ok_or_else(not_found)?;
-            let removed = remove(conn, &slug, user, item, &found.uri)?;
+            let removed = remove(conn, role, user, item, &found.uri)?;
             Ok(dto::DeletedExternalRefResponse {
                 short_code,
                 uri: removed.uri,

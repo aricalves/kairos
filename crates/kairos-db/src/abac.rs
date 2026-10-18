@@ -682,10 +682,11 @@ pub fn resolve_authorization_board(
 }
 
 /// Who created a workflow item or document, if it exists (KAIROS-T-0111).
-/// Since COLLIERY-T-0228 it is the first fact of the edit rule
-/// ([`edit_facts`]); until then it was one arm of the rule for `parent` and
-/// `blocks` edges, and looked at the source only. Items span the five
-/// entity tables in one UUID space.
+/// From COLLIERY-T-0228 to KAIROS-T-0625 it was the first fact of the edit
+/// rule; the edit rule now reads [`creator_and_board`], one query on the
+/// table of the type that the caller knows. This function probes the five
+/// entity tables, which span one UUID space, for a caller that has an id
+/// and no type.
 ///
 /// Archived items answer too (KAIROS-A-0020): who made a thing is a fact
 /// about the row, not about whether it is still on a board. The edit rule
@@ -712,25 +713,65 @@ pub fn item_created_by(conn: &mut PgConnection, item_id: Uuid) -> Result<Option<
     Ok(None)
 }
 
+/// The creator and the authorization board of one item, in ONE query on
+/// the table of `item_type` (KAIROS-T-0625). The caller knows the type: it
+/// loaded the item. An id that is not in that table gives `None`.
+///
+/// The board is that of [`resolve_authorization_board`]: the board of a
+/// strategy, an initiative or a task, the board of an ADR (`None` for an ADR
+/// that is not placed on a board), the owner board of a document. Archived
+/// rows answer too, as there (KAIROS-A-0020).
+pub fn creator_and_board(
+    conn: &mut PgConnection,
+    item_type: ItemType,
+    item_id: Uuid,
+) -> Result<Option<(Uuid, Option<Uuid>)>, AbacError> {
+    use crate::schema::{adrs, documents, initiatives, strategies, tasks};
+    macro_rules! read {
+        ($table:ident) => {
+            $table::table
+                .filter($table::id.eq(item_id))
+                .select(($table::created_by, $table::board_id.nullable()))
+                .first::<(Uuid, Option<Uuid>)>(conn)
+                .optional()?
+        };
+    }
+    Ok(match item_type {
+        ItemType::Strategy => read!(strategies),
+        ItemType::Initiative => read!(initiatives),
+        ItemType::Task => read!(tasks),
+        ItemType::Document => read!(documents),
+        ItemType::Adr => adrs::table
+            .filter(adrs::id.eq(item_id))
+            .select((adrs::created_by, adrs::board_id))
+            .first::<(Uuid, Option<Uuid>)>(conn)
+            .optional()?,
+    })
+}
+
 /// The facts of the edit rule for one principal and one item
 /// (COLLIERY-T-0228), and the authorization board that was asked. The
 /// decision is [`kairos_core::abac::may_edit_item`]; this function only
 /// loads what it needs.
 ///
-/// `manage_capability` is the `manage_<type>` capability of the item type.
-/// The board is [`resolve_authorization_board`]: the board of the item, or
-/// for a document the board that it names, or the board of its `supports`
-/// parent when it names none (COLLIERY-T-0269). With no board,
-/// `holds_manage` is `false`: only the creator and an admin can edit such
-/// an item.
+/// The capability is the `manage_<type>` capability of `item_type`
+/// ([`kairos_core::abac::manage_capability`]). The creator and the board
+/// are [`creator_and_board`]: one query on the table of `item_type`
+/// (KAIROS-T-0625). With no board, `holds_manage` is `false`: only the
+/// creator and an admin can edit such an item.
+///
+/// `is_org_admin` is the role of the principal in the organization, which
+/// the caller has from the request (the tenant layer reads it, KAIROS-T-0625).
+/// It is not read again here.
 ///
 /// The creator is read from the row and not from the board, so the answer
 /// does not change when the item moves to a different board. An unknown
-/// item has no creator, no board, and so no fact but the admin role.
+/// item, or an id that is not of `item_type`, has no creator, no board, and
+/// so no fact but the admin role.
 ///
-/// The three facts are loaded each time, with no early return. The cost is
-/// a small number of indexed reads, and a caller that refuses can then say
-/// which capability is missing, on which board.
+/// The capability is asked each time there is a board, with no early
+/// return, so a caller that refuses can say which capability is missing,
+/// on which board. One edit is two queries: the row, and the capability.
 ///
 /// `edit_use` (KAIROS-T-0410): for [`kairos_core::abac::EditUse::Edit`],
 /// `holds_manage` is [`check_capability`], so membership of a strategy or
@@ -738,15 +779,16 @@ pub fn item_created_by(conn: &mut PgConnection, item_id: Uuid) -> Result<Option<
 /// [`check_granted_capability`]: only a grant counts.
 pub fn edit_facts(
     conn: &mut PgConnection,
-    org_slug: &str,
     user_id: Uuid,
+    is_org_admin: bool,
+    item_type: ItemType,
     item_id: Uuid,
-    manage_capability: &str,
     edit_use: kairos_core::abac::EditUse,
 ) -> Result<(kairos_core::abac::EditFacts, Option<Uuid>), AbacError> {
-    let created_item = item_created_by(conn, item_id)? == Some(user_id);
-    let is_org_admin = is_org_admin(conn, org_slug, user_id)?;
-    let board = resolve_authorization_board(conn, item_id)?;
+    let manage_capability = kairos_core::abac::manage_capability(item_type);
+    let (creator, board) = creator_and_board(conn, item_type, item_id)?.unzip();
+    let created_item = creator == Some(user_id);
+    let board = board.flatten();
     let holds_manage = match (board, edit_use) {
         (Some(board_id), kairos_core::abac::EditUse::Edit) => {
             check_capability(conn, board_id, user_id, manage_capability)?
@@ -760,6 +802,7 @@ pub fn edit_facts(
     // archive. Read only when the other facts refuse: one query less on
     // the common path.
     let holds_claim = !(created_item || holds_manage || is_org_admin)
+        && item_type == ItemType::Task
         && edit_use == kairos_core::abac::EditUse::Edit
         && crate::task_claims::claim_of(conn, item_id)?
             .is_some_and(|claim| claim.user_id == user_id);

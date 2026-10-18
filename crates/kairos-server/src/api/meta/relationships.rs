@@ -441,7 +441,7 @@ pub(crate) async fn create_relationship(
             // COLLIERY-T-0228: the link rule, for each relationship type.
             require_edge_write(
                 conn,
-                &tenant_ctx.slug,
+                tenant_ctx.role,
                 user,
                 relationship.as_str(),
                 source.typed(),
@@ -516,7 +516,7 @@ pub(crate) async fn delete_relationship(
             // `unlink_items` calls.
             crate::api::remove_edge(
                 conn,
-                &tenant_ctx.slug,
+                tenant_ctx.role,
                 user,
                 edge.relationship,
                 (edge.source_id, source_type),

@@ -337,6 +337,12 @@ fn client(
         Err(_) if url.is_none() => return Ok(None),
         Err(e) => return Err(e.to_string()),
     };
+    // KAIROS-T-0595: the daily version check asks this deployment.
+    match &source {
+        Source::Key { deployment, .. } | Source::Cache { deployment, .. } => {
+            auth::note_deployment(deployment)
+        }
+    }
     let (deployment, store) = match source {
         Source::Key {
             deployment,
