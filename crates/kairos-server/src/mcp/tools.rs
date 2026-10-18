@@ -1350,11 +1350,23 @@ pub struct SaveTemplateParams {
 impl KairosMcp {
     /// Run one closure on a tenant-pinned sync connection (the T-0018
     /// blocking bridge); service errors become S-0006 tool errors.
+    ///
+    /// KAIROS-T-0612: after the closure succeeds, the notification
+    /// ride-along of the call is read on the same connection, in the same
+    /// checkout (`super::service::RideAlong`).
     async fn run_tool<F>(&self, tenant: &TenantContext, f: F) -> Result<CallToolResult, ErrorData>
     where
         F: FnOnce(&mut PgConnection) -> Result<String, ApiError> + Send + 'static,
     {
-        match self.state.blocking.run(&tenant.slug, f).await {
+        let ride_along = super::service::RideAlong::current();
+        let run = move |conn: &mut PgConnection| {
+            let text = f(conn)?;
+            if let Some(ride_along) = ride_along {
+                ride_along.fill(conn);
+            }
+            Ok(text)
+        };
+        match self.state.blocking.run(&tenant.slug, run).await {
             Ok(text) => Ok(tool_text(text)),
             Err(e) => Ok(tool_error(e)),
         }
@@ -8578,8 +8590,10 @@ fn events_text(
 pub(super) const RIDE_ALONG: i64 = 5;
 
 /// The block at the end of an answer to a person with unread notifications
-/// (KAIROS-T-0382): the [`RIDE_ALONG`] newest, then "N more". `None` when
-/// the person has none (a service account never has one). One query.
+/// (KAIROS-T-0382): the [`RIDE_ALONG`] newest, then "More" when there are
+/// more. `None` when the person has none (a service account never has
+/// one). One query, with no count (KAIROS-T-0612): the heading says
+/// `5+ unread` when there are more than [`RIDE_ALONG`].
 pub(super) fn ride_along(
     conn: &mut PgConnection,
     user: Uuid,
@@ -8588,22 +8602,89 @@ pub(super) fn ride_along(
     let reader = crate::api::notifications::reader_for(conn, user, agent_key)?;
     let unread =
         kairos_db::notifications::unread(conn, &reader, RIDE_ALONG).map_err(ApiError::internal)?;
-    if unread.total == 0 {
-        return Ok(None);
+    Ok(ride_along_text(&unread))
+}
+
+/// The text of [`ride_along`].
+fn ride_along_text(unread: &kairos_db::notifications::Unread) -> Option<String> {
+    if unread.newest.is_empty() {
+        return None;
     }
-    let mut out = format!("## Your notifications ({} unread)\n", unread.total);
+    let count = if unread.more {
+        format!("{}+", unread.newest.len())
+    } else {
+        unread.newest.len().to_string()
+    };
+    let mut out = format!("## Your notifications ({count} unread)\n");
     for n in &unread.newest {
         out.push_str(&ride_along_line(n));
     }
-    let more = unread.total - unread.newest.len() as i64;
-    if more > 0 {
-        out.push_str(&format!("{more} more: call get_events\n"));
+    if unread.more {
+        out.push_str("More: call get_events\n");
     }
     out.push_str(
         "get_events gives each with its id; mark them read with mark_events_read when you \
          have acted on them.\n",
     );
-    Ok(Some(out))
+    Some(out)
+}
+
+#[cfg(test)]
+mod ride_along_tests {
+    //! KAIROS-T-0612: the heading of the ride-along has no count past
+    //! [`RIDE_ALONG`].
+
+    use super::*;
+    use kairos_db::notifications::{Notification, Unread};
+
+    fn notification(n: u32) -> Notification {
+        Notification {
+            id: Uuid::new_v4(),
+            kind: "mention".into(),
+            item_id: None,
+            short_code: Some(format!("ACME-T-{n:04}")),
+            entity_type: None,
+            title: None,
+            text: format!("Robin mentioned you ({n})"),
+            actor_id: None,
+            created_at: chrono::Utc::now(),
+            read_at: None,
+        }
+    }
+
+    #[test]
+    fn none_without_unread() {
+        assert_eq!(ride_along_text(&Unread::default()), None);
+    }
+
+    #[test]
+    fn the_count_up_to_five() {
+        let unread = Unread {
+            newest: (1..=3).map(notification).collect(),
+            more: false,
+        };
+        let text = ride_along_text(&unread).expect("a block");
+        assert!(
+            text.starts_with("## Your notifications (3 unread)\n"),
+            "{text}"
+        );
+        assert_eq!(text.matches("\n- ").count(), 3, "{text}");
+        assert!(!text.contains("More:"), "{text}");
+    }
+
+    #[test]
+    fn five_plus_past_five() {
+        let unread = Unread {
+            newest: (1..=5).map(notification).collect(),
+            more: true,
+        };
+        let text = ride_along_text(&unread).expect("a block");
+        assert!(
+            text.starts_with("## Your notifications (5+ unread)\n"),
+            "{text}"
+        );
+        assert!(text.contains("More: call get_events\n"), "{text}");
+    }
 }
 
 #[cfg(test)]

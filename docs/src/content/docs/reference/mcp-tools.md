@@ -68,7 +68,7 @@ These hold for every tool.
 | Listing weight | Listings are compact: short code, title and key fields. Full markdown content arrives only from `get_item` and from `get_history` with a `version`. |
 | Errors | A refusal comes back as an MCP tool error whose text is `CODE: message`, the code being the same stable one as the REST API's error envelope. Where that code has structured `details`, a second line follows: `details: ` and the JSON object. See [Errors](../errors/) for what each code's `details` carries. |
 | Audit | Writes are recorded in the activity log by the same code path as the REST API. |
-| Notifications | While the caller has unread [notifications](#your-notifications), each answer (not a refusal) ends with a block: the 5 newest, then `N more: call get_events` when there are more. The block stops when the caller marks them read. An agent key keeps its own read state, apart from the person. `get_events` itself has no block, because it lists them. A service account gets no notifications. |
+| Notifications | While the caller has unread [notifications](#your-notifications), each answer (not a refusal) ends with a block: the 5 newest, then `More: call get_events` when there are more. The block stops when the caller marks them read. An agent key keeps its own read state, apart from the person. `get_events` itself has no block, because it lists them. A service account gets no notifications. |
 | Claims | A task in Active has a [claim](../glossary/#claim): the person who works on it. A write to a task that a different person has the claim on succeeds and is recorded. The text of the tool then ends with a line: `Warning: Alice (agent) has the claim on ACME-T-0012 (since 2026-10-09T10:00:00Z). Your change is recorded.` A write by the person who has the claim, also with the agent key of the person, gets no warning. |
 
 ### Refusal codes
@@ -2502,11 +2502,14 @@ The block at the end of an answer. It is a content block of its own, after
 the answer (KAIROS-T-0549). The content that `get_item` gives stays the
 content of the item. Its lines have no id: `get_events` gives the ids.
 
+The heading gives the count up to 5. With more than 5, it says `5+ unread`
+(KAIROS-T-0612). `get_events` gives the full count.
+
 ```text
-## Your notifications (7 unread)
+## Your notifications (5+ unread)
 - 2026-10-12 09:15Z · hand_off · ACME-T-0012: Robin gave you the claim on ACME-T-0012: Fix the login
 - ...
-2 more: call get_events
+More: call get_events
 get_events gives each with its id; mark them read with mark_events_read when you have acted on them.
 ```
 
