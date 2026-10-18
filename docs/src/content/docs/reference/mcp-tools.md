@@ -3,8 +3,8 @@ title: "MCP tools"
 ---
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-seventy-three tools. A drift gate in the test suite
-asserts that `tools/list` returns these seventy-three and no others. The same
+seventy-four tools. A drift gate in the test suite
+asserts that `tools/list` returns these seventy-four and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -22,7 +22,7 @@ organization.
 
 | URL | Profile | Tools |
 |---|---|---|
-| `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory, claims, notifications, the scales and templates, team pages to read: 42 tools. |
+| `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory, the members, claims, notifications, the scales and templates, team pages to read: 43 tools. |
 | `/mcp?profile=admin` | admin | Teams, boards, columns and transitions, grants, metadata definitions and templates, dispatch rules and agent triage, the writes of team pages, org read tokens, delete and rebuild of repositories, board flow, purge: the other 31 tools. |
 | `/mcp?profile=all` | all | Each tool. |
 
@@ -43,6 +43,7 @@ The work tools:
   `update_repository`;
 - claims and notifications: `claim_item`, `hand_off_item`, `release_item`,
   `get_events`, `mark_events_read`;
+- people: `list_members`;
 - scales and templates: `list_metadata_definitions`, `list_templates`;
 - team pages, to read: `team_pages`.
 
@@ -140,6 +141,10 @@ team, these include `manage_adrs`. The section `Structure (manage_structure)`
 gives the grants of [`manage_structure`](../capabilities/#manage_structure) of
 the caller: on the organization, or on one board.
 
+The line `user name` gives the name that `hand_off_item` and the `claimed_by`
+filter of `search` take. `@<user name>` in the content of an item mentions the
+person (KAIROS-T-0556).
+
 No arguments.
 
 Refuses: nothing beyond transport-level authentication.
@@ -215,6 +220,51 @@ item is in your work. The tool does not show an item in a done column.
 No arguments.
 
 Refuses: an unknown argument, and names it.
+
+### `list_members`
+
+The members of the organization, of a team or of a board (KAIROS-T-0556).
+Each member can read the list. Use it to find the person for `hand_off_item`,
+for the `claimed_by` filter of `search`, or for an `@mention`.
+
+Each line gives the user name, the display name, the email and the kind. The
+kind is `person`, `service account` or `system actor` (the forge actor of the
+organization). The lines are in the order of the user names.
+
+```text
+# Members of the board web-delivery (Web Delivery)
+An organization admin holds each capability on each board. `list_members` with no argument gives the role of each member.
+- jamie — Jamie Lee <jamie@example.test> · person · capabilities: manage_tasks (grant)
+- robin — Robin Park <robin@example.test> · person · capabilities: manage_tasks, manage_documents, transition_items (team web, no grant)
+```
+
+- No argument: the members of the organization. Each line gives the role
+  (`admin` or `member`).
+- `team`: the members of the team.
+- `board`: the members of the board and their capabilities. A capability
+  comes from a grant, or `(grant)`. On a strategy or an initiative board, the
+  `member` grant also gives `(board member, no grant)`. The team of the board gives
+  `(team <slug>, no grant)`. The list does not show the capabilities of the
+  organization admin role.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `team` | string | no | — | The members of this team. Slug or UUID. |
+| `board` | string | no | — | The members of this board, with their capabilities. Slug or UUID. |
+| `limit` | integer | no | `50` | The number of members in the result. The maximum is 200. |
+| `offset` | integer | no | `0` | The number of members to skip. |
+
+A result can be a part of the list. Then a line after the heading gives the
+count of the members and the `offset` of the next part:
+`Members: 120. Shown: 50 (limit 50, offset 0). Call again with offset 50 for
+the next part.`
+
+Refuses:
+
+- `VALIDATION` for `team` and `board` together. Send one of them.
+- `VALIDATION` for an unknown `team`.
+- `NOT_FOUND` for an unknown `board`.
+- an unknown argument, and names it.
 
 ### `list_repositories`
 
@@ -1511,7 +1561,7 @@ Changes the [claim](../glossary/#claim) of a task in Active, or the
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `short_code` | string | yes | — | The short code of a task in Active, or of a strategy or an initiative. |
-| `to` | string | yes | — | The person who gets the claim or who becomes the owner: a user id, an email or a user name of a person of the organization, or `me`. A new owner must be a member of the board of the item. A new claim holder must hold `transition_items` on the board of the task. |
+| `to` | string | yes | — | The person who gets the claim or who becomes the owner: a user id, an email or a user name of a person of the organization, or `me`. [`list_members`](#list_members) gives them. A new owner must be a member of the board of the item. A new claim holder must hold `transition_items` on the board of the task. |
 
 A task: the person who has the claim can hand it off. Any other principal needs
 `transition_items` on the board of the task. A task in Active with no claim can
