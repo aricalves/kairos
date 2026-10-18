@@ -7,7 +7,7 @@ title: "REST API"
      file disagrees with the spec. To change it, change the
      `#[utoipa::path]` annotation on the handler. -->
 
-OpenAPI 3.1.0, Kairos 0.15.1. 153 paths, 259 schemas.
+OpenAPI 3.1.0, Kairos 0.15.1. 154 paths, 259 schemas.
 
 Every endpoint is served under the tenant resolved from the request host and requires a bearer token; see [Configuration](../configuration/) for how a deployment resolves both. The live spec is at `/api/openapi.json`.
 
@@ -17,7 +17,7 @@ This page is generated from that spec, so it cannot drift from the router — bu
 
 - [Work items](../rest/work-items/) — 42 operations. The five entity families. Every one has the same shape — list, get, create, update, delete — and the same optimistic-concurrency contract on update (KAIROS-A-0004): submit the `version` you read, and a concurrent edit gets 409 with the current entity in `details.current`. A write to a claimed task by a different person gets the header `Kairos-Warning: <code> claimed by <name> since <time>` (KAIROS-T-0359). A task with open blockers can move into a claims column or a done column. That answer gets the header `Kairos-Warning: <code> moved into <column>, blocked by <blocker> (open)` (KAIROS-T-0565).
 - [Across any work item](../rest/across-any-work-item/) — 31 operations. Operations addressed by `{entity_type}` and a short code, so they work uniformly across the five families.
-- [Boards and teams](../rest/boards-and-teams/) — 73 operations. Board configuration, membership, the team structures that own boards, and the grants of `manage_structure` (KAIROS-T-0337).
+- [Boards and teams](../rest/boards-and-teams/) — 74 operations. Board configuration, membership, the team structures that own boards, and the grants of `manage_structure` (KAIROS-T-0337).
 - [Execution scope](../rest/execution-scope/) — 29 operations. Repositories as first-class execution scope (KAIROS-A-0019) and the git forges behind them.
 - [Tenant configuration](../rest/tenant-configuration/) — 16 operations. Org-admin surfaces: the metadata and template definitions that shape what work items can carry.
 - [Machine access](../rest/machine-access/) — 21 operations. Agent keys of a person, service accounts and their API keys, and the SCIM tokens for directory sync.
