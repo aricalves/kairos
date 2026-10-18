@@ -39,7 +39,8 @@ pub struct StrategyCard {
     /// Tenant-scoped short code (`{PREFIX}-S-{NNNN}`).
     pub short_code: String,
     pub title: String,
-    /// Markdown content. Only with `fields=full` on the board route.
+    /// Markdown content. Only with `fields=full` on the board route. A card
+    /// has no notes (KAIROS-T-0630): the read of the item gives them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     /// Board the strategy sits on (UUID).
@@ -82,7 +83,8 @@ pub struct InitiativeCard {
     /// Tenant-scoped short code (`{PREFIX}-I-{NNNN}`).
     pub short_code: String,
     pub title: String,
-    /// Markdown content. Only with `fields=full` on the board route.
+    /// Markdown content. Only with `fields=full` on the board route. A card
+    /// has no notes (KAIROS-T-0630): the read of the item gives them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     /// Board the initiative sits on (UUID).
@@ -130,7 +132,8 @@ pub struct TaskCard {
     /// Tenant-scoped short code (`{PREFIX}-T-{NNNN}`).
     pub short_code: String,
     pub title: String,
-    /// Markdown content. Only with `fields=full` on the board route.
+    /// Markdown content. Only with `fields=full` on the board route. A card
+    /// has no notes (KAIROS-T-0630): the read of the item gives them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     /// Board the task sits on (UUID).
@@ -226,7 +229,8 @@ pub struct AdrCard {
     /// Tenant-scoped short code (`{PREFIX}-A-{NNNN}`).
     pub short_code: String,
     pub title: String,
-    /// Markdown content. Only with `fields=full` on the board route.
+    /// Markdown content. Only with `fields=full` on the board route. A card
+    /// has no notes (KAIROS-T-0630): the read of the item gives them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     /// ADR board (UUID), if placed on one.
