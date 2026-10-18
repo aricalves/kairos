@@ -76,6 +76,12 @@ pub struct IndexArgs {
 }
 
 impl IndexArgs {
+    /// The command is `kairos index mcp`: a long stdio session, with no
+    /// daily version check after it (KAIROS-T-0595).
+    pub fn serves_mcp(&self) -> bool {
+        matches!(self.command, Some(IndexCommand::Mcp { .. }))
+    }
+
     pub async fn run(self) -> Result<(), CliError> {
         match self.command {
             Some(command) => command.run().await,
