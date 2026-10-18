@@ -10,6 +10,7 @@ use kairos_client::types_org::{
 use crate::commands::entities::require_confirm;
 use crate::context::{Common, client, print_json};
 use crate::error::CliError;
+use crate::listing::print_whole;
 use crate::table::Table;
 
 /// The columns of a board.
@@ -195,7 +196,7 @@ impl ColumnsCommand {
                 let client = client(&common)?;
                 let detail = board(&client, &b).await?;
                 if common.json {
-                    return print_json(&detail.columns);
+                    return print_whole(&detail.columns);
                 }
                 print!("{}", columns_table(&detail).render());
                 Ok(())
@@ -305,7 +306,7 @@ impl TransitionsCommand {
                 let client = client(&common)?;
                 let detail = board(&client, &b).await?;
                 if common.json {
-                    return print_json(&detail.transitions);
+                    return print_whole(&detail.transitions);
                 }
                 let mut table = Table::new(&["FROM", "TO", "ID"]);
                 for t in &detail.transitions {

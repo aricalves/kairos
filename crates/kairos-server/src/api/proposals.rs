@@ -193,7 +193,11 @@ async fn decide(
     id: Uuid,
     confirming: bool,
 ) -> Result<Json<dto_search::EdgeProposalDto>, ApiError> {
-    let slug = tenant.slug.clone();
+    // The role comes from the context of the request (KAIROS-T-0625).
+    let decider = kairos_db::proposals::Decider {
+        user_id: actor,
+        is_org_admin: tenant.role == kairos_db::models::OrgRole::Admin,
+    };
     let out = state
         .blocking
         .run(&tenant.slug, move |conn| {
@@ -201,9 +205,9 @@ async fn decide(
             // a refusal leaves the proposal pending and writes no edge.
             crate::api::atomically(conn, |conn| {
                 let decided = if confirming {
-                    kairos_db::proposals::confirm(conn, &slug, id, actor)
+                    kairos_db::proposals::confirm(conn, id, decider)
                 } else {
-                    kairos_db::proposals::reject(conn, &slug, id, actor)
+                    kairos_db::proposals::reject(conn, id, decider)
                 }
                 .map_err(map_proposal_error)?;
                 to_dto(conn, decided)

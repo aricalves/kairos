@@ -514,7 +514,7 @@ journey(
       const cli = await alice.cli();
       const platform = await cli.json(['search', '--repo', PLATFORM_REPO, '--limit', '100']);
       const web = await cli.json(['search', '--repo', WEB_REPO, '--limit', '100']);
-      const codes = (hits: any) => (hits.results?.tasks ?? []).map((t: any) => t.short_code);
+      const codes = (hits: any) => (hits.items.filter((h: any) => h.entity_type === 'task')).map((t: any) => t.short_code);
       expect(codes(platform)).toContain(filedCrossRepo);
       expect(codes(web)).toContain(webTask);
       expect(codes(web), 'the cross-filed task is not on the web side').not.toContain(filedCrossRepo);

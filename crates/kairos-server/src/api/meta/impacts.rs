@@ -126,11 +126,11 @@ pub(crate) fn require_subject(
 /// Rule 2: the edit rule, with a text that says what the link needs.
 fn require_edit(
     conn: &mut PgConnection,
-    slug: &str,
+    role: kairos_db::models::OrgRole,
     user: Uuid,
     (item_id, item_type): (Uuid, ItemType),
 ) -> Result<(), ApiError> {
-    let Some(board_id) = missing_item_edit(conn, slug, user, item_id, item_type)? else {
+    let Some(board_id) = missing_item_edit(conn, role, user, item_id, item_type)? else {
         return Ok(());
     };
     let short_code = short_code_of(conn, item_id)?;
@@ -174,7 +174,7 @@ pub(crate) fn map_impact_error(e: ImpactError) -> ApiError {
 /// [`impacts::link`].
 pub(crate) fn add(
     conn: &mut PgConnection,
-    slug: &str,
+    role: kairos_db::models::OrgRole,
     user: Uuid,
     (item_id, item_type): (Uuid, ItemType),
     repository: &str,
@@ -182,7 +182,7 @@ pub(crate) fn add(
 ) -> Result<ImpactedRepository, ApiError> {
     let short_code = short_code_of(conn, item_id)?;
     require_subject(item_type, &short_code, surface)?;
-    require_edit(conn, slug, user, (item_id, item_type))?;
+    require_edit(conn, role, user, (item_id, item_type))?;
     let repository =
         repositories::resolve(conn, repository).map_err(crate::api::tasks::map_repository_error)?;
     impacts::link(conn, item_id, repository.id, user).map_err(map_impact_error)
@@ -193,7 +193,7 @@ pub(crate) fn add(
 /// removed.
 pub(crate) fn remove(
     conn: &mut PgConnection,
-    slug: &str,
+    role: kairos_db::models::OrgRole,
     user: Uuid,
     (item_id, item_type): (Uuid, ItemType),
     repository: &str,
@@ -201,7 +201,7 @@ pub(crate) fn remove(
 ) -> Result<ImpactedRepository, ApiError> {
     let short_code = short_code_of(conn, item_id)?;
     require_subject(item_type, &short_code, surface)?;
-    require_edit(conn, slug, user, (item_id, item_type))?;
+    require_edit(conn, role, user, (item_id, item_type))?;
     let linked = impacts::linked_repository(conn, item_id, repository)
         .map_err(map_impact_error)?
         .ok_or_else(|| {
@@ -282,12 +282,12 @@ pub(crate) async fn create_impact(
     ApiJson(body): ApiJson<dto::CreateImpactRequest>,
 ) -> Result<(StatusCode, Json<dto::Impact>), ApiError> {
     let user = auth.user_id;
-    let slug = tenant.slug.clone();
+    let role = tenant.role;
     let created = state
         .blocking
         .run(&tenant.slug, move |conn| {
             let item = resolve_family_item(conn, &family, &short_code, Liveness::LiveOnly)?;
-            let linked = add(conn, &slug, user, item, &body.repository, Surface::Rest)?;
+            let linked = add(conn, role, user, item, &body.repository, Surface::Rest)?;
             Ok(impact(linked))
         })
         .await?;
@@ -321,12 +321,12 @@ pub(crate) async fn delete_impact(
     Path((family, short_code, repository)): Path<(String, String, String)>,
 ) -> Result<Json<dto::DeletedImpactResponse>, ApiError> {
     let user = auth.user_id;
-    let slug = tenant.slug.clone();
+    let role = tenant.role;
     let deleted = state
         .blocking
         .run(&tenant.slug, move |conn| {
             let item = resolve_family_item(conn, &family, &short_code, Liveness::LiveOnly)?;
-            let removed = remove(conn, &slug, user, item, &repository, Surface::Rest)?;
+            let removed = remove(conn, role, user, item, &repository, Surface::Rest)?;
             Ok(dto::DeletedImpactResponse {
                 short_code,
                 repository: removed.slug,

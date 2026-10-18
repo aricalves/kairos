@@ -72,6 +72,7 @@ pub(crate) async fn promote_note(
 ) -> Result<(StatusCode, Json<dto::PromoteNoteResponse>), ApiError> {
     let user = auth.user_id;
     let slug = tenant.slug.clone();
+    let role = tenant.role;
     let response = state
         .blocking
         .run(&tenant.slug, move |conn| {
@@ -82,6 +83,7 @@ pub(crate) async fn promote_note(
                 crate::promote::promote_note(
                     conn,
                     &slug,
+                    role,
                     user,
                     crate::promote::PromoteInput {
                         source: (item_id, item_type, &source_code),
@@ -131,13 +133,13 @@ pub(crate) async fn append_note(
     ApiJson(body): ApiJson<dto::AppendNoteRequest>,
 ) -> Result<Json<dto::AppendNoteResponse>, ApiError> {
     let user = auth.user_id;
-    let slug = tenant.slug.clone();
+    let role = tenant.role;
     let response = state
         .blocking
         .run(&tenant.slug, move |conn| {
             let (item_id, item_type) =
                 resolve_family_item(conn, &family, &short_code, Liveness::LiveOnly)?;
-            crate::api::require_item_edit(conn, &slug, user, item_id, item_type)?;
+            crate::api::require_item_edit(conn, role, user, item_id, item_type)?;
             let appended = kairos_db::items::append_note(
                 conn,
                 item_type,

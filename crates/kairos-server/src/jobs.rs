@@ -400,6 +400,9 @@ pub struct Worker {
     /// The role of this server (KAIROS-T-0394): the kinds of job that it
     /// takes, and the periodic passes that it runs.
     role: crate::config::ServerRole,
+    /// The metrics of the server (KAIROS-T-0576): the failures and the
+    /// kills of the watchdog.
+    metrics: Arc<crate::metrics::Metrics>,
 }
 
 impl std::fmt::Debug for Worker {
@@ -440,7 +443,21 @@ impl Worker {
             last_purge: Mutex::default(),
             periodic: Arc::default(),
             role: crate::config::ServerRole::All,
+            metrics: Arc::new(crate::metrics::Metrics::new()),
         }
+    }
+
+    /// The worker that counts its failures and kills in `metrics`
+    /// (KAIROS-T-0576): the registry of the state of the server. The
+    /// default is a registry of its own.
+    pub fn with_metrics(mut self, metrics: Arc<crate::metrics::Metrics>) -> Self {
+        self.metrics = metrics;
+        self
+    }
+
+    /// The metrics registry of the worker.
+    pub fn metrics(&self) -> &Arc<crate::metrics::Metrics> {
+        &self.metrics
     }
 
     /// The worker of a server with the role `role` (KAIROS-T-0394). It
@@ -677,6 +694,7 @@ impl Worker {
         match failed {
             Ok(jobs) => {
                 for job in jobs {
+                    self.metrics.record_job_failure(&job.kind);
                     tracing::warn!(
                         job = %job.id,
                         kind = %job.kind,
@@ -785,6 +803,7 @@ impl Worker {
                             self.instance
                         );
                         tracing::warn!(job = %job.id, kind = %job.kind, %reason, "job stalled");
+                        self.metrics.record_job_lease_kill(&job.kind);
                         // KAIROS-T-0399: a kind that is not run again after
                         // a stop fails now.
                         let error = if handler.retry_stopped() {
@@ -931,6 +950,7 @@ impl Worker {
             }
         };
         if ended == Ended::Failed {
+            self.metrics.record_job_failure(&job.kind);
             let row = self
                 .blocking
                 .run_public(move |conn| db::get(conn, id).map_err(ApiError::internal))

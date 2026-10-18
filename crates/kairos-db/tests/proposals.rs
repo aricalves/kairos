@@ -19,13 +19,30 @@ use uuid::Uuid;
 use kairos_db::graph::GraphError;
 use kairos_db::models::{BoardLevel, NewUser, RelationshipType, TaskType, WorkClass};
 use kairos_db::proposals::{
-    MAX_PENDING_PER_ITEM, NewProposal, ProposalError, confirm, pending_for_item, propose, reject,
-    stats,
+    Decider, MAX_PENDING_PER_ITEM, NewProposal, ProposalError, confirm, pending_for_item, propose,
+    reject, stats,
 };
 use kairos_db::{abac, create_board, items, provision_tenant, run_public_migrations, schema};
 
 /// The slug of the organization of each test here.
 const ORG: &str = "acme";
+
+/// A caller who is not an org admin.
+fn member(user_id: Uuid) -> Decider {
+    Decider {
+        user_id,
+        is_org_admin: false,
+    }
+}
+
+/// An org admin. The server reads the role from the context of the
+/// request (KAIROS-T-0625).
+fn org_admin(user_id: Uuid) -> Decider {
+    Decider {
+        user_id,
+        is_org_admin: true,
+    }
+}
 
 /// A team for the delivery board of a fixture (COLLIERY-T-0230): a row in
 /// `teams` and nothing more. A delivery board always has a team, so a
@@ -199,8 +216,8 @@ fn edge_proposal_lifecycle() {
     // Enforced in the service, not in the surfaces: a rule implemented in two
     // handlers is a rule the third handler will not have.
     for refused in [
-        confirm(&mut conn, ORG, p.id, agent),
-        reject(&mut conn, ORG, p.id, agent),
+        confirm(&mut conn, p.id, member(agent)),
+        reject(&mut conn, p.id, member(agent)),
     ] {
         assert!(
             matches!(refused, Err(ProposalError::NotApprover { .. })),
@@ -218,16 +235,16 @@ fn edge_proposal_lifecycle() {
         alice,
     )
     .expect("a person proposes");
-    let own = confirm(&mut conn, ORG, by_alice.id, alice).expect("the proposer confirms");
+    let own = confirm(&mut conn, by_alice.id, member(alice)).expect("the proposer confirms");
     assert_eq!(own.decided_by, Some(alice));
     // Two decisions of one proposal: the second one is refused.
     assert!(matches!(
-        reject(&mut conn, ORG, by_alice.id, bob),
+        reject(&mut conn, by_alice.id, member(bob)),
         Err(ProposalError::AlreadyDecided { ref state, .. }) if state == "confirmed"
     ));
 
     // ---- reject is recorded, not erased ------------------------------------
-    let rejected = reject(&mut conn, ORG, p.id, alice).expect("rejecting");
+    let rejected = reject(&mut conn, p.id, member(alice)).expect("rejecting");
     assert_eq!(rejected.state, "rejected");
     assert_eq!(rejected.decided_by, Some(alice));
     assert!(rejected.decided_at.is_some());
@@ -245,16 +262,16 @@ fn edge_proposal_lifecycle() {
 
     // ---- a decision is not revisited ---------------------------------------
     assert!(matches!(
-        reject(&mut conn, ORG, p.id, alice),
+        reject(&mut conn, p.id, member(alice)),
         Err(ProposalError::AlreadyDecided { .. })
     ));
     assert!(matches!(
-        confirm(&mut conn, ORG, p.id, alice),
+        confirm(&mut conn, p.id, member(alice)),
         Err(ProposalError::AlreadyDecided { .. })
     ));
 
     // ---- confirm creates the real edge -------------------------------------
-    let confirmed = confirm(&mut conn, ORG, second.id, alice).expect("confirming");
+    let confirmed = confirm(&mut conn, second.id, member(alice)).expect("confirming");
     assert_eq!(confirmed.state, "confirmed");
     assert_eq!(confirmed.decided_by, Some(alice));
     #[derive(diesel::QueryableByName)]
@@ -294,7 +311,7 @@ fn edge_proposal_lifecycle() {
         agent,
     )
     .expect("proposing is allowed — the graph is consulted on confirmation");
-    let refused = confirm(&mut conn, ORG, loop_proposal.id, alice)
+    let refused = confirm(&mut conn, loop_proposal.id, member(alice))
         .expect_err("confirming a cycle must be refused");
     assert!(
         matches!(
@@ -312,7 +329,7 @@ fn edge_proposal_lifecycle() {
             .any(|p| p.id == loop_proposal.id && p.state == "pending"),
         "still waiting: {still:?}"
     );
-    reject(&mut conn, ORG, loop_proposal.id, alice).expect("rejected on its merits instead");
+    reject(&mut conn, loop_proposal.id, member(alice)).expect("rejected on its merits instead");
 
     // 2. The rule matrix. `parent` does not run task -> task, and an agent that
     // proposes one gets the same refusal a human would.
@@ -329,13 +346,13 @@ fn edge_proposal_lifecycle() {
         agent,
     )
     .expect("proposing an ill-shaped edge is allowed");
-    let refused = confirm(&mut conn, ORG, wrong_shape.id, alice)
+    let refused = confirm(&mut conn, wrong_shape.id, member(alice))
         .expect_err("task -> task parent must be refused");
     assert!(
         matches!(refused, ProposalError::Graph(GraphError::Rule(_))),
         "by the existing rule matrix: {refused}"
     );
-    reject(&mut conn, ORG, wrong_shape.id, alice).expect("cleaning up");
+    reject(&mut conn, wrong_shape.id, member(alice)).expect("cleaning up");
 
     // ---- two decisions at the same time (KAIROS-T-0538) --------------------
     // The UPDATE has `state = 'pending'`. The first decision holds the row
@@ -379,8 +396,8 @@ fn edge_proposal_lifecycle() {
     let late = std::thread::scope(|scope| {
         first
             .transaction::<_, ProposalError, _>(|first| {
-                confirm(first, ORG, raced_id, alice).expect("the first decision");
-                let waiter = scope.spawn(move || reject(&mut second, ORG, raced_id, bob));
+                confirm(first, raced_id, member(alice)).expect("the first decision");
+                let waiter = scope.spawn(move || reject(&mut second, raced_id, member(bob)));
                 wait_for_lock(&mut conn, second_pid);
                 Ok(waiter)
             })
@@ -584,8 +601,8 @@ fn a_holder_on_either_board_or_an_org_admin_decides() {
     //    The refusal names the grant and both boards. The proposal waits.
     let first = proposal(&mut conn, bot, "1: neither");
     for refused in [
-        confirm(&mut conn, ORG, first, jamie),
-        reject(&mut conn, ORG, first, jamie),
+        confirm(&mut conn, first, member(jamie)),
+        reject(&mut conn, first, member(jamie)),
     ] {
         match refused {
             Err(ref e @ ProposalError::NotApprover { ref boards }) => {
@@ -607,38 +624,44 @@ fn a_holder_on_either_board_or_an_org_admin_decides() {
     );
 
     // 2. A holder on the board of the source confirms.
-    let by_source = confirm(&mut conn, ORG, first, robin).expect("robin holds it on alpha");
+    let by_source = confirm(&mut conn, first, member(robin)).expect("robin holds it on alpha");
     assert_eq!(by_source.decided_by, Some(robin));
 
     // 3. A holder on the board of the target confirms and rejects.
     let second = proposal(&mut conn, bot, "3: the target");
-    let by_target = confirm(&mut conn, ORG, second, sam).expect("sam holds it on beta");
+    let by_target = confirm(&mut conn, second, member(sam)).expect("sam holds it on beta");
     assert_eq!(by_target.decided_by, Some(sam));
     let third = proposal(&mut conn, bot, "3: the target rejects");
-    let rejected = reject(&mut conn, ORG, third, sam).expect("sam rejects");
+    let rejected = reject(&mut conn, third, member(sam)).expect("sam rejects");
     assert_eq!(rejected.state, "rejected");
 
-    // 4. An org admin decides with no grant.
+    // 4. An org admin decides with no grant. The same person as a member
+    //    is refused.
+    let refused = proposal(&mut conn, jamie, "4: alex as a member");
+    assert!(matches!(
+        confirm(&mut conn, refused, member(alex)),
+        Err(ProposalError::NotApprover { .. })
+    ));
     let fourth = proposal(&mut conn, jamie, "4: the org admin");
-    let by_admin = confirm(&mut conn, ORG, fourth, alex).expect("alex is an org admin");
+    let by_admin = confirm(&mut conn, fourth, org_admin(alex)).expect("alex is an org admin");
     assert_eq!(by_admin.decided_by, Some(alex));
 
     // 5. A service account that holds the grant decides: it can confirm the
     //    proposal that it made.
     let fifth = proposal(&mut conn, bot, "5: the service account");
-    let by_bot = confirm(&mut conn, ORG, fifth, bot).expect("the bot holds it on alpha");
+    let by_bot = confirm(&mut conn, fifth, member(bot)).expect("the bot holds it on alpha");
     assert_eq!(by_bot.decided_by, Some(bot));
 
     // 6. The proposer decides their own proposal, as a holder.
     let sixth = proposal(&mut conn, robin, "6: the proposer");
-    let own = reject(&mut conn, ORG, sixth, robin).expect("robin decides her own");
+    let own = reject(&mut conn, sixth, member(robin)).expect("robin decides her own");
     assert_eq!(own.decided_by, Some(robin));
 
     // 7. The grant gone, the holder is refused.
     abac::revoke_capability(&mut conn, beta, sam, approve, alex).expect("the revoke");
     let seventh = proposal(&mut conn, robin, "7: the revoke");
     assert!(matches!(
-        confirm(&mut conn, ORG, seventh, sam),
+        confirm(&mut conn, seventh, member(sam)),
         Err(ProposalError::NotApprover { .. })
     ));
     assert!(waits(&mut conn, seventh));

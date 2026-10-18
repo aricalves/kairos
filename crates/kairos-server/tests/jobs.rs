@@ -5,11 +5,14 @@
 //! 2. Order: priority, then age.
 //! 3. The limits per kind of one server.
 //! 4. A job that makes no progress is killed and re-leased; after its tries
-//!    it fails with the reason, and the failed hook of its kind runs.
+//!    it fails with the reason, and the failed hook of its kind runs. The
+//!    metrics of the worker count each kill and the failure
+//!    (KAIROS-T-0576).
 //! 5. Progress keeps the lease of a long job.
 //! 6. The lease of a dead worker runs out, and another worker takes the job.
 //! 7. A dedupe key keeps a second job out while the first is open.
-//! 8. A job of the last try whose lease ran out is failed by another worker.
+//! 8. A job of the last try whose lease ran out is failed by another worker,
+//!    which counts the failure and no kill (KAIROS-T-0576).
 //! 10. A kind that is not run again after a stop (KAIROS-T-0399): a stalled
 //!     job and a job whose lease ran out fail on their first try, and the
 //!     stopped hook runs; a job of another kind is taken again.
@@ -423,6 +426,10 @@ async fn a_stalled_job_is_killed_and_fails_after_its_tries() {
     let failed = record.failed.lock().unwrap().clone();
     assert_eq!(failed.len(), 1, "the failed hook ran once");
     assert_eq!(failed[0].id, added.id);
+    // KAIROS-T-0576: the watchdog killed each try, and the job failed once.
+    assert_eq!(w.metrics().job_lease_kills(KIND), 2, "a kill for each try");
+    assert_eq!(w.metrics().job_failures(KIND), 1, "one failure");
+    assert_eq!(w.metrics().job_failures(OTHER), 0);
     assert!(
         started.elapsed() < Duration::from_secs(10),
         "killed at the lease time, not later: {:?}",
@@ -571,6 +578,9 @@ async fn a_job_that_ran_out_of_tries_fails_with_the_reason() {
         1,
         "the failed hook ran"
     );
+    // KAIROS-T-0576: a failure, and no kill: this worker did not run it.
+    assert_eq!(w.metrics().job_failures(KIND), 1);
+    assert_eq!(w.metrics().job_lease_kills(KIND), 0);
     shut_down([w]).await;
 }
 

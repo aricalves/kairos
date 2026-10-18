@@ -3,8 +3,8 @@ title: "MCP tools"
 ---
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-seventy-three tools. A drift gate in the test suite
-asserts that `tools/list` returns these seventy-three and no others. The same
+seventy-four tools. A drift gate in the test suite
+asserts that `tools/list` returns these seventy-four and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -22,7 +22,7 @@ organization.
 
 | URL | Profile | Tools |
 |---|---|---|
-| `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory, claims, notifications, the scales and templates, team pages to read: 42 tools. |
+| `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory, the members, claims, notifications, the scales and templates, team pages to read: 43 tools. |
 | `/mcp?profile=admin` | admin | Teams, boards, columns and transitions, grants, metadata definitions and templates, dispatch rules and agent triage, the writes of team pages, org read tokens, delete and rebuild of repositories, board flow, purge: the other 31 tools. |
 | `/mcp?profile=all` | all | Each tool. |
 
@@ -43,6 +43,7 @@ The work tools:
   `update_repository`;
 - claims and notifications: `claim_item`, `hand_off_item`, `release_item`,
   `get_events`, `mark_events_read`;
+- people: `list_members`;
 - scales and templates: `list_metadata_definitions`, `list_templates`;
 - team pages, to read: `team_pages`.
 
@@ -67,7 +68,7 @@ These hold for every tool.
 | Listing weight | Listings are compact: short code, title and key fields. Full markdown content arrives only from `get_item` and from `get_history` with a `version`. |
 | Errors | A refusal comes back as an MCP tool error whose text is `CODE: message`, the code being the same stable one as the REST API's error envelope. Where that code has structured `details`, a second line follows: `details: ` and the JSON object. See [Errors](../errors/) for what each code's `details` carries. |
 | Audit | Writes are recorded in the activity log by the same code path as the REST API. |
-| Notifications | While the caller has unread [notifications](#your-notifications), each answer (not a refusal) ends with a block: the 5 newest, then `N more: call get_events` when there are more. The block stops when the caller marks them read. An agent key keeps its own read state, apart from the person. `get_events` itself has no block, because it lists them. A service account gets no notifications. |
+| Notifications | While the caller has unread [notifications](#your-notifications), each answer (not a refusal) ends with a block: the 5 newest, then `More: call get_events` when there are more. The block stops when the caller marks them read. An agent key keeps its own read state, apart from the person. `get_events` itself has no block, because it lists them. A service account gets no notifications. |
 | Claims | A task in Active has a [claim](../glossary/#claim): the person who works on it. A write to a task that a different person has the claim on succeeds and is recorded. The text of the tool then ends with a line: `Warning: Alice (agent) has the claim on ACME-T-0012 (since 2026-10-09T10:00:00Z). Your change is recorded.` A write by the person who has the claim, also with the agent key of the person, gets no warning. |
 
 ### Refusal codes
@@ -139,6 +140,10 @@ team gives with no grant (`(team <slug>, no grant)`). On the ADR board of the
 team, these include `manage_adrs`. The section `Structure (manage_structure)`
 gives the grants of [`manage_structure`](../capabilities/#manage_structure) of
 the caller: on the organization, or on one board.
+
+The line `user name` gives the name that `hand_off_item` and the `claimed_by`
+filter of `search` take. `@<user name>` in the content of an item mentions the
+person (KAIROS-T-0556).
 
 No arguments.
 
@@ -215,6 +220,51 @@ item is in your work. The tool does not show an item in a done column.
 No arguments.
 
 Refuses: an unknown argument, and names it.
+
+### `list_members`
+
+The members of the organization, of a team or of a board (KAIROS-T-0556).
+Each member can read the list. Use it to find the person for `hand_off_item`,
+for the `claimed_by` filter of `search`, or for an `@mention`.
+
+Each line gives the user name, the display name, the email and the kind. The
+kind is `person`, `service account` or `system actor` (the forge actor of the
+organization). The lines are in the order of the user names.
+
+```text
+# Members of the board web-delivery (Web Delivery)
+An organization admin holds each capability on each board. `list_members` with no argument gives the role of each member.
+- jamie — Jamie Lee <jamie@example.test> · person · capabilities: manage_tasks (grant)
+- robin — Robin Park <robin@example.test> · person · capabilities: manage_tasks, manage_documents, transition_items (team web, no grant)
+```
+
+- No argument: the members of the organization. Each line gives the role
+  (`admin` or `member`).
+- `team`: the members of the team.
+- `board`: the members of the board and their capabilities. A capability
+  comes from a grant, or `(grant)`. On a strategy or an initiative board, the
+  `member` grant also gives `(board member, no grant)`. The team of the board gives
+  `(team <slug>, no grant)`. The list does not show the capabilities of the
+  organization admin role.
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `team` | string | no | — | The members of this team. Slug or UUID. |
+| `board` | string | no | — | The members of this board, with their capabilities. Slug or UUID. |
+| `limit` | integer | no | `50` | The number of members in the result. The maximum is 200. |
+| `offset` | integer | no | `0` | The number of members to skip. |
+
+A result can be a part of the list. Then a line after the heading gives the
+count of the members and the `offset` of the next part:
+`Members: 120. Shown: 50 (limit 50, offset 0). Call again with offset 50 for
+the next part.`
+
+Refuses:
+
+- `VALIDATION` for `team` and `board` together. Send one of them.
+- `VALIDATION` for an unknown `team`.
+- `NOT_FOUND` for an unknown `board`.
+- an unknown argument, and names it.
 
 ### `list_repositories`
 
@@ -1511,7 +1561,7 @@ Changes the [claim](../glossary/#claim) of a task in Active, or the
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `short_code` | string | yes | — | The short code of a task in Active, or of a strategy or an initiative. |
-| `to` | string | yes | — | The person who gets the claim or who becomes the owner: a user id, an email or a user name of a person of the organization, or `me`. A new owner must be a member of the board of the item. A new claim holder must hold `transition_items` on the board of the task. |
+| `to` | string | yes | — | The person who gets the claim or who becomes the owner: a user id, an email or a user name of a person of the organization, or `me`. [`list_members`](#list_members) gives them. A new owner must be a member of the board of the item. A new claim holder must hold `transition_items` on the board of the task. |
 
 A task: the person who has the claim can hand it off. Any other principal needs
 `transition_items` on the board of the task. A task in Active with no claim can
@@ -2451,11 +2501,14 @@ The block at the end of an answer. It is a content block of its own, after
 the answer (KAIROS-T-0549). The content that `get_item` gives stays the
 content of the item. Its lines have no id: `get_events` gives the ids.
 
+The heading gives the count up to 5. With more than 5, it says `5+ unread`
+(KAIROS-T-0612). `get_events` gives the full count.
+
 ```text
-## Your notifications (7 unread)
+## Your notifications (5+ unread)
 - 2026-10-12 09:15Z · hand_off · ACME-T-0012: Robin gave you the claim on ACME-T-0012: Fix the login
 - ...
-2 more: call get_events
+More: call get_events
 get_events gives each with its id; mark them read with mark_events_read when you have acted on them.
 ```
 

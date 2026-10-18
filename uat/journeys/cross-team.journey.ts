@@ -257,7 +257,7 @@ journey(
     await step(alice, `lists what was filed against ${THEIR_REPO} with the CLI and sees carol as the author`, async () => {
       const cli = await alice.cli();
       const hits = await cli.json(['search', '--repo', THEIR_REPO, '--limit', '100']);
-      const row = (hits.results?.tasks ?? []).find((t: any) => t.short_code === filed);
+      const row = (hits.items.filter((h: any) => h.entity_type === 'task')).find((t: any) => t.short_code === filed);
       expect(row).toBeTruthy();
       const me = await (await carol.api()).whoami();
       expect(row.created_by).toBe(me.user.id);

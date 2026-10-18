@@ -370,18 +370,29 @@ pub fn approval_boards(
     })
 }
 
+/// Who decides a proposal (KAIROS-T-0659): the caller, and whether the
+/// caller is an org admin. The server reads the role from the context of
+/// the request, as the edit rule does (KAIROS-T-0625).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Decider {
+    /// `public.users.id` of the caller. An agent key authenticates as its
+    /// person, so this is the person.
+    pub user_id: Uuid,
+    /// True when the caller is an org admin of the current tenant.
+    pub is_org_admin: bool,
+}
+
 /// The rule of who decides (KAIROS-T-0659): an org admin, or a holder of
 /// `approve_proposals` on the board of one end
 /// ([`kairos_core::abac::may_decide_proposal`]). The check reads the grants
-/// of `actor`. An agent key authenticates as its person, so the grants of
-/// the person count for it.
+/// of the caller. An agent key authenticates as its person, so the grants
+/// of the person count for it.
 fn require_approver(
     conn: &mut PgConnection,
-    org_slug: &str,
-    actor: Uuid,
+    decider: Decider,
     proposal: &EdgeProposal,
 ) -> Result<(), ProposalError> {
-    let is_org_admin = crate::abac::is_org_admin(conn, org_slug, actor)?;
+    let (actor, is_org_admin) = (decider.user_id, decider.is_org_admin);
     if is_org_admin {
         return Ok(());
     }
@@ -464,17 +475,16 @@ fn decide(
 /// Transactional: the edge and the state change land together or not at all.
 ///
 /// WHO may confirm is decided here (KAIROS-T-0659): an org admin, or a
-/// holder of `approve_proposals` on the board of one end. `org_slug` is the
-/// slug of the organization of the current tenant. The order of the
+/// holder of `approve_proposals` on the board of one end. The order of the
 /// refusals: no such proposal, a decided proposal, then the grant.
 pub fn confirm(
     conn: &mut PgConnection,
-    org_slug: &str,
     id: Uuid,
-    actor: Uuid,
+    decider: Decider,
 ) -> Result<EdgeProposal, ProposalError> {
     let proposal = load_pending(conn, id)?;
-    require_approver(conn, org_slug, actor, &proposal)?;
+    require_approver(conn, decider, &proposal)?;
+    let actor = decider.user_id;
     let relationship = match proposal.relationship.as_str() {
         "parent" => RelationshipType::Parent,
         "blocks" => RelationshipType::Blocks,
@@ -507,13 +517,12 @@ pub fn confirm(
 /// The rule of who may decide is the rule of [`confirm`] (KAIROS-T-0659).
 pub fn reject(
     conn: &mut PgConnection,
-    org_slug: &str,
     id: Uuid,
-    actor: Uuid,
+    decider: Decider,
 ) -> Result<EdgeProposal, ProposalError> {
     let proposal = load_pending(conn, id)?;
-    require_approver(conn, org_slug, actor, &proposal)?;
-    decide(conn, id, "rejected", actor)
+    require_approver(conn, decider, &proposal)?;
+    decide(conn, id, "rejected", decider.user_id)
 }
 
 /// How the proposals are going.
