@@ -18,6 +18,14 @@
 //! A reject writes no edge and changes no item, so it keeps its rule: a
 //! person. A proposal is a suggestion, and each member can make one.
 //!
+//! # Who may decide (KAIROS-T-0538)
+//!
+//! A person decides, and not through an agent key: the key is the person,
+//! but an agent uses it. The proposer does not decide their own proposal.
+//! Each refusal is 403 `PERSON_DECIDES`, and `details.reason` names the
+//! cause. [`kairos_db::proposals`] makes these checks, so each surface has
+//! them.
+//!
 //! Listing is on the item, not in a queue. A separate review inbox is a second
 //! product with its own notifications and its own backlog of things nobody
 //! looks at; a proposal shown where the work already is gets seen by the person
@@ -49,7 +57,9 @@ pub(crate) fn map_proposal_error(e: kairos_db::proposals::ProposalError) -> ApiE
         P::AlreadyPending => ApiError::conflict(e.to_string()),
         P::AlreadyDecided { .. } => ApiError::conflict(e.to_string()),
         P::TooManyPending { .. } => ApiError::conflict(e.to_string()),
-        P::NotHuman => ApiError::forbidden(e.to_string()),
+        P::NotHuman => ApiError::person_decides(e.to_string(), "service_account"),
+        P::AgentKey => ApiError::person_decides(e.to_string(), "agent_key"),
+        P::Proposer => ApiError::person_decides(e.to_string(), "proposer"),
         P::NotProposable(_) => ApiError::validation(e.to_string()),
         P::Graph(inner) => ApiError::validation(inner.to_string()),
         P::Database(inner) => ApiError::internal(inner),
@@ -114,9 +124,10 @@ pub(crate) async fn list(
 
 /// Confirm a proposal, creating the edge.
 ///
-/// The caller is a person. The link rule applies (COLLIERY-T-0234): the
-/// caller can edit the item at one end of the edge. A refused confirm
-/// leaves the proposal pending.
+/// The caller is a person, not an agent key, and not the proposer
+/// (KAIROS-T-0538). The link rule applies (COLLIERY-T-0234): the caller can
+/// edit the item at one end of the edge. A refused confirm leaves the
+/// proposal pending.
 #[utoipa::path(
     post,
     path = "/api/proposals/{id}/confirm",
@@ -125,9 +136,9 @@ pub(crate) async fn list(
     responses(
         (status = 200, description = "Confirmed; the relationship now exists", body = dto_search::EdgeProposalDto),
         (status = 400, description = "The edge was refused by the graph's own rules — a cycle, or a shape the rule matrix forbids", body = kairos_client::types::ErrorEnvelope),
-        (status = 403, description = "A service account may propose but not decide. A person needs the link rule: the caller can edit the item at one end; details.any_of names the two capabilities", body = kairos_client::types::ErrorEnvelope),
+        (status = 403, description = "PERSON_DECIDES: a service account, an agent key or the proposer cannot confirm; details.reason names which. FORBIDDEN: the link rule, the caller can edit the item at one end; details.any_of names the two capabilities", body = kairos_client::types::ErrorEnvelope),
         (status = 404, description = "No such proposal", body = kairos_client::types::ErrorEnvelope),
-        (status = 409, description = "Already decided", body = kairos_client::types::ErrorEnvelope),
+        (status = 409, description = "CONFLICT: the proposal is decided already, also by a decision at the same time", body = kairos_client::types::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn confirm(
@@ -136,10 +147,13 @@ pub(crate) async fn confirm(
     Extension(auth): Extension<crate::middleware::auth::AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<dto_search::EdgeProposalDto>, ApiError> {
-    decide(state, tenant, auth.user_id, id, true).await
+    decide(state, tenant, decider(&auth), id, true).await
 }
 
 /// Reject a proposal. Recorded, not erased.
+///
+/// The caller is a person, not an agent key, and not the proposer
+/// (KAIROS-T-0538). The link rule does not apply: a reject writes no edge.
 #[utoipa::path(
     post,
     path = "/api/proposals/{id}/reject",
@@ -147,9 +161,9 @@ pub(crate) async fn confirm(
     params(("id" = String, Path, description = "The proposal")),
     responses(
         (status = 200, description = "Rejected, and kept — a repeatedly rejected pair is the clearest signal that retrieval is wrong about something", body = dto_search::EdgeProposalDto),
-        (status = 403, description = "A service account may propose but not decide", body = kairos_client::types::ErrorEnvelope),
+        (status = 403, description = "PERSON_DECIDES: a service account, an agent key or the proposer cannot reject; details.reason names which", body = kairos_client::types::ErrorEnvelope),
         (status = 404, description = "No such proposal", body = kairos_client::types::ErrorEnvelope),
-        (status = 409, description = "Already decided", body = kairos_client::types::ErrorEnvelope),
+        (status = 409, description = "CONFLICT: the proposal is decided already, also by a decision at the same time", body = kairos_client::types::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn reject(
@@ -158,7 +172,16 @@ pub(crate) async fn reject(
     Extension(auth): Extension<crate::middleware::auth::AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<dto_search::EdgeProposalDto>, ApiError> {
-    decide(state, tenant, auth.user_id, id, false).await
+    decide(state, tenant, decider(&auth), id, false).await
+}
+
+/// The decider of a request: the person, and whether an agent key made the
+/// request (KAIROS-T-0538).
+fn decider(auth: &crate::middleware::auth::AuthContext) -> kairos_db::proposals::Decider {
+    kairos_db::proposals::Decider {
+        user_id: auth.user_id,
+        agent_key: auth.agent_key.is_some(),
+    }
 }
 
 /// The item type at one end of a proposal, archived or not: the edit rule
@@ -188,19 +211,25 @@ fn end_type(
 /// only for a person, so the member wrote an edge that `POST
 /// /api/relationships` refuses.
 ///
-/// The order of the refusals is as it was, and the link rule is the last:
-/// a service account (403), no such proposal (404), already decided (409).
-/// So a caller learns no more from a proposal than before.
+/// The order of the refusals: a service account or an agent key (403
+/// `PERSON_DECIDES`), no such proposal (404), already decided (409), the
+/// link rule (403 `FORBIDDEN`), and then the proposer (403
+/// `PERSON_DECIDES`, from [`kairos_db::proposals::confirm`]). So a caller
+/// who may never decide learns nothing about a proposal.
 fn require_confirm(
     conn: &mut diesel::pg::PgConnection,
     slug: &str,
-    actor: Uuid,
+    decider: kairos_db::proposals::Decider,
     id: Uuid,
 ) -> Result<(), ApiError> {
     use kairos_db::proposals::{self, ProposalError};
 
+    let actor = decider.user_id;
     if !proposals::is_human(conn, actor).map_err(map_proposal_error)? {
         return Err(map_proposal_error(ProposalError::NotHuman));
+    }
+    if decider.agent_key {
+        return Err(map_proposal_error(ProposalError::AgentKey));
     }
     let proposal = proposals::get(conn, id).map_err(map_proposal_error)?;
     if proposal.state != "pending" {
@@ -217,7 +246,7 @@ fn require_confirm(
 async fn decide(
     state: AppState,
     tenant: TenantContext,
-    actor: Uuid,
+    decider: kairos_db::proposals::Decider,
     id: Uuid,
     confirming: bool,
 ) -> Result<Json<dto_search::EdgeProposalDto>, ApiError> {
@@ -229,10 +258,10 @@ async fn decide(
             // a refusal leaves the proposal pending and writes no edge.
             crate::api::atomically(conn, |conn| {
                 let decided = if confirming {
-                    require_confirm(conn, &slug, actor, id)?;
-                    kairos_db::proposals::confirm(conn, id, actor)
+                    require_confirm(conn, &slug, decider, id)?;
+                    kairos_db::proposals::confirm(conn, id, decider)
                 } else {
-                    kairos_db::proposals::reject(conn, id, actor)
+                    kairos_db::proposals::reject(conn, id, decider)
                 }
                 .map_err(map_proposal_error)?;
                 to_dto(conn, decided)
