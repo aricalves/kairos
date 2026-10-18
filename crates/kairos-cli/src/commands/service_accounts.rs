@@ -5,7 +5,7 @@
 use kairos_client::types_service_accounts::{CreateServiceAccountRequest, ServiceAccount};
 
 use crate::commands::entities::require_confirm;
-use crate::context::{Common, client, print_json};
+use crate::context::{Common, client, print_json, service_account_id};
 use crate::error::CliError;
 use crate::listing::print_whole;
 use crate::table::Table;
@@ -30,7 +30,9 @@ pub enum ServiceAccountsCommand {
     },
     /// Delete a service account and all its keys (requires --confirm)
     Delete {
-        /// Service account id (UUID; see `kairos service-accounts list`)
+        /// The service account: its name or its id (UUID; see `kairos
+        /// service-accounts list`)
+        #[arg(value_name = "SERVICE_ACCOUNT")]
         id: String,
         /// Actually delete it
         #[arg(long)]
@@ -62,7 +64,7 @@ impl ServiceAccountsCommand {
                 println!("Kairos made the service account {} ({}).", sa.name, sa.id);
                 println!(
                     "To make a key, run: kairos keys create --service-account {}",
-                    sa.id
+                    sa.name
                 );
                 Ok(())
             }
@@ -90,11 +92,12 @@ impl ServiceAccountsCommand {
                     &format!("the service account {id} and all its keys"),
                 )?;
                 let client = client(&common)?;
-                let deleted = client.delete_service_account(&id).await?;
+                let account = service_account_id(&client, &id).await?;
+                let deleted = client.delete_service_account(&account).await?;
                 if common.json {
                     return print_json(&deleted);
                 }
-                println!("Kairos deleted the service account {}.", deleted.id);
+                println!("Kairos deleted the service account {id}.");
                 Ok(())
             }
         }

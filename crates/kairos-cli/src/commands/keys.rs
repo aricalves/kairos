@@ -7,7 +7,7 @@
 use kairos_client::types_service_accounts::{ApiKey, CreateApiKeyRequest};
 
 use crate::commands::entities::require_confirm;
-use crate::context::{Common, client, print_json};
+use crate::context::{Common, client, print_json, service_account_id};
 use crate::error::CliError;
 use crate::listing::print_whole;
 use crate::table::Table;
@@ -18,8 +18,9 @@ pub enum KeysCommand {
     /// Make an agent key that acts as you, or a key for a service account (the
     /// raw key is shown ONCE)
     Create {
-        /// Service account id (UUID). Omit it to make your own agent key.
-        #[arg(long = "service-account")]
+        /// The service account: its name or its id (UUID). Omit it to make
+        /// your own agent key.
+        #[arg(long = "service-account", value_name = "SERVICE_ACCOUNT")]
         service_account: Option<String>,
         /// Label for the key (e.g. "laptop-claude-code" or "gha-main")
         #[arg(long)]
@@ -41,8 +42,9 @@ pub enum KeysCommand {
     Rotate {
         /// Key id (UUID; see `kairos keys list`)
         key_id: String,
-        /// The service account of the key. Omit it to rotate your own agent key.
-        #[arg(long = "service-account")]
+        /// The service account of the key: its name or its id (UUID). Omit
+        /// it to rotate your own agent key.
+        #[arg(long = "service-account", value_name = "SERVICE_ACCOUNT")]
         service_account: Option<String>,
         #[command(flatten)]
         common: Common,
@@ -50,8 +52,9 @@ pub enum KeysCommand {
     /// List your agent keys, or the keys of a service account (prefixes only;
     /// never the secret)
     List {
-        /// Service account id (UUID). Omit it to list your own agent keys.
-        #[arg(long = "service-account")]
+        /// The service account: its name or its id (UUID). Omit it to list
+        /// your own agent keys.
+        #[arg(long = "service-account", value_name = "SERVICE_ACCOUNT")]
         service_account: Option<String>,
         #[command(flatten)]
         common: Common,
@@ -60,8 +63,9 @@ pub enum KeysCommand {
     Revoke {
         /// Key id (UUID; see `kairos keys list`)
         key_id: String,
-        /// The service account of the key. Omit it to revoke your own agent key.
-        #[arg(long = "service-account")]
+        /// The service account of the key: its name or its id (UUID). Omit
+        /// it to revoke your own agent key.
+        #[arg(long = "service-account", value_name = "SERVICE_ACCOUNT")]
         service_account: Option<String>,
         /// Actually revoke it
         #[arg(long)]
@@ -112,7 +116,11 @@ impl KeysCommand {
                     no_expiry,
                 };
                 let created = match &service_account {
-                    Some(sa) => client.create_api_key(sa, &request).await?,
+                    Some(sa) => {
+                        client
+                            .create_api_key(&service_account_id(&client, sa).await?, &request)
+                            .await?
+                    }
                     None => client.create_agent_key(&request).await?,
                 };
                 if common.json {
@@ -142,7 +150,11 @@ impl KeysCommand {
             } => {
                 let client = client(&common)?;
                 let rotated = match &service_account {
-                    Some(sa) => client.rotate_api_key(sa, &key_id).await?,
+                    Some(sa) => {
+                        client
+                            .rotate_api_key(&service_account_id(&client, sa).await?, &key_id)
+                            .await?
+                    }
                     None => client.rotate_agent_key(&key_id).await?,
                 };
                 if common.json {
@@ -169,7 +181,11 @@ impl KeysCommand {
             } => {
                 let client = client(&common)?;
                 let list = match &service_account {
-                    Some(sa) => client.list_api_keys(sa).await?,
+                    Some(sa) => {
+                        client
+                            .list_api_keys(&service_account_id(&client, sa).await?)
+                            .await?
+                    }
                     None => client.list_agent_keys().await?,
                 };
                 if common.json {
@@ -192,7 +208,11 @@ impl KeysCommand {
                 require_confirm(confirm, &format!("the API key {key_id}"))?;
                 let client = client(&common)?;
                 let deleted = match &service_account {
-                    Some(sa) => client.revoke_api_key(sa, &key_id).await?,
+                    Some(sa) => {
+                        client
+                            .revoke_api_key(&service_account_id(&client, sa).await?, &key_id)
+                            .await?
+                    }
                     None => client.revoke_agent_key(&key_id).await?,
                 };
                 if common.json {

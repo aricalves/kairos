@@ -18,7 +18,8 @@ pub enum TeamsCommand {
     /// List teams (paginated)
     List(ListArgs),
     /// Show one team
-    Get {
+    #[command(alias = "get")]
+    Show {
         /// Team slug or UUID
         team: String,
         #[command(flatten)]
@@ -32,9 +33,10 @@ pub enum TeamsCommand {
         /// Team slug (the delivery board becomes `{slug}-delivery`)
         #[arg(long)]
         slug: String,
+        /// The kind of the team:
         /// stream_aligned|platform|enabling|complicated_subsystem
-        /// (defaults to stream_aligned)
-        #[arg(long = "type", value_name = "TEAM_TYPE")]
+        /// (defaults to stream_aligned). The old name --type still works
+        #[arg(long = "kind", alias = "type", value_name = "KIND")]
         team_type: Option<String>,
         /// The short-code prefix of the delivery board, for example SKADI
         /// (a capital letter, then 1 to 9 capital letters or digits). It
@@ -54,8 +56,9 @@ pub enum TeamsCommand {
         /// New slug
         #[arg(long)]
         slug: Option<String>,
-        /// New type: stream_aligned|platform|enabling|complicated_subsystem
-        #[arg(long = "type", value_name = "TEAM_TYPE")]
+        /// New kind: stream_aligned|platform|enabling|complicated_subsystem.
+        /// The old name --type still works
+        #[arg(long = "kind", alias = "type", value_name = "KIND")]
         team_type: Option<String>,
         #[command(flatten)]
         common: Common,
@@ -198,7 +201,7 @@ impl TeamsCommand {
                 envelope.print_footer();
                 Ok(())
             }
-            Self::Get { team, common } => {
+            Self::Show { team, common } => {
                 let client = client(&common)?;
                 let team_id = team_id(&team);
                 let team = client.get_team(&team_id).await?;
@@ -242,7 +245,7 @@ impl TeamsCommand {
             } => {
                 if name.is_none() && slug.is_none() && team_type.is_none() {
                     return Err(CliError::Failure(
-                        "The command has no change. Use --name, --slug or --type.".to_string(),
+                        "The command has no change. Use --name, --slug or --kind.".to_string(),
                     ));
                 }
                 let client = client(&common)?;
@@ -280,7 +283,7 @@ impl TeamsCommand {
                 if common.json {
                     return print_json(&response);
                 }
-                println!("Kairos deleted the team {}.", response.id);
+                println!("Kairos deleted the team {team}.");
                 Ok(())
             }
             Self::Members(command) => command.run().await,
