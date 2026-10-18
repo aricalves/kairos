@@ -101,7 +101,7 @@ An ADR on a board or in a search (KAIROS-T-0602).
 | `archived_at` | `string`, nullable | no | When this work was put away, RFC 3339; absent while it is live (KAIROS-A-0020). |
 | `board_id` | `string`, nullable | no | ADR board (UUID), if placed on one. |
 | `column_id` | `string`, nullable | no | Current column (UUID), if placed on a board. |
-| `content` | `string`, nullable | no | Markdown content. Only with `fields=full` on the board route. |
+| `content` | `string`, nullable | no | Markdown content. Only with `fields=full` on the board route. A card has no notes (KAIROS-T-0630): the read of the item gives them. |
 | `created_at` | `string` | yes | RFC 3339. |
 | `created_by` | `string`, nullable | no | Creator user id (UUID). Only with `fields=full` on the board route. |
 | `decision_date` | `string`, nullable | no | `YYYY-MM-DD`. |
@@ -1335,7 +1335,7 @@ An initiative on a board or in a search (KAIROS-T-0602).
 | `bucket_type` | `string`, nullable | no | Bucket kind (`tech_debt|bug|ad_hoc`), set iff `is_bucket`. |
 | `column_id` | `string` | yes | Current column (UUID). |
 | `complexity` | `string`, nullable | no | T-shirt sizing (`xs|s|m|l|xl`). |
-| `content` | `string`, nullable | no | Markdown content. Only with `fields=full` on the board route. |
+| `content` | `string`, nullable | no | Markdown content. Only with `fields=full` on the board route. A card has no notes (KAIROS-T-0630): the read of the item gives them. |
 | `created_at` | `string` | yes | RFC 3339. |
 | `created_by` | `string`, nullable | no | Creator user id (UUID). Only with `fields=full` on the board route. |
 | `id` | `string` | yes | Entity id (UUID). |
@@ -2650,7 +2650,7 @@ A strategy on a board or in a search (KAIROS-T-0602).
 | `archived_at` | `string`, nullable | no | When this work was put away, RFC 3339; absent while it is live (KAIROS-A-0020). |
 | `board_id` | `string` | yes | Board the strategy sits on (UUID). |
 | `column_id` | `string` | yes | Current column (UUID). |
-| `content` | `string`, nullable | no | Markdown content. Only with `fields=full` on the board route. |
+| `content` | `string`, nullable | no | Markdown content. Only with `fields=full` on the board route. A card has no notes (KAIROS-T-0630): the read of the item gives them. |
 | `created_at` | `string` | yes | RFC 3339. |
 | `created_by` | `string`, nullable | no | Creator user id (UUID). Only with `fields=full` on the board route. |
 | `hypothesis` | `string`, nullable | no |  |
@@ -2742,7 +2742,7 @@ A task on a board or in a search (KAIROS-T-0602).
 | `cancellation` | [`TaskCancellation`](#taskcancellation), nullable | no |  |
 | `claim` | [`TaskClaim`](#taskclaim), nullable | no |  |
 | `column_id` | `string` | yes | Current column (UUID). |
-| `content` | `string`, nullable | no | Markdown content. Only with `fields=full` on the board route. |
+| `content` | `string`, nullable | no | Markdown content. Only with `fields=full` on the board route. A card has no notes (KAIROS-T-0630): the read of the item gives them. |
 | `created_at` | `string` | yes | RFC 3339. |
 | `created_by` | `string`, nullable | no | Creator user id (UUID). Only with `fields=full` on the board route. |
 | `id` | `string` | yes | Entity id (UUID). |
