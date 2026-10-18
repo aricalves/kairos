@@ -1458,7 +1458,7 @@ on are free (KAIROS-T-0531). Org-admin-only.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `user_id` | path | yes | `string` | User id (UUID) |
+| `user_id` | path | yes | `string` | The member: a user id (UUID), an email or a user name |
 
 | Response | Body | Meaning |
 |---|---|---|
@@ -1474,7 +1474,7 @@ Change a member's role. Demoting the LAST admin is rejected (422
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `user_id` | path | yes | `string` | User id (UUID) |
+| `user_id` | path | yes | `string` | The member: a user id (UUID), an email or a user name |
 
 Request body (required): `application/json`, [`UpdateOrgMemberRequest`](../schemas/#updateorgmemberrequest)
 
