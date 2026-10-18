@@ -438,10 +438,18 @@ pub struct BaseWorld {
     /// B after it (1 change).
     pub c: String,
     pub b: String,
+    /// KAIROS-T-0646: a worktree of the checkout, in a folder of its own.
+    /// When it is set, it is the root of the scenario.
+    pub worktree: Option<(TempDir, PathBuf)>,
+    /// KAIROS-T-0646: a board folder with clones and a worktree.
+    pub board: Option<TempDir>,
 }
 
 impl BaseWorld {
     fn root(&self) -> &Path {
+        if let Some((_, worktree)) = &self.worktree {
+            return worktree;
+        }
         self.checkout.as_ref().expect("no checkout").path()
     }
 
@@ -687,6 +695,84 @@ fn a_branch(world: &mut CliWorld, changed: usize) {
     git(&root, &["add", "-A"]);
     git(&root, &["commit", "-q", "-m", "the branch"]);
     assert!(!root.join(INDEX_DB).exists());
+}
+
+/// KAIROS-T-0646: a clone whose `.claude/kairos.local.md` names the
+/// deployment and the repository, and a worktree of it on a branch with the
+/// 3 changes. The `origin` of the clone is a folder, so no repository of
+/// Kairos has it: only the file of the clone names the repository.
+#[given("a worktree of a wired clone, on a branch from A with 3 changed files")]
+fn a_worktree(world: &mut CliWorld) {
+    let w = base(world);
+    w.clone_remote();
+    let clone = w.root().to_path_buf();
+    write(
+        &clone,
+        ".claude/kairos.local.md",
+        &format!(
+            "---\ndeployment_url: {}\nrepository: {REPOSITORY}\n---\n",
+            w.kairos().url
+        ),
+    );
+    let folder = TempDir::new().expect("a folder for the worktree");
+    let worktree = folder.path().join("wt-feature");
+    let path = worktree.display().to_string();
+    git(&clone, &["worktree", "add", "-q", "-b", "feature", &path]);
+    for (file, from, to, _) in BRANCH_CHANGES {
+        let path = worktree.join(file);
+        let text = fs::read_to_string(&path).expect("read");
+        fs::write(&path, text.replace(from, to)).expect("write");
+    }
+    git(&worktree, &["commit", "-q", "-am", "the branch"]);
+    assert!(!worktree.join(".claude").exists());
+    w.worktree = Some((folder, worktree));
+}
+
+/// KAIROS-T-0646: a board folder. Its wiring names the deployment. It
+/// holds a clone of `payments-api` 1 commit behind origin/main, a worktree
+/// of that clone, and a clone of a repository that Kairos does not have.
+#[given(
+    "a board folder with a clone 1 commit behind, a worktree of it and a clone of another repository"
+)]
+fn a_board_folder(world: &mut CliWorld) {
+    let w = base(world);
+    let board = TempDir::new().expect("a board folder");
+    let remote = w.kairos().remote.display().to_string();
+    write(
+        board.path(),
+        ".claude/kairos.local.md",
+        &format!("---\ndeployment_url: {}\n---\n", w.kairos().url),
+    );
+    git(board.path(), &["clone", "-q", &remote, REPOSITORY]);
+    let clone = board.path().join(REPOSITORY);
+    let source = w.kairos().remote.clone();
+    write(&source, "pkg/extra.py", "def extra():\n    return 1\n");
+    git(&source, &["add", "-A"]);
+    git(&source, &["commit", "-q", "-m", "D"]);
+    git(&clone, &["fetch", "-q"]);
+    let url = format!("git@github.com:acme/{REPOSITORY}.git");
+    git(&clone, &["remote", "set-url", "origin", &url]);
+    let worktree = board.path().join("wt-payments").display().to_string();
+    git(
+        &clone,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "work",
+            &worktree,
+            "origin/main",
+        ],
+    );
+    let other = board.path().join("other");
+    fs::create_dir_all(&other).expect("make the other clone");
+    git(&other, &["init", "-q", "-b", "main"]);
+    git(
+        &other,
+        &["remote", "add", "origin", "https://github.com/acme/other"],
+    );
+    w.board = Some(board);
 }
 
 /// KAIROS-T-0516: main gets commit C with `files` new files, then commit B
@@ -954,6 +1040,99 @@ fn run_update(world: &mut CliWorld, command: String) {
         "kairos index update --json" => base(world).update_args(&["--json"], &[]),
         other => panic!("no step runs {other:?}"),
     }
+}
+
+/// KAIROS-T-0646: no `KAIROS_URL` and no `--repo`: the deployment and the
+/// repository come from the file of the clone. The key is in `KAIROS_KEY`.
+#[when("I run \"kairos index update\" in the worktree, with no KAIROS_URL and no --repo")]
+fn run_update_in_worktree(world: &mut CliWorld) {
+    let w = base(world);
+    let config = TempDir::new().expect("a config folder");
+    let run = Command::new(KAIROS)
+        .args(["index", "update", "--root"])
+        .arg(w.root())
+        .env_remove("KAIROS_MCP_KEY")
+        .env_remove("KAIROS_URL")
+        .env("KAIROS_CONFIG_DIR", config.path())
+        .env("KAIROS_UPDATE_CHECK", "0")
+        .env("KAIROS_KEY", &w.key)
+        .output()
+        .expect("run kairos");
+    w.run = Some(run);
+}
+
+/// KAIROS-T-0646: the deployment comes from the wiring of the board folder.
+#[when("I run \"kairos repos local --json\" on the board folder, with no KAIROS_URL")]
+fn run_repos_local(world: &mut CliWorld) {
+    let w = base(world);
+    let config = TempDir::new().expect("a config folder");
+    let board = w.board.as_ref().expect("no board folder").path();
+    let run = Command::new(KAIROS)
+        .args(["repos", "local", "--json"])
+        .arg(board)
+        .env_remove("KAIROS_MCP_KEY")
+        .env_remove("KAIROS_URL")
+        .env("KAIROS_CONFIG_DIR", config.path())
+        .env("KAIROS_UPDATE_CHECK", "0")
+        .env("KAIROS_KEY", &w.kairos().key)
+        .output()
+        .expect("run kairos");
+    w.run = Some(run);
+}
+
+#[then(
+    regex = r"^the list has (\S+): repository (\S+), (clone|worktree of \S+), (\d+) behind origin/main$"
+)]
+fn local_lists(
+    world: &mut CliWorld,
+    folder: String,
+    repository: String,
+    kind: String,
+    behind: u64,
+) {
+    let entry = local_entry(base(world), &folder);
+    assert_eq!(entry["repository"], repository.as_str(), "{entry}");
+    assert_eq!(entry["default_branch"], "main", "{entry}");
+    assert_eq!(entry["behind"], behind, "{entry}");
+    match kind.strip_prefix("worktree of ") {
+        Some(clone) => {
+            assert_eq!(entry["worktree"], true, "{entry}");
+            assert_eq!(entry["clone"], clone, "{entry}");
+        }
+        None => assert_eq!(entry["worktree"], false, "{entry}"),
+    }
+}
+
+#[then(regex = r"^the list has (\S+) with no repository and no count$")]
+fn local_lists_unknown(world: &mut CliWorld, folder: String) {
+    let entry = local_entry(base(world), &folder);
+    assert!(entry["repository"].is_null(), "{entry}");
+    assert!(entry["behind"].is_null(), "{entry}");
+    assert_eq!(entry["remote"], "github.com/acme/other", "{entry}");
+}
+
+#[then("the list has no other entry")]
+fn local_lists_no_other(world: &mut CliWorld) {
+    let list = local_list(base(world));
+    assert_eq!(list["total"], 3, "{list}");
+}
+
+/// The `--json` output of `kairos repos local`.
+fn local_list(w: &BaseWorld) -> serde_json::Value {
+    let out = w.output();
+    assert!(w.run.as_ref().expect("no run").status.success(), "{out}");
+    serde_json::from_str(&w.stdout()).unwrap_or_else(|e| panic!("{e}: {out}"))
+}
+
+fn local_entry(w: &BaseWorld, folder: &str) -> serde_json::Value {
+    let list = local_list(w);
+    list["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|item| item["folder"] == folder)
+        .unwrap_or_else(|| panic!("no {folder} in {list}"))
+        .clone()
 }
 
 #[when(expr = "I run {string} with KAIROS_INDEX_SUMMARIZE=1")]

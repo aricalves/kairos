@@ -313,6 +313,7 @@ differ.
 | `lane` | no | no | yes | no | no |
 | `set-parent` | no | yes | yes | no | no |
 | `lifecycle` | no | no | no | yes | no |
+| `metadata` | yes | yes | yes | yes | yes |
 | `archive` (alias `delete`) | yes | yes | yes | yes | yes |
 | `purge` | no | no | yes | no | no |
 | `restore` | yes | yes | yes | yes | yes |
@@ -435,6 +436,36 @@ stderr. The notice names the current code, for example `The code
 COLLIERY-T-0100 is retired. The current code of this item is SKADI-T-0001.`
 The output on stdout is the item, and `--json` stays clean.
 
+In the text output, the command prints three more lists before the content
+(KAIROS-T-0591):
+
+| Line | Description |
+|---|---|
+| `metadata` | Each metadata value of the item, as `slug: value`. |
+| `relationships` | Each relationship of the item, from the side of the item. |
+| `external` | Each external reference of the item, as `label <uri>`. |
+
+An empty list prints `-`. The labels of `relationships` are `parent`,
+`child`, `blocked by`, `blocks`, `supported by`, `supports`, `informed by`,
+`informs`, `superseded by` and `supersedes`. A neighbour has the marks
+`[archived]`, `[cancelled]` or `[done]`. For example:
+
+```text
+  metadata:
+    priority: high
+  relationships:
+    parent: ACME-I-0002 — Checkout redesign
+    blocked by: ACME-T-0003 — Payment API [done]
+    supported by: ACME-D-0004 — Rollout note
+  external: -
+```
+
+The command reads the three lists with three more requests. With `--json`,
+the command prints the item of the server only, and makes no more requests.
+
+`tasks show` prints the line `repository`. It has the slug of the repository
+of the task, or `-`.
+
 `documents show` prints the line `owner board`. It has the id of the owner
 board of the document.
 
@@ -465,7 +496,7 @@ Board placement per noun:
 | `initiatives` | `--board <BOARD>` | slug or UUID | required | Board to create the initiative on. |
 | `initiatives` | `--column <COLUMN>` | name or UUID | the board's first column | Only the entry column (Discovery). An initiative starts there, and a different column is refused with `VALIDATION` (KAIROS-T-0643). |
 | `tasks` | `--board <BOARD>` | slug or UUID | required unless `--team` is given | Delivery board to create the task on. The board decides the team of the task. With `--team` and no `--board`, the task goes to the delivery board of that team. |
-| `tasks` | `--column <COLUMN>` | name or UUID | the board's first column | Column to place it in. A name is a column of `--board`, else of the delivery board of `--team`. |
+| `tasks` | `--column <COLUMN>` | name or UUID | the board's first column | Only the entry column. A name is a column of `--board`, else of the delivery board of `--team`. A task starts there, and a different column is refused with `VALIDATION`, for each caller (KAIROS-T-0566). Move the task after the create. |
 | `documents` | `--board <BOARD>` | slug or UUID | required | The owner board of the document. It gives the right to edit the document, and the code of the document gets the prefix of this board. The document is not a card of the board. |
 | `documents` | `--parent <SHORT_CODE>` | string | none | The workflow item the document supports. It does not give the document an owner board. |
 | `adrs` | `--board <BOARD>` | slug or UUID | none | ADR board. Omitting it creates an off-board ADR, which is an org-admin operation. |
@@ -488,8 +519,13 @@ Options specific to one noun:
 | `documents` | `--template <TEMPLATE>` | slug or UUID | none | Template to stamp content and metadata defaults from. |
 | `adrs` | `--decision-maker <DECISION_MAKER>` | string | none | Decision maker. |
 | `adrs` | `--decision-date <DATE>` | `YYYY-MM-DD` | none | Decision date. |
+| `adrs` | `--parent <SHORT_CODE>` | short code | none | The strategy, initiative or task that the ADR supports. Kairos writes the ADR and the `supports` edge in one transaction: a refused parent leaves no ADR (KAIROS-T-0591). |
 
 `tasks create` needs `--board` or `--team`. `--repo` does not replace them.
+
+`--parent` is on each `create` but `strategies create`. A strategy is the top
+of the hierarchy, so it has no parent. To link an item after the create, use
+[`kairos link`](#kairos-link).
 
 `documents create` needs `--board`: each document has an owner board. With
 `--parent` too, the document also supports that item. The command needs
@@ -497,8 +533,7 @@ Options specific to one noun:
 repository, use [`kairos repos link`](#kairos-repos-link).
 
 A caller without `manage_tasks` on the board creates a request. The request
-goes to the entry column. For that caller, a `--column` that names a different
-column gets a 403. See
+goes to the entry column, as each new task does. See
 [Send a request to a different team](../../how-to/move-work-between-boards/#send-a-request-to-a-different-team).
 
 ### `<noun> edit`
@@ -836,6 +871,52 @@ The command prints the lifecycle of the document after the call:
 The document ACME-D-0004 is published.
 ```
 
+### `<noun> metadata set`
+
+```
+kairos <noun> metadata set <SHORT_CODE> <SLUG=VALUE>... [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<SHORT_CODE>` | string | required | The item's short code. |
+| `<SLUG=VALUE>...` | one or more pairs | required | Each pair is the slug of a field, `=` and the value. For example: `priority=high`. |
+
+The command sets metadata values of an item (KAIROS-A-0003). The fields are
+the metadata definitions of the organization. `kairos metadata list` shows
+them.
+
+The server checks each value against its definition. An enum value must
+be an option of the field. A date has the form `YYYY-MM-DD`. The server refuses
+an unknown slug with 422 `VALIDATION`.
+
+The edit rule applies: the creator of the item, or `manage_<type>` on its
+board. A pair without `=`, an empty slug or an empty value is a usage error
+(exit 64). A slug that the command gives two times gets exit code 1.
+
+The command prints the metadata of the item after the call:
+
+```text
+Kairos changed the metadata of ACME-T-0001.
+  metadata:
+    priority: high
+```
+
+### `<noun> metadata unset`
+
+```
+kairos <noun> metadata unset <SHORT_CODE> <SLUG>... [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<SHORT_CODE>` | string | required | The item's short code. |
+| `<SLUG>...` | one or more strings | required | The slugs of the fields. |
+
+The command removes metadata values of an item. The rule is that of
+`metadata set`. A field with no value stays without a value. The command
+prints the metadata of the item after the call.
+
 ### `<noun> archive`
 
 ```
@@ -893,50 +974,79 @@ archived: restore is per item, not a cascade.
 ### `kairos link`
 
 ```
-kairos link <SHORT_CODE> external <URI> [--label <TEXT>] [OPTIONS]
+kairos link <SOURCE> <RELATIONSHIP> <TARGET> [--label <TEXT>] [OPTIONS]
 ```
 
 | Argument / Option | Type | Default | Description |
 |---|---|---|---|
-| `<SHORT_CODE>` | string | required | The item, of each type. |
-| `external` | relationship | required | The one relationship of this command. |
-| `<URI>` | string | required | The URI. The scheme is `http`, `https` or `mailto`. |
-| `--label` | string | none | The label of the reference, at most 200 characters. |
+| `<SOURCE>` | string | required | The short code of the source item. |
+| `<RELATIONSHIP>` | relationship | required | `parent`, `blocks`, `informs`, `supports`, `supersedes`, `impacts` or `external`. |
+| `<TARGET>` | string | required | The short code of the target item. For `impacts`, a repository (slug or UUID). For `external`, a URI. |
+| `--label` | string | none | The label of an external reference, at most 200 characters. Only with `external`. |
 
-The command links an item to a document outside Kairos: an
-[external reference](../glossary/#external-reference). You must be able to
-edit the item. The command prints this line:
+The command makes a relationship of an item (KAIROS-T-0591). `<SOURCE>` and
+`<TARGET>` are the two ends of the edge, as in the MCP tool `link_items`:
+
+| Relationship | Source | Target | Meaning |
+|---|---|---|---|
+| `parent` | strategy or initiative | initiative or task | The source is the parent of the target. |
+| `blocks` | strategy, initiative or task | strategy, initiative or task | The target waits for the source. |
+| `informs` | document, ADR or task | strategy, initiative or task | The source informs the target. A task informs a task only. |
+| `supports` | strategy, initiative or task | document or ADR | The target supports the source. |
+| `supersedes` | ADR | ADR | The source replaces the target. |
+| `impacts` | document or ADR | repository | The source is about the repository. It gives no right. |
+| `external` | each type | URI | The item links to a document outside Kairos. |
+
+The server checks the types of the two ends, and refuses a cycle of `parent`
+or `blocks`. You must be able to edit one of the two items. For `impacts` and
+`external`, you must be able to edit the source. An item has one parent. To
+change it, use [`set-parent`](#initiatives-set-parent-tasks-set-parent).
+
+The command prints the edge and its meaning:
 
 ```text
+Kairos made the link: ACME-T-0003 -[blocks]-> ACME-T-0004. ACME-T-0004 waits for ACME-T-0003.
 Kairos made the link: ACME-T-0012 -[external]-> RFC: zen as the policy engine <https://example.com/wiki/rfc-42>.
 ```
 
-The server refuses each other scheme with 422 `VALIDATION`, and the refusal
-names the scheme. The server refuses a URI that the item has with 422
-`ALREADY_LINKED`. To say that a document impacts a repository, use `kairos
-repos link`.
+An `external` link is an
+[external reference](../glossary/#external-reference). The scheme of the URI is
+`http`, `https` or `mailto`. The server refuses each other scheme with 422
+`VALIDATION`, and the refusal names the scheme. The server refuses a URI that
+the item has with 422 `ALREADY_LINKED`.
+
+The CLI refuses `--label` with a relationship other than `external`, and
+names the relationship (exit code 1). An unknown relationship is a usage error
+(exit 64). With `--json`, the command prints the new edge, impact or
+reference.
+
+`kairos link <CODE> impacts <REPOSITORY>` does the same as
+[`kairos repos link`](#kairos-repos-link).
 
 ### `kairos unlink`
 
 ```
-kairos unlink <SHORT_CODE> external <URI> [OPTIONS]
+kairos unlink <SOURCE> <RELATIONSHIP> <TARGET> [OPTIONS]
 ```
 
 | Argument | Type | Default | Description |
 |---|---|---|---|
-| `<SHORT_CODE>` | string | required | The item. |
-| `external` | relationship | required | The one relationship of this command. |
-| `<URI>` | string | required | The URI of the reference. |
+| `<SOURCE>` | string | required | The short code of the source item. |
+| `<RELATIONSHIP>` | relationship | required | A relationship of `kairos link`. |
+| `<TARGET>` | string | required | The short code of the target item. For `impacts`, a repository. For `external`, the URI of the reference. |
 
-The command removes an external reference. The rule is that of `kairos link`.
-The command prints this line:
+The command removes a relationship that `kairos link` makes. The ends are
+those of `kairos link`. The rule is that of `kairos link`. To remove the
+`supports` edge of a document, you must be able to edit the document. The
+command prints this line:
 
 ```text
-Kairos removed the link: ACME-T-0012 -[external]-> RFC: zen as the policy engine <https://example.com/wiki/rfc-42>.
+Kairos removed the link: ACME-T-0003 -[blocks]-> ACME-T-0004.
 ```
 
-The command fails with exit code 1 when the item has no reference with that
-URI.
+For an edge between two items, the CLI reads the relationships of the source.
+Then it removes the edge by its id. The command fails with exit code 1 when the
+source has no such edge, or no reference with that URI.
 
 ## Finding work
 
@@ -1895,6 +2005,48 @@ With `--json`, each row has the fields of
 `GET /api/repositories/{slug}/code-indexes/commits`. See
 [the pages of a list](#the-pages-of-a-list).
 
+### `kairos repos local`
+
+```text
+kairos repos local [<FOLDER>] [OPTIONS]
+```
+
+List the clones and the worktrees of a folder, with the repository of each.
+Use it in a board folder: a folder that holds the clones of a team. The
+command lists each subfolder that has a `.git`. A folder that is a checkout
+gives only that checkout. The command skips hidden folders.
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<FOLDER>` | path | the current folder | The board folder, or a checkout. |
+| `--url <URL>` | string | `KAIROS_URL`, else `deployment_url` in `.claude/kairos.local.md` of the folder, else the only deployment of `kairos login` | The deployment. |
+
+| Column | Meaning |
+|---|---|
+| `FOLDER` | The name of the subfolder, or `.` for the folder itself. |
+| `REPOSITORY` | The slug of the repository whose `repo_url` is the `origin` remote, or `-`. |
+| `KIND` | `clone`, or `worktree of <clone>/`. |
+| `BRANCH` | The branch of the checkout, or `(detached)`. |
+| `BEHIND` | The commits of the default branch that the checkout does not have, and the branch. |
+| `REMOTE` | The `origin` remote as `host/path`, or `-`. |
+
+The command compares the remotes as `kairos index update` does. It removes
+the scheme, the user, the token and the `.git` suffix. The output never
+shows a user or a token.
+
+The command runs no fetch. It counts from the local refs, as of the last
+fetch. The default branch is the branch of the repository in Kairos. When
+the checkout has no ref of that branch, the command uses `origin/HEAD`. Then
+it uses `origin/main`, then `origin/master`.
+
+With `--json`, the command prints `items`, `total` and `next_offset`. Each
+item has the fields `folder`, `path`, `worktree`, `clone`, `branch`,
+`remote`, `repository`, `default_branch` and `behind`. A field with no value
+is `null`.
+
+The session hook of the plugin runs this command in a board folder. When the
+CLI has no such command, the hook lists the clones itself.
+
 ### `kairos repos credential set`
 
 ```
@@ -2434,7 +2586,9 @@ kairos index update [--root <ROOT>] [--rust-edges] [--link-only] [--max-changed 
 | `--tenant <TENANT>` | string | `tenant` in `.claude/kairos.local.md`, else the tenant of the login | The tenant, for a token from `kairos login`. A key carries its tenant. |
 
 Updates the index for the changes in the checkout, also the changes that are
-not committed. With no index, the command starts from the nearest base index
+not committed. Git excludes `.claude/kairos.local.md`, so a worktree has no
+such file. In a worktree, the command reads the file of the main clone. The
+main clone is the folder above `git rev-parse --git-common-dir`. With no index, the command starts from the nearest base index
 in Kairos. See
 [`kairos index update` and the base index](../configuration/#kairos-index-update-and-the-base-index).
 

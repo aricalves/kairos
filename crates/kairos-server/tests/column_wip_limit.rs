@@ -8,6 +8,9 @@
 //! 3. `GET /api/boards/{id}/items` gives the count of each column and marks
 //!    a column over its limit; MCP `board_items` shows `[WIP n/limit, over
 //!    the limit]`; MCP `transition_item` gives the warning line.
+//! 4. KAIROS-T-0566: a create into the entry column, a cancel into the
+//!    done column and a restore warn the same way over a limit (REST
+//!    header, MCP line).
 //!
 //! Runs against the LIVE compose stack (`angreal services up`). Owns the
 //! scratch database `kairos_column_wip_limit_t0371_test`.
@@ -133,6 +136,33 @@ impl Mcp {
             .unwrap_or_else(|| panic!("{tool} gave no text: {result}"))
             .to_string()
     }
+}
+
+/// A POST over raw HTTP, to read the headers: the status, the body and
+/// the values of `Kairos-Warning`.
+async fn post(
+    base_url: &str,
+    token: &str,
+    path: &str,
+    body: Option<Value>,
+) -> (reqwest::StatusCode, Value, Vec<String>) {
+    let mut request = reqwest::Client::new()
+        .post(format!("{base_url}{path}"))
+        .bearer_auth(token)
+        .header("x-tenant", "acme");
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+    let response = request.send().await.expect("POST");
+    let status = response.status();
+    let warnings = response
+        .headers()
+        .get_all("Kairos-Warning")
+        .iter()
+        .map(|value| value.to_str().expect("ASCII").to_string())
+        .collect();
+    let body = response.json().await.unwrap_or(Value::Null);
+    (status, body, warnings)
 }
 
 /// A transition over raw HTTP, to read the headers: the status and the
@@ -375,4 +405,125 @@ async fn a_column_has_a_wip_limit_and_a_move_over_it_warns() {
     assert!(!active_group.over_wip_limit);
     let (_, warnings) = transition(&server.base_url, &svc_token, &codes[0], &todo).await;
     assert!(warnings.is_empty());
+
+    // 4. KAIROS-T-0566: create, cancel and restore warn as a move does.
+    let backlog = columns["Backlog"].clone();
+    let completed = columns["Completed"].clone();
+    for column in [&backlog, &completed] {
+        admin
+            .update_column(&board, column, &wip_request(Some(1)))
+            .await
+            .expect("set the limit");
+    }
+    // A create into the entry column: the second is over the limit.
+    let create = |title: &str| json!({"board_id": board, "title": title});
+    let (status, first, warnings) = post(
+        &server.base_url,
+        &svc_token,
+        "/api/tasks",
+        Some(create("Four")),
+    )
+    .await;
+    assert_eq!(status, 201, "{first}");
+    assert!(warnings.is_empty(), "at the limit: {warnings:?}");
+    let (status, second, warnings) = post(
+        &server.base_url,
+        &svc_token,
+        "/api/tasks",
+        Some(create("Five")),
+    )
+    .await;
+    assert_eq!(status, 201, "{second}");
+    let fourth = first["short_code"].as_str().expect("code").to_string();
+    let fifth = second["short_code"].as_str().expect("code").to_string();
+    assert_eq!(
+        warnings,
+        vec![format!(
+            "{fifth} moved into Backlog, over its WIP limit (2 of 1)"
+        )]
+    );
+    let text = mcp
+        .call_ok(
+            "create_item",
+            json!({"item_type": "task", "title": "Six", "board": board}),
+        )
+        .await;
+    assert!(
+        text.contains("Warning: the column Backlog has 3 items, over its WIP limit of 1."),
+        "{text}"
+    );
+    // A cancel into the done column: the second is over the limit.
+    let cancel = |code: &str| format!("/api/tasks/{code}/cancel");
+    let reason = Some(json!({"reason": "Not needed"}));
+    let (status, body, warnings) = post(
+        &server.base_url,
+        &svc_token,
+        &cancel(&fourth),
+        reason.clone(),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert!(warnings.is_empty(), "at the limit: {warnings:?}");
+    let (status, body, warnings) = post(
+        &server.base_url,
+        &svc_token,
+        &cancel(&fifth),
+        reason.clone(),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        warnings,
+        vec![format!(
+            "{fifth} moved into Completed, over its WIP limit (2 of 1)"
+        )]
+    );
+    // A restore into a column over its limit: archive one, then restore it.
+    admin.delete_task(&fifth).await.expect("archive");
+    let (status, body, warnings) = post(
+        &server.base_url,
+        &svc_token,
+        &format!("/api/tasks/{fifth}/restore"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        warnings,
+        vec![format!(
+            "{fifth} moved into Completed, over its WIP limit (2 of 1)"
+        )]
+    );
+    admin.delete_task(&fifth).await.expect("archive again");
+    let text = mcp
+        .call_ok("restore_item", json!({"short_code": fifth}))
+        .await;
+    assert!(
+        text.contains("Warning: the column Completed has 2 items, over its WIP limit of 1."),
+        "{text}"
+    );
+    // MCP cancel_item: the third cancel into Completed.
+    let sixth = text_code(
+        &mcp.call_ok("board_items", json!({"board": board, "column": "Backlog"}))
+            .await,
+        &[&fourth, &fifth],
+    );
+    let text = mcp
+        .call_ok(
+            "cancel_item",
+            json!({"short_code": sixth, "reason": "Not needed"}),
+        )
+        .await;
+    assert!(
+        text.contains("Warning: the column Completed has 3 items, over its WIP limit of 1."),
+        "{text}"
+    );
+}
+
+/// The first `WEB-T-` code in `text` that is not one of `skip`.
+fn text_code(text: &str, skip: &[&str]) -> String {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .find(|word| word.starts_with("WEB-T-") && !skip.contains(word))
+        .unwrap_or_else(|| panic!("no code in {text}"))
+        .to_string()
 }

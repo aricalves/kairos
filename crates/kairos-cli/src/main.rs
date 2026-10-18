@@ -217,9 +217,10 @@ enum Command {
     /// The templates of the organization (writes: organization admins)
     #[command(subcommand)]
     Templates(commands::meta::TemplatesCommand),
-    /// Link an item to a URI with a label (the relationship `external`)
+    /// Make a relationship: parent, blocks, informs, supports, supersedes,
+    /// impacts (a repository) or external (a URI)
     Link(commands::links::LinkArgs),
-    /// Remove the external reference of an item with a URI
+    /// Remove a relationship that `kairos link` makes
     Unlink(commands::links::UnlinkArgs),
     /// The code index of a checkout, and its code tools for an agent (COLLIERY-T-1852)
     Index(IndexArgs),
@@ -890,6 +891,27 @@ mod tests {
             Cli::try_parse_from(["kairos", "boards", "create", "--name", "x"]).is_err(),
             "slug, level and prefix are required"
         );
+    }
+
+    /// KAIROS-T-0646: `repos local` takes one folder or none. A second
+    /// folder or an unknown flag is refused, and the error names it.
+    #[test]
+    fn repos_local_takes_one_folder_or_none() {
+        for argv in [
+            &["kairos", "repos", "local"][..],
+            &["kairos", "repos", "local", "boards/acme", "--json"][..],
+        ] {
+            let cli = Cli::try_parse_from(argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
+            assert!(matches!(cli.command, Command::Repos(_)));
+        }
+        let err = Cli::try_parse_from(["kairos", "repos", "local", "a", "b"])
+            .err()
+            .expect("a second folder is refused");
+        assert!(err.to_string().contains("'b'"), "{err}");
+        let err = Cli::try_parse_from(["kairos", "repos", "local", "--fetch"])
+            .err()
+            .expect("an unknown flag is refused");
+        assert!(err.to_string().contains("--fetch"), "{err}");
     }
 
     /// KAIROS-T-0386: `repos write-token` parses its subcommands, and takes

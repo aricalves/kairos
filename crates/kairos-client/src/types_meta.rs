@@ -89,11 +89,13 @@ pub struct ItemRelationshipsResponse {
 pub struct ChildrenProgressResponse {
     /// The parent item's short code.
     pub short_code: String,
-    /// Direct live children (soft-deleted excluded; supports/informs
-    /// material never counts).
+    /// Direct children that count: the live children, and the archived
+    /// children in a done column (KAIROS-T-0571). Supports/informs
+    /// material never counts.
     pub total: i64,
     /// Children sitting in `is_done` columns, less the cancelled tasks
-    /// (KAIROS-T-0567).
+    /// (KAIROS-T-0567). An archived child in a done column counts here
+    /// (KAIROS-T-0571).
     pub done: i64,
     /// Cancelled tasks among the children (KAIROS-T-0567). A cancel is
     /// "won't do", not done. The default is for the client only: a
@@ -106,6 +108,13 @@ pub struct ChildrenProgressResponse {
     #[serde(default)]
     #[schema(required = true)]
     pub open: i64,
+    /// Children archived from a column that is not done (KAIROS-T-0571).
+    /// They are not open work, and they are not in `total`. The default
+    /// is for the client only: a response of an older server has no
+    /// `removed`.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub removed: i64,
     /// False when no board hosting the children has a done-flagged
     /// column — show composition only, never a done fraction.
     ///
@@ -116,7 +125,8 @@ pub struct ChildrenProgressResponse {
     #[serde(default)]
     #[schema(required = true)]
     pub has_done_columns: bool,
-    /// Per-column composition, board-then-position order.
+    /// Per-column composition of the children that count,
+    /// board-then-position order.
     pub by_column: Vec<ChildColumnProgress>,
 }
 
@@ -209,6 +219,27 @@ pub struct Relationship {
     pub relationship: String,
     /// RFC 3339.
     pub created_at: String,
+}
+
+/// The answer of `POST /api/relationships` when the call made a proposal
+/// and no edge (202, KAIROS-T-0569). A `blocks` edge needs the right to
+/// edit the target. A caller who can edit the source only gets this.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ProposedRelationship {
+    /// What the call did, and who can confirm the proposal.
+    pub message: String,
+    /// The proposal. Confirm it with `POST /api/proposals/{id}/confirm`.
+    pub proposal: crate::types_search::EdgeProposalDto,
+}
+
+/// What `POST /api/relationships` did (KAIROS-T-0569): the edge (201), or
+/// a proposal of it (202).
+#[derive(Debug, Clone, PartialEq)]
+pub enum RelationshipOutcome {
+    /// 201: the edge exists.
+    Linked(Relationship),
+    /// 202: a proposal waits for a decision.
+    Proposed(ProposedRelationship),
 }
 
 // ---------------------------------------------------------------------------

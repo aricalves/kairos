@@ -1235,6 +1235,7 @@ async fn archive_reach_and_proposal_confirm_against_live_stack() {
             content: "original content".into(),
             decision_maker: None,
             decision_date: None,
+            parent: None,
         })
         .await
         .expect("adr");

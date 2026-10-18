@@ -1299,7 +1299,7 @@ async fn cli_command_tree_golden_path_live() {
             "--team",
             "platform",
             "--column",
-            "todo",
+            "backlog",
             "--title",
             "Named references",
             "--kind",
@@ -1313,7 +1313,12 @@ async fn cli_command_tree_golden_path_live() {
     assert_eq!(code, 0, "tasks create by names failed: {stderr}");
     let named: serde_json::Value = serde_json::from_str(&stdout).expect("task DTO JSON");
     let named_code = named["short_code"].as_str().expect("code").to_string();
-    assert_eq!(named["column_id"].as_str(), Some(todo.as_str()), "{stdout}");
+    // A task starts in the entry column (KAIROS-T-0566).
+    assert_eq!(
+        named["column_id"].as_str(),
+        Some(backlog.as_str()),
+        "{stdout}"
+    );
     assert_eq!(
         named["team_id"].as_str(),
         Some(team.id.as_str()),
@@ -1345,13 +1350,13 @@ async fn cli_command_tree_golden_path_live() {
     // transition --to a column name; the line names the column.
     let (code, stdout, stderr) = run_cli(
         config_dir.path(),
-        &["tasks", "transition", &named_code, "--to", "active"],
+        &["tasks", "transition", &named_code, "--to", "todo"],
     )
     .await;
     assert_eq!(code, 0, "transition by name failed: {stderr}");
     assert_eq!(
         stdout.trim(),
-        format!("Kairos moved the task {named_code} to the column Active.")
+        format!("Kairos moved the task {named_code} to the column Todo.")
     );
 
     // note --text-file; show, and get as its alias.
@@ -1477,6 +1482,302 @@ async fn cli_command_tree_golden_path_live() {
         .await;
         assert_eq!(code, 0, "boards flow {flag} failed: {stderr}");
     }
+
+    // --- KAIROS-T-0591: link and unlink, --parent, metadata values, show -----
+    let cfg = config_dir.path();
+    let created_code = |stdout: &str| -> String {
+        let item: serde_json::Value = serde_json::from_str(stdout).expect("item DTO JSON");
+        item["short_code"].as_str().expect("code").to_string()
+    };
+    let (code, stdout, stderr) = run_cli(
+        cfg,
+        &[
+            "tasks",
+            "create",
+            "--board",
+            &delivery_board_id,
+            "--title",
+            "Blocker",
+            "--parent",
+            &initiative_code,
+            "--json",
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "tasks create --parent failed: {stderr}");
+    let blocker = created_code(&stdout);
+    let (code, stdout, stderr) = run_cli(
+        cfg,
+        &[
+            "tasks",
+            "create",
+            "--board",
+            &delivery_board_id,
+            "--title",
+            "Waiter",
+            "--parent",
+            &initiative_code,
+            "--repo",
+            "payments-api",
+            "--json",
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "tasks create --parent --repo failed: {stderr}");
+    let waiter = created_code(&stdout);
+
+    // link: an edge between two items, with its meaning.
+    let (code, stdout, stderr) = run_cli(cfg, &["link", &blocker, "blocks", &waiter]).await;
+    assert_eq!(code, 0, "link blocks failed: {stderr}");
+    assert_eq!(
+        stdout,
+        format!(
+            "Kairos made the link: {blocker} -[blocks]-> {waiter}. {waiter} waits for {blocker}.\n"
+        )
+    );
+    let (code, _, stderr) = run_cli(cfg, &["link", &blocker, "blocks", &waiter]).await;
+    assert_eq!(code, 1, "a second blocks edge is refused: {stderr}");
+    let (code, _, stderr) = run_cli(cfg, &["link", &waiter, "blocks", &blocker]).await;
+    assert_eq!(code, 1, "a cycle of blocks is refused: {stderr}");
+    let (code, stdout, stderr) =
+        run_cli(cfg, &["link", &blocker, "informs", &waiter, "--json"]).await;
+    assert_eq!(code, 0, "link informs --json failed: {stderr}");
+    let edge: serde_json::Value = serde_json::from_str(&stdout).expect("edge JSON");
+    assert_eq!(edge["relationship"], "informs", "{stdout}");
+    assert_eq!(edge["source_short_code"], blocker.as_str(), "{stdout}");
+    // --label is for external only; an unknown relationship is usage (64).
+    let (code, _, stderr) =
+        run_cli(cfg, &["link", &blocker, "blocks", &waiter, "--label", "x"]).await;
+    assert_eq!(code, 1, "--label with blocks: {stderr}");
+    assert!(stderr.contains("not to blocks"), "{stderr}");
+    let (code, _, stderr) = run_cli(cfg, &["link", &blocker, "child", &waiter]).await;
+    assert_eq!(code, 64, "an unknown relationship: {stderr}");
+
+    // adrs create --parent: the ADR and its supports edge are one write.
+    let adr_total = || async {
+        let (code, stdout, stderr) = run_cli(cfg, &["adrs", "list", "--json"]).await;
+        assert_eq!(code, 0, "adrs list failed: {stderr}");
+        let envelope: serde_json::Value = serde_json::from_str(&stdout).expect("envelope");
+        envelope["total"].as_i64().expect("total")
+    };
+    let before = adr_total().await;
+    let (code, _, stderr) = run_cli(
+        cfg,
+        &[
+            "adrs",
+            "create",
+            "--board",
+            "adrs",
+            "--title",
+            "Refused parent",
+            "--parent",
+            &document_code,
+        ],
+    )
+    .await;
+    assert_eq!(code, 1, "a document is no parent of an ADR: {stderr}");
+    assert_eq!(adr_total().await, before, "a refused parent leaves no ADR");
+    let (code, stdout, stderr) = run_cli(
+        cfg,
+        &[
+            "adrs",
+            "create",
+            "--board",
+            "adrs",
+            "--title",
+            "Queue decision",
+            "--parent",
+            &waiter,
+            "--json",
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "adrs create --parent failed: {stderr}");
+    let adr = created_code(&stdout);
+    let (code, stdout, stderr) = run_cli(
+        cfg,
+        &[
+            "adrs",
+            "create",
+            "--board",
+            "adrs",
+            "--title",
+            "Queue decision 2",
+            "--json",
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "adrs create failed: {stderr}");
+    let adr_two = created_code(&stdout);
+    let (code, stdout, stderr) = run_cli(cfg, &["link", &adr_two, "supersedes", &adr]).await;
+    assert_eq!(code, 0, "link supersedes failed: {stderr}");
+    assert!(
+        stdout.ends_with(&format!("{adr_two} replaces {adr}.\n")),
+        "{stdout}"
+    );
+    let (code, stdout, stderr) =
+        run_cli(cfg, &["link", &initiative_code, "supports", &document_code]).await;
+    assert_eq!(code, 0, "link supports failed: {stderr}");
+    assert!(
+        stdout.ends_with(&format!("{document_code} supports {initiative_code}.\n")),
+        "{stdout}"
+    );
+    let (code, stdout, stderr) =
+        run_cli(cfg, &["link", &document_code, "impacts", "payments-api"]).await;
+    assert_eq!(code, 0, "link impacts failed: {stderr}");
+    assert!(
+        stdout.ends_with(&format!(
+            "{document_code} is about the repository payments-api.\n"
+        )),
+        "{stdout}"
+    );
+    let (code, _, stderr) = run_cli(
+        cfg,
+        &[
+            "link",
+            &waiter,
+            "external",
+            "https://example.com/rfc",
+            "--label",
+            "RFC 42",
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "link external failed: {stderr}");
+
+    // metadata set and unset.
+    let (code, _, stderr) = run_cli(
+        cfg,
+        &[
+            "metadata",
+            "create",
+            "--name",
+            "Rollout risk",
+            "--slug",
+            "risk",
+            "--type",
+            "enum",
+            "--option",
+            "high",
+            "--option",
+            "low",
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "metadata create enum failed: {stderr}");
+    let (code, stdout, stderr) =
+        run_cli(cfg, &["tasks", "metadata", "set", &waiter, "risk=high"]).await;
+    assert_eq!(code, 0, "tasks metadata set failed: {stderr}");
+    assert_eq!(
+        stdout,
+        format!("Kairos changed the metadata of {waiter}.\n  metadata:\n    risk: high\n")
+    );
+    let (code, _, stderr) = run_cli(cfg, &["tasks", "metadata", "set", &waiter, "risk"]).await;
+    assert_eq!(code, 64, "a pair without = is usage: {stderr}");
+    let (code, _, stderr) =
+        run_cli(cfg, &["tasks", "metadata", "set", &waiter, "risk=urgent"]).await;
+    assert_eq!(code, 1, "a value outside the enum: {stderr}");
+    let (code, _, stderr) = run_cli(
+        cfg,
+        &["tasks", "metadata", "set", &waiter, "no-such-field=x"],
+    )
+    .await;
+    assert_eq!(code, 1, "an unknown slug: {stderr}");
+    assert!(stderr.contains("no-such-field"), "{stderr}");
+    let (code, stdout, stderr) = run_cli(
+        cfg,
+        &["adrs", "metadata", "set", &adr, "risk=low", "--json"],
+    )
+    .await;
+    assert_eq!(code, 0, "adrs metadata set --json failed: {stderr}");
+    let values: serde_json::Value = serde_json::from_str(&stdout).expect("metadata JSON");
+    assert_eq!(values["values"][0]["value"], "low", "{stdout}");
+
+    // show: repository, metadata, relationships and external references.
+    let (code, stdout, stderr) = run_cli(cfg, &["tasks", "show", &waiter]).await;
+    assert_eq!(code, 0, "tasks show failed: {stderr}");
+    for line in [
+        "  repository: payments-api\n".to_string(),
+        "  metadata:\n    risk: high\n".to_string(),
+        format!("    parent: {initiative_code} — CLI golden path initiative\n"),
+        format!("    blocked by: {blocker} — Blocker\n"),
+        format!("    informed by: {blocker} — Blocker\n"),
+        format!("    supported by: {adr} — Queue decision\n"),
+        "  external:\n    RFC 42 <https://example.com/rfc>\n".to_string(),
+    ] {
+        assert!(
+            stdout.contains(&line),
+            "tasks show has no {line:?}: {stdout}"
+        );
+    }
+    let (code, stdout, stderr) = run_cli(cfg, &["tasks", "show", &waiter, "--json"]).await;
+    assert_eq!(code, 0, "tasks show --json failed: {stderr}");
+    let shown: serde_json::Value = serde_json::from_str(&stdout).expect("task DTO JSON");
+    assert_eq!(shown["short_code"], waiter.as_str());
+    assert!(shown.get("relationships").is_none(), "{stdout}");
+    let (code, stdout, stderr) = run_cli(cfg, &["initiatives", "show", &initiative_code]).await;
+    assert_eq!(code, 0, "initiatives show failed: {stderr}");
+    assert!(
+        stdout.contains(&format!("    child: {waiter} — Waiter\n")),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(&format!(
+            "    supported by: {document_code} — Rollout note\n"
+        )),
+        "{stdout}"
+    );
+    let (code, stdout, stderr) = run_cli(cfg, &["adrs", "show", &adr]).await;
+    assert_eq!(code, 0, "adrs show failed: {stderr}");
+    assert!(
+        stdout.contains(&format!("    supports: {waiter} — Waiter\n")),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(&format!(
+            "    superseded by: {adr_two} — Queue decision 2\n"
+        )),
+        "{stdout}"
+    );
+    assert!(stdout.contains("  external: -\n"), "{stdout}");
+
+    // unlink each relationship; a second unlink fails with exit 1.
+    let (code, _, stderr) = run_cli(cfg, &["tasks", "metadata", "unset", &waiter, "risk"]).await;
+    assert_eq!(code, 0, "tasks metadata unset failed: {stderr}");
+    let (code, stdout, stderr) = run_cli(cfg, &["unlink", &blocker, "blocks", &waiter]).await;
+    assert_eq!(code, 0, "unlink blocks failed: {stderr}");
+    assert_eq!(
+        stdout,
+        format!("Kairos removed the link: {blocker} -[blocks]-> {waiter}.\n")
+    );
+    let (code, _, stderr) = run_cli(cfg, &["unlink", &blocker, "blocks", &waiter]).await;
+    assert_eq!(code, 1, "a second unlink: {stderr}");
+    assert!(stderr.contains("has no link"), "{stderr}");
+    for (source, relationship, target) in [
+        (blocker.as_str(), "informs", waiter.as_str()),
+        (adr_two.as_str(), "supersedes", adr.as_str()),
+        (initiative_code.as_str(), "supports", document_code.as_str()),
+        (document_code.as_str(), "impacts", "payments-api"),
+        (waiter.as_str(), "external", "https://example.com/rfc"),
+        (initiative_code.as_str(), "parent", blocker.as_str()),
+    ] {
+        let (code, stdout, stderr) = run_cli(cfg, &["unlink", source, relationship, target]).await;
+        assert_eq!(code, 0, "unlink {relationship} failed: {stderr}");
+        assert!(stdout.starts_with("Kairos removed the link: "), "{stdout}");
+    }
+    let (code, stdout, stderr) = run_cli(cfg, &["tasks", "show", &waiter]).await;
+    assert_eq!(code, 0, "tasks show failed: {stderr}");
+    assert!(stdout.contains("  metadata: -\n"), "{stdout}");
+    assert!(stdout.contains("  external: -\n"), "{stdout}");
+    assert!(!stdout.contains("blocked by:"), "{stdout}");
+    // The parent edge comes back with link.
+    let (code, stdout, stderr) =
+        run_cli(cfg, &["link", &initiative_code, "parent", &blocker]).await;
+    assert_eq!(code, 0, "link parent failed: {stderr}");
+    assert!(
+        stdout.ends_with(&format!("{initiative_code} is the parent of {blocker}.\n")),
+        "{stdout}"
+    );
 
     // --- teardown ----------------------------------------------------------------
     drop(conn);
