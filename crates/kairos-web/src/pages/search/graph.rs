@@ -908,11 +908,16 @@ fn ManagePanel(
         busy.set(true);
         leptos::task::spawn_local(async move {
             match data::create_relationship(auth, &request).await {
-                Ok(_) => {
-                    feedback.set(Some(Ok(format!(
-                        "Linked {} \u{2014}{}\u{2192} {}.",
-                        request.source_short_code, request.relationship, request.target_short_code
-                    ))));
+                Ok(outcome) => {
+                    feedback.set(Some(Ok(match outcome {
+                        data::LinkOutcome::Proposed(proposed) => proposed.message,
+                        data::LinkOutcome::Linked(_) => format!(
+                            "Linked {} \u{2014}{}\u{2192} {}.",
+                            request.source_short_code,
+                            request.relationship,
+                            request.target_short_code
+                        ),
+                    })));
                     reload.update(|n| *n += 1);
                     on_changed.run(());
                 }

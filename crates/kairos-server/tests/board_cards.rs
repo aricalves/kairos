@@ -189,19 +189,31 @@ async fn the_board_and_search_send_cards_without_content_against_live_stack() {
     // state line.
     let mut first_code = String::new();
     for number in 0..CARDS {
+        // KAIROS-T-0566: a task starts in the entry column. The columns
+        // that are not done follow each other by a transition on the
+        // default board (Backlog, Todo, Blocked, Active), so the walk goes
+        // one column at a time.
         let task = stack
             .ok(
                 Method::POST,
                 "/api/tasks",
                 Some(json!({
                     "board_id": board_id,
-                    "column_id": columns[number % columns.len()],
                     "title": format!("Task {number}: the board sends cards without content"),
                     "content": content_of(number),
                 })),
             )
             .await;
         let code = task["short_code"].as_str().expect("code").to_string();
+        for column in &columns[1..=number % columns.len()] {
+            stack
+                .ok(
+                    Method::POST,
+                    &format!("/api/tasks/{code}/transition"),
+                    Some(json!({ "to_column_id": column })),
+                )
+                .await;
+        }
         if number % 3 == 0 {
             stack
                 .ok(

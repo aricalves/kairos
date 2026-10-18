@@ -75,11 +75,18 @@ pub(crate) async fn restore_item(
             crate::api::require_item_archive(conn, role, user, item_id, item_type)?;
 
             match items::restore_item(conn, item_type, item_id, user).map_err(map_item_error)? {
-                Ok(outcome) => Ok(dto::RestoreResponse {
-                    short_code: outcome.short_code,
-                    still_archived_count: outcome.still_archived_descendants.len() as i64,
-                    still_archived_short_codes: outcome.still_archived_descendants,
-                }),
+                Ok(outcome) => {
+                    // KAIROS-T-0566: a restore into a column over its WIP
+                    // limit gets the warning of a move.
+                    if let Some(column_id) = outcome.column_id {
+                        crate::claims::note_wip(conn, column_id, &outcome.short_code)?;
+                    }
+                    Ok(dto::RestoreResponse {
+                        short_code: outcome.short_code,
+                        still_archived_count: outcome.still_archived_descendants.len() as i64,
+                        still_archived_short_codes: outcome.still_archived_descendants,
+                    })
+                }
                 Err(blocked) => Err(ApiError::unprocessable(
                     "RESTORE_BLOCKED",
                     format!(

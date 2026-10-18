@@ -399,6 +399,21 @@ pub struct CreatedRelationship {
     pub id: String,
 }
 
+/// mirror of: `kairos_client::types_meta::ProposedRelationship` (partial).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct ProposedRelationship {
+    pub message: String,
+}
+
+/// The two answers of `POST /api/relationships` (KAIROS-T-0569): a
+/// proposal of a `blocks` edge (202, it has `message`), or the edge (201).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum LinkOutcome {
+    Proposed(ProposedRelationship),
+    Linked(CreatedRelationship),
+}
+
 /// mirror of: `kairos_client::types_meta::DeletedResponse` (partial).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct DeletedRelationship {
@@ -414,10 +429,12 @@ pub async fn relationships(auth: Auth, short_code: &str) -> Result<ItemRelations
 /// `POST /api/relationships` (the link rule, COLLIERY-T-0228: the caller may
 /// edit one end; the typed 422s — `RELATIONSHIP_RULE`,
 /// `CYCLE_DETECTED`, `ALREADY_LINKED` — arrive as `ApiError::Http{code}`).
+/// A `blocks` edge needs the target; the source alone gives a proposal
+/// (KAIROS-T-0569).
 pub async fn create_relationship(
     auth: Auth,
     request: &CreateRelationship,
-) -> Result<CreatedRelationship, ApiError> {
+) -> Result<LinkOutcome, ApiError> {
     api::post_json(auth, "/api/relationships", request).await
 }
 

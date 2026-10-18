@@ -1299,7 +1299,7 @@ async fn cli_command_tree_golden_path_live() {
             "--team",
             "platform",
             "--column",
-            "todo",
+            "backlog",
             "--title",
             "Named references",
             "--kind",
@@ -1313,7 +1313,12 @@ async fn cli_command_tree_golden_path_live() {
     assert_eq!(code, 0, "tasks create by names failed: {stderr}");
     let named: serde_json::Value = serde_json::from_str(&stdout).expect("task DTO JSON");
     let named_code = named["short_code"].as_str().expect("code").to_string();
-    assert_eq!(named["column_id"].as_str(), Some(todo.as_str()), "{stdout}");
+    // A task starts in the entry column (KAIROS-T-0566).
+    assert_eq!(
+        named["column_id"].as_str(),
+        Some(backlog.as_str()),
+        "{stdout}"
+    );
     assert_eq!(
         named["team_id"].as_str(),
         Some(team.id.as_str()),
@@ -1345,13 +1350,13 @@ async fn cli_command_tree_golden_path_live() {
     // transition --to a column name; the line names the column.
     let (code, stdout, stderr) = run_cli(
         config_dir.path(),
-        &["tasks", "transition", &named_code, "--to", "active"],
+        &["tasks", "transition", &named_code, "--to", "todo"],
     )
     .await;
     assert_eq!(code, 0, "transition by name failed: {stderr}");
     assert_eq!(
         stdout.trim(),
-        format!("Kairos moved the task {named_code} to the column Active.")
+        format!("Kairos moved the task {named_code} to the column Todo.")
     );
 
     // note --text-file; show, and get as its alias.

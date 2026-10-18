@@ -20,7 +20,10 @@
 //! 7. KAIROS-T-0577: enable sends the skipped deliveries again, with
 //!    their ids; redeliver does it on request (with `since`),
 //!    needs configure_boards, and refuses a target that is off.
-//! 8. KAIROS-T-0558: MCP remove_webhook_target, enable_webhook_target and
+//! 8. KAIROS-T-0566: a create into the entry column fires its rules (REST
+//!    and MCP); a create that names another column is a 422 that names the
+//!    entry column, and fires nothing.
+//! 9. KAIROS-T-0558: MCP remove_webhook_target, enable_webhook_target and
 //!    test_webhook_target need configure_boards, refuse an unknown
 //!    argument, and do what REST does.
 //!
@@ -998,6 +1001,71 @@ async fn a_task_that_enters_the_column_of_a_rule_fires_one_signed_delivery() {
         .expect("nothing left");
     assert_eq!(again.redelivered, Some(0));
 
+    // --- 8. KAIROS-T-0566: a create fires the rules of the entry column ---
+    let before_create = receiver.received().len();
+    let born = new_task(&admin, &api_board, "Born in the entry column", "task").await;
+    let mut admin_mcp = Mcp::connect(&server.base_url, &svc_token).await;
+    let (text, error) = admin_mcp
+        .call(
+            "create_item",
+            json!({"item_type": "task", "title": "Born over MCP", "board": api_board}),
+        )
+        .await;
+    assert!(!error, "{text}");
+    let born_mcp = text
+        .split_whitespace()
+        .find(|word| word.starts_with("API-T-"))
+        .expect("the code")
+        .trim_end_matches(['.', ':', ','])
+        .to_string();
+    // A create into another column is refused for a manager too, names the
+    // entry column, and fires nothing.
+    let api_active = api_detail
+        .columns
+        .iter()
+        .find(|c| c.name == "Active")
+        .expect("Active")
+        .id
+        .clone();
+    let (status, body) = admin
+        .raw_request(
+            reqwest::Method::POST,
+            "/api/tasks",
+            Some(&json!({
+                "board_id": api_board,
+                "column_id": api_active,
+                "title": "Born in Active",
+            })),
+        )
+        .await
+        .expect("POST");
+    assert_eq!(status, 422, "{body}");
+    assert_eq!(body["error"]["code"], "VALIDATION", "{body}");
+    assert_eq!(body["error"]["details"]["field"], "column_id", "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(&format!("entry column of its board ({api_entry})")),
+        "{body}"
+    );
+    deliver(&worker, &scratch_url).await;
+    let mut created: Vec<(String, String)> = receiver.received()[before_create..]
+        .iter()
+        .filter(|r| r.headers["x-kairos-event"] == "task.entered_column")
+        .map(|r| {
+            let body = r.json();
+            (
+                body["data"]["code"].as_str().unwrap().to_string(),
+                body["data"]["column"]["name"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    created.sort();
+    let mut want = vec![(born, api_entry.clone()), (born_mcp, api_entry.clone())];
+    want.sort();
+    assert_eq!(created, want, "one delivery for each create");
+
     // A removed target takes its rules and its log.
     alice
         .delete_webhook_target(&slug, &target)
@@ -1012,7 +1080,7 @@ async fn a_task_that_enters_the_column_of_a_rule_fires_one_signed_delivery() {
             .all(|r| r.target_id != target)
     );
 
-    // --- 8. KAIROS-T-0558: the webhook targets over MCP -----------------
+    // --- 9. KAIROS-T-0558: the webhook targets over MCP -----------------
     // The target that create_dispatch_rule made in section 5.
     let runner = alice
         .list_webhook_targets(&slug)

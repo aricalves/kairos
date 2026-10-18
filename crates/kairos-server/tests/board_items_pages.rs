@@ -257,13 +257,29 @@ async fn the_items_of_a_board_come_in_pages_against_live_stack() {
     for number in 0..12 {
         let mut body = json!({
             "board_id": board_id,
-            "column_id": columns[2 - number % 3],
             "title": format!("Task {number}"),
         });
         if number % 4 == 0 {
             body["repository"] = json!("payments-api");
         }
-        tasks.push(stack.ok(Method::POST, "/api/tasks", Some(body)).await);
+        let task = stack.ok(Method::POST, "/api/tasks", Some(body)).await;
+        // KAIROS-T-0566: a task starts in the entry column; a transition
+        // at a time takes it to its column (Backlog, Todo, Blocked).
+        let code = task["short_code"].as_str().expect("code").to_string();
+        for column in &columns[1..=2 - number % 3] {
+            stack
+                .ok(
+                    Method::POST,
+                    &format!("/api/tasks/{code}/transition"),
+                    Some(json!({ "to_column_id": column })),
+                )
+                .await;
+        }
+        tasks.push(
+            stack
+                .ok(Method::GET, &format!("/api/tasks/{code}"), None)
+                .await,
+        );
     }
     let code = |number: usize| {
         tasks[number]["short_code"]

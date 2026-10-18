@@ -40,6 +40,11 @@ pub const ENV_HISTORY_HOT_DAYS: &str = "KAIROS_HISTORY_HOT_DAYS";
 pub const ENV_HISTORY_KEEP_LATEST: &str = "KAIROS_HISTORY_KEEP_LATEST";
 /// Env var: `activity_log` retention window in days (default 365).
 pub const ENV_ACTIVITY_RETENTION_DAYS: &str = "KAIROS_ACTIVITY_RETENTION_DAYS";
+/// The `activity_log` actions that the sweep keeps at each age
+/// (KAIROS-T-0571): the rows that move an item. The flow metrics read them
+/// for the start of the work, its done time and the age of the work in
+/// progress, so a sweep must not remove them.
+pub const KEPT_ACTIVITY_ACTIONS: [&str; 3] = ["transition", "cancel", "board_move"];
 /// Env var: archive target (filesystem path or `s3://…` URL); unset/empty
 /// means no target is configured.
 pub const ENV_ARCHIVE_TARGET: &str = "KAIROS_ARCHIVE_TARGET";
