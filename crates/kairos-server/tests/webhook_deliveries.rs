@@ -13,9 +13,14 @@
 //! 4. Two servers deliver each event once.
 //! 5. The guard of the addresses: with `KAIROS_WEBHOOK_ALLOW_PRIVATE` off,
 //!    a target on 127.0.0.1 gets no request, and the log says why.
+//! 6. KAIROS-T-0577: enable sends the skipped deliveries again, oldest
+//!    first, with their ids, and keeps the log of an earlier try; a
+//!    delivery older than the retention (30 days) does not go; `since`
+//!    limits a redeliver.
 //!
 //! Runs against the compose Postgres (`angreal services up`). Owns the
-//! scratch databases `kairos_webhooks_t0384_*`.
+//! scratch databases `kairos_webhooks_t0384_*` and
+//! `kairos_webhooks_t0577_*`.
 
 mod common;
 
@@ -215,6 +220,11 @@ fn queue(f: &Fixture, target: Uuid, n: usize) -> db::Delivery {
 }
 
 fn job_settings() -> JobSettings {
+    job_settings_with(2)
+}
+
+/// The settings of the queue, with `limit` deliveries at one time.
+fn job_settings_with(limit: usize) -> JobSettings {
     let mut settings = JobSettings {
         heartbeat: Duration::from_millis(100),
         lease: Duration::from_secs(5),
@@ -224,7 +234,7 @@ fn job_settings() -> JobSettings {
     };
     settings
         .limits
-        .insert(kinds::WEBHOOK_DELIVERY.to_string(), 2);
+        .insert(kinds::WEBHOOK_DELIVERY.to_string(), limit);
     settings
 }
 
@@ -241,12 +251,12 @@ fn hook_settings() -> WebhookSettings {
 }
 
 fn worker(url: &str, settings: WebhookSettings) -> Arc<Worker> {
+    worker_with(url, settings, job_settings())
+}
+
+fn worker_with(url: &str, settings: WebhookSettings, jobs: JobSettings) -> Arc<Worker> {
     let blocking = BlockingTenantPool::new(url, 4);
-    let worker = Arc::new(Worker::new(
-        blocking.clone(),
-        Uuid::new_v4(),
-        job_settings(),
-    ));
+    let worker = Arc::new(Worker::new(blocking.clone(), Uuid::new_v4(), jobs));
     WebhookService::new(blocking, Some(key()), settings).register(&worker);
     worker
 }
@@ -515,16 +525,165 @@ async fn failures_in_a_row_turn_the_target_off_and_tell_its_owners() {
     drain(&worker, &f.url, Duration::from_secs(10)).await;
     assert_eq!(receiver.received.lock().unwrap().len(), before);
 
-    // Turned on again: the failures in a row are 0, and a delivery goes.
+    // Turned on again: the failures in a row are 0, the skipped delivery
+    // goes (KAIROS-T-0577), and a new delivery goes.
     receiver.always_fail.store(false, Ordering::SeqCst);
-    let on = db::enable_target(&mut conn(&f.url), target)
+    let (on, redelivered) = db::enable_target(&mut conn(&f.url), target)
         .unwrap()
         .unwrap();
     assert!(on.enabled);
     assert_eq!(on.consecutive_failures, 0);
+    assert_eq!(
+        redelivered.iter().map(|d| d.id).collect::<Vec<_>>(),
+        vec![third.id]
+    );
     let fourth = queue(&f, target, 4);
     drain(&worker, &f.url, Duration::from_secs(20)).await;
+    assert_eq!(delivery(&f.url, third.id).status, "delivered");
     assert_eq!(delivery(&f.url, fourth.id).status, "delivered");
+    // The failed deliveries do not go again.
+    assert_eq!(delivery(&f.url, first.id).status, "failed");
+    assert_eq!(delivery(&f.url, second.id).status, "failed");
+}
+
+// ===========================================================================
+// 6. KAIROS-T-0577: the skipped deliveries go again, oldest first
+// ===========================================================================
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn enable_sends_the_skipped_deliveries_in_order_within_the_retention() {
+    let f = fixture("kairos_webhooks_t0577_replay");
+    let (receiver, addr) = serve_receiver().await;
+    let (target, _) = add_target(&f, &format!("http://{addr}/hook"));
+    let set_on = |on: bool| {
+        sql_query(format!(
+            "UPDATE webhook_targets SET enabled = {on} WHERE id = '{target}'"
+        ))
+        .execute(&mut conn(&f.url))
+        .expect("set the target");
+    };
+    // One delivery at a time, so the order of the requests is the order
+    // of the queue.
+    let worker = worker_with(&f.url, hook_settings(), job_settings_with(1));
+
+    // The target is off: 4 events are skipped, and nothing is sent.
+    set_on(false);
+    let skipped: Vec<db::Delivery> = (1..=4).map(|n| queue(&f, target, n)).collect();
+    assert!(skipped.iter().all(|d| d.status == "skipped"));
+    drain(&worker, &f.url, Duration::from_secs(10)).await;
+    assert!(receiver.received.lock().unwrap().is_empty());
+    // The first is older than the retention (30 days): it does not go.
+    // The second had a try before the target went off: its log stays.
+    sql_query(format!(
+        "UPDATE webhook_deliveries SET created_at = now() - interval '31 days', \
+             finished_at = now() - interval '31 days' WHERE id = '{}'",
+        skipped[0].id
+    ))
+    .execute(&mut conn(&f.url))
+    .expect("an old event");
+    sql_query(format!(
+        "UPDATE webhook_deliveries SET tries = 1 WHERE id = '{}'",
+        skipped[1].id
+    ))
+    .execute(&mut conn(&f.url))
+    .expect("an earlier try");
+    sql_query(format!(
+        "INSERT INTO webhook_delivery_tries (delivery_id, try, ok, response_code, error, \
+             duration_ms) VALUES ('{}', 1, false, 500, 'The target answered 500.', 3)",
+        skipped[1].id
+    ))
+    .execute(&mut conn(&f.url))
+    .expect("the log of the earlier try");
+
+    // A new event while the target is off removes the finished deliveries
+    // older than the retention.
+    let fifth = queue(&f, target, 5);
+    assert_eq!(fifth.status, "skipped");
+    assert!(
+        db::get_delivery(&mut conn(&f.url), skipped[0].id)
+            .unwrap()
+            .is_none(),
+        "the retention removed the old event"
+    );
+
+    // Turned on: the skipped deliveries go, oldest first, with their ids.
+    let (on, redelivered) = db::enable_target(&mut conn(&f.url), target)
+        .unwrap()
+        .unwrap();
+    assert!(on.enabled);
+    let want: Vec<Uuid> = vec![skipped[1].id, skipped[2].id, skipped[3].id, fifth.id];
+    assert_eq!(redelivered.iter().map(|d| d.id).collect::<Vec<_>>(), want);
+    assert!(redelivered.iter().all(|d| d.status == "pending"));
+    // A new event after the enable goes after them.
+    let sixth = queue(&f, target, 6);
+    drain(&worker, &f.url, Duration::from_secs(30)).await;
+    let received = receiver.received.lock().unwrap().clone();
+    let order: Vec<String> = received
+        .iter()
+        .map(|r| r.headers["x-kairos-delivery"].clone())
+        .collect();
+    let mut expected: Vec<String> = want.iter().map(Uuid::to_string).collect();
+    expected.push(sixth.id.to_string());
+    assert_eq!(order, expected);
+    let ns: Vec<i64> = received
+        .iter()
+        .map(|r| {
+            serde_json::from_slice::<serde_json::Value>(&r.body).unwrap()["data"]["n"]
+                .as_i64()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(ns, vec![2, 3, 4, 5, 6]);
+    for id in &want {
+        assert_eq!(delivery(&f.url, *id).status, "delivered");
+    }
+    // The earlier try stays in the log; the new try is the second.
+    let log = tries(&f.url, skipped[1].id);
+    assert_eq!(
+        log.iter()
+            .map(|t| (t.try_number, t.ok, t.response_code))
+            .collect::<Vec<_>>(),
+        vec![(1, false, Some(500)), (2, true, Some(204))]
+    );
+    assert_eq!(delivery(&f.url, skipped[1].id).tries, 2);
+
+    // Nothing is left to send: a second replay queues nothing.
+    assert!(
+        db::redeliver_skipped(&mut conn(&f.url), target, None)
+            .unwrap()
+            .is_empty()
+    );
+
+    // An old row that the retention did not remove yet does not go
+    // either: redeliver takes the last 30 days only, and `since` limits it
+    // more.
+    set_on(false);
+    let stale = queue(&f, target, 7);
+    let recent = queue(&f, target, 8);
+    let newest = queue(&f, target, 9);
+    for (id, age) in [(stale.id, "40 days"), (recent.id, "2 hours")] {
+        sql_query(format!(
+            "UPDATE webhook_deliveries SET created_at = now() - interval '{age}' \
+             WHERE id = '{id}'"
+        ))
+        .execute(&mut conn(&f.url))
+        .expect("an older event");
+    }
+    set_on(true);
+    let since = chrono::Utc::now() - chrono::Duration::hours(1);
+    let again = db::redeliver_skipped(&mut conn(&f.url), target, Some(since)).unwrap();
+    assert_eq!(
+        again.iter().map(|d| d.id).collect::<Vec<_>>(),
+        vec![newest.id]
+    );
+    let again = db::redeliver_skipped(&mut conn(&f.url), target, None).unwrap();
+    assert_eq!(
+        again.iter().map(|d| d.id).collect::<Vec<_>>(),
+        vec![recent.id]
+    );
+    drain(&worker, &f.url, Duration::from_secs(20)).await;
+    assert_eq!(delivery(&f.url, stale.id).status, "skipped");
+    assert_eq!(delivery(&f.url, recent.id).status, "delivered");
+    assert_eq!(delivery(&f.url, newest.id).status, "delivered");
 }
 
 // ===========================================================================

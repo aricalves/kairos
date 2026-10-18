@@ -100,12 +100,12 @@ fn board_id_by_slug(conn: &mut PgConnection, slug: &str) -> Uuid {
         .unwrap_or_else(|e| panic!("board {slug:?} not found: {e}"))
 }
 
-/// All `activity_log.details` for relationship actions (`entity_id` is
-/// NULL for those per the S-0004 DDL comment), in order.
+/// All `activity_log.details` for relationship actions, in order. Each row
+/// names the source of the edge as its entity (KAIROS-T-0638).
 fn relationship_activity(conn: &mut PgConnection, action: ActivityAction) -> Vec<String> {
     schema::activity_log::table
         .filter(schema::activity_log::action.eq(action.as_str()))
-        .filter(schema::activity_log::entity_id.is_null())
+        .filter(schema::activity_log::entity_id.is_not_null())
         .order(schema::activity_log::occurred_at.asc())
         .select(schema::activity_log::details)
         .load(conn)
@@ -709,6 +709,16 @@ fn relationship_graph_service() {
         ["relationship:blocks:ACME-I-0001->ACME-T-0002".to_string()],
         "unlink writes a relationship_remove activity row"
     );
+    // KAIROS-T-0638: the row names the source of the edge.
+    let entity: (Option<Uuid>, Option<String>) = schema::activity_log::table
+        .filter(schema::activity_log::action.eq(ActivityAction::RelationshipRemove.as_str()))
+        .select((
+            schema::activity_log::entity_id,
+            schema::activity_log::entity_type,
+        ))
+        .first(&mut conn)
+        .expect("the remove row");
+    assert_eq!(entity, (Some(i1.id), Some("initiative".to_string())));
     let missing = graph::unlink_items(&mut conn, i1.id, t2.id, RelationshipType::Blocks, alice);
     assert!(
         matches!(
