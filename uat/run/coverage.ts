@@ -16,7 +16,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { runContext } from './context';
 
-export type SurfaceKind = 'mcp' | 'cli';
+// `gui` is the path of a page that a persona opened (KAIROS-T-0586).
+export type SurfaceKind = 'mcp' | 'cli' | 'gui';
 
 function ledgerPath(): string {
   return path.join(runContext().reportDir, 'surfaces.jsonl');
@@ -33,7 +34,7 @@ function append(record: Record<string, string>): void {
   }
 }
 
-/** One MCP tool call or CLI noun invocation, as it happens. */
+/** One MCP tool call, CLI noun invocation or GUI page, as it happens. */
 export function recordSurface(kind: SurfaceKind, name: string): void {
   if (name) append({ kind, name });
 }
@@ -46,6 +47,8 @@ export function recordJourney(id: string): void {
 export interface SurfaceUsage {
   mcp: string[];
   cli: string[];
+  /** The paths of the pages that the personas opened. */
+  gui: string[];
   journeys: string[];
 }
 
@@ -54,6 +57,7 @@ export function surfaceUsage(): SurfaceUsage {
   const buckets: Record<string, Set<string>> = {
     mcp: new Set(),
     cli: new Set(),
+    gui: new Set(),
     journey: new Set(),
   };
   let raw = '';
@@ -74,6 +78,7 @@ export function surfaceUsage(): SurfaceUsage {
   return {
     mcp: [...buckets.mcp].sort(),
     cli: [...buckets.cli].sort(),
+    gui: [...buckets.gui].sort(),
     journeys: [...buckets.journey].sort(),
   };
 }

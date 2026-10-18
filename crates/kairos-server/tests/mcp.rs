@@ -87,8 +87,8 @@ const TENANT: &str = "acme";
 
 /// How many tools `tools/list` returns, and the word the reference pages
 /// use for that number (COLLIERY-T-0220, COLLIERY-T-0266).
-const TOOL_COUNT: usize = 75;
-const TOOL_COUNT_WORD: &str = "seventy-five";
+const TOOL_COUNT: usize = 78;
+const TOOL_COUNT_WORD: &str = "seventy-eight";
 
 /// Every request carries a real `Host` header and the tenant resolves from
 /// its subdomain against the configured base domain — the S-0006 REQ-1.2
@@ -697,6 +697,10 @@ async fn mcp_endpoint_against_live_stack() {
         "list_dispatch_rules",
         "create_dispatch_rule",
         "delete_dispatch_rule",
+        // KAIROS-T-0558: remove, turn on and test a webhook target.
+        "remove_webhook_target",
+        "enable_webhook_target",
+        "test_webhook_target",
         // KAIROS-T-0431: the read token of the organization for each forge
         // host (an organization admin).
         "list_org_read_tokens",
@@ -918,6 +922,7 @@ async fn mcp_endpoint_against_live_stack() {
             "fifty-eight",
             "sixty-seven",
             "seventy-four",
+            "seventy-five",
         ] {
             assert!(
                 !reference.contains(stale),

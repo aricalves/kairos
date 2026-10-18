@@ -5,6 +5,8 @@
 //! as a holder. Without the grant, the decision is 403 FORBIDDEN: the
 //! details name `approve_proposals` and the two boards, and the proposal
 //! waits. Of two decisions at the same time, one gets 409 CONFLICT.
+//! KAIROS-T-0558: the proposer gets a `proposal_decided` notification, and
+//! `get_item` lists the proposals of an item with their state.
 //!
 //! Runs against the LIVE compose stack (`angreal services up`). Owns the
 //! scratch database `kairos_proposal_deciders_t0659_test`.
@@ -563,5 +565,112 @@ async fn a_holder_of_approve_proposals_on_either_board_decides_once() {
     assert!(
         !text.contains("approve_proposals:"),
         "carol holds no grant: {text}"
+    );
+
+    // 11. KAIROS-T-0558: the proposer learns the outcome. carol proposed in
+    //     steps 5, 6 and 9, and others decided: she has 3 proposal_decided
+    //     notifications. alice (step 3, her own key decided), bob (step 8)
+    //     and the service account (step 7) decided their own: none.
+    #[derive(diesel::QueryableByName)]
+    struct Told {
+        #[diesel(sql_type = diesel::sql_types::Uuid)]
+        user_id: Uuid,
+        #[diesel(sql_type = diesel::sql_types::Text)]
+        text: String,
+        #[diesel(sql_type = diesel::sql_types::Text)]
+        short_code: String,
+    }
+    let told: Vec<Told> = diesel::sql_query(
+        "SELECT n.user_id, n.text, d.short_code FROM notifications n \
+           JOIN entity_directory d ON d.id = n.item_id \
+          WHERE n.kind = 'proposal_decided' ORDER BY n.created_at",
+    )
+    .load(&mut conn)
+    .expect("the notifications");
+    let carol_id = user_id(&mut conn, "carol@kairos.test");
+    assert_eq!(
+        told.len(),
+        3,
+        "{:?}",
+        told.iter().map(|t| &t.text).collect::<Vec<_>>()
+    );
+    assert!(
+        told.iter()
+            .all(|t| t.user_id == carol_id && t.short_code == source)
+    );
+    for (row, (id, target)) in told.iter().zip([
+        (&second, &second_target),
+        (&third, &third_target),
+        (&sixth, &sixth_target),
+    ]) {
+        assert!(
+            row.text.contains(&format!(
+                "your proposal {source} -[blocks]-> {target} ({id})"
+            )),
+            "{}",
+            row.text
+        );
+    }
+    assert!(
+        told[0].text.contains("confirmed") && told[0].text.contains("The edge exists now."),
+        "{}",
+        told[0].text
+    );
+    let (is_error, text) = mcp_call(&base, &carol_token, "get_events", json!({})).await;
+    assert!(!is_error && text.contains("proposal_decided"), "{text}");
+
+    // get_item lists the proposals of an item, with the state: a pending
+    // one first, then the 5 newest decided ones.
+    let (seventh, seventh_target, _) = propose(carol_token.clone(), "11: waits").await;
+    let (is_error, text) = mcp_call(
+        &base,
+        &alice_token,
+        "get_item",
+        json!({"short_code": seventh_target}),
+    )
+    .await;
+    assert!(!is_error, "{text}");
+    let section = text
+        .split("\n## Proposals\n")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no Proposals section: {text}"));
+    assert!(
+        section.starts_with(&format!(
+            "- pending: {source} -[blocks]-> {seventh_target} ({seventh}), proposed by"
+        )),
+        "{section}"
+    );
+    assert!(
+        section.contains("Why: The blocker writes the table"),
+        "{section}"
+    );
+    let (_, text) = mcp_call(
+        &base,
+        &alice_token,
+        "get_item",
+        json!({"short_code": source}),
+    )
+    .await;
+    let section = text
+        .split("\n## Proposals\n")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no Proposals section: {text}"))
+        .split("\n## ")
+        .next()
+        .unwrap_or_default();
+    let lines: Vec<&str> = section.lines().filter(|l| l.starts_with("- ")).collect();
+    assert_eq!(lines.len(), 6, "1 pending and 5 decided: {section}");
+    assert!(lines[0].starts_with("- pending:"), "{section}");
+    assert!(
+        lines[1..]
+            .iter()
+            .all(|l| l.starts_with("- confirmed:") || l.starts_with("- rejected:")),
+        "{section}"
+    );
+    assert!(
+        lines[1..]
+            .iter()
+            .all(|l| l.contains(", confirmed by ") || l.contains(", rejected by ")),
+        "each decided line names the decider: {section}"
     );
 }

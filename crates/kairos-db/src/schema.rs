@@ -275,6 +275,9 @@ diesel::table! {
         author -> Text,
         source -> Text,
         created_at -> Timestamptz,
+        written_state -> Text,
+        comment_state -> Nullable<Text>,
+        busy_until -> Nullable<Timestamptz>,
     }
 }
 

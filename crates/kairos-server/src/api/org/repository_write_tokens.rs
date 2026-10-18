@@ -1,5 +1,7 @@
 //! `/api/repositories/{slug}/write-token` (KAIROS-T-0386): the write token
-//! of the GitHub write-back of a repository.
+//! of the write-back of a repository: the pull requests of a GitHub
+//! repository, and the issues of a GitHub or GitLab repository that became
+//! tasks (KAIROS-T-0575).
 //!
 //! - `GET …/write-token`: the status of the write-back. Open tenant-wide,
 //!   like the repository.
@@ -10,8 +12,8 @@
 //! The token is write-only: no response has it. Kairos seals it with
 //! `KAIROS_SECRETS_KEY` like the read token, with its own associated data
 //! ([`crate::secrets::write_token_aad`]); with no key, a write is refused
-//! with a 501 that names the setting. Only a GitHub repository takes a
-//! write token.
+//! with a 501 that names the setting. Only a GitHub or a GitLab repository
+//! takes a write token.
 //!
 //! Gating: the writes need the right to change the repository (org admin,
 //! or a member of the owner team), as the read token
@@ -73,10 +75,11 @@ pub(crate) async fn get_write_back(
     Ok(Json(status))
 }
 
-/// Set or replace the write token of a GitHub repository. An organization
-/// admin or a member of the owner team can do it. Kairos encrypts the
-/// token, and writes each open pull request that links to an item. The
-/// response is the status, with no token.
+/// Set or replace the write token of a GitHub or GitLab repository. An
+/// organization admin or a member of the owner team can do it. Kairos
+/// encrypts the token. Then Kairos writes each open pull request that
+/// links to an item, and each issue whose task changed. The response is
+/// the status, with no token.
 #[utoipa::path(
     put,
     path = "/api/repositories/{slug}/write-token",
@@ -87,7 +90,7 @@ pub(crate) async fn get_write_back(
         (status = 200, description = "The token is set", body = dto::RepositoryWriteBack),
         (status = 403, description = "Not an organization admin, and not a member of the owner team", body = kairos_client::types::ErrorEnvelope),
         (status = 404, description = "Unknown repository", body = kairos_client::types::ErrorEnvelope),
-        (status = 422, description = "Not a GitHub repository, an unknown field, or a token that is empty, too long or has a space", body = kairos_client::types::ErrorEnvelope),
+        (status = 422, description = "Not a GitHub or GitLab repository, an unknown field, or a token that is empty, too long or has a space", body = kairos_client::types::ErrorEnvelope),
         (status = 501, description = "This deployment has no KAIROS_SECRETS_KEY", body = kairos_client::types::ErrorEnvelope),
     ),
 )]
@@ -105,9 +108,10 @@ pub(crate) async fn set_write_token(
         .blocking
         .run(&tenant.slug, move |conn| {
             let repo = changeable(conn, &tenant_slug, user, &slug)?;
-            if repo.forge != Forge::Github {
+            if !matches!(repo.forge, Forge::Github | Forge::Gitlab) {
                 return Err(ApiError::validation(format!(
-                    "The repository {:?} is on {}. Only a GitHub repository has a write-back.",
+                    "The repository {:?} is on {}. Only a GitHub or a GitLab repository has a \
+                     write-back.",
                     repo.slug, repo.forge
                 ))
                 .with_details(json!({ "field": "token" })));
@@ -145,6 +149,10 @@ pub(crate) async fn set_write_token(
                 )
                 .map_err(ApiError::internal)?;
                 writeback::queue_open_prs(conn, repo.id).map_err(ApiError::internal)?;
+                // KAIROS-T-0575: the issues whose task is done, cancelled or
+                // reopened since the intake.
+                kairos_db::issue_writeback::queue_changed_issues(conn, repo.id)
+                    .map_err(ApiError::internal)?;
                 Ok(())
             })?;
             write_back_of(conn, repo.id).map_err(ApiError::internal)

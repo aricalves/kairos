@@ -241,9 +241,11 @@ pub enum ReposCommand {
         #[command(subcommand)]
         command: CredentialCommand,
     },
-    /// Set, remove or show the write token of the GitHub write-back. With
-    /// it, Kairos writes a comment and the commit status `kairos` on each
-    /// pull request that links to an item. No command shows the token
+    /// Set, remove or show the write token of the write-back. With it,
+    /// Kairos writes a comment and the commit status `kairos` on each GitHub
+    /// pull request that links to an item. It also comments on an issue
+    /// that became a task, and closes or opens it with the task. No command
+    /// shows the token
     #[command(name = "write-token")]
     WriteToken {
         #[command(subcommand)]
@@ -395,13 +397,14 @@ impl CredentialCommand {
     }
 }
 
-/// The write token of the GitHub write-back (KAIROS-T-0386).
+/// The write token of the write-back (KAIROS-T-0386, KAIROS-T-0575).
 #[derive(clap::Subcommand, Debug)]
 pub enum WriteTokenCommand {
     /// Set or replace the write token. The command reads the token from
-    /// standard input, or asks for it on the terminal. Use a GitHub
-    /// fine-grained token with "Pull requests: write" and "Commit statuses:
-    /// write" on the one repository
+    /// standard input, or asks for it on the terminal. On GitHub, use a
+    /// fine-grained token with "Pull requests: write", "Commit statuses:
+    /// write" and "Issues: write" on the one repository. On GitLab, use a
+    /// project access token with the scope "api"
     Set {
         /// Repository slug (or UUID)
         repository: String,
@@ -409,7 +412,7 @@ pub enum WriteTokenCommand {
         common: Common,
     },
     /// Remove the write token (needs --confirm). Kairos writes nothing more
-    /// to GitHub
+    /// to the forge
     Remove {
         /// Repository slug (or UUID)
         repository: String,
