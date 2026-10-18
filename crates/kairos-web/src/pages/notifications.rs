@@ -65,6 +65,7 @@ struct NotificationSettings {
     agent_key_revoked: bool,
     claim_dropped: bool,
     claim_stale: bool,
+    key_expiring: bool,
 }
 
 /// mirror of: `kairos_client::types_notifications::MarkNotificationsReadResponse`
@@ -217,6 +218,7 @@ fn kind_label(kind: &str) -> &'static str {
         "agent_key_revoked" => "Agent key revoked",
         "claim_dropped" => "Claim dropped",
         "claim_stale" => "Claim stale",
+        "key_expiring" => "Key expiring",
         _ => "Notification",
     }
 }
@@ -482,6 +484,7 @@ pub fn NotificationsPage() -> impl IntoView {
     let agent_key_revoked = RwSignal::new(true);
     let claim_dropped = RwSignal::new(true);
     let claim_stale = RwSignal::new(true);
+    let key_expiring = RwSignal::new(true);
     let settings_reload = RwSignal::new(0u32);
     let settings = LocalResource::new(move || {
         auth.track_session();
@@ -501,6 +504,7 @@ pub fn NotificationsPage() -> impl IntoView {
             agent_key_revoked.set(s.agent_key_revoked);
             claim_dropped.set(s.claim_dropped);
             claim_stale.set(s.claim_stale);
+            key_expiring.set(s.key_expiring);
         }
     });
     let on_save = move |_| {
@@ -516,6 +520,7 @@ pub fn NotificationsPage() -> impl IntoView {
             "agent_key_revoked": agent_key_revoked.get_untracked(),
             "claim_dropped": claim_dropped.get_untracked(),
             "claim_stale": claim_stale.get_untracked(),
+            "key_expiring": key_expiring.get_untracked(),
         });
         run_mutation(
             busy,
@@ -626,6 +631,8 @@ pub fn NotificationsPage() -> impl IntoView {
                                     label="A person leaves, and their claim on a task of your team ends"/>
                                 <Switch checked=claim_stale
                                     label="A claim of yours, or on a task of your initiative, has no write for days"/>
+                                <Switch checked=key_expiring
+                                    label="An agent key of yours, or a key of a service account, expires within 7 days"/>
                                 <Group justify="end">
                                     <Button on_click=Callback::new(on_save)>"Save"</Button>
                                 </Group>
@@ -745,6 +752,7 @@ mod tests {
             "agent_key_revoked",
             "claim_dropped",
             "claim_stale",
+            "key_expiring",
         ] {
             assert_ne!(kind_label(kind), "Notification", "{kind}");
         }
