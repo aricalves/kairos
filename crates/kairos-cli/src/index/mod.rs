@@ -18,7 +18,9 @@
 //!   summaries than the local index links, the CLI takes the pool of the
 //!   base first (KAIROS-T-0355, [`take_base_summaries`]). If more
 //!   files than the limit changed since the base, it builds nothing and
-//!   tells the developer to rebase, or to run `kairos index --full`.
+//!   tells the developer to rebase, or to run `kairos index --full`. The
+//!   default limit applies only when a model runs ([`limit_of`],
+//!   KAIROS-T-0515).
 //! - `kairos index --full` builds the index again with no base: the same as
 //!   `kairos index build`.
 //! - `kairos index status` gives the counts.
@@ -58,9 +60,17 @@ pub use error::IndexCommandError;
 
 use crate::error::CliError;
 
-/// The default limit of the files changed since the base index
-/// (COLLIERY-I-0264, "The flow").
+/// The default limit of the files changed since the base index, when a
+/// model runs (COLLIERY-I-0264, "The flow"). An update that runs no model
+/// has no default limit (KAIROS-T-0515): it parses the changed files and
+/// links the summaries of the pool, about 0.1 s for each file.
 pub const DEFAULT_MAX_CHANGED: usize = 200;
+
+/// The limit of the files changed since the base index: `max_changed`, else
+/// [`DEFAULT_MAX_CHANGED`] when a model runs, else no limit (KAIROS-T-0515).
+pub(super) fn limit_of(max_changed: Option<usize>, model_runs: bool) -> Option<usize> {
+    max_changed.or(model_runs.then_some(DEFAULT_MAX_CHANGED))
+}
 
 /// `kairos index`: a subcommand, or `--full`.
 #[derive(clap::Args)]
@@ -111,9 +121,9 @@ pub enum IndexCommand {
         /// Run no model: link the summaries of the pool and make no new ones
         #[arg(long)]
         link_only: bool,
-        /// The most files that can change since the base index. Above it, the CLI builds nothing
-        #[arg(long, default_value_t = DEFAULT_MAX_CHANGED)]
-        max_changed: usize,
+        /// The most files that can change since the base index. Above it, the CLI builds nothing. Default: 200 when a model runs, no limit with --link-only or on a hosted repository
+        #[arg(long)]
+        max_changed: Option<usize>,
         #[command(flatten)]
         remote: base::RemoteArgs,
     },
@@ -402,7 +412,7 @@ async fn update(
     root: &Path,
     rust_edges: bool,
     link_only: bool,
-    max_changed: usize,
+    max_changed: Option<usize>,
     remote: &base::RemoteArgs,
 ) -> Result<(), IndexCommandError> {
     let db = db_path(root);
@@ -428,10 +438,13 @@ async fn update(
     // KAIROS_INDEX_SUMMARIZE says. With no answer from Kairos, the CLI
     // cannot know, and it runs as before.
     let hosted = matches!(&found, base::Found::Base(b) if b.hosted);
+    let limit = limit_of(max_changed, !(link_only || hosted));
     match (found, &local) {
         (base::Found::Base(b), Local::Current(n)) if *n <= b.changed => {
-            if *n > max_changed {
-                return Err(too_far(root, &b, max_changed));
+            if let Some(limit) = limit
+                && *n > limit
+            {
+                return Err(too_far(root, &b, *n, limit, true, error::Caller::Cli));
             }
             println!(
                 "Kairos: the local index is nearer to the tree than the index of {} \
@@ -444,8 +457,17 @@ async fn update(
             }
         }
         (base::Found::Base(b), _) => {
-            if b.changed > max_changed {
-                return Err(too_far(root, &b, max_changed));
+            if let Some(limit) = limit
+                && b.changed > limit
+            {
+                return Err(too_far(
+                    root,
+                    &b,
+                    b.changed,
+                    limit,
+                    false,
+                    error::Caller::Cli,
+                ));
             }
             download = Some(b);
         }
@@ -564,15 +586,53 @@ pub(super) fn reason(found: &base::Found) -> String {
     }
 }
 
-/// The rebase answer: more than `limit` files changed since the base.
-pub(super) fn too_far(root: &Path, b: &base::Base, limit: usize) -> IndexCommandError {
-    IndexCommandError::TooFar {
-        changed: b.changed,
-        commit: b.short().to_string(),
-        limit,
-        branch: b.branch.clone(),
-        estimate: base::full_build_estimate(base::file_count(root), b.summaries),
-    }
+/// The refusal: `changed` files, more than `limit`, changed since the
+/// index that the update starts from: the base, or the local index when it
+/// is nearer (`local`, KAIROS-T-0515). The text says what to do
+/// (KAIROS-T-0517): pull when the checkout is only behind, else rebase or
+/// build again; and the limit to give.
+pub(super) fn too_far(
+    root: &Path,
+    b: &base::Base,
+    changed: usize,
+    limit: usize,
+    local: bool,
+    caller: error::Caller,
+) -> IndexCommandError {
+    let commit = b.short().to_string();
+    let since = if local {
+        error::Since::Local { changed, commit }
+    } else if b.distance > 0 {
+        error::Since::Below {
+            changed,
+            commit,
+            distance: b.distance,
+            from: base::short(&b.from).to_string(),
+        }
+    } else {
+        error::Since::Base { changed, commit }
+    };
+    let (stop, raise) = match caller {
+        error::Caller::Cli => (error::Stop::Cli(limit), error::Raise::Cli(changed)),
+        error::Caller::Tool => (error::Stop::Tool(limit), error::Raise::Tool(changed)),
+    };
+    let advice = match b.behind {
+        Some(commits) => error::Advice::Behind {
+            commits,
+            branch: b.branch.clone(),
+            raise,
+        },
+        None => error::Advice::Rebase {
+            branch: b.branch.clone(),
+            estimate: base::full_build_estimate(base::file_count(root), b.summaries),
+            raise,
+        },
+    };
+    IndexCommandError::TooFar(Box::new(error::TooFar {
+        since,
+        stop,
+        advice,
+    }))
 }
 
 /// Put the downloaded index at `db`. With `keep_pool`, the summaries of the
@@ -923,7 +983,7 @@ mod tests {
                 remote,
                 ..
             }) => {
-                assert_eq!(max_changed, 5);
+                assert_eq!(max_changed, Some(5));
                 assert_eq!(remote.repository.as_deref(), Some("kairos"));
             }
             _ => panic!("not update"),
@@ -932,13 +992,22 @@ mod tests {
         assert!(matches!(
             default.command,
             Some(IndexCommand::Update {
-                max_changed: DEFAULT_MAX_CHANGED,
+                max_changed: None,
                 ..
             })
         ));
         assert!(parse(&["kairos", "index", "--full", "update"]).is_err());
         assert!(parse(&["kairos", "index", "update", "--full"]).is_err());
         assert!(parse(&["kairos", "index", "update", "--depth", "3"]).is_err());
+    }
+
+    /// KAIROS-T-0515: an update that runs no model has no default limit.
+    #[test]
+    fn the_default_limit_applies_only_when_a_model_runs() {
+        assert_eq!(limit_of(None, true), Some(DEFAULT_MAX_CHANGED));
+        assert_eq!(limit_of(None, false), None);
+        assert_eq!(limit_of(Some(7), false), Some(7));
+        assert_eq!(limit_of(Some(900), true), Some(900));
     }
 
     #[test]
