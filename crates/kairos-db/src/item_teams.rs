@@ -195,6 +195,29 @@ pub fn board_teams(
     Ok(group(rows))
 }
 
+/// [`board_teams`] for the items `item_ids` of the board only (the items of
+/// one page, KAIROS-T-0627), in ONE query. A task, an ADR and an archived
+/// item of the list have no entry, as in [`board_teams`].
+pub fn page_teams(
+    conn: &mut PgConnection,
+    board_id: Uuid,
+    item_ids: &[Uuid],
+) -> Result<HashMap<Uuid, Vec<ItemTeam>>, DieselError> {
+    if item_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows: Vec<ItemTeam> = sql_query(teams_sql(
+        "SELECT id FROM initiatives \
+          WHERE board_id = $1 AND deleted_at IS NULL AND id = ANY($2) \
+         UNION ALL SELECT id FROM strategies \
+          WHERE board_id = $1 AND deleted_at IS NULL AND id = ANY($2)",
+    ))
+    .bind::<SqlUuid, _>(board_id)
+    .bind::<Array<SqlUuid>, _>(item_ids)
+    .load(conn)?;
+    Ok(group(rows))
+}
+
 fn group(rows: Vec<ItemTeam>) -> HashMap<Uuid, Vec<ItemTeam>> {
     let mut by_item: HashMap<Uuid, Vec<ItemTeam>> = HashMap::new();
     for row in rows {

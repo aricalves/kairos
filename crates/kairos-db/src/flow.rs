@@ -39,13 +39,30 @@
 //!
 //! Only the live items of the board count: an archived item, and an item
 //! that is on a different board now, do not.
+//!
+//! # The read is bounded by the range (KAIROS-T-0627)
+//!
+//! [`load_moves`] reads each move from the start of the range on. Before
+//! the range it reads at most four moves of each item, the ones that
+//! [`compute`] can use: the first (the column at the creation), the last
+//! (the column at the start of the range), the first entry into a start
+//! column, and the last entry into a done column. The numbers are the same
+//! as from every move. The cumulative flow has an old column name only
+//! when it has an item on a day of the range.
+//!
+//! [`FlowBoard::stamp`] is a hash of what the board has now: the columns,
+//! the items with their column and the time of their last change, and the
+//! cancel marks. A move changes it, so a cache with the stamp in its key
+//! needs no drop on a transition.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 use chrono::{DateTime, Datelike, Days, NaiveDate, Utc};
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::result::Error as DieselError;
+use diesel::sql_query;
 use uuid::Uuid;
 
 /// The most days that one range can have.
@@ -149,12 +166,21 @@ pub struct Flow {
     /// Oldest first.
     pub ageing: Vec<AgeingItem>,
     /// The columns of the cumulative flow: the columns of the board in
-    /// position order, then the old names that the history has.
+    /// position order, then the old names that have an item on a day of
+    /// the range, in name order.
     pub cfd_columns: Vec<String>,
     pub cfd: Vec<FlowDay>,
 }
 
 impl Flow {
+    /// Set the age of each item in progress to its age at `now`: a cached
+    /// result is right at the time of each read.
+    pub fn age_at(&mut self, now: DateTime<Utc>) {
+        for item in &mut self.ageing {
+            item.age_days = days_between(item.started_at, now).max(0.0);
+        }
+    }
+
     /// The number of done items in the range (not cancelled).
     pub fn done_count(&self) -> i64 {
         self.throughput.iter().map(|w| w.done).sum()
@@ -196,6 +222,28 @@ fn end_of(date: NaiveDate) -> DateTime<Utc> {
 /// time when the item is not on the board.
 type Timeline = Vec<(DateTime<Utc>, Option<String>)>;
 
+/// The names of the start columns and of the done columns (module docs).
+fn start_and_done_names(columns: &[FlowColumn]) -> (HashSet<String>, HashSet<String>) {
+    let mut start_names: HashSet<String> = columns
+        .iter()
+        .filter(|c| c.claims)
+        .map(|c| c.name.clone())
+        .collect();
+    if start_names.is_empty() {
+        start_names = columns
+            .iter()
+            .filter(|c| c.name.eq_ignore_ascii_case("active"))
+            .map(|c| c.name.clone())
+            .collect();
+    }
+    let done_names = columns
+        .iter()
+        .filter(|c| c.is_done)
+        .map(|c| c.name.clone())
+        .collect();
+    (start_names, done_names)
+}
+
 /// Compute the metrics of `input` for the days `from..=to`, at `now`. Pure.
 pub fn compute(input: &FlowInput, from: NaiveDate, to: NaiveDate, now: DateTime<Utc>) -> Flow {
     let name_of: HashMap<Uuid, &str> = input
@@ -203,26 +251,7 @@ pub fn compute(input: &FlowInput, from: NaiveDate, to: NaiveDate, now: DateTime<
         .iter()
         .map(|c| (c.id, c.name.as_str()))
         .collect();
-    let mut start_names: HashSet<String> = input
-        .columns
-        .iter()
-        .filter(|c| c.claims)
-        .map(|c| c.name.clone())
-        .collect();
-    if start_names.is_empty() {
-        start_names = input
-            .columns
-            .iter()
-            .filter(|c| c.name.eq_ignore_ascii_case("active"))
-            .map(|c| c.name.clone())
-            .collect();
-    }
-    let done_names: HashSet<String> = input
-        .columns
-        .iter()
-        .filter(|c| c.is_done)
-        .map(|c| c.name.clone())
-        .collect();
+    let (start_names, done_names) = start_and_done_names(&input.columns);
     let mut moves_of: HashMap<Uuid, Vec<&FlowMove>> = HashMap::new();
     for m in &input.moves {
         moves_of.entry(m.item_id).or_default().push(m);
@@ -253,7 +282,7 @@ pub fn compute(input: &FlowInput, from: NaiveDate, to: NaiveDate, now: DateTime<
         timelines.push((item, line));
     }
 
-    let range_start = from.and_hms_opt(0, 0, 0).expect("midnight").and_utc();
+    let range_start = start_of(from);
     let range_end = end_of(to);
     let in_range = |at: DateTime<Utc>| at >= range_start && at < range_end;
 
@@ -317,17 +346,16 @@ pub fn compute(input: &FlowInput, from: NaiveDate, to: NaiveDate, now: DateTime<
     cycle_times.sort_by_key(|c| c.done_at);
     ageing.sort_by(|a, b| b.age_days.total_cmp(&a.age_days));
 
-    // The cumulative flow.
+    // The cumulative flow: the columns of the board, then the old names
+    // in name order.
     let mut cfd_columns: Vec<String> = input.columns.iter().map(|c| c.name.clone()).collect();
-    for (_, line) in &timelines {
-        for (_, column) in line {
-            if let Some(column) = column
-                && !cfd_columns.contains(column)
-            {
-                cfd_columns.push(column.clone());
-            }
-        }
-    }
+    let old_names: BTreeSet<&String> = timelines
+        .iter()
+        .flat_map(|(_, line)| line.iter().filter_map(|(_, column)| column.as_ref()))
+        .filter(|column| !cfd_columns.contains(column))
+        .collect();
+    let board_columns = cfd_columns.len();
+    cfd_columns.extend(old_names.into_iter().cloned());
     let index: HashMap<&str, usize> = cfd_columns
         .iter()
         .enumerate()
@@ -352,6 +380,25 @@ pub fn compute(input: &FlowInput, from: NaiveDate, to: NaiveDate, now: DateTime<
         }
         cfd.push(FlowDay { date: day, counts });
         day = day + Days::new(1);
+    }
+    // An old name with no item on any day of the range is not a column of
+    // the cumulative flow: the bounded read (module docs) does not see it.
+    let keep: Vec<bool> = (0..cfd_columns.len())
+        .map(|i| i < board_columns || cfd.iter().any(|d| d.counts[i] > 0))
+        .collect();
+    if keep.contains(&false) {
+        let mut i = 0;
+        cfd_columns.retain(|_| {
+            i += 1;
+            keep[i - 1]
+        });
+        for day in &mut cfd {
+            let mut i = 0;
+            day.counts.retain(|_| {
+                i += 1;
+                keep[i - 1]
+            });
+        }
     }
 
     let mut start_columns: Vec<String> = input
@@ -409,11 +456,27 @@ fn parse_board_move(details: &str) -> Option<(Uuid, Uuid, Uuid, Uuid)> {
     ))
 }
 
-/// Read the input of [`compute`] for the board `board_id`: its live
-/// columns, its live items (of the four types), their moves, and the
-/// cancelled tasks. 4 queries and one for each type.
-pub fn load_input(conn: &mut PgConnection, board_id: Uuid) -> Result<FlowInput, DieselError> {
-    use crate::schema::{activity_log, adrs, board_columns, initiatives, strategies, tasks};
+/// What the board has now (module docs): the cheap part of the input of
+/// [`compute`], with the stamp of a cache key.
+#[derive(Debug, Clone, Default)]
+pub struct FlowBoard {
+    /// In position order.
+    pub columns: Vec<FlowColumn>,
+    pub items: Vec<FlowItem>,
+    /// The cancelled tasks, with the time of the cancel.
+    pub cancelled: HashMap<Uuid, DateTime<Utc>>,
+    /// The name of each column of the board, removed or not, by id: a
+    /// `board_move` row names its columns by id.
+    pub column_names: HashMap<Uuid, String>,
+    /// A hash of the columns, the items (with their column and the time of
+    /// their last change) and the cancel marks.
+    pub stamp: u64,
+}
+
+/// Read the live columns of the board `board_id`, its live items (of the
+/// four types) and the cancelled tasks. 4 queries and one for each type.
+pub fn load_board(conn: &mut PgConnection, board_id: Uuid) -> Result<FlowBoard, DieselError> {
+    use crate::schema::{adrs, board_columns, initiatives, strategies, tasks};
 
     let columns: Vec<FlowColumn> = board_columns::table
         .filter(board_columns::board_id.eq(board_id))
@@ -435,7 +498,7 @@ pub fn load_input(conn: &mut PgConnection, board_id: Uuid) -> Result<FlowInput, 
         })
         .collect();
 
-    type Row = (Uuid, String, String, Uuid, DateTime<Utc>);
+    type Row = (Uuid, String, String, Uuid, DateTime<Utc>, DateTime<Utc>);
     let mut rows: Vec<Row> = Vec::new();
     macro_rules! live_items {
         ($table:ident) => {
@@ -449,6 +512,7 @@ pub fn load_input(conn: &mut PgConnection, board_id: Uuid) -> Result<FlowInput, 
                         $table::title,
                         $table::column_id,
                         $table::created_at,
+                        $table::updated_at,
                     ))
                     .load::<Row>(conn)?,
             )
@@ -468,40 +532,181 @@ pub fn load_input(conn: &mut PgConnection, board_id: Uuid) -> Result<FlowInput, 
                 adrs::title,
                 adrs::column_id.assume_not_null(),
                 adrs::created_at,
+                adrs::updated_at,
             ))
             .load::<Row>(conn)?,
     );
-    let items: Vec<FlowItem> = rows
-        .into_iter()
-        .map(|(id, short_code, title, column_id, created_at)| FlowItem {
-            id,
-            short_code,
-            title,
-            column_id,
-            created_at,
-        })
-        .collect();
-    let ids: Vec<Uuid> = items.iter().map(|i| i.id).collect();
-
-    let column_name: HashMap<Uuid, String> = board_columns::table
+    let column_names: HashMap<Uuid, String> = board_columns::table
         .filter(board_columns::board_id.eq(board_id))
         .select((board_columns::id, board_columns::name))
         .load::<(Uuid, String)>(conn)?
         .into_iter()
         .collect();
-    let log: Vec<(Uuid, String, String, DateTime<Utc>)> = activity_log::table
-        .filter(activity_log::entity_id.eq_any(&ids))
-        .filter(activity_log::action.eq_any(["transition", "cancel", "board_move"]))
-        .order(activity_log::occurred_at.asc())
-        .select((
-            activity_log::entity_id.assume_not_null(),
-            activity_log::action,
-            activity_log::details,
-            activity_log::occurred_at,
-        ))
+    let ids: Vec<Uuid> = rows.iter().map(|row| row.0).collect();
+    let cancelled: HashMap<Uuid, DateTime<Utc>> = {
+        use crate::schema::task_cancellations as tc;
+        tc::table
+            .filter(tc::task_id.eq_any(&ids))
+            .select((tc::task_id, tc::cancelled_at))
+            .load::<(Uuid, DateTime<Utc>)>(conn)?
+            .into_iter()
+            .collect()
+    };
+
+    let mut hasher = DefaultHasher::new();
+    for column in &columns {
+        (column.id, &column.name, column.is_done, column.claims).hash(&mut hasher);
+    }
+    let mut sorted: Vec<&Row> = rows.iter().collect();
+    sorted.sort_by_key(|row| row.0);
+    sorted.hash(&mut hasher);
+    let mut marks: Vec<(&Uuid, &DateTime<Utc>)> = cancelled.iter().collect();
+    marks.sort();
+    marks.hash(&mut hasher);
+    let mut names: Vec<(&Uuid, &String)> = column_names.iter().collect();
+    names.sort();
+    names.hash(&mut hasher);
+    let stamp = hasher.finish();
+
+    let items = rows
+        .into_iter()
+        .map(
+            |(id, short_code, title, column_id, created_at, _)| FlowItem {
+                id,
+                short_code,
+                title,
+                column_id,
+                created_at,
+            },
+        )
+        .collect();
+    Ok(FlowBoard {
+        columns,
+        items,
+        cancelled,
+        column_names,
+        stamp,
+    })
+}
+
+/// A row of the activity log that moves an item.
+#[derive(QueryableByName)]
+struct MoveRow {
+    #[diesel(sql_type = diesel::sql_types::Uuid)]
+    entity_id: Uuid,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    action: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    details: String,
+    #[diesel(sql_type = diesel::sql_types::Timestamptz)]
+    occurred_at: DateTime<Utc>,
+}
+
+/// The part of the details of a `transition` or a `cancel` row that
+/// [`parse_column_move`] splits: after `column:`, before ` reason:`.
+const BODY: &str = "split_part(substr(a.details, 8), ' reason:', 1)";
+
+/// The rows of the items `$1` before `$2` that move an item on the board
+/// or onto it or off it (`$5`, `$6`: the patterns of a `board_move` row
+/// from and to the board).
+fn before_range_sql() -> String {
+    let to = format!("substr({BODY}, strpos({BODY}, '->') + 2)");
+    let moves = format!(
+        "a.entity_id = e.id AND a.occurred_at < $2 \
+         AND ((a.action IN ('transition', 'cancel') AND a.details LIKE 'column:%' \
+               AND strpos({BODY}, '->') > 0) \
+              OR (a.action = 'board_move' AND (a.details LIKE $5 OR a.details LIKE $6)))"
+    );
+    let into = |names: &str, patterns: &str| {
+        format!(
+            "((a.action <> 'board_move' AND {to} = ANY({names})) \
+              OR (a.action = 'board_move' AND a.details LIKE ANY({patterns})))"
+        )
+    };
+    let pick = |filter: &str, order: &str| {
+        format!(
+            "(SELECT a.id, a.entity_id, a.action, a.details, a.occurred_at \
+               FROM activity_log a WHERE {moves}{filter} \
+              ORDER BY a.occurred_at {order}, a.id {order} LIMIT 1)"
+        )
+    };
+    format!(
+        "SELECT x.entity_id, x.action, x.details, x.occurred_at \
+           FROM unnest($1::uuid[]) AS e(id) \
+           CROSS JOIN LATERAL ({} UNION {} UNION {} UNION {}) x",
+        pick("", "ASC"),
+        pick("", "DESC"),
+        pick(&format!(" AND {}", into("$3", "$7")), "ASC"),
+        pick(&format!(" AND {}", into("$4", "$8")), "DESC"),
+    )
+}
+
+/// Read the moves of the items of `board` that [`compute`] needs for a
+/// range that starts at `since` (module docs): each move from `since` on,
+/// and at most four moves of each item before it. 2 queries.
+pub fn load_moves(
+    conn: &mut PgConnection,
+    board_id: Uuid,
+    board: &FlowBoard,
+    since: DateTime<Utc>,
+) -> Result<Vec<FlowMove>, DieselError> {
+    use crate::schema::activity_log;
+    use diesel::sql_types::{Array, Text, Timestamptz};
+
+    let ids: Vec<Uuid> = board.items.iter().map(|i| i.id).collect();
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (start_names, done_names) = start_and_done_names(&board.columns);
+    // A `board_move` onto a column with a start (or done) name.
+    let onto = |names: &HashSet<String>| -> Vec<String> {
+        board
+            .column_names
+            .iter()
+            .filter(|(_, name)| names.contains(*name))
+            .map(|(id, _)| format!("board:%->{board_id} column:%->{id}"))
+            .collect()
+    };
+    let mut rows: Vec<MoveRow> = sql_query(before_range_sql())
+        .bind::<Array<diesel::sql_types::Uuid>, _>(&ids)
+        .bind::<Timestamptz, _>(since)
+        .bind::<Array<Text>, _>(start_names.iter().cloned().collect::<Vec<_>>())
+        .bind::<Array<Text>, _>(done_names.iter().cloned().collect::<Vec<_>>())
+        .bind::<Text, _>(format!("board:{board_id}->%"))
+        .bind::<Text, _>(format!("board:%->{board_id} column:%"))
+        .bind::<Array<Text>, _>(onto(&start_names))
+        .bind::<Array<Text>, _>(onto(&done_names))
         .load(conn)?;
+    rows.extend(
+        activity_log::table
+            .filter(activity_log::entity_id.eq_any(&ids))
+            .filter(activity_log::action.eq_any(["transition", "cancel", "board_move"]))
+            .filter(activity_log::occurred_at.ge(since))
+            .select((
+                activity_log::entity_id.assume_not_null(),
+                activity_log::action,
+                activity_log::details,
+                activity_log::occurred_at,
+            ))
+            .load::<(Uuid, String, String, DateTime<Utc>)>(conn)?
+            .into_iter()
+            .map(|(entity_id, action, details, occurred_at)| MoveRow {
+                entity_id,
+                action,
+                details,
+                occurred_at,
+            }),
+    );
+    rows.sort_by_key(|row| row.occurred_at);
+
     let mut moves = Vec::new();
-    for (item_id, action, details, at) in log {
+    for MoveRow {
+        entity_id: item_id,
+        action,
+        details,
+        occurred_at: at,
+    } in rows
+    {
         if action == "board_move" {
             let Some((from_board, to_board, from_column, to_column)) = parse_board_move(&details)
             else {
@@ -512,13 +717,13 @@ pub fn load_input(conn: &mut PgConnection, board_id: Uuid) -> Result<FlowInput, 
                     item_id,
                     at,
                     from: None,
-                    to: column_name.get(&to_column).cloned(),
+                    to: board.column_names.get(&to_column).cloned(),
                 });
             } else if from_board == board_id {
                 moves.push(FlowMove {
                     item_id,
                     at,
-                    from: column_name.get(&from_column).cloned(),
+                    from: board.column_names.get(&from_column).cloned(),
                     to: None,
                 });
             }
@@ -531,22 +736,37 @@ pub fn load_input(conn: &mut PgConnection, board_id: Uuid) -> Result<FlowInput, 
             });
         }
     }
+    Ok(moves)
+}
 
-    let cancelled = {
-        use crate::schema::task_cancellations as tc;
-        tc::table
-            .filter(tc::task_id.eq_any(&ids))
-            .select((tc::task_id, tc::cancelled_at))
-            .load::<(Uuid, DateTime<Utc>)>(conn)?
-            .into_iter()
-            .collect()
-    };
-    Ok(FlowInput {
-        columns,
-        items,
-        moves,
-        cancelled,
-    })
+/// Read the input of [`compute`] for the board `board_id` and a range that
+/// starts at `since`: [`load_board`] and [`load_moves`].
+pub fn load_input(
+    conn: &mut PgConnection,
+    board_id: Uuid,
+    since: DateTime<Utc>,
+) -> Result<FlowInput, DieselError> {
+    let board = load_board(conn, board_id)?;
+    let moves = load_moves(conn, board_id, &board, since)?;
+    Ok(FlowInput::new(board, moves))
+}
+
+impl FlowInput {
+    /// The input of a board and its moves.
+    pub fn new(board: FlowBoard, moves: Vec<FlowMove>) -> Self {
+        FlowInput {
+            columns: board.columns,
+            items: board.items,
+            moves,
+            cancelled: board.cancelled,
+        }
+    }
+}
+
+/// The first instant of the day `date` (UTC): the `since` of a range that
+/// starts on that day.
+pub fn start_of(date: NaiveDate) -> DateTime<Utc> {
+    date.and_hms_opt(0, 0, 0).expect("midnight").and_utc()
 }
 
 #[cfg(test)]
@@ -745,6 +965,54 @@ mod tests {
         );
         assert!(flow.start_columns.is_empty());
         assert!(flow.cycle_times.is_empty());
+    }
+
+    /// KAIROS-T-0627: an old column name is a column of the cumulative flow
+    /// only when it has an item on a day of the range.
+    #[test]
+    fn an_old_name_with_no_item_in_the_range_is_not_a_column() {
+        let (mut input, ids) = board();
+        // B was in "Doing" (the old name of a column) before the range,
+        // and A was in "Review" on 2026-09-29 only.
+        input
+            .moves
+            .push(mv(ids[1], "2026-09-28T08:10:00Z", "Backlog", "Doing"));
+        input
+            .moves
+            .push(mv(ids[1], "2026-09-28T08:20:00Z", "Doing", "Backlog"));
+        input
+            .moves
+            .push(mv(ids[0], "2026-09-29T08:00:00Z", "Active", "Review"));
+        input
+            .moves
+            .push(mv(ids[0], "2026-09-29T23:00:00Z", "Review", "Active"));
+        input
+            .moves
+            .push(mv(ids[0], "2026-09-29T23:30:00Z", "Active", "Review"));
+        let flow = compute(
+            &input,
+            date("2026-09-29"),
+            date("2026-10-01"),
+            at("2026-10-11T10:00:00Z"),
+        );
+        assert_eq!(
+            flow.cfd_columns,
+            vec!["Backlog", "Todo", "Active", "Done", "Review"]
+        );
+        assert!(flow.cfd.iter().all(|d| d.counts.len() == 5));
+    }
+
+    #[test]
+    fn a_cached_result_gets_the_age_at_the_read() {
+        let (input, _) = board();
+        let mut flow = compute(
+            &input,
+            date("2026-09-28"),
+            date("2026-10-11"),
+            at("2026-10-11T10:00:00Z"),
+        );
+        flow.age_at(at("2026-10-12T10:00:00Z"));
+        assert!((flow.ageing[0].age_days - 13.0).abs() < 1e-9);
     }
 
     #[test]
