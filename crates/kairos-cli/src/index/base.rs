@@ -7,7 +7,7 @@
 //!   `KAIROS_MCP_KEY` (an agent key or a service-account key, as the plugin
 //!   and `scripts/render-references.sh` use), else the credential cache.
 //!   [`crate::auth`] resolves both, as for each other command.
-//! - **The repository.** `--repository`, else `repository` in
+//! - **The repository.** `--repo`, else `repository` in
 //!   `.claude/kairos.local.md`, else the repository of Kairos whose
 //!   `repo_url` is the `origin` remote of the checkout.
 //! - **The branch point.** `git merge-base HEAD origin/<default branch>`
@@ -49,8 +49,8 @@ pub struct RemoteArgs {
     /// The tenant, when the token is from `kairos login`. Default: `tenant` in .claude/kairos.local.md, else the tenant of the login
     #[arg(long)]
     pub tenant: Option<String>,
-    /// The repository in Kairos. Default: `repository` in .claude/kairos.local.md, else the repository of the `origin` remote
-    #[arg(long)]
+    /// The repository in Kairos. Default: `repository` in .claude/kairos.local.md, else the repository of the `origin` remote. The old name --repository still works
+    #[arg(long = "repo", alias = "repository", value_name = "REPOSITORY")]
     pub repository: Option<String>,
 }
 
@@ -161,7 +161,7 @@ pub async fn find(root: &Path, args: &RemoteArgs) -> Found {
         return Found::NoBase(match wanted {
             Some(slug) => format!("Kairos has no repository {slug:?}"),
             None => "no repository in Kairos has the `origin` remote of this checkout. \
-                     Give `--repository`"
+                     Give `--repo`"
                 .to_string(),
         });
     };
