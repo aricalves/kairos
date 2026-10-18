@@ -1590,3 +1590,60 @@ pub struct RetentionStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_run_at: Option<String>,
 }
+
+// ---------------------------------------------------------------------------
+// The job queue (KAIROS-T-0576)
+// ---------------------------------------------------------------------------
+
+/// The jobs of one kind in each state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct JobKindCounts {
+    /// The kind of job: `hosted_build`, `webhook_delivery`, `periodic`, and
+    /// the others.
+    pub kind: String,
+    /// The jobs that wait for a server.
+    pub queued: i64,
+    /// The jobs that a server runs now.
+    pub leased: i64,
+    /// The jobs that ended well and are kept for a time.
+    pub done: i64,
+    /// The jobs that failed and are kept for a time.
+    pub failed: i64,
+}
+
+/// A job that failed, with its error.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct JobFailure {
+    /// The id of the job (a UUID).
+    pub id: String,
+    pub kind: String,
+    /// The slug of the organization; absent for a job of the deployment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
+    pub tries: i32,
+    pub max_tries: i32,
+    /// The reason of the failure, cut to
+    /// [`JOB_ERROR_LIMIT`] characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// When the job failed, RFC 3339.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+}
+
+/// The number of failures in a [`JobQueueStatus`], at most.
+pub const JOB_FAILURE_LIMIT: usize = 20;
+
+/// The characters of the error of a [`JobFailure`], at most.
+pub const JOB_ERROR_LIMIT: usize = 500;
+
+/// `GET /api/admin/jobs` (KAIROS-T-0576): the job queue of the
+/// organization and of the deployment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct JobQueueStatus {
+    /// The jobs of each kind in each state, by kind. A finished job stays
+    /// for 7 days.
+    pub kinds: Vec<JobKindCounts>,
+    /// The failed jobs, newest first, at most [`JOB_FAILURE_LIMIT`].
+    pub failures: Vec<JobFailure>,
+}

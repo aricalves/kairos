@@ -124,11 +124,11 @@ pub(crate) async fn set_lifecycle(
 ) -> Result<Json<dto::Document>, ApiError> {
     let lifecycle = parse_lifecycle(&body.lifecycle)?;
     let user = auth.user_id;
-    let slug = tenant.slug.clone();
+    let role = tenant.role;
     let (_, updated) = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            change_lifecycle(conn, &slug, user, &short_code, lifecycle)
+            change_lifecycle(conn, role, user, &short_code, lifecycle)
         })
         .await?;
     Ok(Json(updated))
@@ -147,13 +147,13 @@ pub(crate) fn parse_lifecycle(value: &str) -> Result<DocumentLifecycle, ApiError
 /// changes nothing.
 pub(crate) fn change_lifecycle(
     conn: &mut PgConnection,
-    slug: &str,
+    role: kairos_db::models::OrgRole,
     user: Uuid,
     short_code: &str,
     lifecycle: DocumentLifecycle,
 ) -> Result<(DocumentLifecycle, dto::Document), ApiError> {
     let document = load(conn, short_code, Liveness::LiveOnly)?;
-    require_item_edit(conn, slug, user, document.id, ItemType::Document)?;
+    require_item_edit(conn, role, user, document.id, ItemType::Document)?;
     let before = document.lifecycle;
     let updated = items::set_document_lifecycle(conn, document.id, lifecycle, user)
         .map_err(map_item_error)?;
@@ -420,6 +420,7 @@ fn require_manage_on_owner(
 pub(crate) fn create(
     conn: &mut PgConnection,
     slug: &str,
+    role: kairos_db::models::OrgRole,
     user: Uuid,
     input: NewDocument<'_>,
     wording: CreateWording,
@@ -490,7 +491,7 @@ pub(crate) fn create(
         // can link it.
         require_edge_write(
             conn,
-            slug,
+            role,
             user,
             RelationshipType::Supports.as_str(),
             (parent_id, parent_type),
@@ -542,6 +543,7 @@ pub(crate) async fn create_document(
     let template_id = parse_opt_uuid(body.template_id.as_deref(), "template_id")?;
     let user = auth.user_id;
     let slug = tenant.slug.clone();
+    let role = tenant.role;
     let created = state
         .blocking
         .run(&tenant.slug, move |conn| {
@@ -550,6 +552,7 @@ pub(crate) async fn create_document(
                 create(
                     conn,
                     &slug,
+                    role,
                     user,
                     NewDocument {
                         title: &body.title,
@@ -823,12 +826,12 @@ pub(crate) async fn update_document(
     ApiJson(body): ApiJson<dto::UpdateContentRequest>,
 ) -> Result<Json<dto::Document>, ApiError> {
     let user = auth.user_id;
-    let slug = tenant.slug.clone();
+    let role = tenant.role;
     let updated = state
         .blocking
         .run(&tenant.slug, move |conn| {
             let document = load(conn, &short_code, Liveness::LiveOnly)?;
-            require_item_edit(conn, &slug, user, document.id, ItemType::Document)?;
+            require_item_edit(conn, role, user, document.id, ItemType::Document)?;
             let update = items::ContentUpdate {
                 new_title: body.title.as_deref(),
                 new_content: &body.content,
@@ -885,14 +888,21 @@ pub(crate) async fn delete_document(
 ) -> Result<Json<dto::DeleteResponse>, ApiError> {
     let user = auth.user_id;
     let slug = tenant.slug.clone();
+    let role = tenant.role;
     let outcome = state
         .blocking
         .run(&tenant.slug, move |conn| {
             let document = load(conn, &short_code, Liveness::LiveOnly)?;
             // The edit rule for the document, and then for each descendant
             // (COLLIERY-T-0234): `archive_item` does the two.
-            let outcome =
-                super::cascade::archive_item(conn, &slug, user, document.id, ItemType::Document)?;
+            let outcome = super::cascade::archive_item(
+                conn,
+                &slug,
+                role,
+                user,
+                document.id,
+                ItemType::Document,
+            )?;
             Ok(super::cascade::delete_response(outcome))
         })
         .await?;

@@ -28,7 +28,11 @@
 //!
 //! The cached role is the role of the tenant layer (`TenantContext::role`).
 //! A capability check reads the role from the database (KAIROS-A-0006), so
-//! it sees a change at once in each case.
+//! it sees a change at once in each case. The edit rule and the link rule
+//! (`api::require_item_edit`, `api::require_edge_write`) take the admin role
+//! from `TenantContext::role` (KAIROS-T-0625), so they see a role change as
+//! the tenant layer does: at once on the server that made the write, and
+//! within one TTL on the others.
 //!
 //! So on the server that made the write, the next request sees it. On a
 //! deployment with several servers, the other servers keep the entry until it
