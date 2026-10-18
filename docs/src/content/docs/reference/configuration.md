@@ -1111,7 +1111,10 @@ the organization. `kairos index build` and `kairos index --full` do not ask
 Kairos. They run the model of the machine when it has one.
 
 The base is the nearest indexed commit at or below the merge base of `HEAD`
-and the default branch. If more files than the limit changed since that
+and the default branch. The CLI also asks for the nearest indexed commit at
+or below `origin/<default branch>`, and it takes the base with fewer changed
+files. A clone that is only behind the default branch then starts from the
+index of its tip. If more files than the limit changed since that
 commit, the CLI builds nothing. An update that runs no model has no default
 limit. It parses the changed files, about 0.1 s for each file, and links the
 summaries of the pool.

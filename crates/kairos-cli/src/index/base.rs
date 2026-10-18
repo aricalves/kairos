@@ -12,7 +12,9 @@
 //!   `repo_url` is the `origin` remote of the checkout.
 //! - **The branch point.** `git merge-base HEAD origin/<default branch>`
 //!   (then the local default branch), else HEAD. Kairos gives the nearest
-//!   indexed commit at or below it.
+//!   indexed commit at or below it. The CLI also asks for the nearest index
+//!   of `origin/<default branch>`, and takes the base with the smaller diff
+//!   (KAIROS-T-0516): a clone that is only behind gets the index of the tip.
 //! - **The changed files.** `git diff --name-only <base>` (the changes that
 //!   are not committed too) and the files that git does not track and does
 //!   not ignore.
@@ -160,29 +162,44 @@ pub async fn find(root: &Path, args: &RemoteArgs) -> Found {
     let Some(point) = point else {
         return Found::NoBase("the checkout has no git commit".to_string());
     };
-    let nearest = match within(client.nearest_code_index(&repository.slug, &point)).await {
-        Ok(nearest) => nearest,
-        Err(Failure::Unreachable(why)) => return unreachable(why),
-        Err(Failure::Refused(why)) => {
-            return Found::NoBase(format!(
-                "Kairos has no index at or below commit {} ({why})",
-                short(&point)
-            ));
+    // KAIROS-T-0516: the nearest index of the branch point, and of the tip
+    // of `origin/<default>`. A clone that is only behind has HEAD as its
+    // branch point, and the nearest index below it can be old. The index of
+    // the tip is a descendant, and the diff works in each direction.
+    let first = nearest_of(&client, &repository.slug, root, &point).await;
+    let tip = git_output(
+        root,
+        &[
+            "rev-parse",
+            "--verify",
+            "-q",
+            &format!(
+                "refs/remotes/origin/{}^{{commit}}",
+                repository.default_branch
+            ),
+        ],
+    );
+    let second = match (&first, tip) {
+        (Asked::Unreachable(_), _) => None,
+        (Asked::Found(n), _) if n.changed == 0 => None,
+        (_, Some(tip)) if tip != point => {
+            Some(nearest_of(&client, &repository.slug, root, &tip).await)
         }
+        _ => None,
     };
-    let Some(changed) = changed_since(root, &nearest.index.commit) else {
-        return Found::NoBase(format!(
-            "the checkout does not have commit {}",
-            short(&nearest.index.commit)
-        ));
+    let nearest = match (first, second) {
+        (Asked::Found(a), Some(Asked::Found(b))) => choose(a, b),
+        (Asked::Found(a), _) | (_, Some(Asked::Found(a))) => a,
+        (Asked::Unreachable(why), _) => return unreachable(why),
+        (Asked::NoBase(why), _) => return Found::NoBase(why),
     };
     Found::Base(Base {
         client,
         repository: repository.slug.clone(),
         branch: repository.default_branch.clone(),
-        commit: nearest.index.commit,
-        changed,
-        summaries: usize::try_from(nearest.index.summary_keys).unwrap_or(0),
+        commit: nearest.commit,
+        changed: nearest.changed,
+        summaries: nearest.summaries,
         // KAIROS-T-0358: the value that the server resolved (a repository
         // can follow the organization). A server from before it sends no
         // resolved value, so its own `hosted` counts too.
@@ -192,6 +209,59 @@ pub async fn find(root: &Path, args: &RemoteArgs) -> Found {
         ]
         .contains(&&kairos_client::types_repositories::CodeIndexSummaries::Hosted),
     })
+}
+
+/// One nearest index that Kairos gave, and the files of the checkout that
+/// differ from it.
+#[derive(Debug, Clone, PartialEq)]
+struct Nearest {
+    commit: String,
+    changed: usize,
+    summaries: usize,
+}
+
+/// The answer of Kairos to one request of the nearest index.
+enum Asked {
+    Found(Nearest),
+    Unreachable(String),
+    /// No base: the text says why.
+    NoBase(String),
+}
+
+/// Ask Kairos for the nearest index at or below `from`, and count the files
+/// of the checkout that differ from it.
+async fn nearest_of(client: &KairosClient, slug: &str, root: &Path, from: &str) -> Asked {
+    let nearest = match within(client.nearest_code_index(slug, from)).await {
+        Ok(nearest) => nearest,
+        Err(Failure::Unreachable(why)) => return Asked::Unreachable(why),
+        Err(Failure::Refused(why)) => {
+            return Asked::NoBase(format!(
+                "Kairos has no index at or below commit {} ({why})",
+                short(from)
+            ));
+        }
+    };
+    let Some(changed) = changed_since(root, &nearest.index.commit) else {
+        return Asked::NoBase(format!(
+            "the checkout does not have commit {}",
+            short(&nearest.index.commit)
+        ));
+    };
+    Asked::Found(Nearest {
+        commit: nearest.index.commit,
+        changed,
+        summaries: usize::try_from(nearest.index.summary_keys).unwrap_or(0),
+    })
+}
+
+/// The base with the smaller diff (KAIROS-T-0516): `of_point`, the index of
+/// the branch point, on a tie.
+fn choose(of_point: Nearest, of_tip: Nearest) -> Nearest {
+    if of_tip.changed < of_point.changed {
+        of_tip
+    } else {
+        of_point
+    }
 }
 
 /// The client of the Kairos deployment of the checkout at `root`: the
@@ -430,6 +500,20 @@ mod tests {
         assert_eq!(settings["repository"], "kairos");
         assert_eq!(settings.len(), 3);
         assert!(super::settings(&dir.path().join("none")).is_empty());
+    }
+
+    /// KAIROS-T-0516: the base with the smaller diff, the branch point on a
+    /// tie.
+    #[test]
+    fn the_base_with_the_smaller_diff_is_chosen() {
+        let of = |commit: &str, changed| Nearest {
+            commit: commit.into(),
+            changed,
+            summaries: 0,
+        };
+        assert_eq!(choose(of("a", 250), of("b", 1)).commit, "b");
+        assert_eq!(choose(of("a", 3), of("b", 40)).commit, "a");
+        assert_eq!(choose(of("a", 5), of("b", 5)).commit, "a");
     }
 
     #[test]

@@ -21,6 +21,18 @@ Feature: Start from the base index
     And it tells me to rebase on main, or to run "kairos index --full"
     And it gives the time of a full build
 
+  # KAIROS-T-0516: a clone that is only behind gets the index of the tip
+  # of origin/main, when its diff is smaller than the diff of the index
+  # below the checkout.
+  Scenario: A checkout behind origin/main starts from the index of the tip
+    Given Kairos has an index of commit A of main
+    And main then has commit C with 250 new files, then commit B with 1 change
+    And Kairos has an index of commit B
+    And a checkout of main at C, behind origin/main at B
+    When I run "kairos index update"
+    Then the CLI downloads the index of B, 1 file changed since it
+    And the index of the checkout has the 250 new files
+
   # KAIROS-T-0515: an update that runs no model has no default limit of
   # changed files. It parses the changed files and links the pool.
   Scenario: A link-only update of a branch with 500 changed files starts from the base

@@ -434,6 +434,10 @@ pub struct BaseWorld {
     /// KAIROS-T-0348: the folder the server started in, and its config
     /// folder, kept for the scenario.
     pub elsewhere: Option<(TempDir, TempDir)>,
+    /// KAIROS-T-0516: commit C of main (250 new files after A), and commit
+    /// B after it (1 change).
+    pub c: String,
+    pub b: String,
 }
 
 impl BaseWorld {
@@ -682,6 +686,49 @@ fn a_branch(world: &mut CliWorld, changed: usize) {
     }
     git(&root, &["add", "-A"]);
     git(&root, &["commit", "-q", "-m", "the branch"]);
+    assert!(!root.join(INDEX_DB).exists());
+}
+
+/// KAIROS-T-0516: main gets commit C with `files` new files, then commit B
+/// with 1 change.
+#[given(regex = r"^main then has commit C with (\d+) new files, then commit B with 1 change$")]
+fn main_has_c_and_b(world: &mut CliWorld, files: usize) {
+    let w = base(world);
+    let remote = w.kairos().remote.clone();
+    for i in 0..files {
+        write(
+            &remote,
+            &format!("pkg/generated/part_{i:03}.py"),
+            &format!("def part_{i}(x):\n    return x + {i}\n"),
+        );
+    }
+    git(&remote, &["add", "-A"]);
+    git(&remote, &["commit", "-q", "-m", "C"]);
+    w.c = git(&remote, &["rev-parse", "HEAD"]);
+    let (file, from, to, _) = BRANCH_CHANGES[0];
+    let path = remote.join(file);
+    let text = fs::read_to_string(&path).expect("read");
+    fs::write(&path, text.replace(from, to)).expect("write");
+    git(&remote, &["commit", "-q", "-am", "B"]);
+    w.b = git(&remote, &["rev-parse", "HEAD"]);
+}
+
+#[given("Kairos has an index of commit B")]
+async fn kairos_has_b(world: &mut CliWorld) {
+    let w = base(world);
+    let b = w.b.clone();
+    w.kairos().upload(&b).await;
+}
+
+/// KAIROS-T-0516: a clone whose main is at C: HEAD is an ancestor of
+/// origin/main, and the nearest index below HEAD is the index of A.
+#[given("a checkout of main at C, behind origin/main at B")]
+fn a_checkout_behind(world: &mut CliWorld) {
+    let w = base(world);
+    w.clone_remote();
+    let root = w.root().to_path_buf();
+    git(&root, &["reset", "-q", "--hard", &w.c]);
+    assert_eq!(git(&root, &["rev-parse", "origin/main"]), w.b);
     assert!(!root.join(INDEX_DB).exists());
 }
 
@@ -946,6 +993,21 @@ fn downloads_a(world: &mut CliWorld) {
             .content_hash
     };
     assert_ne!(stats.content_hash, in_a, "the index is the index of A");
+}
+
+/// KAIROS-T-0516: the base is the index of the tip of origin/main.
+#[then("the CLI downloads the index of B, 1 file changed since it")]
+fn downloads_b(world: &mut CliWorld) {
+    let w = base(world);
+    let out = w.output();
+    assert!(w.run.as_ref().expect("no run").status.success(), "{out}");
+    assert!(
+        w.stdout().contains(&format!(
+            "Kairos: downloaded the index of {}, 1 files changed since it.",
+            &w.b[..12]
+        )),
+        "{out}"
+    );
 }
 
 /// KAIROS-T-0515: the base of a far branch, with no limit.
