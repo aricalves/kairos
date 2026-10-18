@@ -188,9 +188,10 @@ explain it. A restore of the strategy would not bring the task back, because
 the caller cannot take is left whole. The caller can archive the task with a
 separate call, which is then a decision about the task.
 
-An item can have two parents. If one parent is archived and the other is a
-stop, the item is below a stop, and it stays. When the graph gives two answers,
-the cascade archives less.
+An item has one parent (KAIROS-T-0572), so each item has one path to the
+root. The cascade still reads each path. If a graph had two parents, and one
+parent was a stop, the item would be below a stop, and it would stay. When the
+graph gives two answers, the cascade archives less.
 
 ### What stays, stays linked
 

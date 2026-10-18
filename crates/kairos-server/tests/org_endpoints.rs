@@ -1009,6 +1009,7 @@ async fn org_and_admin_endpoints_against_live_stack() {
             work_class: None,
             team_id: None,
             from_team: None,
+            parent: None,
         })
         .await
         .expect("creating task on the delivery board");

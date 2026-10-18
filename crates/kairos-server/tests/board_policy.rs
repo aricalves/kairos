@@ -531,6 +531,7 @@ async fn an_initiative_moves_to_active_only_with_an_owner() {
         content: String::new(),
         complexity: None,
         bucket_type: None,
+        parent: None,
     };
     let err = admin
         .create_initiative(&create_in(&active))

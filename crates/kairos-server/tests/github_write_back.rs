@@ -246,6 +246,7 @@ async fn a_linked_pull_request_gets_one_comment_edited_in_place_and_the_kairos_s
                     team_id: None,
                     repository: None,
                     from_team: None,
+                    parent: None,
                 })
                 .await
                 .expect("task")

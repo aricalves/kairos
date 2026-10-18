@@ -298,6 +298,7 @@ impl World {
                 team_id: None,
                 repository: None,
                 from_team: None,
+                parent: None,
             })
             .await
             .expect("task")
@@ -324,6 +325,7 @@ impl World {
                 content: String::new(),
                 complexity: None,
                 bucket_type: None,
+                parent: None,
             })
             .await
             .expect("initiative")

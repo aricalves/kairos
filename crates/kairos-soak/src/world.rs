@@ -215,6 +215,7 @@ pub async fn setup_world(
             content: "Container for KAIROS-T-0046 soak-run workload items.".to_string(),
             complexity: Some("l".to_string()),
             bucket_type: None,
+            parent: None,
         })
         .await
         .map_err(|e| setup_err("soak initiative", e))?;
@@ -232,6 +233,7 @@ pub async fn setup_world(
                 work_class: None,
                 team_id: None,
                 from_team: None,
+                parent: None,
             })
             .await
             .map_err(|e| setup_err("collision task", e))?;
@@ -359,6 +361,7 @@ pub async fn setup_bystander(
                 content: "Must remain byte-identical through the soak run.".to_string(),
                 complexity: Some("s".to_string()),
                 bucket_type: None,
+                parent: None,
             })
             .await
             .map_err(|e| BystanderUnavailable::Failed(format!("bystander initiative: {e}")))?;

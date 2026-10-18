@@ -143,13 +143,17 @@ is that a listing nobody asked hides put-away work.
 Create an initiative (requires `manage_initiatives` on the target
 board). `bucket_type` set marks it as a bucket (`is_bucket` derived).
 
+`parent` (KAIROS-T-0572) is the short code of the parent strategy.
+Kairos writes the initiative and the edge in one transaction: a refused
+parent leaves no initiative.
+
 Request body (required): `application/json`, [`CreateInitiativeRequest`](../schemas/#createinitiativerequest)
 
 | Response | Body | Meaning |
 |---|---|---|
 | `201` | [`Initiative`](../schemas/#initiative) | Created |
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Missing capability |
-| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown board/column, a column that is not the entry column of the board, or bad enum value |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown board/column/parent, a column that is not the entry column of the board, a parent that is not a strategy, or bad enum value |
 
 ### `GET /api/initiatives/{short_code}`
 
@@ -262,13 +266,19 @@ the delivery board of that team (COLLIERY-T-0217, COLLIERY-A-0023).
 `repository` is an optional link. It can be any live repository, and it
 does not choose the board.
 
+`parent` (KAIROS-T-0572) is the short code of the parent initiative.
+Kairos writes the task and the edge in one transaction: a refused
+parent leaves no task. The link rule applies to the edge; the creator of the
+task can edit it, so it passes. In a claims column, `parent_gate`
+applies (KAIROS-A-0040).
+
 Request body (required): `application/json`, [`CreateTaskRequest`](../schemas/#createtaskrequest)
 
 | Response | Body | Meaning |
 |---|---|---|
 | `201` | [`Task`](../schemas/#task) | Created |
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Missing capability. For a caller without `manage_tasks` on the board: a column that is not the entry column, the work class `planned`, or a board that is not a delivery board |
-| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | No board and no team, a team that is not the team of the board, a team without exactly one delivery board, unknown board/column/repository, or bad enum value |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | No board and no team, a team that is not the team of the board, a team without exactly one delivery board, unknown board/column/repository/parent, a parent that is not an initiative, PARENT_NOT_ACTIVE (a claims column under an inactive parent), or bad enum value |
 
 ### `GET /api/tasks/{short_code}`
 
