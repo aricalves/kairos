@@ -418,6 +418,7 @@ One indexed commit of a repository.
 | `commit` | `string` | yes | The commit, 40 (or 64) lower-case hex characters. |
 | `created_at` | `string` | yes | When the index was first written, RFC 3339. |
 | `ref` | `string`, nullable | no | The branch, the pull request or the tag that the index is for, if the sender gave it. |
+| `schema_version` | `integer`, nullable | no | The schema version of the index file (KAIROS-T-0518). It is null when the stored structure gives no version. |
 | `source` | `string` | yes | `upload`, or `build` (the server built it after a push). |
 | `structure_bytes` | `integer` | yes | The size of the structure (the index with no summaries), in bytes. |
 | `summary_keys` | `integer` | yes | The summaries that the structure uses. |
@@ -1524,6 +1525,17 @@ The S-0005 list envelope: `{items, total, limit, offset}`.
 | `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
 
 ## ListEnvelope_Board
+
+The S-0005 list envelope: `{items, total, limit, offset}`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `items` | array of `object` | yes |  |
+| `limit` | `integer` | yes | The applied limit. |
+| `offset` | `integer` | yes | The applied offset. |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
+
+## ListEnvelope_CodeIndex
 
 The S-0005 list envelope: `{items, total, limit, offset}`.
 
