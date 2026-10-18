@@ -343,6 +343,44 @@ pub fn list(conn: &mut PgConnection, repository_id: Uuid) -> QueryResult<Vec<Cod
         .load(conn)
 }
 
+/// One page of the indexed commits of a repository, newest first: the
+/// time of the last write, then the commit (KAIROS-T-0518). Each row has
+/// the first `prefix_bytes` bytes of its structure, for the schema version.
+/// With no `limit`, the page has each row from `offset`.
+pub fn page(
+    conn: &mut PgConnection,
+    repository_id: Uuid,
+    limit: Option<i64>,
+    offset: i64,
+    prefix_bytes: i32,
+) -> QueryResult<Vec<(CodeIndexInfo, Vec<u8>)>> {
+    // `prefix_bytes` is a number, so the text of the SQL is safe.
+    let prefix = diesel::dsl::sql::<diesel::sql_types::Bytea>(&format!(
+        "substring(structure from 1 for {prefix_bytes})"
+    ));
+    let mut query = code_indexes::table
+        .filter(code_indexes::repository_id.eq(repository_id))
+        .order((
+            code_indexes::updated_at.desc(),
+            code_indexes::commit_sha.asc(),
+        ))
+        .select((CodeIndexInfo::as_select(), prefix))
+        .offset(offset)
+        .into_boxed();
+    if let Some(limit) = limit {
+        query = query.limit(limit);
+    }
+    query.load(conn)
+}
+
+/// The count of the indexed commits of a repository.
+pub fn count(conn: &mut PgConnection, repository_id: Uuid) -> QueryResult<i64> {
+    code_indexes::table
+        .filter(code_indexes::repository_id.eq(repository_id))
+        .count()
+        .get_result(conn)
+}
+
 /// One indexed commit, with no structure.
 pub fn info(
     conn: &mut PgConnection,
