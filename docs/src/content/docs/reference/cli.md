@@ -86,6 +86,9 @@ details:
 A usage error (exit code 64) is not JSON: the argument parser prints it
 before the CLI reads `--json`. Stdout stays empty on an error.
 
+A refusal of `kairos index` has a code of its own, with details. See
+[The JSON of `kairos index`](#the-json-of-kairos-index).
+
 ## Common options
 
 Every command that reaches the API accepts these three. They are omitted from
@@ -2298,16 +2301,18 @@ tools to an agent. The index is the file `.kairos/index.db` in the checkout.
 A build adds it to `.git/info/exclude`, so git does not track it.
 
 Each `index` command takes `--root`. Only `index update` takes `--url` and
-`--tenant`. No `index` command takes `--json`.
+`--tenant`. Each `index` command except `index mcp` takes `--json`. See
+[The JSON of `kairos index`](#the-json-of-kairos-index).
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--root <ROOT>` | path | the root of the git repository of the current folder | The root of the checkout. |
+| `--json` | flag | off | Print one JSON object with the result, in place of the text. |
 
 ### `kairos index`
 
 ```
-kairos index --full [--root <ROOT>]
+kairos index --full [--root <ROOT>] [--json]
 ```
 
 | Option | Type | Default | Description |
@@ -2319,7 +2324,7 @@ With no subcommand and no `--full`, the command prints its help.
 ### `kairos index build`
 
 ```
-kairos index build [--root <ROOT>]
+kairos index build [--root <ROOT>] [--json]
 ```
 
 Builds the index of the checkout: the structure, the call edges and the
@@ -2329,7 +2334,7 @@ says why it made no summaries.
 ### `kairos index update`
 
 ```
-kairos index update [--root <ROOT>] [--rust-edges] [--link-only] [--max-changed <MAX_CHANGED>] [--repository <REPOSITORY>] [--url <URL>] [--tenant <TENANT>]
+kairos index update [--root <ROOT>] [--rust-edges] [--link-only] [--max-changed <MAX_CHANGED>] [--repository <REPOSITORY>] [--url <URL>] [--tenant <TENANT>] [--json]
 ```
 
 | Option | Type | Default | Description |
@@ -2349,7 +2354,7 @@ in Kairos. See
 ### `kairos index status`
 
 ```
-kairos index status [--root <ROOT>]
+kairos index status [--root <ROOT>] [--json]
 ```
 
 Shows the counts of the index: files, symbols, edges and summaries.
@@ -2357,7 +2362,7 @@ Shows the counts of the index: files, symbols, edges and summaries.
 ### `kairos index duplicates`
 
 ```
-kairos index duplicates [--root <ROOT>] [--kind <KIND>] [--min-lines <MIN_LINES>] [--tests] [--under <UNDER>] [--limit <LIMIT>]
+kairos index duplicates [--root <ROOT>] [--kind <KIND>] [--min-lines <MIN_LINES>] [--tests] [--under <UNDER>] [--limit <LIMIT>] [--json]
 ```
 
 | Option | Type | Default | Description |
@@ -2374,7 +2379,7 @@ code. The text is that of the MCP tool `duplicates`.
 ### `kairos index references`
 
 ```
-kairos index references <SYMBOL> [--root <ROOT>] [--file <FILE>] [--line <LINE>] [--possible] [--limit <LIMIT>]
+kairos index references <SYMBOL> [--root <ROOT>] [--file <FILE>] [--line <LINE>] [--possible] [--limit <LIMIT>] [--json]
 ```
 
 | Argument / Option | Type | Default | Description |
@@ -2396,6 +2401,74 @@ kairos index mcp [--root <ROOT>]
 
 Serves the code tools of the index to an agent: MCP over standard input and
 output. The Claude Code plugin starts this command.
+
+### The JSON of `kairos index`
+
+With `--json`, an `index` command prints one JSON object on stdout, and no
+text. A refusal is the error envelope on stderr (see
+[Errors with `--json`](#errors-with---json)). Stdout then stays empty.
+
+`index build`, `index --full` and `index update` print what the run did:
+
+```json
+{
+  "command": "update",
+  "index": "/work/app/.kairos/index.db",
+  "git_exclude": null,
+  "start": {
+    "from": "base",
+    "base": { "repository": "app", "branch": "main", "commit": "9f2c…", "changed": 3, … },
+    "local_changed": null,
+    "no_base": null,
+    "summaries_taken": null
+  },
+  "structure": { "files": 120, "parsed_files": 98, "symbols": 840, "edges": { "total": 2210, … }, … },
+  "summaries": { "result": "not_made", "linked": 830, "left": { "symbols": 10, … }, "reason": "…", … },
+  "warnings": []
+}
+```
+
+| Key | Description |
+|---|---|
+| `command` | `build` or `update`. `index --full` gives `build`. |
+| `index` | The path of the index file. |
+| `git_exclude` | The exclude file of git, when the run added the line of the index. Else `null`. |
+| `start` | Where the update started. It is `null` for a build. |
+| `start.from` | `base`: the update downloaded the base index of Kairos. `local`: the update changed the local index. |
+| `start.base` | The base index that Kairos gave: the repository, the branch, the commit, the changed files and the count of its summaries. The update can keep the local index and not use it. |
+| `start.local_changed` | The files of the tree that differ from the local index. It is `null` when the checkout has no local index. |
+| `start.no_base` | Why Kairos gave no base index. |
+| `start.summaries_taken` | What the update did with the summaries of the base index, when the local index is as near to the tree. |
+| `structure` | The counts of the files, the symbols, the edges, the SCIP runs and the token vectors, and the time in seconds. |
+| `summaries` | `result` is `linked`, `not_made` or `made`. The object also has the counts by level, and why no model made the missing summaries. |
+| `warnings` | The warnings of the run. |
+
+`index status` prints the counts of the index: `files`, `symbols`, `edges`
+and `summaries`, with the models.
+
+`index duplicates` and `index references` print the list envelope:
+`items`, `total` and `next_offset` (see [The JSON of a list](#the-json-of-a-list)). `total` is the count of
+the rows that the index found. `items` has the first `--limit` rows. These
+commands have no `--offset`, so `next_offset` is `null`. To get more rows,
+give a larger `--limit`.
+
+- `index duplicates`: each item is a group, with its `kind`, its `score` and
+  its `symbols`. The object also has `compared`, `tests`, `min_lines` and
+  `summary_vectors`.
+- `index references`: each item is a use, with its `file`, `line`, `kind` and
+  the `enclosing` symbol. The object also has the `symbol`, the `coverage` of
+  its language and `possible_not_shown`.
+
+A refusal of `index` has one of these codes in the error envelope:
+
+| Code | Description |
+|---|---|
+| `NO_INDEX` | The checkout has no index. The details give the `path`. |
+| `NO_START` | The update has no index to start from. The details give the `path` and the reason. |
+| `TOO_FAR` | More files than the limit changed since the base index. The details give `changed`, `limit`, `commit`, `branch` and `behind`. `local` is `true` when the count is that of the local index. |
+| `NO_ROOT` | The folder of `--root` is not there. |
+| `NOT_FOUND`, `AMBIGUOUS` | `index references` found no symbol, or more than one. The details of `AMBIGUOUS` give the `candidates`. |
+| `CLI_ERROR` | Any other failure. |
 
 ## The CLI itself
 

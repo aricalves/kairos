@@ -325,6 +325,10 @@ pub struct Template {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct ThinEvent {
     pub event: String,
+    /// `notification` for an event of a person (KAIROS-T-0381); empty for
+    /// the frame `lagged` (KAIROS-T-0621).
+    #[serde(default)]
+    pub entity_type: String,
     /// The item of the event; empty when the event names none.
     #[serde(default)]
     pub short_code: String,
@@ -1895,6 +1899,7 @@ mod tests {
     fn an_event_reads_its_card_or_the_board() {
         let event = |code: &str, board: Option<&str>| ThinEvent {
             event: "item_updated".to_string(),
+            entity_type: "task".to_string(),
             short_code: code.to_string(),
             board_id: board.map(str::to_string),
         };

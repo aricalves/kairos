@@ -21,6 +21,20 @@ Feature: Start from the base index
     And it tells me to rebase on main, or to run "kairos index --full"
     And it gives the time of a full build
 
+  # KAIROS-T-0654: with --json, the update prints one JSON object. A
+  # refusal is the error envelope on stderr, with a code and its counts.
+  Scenario: kairos index update --json says where the update started
+    Given Kairos has an index of commit A of main
+    And a checkout of a branch from A with 3 changed files and no local index
+    When I run "kairos index update --json"
+    Then the output is one JSON object: the update started from the index of A, with 3 changed files
+
+  Scenario: A refusal with --json is the error envelope on stderr
+    Given Kairos has an index of commit A of main
+    And a checkout of a branch from A with 250 changed files
+    When I run "kairos index update --json"
+    Then stdout is empty, and stderr has the error TOO_FAR: 250 changed files, the limit is 200
+
   # KAIROS-T-0516: a clone that is only behind gets the index of the tip
   # of origin/main, when its diff is smaller than the diff of the index
   # below the checkout.
