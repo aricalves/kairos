@@ -79,9 +79,11 @@ Two things about the widened board listing, because they look like bugs:
 - Archived cards appear **in the column they were put away in**, even if that
   column has since been removed from the live board. It is an audit view, not a
   board view.
-- The children-progress rollup and the blocks summary are **not** widened. The
-  counts keep counting live rows however the listing is asked for. The blocks
-  summary also leaves out every edge with an end in a done column.
+- The opt-in does not change the counts. The blocks summary counts live rows
+  only, and it leaves out every edge with an end in a done column. The
+  children-progress rollup counts an archived child by the column that it was
+  archived from: from a done column as done, from another column as removed.
+  See [what archive does to the numbers](../../explanation/archiving/#what-archive-does-to-the-numbers).
 
 ## Put it back
 

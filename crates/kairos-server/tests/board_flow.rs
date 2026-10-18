@@ -12,6 +12,11 @@
 //!
 //! REST `GET /api/boards/{id}/flow`, MCP `board_flow`, and the refusals.
 //!
+//! KAIROS-T-0571: then "Archive completed" puts A, C and D away on
+//! 2026-10-08, and B is archived on 2026-10-09. The done count, the cancel
+//! and the cycle times stay; B is not in progress; the cumulative flow
+//! drops each item on the day of its archive.
+//!
 //! Runs against the LIVE compose stack (`angreal services up`). Owns the
 //! scratch database `kairos_board_flow_t0372_test`.
 
@@ -414,6 +419,71 @@ async fn the_flow_of_a_board_from_transitions_at_known_times() {
     }
     assert!(text.contains(&code("B")), "{text}");
 
+    // KAIROS-T-0571: archived work keeps its numbers.
+    let archived = admin
+        .archive_completed(&slug)
+        .await
+        .expect("archive completed");
+    assert_eq!(archived.count, 3, "{archived:?}");
+    admin.delete_task(&code("B")).await.expect("archive B");
+    for (name, at) in [
+        ("A", "2026-10-08T12:00:00Z"),
+        ("C", "2026-10-08T12:00:00Z"),
+        ("D", "2026-10-08T12:00:00Z"),
+        ("B", "2026-10-09T12:00:00Z"),
+    ] {
+        diesel::sql_query("UPDATE org_acme.tasks SET deleted_at = $1::timestamptz WHERE id = $2")
+            .bind::<diesel::sql_types::Text, _>(at)
+            .bind::<diesel::sql_types::Uuid, _>(id(name))
+            .execute(&mut conn)
+            .expect("deleted_at");
+    }
+    let after = bob
+        .board_flow(
+            &slug,
+            &BoardFlowQuery {
+                from: Some("2026-09-28".into()),
+                to: Some("2026-10-11".into()),
+            },
+        )
+        .await
+        .expect("the flow after the archive");
+    assert_eq!((after.done_count, after.cancelled_count), (2, 1));
+    assert_eq!(after.cycle_time, flow.cycle_time);
+    assert_eq!(after.throughput, flow.throughput);
+    assert!(after.ageing.is_empty(), "{:?}", after.ageing);
+    let after_day = |date: &str| {
+        after
+            .cumulative_flow
+            .days
+            .iter()
+            .find(|d| d.date == date)
+            .map(|d| d.counts.clone())
+            .unwrap()
+    };
+    assert_eq!(after_day("2026-10-06"), vec![0, 0, 0, 1, 3]);
+    assert_eq!(after_day("2026-10-08"), vec![0, 0, 0, 1, 0]);
+    assert_eq!(after_day("2026-10-09"), vec![0, 0, 0, 0, 0]);
+    // A range that starts after each archive has none of them.
+    let later = bob
+        .board_flow(
+            &slug,
+            &BoardFlowQuery {
+                from: Some("2026-10-10".into()),
+                to: Some("2026-10-11".into()),
+            },
+        )
+        .await
+        .expect("a range after the archives");
+    assert_eq!((later.done_count, later.cancelled_count), (0, 0));
+    assert!(
+        later
+            .cumulative_flow
+            .days
+            .iter()
+            .all(|d| d.counts.iter().all(|c| *c == 0))
+    );
+
     // KAIROS-T-0627: the read is bounded by the range, the numbers stay.
     bounded_read_and_cache(&admin, &bob, &mut conn).await;
 }
@@ -422,7 +492,8 @@ async fn the_flow_of_a_board_from_transitions_at_known_times() {
 ///
 /// - E: Active 2026-08-02, Blocked 08-03, Active 09-01, Completed 10-07;
 /// - F: Active 2026-08-06, Completed 08-10 (all before the range);
-/// - G: Active 2026-08-06, still in Active.
+/// - G: Active 2026-08-06, still in Active;
+/// - H: Active 2026-08-04, Completed 08-08, archived 08-20 (KAIROS-T-0571).
 ///
 /// The bounded read gives the numbers of the read of every move, for
 /// ranges that start before, inside and after the history. A transition
@@ -449,7 +520,7 @@ async fn bounded_read_and_cache(admin: &KairosClient, bob: &KairosClient, conn: 
     let slug = detail.board.slug.clone();
     let board_id: Uuid = detail.board.id.parse().expect("board uuid");
 
-    let paths: [(&str, &[(&str, &str)]); 3] = [
+    let paths: [(&str, &[(&str, &str)]); 4] = [
         (
             "E",
             &[
@@ -473,6 +544,14 @@ async fn bounded_read_and_cache(admin: &KairosClient, bob: &KairosClient, conn: 
             &[
                 ("Todo", "2026-08-05T09:00:00Z"),
                 ("Active", "2026-08-06T09:00:00Z"),
+            ],
+        ),
+        (
+            "H",
+            &[
+                ("Todo", "2026-08-03T09:00:00Z"),
+                ("Active", "2026-08-04T09:00:00Z"),
+                ("Completed", "2026-08-08T09:00:00Z"),
             ],
         ),
     ];
@@ -508,6 +587,18 @@ async fn bounded_read_and_cache(admin: &KairosClient, bob: &KairosClient, conn: 
             set_time(conn, id, "transition", &format!("column:{from}->{to}"), at);
             from = to;
         }
+        if name == "H" {
+            admin
+                .delete_task(&task.short_code)
+                .await
+                .expect("archive H");
+            diesel::sql_query(
+                "UPDATE org_acme.tasks SET deleted_at = '2026-08-20T09:00:00Z' WHERE id = $1",
+            )
+            .bind::<diesel::sql_types::Uuid, _>(id)
+            .execute(conn)
+            .expect("deleted_at");
+        }
         codes.insert(name, task.short_code);
     }
 
@@ -517,6 +608,21 @@ async fn bounded_read_and_cache(admin: &KairosClient, bob: &KairosClient, conn: 
     let now: chrono::DateTime<chrono::Utc> = "2026-10-11T12:00:00Z".parse().expect("now");
     let every_move =
         flow::load_input(conn, board_id, flow::start_of(day("1970-01-01"))).expect("every move");
+    assert_eq!(
+        every_move.items.len(),
+        4,
+        "the archived H is in the full read"
+    );
+    // KAIROS-T-0571: H counts in a range of its time on the board.
+    let august = flow::compute(&every_move, day("2026-08-03"), day("2026-08-09"), now);
+    assert!(
+        august
+            .cycle_times
+            .iter()
+            .any(|c| c.short_code == codes["H"]),
+        "{:?}",
+        august.cycle_times
+    );
     for (from, to) in [
         ("2026-07-01", "2026-10-11"),
         ("2026-08-03", "2026-08-09"),
@@ -527,6 +633,9 @@ async fn bounded_read_and_cache(admin: &KairosClient, bob: &KairosClient, conn: 
         let bounded =
             flow::load_input(conn, board_id, flow::start_of(from)).expect("bounded input");
         assert!(bounded.moves.len() <= every_move.moves.len());
+        // An item archived before the range is not read.
+        let has_h = bounded.items.iter().any(|i| i.short_code == codes["H"]);
+        assert_eq!(has_h, from <= day("2026-08-20"), "the range {from}..{to}");
         assert_eq!(
             flow::compute(&bounded, from, to, now),
             flow::compute(&every_move, from, to, now),

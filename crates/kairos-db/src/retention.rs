@@ -35,6 +35,14 @@
 //! in `(occurred_at, id)` order. Each delete names at most one batch of
 //! ids. [`SweepPaging`] sets the sizes.
 //!
+//! # The rows that move an item stay (KAIROS-T-0571)
+//!
+//! The `activity_log` sweep does not read or remove the rows of the
+//! actions in [`kairos_core::retention::KEPT_ACTIVITY_ACTIONS`]
+//! (`transition`, `cancel`, `board_move`), at any age. The flow metrics
+//! of a board read them: without the first move into Active, a task that
+//! is in progress for more than the window has no age.
+//!
 //! # Archive layout
 //!
 //! One file per sweep per tenant per table:
@@ -568,7 +576,7 @@ fn plan_history_pages(
 
 /// Read the `activity_log` rows older than the window page by page, in
 /// `(occurred_at, id)` order, and archive them when `archive` is set. The
-/// ids to delete.
+/// ids to delete. The rows that move an item stay (module docs).
 fn plan_activity_pages(
     conn: &mut PgConnection,
     cutoff: DateTime<Utc>,
@@ -583,6 +591,7 @@ fn plan_activity_pages(
     loop {
         let mut page = activity_log::table
             .filter(activity_log::occurred_at.lt(cutoff))
+            .filter(activity_log::action.ne_all(kairos_core::retention::KEPT_ACTIVITY_ACTIONS))
             .order((activity_log::occurred_at.asc(), activity_log::id.asc()))
             .limit(paging.activity_per_page)
             .select((

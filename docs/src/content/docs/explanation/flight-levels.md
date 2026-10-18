@@ -170,10 +170,10 @@ blocker would also hold its dependants until a person decides. A board that
 wants the strict rule turns it on.
 
 Rolling *up* through that graph is where one subtlety lives. An item's
-relationship list and its progress rollup answer different questions, and they
-disagree about archived work on purpose: containment is a fact about the
-record, progress is a fact about live work. [Archiving](../archiving/) explains
-why.
+relationship list and its progress rollup answer different questions. The list
+names each archived child. The rollup counts a child that was archived from a
+done column as done, and a child that was archived from another column as
+removed. [Archiving](../archiving/) explains why.
 
 ## Why the boards are configurable
 

@@ -25,7 +25,9 @@
 //!   (`{target}/{tenant}/{table}/{timestamp}.ndjson`) written before the
 //!   prune, contents full-fidelity-matching the pruned rows
 //! - `activity_log` rows past the retention window archived-then-deleted
-//!   (no compaction tiers); recent rows kept
+//!   (no compaction tiers); recent rows kept; the rows that move an item
+//!   (`transition`, `cancel`, `board_move`) kept at each age
+//!   (KAIROS-T-0571)
 //! - every sweep writes a `retention_sweep` activity row with per-table
 //!   counts; sweeps are idempotent (second run prunes nothing)
 //! - `discard` prunes without archive files; `off` is a full no-op
@@ -297,7 +299,7 @@ fn retention_sweeper_lifecycle() {
         let id: Uuid = diesel::insert_into(schema::activity_log::table)
             .values((
                 schema::activity_log::actor_id.eq(alice),
-                schema::activity_log::action.eq("transition"),
+                schema::activity_log::action.eq("update"),
                 schema::activity_log::details.eq(format!("seed:old-activity-{i}")),
                 schema::activity_log::occurred_at.eq(at(2025, 5, 1, 10, 0, i)),
             ))
@@ -466,7 +468,7 @@ fn retention_sweeper_lifecycle() {
         assert_eq!(value.as_object().unwrap().len(), 8);
         assert_eq!(value["id"].as_str().unwrap(), id.to_string());
         assert_eq!(value["actor_id"].as_str().unwrap(), alice.to_string());
-        assert_eq!(value["action"].as_str().unwrap(), "transition");
+        assert_eq!(value["action"].as_str().unwrap(), "update");
         assert!(value["entity_id"].is_null());
         assert!(value["entity_type"].is_null());
         assert_eq!(value["details"].as_str().unwrap(), details);
@@ -645,6 +647,10 @@ fn retention_pass_removes_old_rows_and_expired_sessions() {
     for (action, ts) in [
         ("old_row", now - Duration::days(31)),
         ("new_row", now - Duration::days(29)),
+        // KAIROS-T-0571: the rows that move an item stay at each age.
+        ("transition", now - Duration::days(400)),
+        ("cancel", now - Duration::days(400)),
+        ("board_move", now - Duration::days(400)),
     ] {
         diesel::insert_into(schema::activity_log::table)
             .values((
@@ -726,7 +732,10 @@ fn retention_pass_removes_old_rows_and_expired_sessions() {
         "swept 1 tenants: item_history archived 0 pruned 0, activity_log archived 0 pruned 1"
     );
     assert_eq!(session_hashes(&mut conn), vec!["live"]);
-    assert_eq!(activity_actions(&mut conn), vec!["new_row"]);
+    assert_eq!(
+        activity_actions(&mut conn),
+        vec!["board_move", "cancel", "new_row", "transition"]
+    );
 
     // A second pass finds nothing to remove.
     let pass = run_retention_pass(&mut conn, &config, now, &mut || {}).expect("pass");
@@ -768,7 +777,7 @@ fn retention_pass_removes_old_rows_and_expired_sessions() {
     assert_eq!(pass.result(), "skipped: no target");
     assert_eq!(
         activity_actions(&mut conn),
-        vec!["new_row"],
+        vec!["board_move", "cancel", "new_row", "transition"],
         "no row removed with no target"
     );
 
@@ -833,9 +842,22 @@ fn the_sweep_pages_by_item_and_prunes_what_the_planner_gives() {
         diesel::insert_into(schema::activity_log::table)
             .values((
                 schema::activity_log::actor_id.eq(robin),
-                schema::activity_log::action.eq("transition"),
+                schema::activity_log::action.eq("update"),
                 schema::activity_log::details.eq(format!("old-{i}")),
                 schema::activity_log::occurred_at.eq(at(2025, 1, 1, 0, 0, i.min(9))),
+            ))
+            .execute(&mut conn)
+            .expect("seeding activity");
+    }
+    // KAIROS-T-0571: three old rows that move an item. They stay, and no
+    // page reads them.
+    for (i, action) in ["transition", "cancel", "board_move"].iter().enumerate() {
+        diesel::insert_into(schema::activity_log::table)
+            .values((
+                schema::activity_log::actor_id.eq(robin),
+                schema::activity_log::action.eq(*action),
+                schema::activity_log::details.eq(format!("kept-{i}")),
+                schema::activity_log::occurred_at.eq(at(2024, 6, 1, 0, 0, i as u32)),
             ))
             .execute(&mut conn)
             .expect("seeding activity");
@@ -942,7 +964,17 @@ fn the_sweep_pages_by_item_and_prunes_what_the_planner_gives() {
         .load(&mut conn)
         .expect("loading history");
     assert!(left.iter().all(|k| !expected.contains(k)));
-    assert_eq!(old_activity_count(&mut conn, now - Duration::days(365)), 0);
+    let kept: Vec<String> = schema::activity_log::table
+        .filter(schema::activity_log::occurred_at.lt(now - Duration::days(365)))
+        .order(schema::activity_log::action.asc())
+        .select(schema::activity_log::action)
+        .load(&mut conn)
+        .expect("loading old activity");
+    assert_eq!(
+        kept,
+        vec!["board_move", "cancel", "transition"],
+        "the rows that move an item stay at each age"
+    );
 
     // A second paged sweep finds nothing.
     let again = sweep_tenant_with(&mut conn, "acme", &config, now, paging).expect("re-sweep");

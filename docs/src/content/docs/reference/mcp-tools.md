@@ -635,7 +635,7 @@ The result has 4 parts:
   Weeks start on Monday.
 - **Work in progress**: each item that is not done and has a start, with its
   age in days, oldest first.
-- **Cumulative flow**: the live items of each column at the end of each of the
+- **Cumulative flow**: the items of each column at the end of each of the
   last 14 days. `GET /api/boards/{id}/flow` gives each day of the range.
 
 The definitions:
@@ -647,8 +647,11 @@ The definitions:
   entry into a done column.
 - A cancelled task counts apart. It is not in the done count, and it has no
   cycle time.
-- Only the live items of the board count. The history names the columns by
-  their name at the time of the move. A column with a new name shows its old
+- The items of the board count. An archived item counts until its archive: an
+  item archived from a done column keeps its done time and its cycle time. An
+  archived item is not in progress, and the cumulative flow drops it on the day
+  of its archive. The history names the columns by their name at the time of
+  the move. A column with a new name shows its old
   name in the cumulative flow.
 
 Refuses: `NOT_FOUND` for an unknown board; `VALIDATION` for a date that is not

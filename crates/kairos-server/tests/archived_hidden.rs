@@ -560,15 +560,17 @@ async fn archived_work_is_absent_from_every_default_listing() {
         chrono::DateTime::parse_from_rfc3339(&marker).is_ok(),
         "archived_at is an RFC 3339 instant, like every other archived marker: {marker}"
     );
-    // ...and the rollup still refuses to count it (ADR-20 rule 5): two
+    // ...and the rollup does not count it as work (KAIROS-T-0571): it was
+    // archived from a column that is not done, so it is removed. Two
     // children listed, one child's worth of progress.
     let progress = svc
         .children_progress(EntityKind::Strategy, &keep_strategy)
         .await
         .expect("children progress of the live strategy");
     assert_eq!(
-        progress.total, 1,
-        "progress counts LIVE children only, though the list names both: {progress:?}"
+        (progress.total, progress.removed, progress.open),
+        (1, 1, 1),
+        "the archived child is removed, not open, though the list names both: {progress:?}"
     );
 
     // === 5. …and none of that is erasure =================================

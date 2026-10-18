@@ -81,10 +81,11 @@ distinction this page exists to draw, and the clearest formulation of it is:
 
 An item's relationship list names its archived children, because what this
 initiative contained is a historical fact and omitting rows would make the
-record wrong. Its progress rollup does not count them, because progress is a
-question about work someone is still doing. An archived item does not block
-anything, because archived work cannot be waiting on anyone. Same rows, two
-questions, two honest answers.
+record wrong. An archived item does not block anything, because archived work
+cannot be waiting on anyone. Same rows, two questions, two honest answers. The
+progress rollup is a third question, about finished work. The section
+[what archive does to the numbers](#what-archive-does-to-the-numbers) gives its
+answer.
 
 That is also why the guards that ask "is there still work here?" — winding down
 a [team](../teams-and-boards/), retiring a
@@ -358,6 +359,34 @@ would leave the board in a state that nobody asked for, and the person could
 not see which tasks went. The right is `manage_tasks` on the board: the right
 that archives each task of the board. The creator of a task can archive that
 task, but not the done column of the team.
+
+## What archive does to the numbers
+
+"Archive completed" is the way to clean a board. So an archive must not erase
+the record of finished work (KAIROS-T-0571). An archive changes each number in
+this way:
+
+- **Children progress.** An archived child counts by the column that it was
+  archived from. From a done column, it counts as done. With the cancel mark, it
+  counts as cancelled. From another column, it counts as `removed`. A removed
+  child is not open work, and it is not in the total. So an initiative with 8
+  finished tasks and 2 open tasks shows 8 of 10 done after "Archive completed",
+  as before it.
+- **Flow metrics.** An archived item counts for its time on the board. An item
+  archived from a done column keeps its done time, its cycle time and its place
+  in the throughput. An archived item is not work in progress. The cumulative
+  flow drops it on the day of its archive.
+- **Blocks.** An archived item blocks nothing, and nothing blocks it.
+- **Guards.** A guard that asks "is there still work here?" counts live rows
+  only (rule 5).
+
+The rollup reads the archived child as finished work, not as live work. Rule 5
+stays: an archived child is never open work.
+
+The flow metrics read the rows of the activity log that move an item:
+`transition`, `cancel` and `board_move`. The retention pass keeps these rows at
+each age. The window of the activity log does not apply to them. Without them,
+a task in progress for more than a year has no start and no age.
 
 ## Alternatives, and what they would have cost
 
