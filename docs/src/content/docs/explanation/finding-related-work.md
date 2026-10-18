@@ -121,26 +121,25 @@ When a suggestion is right, confirming it draws the edge for real. That is not
 bookkeeping: graph distance is half the signal above, so every confirmation makes
 the next answer better. The system improves by being used.
 
-An agent cannot confirm its own suggestion. A wrong `parent` edge re-parents work
-onto a board that then reports the wrong thing to the wrong people, and nobody
-re-reads an edge once it exists. A proposal costs a click; a wrong edge costs a
-conversation.
+A suggestion is not an edge until someone confirms it. A wrong `parent` edge
+re-parents work onto a board that then reports the wrong thing to the wrong
+people, and nobody re-reads an edge once it exists. A proposal costs a click; a
+wrong edge costs a conversation.
 
-An agent key is the person who owns it. So the server cannot tell the agent
-from the person by the user alone. It refuses a decision with an agent key.
-It also refuses the proposer. Thus a proposal that your agent made needs a
-second person. So a second person checks each edge that comes from a
-proposal.
+A grant decides who confirms: `approve_proposals`, on the board of one of the
+two items. An organization admin can also decide. An organization chooses who
+holds the grant. It can be a person, the agent key of that person, or a service
+account that automates the approval. The holder can also decide their own
+proposal. So a team of one person can work with its agents, and a larger team
+can ask a second person to check each edge.
 
-The person who confirms must be able to edit the item at one end of the edge.
-That is the [link rule](../../reference/capabilities/#who-can-write-relationships),
-and it is the rule for each other edge. The reason is that a confirm is not a
-vote on a suggestion: it writes the edge. If the confirm asked only for a
-person, then a member who can edit neither item could draw a `parent` edge by
-two steps, a proposal and a confirm, that the server refuses as one step. A
-proposal must not be a way around a rule. So each member can suggest, and the
-people who own one of the two items decide. A refused confirm leaves the
-proposal where it was, for one of them.
+The grant is the rule because a confirm is not a vote on a suggestion: it
+writes the edge. If the confirm asked for nothing, a member who can edit
+neither item could draw a `parent` edge in two steps, a proposal and a confirm.
+The server refuses that edge as one step. A proposal must not be a way around a
+rule. So each member can suggest, and the holders on the two boards decide. A
+refused confirm leaves the proposal where it was, for one of them. See
+[The decision of an edge proposal](../../reference/capabilities/#the-decision-of-an-edge-proposal).
 
 Rejections are kept, too. A pair that keeps being suggested and keeps being
 rejected is the clearest evidence available that the retrieval is wrong about
