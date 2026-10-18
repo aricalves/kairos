@@ -53,7 +53,16 @@ pub fn MetadataPanel(
     /// Why the values are read-only; empty while the page does not know.
     #[prop(into)]
     read_only_reason: Signal<String>,
+    /// The page bumps this to read the values again: Reload of the banner
+    /// "Changed on the server" (KAIROS-T-0578).
+    #[prop(optional, into)]
+    reload: Signal<u32>,
+    /// The panel writes here the values that it shows, so the live page
+    /// can compare them with the values on the server (KAIROS-T-0578).
+    #[prop(optional)]
+    seen: Option<RwSignal<Option<Vec<MetadataValue>>>>,
 ) -> impl IntoView {
+    let page_reload = reload;
     let auth = use_auth();
     let whoami =
         use_context::<LocalResource<Result<crate::api::Whoami, aurora_dark::tokens::ApiError>>>();
@@ -69,6 +78,7 @@ pub fn MetadataPanel(
     let data = LocalResource::new(move || {
         auth.track_session();
         let _ = reload.get();
+        let _ = page_reload.get();
         // KAIROS-T-0618: the two reads go at the same time.
         let code = code.get_value();
         async move {
@@ -80,6 +90,13 @@ pub fn MetadataPanel(
         }
     });
     let retry = Callback::new(move |_| reload.update(|n| *n += 1));
+    if let Some(seen) = seen {
+        Effect::new(move |_| {
+            if let Some(Ok((_, values))) = data.get() {
+                seen.set(Some(values));
+            }
+        });
+    }
 
     view! {
         <Panel title="Metadata" caption="typed fields">
