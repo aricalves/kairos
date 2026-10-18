@@ -1840,6 +1840,38 @@ upload. Each run shows its result. `--limit` gives the most runs to show:
 | `SYMBOLS` | The symbols of the index that the run wrote. |
 | `DETAIL` | The text of a failure, or when the run ended. |
 
+### `kairos repos indexes`
+
+```text
+kairos repos indexes <REPOSITORY> [OPTIONS]
+```
+
+List the indexed commits of a repository, newest first. The order is the
+time of the last write of each index. Use it when `fetch_index` refuses a
+checkout. The list shows how far the nearest index is from the checkout.
+Each member can read the list.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--limit <LIMIT>` | integer | server default 50, maximum 200 | Page size. |
+| `--offset <OFFSET>` | integer | 0 | Rows to skip. |
+| `--all` | flag | off | Read each page. The CLI asks for one page after the other and prints each row. Not with `--limit` or `--offset`. |
+
+| Column | Meaning |
+|---|---|
+| `COMMIT` | The first 12 characters of the commit. |
+| `REF` | The branch, the pull request or the tag of the index, or `-`. |
+| `SCHEMA` | The schema version of the index file, or `-` when the server cannot read it. |
+| `SIZE` | The size of the structure: the index with no summaries. |
+| `SUMMARIES` | The summaries that the index uses. |
+| `CREATED` | When Kairos first stored an index of the commit, in UTC. |
+| `UPDATED` | When Kairos last stored an index of the commit, in UTC. |
+
+After the table, the command prints the count of the indexes and the page.
+With `--json`, each row has the fields of
+`GET /api/repositories/{slug}/code-indexes/commits`. See
+[the pages of a list](#the-pages-of-a-list).
+
 ### `kairos repos credential set`
 
 ```

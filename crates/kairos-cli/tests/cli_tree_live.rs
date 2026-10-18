@@ -960,6 +960,30 @@ async fn cli_command_tree_golden_path_live() {
     assert!(stdout.contains("payments-api"), "{stdout}");
     assert!(stdout.contains("acme/payments-api"), "{stdout}");
 
+    // KAIROS-T-0518: `repos indexes` of a repository with no index is an
+    // empty list, in the envelope of each list.
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["repos", "indexes", "payments-api", "--json"],
+    )
+    .await;
+    assert_eq!(code, 0, "repos indexes --json failed: {stderr}");
+    let indexes: serde_json::Value = serde_json::from_str(&stdout).expect("envelope JSON");
+    assert_eq!(
+        indexes,
+        serde_json::json!({ "items": [], "total": 0, "next_offset": null })
+    );
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["repos", "indexes", "payments-api", "--all"],
+    )
+    .await;
+    assert_eq!(code, 0, "repos indexes --all failed: {stderr}");
+    assert_eq!(stdout, "(none)\ntotal: 0\n");
+    let (code, _, stderr) = run_cli(config_dir.path(), &["repos", "indexes", "no-such-repo"]).await;
+    assert_ne!(code, 0, "an unknown repository must fail");
+    assert!(stderr.contains("no-such-repo"), "{stderr}");
+
     // The golden-path task was deleted above; bind a fresh one.
     let (code, stdout, stderr) = run_cli(
         config_dir.path(),

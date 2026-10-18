@@ -51,7 +51,7 @@ fn is_exempt(method: &Method, path: &str) -> bool {
     match segments.as_slice() {
         // The static routes next to `{commit}` are in the timeout.
         ["", "api", "repositories", _, "code-indexes", commit] => {
-            !matches!(*commit, "nearest" | "builds" | "rebuild")
+            !matches!(*commit, "commits" | "nearest" | "builds" | "rebuild")
                 && matches!(*method, Method::GET | Method::HEAD | Method::PUT)
         }
         ["", "api", "repositories", _, "site"] => method == Method::PUT,
@@ -125,7 +125,7 @@ mod tests {
         // The other routes of the two families are in the timeout.
         assert!(applies(&Method::DELETE, "/api/repositories/kairos/site"));
         assert!(applies(&Method::DELETE, &index));
-        for name in ["nearest", "builds", "rebuild"] {
+        for name in ["commits", "nearest", "builds", "rebuild"] {
             let path = format!("/api/repositories/kairos/code-indexes/{name}");
             assert!(applies(&Method::GET, &path), "{path}");
             assert!(applies(&Method::POST, &path), "{path}");
