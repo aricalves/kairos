@@ -4315,7 +4315,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Archive an item by short code (it is not deleted): hidden from boards and default search, read-only, and `restore_item` brings it back. Needs `confirm: true`: the archive cascades to the descendants that you can edit, and the answer lists what was archived and what stayed, and why. You can archive an item you created, or with `manage_<type>` on its board. `purge_task` (admin profile) deletes a task for good."
+        description = "Archive an item by short code (it is not deleted): hidden from boards and default search, read-only, and `restore_item` brings it back. Needs `confirm: true`: the archive cascades to the descendants that you can edit, and the answer lists what was archived and what stayed, and why. You can archive an item you created, or with `manage_<type>` on its board. An agent's archive of intake is refused with AGENT_TRIAGE_OFF while the board lets a person decide. `purge_task` (admin profile) deletes an archived task for good."
     )]
     pub async fn delete_item(
         &self,
@@ -4335,6 +4335,19 @@ impl KairosMcp {
                 ));
             }
             let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
+            // KAIROS-T-0537: an archive of intake is a triage (won't do).
+            // The edit rule first, so a caller with no right gets its 403.
+            let triaged = if item.item_type == ItemType::Task {
+                crate::api::require_item_archive(conn, role, user, item.id, item.item_type)?;
+                crate::agent_triage::check(
+                    conn,
+                    &auth,
+                    item.id,
+                    crate::agent_triage::TriageMove::Cancel,
+                )?
+            } else {
+                None
+            };
             // The same archive as REST `DELETE` (COLLIERY-T-0234): the edit
             // rule for the item, and then for each descendant.
             let outcome = crate::api::cascade::archive_item(
@@ -4345,6 +4358,7 @@ impl KairosMcp {
                 item.id,
                 item.item_type,
             )?;
+            crate::agent_triage::record(conn, &auth, item.id, triaged)?;
             let mut out = format!("Archived {}.\n", outcome.root_short_code);
             if outcome.cascaded_short_codes.is_empty() {
                 out.push_str("Cascade: none.\n");
@@ -4488,7 +4502,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Delete a TASK for good, with its history, metadata, edges, forge links and claim. You cannot undo it; `delete_item` archives instead. The activity log keeps the code and title. Needs `confirm: true` and `manage_tasks` on its board. Send the current code (a retired code is not followed)."
+        description = "Delete an archived TASK for good, with its history, metadata, edges, forge links, external references, forge intake row and claim. You cannot undo it. Archive the task first with `delete_item`: a live task is refused with TASK_LIVE. The activity log keeps the code and title. Needs `confirm: true` and `purge` on its board: team membership does not give it, and organization admins have it. An agent's purge of intake is refused with AGENT_TRIAGE_OFF while the board lets a person decide. Send the current code (a retired code is not followed)."
     )]
     pub async fn purge_task(
         &self,
@@ -4496,7 +4510,6 @@ impl KairosMcp {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let (auth, tenant) = Self::caller(&context)?;
-        let user = auth.user_id;
         let slug = tenant.slug.clone();
         self.run_tool(&tenant, move |conn| {
             if !params.confirm {
@@ -4506,7 +4519,7 @@ impl KairosMcp {
                 )
                 .with_details(serde_json::json!({ "argument": "confirm" })));
             }
-            let purged = crate::api::tasks::purge(conn, &slug, &params.short_code, user)?;
+            let purged = crate::api::tasks::purge(conn, &slug, &params.short_code, &auth)?;
             Ok(format!(
                 "Deleted {} (\"{}\") for good. No restore can bring it back.",
                 purged.short_code, purged.title
