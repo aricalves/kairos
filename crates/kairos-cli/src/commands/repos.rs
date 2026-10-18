@@ -23,6 +23,9 @@
 //! standard input or from a prompt with no echo, never from an argument.
 //! `get` (alias `show`) prints the status of the token, never the token.
 //!
+//! `local` lists the clones and worktrees of a folder with their
+//! repositories ([`super::repos_local`], KAIROS-T-0646).
+//!
 //! `indexes` lists the indexed commits of a repository, newest first
 //! (KAIROS-T-0518). It shows why `fetch_index` takes an old base: the
 //! nearest index can be far from the checkout.
@@ -270,6 +273,17 @@ pub enum ReposCommand {
         /// prints each row. Not with --limit or --offset
         #[arg(long, conflicts_with_all = ["limit", "offset"])]
         all: bool,
+        #[command(flatten)]
+        common: Common,
+    },
+    /// List the clones and worktrees of a folder: the repository of each
+    /// (its `origin` remote matched with the repositories of Kairos), its
+    /// branch, and how far it is behind its default branch. The counts are
+    /// from the local refs: the command runs no fetch
+    Local {
+        /// The folder: a board folder with clones, or a checkout. Default:
+        /// the current folder
+        folder: Option<std::path::PathBuf>,
         #[command(flatten)]
         common: Common,
     },
@@ -1007,6 +1021,9 @@ impl ReposCommand {
                 }
                 listing.print_footer();
                 Ok(())
+            }
+            Self::Local { folder, common } => {
+                crate::commands::repos_local::run(folder, common).await
             }
             Self::Builds {
                 repository,

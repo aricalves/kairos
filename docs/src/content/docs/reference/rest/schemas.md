@@ -1979,6 +1979,15 @@ Response of `POST /api/{entity_type}/{short_code}/notes/{note_id}/promote` (KAIR
 | `short_code` | `string` | yes | The short code of the source item. |
 | `supports` | `boolean` | yes | True when the new item `supports` the source item. False for a note on a document or an ADR: no edge joins two attachments. |
 
+## ProposedRelationship
+
+The answer of `POST /api/relationships` when the call made a proposal and no edge (202, KAIROS-T-0569). A `blocks` edge needs the right to edit the target. A caller who can edit the source only gets this.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `message` | `string` | yes | What the call did, and who can confirm the proposal. |
+| `proposal` | [`EdgeProposalDto`](#edgeproposaldto) | yes | The proposal. Confirm it with `POST /api/proposals/{id}/confirm`. |
+
 ## PurgeTaskResponse
 
 Response of `POST /api/tasks/{short_code}/purge` (KAIROS-T-0362): the task that is gone for good.

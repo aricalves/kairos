@@ -21,7 +21,13 @@ kairos MCP connection for live items. Offline degrades to a note, never a
 failure.
 
 In a worktree the wiring is the file of its clone (KAIROS-T-0520,
-`wiring_path`). Not configured (no kairos.local.md) -> silent exit 0. Python stdlib only.
+`wiring_path`). In a board folder the hook lists the clones there
+(KAIROS-T-0521). When the `kairos` CLI has `kairos repos local`
+(KAIROS-T-0646), the CLI gives the list, with the repository of each clone:
+the CLI uses its own credentials (a key in the environment or its login),
+and the hook still holds none. An older CLI, or a CLI that fails, gives the
+listing of the hook. Not configured (no kairos.local.md) -> silent exit 0.
+Python stdlib only.
 """
 
 import json
@@ -166,6 +172,56 @@ def board_checkouts(folder, seconds=2.0, clock=time.monotonic):
     return checkouts
 
 
+CLI_LOCAL_SECONDS = 3.0
+
+
+def cli_checkouts(folder, deployment, timeout=CLI_LOCAL_SECONDS):
+    """The checkouts of a board folder from `kairos repos local --json`
+    (KAIROS-T-0646), in the form of `board_checkouts`, each with its
+    `repository` (the slug, or None when no repository of Kairos has the
+    remote). None when `kairos` is not on PATH, when the CLI has no such
+    verb (an older CLI), or when it fails: then the hook lists the clones
+    itself. The CLI runs no fetch and no daily version check."""
+    binary = shutil.which("kairos")
+    if not binary or os.path.exists(os.path.join(folder, ".git")):
+        return None
+    env = dict(os.environ, KAIROS_UPDATE_CHECK="0", KAIROS_QUIET="1")
+    try:
+        out = subprocess.run(
+            [binary, "repos", "local", "--json", "--url", deployment, folder],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+        )
+        items = json.loads(out.stdout)["items"] if out.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+        return None
+    if not isinstance(items, list):
+        return None
+    checkouts = []
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get("folder"), str):
+            return None
+        if len(checkouts) == MAX_CHECKOUTS:
+            checkouts.append({"stopped": True})
+            break
+        behind = item.get("behind")
+        checkouts.append(
+            {
+                "name": item["folder"],
+                "worktree": bool(item.get("worktree")),
+                "clone": item.get("clone"),
+                "branch": item.get("branch") or "(detached HEAD)",
+                "remote": item.get("remote"),
+                "default": item.get("default_branch"),
+                "behind": behind if isinstance(behind, int) else None,
+                "repository": item.get("repository"),
+            }
+        )
+    return checkouts
+
+
 def checkouts_text(checkouts):
     """The lines of the board folder for the context (pure; testable)."""
     if not checkouts:
@@ -179,6 +235,12 @@ def checkouts_text(checkouts):
             lines.append("- (the list stops here: more checkouts are not listed)")
             continue
         parts = []
+        if "repository" in entry:  # from `kairos repos local`
+            parts.append(
+                f"repository {entry['repository']}"
+                if entry["repository"]
+                else "no repository in Kairos"
+            )
         if entry["worktree"]:
             parts.append(
                 f"worktree of {entry['clone']}/" if entry["clone"] else "worktree"
@@ -193,11 +255,18 @@ def checkouts_text(checkouts):
         elif entry["remote"]:
             parts.append("no origin default branch in the local refs")
         lines.append(f"- {entry['name']}/: " + ", ".join(parts))
-    lines.append(
-        "Match each remote with the full name of a repository in "
-        "`list_repositories` to find the clone of the repository of a task. "
-        "Work in a worktree of that clone, not in the clone (/kairos:implement)."
-    )
+    if any("repository" in entry for entry in checkouts):
+        lines.append(
+            "`kairos repos local` matched each remote with the repositories of "
+            "Kairos. Open the clone of the repository of a task. Work in a "
+            "worktree of that clone, not in the clone (/kairos:implement)."
+        )
+    else:
+        lines.append(
+            "Match each remote with the full name of a repository in "
+            "`list_repositories` to find the clone of the repository of a task. "
+            "Work in a worktree of that clone, not in the clone (/kairos:implement)."
+        )
     return "\n".join(lines)
 
 
@@ -425,7 +494,12 @@ def main():
     note = cli_note(cli_version(budget.left()), server, plugin_version())
 
     project_dir = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
-    context = build_context(values, status, note, board_checkouts(project_dir))
+    checkouts = None
+    if deployment and "NOT reachable" not in status:
+        checkouts = cli_checkouts(project_dir, deployment)
+    if checkouts is None:
+        checkouts = board_checkouts(project_dir)
+    context = build_context(values, status, note, checkouts)
     rules = rules_at_start(values, session)
     if rules:
         context = context + "\n\n" + rules

@@ -59,6 +59,10 @@ use kairos_index::{
 
 pub use error::IndexCommandError;
 
+// KAIROS-T-0646: `kairos repos local` reads the settings and the remotes as
+// `kairos index` does.
+pub(crate) use base::{normalized_remote, settings};
+
 use crate::context::print_json;
 use crate::error::CliError;
 
@@ -302,7 +306,7 @@ pub(super) fn db_path(root: &Path) -> PathBuf {
 }
 
 /// The trimmed stdout of a git command that succeeded.
-pub(super) fn git_output(root: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn git_output(root: &Path, args: &[&str]) -> Option<String> {
     let out = Command::new("git")
         .arg("-C")
         .arg(root)
@@ -312,6 +316,26 @@ pub(super) fn git_output(root: &Path, args: &[&str]) -> Option<String> {
     out.status
         .success()
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// A git command in `dir` for a test, with a fixed identity.
+#[cfg(test)]
+pub(crate) fn test_git(dir: &Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_AUTHOR_NAME", "Robin")
+        .env("GIT_AUTHOR_EMAIL", "robin@example.test")
+        .env("GIT_COMMITTER_NAME", "Robin")
+        .env("GIT_COMMITTER_EMAIL", "robin@example.test")
+        .output()
+        .expect("git runs");
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 /// Make git ignore the index: if git does not ignore `.kairos/index.db`,

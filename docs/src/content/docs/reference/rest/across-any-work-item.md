@@ -13,13 +13,13 @@ Operations addressed by `{entity_type}` and a short code, so they work uniformly
 
 ### `POST /api/relationships`
 
-Create a relationship edge.
+Create a relationship edge, or a proposal of a `blocks` edge.
 
 The link rule applies (COLLIERY-T-0228). The caller can edit the source
-or the target. The rule is the same for each relationship type.
-
-One exception (COLLIERY-T-0235) is a `supports` edge to a document
-that has no parent. The caller must be able to edit the document.
+or the target. A `blocks` edge needs the target, the blocked item
+(KAIROS-T-0569). A caller who can edit the source only gets a proposal
+of the edge. The answer is 202 with the proposal. The message says who
+can confirm it (KAIROS-A-0060).
 
 The T-0013 graph
 service enforces the A-0001 type-rule matrix, cycle prevention for
@@ -31,7 +31,9 @@ Request body (required): `application/json`, [`CreateRelationshipRequest`](../sc
 | Response | Body | Meaning |
 |---|---|---|
 | `201` | [`Relationship`](../schemas/#relationship) | Edge created (relationship_add activity row written) |
-| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The caller may edit neither the source nor the target. For a supports edge to a document with no parent: the caller may not edit the document |
+| `202` | [`ProposedRelationship`](../schemas/#proposedrelationship) | No edge: a proposal of a blocks edge. The caller can edit the source only. The message says who can confirm it |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The caller may edit neither the source nor the target |
+| `409` | [`ErrorEnvelope`](../schemas/#errorenvelope) | CONFLICT: the same proposal is pending, or the item has too many pending proposals |
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Rule violation, cycle, duplicate edge, or unknown endpoint |
 
 ### `DELETE /api/relationships/{id}`
