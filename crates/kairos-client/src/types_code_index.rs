@@ -22,6 +22,10 @@ pub struct CodeIndex {
     pub structure_bytes: i64,
     /// The summaries that the structure uses.
     pub summary_keys: i32,
+    /// The schema version of the index file (KAIROS-T-0518). It is null
+    /// when the stored structure gives no version.
+    #[serde(default)]
+    pub schema_version: Option<i64>,
     /// The model of the vectors, as `provider/model/dimension`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vector_model: Option<String>,
