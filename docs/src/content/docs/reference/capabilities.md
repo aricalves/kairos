@@ -131,7 +131,7 @@ are unaffected.
 `*` matches any sequence of characters, including an empty one. Every other
 character matches itself. Matching is **case-sensitive**.
 
-The API accepts only the twelve values in the two tables above as a stored
+The API accepts only the thirteen values in the two tables above as a stored
 grant; anything else — including a pattern such as `manage_*s` — is refused at
 grant time with `VALIDATION`. The matcher itself is general, and the rules
 below describe it, because it is the matcher that decides authorisation and it
@@ -205,8 +205,8 @@ check rather than by a stored row:
   `capabilities`. The MCP tools `whoami` and `my_boards` show them too.
 
   A person with a grant on the board can claim an item of the board that has
-  no [owner](../glossary/#owner) (`claim_item`, or
-  `POST /api/{entity_type}/{short_code}/owner/claim`). For the claim and the
+  no [owner](../glossary/#owner). Use `claim_item`, or
+  `POST /api/{entity_type}/{short_code}/owner/claim`. For the claim and the
   hand-off, each grant counts, not only `member`. The owner can hand the item
   off to a person with a grant on the board, or release it. An organization
   admin can set or clear the owner. The owner gets no capability.
