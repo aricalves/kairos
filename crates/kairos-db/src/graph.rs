@@ -4,13 +4,12 @@
 //! both-direction neighbor query.
 //!
 //! The pure decisions live in [`kairos_core::graph`] — the type-rule matrix
-//! ([`kairos_core::graph::check_link`]) and cycle detection over loaded
-//! edges ([`kairos_core::graph::would_create_cycle`]). This module is the
+//! ([`kairos_core::graph::check_link`]). This module is the
 //! SQL side of the same contract: it resolves both UUIDs to entity types
 //! through the `entity_directory` view under an explicit `deleted_at IS
 //! NULL` (so soft-deleted items are typed [`GraphError::ItemNotFound`]),
-//! loads the relationship's existing edges for the cycle check (`parent`
-//! and `blocks` only), inserts, and writes `activity_log`.
+//! runs the cycle check in the database (`parent` and `blocks` only,
+//! [`check_acyclic`]), inserts, and writes `activity_log`.
 //!
 //! Every public function operates in the CURRENT `search_path` tenant
 //! schema and runs in its own transaction (same conventions as
@@ -275,24 +274,60 @@ fn log_relationship_activity(
     Ok(())
 }
 
-/// All existing edges of ONE relationship type in the current tenant
-/// schema, as pure [`rules::Edge`]s for the cycle check.
-fn load_edges(
+#[derive(QueryableByName)]
+struct Reached {
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    reached: bool,
+}
+
+/// Refuse a `relationship` edge from `source_id` to `target_id` that makes
+/// a directed cycle (KAIROS-T-0634). Call it in the transaction of the
+/// insert, before the insert.
+///
+/// 1. The lock: `pg_advisory_xact_lock` on the tenant schema and the
+///    relationship. Two links of one relationship in one tenant take the
+///    check and the insert in turn. Without the lock, the links A→B and
+///    B→A at the same time each do not see the edge of the other, and both
+///    commit: a cycle. The second link waits until the first commits; its
+///    check is a new statement, so it sees the edge of the first. The lock
+///    stays until the transaction ends.
+/// 2. The check: a recursive CTE walks the edges of the relationship from
+///    `target_id`, and stops at the first row that is `source_id`
+///    (`LIMIT 1`). The database does the walk, on the index
+///    `(source_id, relationship)`: the server does not load each edge of
+///    the tenant. `UNION` (not `UNION ALL`) keeps the walk finite on bad
+///    data that has a loop already.
+fn check_acyclic(
     conn: &mut PgConnection,
     relationship: RelationshipType,
-) -> Result<Vec<rules::Edge>, DieselError> {
-    use crate::schema::item_relationships;
-
-    Ok(item_relationships::table
-        .filter(item_relationships::relationship.eq(relationship))
-        .select((item_relationships::source_id, item_relationships::target_id))
-        .load::<(Uuid, Uuid)>(conn)?
-        .into_iter()
-        .map(|(source_id, target_id)| rules::Edge {
+    source_id: Uuid,
+    target_id: Uuid,
+) -> Result<(), GraphError> {
+    let edges = format!("edges:{relationship}");
+    sql_query("SELECT pg_advisory_xact_lock(hashtext(current_schema()), hashtext($1))")
+        .bind::<Text, _>(&edges)
+        .execute(conn)?;
+    let cycle: Reached = sql_query(
+        "WITH RECURSIVE reach(id) AS ( \
+             SELECT $1::uuid \
+             UNION \
+             SELECT r.target_id FROM item_relationships r \
+               JOIN reach ON r.source_id = reach.id \
+              WHERE r.relationship = $3) \
+         SELECT EXISTS (SELECT 1 FROM reach WHERE id = $2 LIMIT 1) AS reached",
+    )
+    .bind::<SqlUuid, _>(target_id)
+    .bind::<SqlUuid, _>(source_id)
+    .bind::<Text, _>(relationship.to_string())
+    .get_result(conn)?;
+    if cycle.reached {
+        return Err(GraphError::CycleDetected {
+            relationship,
             source_id,
             target_id,
-        })
-        .collect())
+        });
+    }
+    Ok(())
 }
 
 /// The name of the unique index that holds one parent per item
@@ -418,8 +453,7 @@ fn insert_edge(
 ///    ([`kairos_core::graph::check_link`] → [`GraphError::Rule`]);
 /// 3. for the acyclic relationships (`parent`/`blocks`) the edge must not
 ///    close a directed cycle over the relationship's existing edges
-///    ([`kairos_core::graph::would_create_cycle`] →
-///    [`GraphError::CycleDetected`]);
+///    ([`check_acyclic`], under a lock → [`GraphError::CycleDetected`]);
 /// 4. a `parent` edge to an item that has a different parent is
 ///    [`GraphError::ParentExists`] (KAIROS-T-0572, module docs);
 /// 5. insert (duplicate → [`GraphError::AlreadyLinked`], module docs) and
@@ -444,14 +478,7 @@ pub fn link_items(
         rules::check_link(rel, source_type, target_type)?;
 
         if rel.requires_acyclicity() {
-            let edges = load_edges(conn, relationship)?;
-            if rules::would_create_cycle(&edges, source_id, target_id) {
-                return Err(GraphError::CycleDetected {
-                    relationship,
-                    source_id,
-                    target_id,
-                });
-            }
+            check_acyclic(conn, relationship, source_id, target_id)?;
         }
 
         // KAIROS-T-0572: an item has one parent. The same parent again is
@@ -603,13 +630,17 @@ pub struct ParentChange {
 /// 2. The type rules admit the edge ([`GraphError::Rule`]).
 /// 3. The same parent again, or `None` for an item with no parent, writes
 ///    nothing: `changed` is false.
-/// 4. The old edge goes, with its `relationship_remove` row. The old
+/// 4. The cycle check of the new edge ([`check_acyclic`]). It takes its
+///    lock before the delete, in the order of [`link_items`]: the lock
+///    first, then the rows. The old edge goes into the item, so it is not
+///    on a path from the item, and the check gives the same answer.
+/// 5. The old edge goes, with its `relationship_remove` row. The old
 ///    parent can be archived: the edge to it goes all the same.
-/// 5. The cycle check and the insert of the new edge, with its
+/// 6. The insert of the new edge, with its
 ///    `relationship_add` row. A second parent that a write at the same
 ///    time made is [`GraphError::ParentExists`]; the transaction then
 ///    removes nothing.
-/// 6. One `relationship_changed` event for each live item of the three.
+/// 7. One `relationship_changed` event for each live item of the three.
 ///
 /// WHO may do it is not decided here: the server asks the link rule for
 /// each edge that changes.
@@ -650,6 +681,10 @@ pub fn set_parent(
             });
         }
 
+        if let Some((new_id, _, _)) = &new_parent {
+            check_acyclic(conn, RelationshipType::Parent, *new_id, item_id)?;
+        }
+
         if let Some(old) = &previous {
             use crate::schema::item_relationships::dsl;
             let deleted = diesel::delete(
@@ -677,14 +712,6 @@ pub fn set_parent(
         }
 
         if let Some((new_id, new_type, new_code)) = &new_parent {
-            let edges = load_edges(conn, RelationshipType::Parent)?;
-            if rules::would_create_cycle(&edges, *new_id, item_id) {
-                return Err(GraphError::CycleDetected {
-                    relationship: RelationshipType::Parent,
-                    source_id: *new_id,
-                    target_id: item_id,
-                });
-            }
             insert_edge(conn, *new_id, item_id, RelationshipType::Parent)?;
             log_relationship_activity(
                 conn,
