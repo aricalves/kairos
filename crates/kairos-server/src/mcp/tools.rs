@@ -3132,20 +3132,7 @@ impl KairosMcp {
         let user = auth.user_id;
         let role = tenant.role;
         self.run_tool(&tenant, move |conn| {
-            let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
-            require_item_edit(conn, role, user, item.id, item.item_type)?;
-            let update = items::ContentUpdate {
-                new_title: params.title.as_deref(),
-                new_content: &params.content,
-                expected_version: params.version,
-            };
-            match items::update_item_content(conn, item.item_type, item.id, update, user) {
-                Ok(new_version) => Ok(format!(
-                    "Updated {} to version {new_version}.",
-                    item.short_code
-                )),
-                Err(e) => Err(map_update_error(conn, &item, e)?),
-            }
+            update_item_text(conn, role, user, &params)
         })
         .await
     }
@@ -3162,54 +3149,7 @@ impl KairosMcp {
         let user = auth.user_id;
         let role = tenant.role;
         self.run_tool(&tenant, move |conn| {
-            if params.search.is_empty() {
-                return Err(ApiError::validation(
-                    "The argument search is empty. Send the text to find.",
-                ));
-            }
-            // One retry on a version race (S-0006 edit_item semantics):
-            // the read-modify-write below re-reads on the second attempt.
-            for attempt in 0..2 {
-                let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
-                require_item_edit(conn, role, user, item.id, item.item_type)?;
-                let occurrences = item.content.matches(&params.search).count();
-                if occurrences == 0 {
-                    return Err(ApiError::validation(format!(
-                        "The text of search is not in {} (version {}).",
-                        item.short_code, item.version
-                    )));
-                }
-                if occurrences > 1 && !params.replace_all {
-                    return Err(ApiError::validation(format!(
-                        "The text of search is in {} more than one time. The number of \
-                         times is {occurrences}. Send replace_all=true, or send a longer \
-                         text that is there one time.",
-                        item.short_code
-                    )));
-                }
-                let new_content = if params.replace_all {
-                    item.content.replace(&params.search, &params.replace)
-                } else {
-                    item.content.replacen(&params.search, &params.replace, 1)
-                };
-                let update = items::ContentUpdate {
-                    new_title: None,
-                    new_content: &new_content,
-                    expected_version: item.version,
-                };
-                match items::update_item_content(conn, item.item_type, item.id, update, user) {
-                    Ok(new_version) => {
-                        return Ok(format!(
-                            "Edited {} to version {new_version} ({occurrences} replacement{}).",
-                            item.short_code,
-                            if occurrences == 1 { "" } else { "s" }
-                        ));
-                    }
-                    Err(items::ItemError::VersionConflict { .. }) if attempt == 0 => continue,
-                    Err(e) => return Err(map_update_error(conn, &item, e)?),
-                }
-            }
-            unreachable!("edit_item loop returns within two attempts");
+            edit_item_text(conn, role, user, &params)
         })
         .await
     }
@@ -3227,20 +3167,7 @@ impl KairosMcp {
         let user = auth.user_id;
         let role = tenant.role;
         self.run_tool(&tenant, move |conn| {
-            let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
-            require_item_edit(conn, role, user, item.id, item.item_type)?;
-            let appended = kairos_db::item_notes::append_note(
-                conn,
-                item.item_type,
-                item.id,
-                &params.text,
-                user,
-            )
-            .map_err(crate::api::map_note_error)?;
-            Ok(format!(
-                "Appended note {} to {}. The content stays at version {}.",
-                appended.note_id, item.short_code, appended.version
-            ))
+            append_note_text(conn, role, user, &params)
         })
         .await
     }
@@ -5892,6 +5819,112 @@ fn slug_from_title(title: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// The content writes (KAIROS-T-0635: functions of their own, so that a test
+// can count their statements)
+// ---------------------------------------------------------------------------
+
+/// The answer text of `update_item`.
+pub fn update_item_text(
+    conn: &mut PgConnection,
+    role: OrgRole,
+    user: Uuid,
+    params: &UpdateItemParams,
+) -> Result<String, ApiError> {
+    // KAIROS-T-0635: the rights need no content.
+    let item = load_item_key(conn, &params.short_code)?;
+    require_item_edit(conn, role, user, item.id, item.item_type)?;
+    let update = items::ContentUpdate {
+        new_title: params.title.as_deref(),
+        new_content: &params.content,
+        expected_version: params.version,
+    };
+    match items::update_item_content(conn, item.item_type, item.id, update, user) {
+        Ok(new_version) => Ok(format!(
+            "Updated {} to version {new_version}.",
+            item.short_code
+        )),
+        Err(e) => Err(map_update_error(&item.short_code, e)),
+    }
+}
+
+/// The answer text of `edit_item`.
+pub fn edit_item_text(
+    conn: &mut PgConnection,
+    role: OrgRole,
+    user: Uuid,
+    params: &EditItemParams,
+) -> Result<String, ApiError> {
+    if params.search.is_empty() {
+        return Err(ApiError::validation(
+            "The argument search is empty. Send the text to find.",
+        ));
+    }
+    // One retry on a version race (S-0006 edit_item semantics):
+    // the read-modify-write below re-reads on the second attempt.
+    for attempt in 0..2 {
+        let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
+        require_item_edit(conn, role, user, item.id, item.item_type)?;
+        let occurrences = item.content.matches(&params.search).count();
+        if occurrences == 0 {
+            return Err(ApiError::validation(format!(
+                "The text of search is not in {} (version {}).",
+                item.short_code, item.version
+            )));
+        }
+        if occurrences > 1 && !params.replace_all {
+            return Err(ApiError::validation(format!(
+                "The text of search is in {} more than one time. The number of \
+                     times is {occurrences}. Send replace_all=true, or send a longer \
+                     text that is there one time.",
+                item.short_code
+            )));
+        }
+        let new_content = if params.replace_all {
+            item.content.replace(&params.search, &params.replace)
+        } else {
+            item.content.replacen(&params.search, &params.replace, 1)
+        };
+        let update = items::ContentUpdate {
+            new_title: None,
+            new_content: &new_content,
+            expected_version: item.version,
+        };
+        // KAIROS-T-0635: the content before is the content read.
+        match items::edit_item_content(conn, item.item_type, item.id, update, &item.content, user) {
+            Ok(new_version) => {
+                return Ok(format!(
+                    "Edited {} to version {new_version} ({occurrences} replacement{}).",
+                    item.short_code,
+                    if occurrences == 1 { "" } else { "s" }
+                ));
+            }
+            Err(items::ItemError::VersionConflict { .. }) if attempt == 0 => continue,
+            Err(e) => return Err(map_update_error(&item.short_code, e)),
+        }
+    }
+    unreachable!("edit_item loop returns within two attempts");
+}
+
+/// The answer text of `append_note`.
+pub fn append_note_text(
+    conn: &mut PgConnection,
+    role: OrgRole,
+    user: Uuid,
+    params: &AppendNoteParams,
+) -> Result<String, ApiError> {
+    // KAIROS-T-0635: the rights need no content.
+    let item = load_item_key(conn, &params.short_code)?;
+    require_item_edit(conn, role, user, item.id, item.item_type)?;
+    let appended =
+        kairos_db::item_notes::append_note(conn, item.item_type, item.id, &params.text, user)
+            .map_err(crate::api::map_note_error)?;
+    Ok(format!(
+        "Appended note {} to {}. The content stays at version {}.",
+        appended.note_id, item.short_code, appended.version
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // Shared item projection + lookups (sync, on the blocking connection)
 // ---------------------------------------------------------------------------
 
@@ -6550,36 +6583,17 @@ fn load_item(
         .optional()
         .map_err(ApiError::internal)?;
     let Some(row) = row else {
-        return Err(match liveness {
-            Liveness::LiveOnly => {
-                ApiError::not_found(format!("No live item has the short code {short_code:?}."))
-            }
-            Liveness::IncludeArchived => {
-                ApiError::not_found(format!("No item has the short code {short_code:?}."))
-            }
-        });
+        return Err(no_item(short_code, liveness));
     };
     if liveness == Liveness::LiveOnly {
-        if row.retired.is_some() {
-            return Err(crate::api::retired_code_refused(
-                short_code,
-                &row.short_code,
-            ));
-        }
-        if row.deleted_at.is_some() {
-            return Err(crate::api::archived_write_refused(&upper));
-        }
+        refuse_write(
+            short_code,
+            row.retired.is_some(),
+            row.deleted_at.is_some(),
+            &row.short_code,
+        )?;
     }
-    let item_type = ItemType::ALL
-        .iter()
-        .copied()
-        .find(|t| t.entity_type() == row.entity_type)
-        .ok_or_else(|| {
-            ApiError::internal(format!(
-                "entity_directory returned unknown entity_type {:?}",
-                row.entity_type
-            ))
-        })?;
+    let item_type = item_type_of(&row.entity_type)?;
     Ok(ItemView {
         id: row.id,
         item_type,
@@ -6605,6 +6619,110 @@ fn load_item(
         created_by: row.created_by,
         created_at: row.created_at,
     })
+}
+
+/// The refusal of [`load_item`] for a code that finds no item.
+fn no_item(short_code: &str, liveness: Liveness) -> ApiError {
+    match liveness {
+        Liveness::LiveOnly => {
+            ApiError::not_found(format!("No live item has the short code {short_code:?}."))
+        }
+        Liveness::IncludeArchived => {
+            ApiError::not_found(format!("No item has the short code {short_code:?}."))
+        }
+    }
+}
+
+/// The refusals of a write: a retired code names the current code
+/// (COLLIERY-T-3100), and an archived item says so (KAIROS-T-0560).
+fn refuse_write(
+    short_code: &str,
+    retired: bool,
+    archived: bool,
+    current_code: &str,
+) -> Result<(), ApiError> {
+    if retired {
+        return Err(crate::api::retired_code_refused(short_code, current_code));
+    }
+    if archived {
+        return Err(crate::api::archived_write_refused(
+            &short_code.to_ascii_uppercase(),
+        ));
+    }
+    Ok(())
+}
+
+/// The [`ItemType`] of an `entity_type` of `entity_directory`.
+fn item_type_of(entity_type: &str) -> Result<ItemType, ApiError> {
+    ItemType::ALL
+        .iter()
+        .copied()
+        .find(|t| t.entity_type() == entity_type)
+        .ok_or_else(|| {
+            ApiError::internal(format!(
+                "entity_directory returned unknown entity_type {entity_type:?}"
+            ))
+        })
+}
+
+/// The id, the type and the code of a live item, for a write that needs
+/// no content (KAIROS-T-0635).
+struct ItemKey {
+    id: Uuid,
+    item_type: ItemType,
+    short_code: String,
+}
+
+/// [`load_item`] for a write that needs no content (KAIROS-T-0635): one
+/// statement on `entity_directory`, which has no content, and the same
+/// refusals as [`load_item`] with [`Liveness::LiveOnly`].
+fn load_item_key(conn: &mut PgConnection, short_code: &str) -> Result<ItemKey, ApiError> {
+    let row: Option<LoadedKey> = sql_query(LOAD_ITEM_KEY_SQL)
+        .bind::<SqlText, _>(short_code.to_ascii_uppercase())
+        .get_result(conn)
+        .optional()
+        .map_err(ApiError::internal)?;
+    let Some(row) = row else {
+        return Err(no_item(short_code, Liveness::LiveOnly));
+    };
+    refuse_write(
+        short_code,
+        row.retired.is_some(),
+        row.deleted_at.is_some(),
+        &row.short_code,
+    )?;
+    Ok(ItemKey {
+        id: row.id,
+        item_type: item_type_of(&row.entity_type)?,
+        short_code: row.short_code,
+    })
+}
+
+/// The statement of [`load_item_key`]: the `hit` of [`LOAD_ITEM_SQL`],
+/// with the code and the archive time from `entity_directory`.
+const LOAD_ITEM_KEY_SQL: &str = "\
+    SELECT d.id, d.entity_type, d.short_code, d.deleted_at, NULL::text AS retired, 0 AS pick \
+      FROM entity_directory d WHERE d.short_code = $1 \
+    UNION ALL \
+    SELECT d.id, d.entity_type, d.short_code, d.deleted_at, r.code, 1 \
+      FROM retired_codes r JOIN entity_directory d ON d.id = r.item_id \
+     WHERE r.code = $1 \
+    ORDER BY pick LIMIT 1";
+
+/// The row of [`LOAD_ITEM_KEY_SQL`].
+#[derive(QueryableByName)]
+struct LoadedKey {
+    #[diesel(sql_type = SqlUuid)]
+    id: Uuid,
+    #[diesel(sql_type = SqlText)]
+    entity_type: String,
+    #[diesel(sql_type = SqlText)]
+    short_code: String,
+    #[diesel(sql_type = SqlNullable<diesel::sql_types::Timestamptz>)]
+    deleted_at: Option<DateTime<Utc>>,
+    /// The retired code that found the item, or `None`.
+    #[diesel(sql_type = SqlNullable<SqlText>)]
+    retired: Option<String>,
 }
 
 /// The statement of [`load_item`] (KAIROS-T-0626). `hit` is the code in
@@ -7933,13 +8051,8 @@ fn relationship_lines(
 /// Map an [`items::ItemError`] from a content update to the S-0006 tool
 /// error: a version conflict carries the CURRENT version, title, and
 /// content so the agent can reconcile without another call (REQ-1.5);
-/// everything else takes the standard REST mapping. Returns `Ok(error)` so
-/// callers can `Err(map_update_error(...)?)` inside the blocking closure.
-fn map_update_error(
-    conn: &mut PgConnection,
-    item: &ItemView,
-    e: items::ItemError,
-) -> Result<ApiError, ApiError> {
+/// everything else takes the standard REST mapping.
+fn map_update_error(short_code: &str, e: items::ItemError) -> ApiError {
     match e {
         items::ItemError::VersionConflict {
             expected_version,
@@ -7947,22 +8060,18 @@ fn map_update_error(
             current_title,
             current_content,
             ..
-        } => {
-            let _ = conn; // the typed error already carries the current row
-            Ok(ApiError::conflict(format!(
-                "The call has the version {expected_version} of {}, and the current \
-                 version is {current_version}. Make the edit on the current version.",
-                item.short_code
-            ))
-            .with_details(json!({
-                "current": {
-                    "version": current_version,
-                    "title": current_title,
-                    "content": current_content,
-                }
-            })))
-        }
-        other => Ok(map_item_error(other)),
+        } => ApiError::conflict(format!(
+            "The call has the version {expected_version} of {short_code}, and the current \
+             version is {current_version}. Make the edit on the current version."
+        ))
+        .with_details(json!({
+            "current": {
+                "version": current_version,
+                "title": current_title,
+                "content": current_content,
+            }
+        })),
+        other => map_item_error(other),
     }
 }
 
