@@ -17,6 +17,7 @@ plus the static gate that precedes them (CI gates 1+2, KAIROS-T-0114):
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -596,11 +597,22 @@ def _boot_gui_server(gui_env, log_path=None):
     return gui_server, 0
 
 
-def _run_gui_smoke(env):
+def _parse_shard(shard):
+    """`I/N` (KAIROS-T-0662): 1 <= I <= N. Returns the text, or None when
+    the value is not a shard."""
+    match = re.fullmatch(r"([1-9][0-9]*)/([1-9][0-9]*)", shard.strip())
+    if not match or int(match.group(1)) > int(match.group(2)):
+        return None
+    return f"{int(match.group(1))}/{int(match.group(2))}"
+
+
+def _run_gui_smoke(env, shard=None):
     """The KAIROS-T-0045 GUI leg: build the SPA, reseed a clean demo
     fixture, serve it on :41080 (the only redirect_uri Dex registers for
     kairos-web → real in-browser PKCE), and run the Playwright smoke suite
-    headless. Returns an exit code; the caller attributes the phase."""
+    headless. With `shard` ("I/N") Playwright runs only that part of the
+    spec files (KAIROS-T-0662). Returns an exit code; the caller attributes
+    the phase."""
     code = _prepare_gui_stack(env, "GUI")
     if code != 0:
         return code
@@ -611,7 +623,15 @@ def _run_gui_smoke(env):
     if code != 0:
         return code
     try:
-        print("Running the Playwright GUI smoke suite...", flush=True)
+        command = ["npx", "playwright", "test", "--grep-invert", "@docs"]
+        if shard:
+            command += ["--shard", shard]
+        print(
+            "Running the Playwright GUI smoke suite"
+            + (f" (shard {shard})" if shard else "")
+            + "...",
+            flush=True,
+        )
         pw_env = os.environ.copy()
         pw_env.update({
             "E2E_GUI_BASE_URL": E2E_GUI_BASE_URL,
@@ -632,7 +652,7 @@ def _run_gui_smoke(env):
                 #   cd e2e && npx playwright test capture-docs-images --grep @docs
                 # which still works, because this exclusion lives here and not
                 # in the config where it would fight that `--grep`.
-                ["npx", "playwright", "test", "--grep-invert", "@docs"],
+                command,
                 cwd=str(E2E_DIR),
                 env=pw_env,
             ).returncode,
@@ -678,6 +698,11 @@ def _run_gui_smoke(env):
         Exits 0 ONLY when every step passes; any failure names its phase
         (and, inside the runner, its step) on stderr.
 
+        `--shard I/N` (KAIROS-T-0662) runs part I of N of the Playwright
+        spec files (`npx playwright test --shard I/N`). The other steps
+        run in each shard; the golden path takes about one second. The
+        merge queue runs 2 shards, each on its own runner and stack.
+
         DESTRUCTIVE for the dev database's `demo` tenant (seed --force,
         run twice — once for the API path, once for the GUI leg). The
         compose stack stays up unless --down (KAIROS-T-0453): the stack is
@@ -696,9 +721,26 @@ def _run_gui_smoke(env):
     takes_value=False,
     is_flag=True,
 )
-def e2e(down=False):
+@angreal.argument(
+    name="shard",
+    long="shard",
+    help="run part I of N of the Playwright specs, as I/N (for example 2/4)",
+    takes_value=True,
+    required=False,
+)
+def e2e(down=False, shard=None):
     """Compose up -> seed-demo --force -> serve -> golden-path runner,
     then compose down -v with --down only (KAIROS-T-0453)."""
+    if shard is not None:
+        parsed = _parse_shard(shard)
+        if parsed is None:
+            print(
+                f"--shard {shard!r} is not a shard: give I/N, with 1 <= I <= N "
+                "(for example 2/4)",
+                file=sys.stderr,
+            )
+            return 2
+        shard = parsed
     _no_incremental()
     print("Starting docker services for E2E smoke...", flush=True)
     exit_code = _e2e_phase("compose up", docker_up())
@@ -802,7 +844,7 @@ def e2e(down=False):
             "(KAIROS-T-0045)...",
             flush=True,
         )
-        gui_exit = _run_gui_smoke(env)
+        gui_exit = _run_gui_smoke(env, shard)
         if gui_exit != 0:
             return gui_exit
 

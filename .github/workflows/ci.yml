@@ -13,8 +13,8 @@
 #   web          Gate 7: the GUI wasm build (release with the size budget in
 #                the queue and on main, debug on a PR)
 #   e2e          tier 4 (`angreal test e2e --down`): the API and MCP golden
-#                path and the Playwright GUI suite, in the queue only
-#                (KAIROS-T-0662)
+#                path and the Playwright GUI suite, in the queue only, split
+#                over 2 shards, each with its own compose stack (KAIROS-T-0662)
 #   ci           the one required check: it fails when a gate failed
 #
 # A change to the docs only runs lint. On a pull request a new push cancels
@@ -550,9 +550,14 @@ jobs:
   # Tier 4 (KAIROS-A-0012), in the merge queue only (KAIROS-T-0662): the
   # same steps as e2e.yml, which still runs on a release tag and on
   # dispatch. It needs only `changes`, so it runs beside build-tests and
-  # integration. It takes up to about 45 minutes; the queue allows 90.
+  # integration. The Playwright suite runs one spec at a time on the shared
+  # demo tenant, so it is split over 2 shards of the spec files. Each shard
+  # has its own runner, compose stack and seed, and runs the golden path too
+  # (about one second). A shard takes about 7 minutes of setup (the server
+  # and wasm builds, the browsers) and a few minutes of Playwright. Add a
+  # shard here when the suite grows.
   e2e:
-    name: e2e
+    name: e2e (${{ matrix.shard }}/2)
     needs: changes
     if: >-
       needs.changes.outputs.stage == 'queue' && (
@@ -560,7 +565,11 @@ jobs:
       needs.changes.outputs.web == 'true' ||
       needs.changes.outputs.e2e == 'true')
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -604,10 +613,37 @@ jobs:
         with:
           node-version: "22"
 
+      # The release binary of trunk, where `angreal web build` looks first.
+      # Without it the task runs `cargo install trunk`: about 6 minutes.
+      - name: Install trunk (release binary)
+        env:
+          TRUNK_VERSION: "0.21.14"
+          TRUNK_SHA256: f2b4680cd239693a646a2795e4633c625328d7b2a044fbe749fa3a2fe9e7036b
+        run: |
+          set -euo pipefail
+          curl -sSfL -o trunk.tar.gz \
+            "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${TRUNK_SHA256}  trunk.tar.gz" | sha256sum -c -
+          mkdir -p target/tools/bin
+          tar -xzf trunk.tar.gz -C target/tools/bin trunk
+          rm trunk.tar.gz
+          target/tools/bin/trunk --version
+
       # Compose up, the server and wasm builds, the seed, the API and MCP
-      # golden path, then the Playwright GUI suite; compose down after.
-      - name: Tier 4 — angreal test e2e
-        run: angreal test e2e --down
+      # golden path, then this shard of the Playwright GUI suite; compose
+      # down after.
+      - name: Tier 4 — angreal test e2e, shard ${{ matrix.shard }} of 2
+        run: angreal test e2e --down --shard ${{ matrix.shard }}/2
+
+      # The trace, screenshot and video of each failed spec.
+      - name: Upload the Playwright results
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: e2e-results-${{ matrix.shard }}
+          path: e2e/test-results/
+          retention-days: 7
+          if-no-files-found: ignore
 
   # A pull request that changes the Dockerfile builds the hosted image for
   # amd64 (no push) and runs its smoke check, so a release does not find
