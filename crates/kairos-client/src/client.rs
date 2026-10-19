@@ -2501,7 +2501,10 @@ impl KairosClient {
 
     /// `GET /api/teams/{id}/pages` — the team's live page tree as a flat
     /// list (nest by parent_id).
-    pub async fn list_team_pages(&self, team_id: &str) -> Result<Vec<TeamPage>, Error> {
+    pub async fn list_team_pages(
+        &self,
+        team_id: &str,
+    ) -> Result<Vec<crate::types_team_pages::TeamPageSummary>, Error> {
         self.get(&format!("/api/teams/{team_id}/pages")).await
     }
 
@@ -2582,18 +2585,45 @@ impl KairosClient {
             .await
     }
 
-    /// `GET /api/teams/{id}/pages/{page_id}/history` — the saved versions,
-    /// newest first.
+    /// `GET /api/teams/{id}/pages/{page_id}/history` — one page of the
+    /// saved versions, newest first, without content.
     pub async fn team_page_history(
         &self,
         team_id: &str,
         page_id: &str,
-    ) -> Result<Vec<crate::types_team_pages::TeamPageVersion>, Error> {
-        self.get(&format!("/api/teams/{team_id}/pages/{page_id}/history"))
-            .await
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> Result<ListEnvelope<crate::types_team_pages::TeamPageVersionSummary>, Error> {
+        self.get_query(
+            &format!("/api/teams/{team_id}/pages/{page_id}/history"),
+            &crate::types_team_pages::TeamPageHistoryQuery {
+                version: None,
+                limit,
+                offset,
+            },
+        )
+        .await
     }
 
-    /// `GET /api/teams/{id}/announcements` — pinned first, newest first.
+    /// `GET /api/teams/{id}/pages/{page_id}/history?version=N` — one saved
+    /// version in full.
+    pub async fn team_page_version(
+        &self,
+        team_id: &str,
+        page_id: &str,
+        version: i32,
+    ) -> Result<crate::types_team_pages::TeamPageVersion, Error> {
+        self.get_query(
+            &format!("/api/teams/{team_id}/pages/{page_id}/history"),
+            &crate::types_team_pages::TeamPageHistoryQuery {
+                version: Some(version),
+                limit: None,
+                offset: None,
+            },
+        )
+        .await
+    }
+
     /// `GET /api/teams/{id}/work-documents` — live documents supporting
     /// the team's tasks or items on its delivery board (KAIROS-T-0084).
     pub async fn list_team_work_documents(
@@ -2604,12 +2634,19 @@ impl KairosClient {
             .await
     }
 
+    /// `GET /api/teams/{id}/announcements` — one page, pinned first,
+    /// newest first.
     pub async fn list_team_announcements(
         &self,
         team_id: &str,
-    ) -> Result<Vec<TeamAnnouncement>, Error> {
-        self.get(&format!("/api/teams/{team_id}/announcements"))
-            .await
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> Result<ListEnvelope<TeamAnnouncement>, Error> {
+        self.get_query(
+            &format!("/api/teams/{team_id}/announcements"),
+            &Pagination { limit, offset },
+        )
+        .await
     }
 
     /// `POST /api/teams/{id}/announcements` (team member or org admin;

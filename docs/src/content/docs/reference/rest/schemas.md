@@ -1734,6 +1734,28 @@ The S-0005 list envelope: `{items, total, limit, offset}`.
 | `offset` | `integer` | yes | The applied offset. |
 | `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
 
+## ListEnvelope_TeamAnnouncement
+
+The S-0005 list envelope: `{items, total, limit, offset}`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `items` | array of `object` | yes |  |
+| `limit` | `integer` | yes | The applied limit. |
+| `offset` | `integer` | yes | The applied offset. |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
+
+## ListEnvelope_TeamPageVersionSummary
+
+The S-0005 list envelope: `{items, total, limit, offset}`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `items` | array of `object` | yes |  |
+| `limit` | `integer` | yes | The applied limit. |
+| `offset` | `integer` | yes | The applied offset. |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
+
 ## ListEnvelope_Template
 
 The S-0005 list envelope: `{items, total, limit, offset}`.
@@ -2910,7 +2932,7 @@ A team member (`GET /api/teams/{id}/members` element).
 
 ## TeamPage
 
-One node of a team's page tree, as returned by `GET /api/teams/{id}/pages` (a FLAT list — clients nest by `parent_id`, ordered by position then title).
+One node of a team's page tree with its content, as returned by `GET /api/teams/{id}/pages/{page_id}` and by each write. The list of the tree has [`TeamPageSummary`] rows, with no content (KAIROS-T-0629).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -2927,18 +2949,35 @@ One node of a team's page tree, as returned by `GET /api/teams/{id}/pages` (a FL
 | `updated_at` | `string` | yes | RFC 3339. |
 | `version` | `integer` | yes | Optimistic-concurrency version (content edits only). |
 
-## TeamPageVersion
+## TeamPageSummary
 
-One saved version of a page (KAIROS-T-0439): `GET /api/teams/{id}/pages/{page_id}/history`, newest first.
+One node of a team's page tree without its content, as returned by `GET /api/teams/{id}/pages` (a FLAT list — clients nest by `parent_id`, ordered by position then title). Read the content with `GET /api/teams/{id}/pages/{page_id}` (KAIROS-T-0629).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `created_at` | `string` | yes | RFC 3339. |
+| `id` | `string` | yes | Page id (UUID). |
+| `is_protected` | `boolean` | yes | The Charter: content-editable, never renamed/moved/deleted. |
+| `kind` | `string` | yes | `folder|page`. |
+| `parent_id` | `string`, nullable | no | Parent folder (UUID); `null` for roots. |
+| `position` | `integer` | yes | Display order among siblings. |
+| `slug` | `string` | yes | URL segment, unique among siblings. |
+| `team_id` | `string` | yes | Owning team (UUID). |
+| `title` | `string` | yes |  |
+| `updated_at` | `string` | yes | RFC 3339. |
+| `version` | `integer` | yes | Optimistic-concurrency version (content edits only). |
+
+## TeamPageVersionSummary
+
+One row of the version list of a page (KAIROS-T-0439, KAIROS-T-0629): `GET /api/teams/{id}/pages/{page_id}/history`, newest first. It has no content: `?version=N` gives one version in full ([`TeamPageVersion`]).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `agent_key_id` | `string`, nullable | no | The agent key (UUID) of the request that saved it, when an agent saved it with the agent key of the person: show "Alice (agent)". Null otherwise. |
-| `content` | `string` | yes |  |
 | `edited_at` | `string` | yes | RFC 3339. |
 | `edited_by` | `string` | yes | The user id (UUID) of the person who saved it. |
 | `edited_by_name` | `string` | yes | The display name of that person. |
-| `title` | `string` | yes |  |
+| `title` | `string` | yes | The title at this version. |
 | `version` | `integer` | yes |  |
 
 ## TeamTreeItem

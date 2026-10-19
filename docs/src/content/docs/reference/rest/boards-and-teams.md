@@ -1103,15 +1103,18 @@ Open tenant-wide.
 
 ### `GET /api/teams/{id}/announcements`
 
-The team's announcements, pinned first then newest (open tenant-wide).
+One page of the team's announcements, pinned first then newest (open
+tenant-wide; KAIROS-T-0629: limit and offset).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
 | `id` | path | yes | `string` | The slug or the id (UUID) of the team |
+| `limit` | query | no | `integer` | Page size (default 50, max 200). |
+| `offset` | query | no | `integer` | Rows to skip (default 0). |
 
 | Response | Body | Meaning |
 |---|---|---|
-| `200` | array of [`TeamAnnouncement`](../schemas/#teamannouncement) | Announcements |
+| `200` | [`ListEnvelope_TeamAnnouncement`](../schemas/#listenvelope_teamannouncement) | One page of the announcements |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown team |
 
 ### `POST /api/teams/{id}/announcements`
@@ -1163,7 +1166,9 @@ KAIROS-T-0439).
 
 ### `GET /api/teams/{id}/pages`
 
-The team's live page tree as a flat list (open tenant-wide).
+The team's live page tree as a flat list, without content (open
+tenant-wide). `GET /api/teams/{id}/pages/{page_id}` gives the content
+of one page (KAIROS-T-0629).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
@@ -1171,7 +1176,7 @@ The team's live page tree as a flat list (open tenant-wide).
 
 | Response | Body | Meaning |
 |---|---|---|
-| `200` | array of [`TeamPage`](../schemas/#teampage) | The page tree, flat |
+| `200` | array of [`TeamPageSummary`](../schemas/#teampagesummary) | The page tree, flat, without content |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown team |
 
 ### `POST /api/teams/{id}/pages`
@@ -1243,18 +1248,22 @@ Request body (required): `application/json`, [`UpdateTeamPageRequest`](../schema
 
 ### `GET /api/teams/{id}/pages/{page_id}/history`
 
-The saved versions of a page, newest first (open tenant-wide,
-KAIROS-T-0439).
+The saved versions of a page, newest first, without content, or one
+version in full with `?version=N` (open tenant-wide, KAIROS-T-0439,
+KAIROS-T-0629).
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
 | `id` | path | yes | `string` | The slug or the id (UUID) of the team |
 | `page_id` | path | yes | `string` | Page id (UUID) |
+| `version` | query | no | `integer` | Return this version in full instead of the version list. |
+| `limit` | query | no | `integer` | Page size for the version list (default 50, max 200). |
+| `offset` | query | no | `integer` | Rows to skip (default 0). |
 
 | Response | Body | Meaning |
 |---|---|---|
-| `200` | array of [`TeamPageVersion`](../schemas/#teampageversion) | The versions, newest first |
-| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown team or page |
+| `200` | [`ListEnvelope_TeamPageVersionSummary`](../schemas/#listenvelope_teampageversionsummary) | One page of the versions, newest first, without content (or a TeamPageVersion with ?version=N) |
+| `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown team, page, or version |
 
 ### `POST /api/teams/{id}/pages/{page_id}/restore`
 
