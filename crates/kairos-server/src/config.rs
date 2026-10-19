@@ -149,8 +149,8 @@ pub struct AppConfig {
     /// `KAIROS_POOL_SIZE` — the connections of each of the two pools of a
     /// server, the async one of the middleware and the blocking one of the
     /// handlers (default 16; KAIROS-T-0608). A server holds up to twice
-    /// this many connections, plus `KAIROS_JOB_POOL_SIZE` for the jobs and
-    /// one for LISTEN.
+    /// this many connections, plus `KAIROS_JOB_POOL_SIZE` for the jobs,
+    /// one for LISTEN and one for the event emitter (KAIROS-T-0632).
     pub pool_size: u32,
     /// `KAIROS_POOL_MIN_IDLE` — the connections the blocking pool opens at
     /// start and keeps idle (default 2), so the first requests after a
