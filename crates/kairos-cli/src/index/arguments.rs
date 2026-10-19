@@ -141,7 +141,7 @@ mod tests {
             err.text(),
             "VALIDATION: The call has the argument \"verbose\". This tool does not accept that \
              argument. The arguments of this tool are: file, symbol.\n\
-             details: {\"allowed\":[\"file\",\"symbol\"],\"argument\":\"verbose\"}"
+             details: {\"allowed\":[\"file\",\"symbol\"],\"field\":\"verbose\"}"
         );
     }
 

@@ -96,12 +96,12 @@ pub(crate) fn resolve_member(
             "No member of the organization has the id, the email, the user name or the \
              service-account name {reference:?}. Send a member of the organization."
         ))
-        .with_details(serde_json::json!({ "argument": argument }))),
+        .with_details(serde_json::json!({ "field": argument }))),
         _ => Err(ApiError::validation(format!(
             "More than one member of the organization has the name {reference:?}. Send the \
              id of the member."
         ))
-        .with_details(serde_json::json!({ "argument": argument }))),
+        .with_details(serde_json::json!({ "field": argument }))),
     }
 }
 
