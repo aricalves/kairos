@@ -210,6 +210,65 @@ async fn the_routes_of_a_team_take_a_slug_against_live_stack() {
             .await;
         assert_eq!(by_id, by_slug, "GET /api/teams/{{ref}}{tail}");
     }
+    // --- KAIROS-T-0629: the lists have no content; one page has it ------
+    let tree = stack
+        .ok(Method::GET, "/api/teams/payments/pages", None)
+        .await;
+    let rows = tree.as_array().expect("the tree");
+    assert!(!rows.is_empty(), "{tree}");
+    assert!(
+        rows.iter().all(|row| row.get("content").is_none()),
+        "a row of the tree has no content: {tree}"
+    );
+    let one = stack
+        .ok(
+            Method::GET,
+            &format!("/api/teams/payments/pages/{page_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(one["content"], "# Runbook", "{one}");
+    let history = stack
+        .ok(
+            Method::GET,
+            &format!("/api/teams/payments/pages/{page_id}/history"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        (history["total"].as_i64(), history["limit"].as_i64()),
+        (Some(1), Some(50))
+    );
+    assert!(history["items"][0].get("content").is_none(), "{history}");
+    let v1 = stack
+        .ok(
+            Method::GET,
+            &format!("/api/teams/payments/pages/{page_id}/history?version=1"),
+            None,
+        )
+        .await;
+    assert_eq!(v1["content"], "# Runbook", "{v1}");
+    let feed = stack
+        .ok(
+            Method::GET,
+            "/api/teams/payments/announcements?limit=1&offset=0",
+            None,
+        )
+        .await;
+    assert_eq!(
+        (feed["total"].as_i64(), feed["limit"].as_i64()),
+        (Some(1), Some(1))
+    );
+    assert_eq!(feed["items"][0]["body"], "Payments is live.", "{feed}");
+    for path in [
+        format!("/api/teams/payments/pages/{page_id}/history?page=2"),
+        "/api/teams/payments/announcements?page=2".to_string(),
+    ] {
+        let (status, answer) = stack.send(Method::GET, &path, None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{path}: {answer}");
+        assert!(answer.to_string().contains("page"), "{path}: {answer}");
+    }
+
     let by_slug_route = stack
         .ok(Method::GET, "/api/teams/by-slug/payments", None)
         .await;

@@ -67,6 +67,13 @@ pub use service::KairosMcp;
 /// The answer text of `get_item` (KAIROS-T-0626), for the statement-count test.
 #[doc(hidden)]
 pub use tools::get_item_text;
+/// The content writes of `update_item`, `edit_item` and `append_note`
+/// (KAIROS-T-0635), for the statement-count test.
+#[doc(hidden)]
+pub use tools::{
+    AppendNoteParams, EditItemParams, UpdateItemParams, append_note_text, edit_item_text,
+    update_item_text,
+};
 
 /// The RFC 9728 well-known path for the `/mcp` protected resource.
 const WELL_KNOWN_MCP: &str = "/.well-known/oauth-protected-resource/mcp";

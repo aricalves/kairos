@@ -66,7 +66,7 @@ use kairos_db::models::templates::Template;
 use kairos_db::search::{SearchError, SearchResults};
 use kairos_db::{GraphError, abac, boards, graph, items, repositories, search};
 
-use crate::api::meta::{manage_capability, validated_metadata_ops};
+use crate::api::meta::{apply_metadata_ops, manage_capability, validated_metadata_ops};
 use crate::api::{
     Liveness, atomically, map_board_error, map_graph_error, map_item_error, parse_enum,
     require_capability, require_edge_write, require_item_edit, resolve_short_code,
@@ -352,9 +352,11 @@ pub struct GetItemParams {
 pub struct GetHistoryParams {
     /// The item's short code.
     pub short_code: String,
-    /// Max versions to list (default 20, newest first).
+    /// Max rows of each list, the versions and the activity (default 20,
+    /// newest first).
     pub limit: Option<i64>,
-    /// The versions to skip, newest first (default 0).
+    /// The versions to skip, newest first (default 0). The activity starts
+    /// at its newest row.
     pub offset: Option<i64>,
     /// Return this version's full title + content instead of the list.
     pub version: Option<i32>,
@@ -1034,6 +1036,11 @@ pub struct ArchiveCompletedParams {
     /// Must be true: the call archives each task in the done columns of
     /// the board.
     pub confirm: bool,
+    /// Archive only the done tasks that entered their done column at
+    /// least this many days ago (1 to 36500). Omit it to archive each
+    /// done task.
+    #[serde(default)]
+    pub older_than_days: Option<i64>,
 }
 
 /// Parameters for `create_team` (KAIROS-T-0337). The names are those of the
@@ -2134,6 +2141,7 @@ impl KairosMcp {
                     include_archived: liveness == Liveness::IncludeArchived,
                     repository_id: repository,
                     team: team_filter,
+                    done_limit: None,
                 },
                 limit,
                 offset,
@@ -2835,7 +2843,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "An item's content version history (version, editor, timestamp; newest first). At most 20 by default (`limit` up to 200, `offset`); a partial result says so and gives the next `offset`. Pass `version` to fetch that snapshot's full title + content instead."
+        description = "An item's history, newest first: the content versions (version, editor, time), then the activity (moves, claims, hand-offs, releases, lane, metadata, state, links and more, with who and when). `limit` caps each list (default 20, up to 200); `offset` pages the versions, and a partial list says so and gives the next `offset`. Pass `version` to fetch that snapshot's full title + content instead."
     )]
     pub async fn get_history(
         &self,
@@ -2938,6 +2946,7 @@ impl KairosMcp {
             }
             out.push_str(&more_line(total, offset, shown));
             out.push_str(&rename_history(conn, item.id)?);
+            out.push_str(&activity_section(conn, item.id, &item.short_code, limit)?);
             Ok(out)
         })
         .await
@@ -3132,20 +3141,7 @@ impl KairosMcp {
         let user = auth.user_id;
         let role = tenant.role;
         self.run_tool(&tenant, move |conn| {
-            let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
-            require_item_edit(conn, role, user, item.id, item.item_type)?;
-            let update = items::ContentUpdate {
-                new_title: params.title.as_deref(),
-                new_content: &params.content,
-                expected_version: params.version,
-            };
-            match items::update_item_content(conn, item.item_type, item.id, update, user) {
-                Ok(new_version) => Ok(format!(
-                    "Updated {} to version {new_version}.",
-                    item.short_code
-                )),
-                Err(e) => Err(map_update_error(conn, &item, e)?),
-            }
+            update_item_text(conn, role, user, &params)
         })
         .await
     }
@@ -3162,54 +3158,7 @@ impl KairosMcp {
         let user = auth.user_id;
         let role = tenant.role;
         self.run_tool(&tenant, move |conn| {
-            if params.search.is_empty() {
-                return Err(ApiError::validation(
-                    "The argument search is empty. Send the text to find.",
-                ));
-            }
-            // One retry on a version race (S-0006 edit_item semantics):
-            // the read-modify-write below re-reads on the second attempt.
-            for attempt in 0..2 {
-                let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
-                require_item_edit(conn, role, user, item.id, item.item_type)?;
-                let occurrences = item.content.matches(&params.search).count();
-                if occurrences == 0 {
-                    return Err(ApiError::validation(format!(
-                        "The text of search is not in {} (version {}).",
-                        item.short_code, item.version
-                    )));
-                }
-                if occurrences > 1 && !params.replace_all {
-                    return Err(ApiError::validation(format!(
-                        "The text of search is in {} more than one time. The number of \
-                         times is {occurrences}. Send replace_all=true, or send a longer \
-                         text that is there one time.",
-                        item.short_code
-                    )));
-                }
-                let new_content = if params.replace_all {
-                    item.content.replace(&params.search, &params.replace)
-                } else {
-                    item.content.replacen(&params.search, &params.replace, 1)
-                };
-                let update = items::ContentUpdate {
-                    new_title: None,
-                    new_content: &new_content,
-                    expected_version: item.version,
-                };
-                match items::update_item_content(conn, item.item_type, item.id, update, user) {
-                    Ok(new_version) => {
-                        return Ok(format!(
-                            "Edited {} to version {new_version} ({occurrences} replacement{}).",
-                            item.short_code,
-                            if occurrences == 1 { "" } else { "s" }
-                        ));
-                    }
-                    Err(items::ItemError::VersionConflict { .. }) if attempt == 0 => continue,
-                    Err(e) => return Err(map_update_error(conn, &item, e)?),
-                }
-            }
-            unreachable!("edit_item loop returns within two attempts");
+            edit_item_text(conn, role, user, &params)
         })
         .await
     }
@@ -3227,20 +3176,7 @@ impl KairosMcp {
         let user = auth.user_id;
         let role = tenant.role;
         self.run_tool(&tenant, move |conn| {
-            let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
-            require_item_edit(conn, role, user, item.id, item.item_type)?;
-            let appended = kairos_db::item_notes::append_note(
-                conn,
-                item.item_type,
-                item.id,
-                &params.text,
-                user,
-            )
-            .map_err(crate::api::map_note_error)?;
-            Ok(format!(
-                "Appended note {} to {}. The content stays at version {}.",
-                appended.note_id, item.short_code, appended.version
-            ))
+            append_note_text(conn, role, user, &params)
         })
         .await
     }
@@ -4426,9 +4362,6 @@ impl KairosMcp {
         let user = auth.user_id;
         let role = tenant.role;
         self.run_tool(&tenant, move |conn| {
-            use kairos_db::models::templates::NewItemMetadata;
-            use kairos_db::schema::item_metadata;
-
             let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
             require_item_edit(conn, role, user, item.id, item.item_type)?;
 
@@ -4442,37 +4375,9 @@ impl KairosMcp {
             let was_p0 =
                 kairos_db::notifications::is_p0_bug(conn, item.id).map_err(ApiError::internal)?;
 
-            // Phase 2 — apply atomically (same shape as the API handler).
+            // Phase 2 — apply atomically (the same function as the API handler).
             conn.transaction::<_, diesel::result::Error, _>(|conn| {
-                for (definition_id, value) in &ops {
-                    match value {
-                        Some(value) => {
-                            diesel::insert_into(item_metadata::table)
-                                .values(NewItemMetadata {
-                                    item_id: item.id,
-                                    metadata_definition_id: *definition_id,
-                                    value: value.clone(),
-                                })
-                                .on_conflict((
-                                    item_metadata::item_id,
-                                    item_metadata::metadata_definition_id,
-                                ))
-                                .do_update()
-                                .set(item_metadata::value.eq(value))
-                                .execute(conn)?;
-                        }
-                        None => {
-                            diesel::delete(
-                                item_metadata::table
-                                    .filter(item_metadata::item_id.eq(item.id))
-                                    .filter(
-                                        item_metadata::metadata_definition_id.eq(*definition_id),
-                                    ),
-                            )
-                            .execute(conn)?;
-                        }
-                    }
-                }
+                apply_metadata_ops(conn, item.id, item.item_type.entity_type(), &ops, user)?;
                 if !was_p0 {
                     kairos_db::notifications::on_p0_bug(conn, item.id, user)?;
                 }
@@ -4735,7 +4640,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Archive each task in the done columns of one delivery board (\"Archive completed\"), cancelled tasks too. Each task is archived as by `delete_item`, and `restore_item` brings back each one. One transaction: the call archives each task, or none. Requires confirm=true, and `manage_tasks` on the board. The response gives the count and the codes."
+        description = "Archive each task in the done columns of one delivery board (\"Archive completed\"), cancelled tasks too. Each task is archived as by `delete_item`, and `restore_item` brings back each one. One transaction: the call archives each task, or none. Requires confirm=true, and `manage_tasks` on the board. Optional `older_than_days` (1 to 36500): only the done tasks that entered their done column at least that many days ago. The response gives the count and the codes."
     )]
     pub async fn archive_completed(
         &self,
@@ -4754,14 +4659,28 @@ impl KairosMcp {
                 )
                 .with_details(serde_json::json!({ "field": "confirm" })));
             }
+            let older_than_days = crate::api::org::boards::older_than_days(params.older_than_days)?;
             let board = board_by_ref(conn, &params.board)?;
-            let response =
-                crate::api::org::boards::archive_completed_tasks(conn, &slug, role, &board, user)?;
+            let response = crate::api::org::boards::archive_completed_tasks(
+                conn,
+                &slug,
+                role,
+                &board,
+                user,
+                older_than_days,
+            )?;
             Ok(if response.count == 0 {
-                format!(
-                    "The done columns of {} have no tasks. Kairos archived nothing.",
-                    board.slug
-                )
+                match older_than_days {
+                    Some(days) => format!(
+                        "The done columns of {} have no tasks that entered them {days} days \
+                         ago or before. Kairos archived nothing.",
+                        board.slug
+                    ),
+                    None => format!(
+                        "The done columns of {} have no tasks. Kairos archived nothing.",
+                        board.slug
+                    ),
+                }
             } else {
                 format!(
                     "Archived {} completed task{} of {}: {}.\nTo get one back, restore it by its \
@@ -5468,7 +5387,13 @@ impl KairosMcp {
                     Ok(render_page_tree(&team.slug, &pages, &items))
                 }
                 Some(reference) => {
-                    let page = page_by_ref(&pages, &reference)?;
+                    // KAIROS-T-0629: the list has no content; read the page.
+                    let summary = page_by_ref(&pages, &reference)?;
+                    let page = crate::api::org::team_pages::page_as(
+                        conn,
+                        team.id,
+                        parse_page_id(summary)?,
+                    )?;
                     Ok(format!(
                         "# {} — {}\n- kind: {}{}\n- path: {}\n- id: {}\n- version: {}\n\n{}",
                         team.slug,
@@ -5479,7 +5404,7 @@ impl KairosMcp {
                         } else {
                             ""
                         },
-                        page_path(&pages, page),
+                        page_path(&pages, summary),
                         page.id,
                         page.version,
                         page.content
@@ -5535,14 +5460,15 @@ impl KairosMcp {
                 },
             )?;
             let mut all = pages;
-            all.push(created.clone());
+            let summary = kairos_client::types_team_pages::TeamPageSummary::from(&created);
+            all.push(summary.clone());
             Ok(format!(
                 "Created the {} {} ({}) in the team page of {}: path {}, version {}.",
                 created.kind,
                 created.title,
                 created.id,
                 team.slug,
-                page_path(&all, &created),
+                page_path(&all, &summary),
                 created.version
             ))
         })
@@ -5679,7 +5605,10 @@ impl KairosMcp {
                 updated.title,
                 updated.id,
                 team.slug,
-                page_path(&all, &updated),
+                page_path(
+                    &all,
+                    &kairos_client::types_team_pages::TeamPageSummary::from(&updated)
+                ),
                 updated.position
             ))
         })
@@ -5720,8 +5649,8 @@ impl KairosMcp {
 
 /// The path of slugs of a page, from the root ("documentation/runbooks").
 fn page_path(
-    pages: &[kairos_client::types_team_pages::TeamPage],
-    page: &kairos_client::types_team_pages::TeamPage,
+    pages: &[kairos_client::types_team_pages::TeamPageSummary],
+    page: &kairos_client::types_team_pages::TeamPageSummary,
 ) -> String {
     let mut slugs = vec![page.slug.clone()];
     let mut parent = page.parent_id.clone();
@@ -5740,9 +5669,9 @@ fn page_path(
 
 /// A page of the tree by its UUID or its path of slugs from the root.
 fn page_by_ref<'a>(
-    pages: &'a [kairos_client::types_team_pages::TeamPage],
+    pages: &'a [kairos_client::types_team_pages::TeamPageSummary],
     reference: &str,
-) -> Result<&'a kairos_client::types_team_pages::TeamPage, ApiError> {
+) -> Result<&'a kairos_client::types_team_pages::TeamPageSummary, ApiError> {
     if let Some(page) = pages.iter().find(|p| p.id == reference) {
         return Ok(page);
     }
@@ -5768,7 +5697,9 @@ fn page_by_ref<'a>(
     })
 }
 
-fn parse_page_id(page: &kairos_client::types_team_pages::TeamPage) -> Result<Uuid, ApiError> {
+fn parse_page_id(
+    page: &kairos_client::types_team_pages::TeamPageSummary,
+) -> Result<Uuid, ApiError> {
     Uuid::parse_str(&page.id).map_err(ApiError::internal)
 }
 
@@ -5778,10 +5709,10 @@ fn parse_page_id(page: &kairos_client::types_team_pages::TeamPage) -> Result<Uui
 /// the root.
 fn render_page_tree(
     team: &str,
-    pages: &[kairos_client::types_team_pages::TeamPage],
+    pages: &[kairos_client::types_team_pages::TeamPageSummary],
     items: &[kairos_client::types_team_pages::TeamTreeItem],
 ) -> String {
-    use kairos_client::types_team_pages::{TeamPage, TeamTreeItem};
+    use kairos_client::types_team_pages::{TeamPageSummary as TeamPage, TeamTreeItem};
     enum Node<'a> {
         Page(&'a TeamPage),
         Item(&'a TeamTreeItem),
@@ -5877,6 +5808,112 @@ fn slug_from_title(title: &str) -> String {
         }
     }
     slug.trim_end_matches('-').to_string()
+}
+
+// ---------------------------------------------------------------------------
+// The content writes (KAIROS-T-0635: functions of their own, so that a test
+// can count their statements)
+// ---------------------------------------------------------------------------
+
+/// The answer text of `update_item`.
+pub fn update_item_text(
+    conn: &mut PgConnection,
+    role: OrgRole,
+    user: Uuid,
+    params: &UpdateItemParams,
+) -> Result<String, ApiError> {
+    // KAIROS-T-0635: the rights need no content.
+    let item = load_item_key(conn, &params.short_code)?;
+    require_item_edit(conn, role, user, item.id, item.item_type)?;
+    let update = items::ContentUpdate {
+        new_title: params.title.as_deref(),
+        new_content: &params.content,
+        expected_version: params.version,
+    };
+    match items::update_item_content(conn, item.item_type, item.id, update, user) {
+        Ok(new_version) => Ok(format!(
+            "Updated {} to version {new_version}.",
+            item.short_code
+        )),
+        Err(e) => Err(map_update_error(&item.short_code, e)),
+    }
+}
+
+/// The answer text of `edit_item`.
+pub fn edit_item_text(
+    conn: &mut PgConnection,
+    role: OrgRole,
+    user: Uuid,
+    params: &EditItemParams,
+) -> Result<String, ApiError> {
+    if params.search.is_empty() {
+        return Err(ApiError::validation(
+            "The argument search is empty. Send the text to find.",
+        ));
+    }
+    // One retry on a version race (S-0006 edit_item semantics):
+    // the read-modify-write below re-reads on the second attempt.
+    for attempt in 0..2 {
+        let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
+        require_item_edit(conn, role, user, item.id, item.item_type)?;
+        let occurrences = item.content.matches(&params.search).count();
+        if occurrences == 0 {
+            return Err(ApiError::validation(format!(
+                "The text of search is not in {} (version {}).",
+                item.short_code, item.version
+            )));
+        }
+        if occurrences > 1 && !params.replace_all {
+            return Err(ApiError::validation(format!(
+                "The text of search is in {} more than one time. The number of \
+                     times is {occurrences}. Send replace_all=true, or send a longer \
+                     text that is there one time.",
+                item.short_code
+            )));
+        }
+        let new_content = if params.replace_all {
+            item.content.replace(&params.search, &params.replace)
+        } else {
+            item.content.replacen(&params.search, &params.replace, 1)
+        };
+        let update = items::ContentUpdate {
+            new_title: None,
+            new_content: &new_content,
+            expected_version: item.version,
+        };
+        // KAIROS-T-0635: the content before is the content read.
+        match items::edit_item_content(conn, item.item_type, item.id, update, &item.content, user) {
+            Ok(new_version) => {
+                return Ok(format!(
+                    "Edited {} to version {new_version} ({occurrences} replacement{}).",
+                    item.short_code,
+                    if occurrences == 1 { "" } else { "s" }
+                ));
+            }
+            Err(items::ItemError::VersionConflict { .. }) if attempt == 0 => continue,
+            Err(e) => return Err(map_update_error(&item.short_code, e)),
+        }
+    }
+    unreachable!("edit_item loop returns within two attempts");
+}
+
+/// The answer text of `append_note`.
+pub fn append_note_text(
+    conn: &mut PgConnection,
+    role: OrgRole,
+    user: Uuid,
+    params: &AppendNoteParams,
+) -> Result<String, ApiError> {
+    // KAIROS-T-0635: the rights need no content.
+    let item = load_item_key(conn, &params.short_code)?;
+    require_item_edit(conn, role, user, item.id, item.item_type)?;
+    let appended =
+        kairos_db::item_notes::append_note(conn, item.item_type, item.id, &params.text, user)
+            .map_err(crate::api::map_note_error)?;
+    Ok(format!(
+        "Appended note {} to {}. The content stays at version {}.",
+        appended.note_id, item.short_code, appended.version
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -6538,36 +6575,17 @@ fn load_item(
         .optional()
         .map_err(ApiError::internal)?;
     let Some(row) = row else {
-        return Err(match liveness {
-            Liveness::LiveOnly => {
-                ApiError::not_found(format!("No live item has the short code {short_code:?}."))
-            }
-            Liveness::IncludeArchived => {
-                ApiError::not_found(format!("No item has the short code {short_code:?}."))
-            }
-        });
+        return Err(no_item(short_code, liveness));
     };
     if liveness == Liveness::LiveOnly {
-        if row.retired.is_some() {
-            return Err(crate::api::retired_code_refused(
-                short_code,
-                &row.short_code,
-            ));
-        }
-        if row.deleted_at.is_some() {
-            return Err(crate::api::archived_write_refused(&upper));
-        }
+        refuse_write(
+            short_code,
+            row.retired.is_some(),
+            row.deleted_at.is_some(),
+            &row.short_code,
+        )?;
     }
-    let item_type = ItemType::ALL
-        .iter()
-        .copied()
-        .find(|t| t.entity_type() == row.entity_type)
-        .ok_or_else(|| {
-            ApiError::internal(format!(
-                "entity_directory returned unknown entity_type {:?}",
-                row.entity_type
-            ))
-        })?;
+    let item_type = item_type_of(&row.entity_type)?;
     Ok(ItemView {
         id: row.id,
         item_type,
@@ -6593,6 +6611,110 @@ fn load_item(
         created_by: row.created_by,
         created_at: row.created_at,
     })
+}
+
+/// The refusal of [`load_item`] for a code that finds no item.
+fn no_item(short_code: &str, liveness: Liveness) -> ApiError {
+    match liveness {
+        Liveness::LiveOnly => {
+            ApiError::not_found(format!("No live item has the short code {short_code:?}."))
+        }
+        Liveness::IncludeArchived => {
+            ApiError::not_found(format!("No item has the short code {short_code:?}."))
+        }
+    }
+}
+
+/// The refusals of a write: a retired code names the current code
+/// (COLLIERY-T-3100), and an archived item says so (KAIROS-T-0560).
+fn refuse_write(
+    short_code: &str,
+    retired: bool,
+    archived: bool,
+    current_code: &str,
+) -> Result<(), ApiError> {
+    if retired {
+        return Err(crate::api::retired_code_refused(short_code, current_code));
+    }
+    if archived {
+        return Err(crate::api::archived_write_refused(
+            &short_code.to_ascii_uppercase(),
+        ));
+    }
+    Ok(())
+}
+
+/// The [`ItemType`] of an `entity_type` of `entity_directory`.
+fn item_type_of(entity_type: &str) -> Result<ItemType, ApiError> {
+    ItemType::ALL
+        .iter()
+        .copied()
+        .find(|t| t.entity_type() == entity_type)
+        .ok_or_else(|| {
+            ApiError::internal(format!(
+                "entity_directory returned unknown entity_type {entity_type:?}"
+            ))
+        })
+}
+
+/// The id, the type and the code of a live item, for a write that needs
+/// no content (KAIROS-T-0635).
+struct ItemKey {
+    id: Uuid,
+    item_type: ItemType,
+    short_code: String,
+}
+
+/// [`load_item`] for a write that needs no content (KAIROS-T-0635): one
+/// statement on `entity_directory`, which has no content, and the same
+/// refusals as [`load_item`] with [`Liveness::LiveOnly`].
+fn load_item_key(conn: &mut PgConnection, short_code: &str) -> Result<ItemKey, ApiError> {
+    let row: Option<LoadedKey> = sql_query(LOAD_ITEM_KEY_SQL)
+        .bind::<SqlText, _>(short_code.to_ascii_uppercase())
+        .get_result(conn)
+        .optional()
+        .map_err(ApiError::internal)?;
+    let Some(row) = row else {
+        return Err(no_item(short_code, Liveness::LiveOnly));
+    };
+    refuse_write(
+        short_code,
+        row.retired.is_some(),
+        row.deleted_at.is_some(),
+        &row.short_code,
+    )?;
+    Ok(ItemKey {
+        id: row.id,
+        item_type: item_type_of(&row.entity_type)?,
+        short_code: row.short_code,
+    })
+}
+
+/// The statement of [`load_item_key`]: the `hit` of [`LOAD_ITEM_SQL`],
+/// with the code and the archive time from `entity_directory`.
+const LOAD_ITEM_KEY_SQL: &str = "\
+    SELECT d.id, d.entity_type, d.short_code, d.deleted_at, NULL::text AS retired, 0 AS pick \
+      FROM entity_directory d WHERE d.short_code = $1 \
+    UNION ALL \
+    SELECT d.id, d.entity_type, d.short_code, d.deleted_at, r.code, 1 \
+      FROM retired_codes r JOIN entity_directory d ON d.id = r.item_id \
+     WHERE r.code = $1 \
+    ORDER BY pick LIMIT 1";
+
+/// The row of [`LOAD_ITEM_KEY_SQL`].
+#[derive(QueryableByName)]
+struct LoadedKey {
+    #[diesel(sql_type = SqlUuid)]
+    id: Uuid,
+    #[diesel(sql_type = SqlText)]
+    entity_type: String,
+    #[diesel(sql_type = SqlText)]
+    short_code: String,
+    #[diesel(sql_type = SqlNullable<diesel::sql_types::Timestamptz>)]
+    deleted_at: Option<DateTime<Utc>>,
+    /// The retired code that found the item, or `None`.
+    #[diesel(sql_type = SqlNullable<SqlText>)]
+    retired: Option<String>,
 }
 
 /// The statement of [`load_item`] (KAIROS-T-0626). `hit` is the code in
@@ -7625,6 +7747,46 @@ fn rename_history(conn: &mut PgConnection, item_id: Uuid) -> Result<String, ApiE
     Ok(out)
 }
 
+/// The activity of an item for `get_history` (KAIROS-T-0557): at most
+/// `limit` rows, newest first, each with what changed, the time and who
+/// did it ([`kairos_db::item_activity`]). A last line says how many older
+/// rows the list does not show.
+fn activity_section(
+    conn: &mut PgConnection,
+    item_id: Uuid,
+    short_code: &str,
+    limit: i64,
+) -> Result<String, ApiError> {
+    let page = kairos_db::item_activity::of_item(conn, item_id, short_code, limit, 0)
+        .map_err(ApiError::internal)?;
+    let mut out = "\n## Activity\n".to_string();
+    if page.rows.is_empty() {
+        out.push_str("No activity is recorded for this item.\n");
+        return Ok(out);
+    }
+    for row in &page.rows {
+        out.push_str(&format!(
+            "- {} — {} by {}\n",
+            row.text,
+            row.occurred_at.format("%Y-%m-%dT%H:%M:%SZ"),
+            actor_text(
+                row.actor_name.as_deref().unwrap_or("unknown"),
+                row.agent_key_id
+            )
+        ));
+    }
+    let shown = i64::try_from(page.rows.len()).unwrap_or(i64::MAX);
+    let older = page.total.saturating_sub(shown);
+    match older {
+        ..=0 => {}
+        1 => out.push_str("- 1 older row is not shown. Send a larger `limit` to see it.\n"),
+        _ => out.push_str(&format!(
+            "- {older} older rows are not shown. Send a larger `limit` to see them.\n"
+        )),
+    }
+    Ok(out)
+}
+
 /// The live TASK of `claim_item`, `hand_off_item` and `release_item`, or a
 /// refusal for an item that is not a task (KAIROS-T-0359). A strategy and an initiative
 /// have an owner instead (KAIROS-T-0411), and the tools take that path
@@ -7921,13 +8083,8 @@ fn relationship_lines(
 /// Map an [`items::ItemError`] from a content update to the S-0006 tool
 /// error: a version conflict carries the CURRENT version, title, and
 /// content so the agent can reconcile without another call (REQ-1.5);
-/// everything else takes the standard REST mapping. Returns `Ok(error)` so
-/// callers can `Err(map_update_error(...)?)` inside the blocking closure.
-fn map_update_error(
-    conn: &mut PgConnection,
-    item: &ItemView,
-    e: items::ItemError,
-) -> Result<ApiError, ApiError> {
+/// everything else takes the standard REST mapping.
+fn map_update_error(short_code: &str, e: items::ItemError) -> ApiError {
     match e {
         items::ItemError::VersionConflict {
             expected_version,
@@ -7935,22 +8092,18 @@ fn map_update_error(
             current_title,
             current_content,
             ..
-        } => {
-            let _ = conn; // the typed error already carries the current row
-            Ok(ApiError::conflict(format!(
-                "The call has the version {expected_version} of {}, and the current \
-                 version is {current_version}. Make the edit on the current version.",
-                item.short_code
-            ))
-            .with_details(json!({
-                "current": {
-                    "version": current_version,
-                    "title": current_title,
-                    "content": current_content,
-                }
-            })))
-        }
-        other => Ok(map_item_error(other)),
+        } => ApiError::conflict(format!(
+            "The call has the version {expected_version} of {short_code}, and the current \
+             version is {current_version}. Make the edit on the current version."
+        ))
+        .with_details(json!({
+            "current": {
+                "version": current_version,
+                "title": current_title,
+                "content": current_content,
+            }
+        })),
+        other => map_item_error(other),
     }
 }
 

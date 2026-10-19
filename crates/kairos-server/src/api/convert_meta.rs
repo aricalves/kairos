@@ -52,11 +52,13 @@ impl IntoDto<dto::Template> for Template {
     }
 }
 
-impl IntoDto<dto::HistoryVersion> for ItemHistory {
+impl IntoDto<dto::HistoryVersion> for kairos_db::items::HistoryVersionMeta {
     fn into_dto(self) -> dto::HistoryVersion {
         dto::HistoryVersion {
             version: self.version,
             edited_by: self.edited_by.to_string(),
+            // The handler fills the name: one query for the page.
+            edited_by_name: None,
             edited_at: timestamp(self.edited_at),
             agent_key_id: self.agent_key_id.map(|id| id.to_string()),
         }

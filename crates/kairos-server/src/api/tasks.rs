@@ -571,14 +571,20 @@ pub(crate) async fn update_task(
     let updated = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            let task = load(conn, &short_code, Liveness::LiveOnly)?;
-            require_item_edit(conn, role, user, task.id, ItemType::Task)?;
+            // KAIROS-T-0635: the rights need no content.
+            let (task_id, _) = crate::api::meta::resolve_family_item(
+                conn,
+                "tasks",
+                &short_code,
+                Liveness::LiveOnly,
+            )?;
+            require_item_edit(conn, role, user, task_id, ItemType::Task)?;
             let update = items::ContentUpdate {
                 new_title: body.title.as_deref(),
                 new_content: &body.content,
                 expected_version: body.version,
             };
-            match items::update_item_content(conn, ItemType::Task, task.id, update, user) {
+            match items::update_item_content(conn, ItemType::Task, task_id, update, user) {
                 Ok(_) => {
                     let task = load(conn, &short_code, Liveness::LiveOnly)?.into_dto();
                     embed(conn, task)
@@ -807,6 +813,9 @@ pub(crate) async fn set_repository(
 /// value. `null` clears the field. A field that you do not send keeps its
 /// value. Send at least one field. `expected_updated_at` refuses a write
 /// over a state that changed since.
+///
+/// A write that changes a field writes one activity row with the names of
+/// the fields (KAIROS-T-0557).
 #[utoipa::path(
     put,
     path = "/api/tasks/{short_code}/state",

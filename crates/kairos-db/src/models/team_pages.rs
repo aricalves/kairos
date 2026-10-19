@@ -66,6 +66,41 @@ pub struct TeamPageChangeset {
     pub updated_at: Option<DateTime<Utc>>,
 }
 
+/// A node of a team's page tree without its content (KAIROS-T-0629): the
+/// row of a list. Only the read of one page loads the content.
+#[derive(Debug, Clone, PartialEq, Eq, Queryable, Selectable)]
+#[diesel(table_name = team_pages)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+pub struct TeamPageMeta {
+    pub id: Uuid,
+    pub team_id: Uuid,
+    pub parent_id: Option<Uuid>,
+    pub kind: TeamPageKind,
+    pub slug: String,
+    pub title: String,
+    pub position: i32,
+    pub is_protected: bool,
+    pub version: i32,
+    pub created_by: Uuid,
+    pub updated_by: Uuid,
+    pub deleted_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// A saved version of a team page without its content (KAIROS-T-0629):
+/// the row of the history list.
+#[derive(Debug, Clone, PartialEq, Eq, Queryable, Selectable)]
+#[diesel(table_name = team_page_history)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+pub struct TeamPageVersionMeta {
+    pub version: i32,
+    pub title: String,
+    pub edited_by: Uuid,
+    pub edited_at: DateTime<Utc>,
+    pub agent_key_id: Option<Uuid>,
+}
+
 /// One version snapshot of a team page (`team_page_history`, append-only;
 /// complete from birth — v1 baseline written at creation, the A-0004
 /// posture).

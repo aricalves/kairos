@@ -892,6 +892,18 @@ pub struct DeleteResponse {
     pub not_reached: Vec<NotReached>,
 }
 
+/// Query of `POST /api/boards/{id}/archive-completed` (KAIROS-T-0649).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+#[serde(deny_unknown_fields)]
+pub struct ArchiveCompletedQuery {
+    /// Archive only the done tasks that entered their done column at
+    /// least this many days ago: a whole number from 1 to 36500. With no
+    /// value, the call archives each done task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub older_than_days: Option<i64>,
+}
+
 /// Response of `POST /api/boards/{id}/archive-completed` (KAIROS-T-0363):
 /// the tasks of the done columns that the call archived.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

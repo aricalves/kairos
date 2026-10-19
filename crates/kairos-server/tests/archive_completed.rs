@@ -10,6 +10,9 @@
 //! 4. A restore brings back an archived task, cancel mark and all.
 //! 5. MCP `archive_completed` needs confirm=true, and on empty done
 //!    columns it archives nothing.
+//! 6. `older_than_days` (KAIROS-T-0649, REST and MCP) archives only the
+//!    done tasks that entered their column that many days ago or before.
+//!    A value under 1 is refused.
 //!
 //! Runs against the LIVE compose stack (`angreal services up`). Owns the
 //! scratch database `kairos_archive_completed_t0363_server_test`.
@@ -374,6 +377,73 @@ async fn archive_completed_archives_the_done_columns() {
         )
         .await;
     assert!(error && text.contains("FORBIDDEN"), "{text}");
+
+    // --- 6. older_than_days (KAIROS-T-0649) ----------------------------------
+    let old_task = alice.create_task(&new_task("Old")).await.expect("task");
+    let new_done = alice.create_task(&new_task("New")).await.expect("task");
+    for task in [&old_task, &new_done] {
+        for column in ["Todo", "Active", "Completed"] {
+            alice
+                .transition_task(&task.short_code, &to(column))
+                .await
+                .unwrap_or_else(|e| panic!("to {column}: {e}"));
+        }
+    }
+    // The old task entered Completed 10 days ago.
+    diesel::sql_query(
+        "UPDATE org_acme.activity_log \
+         SET occurred_at = occurred_at - interval '10 days' WHERE entity_id = $1",
+    )
+    .bind::<diesel::sql_types::Uuid, _>(old_task.id.parse::<Uuid>().expect("uuid"))
+    .execute(&mut conn)
+    .expect("back-dating");
+    for days in [0, -1, 36_501] {
+        let err = bob
+            .archive_completed_older_than(&board, Some(days))
+            .await
+            .expect_err("out of range");
+        assert!(
+            matches!(&err, Error::Validation { status: 422, field: Some(f), .. }
+                if f == "older_than_days"),
+            "{days}: {err:?}"
+        );
+    }
+    let (text, error) = bob_mcp
+        .call(
+            "archive_completed",
+            json!({"board": board, "confirm": true, "older_than_days": 0}),
+        )
+        .await;
+    assert!(error && text.contains("older_than_days"), "{text}");
+    let text = bob_mcp
+        .call_ok(
+            "archive_completed",
+            json!({"board": board, "confirm": true, "older_than_days": 30}),
+        )
+        .await;
+    assert!(
+        text.contains("30 days ago or before") && text.contains("archived nothing"),
+        "{text}"
+    );
+    let response = bob
+        .archive_completed_older_than(&board, Some(7))
+        .await
+        .expect("archive older than 7 days");
+    assert_eq!(response.short_codes, vec![old_task.short_code.clone()]);
+    let got = carol.get_task(&new_done.short_code).await.expect("get");
+    assert_eq!(got.archived_at, None, "a task of today stays");
+    let text = bob_mcp
+        .call_ok(
+            "archive_completed",
+            json!({"board": board, "confirm": true, "older_than_days": 1}),
+        )
+        .await;
+    assert!(text.contains("archived nothing"), "{text}");
+    let response = bob
+        .archive_completed_older_than(&board, None)
+        .await
+        .expect("archive each");
+    assert_eq!(response.short_codes, vec![new_done.short_code.clone()]);
 
     // --- a board that is not a delivery board has no tasks -------------------
     let boards = admin

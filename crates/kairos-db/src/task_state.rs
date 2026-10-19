@@ -6,8 +6,11 @@
 //! everyone reads it on the card, on the item page and in `get_item`.
 //!
 //! One row for each task at most; a write is a patch ([`patch`]): a field
-//! that is not sent is kept, `null` clears it (KAIROS-T-0533). No history:
-//! the notes hold the record. The row stays when the task reaches a done
+//! that is not sent is kept, `null` clears it (KAIROS-T-0533). No history
+//! of the values: the notes hold the record. A write that changes a field
+//! writes one `update` row to the activity log with the names of the
+//! fields that it changed (KAIROS-T-0557), so the activity says who
+//! changed the state and when. The row stays when the task reaches a done
 //! column; a hand-off or a release clears the next step
 //! ([`clear_next_step`]). The state is not content: a write makes no new
 //! version of the task; the server emits `item_updated` so the cards
@@ -139,14 +142,66 @@ pub fn patch(
             next_step: patch.next_step.apply(next_step),
             updated_by: actor,
         };
-        Ok(diesel::insert_into(dsl::task_state)
+        let changed = changed_fields(current.as_ref(), &row);
+        let written = diesel::insert_into(dsl::task_state)
             .values(&row)
             .on_conflict(dsl::task_id)
             .do_update()
             .set((&row, dsl::updated_at.eq(diesel::dsl::now)))
             .returning(TaskState::as_select())
-            .get_result(conn)?)
+            .get_result(conn)?;
+        // KAIROS-T-0557: the activity of the task says who changed the
+        // state and when. The values stay in the state, not in the row.
+        if !changed.is_empty() {
+            diesel::insert_into(crate::schema::activity_log::table)
+                .values(crate::models::NewActivityLogEntry {
+                    actor_id: actor,
+                    action: crate::models::enums::ActivityAction::Update,
+                    entity_id: Some(task_id),
+                    entity_type: Some("task".to_string()),
+                    details: format!(
+                        "{}{}",
+                        crate::item_activity::STATE_PREFIX,
+                        changed.join(",")
+                    ),
+                })
+                .execute(conn)?;
+        }
+        Ok(written)
     })
+}
+
+/// The names of the fields that `row` changes on `current`, in the order
+/// of the state. A task with no state yet changes each field that `row`
+/// sets.
+fn changed_fields(current: Option<&TaskState>, row: &NewTaskState) -> Vec<&'static str> {
+    let (branch, commit, pushed, pr_url, next_step) = match current {
+        Some(c) => (
+            c.branch.as_deref(),
+            c.commit.as_deref(),
+            c.pushed,
+            c.pr_url.as_deref(),
+            c.next_step.as_deref(),
+        ),
+        None => (None, None, false, None, None),
+    };
+    let mut changed = Vec::new();
+    if row.branch.as_deref() != branch {
+        changed.push("branch");
+    }
+    if row.commit.as_deref() != commit {
+        changed.push("commit");
+    }
+    if row.pushed != pushed {
+        changed.push("pushed");
+    }
+    if row.pr_url.as_deref() != pr_url {
+        changed.push("pr_url");
+    }
+    if row.next_step.as_deref() != next_step {
+        changed.push("next_step");
+    }
+    changed
 }
 
 /// Clear the next step of a task (KAIROS-T-0533): a hand-off or a release

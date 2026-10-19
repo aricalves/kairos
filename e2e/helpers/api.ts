@@ -207,13 +207,15 @@ export async function getTeamPage(
     if (!node) throw new Error(`no team page at ${path} (stuck on ${segment})`);
     parent = node.id;
   }
+  // KAIROS-T-0629: the list has no content; read the page.
+  const full = await json(server, token, `/api/teams/${team.id}/pages/${node.id}`);
   return {
-    id: node.id,
+    id: full.id,
     teamId: team.id,
-    slug: node.slug,
-    title: node.title,
-    content: node.content,
-    version: node.version,
+    slug: full.slug,
+    title: full.title,
+    content: full.content,
+    version: full.version,
   };
 }
 

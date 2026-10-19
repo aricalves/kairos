@@ -96,9 +96,9 @@ pub async fn team_by_slug(auth: Auth, slug: &str) -> Result<Team, ApiError> {
     get_json(auth, &format!("/api/teams/by-slug/{slug}")).await
 }
 
-/// mirror of: `kairos_client::types_team_pages::TeamPage` (partial — the
-/// landing page needs the tree shape + charter content; `updated_at`
-/// stays server-side).
+/// mirror of: `kairos_client::types_team_pages::TeamPageSummary` (partial;
+/// `updated_at` stays server-side). One page (`TeamPage`) also has its
+/// content: the landing page needs the content of the charter.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct TeamPageNode {
     pub id: String,
@@ -107,6 +107,9 @@ pub struct TeamPageNode {
     pub kind: String,
     pub slug: String,
     pub title: String,
+    /// Empty in the rows of the list: the list has no content
+    /// (KAIROS-T-0629). [`team_page`] reads one page with its content.
+    #[serde(default)]
     pub content: String,
     pub position: i32,
     pub is_protected: bool,
@@ -204,9 +207,15 @@ impl TeamPageNode {
     }
 }
 
-/// `GET /api/teams/{id}/pages` — the flat page tree (nest by parent_id).
+/// `GET /api/teams/{id}/pages` — the flat page tree (nest by parent_id),
+/// without content (KAIROS-T-0629).
 pub async fn team_pages(auth: Auth, team_id: &str) -> Result<Vec<TeamPageNode>, ApiError> {
     get_json(auth, &format!("/api/teams/{team_id}/pages")).await
+}
+
+/// `GET /api/teams/{id}/pages/{page_id}` — one page with its content.
+pub async fn team_page(auth: Auth, team_id: &str, page_id: &str) -> Result<TeamPageNode, ApiError> {
+    get_json(auth, &format!("/api/teams/{team_id}/pages/{page_id}")).await
 }
 
 /// `PATCH /api/teams/{id}/pages/{page_id}` — the A-0004 versioned
@@ -366,27 +375,56 @@ pub async fn restore_page(
     .await
 }
 
-/// mirror of: `kairos_client::types_team_pages::TeamPageVersion`.
+/// mirror of: `kairos_client::types_team_pages::TeamPageVersionSummary`.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct PageVersion {
     pub version: i32,
     pub title: String,
-    pub content: String,
     pub edited_by_name: String,
     pub edited_at: String,
     #[serde(default)]
     pub agent_key_id: Option<String>,
 }
 
-/// `GET /api/teams/{id}/pages/{page_id}/history` — newest first.
+/// mirror of: `kairos_client::types_team_pages::TeamPageVersion` (the
+/// fields that the page shows).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct PageSnapshot {
+    pub version: i32,
+    pub title: String,
+    pub content: String,
+}
+
+/// The most versions that the history panel lists: the maximum of the
+/// route.
+const HISTORY_LIMIT: i64 = 200;
+
+/// `GET /api/teams/{id}/pages/{page_id}/history` — the newest versions
+/// first, without content (KAIROS-T-0629).
 pub async fn page_history(
     auth: Auth,
     team_id: &str,
     page_id: &str,
 ) -> Result<Vec<PageVersion>, ApiError> {
+    let page: crate::pages::activity::ListEnvelope<PageVersion> = get_json(
+        auth,
+        &format!("/api/teams/{team_id}/pages/{page_id}/history?limit={HISTORY_LIMIT}"),
+    )
+    .await?;
+    Ok(page.items)
+}
+
+/// `GET /api/teams/{id}/pages/{page_id}/history?version=N` — one version
+/// with its content.
+pub async fn page_version(
+    auth: Auth,
+    team_id: &str,
+    page_id: &str,
+    version: i32,
+) -> Result<PageSnapshot, ApiError> {
     get_json(
         auth,
-        &format!("/api/teams/{team_id}/pages/{page_id}/history"),
+        &format!("/api/teams/{team_id}/pages/{page_id}/history?version={version}"),
     )
     .await
 }
@@ -409,9 +447,12 @@ pub struct Announcement {
     pub created_at: String,
 }
 
-/// `GET /api/teams/{id}/announcements` (pinned first, newest first).
+/// `GET /api/teams/{id}/announcements` (pinned first, newest first): the
+/// first page, of the default size (KAIROS-T-0629).
 pub async fn team_announcements(auth: Auth, team_id: &str) -> Result<Vec<Announcement>, ApiError> {
-    get_json(auth, &format!("/api/teams/{team_id}/announcements")).await
+    let page: crate::pages::activity::ListEnvelope<Announcement> =
+        get_json(auth, &format!("/api/teams/{team_id}/announcements")).await?;
+    Ok(page.items)
 }
 
 /// mirror of: `kairos_client::types_team_pages::CreateTeamAnnouncementRequest`.

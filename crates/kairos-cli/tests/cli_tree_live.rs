@@ -574,6 +574,51 @@ async fn cli_command_tree_golden_path_live() {
         format!("Kairos moved the task {task_code} to the column Todo.")
     );
 
+    // --- KAIROS-T-0557: history prints the versions and the activity --------
+    let (code, stdout, stderr) =
+        run_cli(config_dir.path(), &["tasks", "history", &task_code]).await;
+    assert_eq!(code, 0, "history failed: {stderr}");
+    assert!(
+        stdout.starts_with(&format!("# History of {task_code}\n- v1 — ")),
+        "{stdout}"
+    );
+    let activity: Vec<&str> = stdout
+        .lines()
+        .skip_while(|line| *line != "## Activity")
+        .skip(1)
+        .collect();
+    assert!(
+        activity
+            .first()
+            .is_some_and(|line| line.starts_with("- moved from Backlog to Todo — ")),
+        "the newest row first: {stdout}"
+    );
+    assert!(
+        activity
+            .last()
+            .is_some_and(|line| line.starts_with(&format!("- created as {task_code} — "))),
+        "{stdout}"
+    );
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["tasks", "history", &task_code, "--limit", "1", "--json"],
+    )
+    .await;
+    assert_eq!(code, 0, "history --json failed: {stderr}");
+    let history: serde_json::Value = serde_json::from_str(&stdout).expect("history JSON");
+    assert_eq!(history["versions"]["total"], 1, "{stdout}");
+    assert_eq!(history["activity"]["total"], 2, "{stdout}");
+    assert_eq!(history["activity"]["next_offset"], 1, "{stdout}");
+    assert!(history["versions"]["next_offset"].is_null(), "{stdout}");
+    assert_eq!(
+        history["activity"]["items"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        history["activity"]["items"][0]["text"], "moved from Backlog to Todo",
+        "{stdout}"
+    );
+
     // --- search finds it: flags, --json, and the --query-json escape hatch -----
     let (code, stdout, stderr) = run_cli(
         config_dir.path(),

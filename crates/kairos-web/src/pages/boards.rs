@@ -961,7 +961,7 @@ pub fn BoardsPage() -> impl IntoView {
 /// `column_id` with each move. `extras` is a hash of the fields that
 /// change with no new version: the claim, the state, the cancel mark, the
 /// repository, the owner, the teams, the progress and the blocks counts,
-/// and the priority.
+/// the priority, the days in the column and the notes count.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct CardKey {
     short_code: String,
@@ -985,6 +985,10 @@ struct CardExtras<'a> {
     /// The priority metadata (KAIROS-T-0582): a change of metadata gives
     /// no new version of the item.
     priority: Option<&'a str>,
+    /// The days in the column and the notes count (KAIROS-T-0649): a note
+    /// gives no new version of the item.
+    days: Option<i64>,
+    notes: Option<i64>,
 }
 
 impl CardExtras<'_> {
@@ -1068,6 +1072,9 @@ struct ColumnModel {
     /// The column holds finished work (KAIROS-T-0582): it shows the last
     /// [`DONE_COLUMN_CARDS`] cards, and "Hide done" hides it.
     is_done: bool,
+    /// The live cards of the full column (KAIROS-T-0649): the board reads
+    /// fewer cards of a done column.
+    item_count: i64,
     targets: Vec<(String, String)>,
     cards: Vec<CardModel>,
     key: String,
@@ -1076,6 +1083,7 @@ struct ColumnModel {
 /// Flatten the wire shape into owned, keyed view models (leptos children
 /// are `'static` move closures, so views must own their data).
 fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
+    let now = now_ms();
     let column_name_of = |id: &str| -> String {
         view.detail
             .columns
@@ -1101,7 +1109,8 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
          work_class: Option<String>,
          repository: Option<String>,
          (claim, state, cancelled): (Option<data::TaskClaim>, Option<data::TaskState>, bool),
-         owner: Option<CardOwner>| {
+         owner: Option<CardOwner>,
+         (entered, notes): (Option<&str>, Option<i64>)| {
             let progress = progress_of(short_code);
             let blocks = blocks_of(short_code);
             let teams = teams_of(short_code);
@@ -1109,6 +1118,10 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
             let priority = view.items.metadata_value(short_code, data::PRIORITY_SLUG);
             let mut meta = meta;
             meta.extend(priority.map(priority_pill));
+            // KAIROS-T-0649: the days in the column and the notes count.
+            let days = entered.and_then(|at| days_in_column(at, now));
+            meta.extend(days.and_then(days_pill).map(|pill| (pill, token::MUTED)));
+            meta.extend(notes.and_then(notes_pill).map(|pill| (pill, token::MUTED)));
             let extras = CardExtras {
                 work_class: work_class.as_deref(),
                 repository: repository.as_deref(),
@@ -1120,6 +1133,8 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                 progress,
                 blocks,
                 priority,
+                days,
+                notes,
             }
             .hash_value();
             CardModel {
@@ -1173,6 +1188,7 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                     None,
                     (None, None, false),
                     item.owner.as_ref().map(CardOwner::of_owner),
+                    (item.entered_column_at.as_deref(), item.notes_count),
                 )
             }));
             cards.extend(group.initiatives.iter().map(|item| {
@@ -1197,6 +1213,7 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                     None,
                     (None, None, false),
                     item.owner.as_ref().map(CardOwner::of_owner),
+                    (item.entered_column_at.as_deref(), item.notes_count),
                 )
             }));
             cards.extend(group.tasks.iter().map(|item| {
@@ -1223,6 +1240,7 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                         item.cancellation.is_some(),
                     ),
                     item.claim.as_ref().map(CardOwner::of_claim),
+                    (item.entered_column_at.as_deref(), item.notes_count),
                 )
             }));
             cards.extend(group.adrs.iter().map(|item| {
@@ -1240,6 +1258,7 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                     None,
                     (None, None, false),
                     None,
+                    (item.entered_column_at.as_deref(), item.notes_count),
                 )
             }));
             let wip = data::wip_label(group.item_count, group.column.wip_limit)
@@ -1257,6 +1276,7 @@ fn column_models(view: &data::BoardView) -> Vec<ColumnModel> {
                 ),
                 wip,
                 is_done: group.column.is_done,
+                item_count: group.item_count,
                 targets,
                 cards,
             }
@@ -1601,13 +1621,18 @@ pub fn BoardPage() -> impl IntoView {
         model,
         drops: StoredValue::new(data::DropsInFlight::default()),
     };
+    // KAIROS-T-0649: the board reads the last done cards, until "Show
+    // all" of a done column.
+    let done_all = RwSignal::new(false);
+    provide_context(DoneAll(done_all));
     let board = LocalResource::new(move || {
         auth.track_session();
         let _ = refresh.get();
+        let done_limit = (!done_all.get()).then_some(DONE_COLUMN_CARDS);
         let param = params.read().get("board").unwrap_or_default();
         let read = BoardRead::start(live);
         async move {
-            let view = data::load_board_view(auth, &param).await;
+            let view = data::load_board_view(auth, &param, done_limit).await;
             drop(read);
             view
         }
@@ -2424,11 +2449,34 @@ fn BoardBody(
     }
 }
 
-/// The question of the "Archive completed" dialog (KAIROS-T-0363). Pure,
+/// The question of the "Archive completed" dialog (KAIROS-T-0363). With
+/// an age (KAIROS-T-0649), the count of the board is not that of the
+/// call, so the question gives the age. Pure, host-tested.
+fn archive_completed_title(count: usize, older_than_days: Option<u32>) -> String {
+    match older_than_days {
+        Some(days) => format!(
+            "Archive the completed tasks that entered their column {} ago or before?",
+            days_text(days)
+        ),
+        None => {
+            let tasks = if count == 1 { "task" } else { "tasks" };
+            format!("Archive {count} completed {tasks}?")
+        }
+    }
+}
+
+/// The age of the "older than" field of the dialog (KAIROS-T-0649): no
+/// value for an empty field, else a whole number of days from 1. Pure,
 /// host-tested.
-fn archive_completed_title(count: usize) -> String {
-    let tasks = if count == 1 { "task" } else { "tasks" };
-    format!("Archive {count} completed {tasks}?")
+fn older_than_days(text: &str) -> Result<Option<u32>, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    match text.parse::<u32>() {
+        Ok(days) if (1..=36_500).contains(&days) => Ok(Some(days)),
+        _ => Err("Give a whole number of days from 1 to 36500.".to_string()),
+    }
 }
 
 /// The "Archive completed" dialog (KAIROS-T-0363): the confirmation gives
@@ -2445,6 +2493,8 @@ fn ArchiveCompletedDialog(
     let board_id = StoredValue::new(board_id);
     let busy = RwSignal::new(false);
     let error = RwSignal::new(None::<String>);
+    // KAIROS-T-0649: "older than N days"; empty archives each done task.
+    let days = RwSignal::new(String::new());
     Effect::new(move |_| {
         if open.get() {
             error.set(None);
@@ -2454,10 +2504,17 @@ fn ArchiveCompletedDialog(
         if busy.get_untracked() {
             return;
         }
+        let older = match older_than_days(&days.get_untracked()) {
+            Ok(older) => older,
+            Err(message) => {
+                error.set(Some(message));
+                return;
+            }
+        };
         busy.set(true);
         error.set(None);
         leptos::task::spawn_local(async move {
-            let result = data::archive_completed(auth, &board_id.get_value()).await;
+            let result = data::archive_completed(auth, &board_id.get_value(), older).await;
             busy.set(false);
             match result {
                 Ok(outcome) => {
@@ -2476,13 +2533,17 @@ fn ArchiveCompletedDialog(
     view! {
         <ConfirmDialog
             open
-            title=Signal::derive(move || archive_completed_title(count.get()))
+            title=Signal::derive(move || {
+                archive_completed_title(count.get(), older_than_days(&days.get()).ok().flatten())
+            })
             message="You can restore each one."
             confirm_label="Archive"
             danger=false
             busy
             on_confirm=confirm
         >
+            <TextInput label="Older than (days)" value=days
+                placeholder="Empty: each completed task"/>
             {move || error.get().map(|message| view! {
                 <Alert title="Archive failed" color=token::BAD>
                     <Text size="sm" dimmed=true>{message}</Text>
@@ -2791,6 +2852,68 @@ struct WipLane(Memo<Option<String>>);
 fn refusal_note(drag: &DragData, column_id: &str, source_name: &str) -> Option<String> {
     (drag.source_column != column_id && !drag.targets.iter().any(|t| t == column_id))
         .then(|| format!("No transition from {source_name}."))
+}
+
+/// "Show all" of the done columns (KAIROS-T-0649): while it is on, the
+/// board reads each done card.
+#[derive(Clone, Copy)]
+struct DoneAll(RwSignal<bool>);
+
+/// The time now, in milliseconds. The host tests have no browser clock:
+/// there it is 0, and no card shows its days.
+fn now_ms() -> f64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Date::now()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        0.0
+    }
+}
+
+/// The days from the RFC 3339 time `at` (UTC) to `now_ms`, or `None` for
+/// a time that does not parse or is after `now_ms`. Pure, host-tested.
+fn days_in_column(at: &str, now_ms: f64) -> Option<i64> {
+    let number = |range: std::ops::Range<usize>| at.get(range)?.parse::<i64>().ok();
+    let (y, m, d) = (number(0..4)?, number(5..7)?, number(8..10)?);
+    let (hh, mm, ss) = (number(11..13)?, number(14..16)?, number(17..19)?);
+    // The days from 1970-01-01 of a civil date (H. Hinnant).
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let epoch_days = era * 146_097 + doe - 719_468;
+    let at_ms = ((epoch_days * 86_400 + hh * 3_600 + mm * 60 + ss) * 1_000) as f64;
+    (now_ms >= at_ms).then(|| ((now_ms - at_ms) / 86_400_000.0).floor() as i64)
+}
+
+/// "1 day" or "N days". Pure.
+fn days_text(days: u32) -> String {
+    if days == 1 {
+        "1 day".to_string()
+    } else {
+        format!("{days} days")
+    }
+}
+
+/// The pill of the days in the column: `None` before the first full day.
+/// Pure, host-tested.
+fn days_pill(days: i64) -> Option<String> {
+    u32::try_from(days)
+        .ok()
+        .filter(|days| *days >= 1)
+        .map(|days| format!("{} in column", days_text(days)))
+}
+
+/// The pill of the notes count: `None` for no notes. Pure, host-tested.
+fn notes_pill(count: i64) -> Option<String> {
+    match count {
+        ..=0 => None,
+        1 => Some("1 note".to_string()),
+        n => Some(format!("{n} notes")),
+    }
 }
 
 /// The pill of the priority metadata of a card. A high priority has the
@@ -3232,8 +3355,24 @@ fn LaneColumns(
                         })
                     });
                     // KAIROS-T-0582: a done column shows its last cards,
-                    // until "Show all".
-                    let show_all = RwSignal::new(false);
+                    // until "Show all". KAIROS-T-0649: "Show all" is of the
+                    // board: the board then reads each done card.
+                    let show_all = use_context::<DoneAll>()
+                        .map_or_else(|| RwSignal::new(false), |all| all.0);
+                    // The cards of the column that the board did not read.
+                    let cut_column_id = id.clone();
+                    let cut = Memo::new(move |_| {
+                        columns.with(|columns| {
+                            columns
+                                .iter()
+                                .find(|c| c.id == cut_column_id)
+                                .map_or(0, |c| {
+                                    usize::try_from(c.item_count)
+                                        .unwrap_or(0)
+                                        .saturating_sub(c.cards.len())
+                                })
+                        })
+                    });
                     let shown = Memo::new(move |_| {
                         let all = show_all.get();
                         cards.with(|cards| visible_cards(cards, is_done, all))
@@ -3334,7 +3473,8 @@ fn LaneColumns(
                                     <Text dimmed=true size="xs">"No items in this column."</Text>
                                 })}
                                 {move || {
-                                    let total = cards.with(Vec::len);
+                                    let cut = cut.get();
+                                    let total = cards.with(Vec::len) + cut;
                                     let hidden = shown.with(|s| total - s.len());
                                     show_all_label(is_done, show_all.get(), hidden, total).map(|label| view! {
                                         <Button
@@ -4043,8 +4183,23 @@ mod tests {
     /// count.
     #[test]
     fn the_archive_completed_title_gives_the_count() {
-        assert_eq!(archive_completed_title(1), "Archive 1 completed task?");
-        assert_eq!(archive_completed_title(12), "Archive 12 completed tasks?");
+        assert_eq!(
+            archive_completed_title(1, None),
+            "Archive 1 completed task?"
+        );
+        assert_eq!(
+            archive_completed_title(12, None),
+            "Archive 12 completed tasks?"
+        );
+        assert_eq!(
+            archive_completed_title(12, Some(30)),
+            "Archive the completed tasks that entered their column 30 days ago or before?"
+        );
+        assert_eq!(older_than_days(""), Ok(None));
+        assert_eq!(older_than_days(" 7 "), Ok(Some(7)));
+        for bad in ["0", "-1", "x", "36501"] {
+            assert!(older_than_days(bad).is_err(), "{bad}");
+        }
     }
 
     /// KAIROS-T-0359: the claim chip names the person, and the agent.
@@ -5201,6 +5356,7 @@ mod tests {
             name: "c".into(),
             wip: None,
             is_done: false,
+            item_count: 0,
             targets: Vec::new(),
             cards,
             key: String::new(),
@@ -5731,6 +5887,27 @@ mod tests {
         for card in [&robin, &sam, &nobody] {
             assert!(mine_admits(card, None), "the filter is off");
         }
+    }
+
+    /// KAIROS-T-0649: the days in the column and the notes count.
+    #[test]
+    fn the_days_in_the_column_and_the_notes_pills() {
+        // 2026-10-18T12:00:00Z in milliseconds.
+        let now = 1_792_324_800_000.0;
+        assert_eq!(days_in_column("2026-10-18T12:00:00+00:00", now), Some(0));
+        assert_eq!(days_in_column("2026-10-17T11:59:59Z", now), Some(1));
+        assert_eq!(
+            days_in_column("2026-10-08T12:00:00.123+00:00", now),
+            Some(10)
+        );
+        assert_eq!(days_in_column("2026-10-19T00:00:00Z", now), None, "later");
+        assert_eq!(days_in_column("yesterday", now), None);
+        assert_eq!(days_pill(0), None);
+        assert_eq!(days_pill(1).as_deref(), Some("1 day in column"));
+        assert_eq!(days_pill(12).as_deref(), Some("12 days in column"));
+        assert_eq!(notes_pill(0), None);
+        assert_eq!(notes_pill(1).as_deref(), Some("1 note"));
+        assert_eq!(notes_pill(4).as_deref(), Some("4 notes"));
     }
 
     /// KAIROS-T-0582: the priority pill.

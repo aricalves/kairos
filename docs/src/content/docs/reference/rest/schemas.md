@@ -106,8 +106,10 @@ An ADR on a board or in a search (KAIROS-T-0602).
 | `created_by` | `string`, nullable | no | Creator user id (UUID). Only with `fields=full` on the board route. |
 | `decision_date` | `string`, nullable | no | `YYYY-MM-DD`. |
 | `decision_maker` | `string`, nullable | no |  |
+| `entered_column_at` | `string`, nullable | no | When the card entered its column, RFC 3339: its last move, or its creation (KAIROS-T-0649). Present on the board route; absent on a search hit. |
 | `id` | `string` | yes | Entity id (UUID). |
 | `impacts` | array of [`Impact`](#impact) | no | The repositories that the ADR impacts (COLLIERY-T-0269). |
+| `notes_count` | `integer`, nullable | no | The number of the notes of the item (KAIROS-T-0649). Present on the board route; absent on a search hit. |
 | `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-A-{NNNN}`). |
 | `snippet` | `string`, nullable | no | About 200 characters of the content, near the first match of `q`. Only on a search hit. |
 | `title` | `string` | yes |  |
@@ -1263,6 +1265,7 @@ One row of `GET /api/{entity_type}/{short_code}/history`.
 | `agent_key_id` | `string`, nullable | no | The agent key (UUID) of the request that made this change, when an agent made it with the agent key of a person (KAIROS-T-0359). The actor is still the person: show "Alice (agent)". Null for a change made without an agent key, and for each change made before Kairos recorded the key. |
 | `edited_at` | `string` | yes | RFC 3339. |
 | `edited_by` | `string` | yes | Editor user id (UUID). |
+| `edited_by_name` | `string`, nullable | no | The display name of the editor (KAIROS-T-0557). Null for an editor that Kairos does not know. |
 | `version` | `integer` | yes | The content version this snapshot captured. |
 
 ## Impact
@@ -1344,8 +1347,10 @@ An initiative on a board or in a search (KAIROS-T-0602).
 | `content` | `string`, nullable | no | Markdown content. Only with `fields=full` on the board route. A card has no notes (KAIROS-T-0630): the read of the item gives them. |
 | `created_at` | `string` | yes | RFC 3339. |
 | `created_by` | `string`, nullable | no | Creator user id (UUID). Only with `fields=full` on the board route. |
+| `entered_column_at` | `string`, nullable | no | When the card entered its column, RFC 3339: its last move, or its creation (KAIROS-T-0649). Present on the board route; absent on a search hit. |
 | `id` | `string` | yes | Entity id (UUID). |
 | `is_bucket` | `boolean` | yes | Whether this initiative is a bucket. |
+| `notes_count` | `integer`, nullable | no | The number of the notes of the item (KAIROS-T-0649). Present on the board route; absent on a search hit. |
 | `owner` | [`ItemOwner`](#itemowner), nullable | no |  |
 | `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-I-{NNNN}`). |
 | `snippet` | `string`, nullable | no | About 200 characters of the content, near the first match of `q`. Only on a search hit. |
@@ -1382,6 +1387,21 @@ The counts of an import of the open issues (KAIROS-T-0483). The job writes them 
 | `message` | `string` | yes | A sentence for a person. |
 | `not_taken` | `integer` | yes | Issues that no task could be made for; `message` says why. |
 | `skipped` | `integer` | yes | Issues that were taken before (by a webhook or an earlier import). |
+
+## ItemActivityEntry
+
+One row of the activity of one item, as returned by `GET /api/{entity_type}/{short_code}/activity` (KAIROS-T-0557).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `action` | `string` | yes | The action of the row, as in [`ActivityEntry::action`]. |
+| `actor_id` | `string` | yes | Who did it (user UUID). |
+| `actor_name` | `string`, nullable | no | The display name of the actor. Null for an actor that Kairos does not know. |
+| `agent_key_id` | `string`, nullable | no | The agent key (UUID) of the request, when an agent made the change with the agent key of a person (KAIROS-T-0359). Show "Alice (agent)". |
+| `details` | `string` | yes | The details of the row, as they are stored. |
+| `id` | `string` | yes | Row id (UUID). |
+| `occurred_at` | `string` | yes | RFC 3339. |
+| `text` | `string` | yes | The row as one line of text, with the names of the people, the boards, the columns and the repositories instead of their ids, for example `moved from Todo to Active` or `claim taken: Alice`. |
 
 ## ItemExternalRefsResponse
 
@@ -1642,6 +1662,17 @@ The S-0005 list envelope: `{items, total, limit, offset}`.
 | `offset` | `integer` | yes | The applied offset. |
 | `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
 
+## ListEnvelope_ItemActivityEntry
+
+The S-0005 list envelope: `{items, total, limit, offset}`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `items` | array of `object` | yes |  |
+| `limit` | `integer` | yes | The applied limit. |
+| `offset` | `integer` | yes | The applied offset. |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
+
 ## ListEnvelope_MetadataDefinition
 
 The S-0005 list envelope: `{items, total, limit, offset}`.
@@ -1720,6 +1751,28 @@ The S-0005 list envelope: `{items, total, limit, offset}`.
 | `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
 
 ## ListEnvelope_Team
+
+The S-0005 list envelope: `{items, total, limit, offset}`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `items` | array of `object` | yes |  |
+| `limit` | `integer` | yes | The applied limit. |
+| `offset` | `integer` | yes | The applied offset. |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
+
+## ListEnvelope_TeamAnnouncement
+
+The S-0005 list envelope: `{items, total, limit, offset}`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `items` | array of `object` | yes |  |
+| `limit` | `integer` | yes | The applied limit. |
+| `offset` | `integer` | yes | The applied offset. |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
+
+## ListEnvelope_TeamPageVersionSummary
 
 The S-0005 list envelope: `{items, total, limit, offset}`.
 
@@ -2711,8 +2764,10 @@ A strategy on a board or in a search (KAIROS-T-0602).
 | `content` | `string`, nullable | no | Markdown content. Only with `fields=full` on the board route. A card has no notes (KAIROS-T-0630): the read of the item gives them. |
 | `created_at` | `string` | yes | RFC 3339. |
 | `created_by` | `string`, nullable | no | Creator user id (UUID). Only with `fields=full` on the board route. |
+| `entered_column_at` | `string`, nullable | no | When the card entered its column, RFC 3339: its last move, or its creation (KAIROS-T-0649). Present on the board route; absent on a search hit. |
 | `hypothesis` | `string`, nullable | no |  |
 | `id` | `string` | yes | Entity id (UUID). |
+| `notes_count` | `integer`, nullable | no | The number of the notes of the item (KAIROS-T-0649). Present on the board route; absent on a search hit. |
 | `owner` | [`ItemOwner`](#itemowner), nullable | no |  |
 | `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-S-{NNNN}`). |
 | `snippet` | `string`, nullable | no | About 200 characters of the content, near the first match of `q`. Only on a search hit. |
@@ -2803,7 +2858,9 @@ A task on a board or in a search (KAIROS-T-0602).
 | `content` | `string`, nullable | no | Markdown content. Only with `fields=full` on the board route. A card has no notes (KAIROS-T-0630): the read of the item gives them. |
 | `created_at` | `string` | yes | RFC 3339. |
 | `created_by` | `string`, nullable | no | Creator user id (UUID). Only with `fields=full` on the board route. |
+| `entered_column_at` | `string`, nullable | no | When the card entered its column, RFC 3339: its last move, or its creation (KAIROS-T-0649). Present on the board route; absent on a search hit. |
 | `id` | `string` | yes | Entity id (UUID). |
+| `notes_count` | `integer`, nullable | no | The number of the notes of the item (KAIROS-T-0649). Present on the board route; absent on a search hit. |
 | `repository` | [`RepositoryRef`](#repositoryref), nullable | no |  |
 | `repository_id` | `string`, nullable | no | The repository this task is issued against (UUID), if bound. |
 | `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-T-{NNNN}`). |
@@ -2902,7 +2959,7 @@ A team member (`GET /api/teams/{id}/members` element).
 
 ## TeamPage
 
-One node of a team's page tree, as returned by `GET /api/teams/{id}/pages` (a FLAT list — clients nest by `parent_id`, ordered by position then title).
+One node of a team's page tree with its content, as returned by `GET /api/teams/{id}/pages/{page_id}` and by each write. The list of the tree has [`TeamPageSummary`] rows, with no content (KAIROS-T-0629).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -2919,18 +2976,35 @@ One node of a team's page tree, as returned by `GET /api/teams/{id}/pages` (a FL
 | `updated_at` | `string` | yes | RFC 3339. |
 | `version` | `integer` | yes | Optimistic-concurrency version (content edits only). |
 
-## TeamPageVersion
+## TeamPageSummary
 
-One saved version of a page (KAIROS-T-0439): `GET /api/teams/{id}/pages/{page_id}/history`, newest first.
+One node of a team's page tree without its content, as returned by `GET /api/teams/{id}/pages` (a FLAT list — clients nest by `parent_id`, ordered by position then title). Read the content with `GET /api/teams/{id}/pages/{page_id}` (KAIROS-T-0629).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `created_at` | `string` | yes | RFC 3339. |
+| `id` | `string` | yes | Page id (UUID). |
+| `is_protected` | `boolean` | yes | The Charter: content-editable, never renamed/moved/deleted. |
+| `kind` | `string` | yes | `folder|page`. |
+| `parent_id` | `string`, nullable | no | Parent folder (UUID); `null` for roots. |
+| `position` | `integer` | yes | Display order among siblings. |
+| `slug` | `string` | yes | URL segment, unique among siblings. |
+| `team_id` | `string` | yes | Owning team (UUID). |
+| `title` | `string` | yes |  |
+| `updated_at` | `string` | yes | RFC 3339. |
+| `version` | `integer` | yes | Optimistic-concurrency version (content edits only). |
+
+## TeamPageVersionSummary
+
+One row of the version list of a page (KAIROS-T-0439, KAIROS-T-0629): `GET /api/teams/{id}/pages/{page_id}/history`, newest first. It has no content: `?version=N` gives one version in full ([`TeamPageVersion`]).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `agent_key_id` | `string`, nullable | no | The agent key (UUID) of the request that saved it, when an agent saved it with the agent key of the person: show "Alice (agent)". Null otherwise. |
-| `content` | `string` | yes |  |
 | `edited_at` | `string` | yes | RFC 3339. |
 | `edited_by` | `string` | yes | The user id (UUID) of the person who saved it. |
 | `edited_by_name` | `string` | yes | The display name of that person. |
-| `title` | `string` | yes |  |
+| `title` | `string` | yes | The title at this version. |
 | `version` | `integer` | yes |  |
 
 ## TeamTreeItem

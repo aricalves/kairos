@@ -4,11 +4,11 @@
 //! admin; reads are open tenant-wide.
 
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 
-/// One node of a team's page tree, as returned by
-/// `GET /api/teams/{id}/pages` (a FLAT list — clients nest by
-/// `parent_id`, ordered by position then title).
+/// One node of a team's page tree with its content, as returned by
+/// `GET /api/teams/{id}/pages/{page_id}` and by each write. The list of
+/// the tree has [`TeamPageSummary`] rows, with no content (KAIROS-T-0629).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct TeamPage {
     /// Page id (UUID).
@@ -34,6 +34,53 @@ pub struct TeamPage {
     pub created_at: String,
     /// RFC 3339.
     pub updated_at: String,
+}
+
+/// One node of a team's page tree without its content, as returned by
+/// `GET /api/teams/{id}/pages` (a FLAT list — clients nest by
+/// `parent_id`, ordered by position then title). Read the content with
+/// `GET /api/teams/{id}/pages/{page_id}` (KAIROS-T-0629).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct TeamPageSummary {
+    /// Page id (UUID).
+    pub id: String,
+    /// Owning team (UUID).
+    pub team_id: String,
+    /// Parent folder (UUID); `null` for roots.
+    pub parent_id: Option<String>,
+    /// `folder|page`.
+    pub kind: String,
+    /// URL segment, unique among siblings.
+    pub slug: String,
+    pub title: String,
+    /// Display order among siblings.
+    pub position: i32,
+    /// The Charter: content-editable, never renamed/moved/deleted.
+    pub is_protected: bool,
+    /// Optimistic-concurrency version (content edits only).
+    pub version: i32,
+    /// RFC 3339.
+    pub created_at: String,
+    /// RFC 3339.
+    pub updated_at: String,
+}
+
+impl From<&TeamPage> for TeamPageSummary {
+    fn from(page: &TeamPage) -> Self {
+        TeamPageSummary {
+            id: page.id.clone(),
+            team_id: page.team_id.clone(),
+            parent_id: page.parent_id.clone(),
+            kind: page.kind.clone(),
+            slug: page.slug.clone(),
+            title: page.title.clone(),
+            position: page.position,
+            is_protected: page.is_protected,
+            version: page.version,
+            created_at: page.created_at.clone(),
+            updated_at: page.updated_at.clone(),
+        }
+    }
 }
 
 /// Body of `POST /api/teams/{id}/pages`.
@@ -144,16 +191,38 @@ pub struct CreateTeamAnnouncementRequest {
 /// /api/teams/{id}/pages/{page_id}/restore`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ArchivedTeamPage {
-    /// The node as it was archived (its parent may be gone).
+    /// The node as it was archived (its parent may be gone), without its
+    /// content (KAIROS-T-0629).
     #[serde(flatten)]
-    pub page: TeamPage,
+    pub page: TeamPageSummary,
     /// RFC 3339. Nodes archived together (a folder and its contents) have
     /// the same value.
     pub archived_at: String,
 }
 
-/// One saved version of a page (KAIROS-T-0439): `GET
-/// /api/teams/{id}/pages/{page_id}/history`, newest first.
+/// One row of the version list of a page (KAIROS-T-0439, KAIROS-T-0629):
+/// `GET /api/teams/{id}/pages/{page_id}/history`, newest first. It has no
+/// content: `?version=N` gives one version in full ([`TeamPageVersion`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct TeamPageVersionSummary {
+    pub version: i32,
+    /// The title at this version.
+    pub title: String,
+    /// The user id (UUID) of the person who saved it.
+    pub edited_by: String,
+    /// The display name of that person.
+    pub edited_by_name: String,
+    /// RFC 3339.
+    pub edited_at: String,
+    /// The agent key (UUID) of the request that saved it, when an agent saved
+    /// it with the agent key of the person: show "Alice (agent)". Null
+    /// otherwise.
+    #[serde(default)]
+    pub agent_key_id: Option<String>,
+}
+
+/// One saved version of a page in full (KAIROS-T-0439): `GET
+/// /api/teams/{id}/pages/{page_id}/history?version=N`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct TeamPageVersion {
     pub version: i32,
@@ -201,4 +270,20 @@ pub struct PlaceTeamItemRequest {
     pub parent_id: Option<String>,
     /// Its position among its siblings.
     pub position: i32,
+}
+
+/// Query of `GET /api/teams/{id}/pages/{page_id}/history` (KAIROS-T-0629).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+#[serde(deny_unknown_fields)]
+pub struct TeamPageHistoryQuery {
+    /// Return this version in full instead of the version list.
+    #[serde(default)]
+    pub version: Option<i32>,
+    /// Page size for the version list (default 50, max 200).
+    #[serde(default)]
+    pub limit: Option<i64>,
+    /// Rows to skip (default 0).
+    #[serde(default)]
+    pub offset: Option<i64>,
 }

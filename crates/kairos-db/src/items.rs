@@ -52,11 +52,11 @@
 //!
 //! # Soft delete (KAIROS-A-0001)
 //!
-//! [`soft_delete_item`] loads the tenant's `parent` edges in one query,
-//! computes the descendant set with the pure
-//! [`kairos_core::items::cascade_descendants`] (chosen over a recursive CTE
-//! so the traversal decision lives in core and is unit-testable; the edge
-//! count per tenant is small at M1 scale), and stamps `deleted_at` on the
+//! [`soft_delete_item`] loads the `parent` edges below the root in one
+//! query, a recursive CTE from the root ([`subtree_parent_edges`],
+//! KAIROS-T-0629), computes the descendant set with the pure
+//! [`kairos_core::items::cascade_descendants`] (so the traversal decision
+//! lives in core and is unit-testable), and stamps `deleted_at` on the
 //! root plus every live descendant across all five entity tables. One
 //! `activity_log` row (action `delete`) on the root records the cascade
 //! count and the cascaded short codes.
@@ -610,14 +610,14 @@ macro_rules! content_table_ops {
         /// Atomic KAIROS-A-0004 write: `UPDATE … SET version = version + 1
         /// … WHERE id = ? AND version = expected AND deleted_at IS NULL`.
         /// `Ok(None)` = no row matched (stale version, missing, or
-        /// soft-deleted); `Ok(Some((new_version, title, content)))` on
-        /// success.
+        /// soft-deleted); `Ok(Some((new_version, title)))` on success. The
+        /// content is not given back: the caller has it (KAIROS-T-0635).
         fn $apply_fn(
             conn: &mut PgConnection,
             item_id: Uuid,
             update: &ContentUpdate<'_>,
             actor: Uuid,
-        ) -> Result<Option<(i32, String, String)>, DieselError> {
+        ) -> Result<Option<(i32, String)>, DieselError> {
             use crate::schema::$table::dsl;
             let target = dsl::$table
                 .filter(dsl::id.eq(item_id))
@@ -632,7 +632,7 @@ macro_rules! content_table_ops {
                         dsl::updated_by.eq(actor),
                         dsl::updated_at.eq(diesel::dsl::now),
                     ))
-                    .returning((dsl::version, dsl::title, dsl::content))
+                    .returning((dsl::version, dsl::title))
                     .get_result(conn)
                     .optional()?,
                 None => diesel::update(target)
@@ -642,7 +642,7 @@ macro_rules! content_table_ops {
                         dsl::updated_by.eq(actor),
                         dsl::updated_at.eq(diesel::dsl::now),
                     ))
-                    .returning((dsl::version, dsl::title, dsl::content))
+                    .returning((dsl::version, dsl::title))
                     .get_result(conn)
                     .optional()?,
             };
@@ -759,7 +759,7 @@ fn apply_content_update(
     item_id: Uuid,
     update: &ContentUpdate<'_>,
     actor: Uuid,
-) -> Result<Option<(i32, String, String)>, DieselError> {
+) -> Result<Option<(i32, String)>, DieselError> {
     match item_type {
         ItemType::Strategy => apply_content_strategy(conn, item_id, update, actor),
         ItemType::Initiative => apply_content_initiative(conn, item_id, update, actor),
@@ -1480,6 +1480,12 @@ pub fn create_adr(
 /// A stale `expected_version` returns the typed
 /// [`ItemError::VersionConflict`] carrying the item's current version,
 /// title, and content — conflict resolution is client-side (A-0004 step 4).
+///
+/// KAIROS-T-0635: the UPDATE does not give the content back, and the
+/// history row and the mention scan use `update.new_content`. When the new
+/// text has a mention, one read under the lock of the row
+/// (`FOR UPDATE`) gives the content before and, for a stale version, the
+/// conflict answer. With no mention there is no read.
 pub fn update_item_content(
     conn: &mut PgConnection,
     item_type: ItemType,
@@ -1488,56 +1494,144 @@ pub fn update_item_content(
     actor: Uuid,
 ) -> Result<i32, ItemError> {
     conn.transaction::<_, ItemError, _>(|conn| {
-        // KAIROS-T-0381: the content before the update, to find the new
-        // mentions. Read only when the new content has a mention.
-        let before = if kairos_core::notifications::mentions(update.new_content).is_empty() {
-            None
-        } else {
-            load_live_content(conn, item_type, item_id)?.map(|(_, _, content, _)| content)
-        };
-        match apply_content_update(conn, item_type, item_id, &update, actor)? {
-            Some((new_version, title, content)) => {
-                insert_history(conn, item_id, new_version, &title, &content, actor)?;
-                if let Some(before) = before {
-                    let names = kairos_core::notifications::new_mentions(&before, &content);
-                    crate::notifications::on_mentions(conn, item_id, &names, actor)?;
-                }
-                // KAIROS-T-0022: thin event, delivered on commit.
-                events::emit_item_event_by_id(
-                    conn,
-                    EventKind::ItemUpdated,
-                    item_type.entity_type(),
+        write_content(conn, item_type, item_id, &update, Before::Read, actor)
+    })
+}
+
+/// [`update_item_content`] for a caller that read the content at
+/// `update.expected_version`, as `edit_item` does (KAIROS-T-0635): `before`
+/// is that content. The write reads no content. A content does not change
+/// without a new version, so when the UPDATE matches, `before` is the
+/// content that it replaces. A stale version is the same
+/// [`ItemError::VersionConflict`].
+pub fn edit_item_content(
+    conn: &mut PgConnection,
+    item_type: ItemType,
+    item_id: Uuid,
+    update: ContentUpdate<'_>,
+    before: &str,
+    actor: Uuid,
+) -> Result<i32, ItemError> {
+    conn.transaction::<_, ItemError, _>(|conn| {
+        write_content(
+            conn,
+            item_type,
+            item_id,
+            &update,
+            Before::Known(before),
+            actor,
+        )
+    })
+}
+
+/// The content before a write, for the new mentions (KAIROS-T-0381).
+enum Before<'a> {
+    /// Read it when the new text has a mention.
+    Read,
+    /// The caller has it: the content at `expected_version`.
+    Known(&'a str),
+}
+
+/// `(version, title, content)` of the live row, locked until the end of
+/// the transaction (`FOR UPDATE`).
+#[derive(QueryableByName)]
+struct LockedContent {
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    version: i32,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    title: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    content: String,
+}
+
+/// The body of [`update_item_content`], [`edit_item_content`] and
+/// [`rollback_item`], in the transaction of the caller: no savepoint.
+fn write_content(
+    conn: &mut PgConnection,
+    item_type: ItemType,
+    item_id: Uuid,
+    update: &ContentUpdate<'_>,
+    before: Before<'_>,
+    actor: Uuid,
+) -> Result<i32, ItemError> {
+    // KAIROS-T-0381: the content before the update, to find the new
+    // mentions. Needed only when the new content has a mention.
+    let has_mention = !kairos_core::notifications::mentions(update.new_content).is_empty();
+    let before: Option<std::borrow::Cow<'_, str>> = match before {
+        _ if !has_mention => None,
+        Before::Known(text) => Some(std::borrow::Cow::Borrowed(text)),
+        Before::Read => {
+            let locked: LockedContent = sql_query(format!(
+                "SELECT version, title, content FROM {} \
+                 WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+                table_of(item_type)
+            ))
+            .bind::<diesel::sql_types::Uuid, _>(item_id)
+            .get_result(conn)
+            .optional()?
+            .ok_or(ItemError::ItemNotFound {
+                entity_type: item_type.entity_type(),
+                id: item_id,
+            })?;
+            if locked.version != update.expected_version {
+                return Err(ItemError::VersionConflict {
                     item_id,
-                    actor,
-                )?;
-                Ok(new_version)
+                    expected_version: update.expected_version,
+                    current_version: locked.version,
+                    current_title: locked.title,
+                    current_content: locked.content,
+                });
             }
-            None => {
-                let (current_version, current_title, current_content, _) = load_live_content(
-                    conn, item_type, item_id,
-                )?
-                .ok_or(ItemError::ItemNotFound {
+            Some(std::borrow::Cow::Owned(locked.content))
+        }
+    };
+    match apply_content_update(conn, item_type, item_id, update, actor)? {
+        Some((new_version, title)) => {
+            insert_history(
+                conn,
+                item_id,
+                new_version,
+                &title,
+                update.new_content,
+                actor,
+            )?;
+            if let Some(before) = before {
+                let names = kairos_core::notifications::new_mentions(&before, update.new_content);
+                crate::notifications::on_mentions(conn, item_id, &names, actor)?;
+            }
+            // KAIROS-T-0022: thin event, delivered on commit.
+            events::emit_item_event_by_id(
+                conn,
+                EventKind::ItemUpdated,
+                item_type.entity_type(),
+                item_id,
+                actor,
+            )?;
+            Ok(new_version)
+        }
+        None => {
+            let (current_version, current_title, current_content, _) =
+                load_live_content(conn, item_type, item_id)?.ok_or(ItemError::ItemNotFound {
                     entity_type: item_type.entity_type(),
                     id: item_id,
                 })?;
-                // The row exists but the atomic UPDATE matched nothing: its
-                // version moved past `expected_version`. The pure mirror of
-                // this decision lives in kairos-core (one contract, two
-                // layers).
-                debug_assert!(matches!(
-                    rules::check_version(current_version, update.expected_version),
-                    rules::VersionCheck::Conflict { .. }
-                ));
-                Err(ItemError::VersionConflict {
-                    item_id,
-                    expected_version: update.expected_version,
-                    current_version,
-                    current_title,
-                    current_content,
-                })
-            }
+            // The row exists but the atomic UPDATE matched nothing: its
+            // version moved past `expected_version`. The pure mirror of
+            // this decision lives in kairos-core (one contract, two
+            // layers).
+            debug_assert!(matches!(
+                rules::check_version(current_version, update.expected_version),
+                rules::VersionCheck::Conflict { .. }
+            ));
+            Err(ItemError::VersionConflict {
+                item_id,
+                expected_version: update.expected_version,
+                current_version,
+                current_title,
+                current_content,
+            })
         }
-    })
+    }
 }
 
 /// Roll an item back to a historical snapshot (KAIROS-A-0004 "rollback by
@@ -1568,24 +1662,67 @@ pub fn rollback_item(
             version: to_version,
         })?;
 
-        let (current_version, ..) =
-            load_live_content(conn, item_type, item_id)?.ok_or(ItemError::ItemNotFound {
+        let (current_version, _, current_content, _) = load_live_content(conn, item_type, item_id)?
+            .ok_or(ItemError::ItemNotFound {
                 entity_type: item_type.entity_type(),
                 id: item_id,
             })?;
 
-        update_item_content(
+        // KAIROS-T-0635: in this transaction (no savepoint), with the
+        // content before in hand.
+        write_content(
             conn,
             item_type,
             item_id,
-            ContentUpdate {
+            &ContentUpdate {
                 new_title: Some(&title),
                 new_content: &content,
                 expected_version: current_version,
             },
+            Before::Known(&current_content),
             actor,
         )
     })
+}
+
+// ---------------------------------------------------------------------------
+// The version list (KAIROS-T-0629)
+// ---------------------------------------------------------------------------
+
+/// A version of an item without its title and content: the row of the
+/// version list.
+#[derive(Debug, Clone, PartialEq, Eq, Queryable, Selectable)]
+#[diesel(table_name = crate::schema::item_history)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+pub struct HistoryVersionMeta {
+    pub version: i32,
+    pub edited_by: Uuid,
+    pub edited_at: chrono::DateTime<chrono::Utc>,
+    pub agent_key_id: Option<Uuid>,
+}
+
+/// One page of the versions of an item, newest first, and the number of
+/// versions. The rows have no title and no content: the read of one
+/// version gives them.
+pub fn history_versions(
+    conn: &mut PgConnection,
+    item_id: Uuid,
+    limit: i64,
+    offset: i64,
+) -> Result<(i64, Vec<HistoryVersionMeta>), DieselError> {
+    use crate::schema::item_history as history;
+    let total: i64 = history::table
+        .filter(history::item_id.eq(item_id))
+        .count()
+        .get_result(conn)?;
+    let rows = history::table
+        .filter(history::item_id.eq(item_id))
+        .order(history::version.desc())
+        .limit(limit)
+        .offset(offset)
+        .select(HistoryVersionMeta::as_select())
+        .load(conn)?;
+    Ok((total, rows))
 }
 
 // ---------------------------------------------------------------------------
@@ -1675,6 +1812,47 @@ struct CascadePlan {
     not_reached: Vec<NotReached>,
 }
 
+/// The `parent` edges below `root`: each edge whose parent is `root` or a
+/// descendant of it (KAIROS-T-0629). One recursive CTE from the root on
+/// the source index, not a read of each `parent` edge of the tenant. The
+/// walk of [`kairos_core::items::cascade_descendants`] and
+/// [`kairos_core::items::cascade_reach`] reads no other edge. `UNION`
+/// drops a node that the walk has, so a cycle ends the walk.
+pub fn subtree_parent_edges(
+    conn: &mut PgConnection,
+    root: Uuid,
+) -> Result<Vec<rules::ParentEdge>, DieselError> {
+    #[derive(QueryableByName)]
+    struct Edge {
+        #[diesel(sql_type = diesel::sql_types::Uuid)]
+        source_id: Uuid,
+        #[diesel(sql_type = diesel::sql_types::Uuid)]
+        target_id: Uuid,
+    }
+    let rows: Vec<Edge> = sql_query(
+        "WITH RECURSIVE below(id) AS ( \
+             SELECT $1::uuid \
+             UNION \
+             SELECT r.target_id FROM item_relationships r \
+             JOIN below b ON r.source_id = b.id \
+             WHERE r.relationship = $2 \
+         ) \
+         SELECT r.source_id, r.target_id FROM item_relationships r \
+         JOIN below b ON r.source_id = b.id \
+         WHERE r.relationship = $2",
+    )
+    .bind::<diesel::sql_types::Uuid, _>(root)
+    .bind::<Text, _>(RelationshipType::Parent.as_str())
+    .load(conn)?;
+    Ok(rows
+        .into_iter()
+        .map(|edge| rules::ParentEdge {
+            parent_id: edge.source_id,
+            child_id: edge.target_id,
+        })
+        .collect())
+}
+
 /// Plan the cascade of an archive. Call it inside the transaction of the
 /// caller.
 ///
@@ -1701,24 +1879,13 @@ fn plan_cascade(
     item_id: Uuid,
     principal: Option<Principal<'_>>,
 ) -> Result<CascadePlan, ItemError> {
-    use crate::schema::item_relationships;
-
     let (.., root_short_code) =
         load_live_content(conn, item_type, item_id)?.ok_or(ItemError::ItemNotFound {
             entity_type: item_type.entity_type(),
             id: item_id,
         })?;
 
-    let edges: Vec<rules::ParentEdge> = item_relationships::table
-        .filter(item_relationships::relationship.eq(RelationshipType::Parent))
-        .select((item_relationships::source_id, item_relationships::target_id))
-        .load::<(Uuid, Uuid)>(conn)?
-        .into_iter()
-        .map(|(parent_id, child_id)| rules::ParentEdge {
-            parent_id,
-            child_id,
-        })
-        .collect();
+    let edges = subtree_parent_edges(conn, item_id)?;
 
     let Some(principal) = principal else {
         return Ok(CascadePlan {
@@ -1818,8 +1985,8 @@ fn preview_planned(
 
 /// Preview the KAIROS-A-0001 soft-delete cascade WITHOUT mutating anything
 /// (KAIROS-T-0051): the read half of [`soft_delete_item`], sharing its
-/// exact machinery so the two can never disagree. Loads the tenant's
-/// `parent` edges, computes the descendant set with the SAME pure
+/// exact machinery so the two can never disagree. Loads the `parent`
+/// edges below the root ([`subtree_parent_edges`]), computes the descendant set with the SAME pure
 /// [`kairos_core::items::cascade_descendants`] BFS, and reads the LIVE
 /// short codes of those descendants across all five entity tables (the
 /// read-only mirror of the delete's per-table filter). Runs in one
@@ -1853,9 +2020,9 @@ pub fn preview_cascade_as(
 }
 
 /// Soft-delete an item and cascade to its descendants (KAIROS-A-0001), in
-/// ONE transaction: load the tenant's `parent` edges, compute the
-/// descendant set with the pure [`kairos_core::items::cascade_descendants`]
-/// (see module docs for why this over a recursive CTE), stamp `deleted_at`
+/// ONE transaction: load the `parent` edges below the root
+/// ([`subtree_parent_edges`]), compute the descendant set with the pure
+/// [`kairos_core::items::cascade_descendants`], stamp `deleted_at`
 /// on the root and every live descendant across all five entity tables,
 /// and write ONE `activity_log` `delete` row on the root recording the
 /// cascade count and short codes. Already-deleted descendants are left
@@ -2256,8 +2423,6 @@ pub fn restore_item(
     actor: Uuid,
 ) -> Result<Result<RestoreOutcome, RestoreBlockers>, ItemError> {
     conn.transaction::<_, ItemError, _>(|conn| {
-        use crate::schema::item_relationships;
-
         let short_code =
             archived_short_code(conn, item_type, item_id)?.ok_or(ItemError::ItemNotFound {
                 entity_type: item_type.entity_type(),
@@ -2273,16 +2438,7 @@ pub fn restore_item(
 
         // Name the descendants still away, so "I restored it and half of it
         // is missing" is answered before it is asked.
-        let edges: Vec<rules::ParentEdge> = item_relationships::table
-            .filter(item_relationships::relationship.eq(RelationshipType::Parent))
-            .select((item_relationships::source_id, item_relationships::target_id))
-            .load::<(Uuid, Uuid)>(conn)?
-            .into_iter()
-            .map(|(parent_id, child_id)| rules::ParentEdge {
-                parent_id,
-                child_id,
-            })
-            .collect();
+        let edges = subtree_parent_edges(conn, item_id)?;
         let mut still_archived_descendants = Vec::new();
         for descendant in rules::cascade_descendants(item_id, &edges) {
             if let Some(code) = any_archived_short_code(conn, descendant)? {
