@@ -94,6 +94,17 @@ pub(super) fn is_newer_copy(shown: &ItemDetail, read: &ItemDetail) -> bool {
     read.version >= shown.version && read != shown
 }
 
+/// Is `read` the copy `shown` with new notes and the time of their write
+/// (KAIROS-T-0662)? A note keeps the version and moves `updated_at`, so the
+/// page takes that time with the notes, and shows no banner. Pure,
+/// host-tested.
+pub(super) fn only_notes_changed(shown: &ItemDetail, read: &ItemDetail) -> bool {
+    let mut probe = shown.clone();
+    probe.notes.clone_from(&read.notes);
+    probe.updated_at.clone_from(&read.updated_at);
+    probe == *read
+}
+
 /// Do the metadata values that the page read differ from the values that
 /// the panel shows? `None` for the panel: it did not load yet, so there is
 /// nothing to compare. The order of the values is not part of the
@@ -320,6 +331,25 @@ mod tests {
         .expect("item decodes");
         assert!(is_newer_copy(&shown, &noted));
         assert_eq!(changed_parts(&shown, &noted), vec!["the notes"]);
+    }
+
+    /// KAIROS-T-0662: a note moves `updated_at` and keeps the version. The
+    /// page takes the notes and the time; a change of another part is not
+    /// only the notes.
+    #[test]
+    fn a_note_and_its_time_are_only_the_notes() {
+        let shown = item(4);
+        let mut noted = item(4);
+        noted.updated_at = "2026-10-18T00:00:00Z".to_string();
+        noted.notes = serde_json::from_value(serde_json::json!([
+            {"id": "n-1", "author": "Robin", "created_at": "2026-10-18T00:00:00Z", "text": "One."}
+        ]))
+        .ok();
+        assert!(noted.notes.is_some(), "the notes fixture decodes");
+        assert!(only_notes_changed(&shown, &noted));
+        let mut edited = noted.clone();
+        edited.version = 5;
+        assert!(!only_notes_changed(&shown, &edited));
     }
 
     fn value(slug: &str, value: &str) -> MetadataValue {

@@ -140,6 +140,14 @@ test('lanes: support renders above planned; drags and the lane control move card
 
   // 6. Diagonal drag: transition + lane write in one drop --------------------
   await test.step('drag Planned/Todo → Support/Active (diagonal)', async () => {
+    // KAIROS-T-0619: the card moves at once, and the transition and the
+    // lane write go to the server after. The next step opens the item
+    // page, so this step waits for the lane write to end.
+    const laneWritten = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' &&
+        new URL(response.url()).pathname.endsWith('/work-class'),
+    );
     await expect(async () => {
       const card = cardIn(page, 'Todo', 'planned', createdTitle);
       if (await card.isVisible()) {
@@ -149,6 +157,7 @@ test('lanes: support renders above planned; drags and the lane control move card
         cardIn(page, 'Active', 'support', createdTitle),
       ).toBeVisible({ timeout: 5_000 });
     }).toPass({ timeout: 30_000 });
+    expect((await laneWritten).ok(), 'the lane write of the drop').toBe(true);
   });
 
   // 7. The keyboard path: the detail page's Lane control ---------------------

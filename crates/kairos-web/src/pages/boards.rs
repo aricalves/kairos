@@ -1415,9 +1415,11 @@ impl LiveReads {
             }
             data::Batch::Cards(codes) => {
                 let end = BatchEnd(self);
+                // KAIROS-T-0662: the read names the board by its slug, as
+                // the route of the view does (COLLIERY-T-0265), not its id.
                 let Some(board) = self
                     .model
-                    .with_untracked(|m| m.as_ref().map(|view| view.items.board.id.clone()))
+                    .with_untracked(|m| m.as_ref().map(|view| view.items.board.slug.clone()))
                 else {
                     return;
                 };
@@ -1442,7 +1444,7 @@ impl LiveReads {
                     let mut whole = false;
                     self.model.try_update(|model| match model.as_mut() {
                         // The page shows a different board now.
-                        Some(view) if view.items.board.id != board => {}
+                        Some(view) if view.items.board.slug != board => {}
                         Some(view) => {
                             for (code, page) in pages {
                                 whole |= match page {

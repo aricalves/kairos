@@ -229,7 +229,10 @@ test('team lens: bob → my teams → roster/board/stream → directory → acti
     );
 
     // The count of the pager is the count of the server after the filter,
-    // and it is smaller than the count of the full feed.
+    // and it is smaller than the count of the full feed. KAIROS-T-0627:
+    // the server stops the count at 1000 (a total of 1001 is "more than
+    // 1000"), so after a full run of the suite the two counts can both
+    // stop there.
     const get = async (query: string): Promise<any> => {
       const res = await fetch(`${GUI}/api/activity?${query}`, {
         headers: { authorization: `Bearer ${alice}` },
@@ -237,17 +240,21 @@ test('team lens: bob → my teams → roster/board/stream → directory → acti
       expect(res.status, `GET /api/activity?${query}`).toBe(200);
       return res.json();
     };
+    const COUNT_CAP = 1000;
     const ofTeam = await get('team=platform&limit=25');
     const all = await get('limit=1');
     expect(ofTeam.total).toBeGreaterThan(0);
-    expect(ofTeam.total).toBeLessThan(all.total);
+    if (all.total <= COUNT_CAP) {
+      expect(ofTeam.total).toBeLessThan(all.total);
+    } else {
+      expect(ofTeam.total).toBeLessThanOrEqual(all.total);
+    }
     const shown = Math.min(25, ofTeam.total);
     const feed = page.locator('.cl-panel', {
       has: page.locator('.cl-panel__title', { hasText: 'Feed' }),
     });
-    await expect(
-      feed.getByText(`The list shows items 1 to ${shown} of ${ofTeam.total}.`),
-    ).toBeVisible();
+    const of = ofTeam.total > COUNT_CAP ? `more than ${COUNT_CAP}` : `${ofTeam.total}`;
+    await expect(feed.getByText(`The list shows items 1 to ${shown} of ${of}.`)).toBeVisible();
     await expect(feed.locator('tbody tr')).toHaveCount(shown);
     // Each entry of the page is by a member of the team.
     const members = new Set<string>(

@@ -145,6 +145,9 @@ const PAGES: MainPage[] = [
 test('theme: follows the OS, the toggle switches and persists, pages use tokens only', async ({
   page,
 }) => {
+  // About 20 full loads of the dev bundle (the 7 pages in 2 themes, the
+  // reloads of steps 4 and 4b): more than the 90 s of the config.
+  test.setTimeout(240_000);
   // 1. With no choice, the page follows the OS --------------------------------
   await test.step('/login follows the OS setting', async () => {
     await page.emulateMedia({ colorScheme: 'light' });

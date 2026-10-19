@@ -100,12 +100,15 @@ test('the Notifications page shows older read notifications', async ({ page }) =
   const alice = await mintToken();
   const bob = await mintToken({ email: 'bob@kairos.test', password: 'bob-password' });
   const board = await loadBoard(GUI, bob, (b) => b.slug === 'platform-delivery');
+  // The demo seed sets the user name of a person to the subject of the
+  // login (KAIROS-T-0184), so "@alice" names no one. The token has it.
+  const sub = JSON.parse(Buffer.from(alice.split('.')[1], 'base64url').toString()).sub;
   // 22 mentions of alice, then alice reads them: more than 20 read ones.
   for (let n = 0; n < 22; n++) {
     await createTask(GUI, bob, {
       title: `E2E notification pages ${Date.now()} ${n}`,
       boardId: board.id,
-      content: 'Ask @alice.',
+      content: `Ask @${sub}.`,
     });
   }
   const list = await send(alice, 'GET', '/api/me/notifications');

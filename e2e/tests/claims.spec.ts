@@ -10,7 +10,8 @@
 //   4. Release ends the claim; the panel then shows Claim and Hand off;
 //   5. Claim gives alice the free task again;
 //   6. Cancel with a reason puts the cancel mark on the task;
-//   7. Delete for good (a board manager) removes the task;
+//   7. Delete for good (a board manager) removes the task, once it is
+//      archived (KAIROS-T-0570);
 //   8. the Agent keys page makes a key, rotates it and revokes it.
 //
 // The task is new for each run (a timestamped title), so a retry starts
@@ -156,6 +157,17 @@ test('a task is claimed, handed off, released, cancelled and deleted', async ({
   });
 
   await test.step('a board manager deletes the task for good', async () => {
+    // KAIROS-T-0570: Delete for good is for an archived task. Archive it
+    // first, then open the page again.
+    const archived = await fetch(`${GUI}/api/tasks/${code}`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(archived.ok, `archive ${code} -> ${archived.status}`).toBeTruthy();
+    await page.goto(`/items/${code}`);
+    await expect(page.locator('[data-testid="archived-banner"]').first()).toBeVisible({
+      timeout: 20_000,
+    });
     await page.getByRole('button', { name: 'Delete', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: `Delete ${code} for good?` });
     await expect(dialog).toBeVisible();
