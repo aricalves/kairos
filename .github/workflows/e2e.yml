@@ -34,6 +34,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
+      # The compose stack and the test servers bind host ports 41080-41900,
+      # inside the default ephemeral range (32768-60999). An outbound
+      # connection of an earlier step can hold one of them, and compose up
+      # then fails with "address already in use" (KAIROS-T-0662).
+      - name: Keep the ports of the stack out of the ephemeral range
+        run: sudo sysctl -w net.ipv4.ip_local_port_range="42000 65000"
+
       - name: Checkout
         uses: actions/checkout@v5
 
