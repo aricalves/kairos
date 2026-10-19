@@ -339,7 +339,13 @@ impl ScipRunner for TypeScriptRunner {
             if inferred {
                 let _ = std::fs::remove_file(&tsconfig);
             }
-            ran?;
+            ran.map_err(|reason| {
+                if reason.contains("no files got indexed") {
+                    format!("{reason} {}", no_files_hint(&dir, project, inferred))
+                } else {
+                    reason
+                }
+            })?;
             Ok(rebase(read_index(&out)?, project, proto::ENCODING_UTF16))
         });
         if let Some(cache) = &self.tools.cache {
@@ -347,6 +353,26 @@ impl ScipRunner for TypeScriptRunner {
         }
         output
     }
+}
+
+/// A line for the warning "no files got indexed" of scip-typescript
+/// (KAIROS-T-0669): the project and its config files, as they were when the
+/// indexer ran.
+fn no_files_hint(dir: &Path, project: &str, inferred: bool) -> String {
+    let at = if project.is_empty() { "." } else { project };
+    let jsconfig = dir.join("jsconfig.json").is_file();
+    let config = match (inferred, jsconfig) {
+        (false, _) => "a tsconfig.json".to_string(),
+        (true, true) => {
+            "a jsconfig.json and no tsconfig.json: scip-typescript inferred a tsconfig.json"
+                .to_string()
+        }
+        (true, false) => {
+            "no tsconfig.json or jsconfig.json: scip-typescript inferred a tsconfig.json"
+                .to_string()
+        }
+    };
+    format!("(the project at {at} has {config}.)")
 }
 
 /// The dependency files of a Python project at the root, with their texts:
@@ -800,6 +826,61 @@ mod tests {
                 "uv-0.0.0"
             ]
         );
+    }
+
+    /// KAIROS-T-0669: "no files got indexed" says which project and which
+    /// config files the indexer saw.
+    #[test]
+    fn no_files_indexed_names_the_project_and_its_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("app.js"), "function run() {}\n").unwrap();
+        let tools = dir.path().join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        let tools = LanguageTools {
+            dir: Some(tools.clone()),
+            fetch: true,
+            overrides: vec![
+                fake_component(
+                    &tools,
+                    "node",
+                    &[(
+                        "bin/node",
+                        "#!/bin/sh\necho 'no files got indexed' >&2\nexit 1\n",
+                    )],
+                ),
+                fake_component(
+                    &tools,
+                    "scip-typescript",
+                    &[(
+                        "node_modules/@sourcegraph/scip-typescript/dist/src/main.js",
+                        "",
+                    )],
+                ),
+            ],
+            cache: Some(DependencyCache {
+                root: dir.path().join("deps"),
+                key: "t/r".into(),
+                cap_bytes: u64::MAX,
+                min_free_bytes: 0,
+            }),
+            ..Default::default()
+        };
+        let report = run_python(dir.path(), &root, tools);
+        let reason = &report
+            .scip_warnings
+            .iter()
+            .find(|w| w.language == "typescript")
+            .unwrap()
+            .reason;
+        assert!(
+            reason.ends_with(
+                "no files got indexed (the project at . has no tsconfig.json or jsconfig.json: scip-typescript inferred a tsconfig.json.)"
+            ),
+            "{reason}"
+        );
+        assert!(!root.join("tsconfig.json").exists());
     }
 
     /// KAIROS-T-0486: a failed `uv sync` is the fallback with a warning.
