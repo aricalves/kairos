@@ -399,7 +399,14 @@ fn ItemLoaded(item: ItemDetail, family: Family) -> impl IntoView {
                     notes::takes_notes(shown.notes.as_deref(), next.notes.as_deref())
                 });
                 if takes == Some(true) {
-                    let _ = current.try_update(|shown| shown.notes.clone_from(&next.notes));
+                    let _ = current.try_update(|shown| {
+                        // KAIROS-T-0662: the time of the note too, when
+                        // nothing else changed: no banner.
+                        if live::only_notes_changed(shown, &next) {
+                            shown.updated_at.clone_from(&next.updated_at);
+                        }
+                        shown.notes.clone_from(&next.notes);
+                    });
                 }
                 let _ = pending.try_set(Some(next));
             }
